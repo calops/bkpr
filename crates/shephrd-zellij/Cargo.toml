@@ -1,0 +1,18 @@
+[package]
+name = "shephrd-zellij"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Workspace-first Zellij sidebar and overlays for shephrd"
+
+[[bin]]
+name = "shephrd-zellij"
+path = "src/main.rs"
+
+[dependencies]
+shephrd = { path = "../shephrd" }
+serde.workspace = true
+serde_json.workspace = true
+unicode-width = "0.2"
+zellij-tile = "=0.45.1"
