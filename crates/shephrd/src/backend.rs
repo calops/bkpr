@@ -25,10 +25,7 @@ pub struct Config {
     pub socket: PathBuf,
     pub session: String,
     pub machine: Option<String>,
-    pub remote: Option<RemoteTarget>,
-    pub herdr: PathBuf,
-    #[serde(default)]
-    pub herdr_config: Option<PathBuf>,
+    pub remote: RemoteTarget,
     pub ssh: PathBuf,
     pub zellij: PathBuf,
     pub zellij_session: String,
@@ -42,16 +39,13 @@ pub struct Config {
 impl Config {
     fn validate(&self) -> Result<()> {
         validate_session(&self.session)?;
-        if let Some(remote) = &self.remote {
-            herdr::validate_target(&remote.target)?;
-            validate_session(&remote.session)?;
-            if remote.session != self.session {
-                bail!("remote and companion sessions must match");
-            }
+        herdr::validate_target(&self.remote.target)?;
+        validate_session(&self.remote.session)?;
+        if self.remote.session != self.session {
+            bail!("remote and companion sessions must match");
         }
         for (name, path) in [
             ("socket", &self.socket),
-            ("herdr", &self.herdr),
             ("ssh", &self.ssh),
             ("zellij", &self.zellij),
             ("program", &self.program),
@@ -61,13 +55,6 @@ impl Config {
             if !path.is_absolute() || path.to_str().is_none() {
                 bail!("{name} must be an absolute UTF-8 path");
             }
-        }
-        if self
-            .herdr_config
-            .as_ref()
-            .is_some_and(|path| !path.is_absolute())
-        {
-            bail!("herdr_config must be absolute");
         }
         if self.zellij_session.is_empty() || self.zellij_session.contains(['\0', '\n', '\r']) {
             bail!("invalid Zellij session name");
@@ -244,17 +231,9 @@ impl Backend {
         // Subscribe and drain before issuing the separate snapshot request. There is no recovery cursor.
         let client = herdr::Client::new(&self.config)?;
         let subscription = client.subscribe(BTreeSet::new(), self.invalidated.clone())?;
-        let seeded = client.started_server();
         self.client = Some(client);
         self.subscription = Some(subscription);
         self.refresh()?;
-        if seeded && self.state.workspaces.is_empty() {
-            self.client.as_mut().unwrap().request(
-                "workspace.create",
-                json!({"cwd": self.config.cwd, "focus": true}),
-            )?;
-            self.refresh()?;
-        }
         Ok(())
     }
 
@@ -461,42 +440,17 @@ impl Backend {
             Action::ResolveAttachment { pane_id } => {
                 self.refresh()?;
                 let pane = self.pane(&pane_id)?;
-                let command = if let Some(remote) = &self.config.remote {
-                    let mut args = herdr::ssh_args(&remote.target, true);
-                    args.push(herdr::remote_command(
-                        remote,
-                        &["terminal", "attach", &pane.terminal_id],
-                    ));
-                    CommandSpec {
-                        executable: self.config.ssh.to_str().unwrap().into(),
-                        args,
-                        cwd: Some(self.config.cwd.to_str().unwrap().into()),
-                        env: BTreeMap::new(),
-                    }
-                } else {
-                    let env = self
-                        .config
-                        .herdr_config
-                        .as_ref()
-                        .map(|config| {
-                            BTreeMap::from([(
-                                "HERDR_CONFIG_PATH".into(),
-                                config.to_string_lossy().into_owned(),
-                            )])
-                        })
-                        .unwrap_or_default();
-                    CommandSpec {
-                        executable: self.config.herdr.to_str().unwrap().into(),
-                        args: vec![
-                            "--session".into(),
-                            self.config.session.clone(),
-                            "terminal".into(),
-                            "attach".into(),
-                            pane.terminal_id.clone(),
-                        ],
-                        cwd: Some(self.config.cwd.to_str().unwrap().into()),
-                        env,
-                    }
+                let remote = &self.config.remote;
+                let mut args = herdr::ssh_args(&remote.target, true);
+                args.push(herdr::remote_command(
+                    remote,
+                    &["terminal", "attach", &pane.terminal_id],
+                ));
+                let command = CommandSpec {
+                    executable: self.config.ssh.to_str().unwrap().into(),
+                    args,
+                    cwd: Some(self.config.cwd.to_str().unwrap().into()),
+                    env: BTreeMap::new(),
                 };
                 Ok(vec![Effect::Attachment { command }])
             }

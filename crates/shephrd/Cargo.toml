@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Persistent Herdr workspaces composed in Zellij"
+description = "Workspace-first native Zellij launcher and remote companion"
 
 [dependencies]
 serde.workspace = true
