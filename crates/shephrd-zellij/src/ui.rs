@@ -493,14 +493,6 @@ impl PopupRow {
             ..Self::default()
         }
     }
-
-    pub fn plain(&self) -> String {
-        self.spans
-            .iter()
-            .chain(&self.suffix)
-            .map(|span| clean(&span.text))
-            .collect()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1474,6 +1466,16 @@ impl Modal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl PopupRow {
+        pub fn plain(&self) -> String {
+            self.spans
+                .iter()
+                .chain(&self.suffix)
+                .map(|span| clean(&span.text))
+                .collect()
+        }
+    }
 
     #[test]
     fn labels_disarm_hidden_direction_changes_without_destroying_unicode() {

@@ -20,7 +20,7 @@ pub struct Options {
     /// Frontend WASM artifact; bundled automatically by the product package.
     #[arg(long, env = "SHEPHRD_PLUGIN", hide = true)]
     pub plugin: Option<PathBuf>,
-    /// Sidebar width in columns (16–120).
+    /// Initial sidebar target in columns (16–120); resizable, rounded to integer percent.
     #[arg(long, default_value_t = 38, value_parser = clap::value_parser!(u16).range(16..=120), help_heading = "Session")]
     pub sidebar_width: u16,
 }
@@ -50,6 +50,11 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
     let config_path = config_dir.join("config.kdl");
     let layout_path = runtime.join("layout.kdl");
     if !existing {
+        let sidebar_percent = shephrd::native_sidebar_percent(
+            usize::from(options.sidebar_width),
+            terminal_columns()?,
+        )
+        .context("terminal needs at least two columns for a sidebar and terminal pane")?;
         let bin = runtime.join("bin");
         private_directory(&bin)?;
         let wrapper = bin.join("claude");
@@ -92,7 +97,7 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
                 &configuration,
                 "Workspace",
                 cwd,
-                usize::from(options.sidebar_width),
+                sidebar_percent,
             )?
             .as_bytes(),
         )?;
@@ -130,6 +135,27 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
         bail!("Zellij exited with {status}");
     }
     Ok(())
+}
+
+fn terminal_columns() -> Result<usize> {
+    let mut dimensions = std::mem::MaybeUninit::<libc::winsize>::uninit();
+    // TIOCGWINSZ initializes winsize on success; stdin is the launcher's verified TTY.
+    if unsafe {
+        libc::ioctl(
+            std::io::stdin().as_raw_fd(),
+            libc::TIOCGWINSZ,
+            dimensions.as_mut_ptr(),
+        )
+    } == -1
+    {
+        return Err(std::io::Error::last_os_error())
+            .context("read terminal size; launch from a TTY with a configured window size");
+    }
+    let columns = usize::from(unsafe { dimensions.assume_init() }.ws_col);
+    if columns == 0 {
+        bail!("terminal reports zero columns; configure the TTY window size before launching");
+    }
+    Ok(columns)
 }
 
 fn zellij_command(program: &Path, config_dir: &Path) -> Command {
