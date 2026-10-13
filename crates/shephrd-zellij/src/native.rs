@@ -77,10 +77,13 @@ impl Topology {
 
     fn tabs(&mut self, tabs: Vec<TabInfo>) -> bool {
         let Some(manifest) = self.pending.take() else {
+            self.ready = None;
+            self.reconciled = None;
             return false;
         };
         let positions: BTreeSet<_> = tabs.iter().map(|tab| tab.position).collect();
         if positions.len() != tabs.len() || positions != manifest.panes.keys().copied().collect() {
+            self.pending = Some(manifest);
             return false;
         }
         if self
@@ -94,6 +97,40 @@ impl Topology {
         }
         self.ready = Some((tabs, manifest));
         true
+    }
+
+    fn sidebar_percent(&self, source: u32) -> Result<u8, String> {
+        if self.pending.is_some() {
+            return Err("Native tab geometry is updating; try creating the tab again".to_owned());
+        }
+        let (tabs, manifest) = self
+            .ready
+            .as_ref()
+            .or(self.reconciled.as_ref())
+            .ok_or("Native tab geometry is unavailable")?;
+        for tab in tabs {
+            let Some(panes) = manifest.panes.get(&tab.position) else {
+                continue;
+            };
+            if let Some(pane) = panes
+                .iter()
+                .find(|pane| pane.is_plugin && pane.id == source)
+            {
+                if pane.is_floating || pane.is_suppressed || pane.exited {
+                    return Err("Tab creation requires an open tiled sidebar".to_owned());
+                }
+                if pane.pane_columns > tab.display_area_columns {
+                    return Err("Native sidebar geometry exceeds the display".to_owned());
+                }
+                // Outer columns include the separator; content columns would shrink each tab.
+                return shephrd::native_sidebar_percent(
+                    pane.pane_columns,
+                    tab.display_area_columns,
+                )
+                .ok_or_else(|| "Native sidebar geometry is unavailable".to_owned());
+            }
+        }
+        Err("The requesting sidebar is no longer open".to_owned())
     }
 }
 
@@ -1690,6 +1727,13 @@ impl Owner {
                 if topology_changed {
                     self.schedule();
                 }
+                if self.topology.pending.is_none()
+                    && (self.topology.ready.is_some() || self.topology.reconciled.is_some())
+                {
+                    for message in std::mem::take(&mut self.queued) {
+                        self.pipe(message);
+                    }
+                }
             }
             Event::Timer(_) if self.granted => {
                 self.reconcile_pending = false;
@@ -1811,7 +1855,7 @@ impl Owner {
         self.schedule();
     }
 
-    fn action(&mut self, action: Action) -> Result<Option<u32>, String> {
+    fn action(&mut self, source: u32, action: Action) -> Result<Option<u32>, String> {
         if let Some(error) = &self.error {
             return Err(error.clone());
         }
@@ -1848,12 +1892,12 @@ impl Owner {
                 if let Some(id) = id {
                     Ok(Some(id))
                 } else {
-                    self.create_tab(Some(workspace_id), None, None)
+                    self.create_tab(source, Some(workspace_id), None, None)
                 }
             }
-            Action::CreateWorkspace { label, cwd } => self.create_tab(None, label, cwd),
+            Action::CreateWorkspace { label, cwd } => self.create_tab(source, None, label, cwd),
             Action::CreatePane { workspace_id, cwd } => {
-                self.create_tab(Some(workspace_id), None, cwd)
+                self.create_tab(source, Some(workspace_id), None, cwd)
             }
             Action::RenameWorkspace {
                 workspace_id,
@@ -1924,10 +1968,12 @@ impl Owner {
 
     fn create_tab(
         &mut self,
+        source: u32,
         workspace: Option<String>,
         label: Option<String>,
         cwd: Option<String>,
     ) -> Result<Option<u32>, String> {
+        let sidebar_percent = self.topology.sidebar_percent(source)?;
         let model = self
             .model
             .as_mut()
@@ -1957,15 +2003,13 @@ impl Owner {
         };
         let mut sidebar_configuration = self.configuration.clone();
         sidebar_configuration.insert("role".to_owned(), "sidebar".to_owned());
-        let width = self.configuration["sidebar_width"]
-            .parse()
-            .map_err(|_| "Invalid sidebar width")?;
+        // Preserve startup configuration/owner identity; geometry is inherited separately.
         let layout = shephrd::native_layout(
             &self.configuration["plugin_url"],
             &sidebar_configuration,
             &name,
             &cwd,
-            width,
+            sidebar_percent,
         )
         .map_err(|error| format!("Cannot create native terminal layout: {error}"))?;
         let tabs = new_tabs_with_layout(&layout);
@@ -2119,6 +2163,19 @@ impl Owner {
             }
             return false;
         }
+        // Resize publishes panes and tabs separately. Keep creation pending until its
+        // source geometry is coherent rather than consuming the request with a transient error.
+        if matches!(
+            envelope.request.action,
+            Action::CreateWorkspace { .. } | Action::CreatePane { .. }
+        ) && (self.topology.pending.is_some()
+            || (self.topology.ready.is_none() && self.topology.reconciled.is_none()))
+        {
+            if self.queued.len() < 128 {
+                self.queued.push(message);
+            }
+            return false;
+        }
         self.recover();
         let focus_changed = self.synchronize_focus(false);
         let key = format!("{source}:{}", envelope.client);
@@ -2150,7 +2207,7 @@ impl Owner {
                 envelope.request.action,
                 Action::SelectPane { .. } | Action::SelectWorkspace { .. }
             );
-            let result = self.action(envelope.request.action);
+            let result = self.action(source, envelope.request.action);
             let receipt = Receipt {
                 request_id: envelope.request.request_id,
                 error: result.as_ref().err().cloned(),
@@ -2267,6 +2324,86 @@ mod tests {
         PaneManifest {
             panes: entries.iter().cloned().collect(),
         }
+    }
+
+    #[test]
+    fn new_tab_sizing_uses_requesting_sidebar_outer_width_and_latest_geometry() {
+        let mut source_tab = tab(10, 0);
+        source_tab.display_area_columns = 200;
+        source_tab.viewport_columns = 162;
+        let mut other_tab = tab(20, 1);
+        other_tab.display_area_columns = 300;
+        let mut sidebar = PaneInfo {
+            id: 7,
+            is_plugin: true,
+            pane_columns: 38,
+            pane_content_columns: 37,
+            ..PaneInfo::default()
+        };
+        let other_sidebar = PaneInfo {
+            id: 8,
+            is_plugin: true,
+            pane_columns: 51,
+            pane_content_columns: 50,
+            ..PaneInfo::default()
+        };
+        let mut topology = Topology::default();
+        topology.panes(manifest(&[
+            (0, vec![sidebar.clone()]),
+            (1, vec![other_sidebar.clone()]),
+        ]));
+        assert!(topology.tabs(vec![source_tab.clone(), other_tab.clone()]));
+        assert_eq!(topology.sidebar_percent(7), Ok(19));
+        assert_eq!(topology.sidebar_percent(8), Ok(17));
+        topology.reconciled = topology.ready.take();
+
+        sidebar.pane_columns = 47;
+        sidebar.pane_content_columns = 46;
+        topology.panes(manifest(&[(0, vec![sidebar]), (1, vec![other_sidebar])]));
+        assert!(topology.sidebar_percent(7).is_err());
+        assert!(topology.tabs(vec![source_tab, other_tab]));
+        // 46 content columns would round to 23%, rather than the outer width's 24%.
+        assert_eq!(topology.sidebar_percent(7), Ok(24));
+        assert!(topology.sidebar_percent(99).is_err());
+    }
+
+    #[test]
+    fn new_tab_sizing_rejects_missing_or_incoherent_source_geometry() {
+        let mut source_tab = tab(10, 0);
+        source_tab.display_area_columns = 200;
+        let mut sidebar = PaneInfo {
+            id: 7,
+            is_plugin: true,
+            pane_columns: 38,
+            ..PaneInfo::default()
+        };
+        let mut topology = Topology::default();
+        for invalid in 0..6 {
+            sidebar.is_plugin = invalid != 0;
+            sidebar.is_floating = invalid == 1;
+            sidebar.is_suppressed = invalid == 2;
+            sidebar.exited = invalid == 3;
+            sidebar.pane_columns = if invalid == 4 { 0 } else { 38 };
+            source_tab.display_area_columns = if invalid == 5 { 20 } else { 200 };
+            topology.panes(manifest(&[(0, vec![sidebar.clone()])]));
+            topology.tabs(vec![source_tab.clone()]);
+            assert!(topology.sidebar_percent(7).is_err());
+        }
+        sidebar.pane_columns = 38;
+        source_tab.display_area_columns = 200;
+        topology.panes(manifest(&[(0, vec![sidebar])]));
+        topology.tabs(vec![source_tab.clone()]);
+        assert_eq!(topology.sidebar_percent(7), Ok(19));
+        topology.reconciled = topology.ready.take();
+
+        topology.panes(manifest(&[(1, vec![pane(1)])]));
+        assert!(!topology.tabs(vec![source_tab.clone()]));
+        assert!(topology.sidebar_percent(7).is_err());
+        topology.panes(manifest(&[(0, vec![pane(7)])]));
+        topology.tabs(vec![source_tab.clone()]);
+        assert!(topology.sidebar_percent(7).is_err());
+        assert!(!topology.tabs(vec![source_tab]));
+        assert!(topology.sidebar_percent(7).is_err());
     }
 
     #[test]

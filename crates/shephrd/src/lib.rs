@@ -139,19 +139,31 @@ pub struct Snapshot {
     pub panes: Vec<Pane>,
 }
 
+/// Convert an initial or inherited cell width to Zellij's integer percent sizing.
+/// Reserve a nonzero share for both sidebar and terminals, including narrow displays.
+pub fn native_sidebar_percent(sidebar_columns: usize, display_columns: usize) -> Option<u8> {
+    if sidebar_columns == 0 || display_columns < 2 {
+        return None;
+    }
+    let columns = display_columns as u128;
+    let percent = (sidebar_columns.min(display_columns) as u128 * 100 + columns / 2) / columns;
+    Some(percent.clamp(1, 99) as u8)
+}
+
 /// Native tabs contain ordinary Zellij-owned terminals, including stock-created tabs.
 pub fn native_layout(
     plugin_url: &str,
     configuration: &std::collections::BTreeMap<String, String>,
     tab_name: &str,
     cwd: &str,
-    sidebar_width: usize,
+    sidebar_percent: u8,
 ) -> Result<String, serde_json::Error> {
     use std::fmt::Write;
 
+    let sidebar_percent = sidebar_percent.clamp(1, 99);
     let quote = |value: &str| serde_json::to_string(value);
     let mut sidebar = format!(
-        "   pane size={sidebar_width} borderless=true {{\n    plugin location={} {{\n",
+        "   pane size=\"{sidebar_percent}%\" borderless=true {{\n    plugin location={} {{\n",
         quote(plugin_url)?
     );
     for (key, value) in configuration {
@@ -239,6 +251,21 @@ pub struct Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_percent_rounds_cell_targets_without_zero_or_overflow() {
+        assert_eq!(native_sidebar_percent(38, 160), Some(24));
+        assert_eq!(native_sidebar_percent(38, 120), Some(32));
+        assert_eq!(native_sidebar_percent(51, 300), Some(17));
+        assert_eq!(native_sidebar_percent(1, usize::MAX), Some(1));
+        assert_eq!(native_sidebar_percent(usize::MAX / 2, usize::MAX), Some(50));
+        assert_eq!(native_sidebar_percent(usize::MAX, usize::MAX), Some(99));
+        assert_eq!(native_sidebar_percent(120, 20), Some(99));
+        assert_eq!(native_sidebar_percent(1, 2), Some(50));
+        assert_eq!(native_sidebar_percent(38, 0), None);
+        assert_eq!(native_sidebar_percent(38, 1), None);
+        assert_eq!(native_sidebar_percent(0, 160), None);
+    }
 
     #[test]
     fn pane_branch_is_optional_on_the_wire_and_independent_of_activity() {

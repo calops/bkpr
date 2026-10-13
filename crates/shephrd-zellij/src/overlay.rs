@@ -244,6 +244,9 @@ pub fn geometry(
     } else {
         sidebar.pane_x
     };
+    if left >= tab.display_area_columns {
+        return None;
+    }
     let columns = match (rendered_columns, sidebar.pane_content_columns) {
         (0, reported) => reported,
         (rendered, 0) => rendered,
@@ -278,17 +281,37 @@ pub fn geometry(
     let width = source_rows
         .iter()
         .map(|row| {
+            let body: usize = row
+                .spans
+                .iter()
+                .map(|span| ui::width(&ui::clean(&span.text)))
+                .sum();
+            let suffix: usize = row
+                .suffix
+                .iter()
+                .map(|span| ui::width(&ui::clean(&span.text)))
+                .sum();
             let right: usize = row
                 .right
                 .iter()
                 .map(|span| ui::width(&ui::clean(&span.text)))
                 .sum();
-            ui::width(&row.plain()) + right + usize::from(right != 0)
+            // Rendering reserves a gap before right-aligned metadata and, when a
+            // suffix is present, limits that metadata to half the body viewport.
+            let body = body.max(usize::from(suffix != 0)).saturating_add(suffix);
+            let width = body
+                .saturating_add(right)
+                .saturating_add(usize::from(right != 0));
+            if suffix != 0 {
+                width.max(right.saturating_mul(2))
+            } else {
+                width
+            }
         })
         .max()
         .unwrap_or(0)
         .saturating_add(2)
-        .clamp(12, 64)
+        .clamp(48, 80)
         .min(available);
     let height = wrapped_rows(&source_rows, width.saturating_sub(2))
         .len()
@@ -1687,6 +1710,143 @@ mod tests {
     }
 
     #[test]
+    fn popup_width_grows_from_minimum_to_cap_and_wraps_overflow() {
+        let sidebar = PaneInfo {
+            pane_content_columns: 20,
+            ..PaneInfo::default()
+        };
+        let tab = TabInfo {
+            display_area_columns: 140,
+            display_area_rows: 40,
+            ..TabInfo::default()
+        };
+        for (length, expected) in [(10, 48), (50, 52), (100, 80)] {
+            let source = row(&"word ".repeat(length / 5), ui::PopupColor::Text);
+            let content = ui::PopupContent {
+                title: source.clone(),
+                ..ui::PopupContent::default()
+            };
+            let placement = geometry(&sidebar, 20, &tab, 0..=0, &content).unwrap();
+            assert_eq!(
+                placement.coordinates.width,
+                FloatingPaneCoordinates::default()
+                    .with_width_fixed(expected)
+                    .width
+            );
+            let lines = wrapped_rows(&[source], expected - 2);
+            assert_eq!(lines.len() > 1, length > expected - 2);
+            for line in lines {
+                let text = visible(&render_line(&line.row, expected - 2));
+                assert_eq!(ui::width(&text), expected - 2);
+                assert!(!text.trim().contains("wor "));
+            }
+        }
+    }
+
+    #[test]
+    fn natural_unicode_width_keeps_suffix_and_unlinked_refresh_button_visible() {
+        let mut header = refresh_header();
+        header.spans = row(&"界e\u{301}".repeat(16), ui::PopupColor::Text).spans;
+        header.suffix = row("+12", ui::PopupColor::Added).spans;
+        let content = ui::PopupContent {
+            title: header.clone(),
+            ..ui::PopupContent::default()
+        };
+        let sidebar = PaneInfo {
+            pane_content_columns: 20,
+            ..PaneInfo::default()
+        };
+        let tab = TabInfo {
+            display_area_columns: 140,
+            display_area_rows: 20,
+            ..TabInfo::default()
+        };
+        let width = 48 + 3 + 1 + ui::refresh_button_width() + 2;
+        let placement = geometry(&sidebar, 20, &tab, 0..=0, &content).unwrap();
+        assert_eq!(
+            placement.coordinates.width,
+            FloatingPaneCoordinates::default()
+                .with_width_fixed(width)
+                .width
+        );
+        let lines = wrapped_rows(&[header.clone()], width - 2);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].row.refresh, header.refresh);
+        let mut terminal = TerminalConsumer::default();
+        terminal.consume(&render_line(&lines[0].row, width - 2));
+        assert_eq!(ui::width(&terminal.text()), width - 2);
+        assert!(
+            terminal
+                .text()
+                .starts_with(&format!("{}+12", "界e\u{301}".repeat(16)))
+        );
+        assert!(terminal.text().ends_with(ui::refresh_button_text()));
+        assert!(
+            terminal.cell_links()[width - 2 - ui::refresh_button_width()..]
+                .iter()
+                .all(Option::is_none)
+        );
+    }
+
+    #[test]
+    fn resized_sidebar_keeps_popup_in_adjacent_viewport_and_joined_to_content() {
+        let content = ui::PopupContent {
+            title: row("Context", ui::PopupColor::Text),
+            ..ui::PopupContent::default()
+        };
+        let tab = TabInfo {
+            display_area_columns: 100,
+            display_area_rows: 20,
+            ..TabInfo::default()
+        };
+        for sidebar_columns in [16, 38, 70, 88] {
+            for side in [ui::JoinSide::Right, ui::JoinSide::Left] {
+                let content_x = if side == ui::JoinSide::Right {
+                    0
+                } else {
+                    100 - sidebar_columns
+                };
+                let sidebar = PaneInfo {
+                    pane_content_x: content_x,
+                    pane_content_columns: sidebar_columns,
+                    ..PaneInfo::default()
+                };
+                let placement = geometry(&sidebar, sidebar_columns, &tab, 2..=3, &content).unwrap();
+                let width = 48.min(100 - sidebar_columns);
+                let x = if side == ui::JoinSide::Right {
+                    sidebar_columns
+                } else {
+                    content_x - width
+                };
+                assert_eq!(placement.connection.side, side);
+                assert_eq!(
+                    placement.coordinates.x,
+                    FloatingPaneCoordinates::default().with_x_fixed(x).x
+                );
+                assert_eq!(
+                    placement.coordinates.width,
+                    FloatingPaneCoordinates::default()
+                        .with_width_fixed(width)
+                        .width
+                );
+                assert!(x + width <= tab.display_area_columns);
+            }
+        }
+        for (columns, content_x) in [(0, 0), (100, 100)] {
+            let sidebar = PaneInfo {
+                pane_content_x: content_x,
+                pane_content_columns: 20,
+                ..PaneInfo::default()
+            };
+            let tab = TabInfo {
+                display_area_columns: columns,
+                ..tab.clone()
+            };
+            assert!(geometry(&sidebar, 20, &tab, 0..=0, &content).is_none());
+        }
+    }
+
+    #[test]
     fn compact_source_bands_join_only_their_actual_rows() {
         let content = ui::PopupContent {
             title: row("Workspace", ui::PopupColor::Text),
@@ -1828,7 +1988,7 @@ mod tests {
             let placement = geometry(&sidebar, 14, &tab, 16..=19, &content).unwrap();
             assert_eq!(placement.connection.side, side);
             assert_eq!(placement.connection.bottom - placement.connection.top, 3);
-            let width = 12;
+            let width = 48;
             let x = if side == ui::JoinSide::Right {
                 14
             } else {

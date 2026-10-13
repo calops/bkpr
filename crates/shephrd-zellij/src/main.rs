@@ -1104,6 +1104,26 @@ impl Frontend {
         self.activate();
     }
 
+    fn sidebar_geometry(&self) -> Option<[usize; 8]> {
+        self.manifest
+            .panes
+            .values()
+            .flatten()
+            .find(|pane| pane.is_plugin && pane.id == self.id)
+            .map(|pane| {
+                [
+                    pane.pane_x,
+                    pane.pane_y,
+                    pane.pane_columns,
+                    pane.pane_rows,
+                    pane.pane_content_x,
+                    pane.pane_content_y,
+                    pane.pane_content_columns,
+                    pane.pane_content_rows,
+                ]
+            })
+    }
+
     fn sidebar_dimensions(&self, rows: usize, columns: usize) -> (usize, usize) {
         self.manifest
             .panes
@@ -1408,6 +1428,7 @@ impl ZellijPlugin for Frontend {
                     self.local_selection,
                     self.scroll,
                     self.popup_item.clone(),
+                    self.sidebar_geometry(),
                 );
                 self.pane_update(manifest);
                 return before
@@ -1416,6 +1437,7 @@ impl ZellijPlugin for Frontend {
                         self.local_selection,
                         self.scroll,
                         self.popup_item.clone(),
+                        self.sidebar_geometry(),
                     );
             }
             Event::TabUpdate(tabs) if self.granted => {
@@ -1424,6 +1446,10 @@ impl ZellijPlugin for Frontend {
                     self.local_selection,
                     self.scroll,
                     self.popup_item.clone(),
+                    self.tabs
+                        .iter()
+                        .find(|tab| tab.active)
+                        .map(|tab| [tab.display_area_columns, tab.display_area_rows]),
                 );
                 if self
                     .tabs
@@ -1443,6 +1469,10 @@ impl ZellijPlugin for Frontend {
                         self.local_selection,
                         self.scroll,
                         self.popup_item.clone(),
+                        self.tabs
+                            .iter()
+                            .find(|tab| tab.active)
+                            .map(|tab| [tab.display_area_columns, tab.display_area_rows]),
                     );
             }
             Event::PaneClosed(PaneId::Plugin(id)) => {
@@ -2183,6 +2213,40 @@ mod tests {
         assert_eq!(frontend.sidebar_dimensions(0, 0), (0, 0));
         frontend.manifest.panes.clear();
         assert_eq!(frontend.sidebar_dimensions(20, 38), (20, 38));
+    }
+
+    #[test]
+    fn geometry_updates_repaint_and_rejoin_an_open_popup_without_moving_selection() {
+        let mut frontend = popup_frontend();
+        frontend.synchronize_focus();
+        let item = Item::Workspace("workspace_1".to_owned());
+        frontend.popup_item = Some(item.clone());
+        frontend.refresh_tooltip();
+        let focus = frontend.native_focus;
+        let cursor = frontend.cursor.clone();
+        // The host can render the new size before publishing its updated pane manifest.
+        sidebar_cells(&mut frontend, 20, 60);
+        assert_eq!(frontend.columns, 40);
+        let mut manifest = frontend.manifest.clone();
+        manifest.panes.get_mut(&0).unwrap()[0].pane_content_columns = 60;
+        assert!(frontend.update(Event::PaneUpdate(manifest)));
+        sidebar_cells(&mut frontend, 20, 60);
+        assert_eq!(
+            frontend.tooltip.pending.as_ref().unwrap().coordinates.x,
+            FloatingPaneCoordinates::default().with_x_fixed(60).x
+        );
+        assert_eq!(frontend.native_focus, focus);
+        assert_eq!(frontend.cursor, cursor);
+        assert_eq!(frontend.popup_item, Some(item));
+        let mut tabs = frontend.tabs.clone();
+        tabs[0].display_area_columns = 90;
+        assert!(frontend.update(Event::TabUpdate(tabs)));
+        assert_eq!(
+            frontend.tooltip.pending.as_ref().unwrap().coordinates.width,
+            FloatingPaneCoordinates::default()
+                .with_width_fixed(30)
+                .width
+        );
     }
 
     #[test]
