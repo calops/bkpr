@@ -1,0 +1,1445 @@
+--- a/zellij-server/src/panes/program_status.rs
++++ b/zellij-server/src/panes/program_status.rs
+@@ -1,6 +1,6 @@
+ //! Terminal-owned OSC 7501 records. Presentation and application recognition are not parser concerns.
+ use base64::{engine::{general_purpose::GeneralPurpose, DecodePaddingMode, GeneralPurposeConfig}, alphabet::STANDARD, Engine};
+-use zellij_utils::data::ProgramStatus;
++use zellij_utils::data::{Event, ProgramStatus};
+ 
+ const DECODER: GeneralPurpose = GeneralPurpose::new(&STANDARD, GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent));
+ 
+@@ -8,6 +8,8 @@
+ pub struct ProgramStatuses {
+     // Oldest update first; replacing a record also refreshes its eviction position.
+     records: Vec<ProgramStatus>,
++    changed: bool,
++    owner_process_group: Option<i32>,
+ }
+ 
+ fn segment(value: &str) -> bool {
+@@ -23,25 +25,63 @@
+ }
+ 
+ impl ProgramStatuses {
+-    pub fn clear(&mut self) { self.records.clear(); }
++    pub fn clear(&mut self) {
++        self.changed |= !self.records.is_empty();
++        self.records.clear();
++        self.owner_process_group = None;
++    }
+ 
+     pub fn expire_running(&mut self) {
++        let previous_len = self.records.len();
+         self.records.retain(|record| !matches!(record.state.as_str(), "working" | "blocked"));
++        self.changed |= self.records.len() != previous_len;
++    }
++
++    pub fn expire_running_on_prompt(&mut self, read_foreground: &dyn Fn() -> Option<i32>) {
++        // Applications also mark transcript blocks with OSC 133. Only a proven
++        // foreground ownership change makes their prompt a shell-return boundary.
++        if !self.records.iter().any(|record| matches!(record.state.as_str(), "working" | "blocked")) {
++            return;
++        }
++        if let Some(owner) = self.owner_process_group {
++            if let Some(foreground) = read_foreground().filter(|group| *group > 0) {
++                if owner != foreground {
++                    self.expire_running();
++                }
++            }
++        }
++    }
++
++    // Ordinary terminal output and duplicate reports never allocate a snapshot.
++    pub fn take_change(&mut self) -> Option<Vec<ProgramStatus>> {
++        std::mem::take(&mut self.changed).then(|| self.snapshot())
++    }
++
++    fn effective_app<'a>(&'a self, record: &'a ProgramStatus) -> Option<&'a str> {
++        if let Some(app) = record.app.as_deref() {
++            return Some(app);
++        }
++        let mut ancestor = record.id.as_str();
++        while !ancestor.is_empty() {
++            ancestor = ancestor.rsplit_once('/').map_or("", |(parent, _)| parent);
++            if let Some(app) = self.records.iter().find(|r| r.id == ancestor).and_then(|r| r.app.as_deref()) {
++                return Some(app);
++            }
++        }
++        None
+     }
+ 
+     pub fn snapshot(&self) -> Vec<ProgramStatus> {
+         self.records.iter().map(|record| {
+             let mut result = record.clone();
+-            let mut ancestor = record.id.as_str();
+-            while result.app.is_none() && !ancestor.is_empty() {
+-                ancestor = ancestor.rsplit_once('/').map_or("", |(parent, _)| parent);
+-                result.app = self.records.iter().find(|r| r.id == ancestor).and_then(|r| r.app.clone());
++            if result.app.is_none() {
++                result.app = self.effective_app(record).map(str::to_owned);
+             }
+             result
+         }).collect()
+     }
+ 
+-    pub fn report(&mut self, body: &[u8]) {
++    pub fn report(&mut self, body: &[u8], read_foreground: &dyn Fn() -> Option<i32>) {
+         // ST can be two bytes. Accepting the conservative cap also bounds all work below.
+         if body.len() + 9 > 4096 { return; }
+         let mut record = ProgramStatus::default();
+@@ -87,9 +127,17 @@
+             record.id = id.to_owned();
+         }
+         if state == "clear" {
++            let previous_len = self.records.len();
+             self.records.retain(|r| !record.id.is_empty() && r.id != record.id && !r.id.strip_prefix(&record.id).is_some_and(|suffix| suffix.starts_with('/')));
++            self.changed |= self.records.len() != previous_len;
++            if record.id.is_empty() {
++                self.owner_process_group = None;
++            }
+             return;
+         }
++        if record.id.is_empty() || self.owner_process_group.is_none() {
++            self.owner_process_group = read_foreground().filter(|group| *group > 0);
++        }
+         record.state = state.to_owned();
+         if state == "blocked" {
+             record.kind = kind.filter(|kind| matches!(*kind, "permission" | "question" | "auth")).map(str::to_owned);
+@@ -97,12 +145,34 @@
+         if matches!(state, "working" | "blocked") {
+             record.progress = progress.filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())).and_then(|p| p.parse::<u8>().ok()).filter(|p| *p <= 100);
+         }
+-        self.records.retain(|r| r.id != record.id);
++        if let Some(index) = self.records.iter().position(|r| r.id == record.id) {
++            let previous = &self.records[index];
++            let changed = previous.state != record.state
++                || previous.kind != record.kind
++                || previous.progress != record.progress
++                || previous.title != record.title
++                || previous.msg != record.msg
++                || self.effective_app(previous) != self.effective_app(&record);
++            self.changed |= changed;
++            self.records.remove(index);
++        } else {
++            self.changed = true;
++        }
+         if self.records.len() == 256 { self.records.remove(0); }
+         self.records.push(record);
+     }
+ }
+ 
++pub fn status_event(pane_id: u32, records: &[ProgramStatus]) -> serde_json::Result<Event> {
++    #[derive(serde::Serialize)]
++    struct Update<'a> {
++        pane_id: u32,
++        records: &'a [ProgramStatus],
++    }
++    serde_json::to_string(&Update { pane_id, records })
++        .map(|payload| Event::CustomMessage("program_status".to_owned(), payload))
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -110,18 +180,18 @@
+     #[test]
+     fn records_replace_inherit_clear_and_expire_by_lifetime() {
+         let mut records = ProgramStatuses::default();
+-        records.report(b"state=working:app=cargo:msg=QnVpbGQ=");
+-        records.report(b"state=done:id=build:app=test");
+-        records.report(b"state=blocked:id=build/check:kind=permission:progress=50");
++        records.report(b"state=working:app=cargo:msg=QnVpbGQ=", &|| None);
++        records.report(b"state=done:id=build:app=test", &|| None);
++        records.report(b"state=blocked:id=build/check:kind=permission:progress=50", &|| None);
+         assert_eq!(records.snapshot()[2].app.as_deref(), Some("test"));
+-        records.report(b"state=error:id=build");
++        records.report(b"state=error:id=build", &|| None);
+         assert_eq!(records.snapshot()[1].app.as_deref(), Some("cargo"));
+         assert_eq!(records.snapshot()[2].msg, None);
+         records.expire_running();
+         assert_eq!(records.snapshot().iter().map(|r| r.state.as_str()).collect::<Vec<_>>(), vec!["error"]);
+-        records.report(b"state=done:id=build/child");
+-        records.report(b"state=done:id=builder");
+-        records.report(b"state=clear:id=build");
++        records.report(b"state=done:id=build/child", &|| None);
++        records.report(b"state=done:id=builder", &|| None);
++        records.report(b"state=clear:id=build", &|| None);
+         assert_eq!(records.snapshot()[0].id, "builder");
+         records.clear();
+         assert!(records.snapshot().is_empty());
+@@ -130,39 +200,80 @@
+     #[test]
+     fn hostile_reports_are_atomic_and_bad_pairs_do_not_poison_valid_pairs() {
+         let mut records = ProgramStatuses::default();
+-        records.report(b"state=done:app=cargo");
++        records.report(b"state=done:app=cargo", &|| None);
+         for bad in ["state=working:title=a", "state=blocked:msg=Gwo=", "state=error:title=wog=", "state=unknown", "id=bad//path:state=idle", "id=:state=clear", "id=bad?:state=clear", "state=working:msg=bad="] {
+-            records.report(bad.as_bytes());
++            records.report(bad.as_bytes(), &|| None);
+             assert_eq!(records.snapshot()[0].state, "done", "{bad}");
+         }
+         for bad in [format!("state=clear:title={}", "YQ".repeat(129)), format!("state=clear:app={}", "a".repeat(33)), format!("state=clear:id={}", "a/".repeat(9)), format!("state=clear:{}=x", "a".repeat(17)), format!("state=clear:unknown={}", "a".repeat(4096))] {
+-            records.report(bad.as_bytes());
++            records.report(bad.as_bytes(), &|| None);
+             assert_eq!(records.snapshot()[0].state, "done");
+         }
+-        records.report(b"not-a-pair:=oops:bad=!:future=allowed:state=error:state=working:progress=101:kind=question:app=invalid,app:title=VGVzdA");
++        records.report(b"not-a-pair:=oops:bad=!:future=allowed:state=error:state=working:progress=101:kind=question:app=invalid,app:title=VGVzdA", &|| None);
+         let record = &records.snapshot()[0];
+         assert_eq!(record.state, "working");
+         assert_eq!(record.title.as_deref(), Some("Test"));
+         assert_eq!((record.app.as_ref(), record.kind.as_ref(), record.progress), (None, None, None));
+-        records.report(b"state=clear:id=\xff");
++        records.report(b"state=clear:id=\xff", &|| None);
+         assert_eq!(records.snapshot()[0].state, "working");
+-        records.report(b"state=blocked:id=bad//path:id=good");
++        records.report(b"state=blocked:id=bad//path:id=good", &|| None);
+         assert!(records.snapshot().iter().any(|record| record.id == "good" && record.state == "blocked"));
+-        records.report(b"state=clear:id=good:id=bad?");
++        records.report(b"state=clear:id=good:id=bad?", &|| None);
+         assert!(records.snapshot().iter().any(|record| record.id == "good" && record.state == "blocked"));
+-        records.report(b"state=clear:id=bad?:id=good");
++        records.report(b"state=clear:id=bad?:id=good", &|| None);
+         assert!(!records.snapshot().iter().any(|record| record.id == "good"));
+     }
+ 
+     #[test]
+     fn record_cap_evicts_least_recently_updated_not_oldest_created() {
+         let mut records = ProgramStatuses::default();
+-        for id in 0..256 { records.report(format!("state=done:id={id}").as_bytes()); }
+-        records.report(b"state=error:id=0");
+-        records.report(b"state=done:id=256");
++        for id in 0..256 { records.report(format!("state=done:id={id}").as_bytes(), &|| None); }
++        records.report(b"state=error:id=0", &|| None);
++        records.report(b"state=done:id=256", &|| None);
+         let snapshot = records.snapshot();
+         assert_eq!(snapshot.len(), 256);
+         assert!(!snapshot.iter().any(|r| r.id == "1"));
+         assert!(snapshot.iter().any(|r| r.id == "0" && r.state == "error"));
+     }
++
++    #[test]
++    fn duplicate_updates_refresh_eviction_without_publishing_unchanged_records() {
++        let mut records = ProgramStatuses::default();
++        for id in 0..256 { records.report(format!("state=done:id={id}").as_bytes(), &|| None); }
++        assert_eq!(records.take_change().unwrap().len(), 256);
++        records.report(b"state=done:id=0", &|| None);
++        assert!(records.take_change().is_none());
++        records.report(b"state=done:id=256", &|| None);
++        let changed = records.take_change().unwrap();
++        assert!(!changed.iter().any(|r| r.id == "1"));
++        assert!(changed.iter().any(|r| r.id == "0"));
++    }
++
++    #[test]
++    fn clears_expiry_and_inherited_apps_publish_only_changed_values() {
++        let mut records = ProgramStatuses::default();
++        assert!(records.take_change().is_none());
++        records.clear();
++        records.expire_running();
++        records.report(b"state=clear:id=absent", &|| None);
++        records.report(b"state=unknown", &|| None);
++        records.report(b"state=working:title=a", &|| None);
++        assert!(records.take_change().is_none());
++        records.report(b"state=done:app=cargo", &|| None);
++        records.report(b"state=working:id=build", &|| None);
++        assert_eq!(records.take_change().unwrap()[1].app.as_deref(), Some("cargo"));
++        records.report(b"state=working:id=build:app=cargo", &|| None);
++        assert!(records.take_change().is_none());
++        records.report(b"state=error:app=test", &|| None);
++        let changed = records.take_change().unwrap();
++        assert_eq!(changed.iter().find(|r| r.id == "build").unwrap().app.as_deref(), Some("cargo"));
++        records.expire_running();
++        assert_eq!(records.take_change().unwrap()[0].state, "error");
++        records.expire_running();
++        assert!(records.take_change().is_none());
++        records.clear();
++        assert!(records.take_change().unwrap().is_empty());
++        records.clear();
++        assert!(records.take_change().is_none());
++    }
+ }
+--- a/zellij-server/src/panes/program_status_vte.rs
++++ b/zellij-server/src/panes/program_status_vte.rs
+@@ -1,7 +1,7 @@
+ //! Bound raw OSC 7501 before vte's general-purpose (unbounded) OSC buffer.
+ //! Other terminal sequences still go through vte, unchanged.
+ use super::grid::Grid;
+-use vte::Perform;
++use vte::{Params, Perform};
+ 
+ #[derive(Clone, Copy)]
+ enum Mode {
+@@ -21,6 +21,38 @@
+     }
+ }
+ 
++struct ProgramStatusPerformer<'a> {
++    grid: &'a mut Grid,
++    read_foreground: &'a dyn Fn() -> Option<i32>,
++}
++
++impl Perform for ProgramStatusPerformer<'_> {
++    fn print(&mut self, c: char) { self.grid.print(c); }
++    fn execute(&mut self, byte: u8) { self.grid.execute(byte); }
++    fn hook(&mut self, params: &Params, intermediates: &[u8], ignore: bool, c: char) {
++        self.grid.hook(params, intermediates, ignore, c);
++    }
++    fn put(&mut self, byte: u8) { self.grid.put(byte); }
++    fn unhook(&mut self) { self.grid.unhook(); }
++    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
++        if params.len() == 2 && params[0] == b"7501" && params[1] != b"?" {
++            self.grid.program_status.report(params[1], self.read_foreground);
++            return;
++        }
++        if params.first() == Some(&b"133".as_slice()) && params.get(1) == Some(&b"A".as_slice()) {
++            self.grid.program_status.expire_running_on_prompt(self.read_foreground);
++        }
++        self.grid.osc_dispatch(params, bell_terminated);
++    }
++    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, c: char) {
++        self.grid.csi_dispatch(params, intermediates, ignore, c);
++    }
++    fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
++        self.grid.esc_dispatch(intermediates, ignore, byte);
++    }
++    fn terminated(&self) -> bool { self.grid.terminated() }
++}
++
+ pub struct ProgramStatusVteParser {
+     parser: vte::Parser,
+     mode: Mode,
+@@ -32,23 +64,24 @@
+         Self { parser: vte::Parser::new(), mode: Mode::Ground, body: Vec::new() }
+     }
+ 
+-    pub fn advance_until_terminated(&mut self, grid: &mut Grid, bytes: &[u8]) -> usize {
++    pub fn advance_until_terminated(&mut self, grid: &mut Grid, bytes: &[u8], read_foreground: &dyn Fn() -> Option<i32>) -> usize {
++        let mut performer = ProgramStatusPerformer { grid, read_foreground };
+         let mut index = 0;
+         while index < bytes.len() {
+             // Ordinary grid text remains a single bulk parser call, not per-byte dispatch.
+             if matches!(self.mode, Mode::Ground) && bytes[index] != 0x1b {
+                 let end = bytes[index..].iter().position(|b| *b == 0x1b).map_or(bytes.len(), |n| index + n);
+-                let consumed = self.parser.advance_until_terminated(grid, &bytes[index..end]);
++                let consumed = self.parser.advance_until_terminated(&mut performer, &bytes[index..end]);
+                 index += consumed;
+-                if index < end || !grid.pending_forwarded_queries.is_empty() { return index; }
++                if index < end || !performer.grid.pending_forwarded_queries.is_empty() { return index; }
+                 continue;
+             }
+             if let Mode::OtherString { bell, escape: false } = self.mode {
+                 if !matches!(bytes[index], 0x1b | 0x18 | 0x1a) && (!bell || bytes[index] != 7) {
+                     let end = bytes[index..].iter().position(|b| matches!(*b, 0x1b | 0x18 | 0x1a) || (bell && *b == 7)).map_or(bytes.len(), |n| index + n);
+-                    let consumed = self.parser.advance_until_terminated(grid, &bytes[index..end]);
++                    let consumed = self.parser.advance_until_terminated(&mut performer, &bytes[index..end]);
+                     index += consumed;
+-                    if index < end || !grid.pending_forwarded_queries.is_empty() { return index; }
++                    if index < end || !performer.grid.pending_forwarded_queries.is_empty() { return index; }
+                     continue;
+                 }
+             }
+@@ -62,7 +95,7 @@
+                     if byte == b"7501;"[n] {
+                         if n == 4 {
+                             // The already-forwarded prefix cannot dispatch anything; cancel it.
+-                            self.parser.advance(grid, b"\x18");
++                            self.parser.advance(&mut performer, b"\x18");
+                             self.body.clear();
+                             self.mode = Mode::Status { escape: false, discarded: false };
+                             forward = false;
+@@ -82,14 +115,14 @@
+                     if byte == 7 || (escape && byte == b'\\') {
+                         let overhead = if byte == 7 { 8 } else { 9 };
+                         if !discarded && self.body.len() + overhead <= 4096 {
+-                            grid.osc_dispatch(&[b"7501", &self.body], byte == 7);
++                            performer.osc_dispatch(&[b"7501", &self.body], byte == 7);
+                         }
+                         self.body.clear();
+                         self.mode = Mode::Ground;
+                     } else if escape {
+                         // An unexpected ESC starts another terminal sequence, not a valid ST.
+                         self.body.clear();
+-                        self.parser.advance(grid, b"\x1b");
++                        self.parser.advance(&mut performer, b"\x1b");
+                         self.mode = Mode::Escape;
+                         // Reprocess this byte normally as the character following that ESC.
+                         continue;
+@@ -104,13 +137,13 @@
+                 },
+             }
+             if forward {
+-                if self.parser.advance_until_terminated(grid, &bytes[index..index + 1]) == 0 {
++                if self.parser.advance_until_terminated(&mut performer, &bytes[index..index + 1]) == 0 {
+                     self.mode = previous;
+                     return index;
+                 }
+             }
+             index += 1;
+-            if !grid.pending_forwarded_queries.is_empty() { return index; }
++            if !performer.grid.pending_forwarded_queries.is_empty() { return index; }
+         }
+         index
+     }
+@@ -139,14 +172,14 @@
+         let mut grid = grid();
+         // Every byte may arrive separately from a PTY.
+         for byte in b"\x1b]7501;?\x1b\\\x1b]7501;state=done:app=cargo\x07" {
+-            assert_eq!(parser.advance_until_terminated(&mut grid, &[*byte]), 1);
++            assert_eq!(parser.advance_until_terminated(&mut grid, &[*byte], &|| Some(200)), 1);
+         }
+         assert_eq!(grid.pending_messages_to_pty.remove(0), b"\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\");
+-        parser.advance_until_terminated(&mut grid, b"\x1b[?1049h\x1b[!p\x1b[?1049l");
++        parser.advance_until_terminated(&mut grid, b"\x1b[?1049h\x1b[!p\x1b[?1049l", &|| None);
+         assert_eq!(grid.program_status.snapshot()[0].state, "done");
+-        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=blocked:id=worker\x1b\\\x1b]133;A\x07");
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=blocked:id=worker\x1b\\\x1b]133;A\x07", &|| Some(100));
+         assert_eq!(grid.program_status.snapshot().iter().map(|r| r.state.as_str()).collect::<Vec<_>>(), vec!["done"]);
+-        parser.advance_until_terminated(&mut grid, b"\x1bc");
++        parser.advance_until_terminated(&mut grid, b"\x1bc", &|| None);
+         assert!(grid.program_status.snapshot().is_empty());
+     }
+ 
+@@ -154,21 +187,172 @@
+     fn raw_reports_are_bounded_atomic_and_do_not_disrupt_following_terminal_sequences() {
+         let mut parser = ProgramStatusVteParser::new();
+         let mut grid = grid();
+-        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=done:app=cargo\x07");
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=done:app=cargo\x07", &|| None);
+         let mut hostile = b"\x1b]7501;state=clear:unknown=".to_vec();
+         hostile.extend(std::iter::repeat_n(b'a', 65536));
+         hostile.extend_from_slice(b"\x1b\\\x1b]2;Ordinary window title\x07");
+-        assert_eq!(parser.advance_until_terminated(&mut grid, &hostile), hostile.len());
++        assert_eq!(parser.advance_until_terminated(&mut grid, &hostile, &|| None), hostile.len());
+         assert_eq!(grid.program_status.snapshot()[0].state, "done");
+         assert!(parser.body.capacity() <= 8192);
+         // Vte would strip raw controls from an OSC. The raw bridge must not turn a bad state pair into a valid one.
+-        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=cl\x01ear\x07");
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=cl\x01ear\x07", &|| None);
+         assert_eq!(grid.program_status.snapshot()[0].state, "done");
+-        parser.advance_until_terminated(&mut grid, b"\x1b]7501;bad=\xff:state=working\x07");
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;bad=\xff:state=working\x07", &|| None);
+         assert_eq!(grid.program_status.snapshot()[0].state, "working");
+-        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=clear\x1b\\");
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=clear\x1b\\", &|| None);
+         assert!(grid.program_status.snapshot().is_empty());
+-        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=done\x1b\\");
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=done\x1b\\", &|| None);
+         assert_eq!(grid.program_status.snapshot()[0].state, "done");
+     }
++
++    #[test]
++    fn notifications_follow_completed_reports_and_terminal_lifetime() {
++        let mut parser = ProgramStatusVteParser::new();
++        let mut grid = grid();
++        parser.advance_until_terminated(&mut grid, b"ordinary text\x1b]7501;?\x07\x1b]7501;state=unknown\x07", &|| None);
++        assert!(grid.program_status.take_change().is_none());
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=working:app=cargo", &|| None);
++        assert!(grid.program_status.take_change().is_none());
++        parser.advance_until_terminated(&mut grid, b"\x1b\\", &|| Some(200));
++        assert_eq!(grid.program_status.take_change().unwrap()[0].state, "working");
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=working:app=cargo\x07\x1b]7501;state=error:title=a\x07", &|| Some(200));
++        assert!(grid.program_status.take_change().is_none());
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=done:id=build\x07", &|| None);
++        assert_eq!(grid.program_status.take_change().unwrap()[1].state, "done");
++        parser.advance_until_terminated(&mut grid, b"\x1b]133;A\x07", &|| Some(100));
++        let after_prompt = grid.program_status.take_change().unwrap();
++        assert_eq!(after_prompt.len(), 1);
++        assert_eq!(after_prompt[0].id, "build");
++        parser.advance_until_terminated(&mut grid, b"\x1b]133;A\x07", &|| None);
++        assert!(grid.program_status.take_change().is_none());
++        parser.advance_until_terminated(&mut grid, b"\x1bc", &|| None);
++        assert!(grid.program_status.take_change().unwrap().is_empty());
++        parser.advance_until_terminated(&mut grid, b"\x1bc\x1b]7501;state=clear\x07", &|| None);
++        assert!(grid.program_status.take_change().is_none());
++    }
++
++    #[test]
++    fn reports_after_forwarded_queries_publish_only_after_resuming_parsing() {
++        let mut parser = ProgramStatusVteParser::new();
++        let mut grid = grid();
++        let input = b"\x1b[14t\x1b]7501;state=working:app=cargo\x07";
++        let consumed = parser.advance_until_terminated(&mut grid, input, &|| None);
++        assert_eq!(consumed, b"\x1b[14t".len());
++        assert_eq!(grid.pending_forwarded_queries.len(), 1);
++        assert!(grid.program_status.take_change().is_none());
++        grid.pending_forwarded_queries.clear();
++        assert_eq!(parser.advance_until_terminated(&mut grid, &input[consumed..], &|| None), input.len() - consumed);
++        assert_eq!(grid.program_status.take_change().unwrap()[0].state, "working");
++    }
++
++    #[test]
++    fn native_titles_publish_changes_without_mutating_program_status() {
++        let mut parser = ProgramStatusVteParser::new();
++        let mut grid = grid();
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=working:app=omp\x1b\\", &|| None);
++        grid.program_status.take_change();
++        parser.advance_until_terminated(&mut grid, b"\x1b]0;First task", &|| None);
++        assert!(!grid.pending_title_changed);
++        parser.advance_until_terminated(&mut grid, b"\x07", &|| None);
++        assert!(std::mem::take(&mut grid.pending_title_changed));
++        assert_eq!(grid.title.as_deref(), Some("First task"));
++        parser.advance_until_terminated(&mut grid, b"\x1b]2;First task\x1b\\\x1b[22;0t", &|| None);
++        assert!(!grid.pending_title_changed);
++        parser.advance_until_terminated(&mut grid, b"\x1b]0;Live task\x07", &|| None);
++        assert!(std::mem::take(&mut grid.pending_title_changed));
++        assert_eq!(grid.title.as_deref(), Some("Live task"));
++        parser.advance_until_terminated(&mut grid, b"\x1b[23;0t", &|| None);
++        assert!(std::mem::take(&mut grid.pending_title_changed));
++        assert_eq!(grid.title.as_deref(), Some("First task"));
++        parser.advance_until_terminated(&mut grid, b"\x1b[23;0tordinary text", &|| None);
++        assert!(!grid.pending_title_changed);
++        assert!(grid.program_status.take_change().is_none());
++        assert_eq!(grid.program_status.snapshot()[0].state, "working");
++        parser.advance_until_terminated(&mut grid, b"\x1bc", &|| None);
++        assert!(!grid.pending_title_changed);
++        assert_eq!(grid.title.as_deref(), Some("First task"));
++        assert!(grid.program_status.take_change().unwrap().is_empty());
++    }
++
++    #[test]
++    fn application_prompt_blocks_preserve_working_until_foreground_ownership_changes() {
++        let mut parser = ProgramStatusVteParser::new();
++        let mut grid = grid();
++        // omp's genuine turn-start order: Working, then transcript A/B/C/D.
++        let input = b"\x1b]7501;state=working:app=omp\x1b\\\x1b]133;A\x07user prompt\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;0\x07";
++        for byte in input {
++            parser.advance_until_terminated(&mut grid, &[*byte], &|| Some(200));
++        }
++        assert_eq!(grid.program_status.take_change().unwrap()[0].state, "working");
++        parser.advance_until_terminated(&mut grid, b"\x1b]133;A\x07", &|| None);
++        assert!(grid.program_status.take_change().is_none());
++        assert_eq!(grid.program_status.snapshot()[0].state, "working");
++        parser.advance_until_terminated(&mut grid, b"\x1b]133;A\x07", &|| Some(100));
++        assert!(grid.program_status.take_change().unwrap().is_empty());
++    }
++
++    #[test]
++    fn same_chunk_prompt_expiry_does_not_erase_a_later_reporters_status() {
++        let mut parser = ProgramStatusVteParser::new();
++        let mut grid = grid();
++        let groups = [200, 200, 100, 300, 300];
++        let query = std::cell::Cell::new(0);
++        let read_foreground = || {
++            let index = query.get();
++            query.set(index + 1);
++            Some(groups[index])
++        };
++        parser.advance_until_terminated(
++            &mut grid,
++            b"\x1b]7501;state=working:app=first\x07\x1b]133;A\x07\x1b]133;A\x07\x1b]7501;state=working:app=second\x07\x1b]133;A\x07",
++            &read_foreground,
++        );
++        assert_eq!(query.get(), groups.len());
++        let snapshot = grid.program_status.take_change().unwrap();
++        assert_eq!(snapshot[0].state, "working");
++        assert_eq!(snapshot[0].app.as_deref(), Some("second"));
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=clear\x07\x1b]133;A\x07", &|| panic!("clear must not query ownership"));
++        assert!(grid.program_status.take_change().unwrap().is_empty());
++    }
++
++    #[test]
++    fn prompt_expiry_preserves_unknown_ownership_and_nonrunning_records() {
++        let mut parser = ProgramStatusVteParser::new();
++        let mut grid = grid();
++        for state in ["working", "blocked:kind=permission", "blocked:kind=question", "error", "done", "idle"] {
++            parser.advance_until_terminated(&mut grid, format!("\x1b]7501;state={state}:app=test\x07\x1b]133;A\x07").as_bytes(), &|| None);
++            assert_eq!(grid.program_status.snapshot()[0].state, state.split(':').next().unwrap());
++            parser.advance_until_terminated(&mut grid, b"\x1bc", &|| panic!("reset must not query ownership"));
++            assert!(grid.program_status.snapshot().is_empty());
++        }
++        for state in ["error", "done", "idle"] {
++            parser.advance_until_terminated(&mut grid, format!("\x1b]7501;state={state}:app=test\x07").as_bytes(), &|| Some(200));
++            parser.advance_until_terminated(&mut grid, b"\x1b]133;A\x07", &|| panic!("nonrunning prompt must not query ownership"));
++            assert_eq!(grid.program_status.snapshot()[0].state, state);
++        }
++        for kind in ["permission", "question"] {
++            parser.advance_until_terminated(&mut grid, format!("\x1b]7501;state=blocked:kind={kind}:app=test\x07\x1b]133;A\x07").as_bytes(), &|| Some(200));
++            assert_eq!(grid.program_status.snapshot()[0].state, "blocked");
++            assert_eq!(grid.program_status.snapshot()[0].kind.as_deref(), Some(kind));
++            parser.advance_until_terminated(&mut grid, b"\x1b]133;A\x07", &|| Some(100));
++            assert!(grid.program_status.snapshot().is_empty());
++        }
++    }
++
++    #[test]
++    fn child_only_reports_claim_foreground_without_overriding_a_known_root_owner() {
++        let mut parser = ProgramStatusVteParser::new();
++        let mut grid = grid();
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=working:id=build:app=test\x07\x1b]133;A\x07", &|| Some(200));
++        assert_eq!(grid.program_status.snapshot()[0].state, "working");
++        parser.advance_until_terminated(&mut grid, b"\x1b]133;A\x07", &|| Some(100));
++        assert!(grid.program_status.snapshot().is_empty());
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=idle:app=root\x07", &|| Some(200));
++        parser.advance_until_terminated(&mut grid, b"\x1b]7501;state=working:id=build\x07", &|| panic!("known root ownership must not be replaced by child report"));
++        parser.advance_until_terminated(&mut grid, b"\x1b]133;A\x07", &|| Some(200));
++        assert!(grid.program_status.snapshot().iter().any(|record| record.id == "build"));
++        parser.advance_until_terminated(&mut grid, b"\x1b]133;A\x07", &|| Some(100));
++        assert_eq!(grid.program_status.snapshot().len(), 1);
++        assert_eq!(grid.program_status.snapshot()[0].state, "idle");
++    }
+ }
+--- a/zellij-server/src/panes/terminal_pane.rs
++++ b/zellij-server/src/panes/terminal_pane.rs
+@@ -224,7 +224,7 @@
+         self.geom_override = Some(pane_geom);
+         self.reflow_lines();
+     }
+-    fn handle_pty_bytes(&mut self, bytes: VteBytes) {
++    fn handle_pty_bytes(&mut self, bytes: VteBytes, read_foreground: &dyn Fn() -> Option<i32>) {
+         self.set_should_render(true);
+         if self.forward_paused {
+             // A host-forward initiated by this pane is outstanding.
+@@ -250,9 +250,7 @@
+                         // in the middle of this flush can never strand a
+                         // capture that has already left the input buffer.
+                         if !forwarded.is_empty() {
+-                            let consumed = self
+-                                .vte_parser
+-                                .advance_until_terminated(&mut self.grid, &forwarded);
++                            let consumed = self.vte_parser.advance_until_terminated(&mut self.grid, &forwarded, read_foreground);
+                             if consumed < forwarded.len() {
+                                 self.pending_pty_input.extend(&forwarded[consumed..]);
+                                 self.pending_pty_input.extend(&bytes[index - 1..]);
+@@ -266,9 +264,7 @@
+                 InterceptorResult::Captured(cmd) => {
+                     capture_started = false;
+                     if !forwarded.is_empty() {
+-                        let consumed = self
+-                            .vte_parser
+-                            .advance_until_terminated(&mut self.grid, &forwarded);
++                        let consumed = self.vte_parser.advance_until_terminated(&mut self.grid, &forwarded, read_foreground);
+                         if consumed < forwarded.len() {
+                             self.pending_pty_input.extend(&forwarded[consumed..]);
+                             self.pending_pty_input.extend(b"\x1b_G");
+@@ -290,9 +286,7 @@
+                 },
+             }
+         }
+-        let consumed = self
+-            .vte_parser
+-            .advance_until_terminated(&mut self.grid, &forwarded);
++        let consumed = self.vte_parser.advance_until_terminated(&mut self.grid, &forwarded, read_foreground);
+         if consumed < forwarded.len() {
+             self.pending_pty_input.extend(&forwarded[consumed..]);
+         }
+@@ -1090,6 +1084,12 @@
+     fn program_status(&self) -> Vec<zellij_utils::data::ProgramStatus> {
+         self.grid.program_status.snapshot()
+     }
++    fn drain_program_status(&mut self) -> Option<Vec<zellij_utils::data::ProgramStatus>> {
++        self.grid.program_status.take_change()
++    }
++    fn drain_title_changed(&mut self) -> bool {
++        std::mem::take(&mut self.grid.pending_title_changed)
++    }
+     fn hold(&mut self, exit_status: Option<i32>, is_first_run: bool, run_command: RunCommand) {
+         if !is_first_run {
+             self.grid.program_status.expire_running();
+@@ -1495,7 +1495,7 @@
+             None => render_first_run_banner(columns, rows, &self.style, None),
+         };
+         self.banner = Some(banner.clone());
+-        self.handle_pty_bytes(banner.as_bytes().to_vec());
++        self.handle_pty_bytes(banner.as_bytes().to_vec(), &|| None);
+     }
+     fn remove_banner(&mut self) {
+         if self.banner.is_some() {
+--- a/zellij-server/src/tab/mod.rs
++++ b/zellij-server/src/tab/mod.rs
+@@ -291,7 +291,7 @@
+     fn reset_size_and_position_override(&mut self);
+     fn set_geom(&mut self, position_and_size: PaneGeom);
+     fn set_geom_override(&mut self, pane_geom: PaneGeom);
+-    fn handle_pty_bytes(&mut self, _bytes: VteBytes) {}
++    fn handle_pty_bytes(&mut self, _bytes: VteBytes, _read_foreground: &dyn Fn() -> Option<i32>) {}
+     fn handle_plugin_bytes(&mut self, _client_id: ClientId, _bytes: VteBytes) {}
+     fn show_cursor(&mut self, _client_id: ClientId, _cursor_position: Option<(usize, usize)>) {}
+     /// Returns the cursor position and whether it is visible.
+@@ -406,6 +406,12 @@
+     fn program_status(&self) -> Vec<zellij_utils::data::ProgramStatus> {
+         Vec::new()
+     }
++    fn drain_program_status(&mut self) -> Option<Vec<zellij_utils::data::ProgramStatus>> {
++        None
++    }
++    fn drain_title_changed(&mut self) -> bool {
++        false
++    }
+ 
+     fn right_boundary_x_coords(&self) -> usize {
+         self.x() + self.cols()
+@@ -4215,8 +4221,23 @@
+         }
+         Ok(())
+     }
++    fn publish_program_status(
++        &self,
++        pid: u32,
++        records: Option<&[zellij_utils::data::ProgramStatus]>,
++    ) -> Result<()> {
++        let Some(records) = records else {
++            return Ok(());
++        };
++        self.senders.send_to_plugin(PluginInstruction::Update(vec![(
++            None,
++            None,
++            crate::panes::program_status::status_event(pid, records)?,
++        )]))
++    }
+     fn process_pty_bytes(&mut self, pid: u32, bytes: VteBytes) -> Result<()> {
+         let err_context = || format!("failed to process pty bytes from pid {pid}");
++        let os_api = self.os_api.as_ref();
+ 
+         if let Some(terminal_output) = self
+             .tiled_panes
+@@ -4238,7 +4259,9 @@
+                 )
+                 .with_context(err_context)?;
+             }
+-            terminal_output.handle_pty_bytes(bytes);
++            terminal_output.handle_pty_bytes(bytes, &|| os_api.foreground_process_group(pid));
++            let program_status = terminal_output.drain_program_status();
++            let title_changed = terminal_output.drain_title_changed();
+             let messages_to_pty = terminal_output.drain_messages_to_pty();
+             let forwarded_queries = terminal_output.drain_forwarded_queries();
+             // If at least one forward was produced, the pane stopped
+@@ -4258,6 +4281,12 @@
+             let clipboard_update = terminal_output.drain_clipboard_update();
+             let desktop_notifications = terminal_output.drain_desktop_notifications();
+             let osc7_cwd = terminal_output.drain_osc7_cwd();
++            self.publish_program_status(pid, program_status.as_deref())
++                .with_context(err_context)?;
++            if title_changed {
++                self.senders.send_to_screen(ScreenInstruction::PaneTitleChanged)
++                    .with_context(err_context)?;
++            }
+             for message in messages_to_pty {
+                 self.write_to_pane_id_without_preprocessing(message, PaneId::Terminal(pid))
+                     .with_context(err_context)?;
+@@ -5864,6 +5893,22 @@
+         } else if let Some(pane) = self.suppressed_panes.values_mut().find(|p| p.1.pid() == id) {
+             pane.1.hold(exit_status, is_first_run, run_command);
+         }
++        if let PaneId::Terminal(pid) = id {
++            let records = self
++                .floating_panes
++                .get_pane_mut(id)
++                .or_else(|| self.tiled_panes.get_pane_mut(id))
++                .or_else(|| {
++                    self.suppressed_panes
++                        .values_mut()
++                        .find(|(_, pane)| pane.pid() == id)
++                        .map(|(_, pane)| pane)
++                })
++                .and_then(|pane| pane.drain_program_status());
++            if let Some(records) = records {
++                self.publish_program_status(pid, Some(&records)).non_fatal();
++            }
++        }
+     }
+     pub fn replace_pane_with_suppressed_pane(
+         &mut self,
+--- a/zellij-server/src/screen.rs
++++ b/zellij-server/src/screen.rs
+@@ -353,6 +353,7 @@
+ #[derive(Debug, Clone)]
+ pub enum ScreenInstruction {
+     PtyBytes(u32, VteBytes),
++    PaneTitleChanged,
+     PluginBytes(Vec<PluginRenderAsset>),
+     Render,
+     RenderToClients,
+@@ -919,6 +920,7 @@
+         plugin_id: u32,
+     },
+     ClearAllPluginHighlights(u32), // plugin_id — clears across all panes
++    BootstrapProgramStatuses(PluginId, ClientId, HashSet<EventType>),
+     SubscribeToPaneRenders {
+         client_id: ClientId,
+         pane_ids: Vec<zellij_utils::data::PaneId>,
+@@ -973,6 +975,7 @@
+     fn from(screen_instruction: &ScreenInstruction) -> Self {
+         match *screen_instruction {
+             ScreenInstruction::PtyBytes(..) => ScreenContext::HandlePtyBytes,
++            ScreenInstruction::PaneTitleChanged => ScreenContext::HandlePtyBytes,
+             ScreenInstruction::PluginBytes(..) => ScreenContext::PluginBytes,
+             ScreenInstruction::Render => ScreenContext::Render,
+             ScreenInstruction::RenderToClients => ScreenContext::RenderToClients,
+@@ -1293,6 +1296,9 @@
+             ScreenInstruction::DesktopNotificationResponse(..) => {
+                 ScreenContext::DesktopNotificationResponse
+             },
++            ScreenInstruction::BootstrapProgramStatuses(..) => {
++                ScreenContext::BootstrapProgramStatuses
++            },
+             ScreenInstruction::SubscribeToPaneRenders { .. } => {
+                 ScreenContext::SubscribeToPaneRenders
+             },
+@@ -7742,6 +7748,63 @@
+             }
+         }
+     }
++    fn bootstrap_program_statuses(
++        &self,
++        plugin_id: PluginId,
++        client_id: ClientId,
++        subscriptions: &HashSet<EventType>,
++    ) -> Result<()> {
++        let topology_event_count = usize::from(subscriptions.contains(&EventType::PaneUpdate))
++            + usize::from(subscriptions.contains(&EventType::TabUpdate));
++        let mut topology = Vec::with_capacity(topology_event_count);
++        if subscriptions.contains(&EventType::PaneUpdate) {
++            let mut pane_manifest = PaneManifest::default();
++            for tab in self.tabs.values() {
++                pane_manifest.panes.insert(tab.position, tab.pane_infos());
++            }
++            topology.push((Some(plugin_id), Some(client_id), Event::PaneUpdate(pane_manifest)));
++        }
++        if subscriptions.contains(&EventType::TabUpdate) {
++            let mut tab_infos = Vec::with_capacity(self.tabs.len());
++            for tab in self.tabs.values() {
++                if let Some(mut info) = self.get_tab_info(tab.id) {
++                    info.name = tab.single_pane_tab_name().unwrap_or(info.name);
++                    info.active = self.active_tab_ids.get(&client_id) == Some(&tab.id);
++                    if self.session_is_mirrored {
++                        info.other_focused_clients.clear();
++                    } else {
++                        info.other_focused_clients.retain(|id| *id != client_id);
++                    }
++                    info.has_bell_notification = tab.tab_has_pending_bell && !info.active;
++                    info.is_flashing_bell = tab.tab_bell_flash && !info.active;
++                    tab_infos.push(info);
++                }
++            }
++            tab_infos.sort_by_key(|info| info.position);
++            topology.push((Some(plugin_id), Some(client_id), Event::TabUpdate(tab_infos)));
++        }
++        if !topology.is_empty() {
++            self.bus.senders.send_to_plugin(PluginInstruction::Update(topology))?;
++        }
++        for tab in self.tabs.values() {
++            let panes = tab
++                .get_tiled_panes()
++                .map(|(_, pane)| pane)
++                .chain(tab.get_floating_panes().map(|(_, pane)| pane))
++                .chain(tab.get_suppressed_panes().map(|(_, (_, pane))| pane));
++            for pane in panes {
++                if let PaneId::Terminal(pid) = pane.pid() {
++                    let records = pane.program_status();
++                    self.bus.senders.send_to_plugin(PluginInstruction::Update(vec![(
++                        Some(plugin_id),
++                        Some(client_id),
++                        crate::panes::program_status::status_event(pid, &records)?,
++                    )]))?;
++                }
++            }
++        }
++        Ok(())
++    }
+     fn subscribe_to_pane_renders(
+         &mut self,
+         subscriber_client_id: ClientId,
+@@ -8256,6 +8319,9 @@
+                     .senders
+                     .send_to_background_jobs(BackgroundJob::RenderToClients);
+             },
++            ScreenInstruction::PaneTitleChanged => {
++                screen.log_and_report_session_state()?;
++            },
+             ScreenInstruction::PluginBytes(mut plugin_render_assets) => {
+                 for plugin_render_asset in plugin_render_assets.iter_mut() {
+                     let plugin_id = plugin_render_asset.plugin_id;
+@@ -12275,6 +12341,9 @@
+                     screen.log_and_report_session_state()?;
+                 }
+             },
++            ScreenInstruction::BootstrapProgramStatuses(plugin_id, client_id, subscriptions) => {
++                screen.bootstrap_program_statuses(plugin_id, client_id, &subscriptions)?;
++            },
+             ScreenInstruction::SubscribeToPaneRenders {
+                 client_id,
+                 pane_ids,
+--- a/zellij-server/src/plugins/zellij_exports.rs
++++ b/zellij-server/src/plugins/zellij_exports.rs
+@@ -811,6 +811,19 @@
+         .lock()
+         .to_anyhow()?
+         .extend(event_list.clone());
++    if event_list.contains(&EventType::CustomMessage)
++        && (env.plugin.is_builtin()
++            || env.permissions.lock().to_anyhow()?.as_ref().is_some_and(|permissions| {
++                permissions.contains(&PermissionType::ReadApplicationState)
++            }))
++    {
++        env.senders
++            .send_to_screen(ScreenInstruction::BootstrapProgramStatuses(
++                env.plugin_id,
++                env.client_id,
++                env.subscriptions.lock().to_anyhow()?.clone(),
++            ))?;
++    }
+     env.senders
+         .send_to_plugin(PluginInstruction::PluginSubscribedToEvents(
+             env.plugin_id,
+--- a/zellij-server/src/plugins/wasm_bridge.rs
++++ b/zellij-server/src/plugins/wasm_bridge.rs
+@@ -1329,27 +1329,31 @@
+         &self,
+         plugin_id: PluginId,
+         client_id: ClientId,
+-        events: HashSet<EventType>,
+-    ) {
+-        // Check if this plugin is a background plugin (tab_index == None)
+-        let is_background = {
+-            let mut plugin_map = self.plugin_map.lock().unwrap();
+-            plugin_map
+-                .running_plugins_and_subscriptions()
+-                .iter()
+-                .any(|(pid, cid, rp, _)| {
+-                    *pid == plugin_id
+-                        && *cid == client_id
+-                        && rp.lock().unwrap().store.data().tab_index.is_none()
+-                })
++    ) -> Result<()> {
++        let subscribed_events = {
++            let mut plugin_map = self.plugin_map.lock().to_anyhow()?;
++            let mut subscribed_events = None;
++            for (pid, cid, running_plugin, subscriptions) in
++                plugin_map.running_plugins_and_subscriptions()
++            {
++                if pid == plugin_id
++                    && cid == client_id
++                    && running_plugin.lock().to_anyhow()?.store.data().tab_index.is_none()
++                {
++                    subscribed_events = Some(subscriptions.lock().to_anyhow()?.clone());
++                    break;
++                }
++            }
++            subscribed_events
+         };
+-        if is_background {
+-            let _ = self.senders.send_to_screen(
++        if let Some(events) = subscribed_events {
++            self.senders.send_to_screen(
+                 ScreenInstruction::UpdateBackgroundPluginSubscriptions(
+                     plugin_id, client_id, events,
+                 ),
+-            );
++            )?;
+         }
++        Ok(())
+     }
+ 
+     pub fn send_initial_keybinds_to_plugin(&self, plugin_id: PluginId, client_id: ClientId) {
+@@ -2102,6 +2106,9 @@
+         | Event::HintText(..)
+         | Event::ActivePaneScroll(..)
+         | Event::InputReceived => PermissionType::ReadApplicationState,
++        Event::CustomMessage(name, _) if name == "program_status" => {
++            PermissionType::ReadApplicationState
++        },
+         Event::WebServerStatus(..) => PermissionType::StartWebServer,
+         Event::PaneRenderReport(..) => PermissionType::ReadPaneContents,
+         Event::UserAction(..) => PermissionType::InterceptInput,
+--- a/zellij-utils/src/errors.rs
++++ b/zellij-utils/src/errors.rs
+@@ -447,6 +447,7 @@
+     SetPluginRegexHighlights,
+     ClearPluginHighlights,
+     DesktopNotificationResponse,
++    BootstrapProgramStatuses,
+     SubscribeToPaneRenders,
+     NotifyPaneClosedToSubscribers,
+     // Pane-targeting CLI variants
+--- a/zellij-server/src/plugins/mod.rs
++++ b/zellij-server/src/plugins/mod.rs
+@@ -754,11 +754,9 @@
+                 wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+             },
+             PluginInstruction::PluginSubscribedToEvents(plugin_id, client_id, events) => {
+-                wasm_bridge.notify_screen_of_background_plugin_subscriptions(
+-                    plugin_id,
+-                    client_id,
+-                    events.clone(),
+-                );
++                wasm_bridge
++                    .notify_screen_of_background_plugin_subscriptions(plugin_id, client_id)
++                    .non_fatal();
+                 if events.contains(&EventType::InitialKeybinds) {
+                     wasm_bridge.send_initial_keybinds_to_plugin(plugin_id, client_id);
+                 }
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -123,6 +123,25 @@
+ [profile.dev]
+ debug = "line-tables-only"
+ 
++# Keep the interpreter usable while guest plugins and Zellij retain debug builds.
++[profile.dev.package.wasmi]
++opt-level = 3
++
++[profile.dev.package.wasmi_core]
++opt-level = 3
++
++[profile.dev.package.wasmi_ir]
++opt-level = 3
++
++[profile.dev.package.wasmi_collections]
++opt-level = 3
++
++[profile.dev.package.wasmi_wasi]
++opt-level = 3
++
++[profile.dev.package.wasmparser]
++opt-level = 3
++
+ [profile.dev-opt]
+ inherits = "dev"
+ 
+--- a/zellij-server/src/panes/grid.rs
++++ b/zellij-server/src/panes/grid.rs
+@@ -834,6 +834,7 @@
+     pub pending_messages_to_pty: Vec<Vec<u8>>,
+     pub selection: Selection,
+     pub title: Option<String>,
++    pub pending_title_changed: bool,
+     pub is_scrolled: bool,
+     pub link_handler: Rc<RefCell<LinkHandler>>,
+     pub ring_bell: bool,
+@@ -1219,6 +1220,7 @@
+             selection: Default::default(),
+             title_stack: vec![],
+             title: None,
++            pending_title_changed: false,
+             changed_colors: None,
+             is_scrolled: false,
+             link_handler,
+@@ -3691,7 +3693,10 @@
+         }
+     }
+     fn set_title(&mut self, title: String) {
+-        self.title = Some(title);
++        if self.title.as_ref() != Some(&title) {
++            self.title = Some(title);
++            self.pending_title_changed = true;
++        }
+     }
+     fn push_current_title_to_stack(&mut self) {
+         if self.title_stack.len() > MAX_TITLE_STACK_SIZE {
+@@ -3703,7 +3708,7 @@
+     }
+     fn pop_title_from_stack(&mut self) {
+         if let Some(popped_title) = self.title_stack.pop() {
+-            self.title = Some(popped_title);
++            self.set_title(popped_title);
+         }
+     }
+     fn transfer_rows_to_lines_above(&mut self, count: usize) {
+@@ -4728,16 +4733,11 @@
+                         self.pending_messages_to_pty.push(
+                             format!("\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth{}", terminator).into_bytes(),
+                         );
+-                    } else {
+-                        self.program_status.report(params[1]);
+                     }
+                 }
+             },
+ 
+             b"133" => {
+-                if params.get(1) == Some(&b"A".as_slice()) {
+-                    self.program_status.expire_running();
+-                }
+                 let marker = params.get(1).and_then(|subcommand| match *subcommand {
+                     b"A" | b"P" => Some(Osc133MarkerKind::Prompt),
+                     b"B" | b"I" => Some(Osc133MarkerKind::Input),
+--- a/zellij-server/src/os_input_output.rs
++++ b/zellij-server/src/os_input_output.rs
+@@ -365,6 +365,10 @@
+     ) -> HashMap<u32, Vec<String>> {
+         HashMap::new()
+     }
++    /// Current foreground process group of the pane's PTY, without process discovery.
++    fn foreground_process_group(&self, _terminal_id: u32) -> Option<i32> {
++        None
++    }
+     /// Writes the given buffer to a string
+     fn write_to_file(&mut self, buf: String, file: Option<String>) -> Result<()>;
+ 
+@@ -586,6 +590,11 @@
+     }
+ 
+     #[cfg(unix)]
++    fn foreground_process_group(&self, terminal_id: u32) -> Option<i32> {
++        self.pty_backend.tcgetpgrp(terminal_id).filter(|group| *group > 0)
++    }
++
++    #[cfg(unix)]
+     fn get_foreground_cmds(
+         &self,
+         panes: &[(u32, u32)],
+--- a/zellij-server/src/tab/layout_applier.rs
++++ b/zellij-server/src/tab/layout_applier.rs
+@@ -547,8 +547,8 @@
+             self.styled_underlines,
+         );
+         if let Some(pane_initial_contents) = &layout.pane_initial_contents {
+-            new_plugin.handle_pty_bytes(pane_initial_contents.as_bytes().into());
+-            new_plugin.handle_pty_bytes("\n\r".as_bytes().into());
++            new_plugin.handle_pty_bytes(pane_initial_contents.as_bytes().into(), &|| None);
++            new_plugin.handle_pty_bytes("\n\r".as_bytes().into(), &|| None);
+         }
+ 
+         new_plugin.set_borderless(layout.borderless.unwrap_or(false));
+@@ -597,8 +597,8 @@
+             self.styled_underlines,
+         );
+         if let Some(pane_initial_contents) = &floating_pane_layout.pane_initial_contents {
+-            new_pane.handle_pty_bytes(pane_initial_contents.as_bytes().into());
+-            new_pane.handle_pty_bytes("\n\r".as_bytes().into());
++            new_pane.handle_pty_bytes(pane_initial_contents.as_bytes().into(), &|| None);
++            new_pane.handle_pty_bytes("\n\r".as_bytes().into(), &|| None);
+         }
+         if floating_pane_layout.borderless.unwrap_or(false) {
+             new_pane.set_borderless(true);
+@@ -654,8 +654,8 @@
+             None,
+         );
+         if let Some(pane_initial_contents) = &floating_pane_layout.pane_initial_contents {
+-            new_pane.handle_pty_bytes(pane_initial_contents.as_bytes().into());
+-            new_pane.handle_pty_bytes("\n\r".as_bytes().into());
++            new_pane.handle_pty_bytes(pane_initial_contents.as_bytes().into(), &|| None);
++            new_pane.handle_pty_bytes("\n\r".as_bytes().into(), &|| None);
+         }
+         if floating_pane_layout.borderless.unwrap_or(false) {
+             new_pane.set_borderless(true);
+@@ -731,8 +731,8 @@
+             notification_end,
+         );
+         if let Some(pane_initial_contents) = &layout.pane_initial_contents {
+-            new_pane.handle_pty_bytes(pane_initial_contents.as_bytes().into());
+-            new_pane.handle_pty_bytes("\n\r".as_bytes().into());
++            new_pane.handle_pty_bytes(pane_initial_contents.as_bytes().into(), &|| None);
++            new_pane.handle_pty_bytes("\n\r".as_bytes().into(), &|| None);
+         }
+         new_pane.set_borderless(layout.borderless.unwrap_or(false));
+         if let Some(exclude_from_sync) = layout.exclude_from_sync {
+--- a/zellij-server/src/panes/kitty_graphics/unit/interceptor_tests.rs
++++ b/zellij-server/src/panes/kitty_graphics/unit/interceptor_tests.rs
+@@ -248,7 +248,7 @@
+         explicitly_disable_kitty_keyboard_protocol,
+         None,
+     );
+-    terminal_pane.handle_pty_bytes(Vec::from(&b"A\x1b_Gq=2,a=d,d=A\x1b\\B"[..]));
++    terminal_pane.handle_pty_bytes(Vec::from(&b"A\x1b_Gq=2,a=d,d=A\x1b\\B"[..]), &|| None);
+     assert_snapshot!(format!("{:?}", terminal_pane.grid));
+     assert_eq!(terminal_pane.grid.kitty_commands_handled(), 1);
+ }
+--- a/zellij-server/src/panes/unit/terminal_pane_tests.rs
++++ b/zellij-server/src/panes/unit/terminal_pane_tests.rs
+@@ -67,7 +67,7 @@
+     for i in 0..30 {
+         writeln!(&mut text_to_fill_pane, "\rline {}", i + 1).unwrap();
+     }
+-    terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes());
++    terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes(), &|| None);
+     terminal_pane.scroll_up(10, fake_client_id);
+     assert_snapshot!(format!("{:?}", terminal_pane.grid));
+     terminal_pane.scroll_down(3, fake_client_id);
+@@ -124,7 +124,7 @@
+         #1!14@
+         \u{1b}\\";
+ 
+-    terminal_pane.handle_pty_bytes(Vec::from(sixel_image_bytes.as_bytes()));
++    terminal_pane.handle_pty_bytes(Vec::from(sixel_image_bytes.as_bytes()), &|| None);
+     assert_snapshot!(format!("{:?}", terminal_pane.grid));
+ }
+ 
+@@ -172,7 +172,7 @@
+         None,
+     ); // 0 is the pane index
+     let pane_content = read_fixture("sixel-image-500px.six");
+-    terminal_pane.handle_pty_bytes(pane_content);
++    terminal_pane.handle_pty_bytes(pane_content, &|| None);
+     assert_snapshot!(format!("{:?}", terminal_pane.grid));
+ }
+ 
+@@ -220,7 +220,7 @@
+         None,
+     ); // 0 is the pane index
+     let pane_content = read_fixture("sixel-image-500px.six");
+-    terminal_pane.handle_pty_bytes(pane_content);
++    terminal_pane.handle_pty_bytes(pane_content, &|| None);
+     assert_snapshot!(format!("{:?}", terminal_pane.grid));
+ }
+ 
+@@ -272,8 +272,8 @@
+     }
+     writeln!(&mut text_to_fill_pane, "\r").unwrap();
+     let pane_sixel_content = read_fixture("sixel-image-500px.six");
+-    terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes());
+-    terminal_pane.handle_pty_bytes(pane_sixel_content);
++    terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes(), &|| None);
++    terminal_pane.handle_pty_bytes(pane_sixel_content, &|| None);
+     terminal_pane.scroll_up(10, fake_client_id);
+     assert_snapshot!(format!("{:?}", terminal_pane.grid));
+     terminal_pane.scroll_down(3, fake_client_id);
+@@ -330,9 +330,9 @@
+     }
+     writeln!(&mut text_to_fill_pane, "\r").unwrap();
+     let pane_sixel_content = read_fixture("sixel-image-500px.six");
+-    terminal_pane.handle_pty_bytes(pane_sixel_content.clone()); // one image above text
+-    terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes());
+-    terminal_pane.handle_pty_bytes(pane_sixel_content); // one image below text
++    terminal_pane.handle_pty_bytes(pane_sixel_content.clone(), &|| None); // one image above text
++    terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes(), &|| None);
++    terminal_pane.handle_pty_bytes(pane_sixel_content, &|| None); // one image below text
+     terminal_pane.scroll_up(20, fake_client_id); // scroll up to see both images
+     assert_snapshot!(format!("{:?}", terminal_pane.grid));
+ }
+@@ -386,9 +386,9 @@
+     }
+     writeln!(&mut text_to_fill_pane, "\r").unwrap();
+     let pane_sixel_content = read_fixture("sixel-image-500px.six");
+-    terminal_pane.handle_pty_bytes(pane_sixel_content.clone());
+-    terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes());
+-    terminal_pane.handle_pty_bytes(pane_sixel_content);
++    terminal_pane.handle_pty_bytes(pane_sixel_content.clone(), &|| None);
++    terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes(), &|| None);
++    terminal_pane.handle_pty_bytes(pane_sixel_content, &|| None);
+     let mut new_win_size = PaneGeom::default();
+     new_win_size.cols.set_inner(100);
+     new_win_size.rows.set_inner(20);
+@@ -445,9 +445,9 @@
+     }
+     writeln!(&mut text_to_fill_pane, "\r").unwrap();
+     let pane_sixel_content = read_fixture("sixel-image-500px.six");
+-    terminal_pane.handle_pty_bytes(pane_sixel_content.clone());
+-    terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes());
+-    terminal_pane.handle_pty_bytes(pane_sixel_content);
++    terminal_pane.handle_pty_bytes(pane_sixel_content.clone(), &|| None);
++    terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes(), &|| None);
++    terminal_pane.handle_pty_bytes(pane_sixel_content, &|| None);
+     // here the new_win_size is the same as the old one, we just update the character_cell_size
+     // which will be picked up upon resize (which is why we're doing set_geom below)
+     let mut new_win_size = PaneGeom::default();
+@@ -511,12 +511,12 @@
+         #1!14@
+         \u{1b}\\";
+ 
+-    terminal_pane.handle_pty_bytes(Vec::from(sixel_image_bytes.as_bytes()));
++    terminal_pane.handle_pty_bytes(Vec::from(sixel_image_bytes.as_bytes()), &|| None);
+     let mut text_to_fill_pane = String::new();
+     for i in 0..5 {
+         writeln!(&mut text_to_fill_pane, "\rline {}", i + 1).unwrap();
+     }
+-    terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes());
++    terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes(), &|| None);
+     assert_snapshot!(format!("{:?}", terminal_pane.grid));
+ }
+ 
+@@ -777,7 +777,7 @@
+         "Initially has_bell should be false"
+     );
+ 
+-    terminal_pane.handle_pty_bytes(vec![7u8]);
++    terminal_pane.handle_pty_bytes(vec![7u8], &|| None);
+     assert!(
+         terminal_pane.has_bell(),
+         "has_bell should be true after pty bell byte"
+--- a/zellij-server/src/panes/unit/search_in_pane_tests.rs
++++ b/zellij-server/src/panes/unit/search_in_pane_tests.rs
+@@ -56,7 +56,7 @@
+         None,
+     ); // 0 is the pane index
+     let content = read_fixture();
+-    terminal_pane.handle_pty_bytes(content);
++    terminal_pane.handle_pty_bytes(content, &|| None);
+     terminal_pane
+ }
+ 
+@@ -374,11 +374,9 @@
+ #[test]
+ pub fn searching_whole_word_across_line_wrap() {
+     let mut terminal_pane = create_pane();
+-    terminal_pane.handle_pty_bytes(
+-        "a:--:aaaaaaaaa:--:--:--:aaaaaaaaaaa:--: :--: :--: aaa :--::--: aaa"
+-            .as_bytes()
+-            .to_vec(),
+-    );
++    terminal_pane.handle_pty_bytes("a:--:aaaaaaaaa:--:--:--:aaaaaaaaaaa:--: :--: :--: aaa :--::--: aaa"
++        .as_bytes()
++        .to_vec(), &|| None);
+     terminal_pane.grid.change_size(20, 5);
+     terminal_pane.update_search_term(":--:");
+     assert_snapshot!(
+--- a/zellij-server/src/panes/tiled_panes/unit/mock_pane.rs
++++ b/zellij-server/src/panes/tiled_panes/unit/mock_pane.rs
+@@ -204,7 +204,7 @@
+     fn set_geom_override(&mut self, pane_geom: PaneGeom) {
+         self.geom_override = Some(pane_geom);
+     }
+-    fn handle_pty_bytes(&mut self, _bytes: VteBytes) {
++    fn handle_pty_bytes(&mut self, _bytes: VteBytes, _read_foreground: &dyn Fn() -> Option<i32>) {
+         unimplemented!()
+     }
+     fn handle_plugin_bytes(&mut self, _client_id: ClientId, _bytes: VteBytes) {
+--- a/zellij-server/src/panes/tiled_panes/unit/stacked_panes_tests.rs
++++ b/zellij-server/src/panes/tiled_panes/unit/stacked_panes_tests.rs
+@@ -1079,7 +1079,7 @@
+     fn set_geom_override(&mut self, _pane_geom: PaneGeom) {
+         unimplemented!()
+     }
+-    fn handle_pty_bytes(&mut self, _bytes: VteBytes) {
++    fn handle_pty_bytes(&mut self, _bytes: VteBytes, _read_foreground: &dyn Fn() -> Option<i32>) {
+         unimplemented!()
+     }
+     fn handle_plugin_bytes(&mut self, _client_id: ClientId, _bytes: VteBytes) {
+--- a/zellij-server/src/unit/screen_tests.rs
++++ b/zellij-server/src/unit/screen_tests.rs
+@@ -10462,8 +10462,8 @@
+     pane.arm_forward_pause();
+     assert!(pane.is_forward_paused());
+ 
+-    pane.handle_pty_bytes(b"hello".to_vec());
+-    pane.handle_pty_bytes(b"world".to_vec());
++    pane.handle_pty_bytes(b"hello".to_vec(), &|| None);
++    pane.handle_pty_bytes(b"world".to_vec(), &|| None);
+ 
+     let drained = pane.drain_pending_pty_input();
+     assert_eq!(
+@@ -10487,7 +10487,7 @@
+     let mut pane = new_terminal_pane_for_pause_test(1);
+     let mut input = b"\x1b]10;?\x07".to_vec();
+     input.extend_from_slice(b"after");
+-    pane.handle_pty_bytes(input);
++    pane.handle_pty_bytes(input, &|| None);
+ 
+     let queries = pane.drain_forwarded_queries();
+     assert_eq!(queries.len(), 1, "exactly one forward must be queued");
+@@ -10511,7 +10511,7 @@
+     // When the input contains no forward-bound query, processing runs
+     // to completion and `pending_pty_input` ends empty.
+     let mut pane = new_terminal_pane_for_pause_test(1);
+-    pane.handle_pty_bytes(b"plain text".to_vec());
++    pane.handle_pty_bytes(b"plain text".to_vec(), &|| None);
+ 
+     assert!(
+         pane.drain_forwarded_queries().is_empty(),
+@@ -10544,7 +10544,7 @@
+     // reply during step 2.
+     let mut pane = new_terminal_pane_for_pause_test(1);
+     pane.arm_forward_pause();
+-    pane.handle_pty_bytes(b"buffered\x1b[c".to_vec());
++    pane.handle_pty_bytes(b"buffered\x1b[c".to_vec(), &|| None);
+ 
+     // While paused, vte was never fed, so no replies were produced.
+     assert!(
+@@ -10559,7 +10559,7 @@
+     let was_paused = pane.clear_forward_pause();
+     assert!(was_paused, "was paused");
+     let buffered = pane.drain_pending_pty_input();
+-    pane.handle_pty_bytes(buffered);
++    pane.handle_pty_bytes(buffered, &|| None);
+ 
+     let sync_replies = pane.drain_messages_to_pty();
+     assert!(
+@@ -10615,7 +10615,7 @@
+     let mut pane = new_terminal_pane_for_pause_test(1);
+     let mut input = b"\x1b]10;?\x07".to_vec();
+     input.extend_from_slice(b"\x1b[c");
+-    pane.handle_pty_bytes(input);
++    pane.handle_pty_bytes(input, &|| None);
+ 
+     // Forward emitted; DA1 still queued behind it.
+     let queries = pane.drain_forwarded_queries();
+@@ -10631,7 +10631,7 @@
+     // (host reply gets written to PTY via Tab; modelled here as no-op)
+     pane.clear_forward_pause();
+     let buffered = pane.drain_pending_pty_input();
+-    pane.handle_pty_bytes(buffered);
++    pane.handle_pty_bytes(buffered, &|| None);
+ 
+     let sync_replies = pane.drain_messages_to_pty();
+     assert!(
+@@ -10649,7 +10649,7 @@
+     // write yet still clears the pause and re-feeds the queue.
+     let mut pane = new_terminal_pane_for_pause_test(1);
+     pane.arm_forward_pause();
+-    pane.handle_pty_bytes(b"after".to_vec());
++    pane.handle_pty_bytes(b"after".to_vec(), &|| None);
+     assert!(pane.is_forward_paused());
+ 
+     // Simulate Tab::resume_pane_after_forward with empty reply:
+@@ -10658,7 +10658,7 @@
+     let was_paused = pane.clear_forward_pause();
+     assert!(was_paused);
+     let buffered = pane.drain_pending_pty_input();
+-    pane.handle_pty_bytes(buffered);
++    pane.handle_pty_bytes(buffered, &|| None);
+     assert!(!pane.is_forward_paused());
+     assert!(
+         pane.drain_pending_pty_input().is_empty(),
+@@ -11359,7 +11359,7 @@
+     assert_eq!(screen.kitty_host_capabilities.borrow().get(&1), Some(&true));
+     let active_tab = screen.get_active_tab_mut(1).unwrap();
+     let active_pane = active_tab.get_active_pane_mut(1).unwrap();
+-    active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
++    active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec(), &|| None);
+     assert_eq!(
+         active_pane.drain_messages_to_pty(),
+         vec![b"\x1b_Gi=31;OK\x1b\\".to_vec()]
+@@ -11381,7 +11381,7 @@
+     );
+     let active_tab = screen.get_active_tab_mut(1).unwrap();
+     let active_pane = active_tab.get_active_pane_mut(1).unwrap();
+-    active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
++    active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec(), &|| None);
+     let replies = active_pane.drain_messages_to_pty();
+     assert_eq!(replies.len(), 1);
+     let reply = String::from_utf8(replies[0].clone()).unwrap();
+@@ -11405,7 +11405,7 @@
+     );
+     let active_tab = screen.get_active_tab_mut(1).unwrap();
+     let active_pane = active_tab.get_active_pane_mut(1).unwrap();
+-    active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
++    active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec(), &|| None);
+     assert!(
+         active_pane.drain_messages_to_pty().is_empty(),
+         "a disabled protocol must not reply to queries at all"
+@@ -11426,7 +11426,7 @@
+     screen.remove_client(2).expect("TEST");
+     let active_tab = screen.get_active_tab_mut(1).unwrap();
+     let active_pane = active_tab.get_active_pane_mut(1).unwrap();
+-    active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
++    active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec(), &|| None);
+     let replies = active_pane.drain_messages_to_pty();
+     assert_eq!(replies.len(), 1);
+     let reply = String::from_utf8(replies[0].clone()).unwrap();
+@@ -11446,7 +11446,7 @@
+     assert_eq!(screen.sixel_host_capabilities.borrow().get(&1), Some(&true));
+     let active_tab = screen.get_active_tab_mut(1).unwrap();
+     let active_pane = active_tab.get_active_pane_mut(1).unwrap();
+-    active_pane.handle_pty_bytes(b"\x1b[c".to_vec());
++    active_pane.handle_pty_bytes(b"\x1b[c".to_vec(), &|| None);
+     assert_eq!(
+         active_pane.drain_messages_to_pty(),
+         vec![b"\x1b[?62;4;52c".to_vec()]
+@@ -11468,7 +11468,7 @@
+     );
+     let active_tab = screen.get_active_tab_mut(1).unwrap();
+     let active_pane = active_tab.get_active_pane_mut(1).unwrap();
+-    active_pane.handle_pty_bytes(b"\x1b[c".to_vec());
++    active_pane.handle_pty_bytes(b"\x1b[c".to_vec(), &|| None);
+     assert_eq!(
+         active_pane.drain_messages_to_pty(),
+         vec![b"\x1b[?62;52c".to_vec()]
+@@ -11489,7 +11489,7 @@
+     screen.remove_client(2).expect("TEST");
+     let active_tab = screen.get_active_tab_mut(1).unwrap();
+     let active_pane = active_tab.get_active_pane_mut(1).unwrap();
+-    active_pane.handle_pty_bytes(b"\x1b[c".to_vec());
++    active_pane.handle_pty_bytes(b"\x1b[c".to_vec(), &|| None);
+     assert_eq!(
+         active_pane.drain_messages_to_pty(),
+         vec![b"\x1b[?62;52c".to_vec()]

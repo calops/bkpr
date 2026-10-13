@@ -1,0 +1,50 @@
+--- a/zellij-server/src/tab/mouse_handler.rs
++++ b/zellij-server/src/tab/mouse_handler.rs
+@@ -1515,6 +1515,14 @@
+                     return Ok(MouseAction::ShowFloatingPanesAndFocus { pane_id: pinned_id });
+                 }
+                 if ctx.pinned_unselectable.is_some() {
++                    if ctx.pinned_unselectable == Some(details.pane_id)
++                        && matches!(details.pane_id, PaneId::Plugin(_))
++                    {
++                        return Ok(MouseAction::StartSelection {
++                            pane_id: details.pane_id,
++                            position: event.position,
++                        });
++                    }
+                     return Ok(MouseAction::NoAction);
+                 }
+             }
+@@ -1957,4 +1965,32 @@
+             );
+         }
+     }
++
++    #[test]
++    fn pinned_nonselectable_plugin_clicks_dispatch_without_focusing() {
++        let position = Position::new(4, 8);
++        let event = MouseEvent::new_left_press_event(position);
++        for pane_id in [PaneId::Plugin(2), PaneId::Terminal(2)] {
++            let mut context = mouse_event_context(false);
++            context.pane_id_at_position = Some(pane_id);
++            context.pinned_unselectable = Some(pane_id);
++            context.clicked_pane = Some(ClickedPaneDetails {
++                pane_id,
++                on_frame: false,
++                frame_intercepted: false,
++                edge: None,
++                is_floating: true,
++                terminal_wants_mouse: false,
++            });
++            let expected = if matches!(pane_id, PaneId::Plugin(_)) {
++                MouseAction::StartSelection { pane_id, position }
++            } else {
++                MouseAction::NoAction
++            };
++            assert_eq!(
++                MouseHandler::determine_mouse_action(&event, &context).unwrap(),
++                expected
++            );
++        }
++    }
+ }

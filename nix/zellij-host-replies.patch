@@ -1,0 +1,547 @@
+--- a/zellij-client/src/stdin_ansi_parser.rs
++++ b/zellij-client/src/stdin_ansi_parser.rs
+@@ -9,6 +9,7 @@
+ use lazy_static::lazy_static;
+ use regex::Regex;
+ use serde::{Deserialize, Serialize};
++use std::time::{Duration, Instant};
+ use zellij_utils::{
+     data::HostTerminalThemeMode,
+     ipc::PixelDimensions,
+@@ -176,15 +177,15 @@
+ }
+ 
+ /// The "slot" tracking state for a single forwarded query currently in
+-/// flight to the host terminal. The parser accumulates raw reply bytes
+-/// into `reply_bytes` until it sees a Primary-DA (`c`) reply, which acts
+-/// as the serializing barrier. The timer that enforces the 500 ms
+-/// deadline lives on the forward-timeout runtime and owns its own
+-/// wall-clock — the parser itself is deadline-agnostic.
++/// flight to the host terminal. Replies belong to this slot only after
++/// all earlier query batches have crossed their Primary-DA boundaries.
++/// Its own Primary DA completes the captured bytes. The separate 500 ms
++/// forward-timeout runtime owns the forwarding deadline.
+ #[derive(Debug, Clone)]
+ pub struct ForwardSlot {
+     pub token: u32,
+     pub reply_bytes: Vec<u8>,
++    barriers_ahead: usize,
+ }
+ 
+ #[derive(Debug, Clone)]
+@@ -194,6 +195,10 @@
+ 
+ pub const CLIENT_CLIPBOARD_FORWARD_TIMEOUT_MS: u64 = 30_000;
+ 
++// A silent or unsupported host must not hold a real Escape key forever.
++// Query replies otherwise keep their prefixes across keyboard idle ticks.
++const HOST_REPLY_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
++
+ /// Return value of `feed()`.
+ #[derive(Debug, Clone, Default)]
+ pub struct ParseOutput {
+@@ -250,11 +255,15 @@
+     LoneEsc,
+     BareIntroducer,
+     ReplyInProgress,
++    ExpectedReply,
+ }
+ 
+ impl PendingPartial {
+     pub fn uses_reply_flush_guard(&self) -> bool {
+-        matches!(self, PendingPartial::ReplyInProgress)
++        matches!(
++            self,
++            PendingPartial::ReplyInProgress | PendingPartial::ExpectedReply
++        )
+     }
+ }
+ 
+@@ -320,6 +329,8 @@
+     in_bracketed_paste: bool,
+     startup_kitty_probe: StartupKittyProbe,
+     partial_apc: Vec<u8>,
++    outstanding_host_query_barriers: usize,
++    host_reply_deadline: Option<Instant>,
+ }
+ 
+ impl std::fmt::Debug for StdinAnsiParser {
+@@ -345,6 +356,8 @@
+             in_bracketed_paste: false,
+             startup_kitty_probe: StartupKittyProbe::NotSent,
+             partial_apc: Vec::new(),
++            outstanding_host_query_barriers: 0,
++            host_reply_deadline: None,
+         }
+     }
+ 
+@@ -352,10 +365,36 @@
+         self.startup_kitty_probe = StartupKittyProbe::AwaitingReply;
+     }
+ 
+-    /// Open a forwarding window for `token`. Subsequent reply events that
+-    /// arrive before the Primary-DA barrier will be accumulated into the
+-    /// slot's `reply_bytes`, in addition to being dispatched as normal
+-    /// classified `HostReply` events.
++    /// Register a host-query batch before writing it to the terminal.
++    /// Each batch must end with Primary DA so its replies have a boundary
++    /// independent of stdin read sizes and keyboard Escape timeouts.
++    pub fn expect_host_replies(&mut self) {
++        if !self.host_replies_expected() {
++            self.outstanding_host_query_barriers = 0;
++        }
++        self.outstanding_host_query_barriers += 1;
++        self.host_reply_deadline = Some(Instant::now() + HOST_REPLY_QUERY_TIMEOUT);
++    }
++
++    fn host_replies_expected(&self) -> bool {
++        self.outstanding_host_query_barriers > 0
++            && self
++                .host_reply_deadline
++                .map(|deadline| Instant::now() < deadline)
++                .unwrap_or(false)
++    }
++
++    fn complete_host_query(&mut self) {
++        self.outstanding_host_query_barriers =
++            self.outstanding_host_query_barriers.saturating_sub(1);
++        if self.outstanding_host_query_barriers == 0 {
++            self.host_reply_deadline = None;
++        }
++    }
++
++    /// Open a forwarding window for `token`. After earlier query batches
++    /// cross their DA boundaries, this batch's reply bytes are captured
++    /// until its own DA, alongside normal classified `HostReply` events.
+     ///
+     /// The server serializes forwarded queries globally (`forward_in_flight`
+     /// on `Screen`), but its own backstop timeout can release that slot and
+@@ -381,9 +420,11 @@
+                 existing.reply_bytes.len(),
+             );
+         }
++        self.expect_host_replies();
+         self.active_forward = Some(ForwardSlot {
+             token,
+             reply_bytes: Vec::new(),
++            barriers_ahead: self.outstanding_host_query_barriers - 1,
+         });
+     }
+ 
+@@ -495,7 +536,11 @@
+                             continue;
+                         }
+                     }
+-                    if let Some(slot) = self.active_forward.as_mut() {
++                    if let Some(slot) = self
++                        .active_forward
++                        .as_mut()
++                        .filter(|slot| slot.barriers_ahead == 0)
++                    {
+                         // Re-serialize so the pane's pty sees a legal OSC.
+                         // Terminators vary by host; ST (ESC \) is always safe.
+                         slot.reply_bytes.extend_from_slice(b"\x1b]");
+@@ -511,6 +556,7 @@
+                 } => {
+                     match final_byte {
+                         b'c' => {
++                            self.complete_host_query();
+                             if self.startup_kitty_probe == StartupKittyProbe::AwaitingReply {
+                                 self.startup_kitty_probe = StartupKittyProbe::Resolved;
+                                 out.replies.push(HostReply::KittyGraphicsSupport(false));
+@@ -518,10 +564,17 @@
+                             if let Some(reply) = HostReply::sixel_support_from_primary_da(&raw) {
+                                 out.replies.push(reply);
+                             }
+-                            // Primary-DA — the barrier. Close the slot and
+-                            // emit the completed forwarded reply if active.
+-                            if let Some(slot) = self.active_forward.take() {
+-                                out.completed_forward = Some((slot.token, slot.reply_bytes));
++                            // A local or timed-out earlier query's DA
++                            // cannot complete this forwarding window.
++                            match self.active_forward.as_mut() {
++                                Some(slot) if slot.barriers_ahead > 0 => {
++                                    slot.barriers_ahead -= 1;
++                                },
++                                Some(_) => {
++                                    let slot = self.active_forward.take().unwrap();
++                                    out.completed_forward = Some((slot.token, slot.reply_bytes));
++                                },
++                                None => {},
+                             }
+                             // Primary-DA is NOT double-dispatched — it has
+                             // no cached-state counterpart.
+@@ -530,7 +583,11 @@
+                             if let Some(reply) = HostReply::from_csi_report(&raw) {
+                                 out.replies.push(reply);
+                             }
+-                            if let Some(slot) = self.active_forward.as_mut() {
++                            if let Some(slot) = self
++                                .active_forward
++                                .as_mut()
++                                .filter(|slot| slot.barriers_ahead == 0)
++                            {
+                                 slot.reply_bytes.extend_from_slice(&raw);
+                             }
+                             // Suppress unused-variable warning for params.
+@@ -574,7 +631,14 @@
+     }
+ 
+     pub fn pending_partial(&self) -> PendingPartial {
+-        if !self.partial_paste.is_empty() || !self.partial_apc.is_empty() {
++        if self.host_replies_expected()
++            && (!self.partial_osc.is_empty()
++                || !self.partial_csi.is_empty()
++                || !self.partial_apc.is_empty()
++                || !self.nested_frame_extractor.partial_bytes().is_empty())
++        {
++            PendingPartial::ExpectedReply
++        } else if !self.partial_paste.is_empty() || !self.partial_apc.is_empty() {
+             PendingPartial::ReplyInProgress
+         } else if self.partial_csi.is_empty()
+             && self.partial_osc.is_empty()
+@@ -607,7 +671,9 @@
+                     std::mem::take(&mut self.partial_csi)
+                 }
+             },
+-            PendingPartial::None | PendingPartial::ReplyInProgress => Vec::new(),
++            PendingPartial::None
++            | PendingPartial::ReplyInProgress
++            | PendingPartial::ExpectedReply => Vec::new(),
+         }
+     }
+ 
+--- a/zellij-client/src/stdin_handler.rs
++++ b/zellij-client/src/stdin_handler.rs
+@@ -46,13 +46,17 @@
+ 
+         if can_query_terminal {
+             let query_string = build_startup_query_string(support_kitty_graphics_protocol);
+-            let _ = os_input
+-                .get_stdout_writer()
+-                .write(query_string.as_bytes())
+-                .unwrap();
+-            if support_kitty_graphics_protocol {
+-                stdin_ansi_parser.lock().unwrap().expect_kitty_probe_reply();
+-            } else {
++            {
++                let mut parser = stdin_ansi_parser.lock().unwrap();
++                parser.expect_host_replies();
++                if support_kitty_graphics_protocol {
++                    parser.expect_kitty_probe_reply();
++                }
++                let mut stdout = os_input.get_stdout_writer();
++                stdout.write_all(query_string.as_bytes()).unwrap();
++                stdout.flush().unwrap();
++            }
++            if !support_kitty_graphics_protocol {
+                 let _ =
+                     send_input_instructions.send(InputInstruction::AnsiStdinInstructions(vec![
+                         HostReply::KittyGraphicsSupport(false),
+@@ -258,26 +262,12 @@
+                 }
+             },
+             Err(mpsc::RecvTimeoutError::Timeout) => {
+-                let pending = stdin_ansi_parser.lock().unwrap().pending_partial();
+-                if pending.uses_reply_flush_guard() {
+-                    let elapsed = reply_in_progress_since
+-                        .map(|since| since.elapsed())
+-                        .unwrap_or_default();
+-                    if elapsed >= PARTIAL_REPLY_FLUSH_GUARD {
+-                        let drained = stdin_ansi_parser.lock().unwrap().finalize_force();
+-                        drain_partial_to_keyboard(
+-                            &mut input_parser,
+-                            &mut current_buffer,
+-                            send_input_instructions.clone(),
+-                            drained,
+-                        );
+-                        needs_finalization = false;
+-                        reply_in_progress_since = None;
+-                    } else {
+-                        needs_finalization = true;
+-                    }
+-                } else {
+-                    let drained = stdin_ansi_parser.lock().unwrap().finalize_fast_partial();
++                let elapsed = reply_in_progress_since
++                    .map(|since| since.elapsed())
++                    .unwrap_or_default();
++                let drained =
++                    finalize_idle_partial(&mut stdin_ansi_parser.lock().unwrap(), elapsed);
++                if let Some(drained) = drained {
+                     drain_partial_to_keyboard(
+                         &mut input_parser,
+                         &mut current_buffer,
+@@ -297,6 +287,17 @@
+     }
+ }
+ 
++fn finalize_idle_partial(parser: &mut StdinAnsiParser, elapsed: Duration) -> Option<Vec<u8>> {
++    match parser.pending_partial() {
++        // A solicited reply can split at even a lone ESC. The query's
++        // boundary, not a keyboard idle timer, decides when it is input.
++        PendingPartial::ExpectedReply => None,
++        PendingPartial::ReplyInProgress if elapsed < PARTIAL_REPLY_FLUSH_GUARD => None,
++        PendingPartial::ReplyInProgress => Some(parser.finalize_force()),
++        _ => Some(parser.finalize_fast_partial()),
++    }
++}
++
+ fn schedule_finalization(
+     stdin_ansi_parser: &Arc<Mutex<StdinAnsiParser>>,
+     fed_termwiz: bool,
+@@ -406,13 +407,16 @@
+ }
+ 
+ pub(crate) const PIXEL_SIZE_QUERY: &str = "\u{1b}[14t\u{1b}[16t";
++pub(crate) const PIXEL_SIZE_QUERY_WITH_BARRIER: &str = "\u{1b}[14t\u{1b}[16t\u{1b}[c";
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::{
+-        build_startup_query_string, extract_focus_reports, realign_current_buffer, InputParser,
+-        PIXEL_SIZE_QUERY,
++        build_startup_query_string, extract_focus_reports, finalize_idle_partial,
++        realign_current_buffer, InputParser, PIXEL_SIZE_QUERY,
+     };
++    use crate::stdin_ansi_parser::{HostReply, StdinAnsiParser};
++    use std::time::Duration;
+ 
+     #[test]
+     fn realign_after_lone_paste_start_empties_the_buffer() {
+@@ -506,4 +510,40 @@
+         assert!(query.ends_with("\u{1b}[c"));
+         assert!(query.starts_with("\u{1b}[14t\u{1b}[16t"));
+     }
++
++    #[test]
++    fn solicited_cell_size_reply_never_reaches_keyboard_across_idle_flushes() {
++        let reply = b"\x1b[6;17;7t";
++        for split in 1..reply.len() {
++            let mut parser = StdinAnsiParser::new();
++            parser.expect_host_replies();
++            let prefix = parser.feed(&reply[..split]);
++            assert!(prefix.residue.is_empty(), "prefix split at {}", split);
++
++            // Exercise both idle boundaries that previously forwarded
++            // a host prefix and then treated its tail as keyboard input.
++            assert!(finalize_idle_partial(&mut parser, Duration::from_millis(80)).is_none());
++            assert!(finalize_idle_partial(&mut parser, Duration::from_secs(2)).is_none());
++
++            let suffix = parser.feed(&reply[split..]);
++            assert!(suffix.residue.is_empty(), "suffix split at {}", split);
++            assert_eq!(prefix.replies.len() + suffix.replies.len(), 1);
++            match &suffix.replies[0] {
++                HostReply::PixelDimensions(dimensions) => {
++                    let cell = dimensions.character_cell_size.expect("cell size");
++                    assert_eq!((cell.height, cell.width), (17, 7));
++                },
++                other => panic!("expected cell-size reply, got {:?}", other),
++            }
++
++            assert!(parser.feed(b"\x1b[?62;4c").residue.is_empty());
++            parser.feed(b"\x1b");
++            assert_eq!(
++                finalize_idle_partial(&mut parser, Duration::from_millis(80)),
++                Some(vec![0x1b]),
++                "the completed query must restore ordinary Escape timing"
++            );
++            assert_eq!(parser.feed(b"6;17;7t").residue, b"6;17;7t");
++        }
++    }
+ }
+--- a/zellij-client/src/stdin_ansi_parser_tests.rs
++++ b/zellij-client/src/stdin_ansi_parser_tests.rs
+@@ -1832,3 +1832,123 @@
+     );
+     assert_eq!(parser.close_clipboard_forward_on_timeout(3), None);
+ }
++
++#[test]
++fn outstanding_queries_do_not_consume_literal_text_or_escape_chords() {
++    let mut parser = StdinAnsiParser::new();
++    parser.expect_host_replies();
++    assert_eq!(parser.feed(b"6;17;7t").residue, b"6;17;7t");
++    assert_eq!(parser.feed(b"\x1ba").residue, b"\x1ba");
++    assert_eq!(parser.pending_partial(), PendingPartial::None);
++}
++
++#[test]
++fn each_outstanding_query_requires_its_own_boundary() {
++    let mut parser = StdinAnsiParser::new();
++    parser.expect_host_replies();
++    parser.expect_host_replies();
++    parser.feed(b"\x1b[?62;4c");
++
++    parser.feed(b"\x1b");
++    assert_eq!(parser.pending_partial(), PendingPartial::ExpectedReply);
++    assert!(parser.finalize_fast_partial().is_empty());
++    assert_eq!(parser.feed(b"a").residue, b"\x1ba");
++
++    parser.feed(b"\x1b[?62;4c");
++    parser.feed(b"\x1b");
++    assert_eq!(parser.pending_partial(), PendingPartial::LoneEsc);
++    assert_eq!(parser.finalize_fast_partial(), b"\x1b");
++}
++
++#[test]
++fn a_silent_query_eventually_releases_genuine_escape_and_alt_brackets() {
++    for prefix in [b"\x1b".as_ref(), b"\x1b[".as_ref(), b"\x1b]".as_ref()] {
++        let mut parser = StdinAnsiParser::new();
++        parser.expect_host_replies();
++        parser.feed(prefix);
++        assert_eq!(parser.pending_partial(), PendingPartial::ExpectedReply);
++        assert!(parser.finalize_fast_partial().is_empty());
++
++        // Drive the deadline without sleeping or relying on scheduler timing.
++        parser.host_reply_deadline = Some(std::time::Instant::now() - Duration::from_secs(1));
++        let drained = parser.finalize_fast_partial();
++        assert_eq!(drained, prefix);
++        assert_eq!(parser.pending_partial(), PendingPartial::None);
++        let expected_key = match prefix {
++            b"\x1b" => InputEvent::Key(KeyEvent {
++                key: KeyCode::Escape,
++                modifiers: Modifiers::NONE,
++            }),
++            b"\x1b[" => alt_char('['),
++            _ => alt_char(']'),
++        };
++        assert_eq!(keys_from_flushed_bytes(&drained), vec![expected_key]);
++        assert_eq!(parser.feed(b"6;17;7t").residue, b"6;17;7t");
++    }
++}
++
++#[test]
++fn startup_replies_and_expired_forwards_cannot_leak_into_a_new_forward() {
++    let mut parser = StdinAnsiParser::new();
++    parser.expect_host_replies();
++    assert!(parser.feed(b"\x1b[6;").residue.is_empty());
++
++    // Fish can issue color queries while the startup cell-size reply
++    // is still arriving, and retry after its first forward times out.
++    parser.open_forward(1);
++    assert_eq!(parser.close_forward_on_timeout(1), Some((1, Vec::new())));
++    parser.open_forward(2);
++
++    let cell_tail = parser.feed(b"17;7t");
++    assert!(cell_tail.residue.is_empty());
++    assert!(cell_tail.completed_forward.is_none());
++    let startup_tail = parser.feed(
++        b"\x1b[4;816;1120t\x1b]11;rgb:0000/0000/0000\x1b\\\
++          \x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b[?2026;2$y\x1b[?1;2c",
++    );
++    assert!(startup_tail.residue.is_empty());
++    assert!(startup_tail.completed_forward.is_none());
++    assert_eq!(parser.active_forward_token(), Some(2));
++    assert!(startup_tail
++        .replies
++        .iter()
++        .any(|reply| matches!(reply, HostReply::PixelDimensions(_))));
++
++    let expired_reply = parser.feed(b"\x1b]11;rgb:1111/1111/1111\x1b\\\x1b[?1;2c");
++    assert!(expired_reply.residue.is_empty());
++    assert!(expired_reply.completed_forward.is_none());
++    assert_eq!(parser.active_forward_token(), Some(2));
++
++    let current_reply = b"\x1b]11;rgb:2222/2222/2222\x1b\\";
++    let current = parser.feed(current_reply);
++    assert!(current.residue.is_empty());
++    let boundary = parser.feed(b"\x1b[?1;2c");
++    assert_eq!(
++        boundary.completed_forward,
++        Some((2, current_reply.to_vec())),
++        "only this forward's response may reach the application's PTY"
++    );
++}
++
++#[test]
++fn resize_boundary_between_forwards_preserves_each_batch_owner() {
++    let mut parser = StdinAnsiParser::new();
++    parser.open_forward(1);
++    parser.expect_host_replies(); // resize query written after forward 1
++    let first = parser.feed(b"\x1b]11;rgb:1111/1111/1111\x1b\\\x1b[?1;2c");
++    assert_eq!(
++        first.completed_forward,
++        Some((1, b"\x1b]11;rgb:1111/1111/1111\x1b\\".to_vec()))
++    );
++
++    parser.open_forward(2); // written before the resize response arrives
++    let resize = parser.feed(b"\x1b[4;816;1120t\x1b[6;17;7t\x1b[?1;2c");
++    assert!(resize.residue.is_empty());
++    assert!(resize.completed_forward.is_none());
++    assert_eq!(parser.active_forward_token(), Some(2));
++    let second = parser.feed(b"\x1b]11;rgb:2222/2222/2222\x1b\\\x1b[?1;2c");
++    assert_eq!(
++        second.completed_forward,
++        Some((2, b"\x1b]11;rgb:2222/2222/2222\x1b\\".to_vec()))
++    );
++}
+--- a/zellij-client/src/lib.rs
++++ b/zellij-client/src/lib.rs
+@@ -1290,6 +1290,8 @@
+         .name("signal_listener".to_string())
+         .spawn({
+             let os_input = os_input.clone();
++            #[cfg(not(windows))]
++            let stdin_ansi_parser = stdin_ansi_parser.clone();
+             move || {
+                 os_input.handle_signals(
+                     Box::new({
+@@ -1299,9 +1301,15 @@
+                                 new_size: os_api.get_terminal_size(),
+                             });
+                             #[cfg(not(windows))]
+-                            let _ = os_api
+-                                .get_stdout_writer()
+-                                .write(crate::stdin_handler::PIXEL_SIZE_QUERY.as_bytes());
++                            {
++                                let mut parser = stdin_ansi_parser.lock().unwrap();
++                                parser.expect_host_replies();
++                                let mut stdout = os_api.get_stdout_writer();
++                                let _ = stdout.write_all(
++                                    crate::stdin_handler::PIXEL_SIZE_QUERY_WITH_BARRIER.as_bytes(),
++                                );
++                                let _ = stdout.flush();
++                            }
+                         }
+                     }),
+                     Box::new({
+@@ -1527,8 +1535,8 @@
+             ClientInstruction::ForwardQueryToHost {
+                 token, query_bytes, ..
+             } => {
+-                // 1. Open a forwarding window on the parser so any reply
+-                //    events that arrive before the barrier are captured.
++                // 1. Register and write this batch under the parser lock,
++                //    preserving the order of all host-query boundaries.
+                 //    A slot may still be open here: the server's backstop
+                 //    timeout can give up on the previous token and dispatch
+                 //    this one before this client's per-slot timer got to
+@@ -1537,6 +1545,11 @@
+                     let mut stdin_ansi_parser = stdin_ansi_parser.lock().unwrap();
+                     let stale_forward = stdin_ansi_parser.take_active_forward();
+                     stdin_ansi_parser.open_forward(token);
++                    let mut blob = query_bytes;
++                    blob.extend_from_slice(b"\x1b[c");
++                    let mut out = os_input.get_stdout_writer();
++                    let _ = out.write_all(&blob);
++                    let _ = out.flush();
+                     stale_forward
+                 };
+                 if let Some((stale_token, stale_reply_bytes)) = stale_forward {
+@@ -1574,16 +1587,6 @@
+                         );
+                     },
+                 );
+-                // 3. Write the query + Primary-DA barrier in a single
+-                //    write_all. The barrier closes the window on the
+-                //    parser side when its reply arrives — the timer
+-                //    task's eventual wake-up finds an empty slot for
+-                //    this token and no-ops.
+-                let mut blob = query_bytes;
+-                blob.extend_from_slice(b"\x1b[c");
+-                let mut out = os_input.get_stdout_writer();
+-                let _ = out.write_all(&blob);
+-                let _ = out.flush();
+             },
+             ClientInstruction::EmitNestedSessionFrame(payload_bytes) => {
+                 if nested_reannounce.host_contacted() {

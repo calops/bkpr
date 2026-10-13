@@ -1,0 +1,612 @@
+--- a/zellij-server/src/plugins/mod.rs
++++ b/zellij-server/src/plugins/mod.rs
+@@ -1378,6 +1378,12 @@
+     ) {
+         Ok(run_plugin_or_alias) => {
+             let initial_cwd = run_plugin_or_alias.get_initial_cwd();
++            let tab_index = match &pipe_source {
++                PipeSource::Plugin(source_plugin_id) => {
++                    wasm_bridge.tab_index_of_plugin_id(*source_plugin_id)
++                },
++                _ => None,
++            };
+             let all_plugin_ids = wasm_bridge.get_or_load_plugins(
+                 run_plugin_or_alias,
+                 size,
+@@ -1390,6 +1396,7 @@
+                 cli_client_id,
+                 floating_pane_coordinates,
+                 should_focus.unwrap_or(false),
++                tab_index,
+             );
+             for (plugin_id, client_id) in all_plugin_ids {
+                 pipe_messages.push((
+--- a/zellij-server/src/plugins/wasm_bridge.rs
++++ b/zellij-server/src/plugins/wasm_bridge.rs
+@@ -8,7 +8,7 @@
+ 
+ use crate::plugins::plugin_worker::MessageToWorker;
+ use crate::plugins::watch_filesystem::watch_filesystem;
+-use crate::plugins::zellij_exports::{wasi_read_string, wasi_write_object};
++use crate::plugins::zellij_exports::wasi_write_object;
+ use highway::{HighwayHash, PortableHash};
+ use log::info;
+ use notify_debouncer_full::{notify::RecommendedWatcher, Debouncer, RecommendedCache};
+@@ -76,6 +76,7 @@
+     pub plugin_id: PluginId,
+     pub bytes: Vec<u8>,
+     pub cli_pipes: HashMap<String, PipeStateChange>,
++    pub render_messages: Vec<zellij_utils::data::MessageToPlugin>,
+ }
+ 
+ impl PluginRenderAsset {
+@@ -808,7 +809,7 @@
+                     .contains_key(&plugin_id)
+             })
+             .collect();
+-        for (plugin_id, client_id, running_plugin) in plugins_to_resize {
++        for (plugin_id, _client_id, running_plugin) in plugins_to_resize {
+             if plugin_id == pid {
+                 let event_id = running_plugin
+                     .lock()
+@@ -831,32 +832,9 @@
+                             // in the below conditional, we check if event_id == 0 so that we'll
+                             // make sure to always render on the first resize event
+                             if old_rows != new_rows || old_columns != new_columns || event_id == 0 {
+-                                let rendered_bytes = running_plugin
+-                                    .instance
+-                                    .clone()
+-                                    .get_typed_func::<(i32, i32), ()>(
+-                                        &mut running_plugin.store,
+-                                        "render",
+-                                    )
+-                                    .and_then(|render| {
+-                                        render.call(
+-                                            &mut running_plugin.store,
+-                                            (new_rows as i32, new_columns as i32),
+-                                        )
+-                                    })
+-                                    .map_err(|e| anyhow!(e))
+-                                    .and_then(|_| {
+-                                        wasi_read_string(running_plugin.store.data())
+-                                            .map_err(|e| anyhow!(e))
+-                                    })
+-                                    .with_context(err_context);
+-                                match rendered_bytes {
+-                                    Ok(rendered_bytes) => {
+-                                        let plugin_render_asset = PluginRenderAsset::new(
+-                                            plugin_id,
+-                                            client_id,
+-                                            rendered_bytes.as_bytes().to_vec(),
+-                                        );
++                                let rendered_asset = running_plugin.render().with_context(err_context);
++                                match rendered_asset {
++                                    Ok(plugin_render_asset) => {
+                                         senders
+                                             .send_to_screen(ScreenInstruction::PluginBytes(vec![
+                                                 plugin_render_asset,
+@@ -1721,7 +1699,7 @@
+                 r.store.data().plugin.clone()
+             })
+     }
+-    fn tab_index_of_plugin_id(&self, plugin_id: PluginId) -> Option<usize> {
++    pub(super) fn tab_index_of_plugin_id(&self, plugin_id: PluginId) -> Option<usize> {
+         self.plugin_map
+             .lock()
+             .unwrap()
+@@ -1852,6 +1830,7 @@
+         cli_client_id: Option<ClientId>,
+         floating_pane_coordinates: Option<FloatingPaneCoordinates>,
+         should_focus: bool,
++        tab_index: Option<usize>,
+     ) -> Vec<(PluginId, Option<ClientId>)> {
+         let run_plugin = run_plugin_or_alias.get_run_plugin();
+         match run_plugin {
+@@ -1869,7 +1848,7 @@
+                     }
+                     match self.load_plugin(
+                         &Some(run_plugin),
+-                        None,
++                        tab_index,
+                         size,
+                         cwd.clone(),
+                         skip_cache,
+@@ -1883,7 +1862,7 @@
+                                 false, // close_replaced_pane
+                                 run_plugin_or_alias,
+                                 pane_title,
+-                                None,
++                                tab_index,
+                                 plugin_id,
+                                 pane_id_to_replace,
+                                 cwd,
+@@ -2171,27 +2150,10 @@
+                         should_render = true;
+                     }
+                     if rows > 0 && columns > 0 && should_render {
+-                        let rendered_bytes = instance
+-                            .get_typed_func::<(i32, i32), ()>(&mut running_plugin.store, "render")
+-                            .and_then(|render| {
+-                                render
+-                                    .call(&mut running_plugin.store, (rows as i32, columns as i32))
+-                            })
+-                            .map_err(|e| anyhow!(e))
+-                            .and_then(|_| {
+-                                wasi_read_string(running_plugin.store.data())
+-                                    .map_err(|e| anyhow!(e))
+-                            })
+-                            .with_context(err_context)?;
++                        let plugin_render_asset = running_plugin.render().with_context(err_context)?;
+                         let pipes_to_block_or_unblock =
+                             pipes_to_block_or_unblock(running_plugin, None);
+-                        let plugin_render_asset = PluginRenderAsset::new(
+-                            plugin_id,
+-                            client_id,
+-                            rendered_bytes.as_bytes().to_vec(),
+-                        )
+-                        .with_pipes(pipes_to_block_or_unblock);
+-                        plugin_render_assets.push(plugin_render_asset);
++                        plugin_render_assets.push(plugin_render_asset.with_pipes(pipes_to_block_or_unblock));
+                     } else {
+                         // This is a bit of a hack to get around the fact that plugins are allowed not to
+                         // render and still unblock CLI pipes
+@@ -2267,3 +2229,7 @@
+         .context("failed to unblock input pipe");
+     Ok(())
+ }
++
++#[cfg(test)]
++#[path = "unit/render_messages_tests.rs"]
++mod render_messages_tests;
+--- a/zellij-server/src/plugins/zellij_exports.rs
++++ b/zellij-server/src/plugins/zellij_exports.rs
+@@ -860,6 +860,11 @@
+             env.plugin_cwd.display().to_string(),
+         );
+     }
++    if let Some(messages) = env.render_messages.borrow_mut().as_mut() {
++        // Deliver render-origin messages only once Screen has applied this frame.
++        messages.push(message_to_plugin);
++        return Ok(());
++    }
+     env.senders
+         .send_to_plugin(PluginInstruction::MessageFromPlugin {
+             source_plugin_id: env.plugin_id,
+--- a/zellij-server/src/plugins/plugin_map.rs
++++ b/zellij-server/src/plugins/plugin_map.rs
+@@ -1,6 +1,8 @@
+ use crate::plugins::plugin_worker::MessageToWorker;
+ use crate::plugins::PluginId;
+-use std::io::Write;
++use crate::plugins::wasm_bridge::PluginRenderAsset;
++use std::cell::RefCell;
++use std::io::{Read, Write};
+ use std::{
+     collections::{BTreeMap, HashMap, HashSet, VecDeque},
+     path::PathBuf,
+@@ -15,6 +17,7 @@
+ use zellij_utils::{
+     data::EventType,
+     data::InputMode,
++    data::MessageToPlugin,
+     input::command::TerminalAction,
+     input::keybinds::Keybinds,
+     input::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation},
+@@ -299,6 +302,7 @@
+     pub keybinds: Keybinds,
+     pub intercepting_key_presses: bool,
+     pub store_limits: StoreLimits,
++    pub render_messages: RefCell<Option<Vec<MessageToPlugin>>>,
+ }
+ 
+ #[derive(Clone)]
+@@ -375,6 +379,46 @@
+             last_applied_event_ids: HashMap::new(),
+         }
+     }
++    pub fn render(&mut self) -> Result<PluginRenderAsset> {
++        // The guest must emit host commands before ANSI text: both use stdout.
++        *self.store.data().render_messages.borrow_mut() = Some(Vec::new());
++        let render_result = self
++            .instance
++            .get_typed_func::<(i32, i32), ()>(&mut self.store, "render")
++            .and_then(|render| {
++                render.call(&mut self.store, (self.rows as i32, self.columns as i32))
++            });
++        let mut render_messages = self
++            .store
++            .data()
++            .render_messages
++            .borrow_mut()
++            .take()
++            .unwrap_or_default();
++        // Drain even a failed frame, so partial stdout cannot corrupt the next command.
++        let mut bytes = Vec::new();
++        self.store
++            .data()
++            .stdout_pipe
++            .lock()
++            .unwrap()
++            .read_to_end(&mut bytes)?;
++        render_result.map_err(|error| anyhow!(error))?;
++        let text = std::str::from_utf8(&bytes)?;
++        if text.contains('\n') {
++            bytes = text.replace("\n", "\n\r").into_bytes();
++        }
++        if bytes.is_empty() {
++            render_messages.clear();
++        }
++        Ok(PluginRenderAsset {
++            plugin_id: self.store.data().plugin_id,
++            client_id: self.store.data().client_id,
++            bytes,
++            render_messages,
++            ..PluginRenderAsset::default()
++        })
++    }
+     pub fn next_event_id(&mut self, atomic_event: AtomicEvent) -> usize {
+         let current_event_id = *self.next_event_ids.get(&atomic_event).unwrap_or(&0);
+         if current_event_id < usize::MAX {
+--- a/zellij-server/src/plugins/plugin_loader.rs
++++ b/zellij-server/src/plugins/plugin_loader.rs
+@@ -281,6 +281,7 @@
+             stdin_pipe,
+             stdout_pipe,
+             store_limits: create_optimized_store_limits(),
++            render_messages: Default::default(),
+         };
+         let mut store = Store::new(&self.engine, plugin_env);
+ 
+@@ -393,6 +394,7 @@
+             stdin_pipe,
+             stdout_pipe,
+             store_limits: create_optimized_store_limits(),
++            render_messages: Default::default(),
+         };
+         let mut store = Store::new(&self.engine, plugin_env);
+ 
+--- a/zellij-server/src/plugins/pipes.rs
++++ b/zellij-server/src/plugins/pipes.rs
+@@ -1,7 +1,7 @@
+ use super::{PluginId, PluginInstruction};
+ use crate::plugins::plugin_map::RunningPlugin;
+ use crate::plugins::wasm_bridge::PluginRenderAsset;
+-use crate::plugins::zellij_exports::{wasi_read_string, wasi_write_object};
++use crate::plugins::zellij_exports::wasi_write_object;
+ use std::collections::{HashMap, HashSet};
+ use zellij_utils::data::{PipeMessage, PipeSource};
+ use zellij_utils::plugin_api::pipe_message::ProtobufPipeMessage;
+@@ -207,25 +207,10 @@
+                 .with_context(err_context)?;
+             let should_render = should_render == 1;
+             if rows > 0 && columns > 0 && should_render {
+-                let rendered_bytes = instance
+-                    .get_typed_func::<(i32, i32), ()>(&mut running_plugin.store, "render")
+-                    .and_then(|render| {
+-                        render.call(&mut running_plugin.store, (rows as i32, columns as i32))
+-                    })
+-                    .map_err(|e| anyhow!(e))
+-                    .and_then(|_| {
+-                        wasi_read_string(running_plugin.store.data()).map_err(|e| anyhow!(e))
+-                    })
+-                    .with_context(err_context)?;
++                let plugin_render_asset = running_plugin.render().with_context(err_context)?;
+                 let pipes_to_block_or_unblock =
+                     pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
+-                let plugin_render_asset = PluginRenderAsset::new(
+-                    plugin_id,
+-                    client_id,
+-                    rendered_bytes.as_bytes().to_vec(),
+-                )
+-                .with_pipes(pipes_to_block_or_unblock);
+-                plugin_render_assets.push(plugin_render_asset);
++                plugin_render_assets.push(plugin_render_asset.with_pipes(pipes_to_block_or_unblock));
+             } else {
+                 let pipes_to_block_or_unblock =
+                     pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
+--- a/zellij-server/src/plugins/unit/render_messages_tests.rs
++++ b/zellij-server/src/plugins/unit/render_messages_tests.rs
+@@ -0,0 +1,283 @@
++use super::*;
++use crate::plugins::plugin_map::PluginEnv;
++use crate::plugins::zellij_exports::zellij_exports;
++use crate::thread_bus::Bus;
++use std::collections::VecDeque;
++use std::time::Duration;
++use wasmi::{Linker, Store, StoreLimitsBuilder};
++use zellij_utils::channels::{unbounded, Receiver, SenderWithContext};
++use zellij_utils::data::{MessageToPlugin, PluginCommand};
++use zellij_utils::errors::ErrorContext;
++use zellij_utils::plugin_api::plugin_command::ProtobufPluginCommand;
++
++// A real WASI guest: fd_write serializes SDK commands on stdout, invokes the
++// native command decoder, then writes the ANSI frame. No prebuilt fixture needed.
++fn guest_module(frame: &[u8], trap: bool) -> Vec<u8> {
++    fn unsigned(mut value: usize) -> Vec<u8> {
++        let mut bytes = Vec::new();
++        loop {
++            let byte = (value & 127) as u8;
++            value >>= 7;
++            bytes.push(byte | if value != 0 { 128 } else { 0 });
++            if value == 0 { return bytes; }
++        }
++    }
++    fn signed(mut value: i32) -> Vec<u8> {
++        let mut bytes = Vec::new();
++        loop {
++            let byte = (value & 127) as u8;
++            value >>= 7;
++            let done = (value == 0 && byte & 64 == 0) || (value == -1 && byte & 64 != 0);
++            bytes.push(byte | if done { 0 } else { 128 });
++            if done { return bytes; }
++        }
++    }
++    fn name(value: &str) -> Vec<u8> {
++        let mut bytes = unsigned(value.len());
++        bytes.extend_from_slice(value.as_bytes());
++        bytes
++    }
++    fn section(module: &mut Vec<u8>, id: u8, data: Vec<u8>) {
++        module.push(id);
++        module.extend(unsigned(data.len()));
++        module.extend(data);
++    }
++    fn write(iovec: i32) -> Vec<u8> {
++        let mut code = vec![0x41, 1, 0x41];
++        code.extend(signed(iovec));
++        code.extend([0x41, 1, 0x41, 0, 0x10, 0, 0x1a]);
++        code
++    }
++    let mut memory = vec![0; 1024];
++    let mut write_payload = |index: usize, payload: &[u8]| {
++        let pointer = memory.len() as u32;
++        let iovec = 16 + index * 8;
++        memory[iovec..iovec + 4].copy_from_slice(&pointer.to_le_bytes());
++        memory[iovec + 4..iovec + 8].copy_from_slice(&(payload.len() as u32).to_le_bytes());
++        memory.extend_from_slice(payload);
++    };
++    for (index, message_name) in ["arbitrary-frame-one", "arbitrary-frame-two", "immediate-update"].iter().enumerate() {
++        let command: ProtobufPluginCommand = PluginCommand::MessageToPlugin(
++            MessageToPlugin::new(*message_name)
++        ).try_into().unwrap();
++        let payload = serde_json::to_vec(&command.encode_to_vec()).unwrap();
++        write_payload(index, &payload);
++    }
++    write_payload(3, frame);
++    let mut module = b"\0asm\x01\0\0\0".to_vec();
++    section(&mut module, 1, vec![4,
++        0x60, 4, 0x7f, 0x7f, 0x7f, 0x7f, 1, 0x7f,
++        0x60, 0, 0,
++        0x60, 2, 0x7f, 0x7f, 0,
++        0x60, 0, 1, 0x7f]);
++    let mut imports = vec![2];
++    imports.extend(name("wasi_snapshot_preview1"));
++    imports.extend(name("fd_write"));
++    imports.extend([0, 0]);
++    imports.extend(name("zellij"));
++    imports.extend(name("host_run_plugin_command"));
++    imports.extend([0, 1]);
++    section(&mut module, 2, imports);
++    section(&mut module, 3, vec![4, 2, 3, 1, 3]);
++    section(&mut module, 5, vec![1, 0, 1]);
++    let mut exports = vec![6];
++    for (export, kind, index) in [("memory", 2, 0), ("render", 0, 2), ("update", 0, 3), ("load", 0, 4), ("pipe", 0, 5), ("_start", 0, 4)] {
++        exports.extend(name(export));
++        exports.extend([kind, index]);
++    }
++    section(&mut module, 7, exports);
++    let mut render = vec![0]; // no locals
++    for iovec in [16, 24] {
++        render.extend(write(iovec));
++        render.extend([0x10, 1]);
++    }
++    render.extend(write(40));
++    if trap { render.push(0); }
++    render.push(0x0b);
++    let mut update = vec![0];
++    update.extend(write(32));
++    update.extend([0x10, 1, 0x41, 1, 0x0b]);
++    let mut code = vec![4];
++    for body in [&render, &update, &vec![0, 0x0b], &update] {
++        code.extend(unsigned(body.len()));
++        code.extend(body);
++    }
++    section(&mut module, 10, code);
++    let mut data = vec![1, 0, 0x41, 0, 0x0b];
++    data.extend(unsigned(memory.len()));
++    data.extend(memory);
++    section(&mut module, 11, data);
++    module
++}
++
++fn running_guest(plugin_id: PluginId, client_id: ClientId, tab_index: usize, frame: &[u8], trap: bool)
++    -> (RunningPlugin, Receiver<(PluginInstruction, ErrorContext)>)
++{
++    let engine = Engine::default();
++    let module = Module::new(&engine, &guest_module(frame, trap)).unwrap();
++    let (sender, receiver) = unbounded();
++    let stdin_pipe = Arc::new(Mutex::new(VecDeque::new()));
++    let stdout_pipe = Arc::new(Mutex::new(VecDeque::new()));
++    let cwd = std::env::temp_dir();
++    let wasi_ctx = PluginLoader::create_wasi_ctx(
++        &cwd, &cwd, &cwd, &cwd, &"render-fixture".to_owned(), plugin_id,
++        stdin_pipe.clone(), stdout_pipe.clone(),
++    ).unwrap();
++    let env = PluginEnv {
++        plugin_id, client_id, tab_index: Some(tab_index),
++        plugin: PluginConfig {
++            path: PathBuf::from("render-fixture"),
++            _allow_exec_host_cmd: false,
++            location: RunPluginLocation::File(PathBuf::from("render-fixture")),
++            initial_userspace_configuration: Default::default(), initial_cwd: None,
++        },
++        permissions: Arc::new(Mutex::new(Some(HashSet::from([
++            PermissionType::MessageAndLaunchOtherPlugins, PermissionType::ReadApplicationState,
++        ])))),
++        senders: ThreadSenders {
++            to_plugin: Some(SenderWithContext::new(sender)),
++            should_silently_fail: true, ..Default::default()
++        },
++        wasi_ctx, stdin_pipe, stdout_pipe,
++        plugin_own_data_dir: cwd.clone(), plugin_own_cache_dir: cwd.clone(),
++        path_to_default_shell: PathBuf::from("/bin/sh"), default_shell: None,
++        layout_dir: None, plugin_cwd: cwd, session_env_vars: Default::default(),
++        input_pipes_to_unblock: Default::default(), input_pipes_to_block: Default::default(),
++        default_mode: InputMode::Normal, subscriptions: Default::default(),
++        keybinds: Keybinds::default(), intercepting_key_presses: false,
++        store_limits: StoreLimitsBuilder::new().build(), render_messages: Default::default(),
++    };
++    let mut store = Store::new(&engine, env);
++    let mut linker = Linker::new(&engine);
++    wasmi_wasi::add_to_linker(&mut linker, |env: &mut PluginEnv| &mut env.wasi_ctx).unwrap();
++    zellij_exports(&mut linker);
++    let instance = linker.instantiate_and_start(&mut store, &module).unwrap();
++    (RunningPlugin::new(store, instance, 10, 40), receiver)
++}
++
++#[test]
++fn generic_render_messages_follow_their_guest_frame() {
++    let frame = b"\x1b[2J\x1b[Hcomplete card";
++    for (plugin_id, client_id) in [(17, 2), (18, 3), (17, 4)] {
++        let (mut guest, receiver) = running_guest(plugin_id, client_id, 5, frame, false);
++        let asset = guest.render().unwrap();
++        assert_eq!((asset.plugin_id, asset.client_id), (plugin_id, client_id));
++        assert_eq!(asset.bytes, frame);
++        assert_eq!(asset.render_messages.iter().map(|message| message.message_name.as_str()).collect::<Vec<_>>(),
++            ["arbitrary-frame-one", "arbitrary-frame-two"]);
++        assert!(receiver.try_recv().is_err());
++        assert!(guest.store.data().render_messages.borrow().is_none());
++        // Repeated renders retain each frame's messages exactly once.
++        assert_eq!(guest.render().unwrap().render_messages.len(), 2);
++        assert!(receiver.try_recv().is_err());
++    }
++}
++
++#[test]
++fn normal_update_and_pipe_commands_are_immediate() {
++    let (mut guest, receiver) = running_guest(17, 2, 5, b"card", false);
++    let mut assets = Vec::new();
++    let senders = guest.store.data().senders.clone();
++    apply_event_to_plugin(17, 2, &mut guest, &Event::CustomMessage("normal".into(), "update".into()),
++        &mut assets, senders.clone(), &HashSet::new()).unwrap();
++    assert_eq!(assets.len(), 1);
++    assert_eq!(assets[0].bytes, b"card");
++    assert_eq!(assets[0].render_messages.len(), 2);
++    match receiver.try_recv().unwrap().0 {
++        PluginInstruction::MessageFromPlugin { source_plugin_id, message } => {
++            assert_eq!(source_plugin_id, 17);
++            assert_eq!(message.message_name, "immediate-update");
++        },
++        instruction => panic!("unexpected instruction: {instruction:?}"),
++    }
++    let pipe = PipeMessage::new(PipeSource::Plugin(99), "normal", &None, &None, true);
++    apply_pipe_message_to_plugin(17, 2, &mut guest, &pipe, &mut assets, &senders).unwrap();
++    assert_eq!(assets.len(), 2);
++    assert_eq!(assets[1].bytes, b"card");
++    assert_eq!(assets[1].render_messages.len(), 2);
++    assert!(matches!(receiver.try_recv().unwrap().0,
++        PluginInstruction::MessageFromPlugin { message, .. } if message.message_name == "immediate-update"));
++    assert!(receiver.try_recv().is_err());
++}
++
++#[test]
++fn failed_empty_and_invalid_guest_frames_do_not_publish_messages() {
++    for (frame, trap) in [(b"partial".as_slice(), true), (b"".as_slice(), false), (&[0xff], false)] {
++        let (mut guest, receiver) = running_guest(17, 2, 5, frame, trap);
++        let result = guest.render();
++        if frame.is_empty() {
++            assert!(result.unwrap().render_messages.is_empty());
++        } else {
++            assert!(result.is_err());
++        }
++        assert!(receiver.try_recv().is_err());
++        assert!(guest.store.data().render_messages.borrow().is_none());
++        assert!(guest.store.data().stdout_pipe.lock().unwrap().is_empty());
++        // A normal callback after a failed frame is not accidentally deferred.
++        let instance = guest.instance;
++        instance.get_typed_func::<(), i32>(&mut guest.store, "update").unwrap()
++            .call(&mut guest.store, ()).unwrap();
++        assert!(matches!(receiver.try_recv().unwrap().0, PluginInstruction::MessageFromPlugin { .. }));
++    }
++}
++
++#[test]
++fn render_message_permission_gating_is_unchanged() {
++    let (mut guest, receiver) = running_guest(17, 2, 5, b"card", false);
++    guest.store.data_mut().set_permissions(HashSet::new());
++    assert!(guest.render().unwrap().render_messages.is_empty());
++    assert!(receiver.try_recv().is_err());
++}
++
++#[test]
++fn plugin_origin_spawn_uses_source_tab_but_cli_and_keybind_do_not() {
++    let directory = tempfile::tempdir().unwrap();
++    let (screen_sender, screen_receiver) = unbounded();
++    let senders = ThreadSenders {
++        to_screen: Some(SenderWithContext::new(screen_sender)), should_silently_fail: true,
++        ..Default::default()
++    };
++    let mut bridge = WasmBridge::new(senders.clone(), Engine::default(), directory.path().to_path_buf(),
++        PathBuf::from("/bin/sh"), directory.path().to_path_buf(), Default::default(),
++        None, None, vec![], vec![], InputMode::Normal, Keybinds::default());
++    bridge.connected_clients.lock().unwrap().push(2);
++    let (guest, _) = running_guest(77, 2, 5, b"card", false);
++    bridge.plugin_map.lock().unwrap().insert(77, 2, Arc::new(Mutex::new(guest)),
++        Arc::new(Mutex::new(HashSet::new())), HashMap::new());
++    let mut bus = Bus::<PluginInstruction>::empty();
++    bus.senders = senders;
++    for (index, source, expected_tab) in [
++        (0, PipeSource::Plugin(77), Some(5)),
++        (1, PipeSource::Cli("cli".into()), None),
++        (2, PipeSource::Keybind, None),
++    ] {
++        let path = directory.path().join(format!("destination-{index}.wasm"));
++        std::fs::write(&path, guest_module(b"card", false)).unwrap();
++        let mut messages = Vec::new();
++        super::super::pipe_to_specific_plugins(source, &format!("file:{}", path.display()),
++            &None, &None, false, true, &None, &None, Some(2), &mut messages,
++            "generic-launch", &None, &None, &bus, &mut bridge, &PluginAliases::default(),
++            None, Some(true)); // source routing is generic, not pinned/passive-only
++        assert_eq!(messages.len(), 1);
++        let spawned_id = messages[0].0.unwrap();
++        loop {
++            match screen_receiver.recv_timeout(Duration::from_secs(5)).unwrap().0 {
++                ScreenInstruction::AddPlugin(_, _, _, _, _, tab_index, plugin_id, ..) => {
++                    assert_eq!(plugin_id, spawned_id);
++                    assert_eq!(tab_index, expected_tab);
++                    break;
++                },
++                _ => {},
++            }
++        }
++        let deadline = std::time::Instant::now() + Duration::from_secs(5);
++        loop {
++            if let Some(plugin) = bridge.plugin_map.lock().unwrap().get_running_plugin(spawned_id, Some(2)) {
++                assert_eq!(plugin.lock().unwrap().store.data().tab_index, expected_tab);
++                break;
++            }
++            assert!(std::time::Instant::now() < deadline, "guest did not load");
++            std::thread::yield_now();
++        }
++    }
++}
+--- a/zellij-server/src/plugins/unit/snapshots/zellij_server__plugins__plugin_tests__block_input_plugin_command.snap
++++ b/zellij-server/src/plugins/unit/snapshots/zellij_server__plugins__plugin_tests__block_input_plugin_command.snap
+@@ -56,6 +56,7 @@
+                 cli_pipes: {
+                     "input_pipe_id": Block,
+                 },
++                render_messages: [],
+             },
+         ],
+     ),
+--- a/zellij-server/src/plugins/unit/snapshots/zellij_server__plugins__plugin_tests__unblock_input_plugin_command.snap
++++ b/zellij-server/src/plugins/unit/snapshots/zellij_server__plugins__plugin_tests__unblock_input_plugin_command.snap
+@@ -56,6 +56,7 @@
+                 cli_pipes: {
+                     "input_pipe_id": Unblock,
+                 },
++                render_messages: [],
+             },
+         ],
+     ),

@@ -1,0 +1,111 @@
+--- a/zellij-server/src/tab/mod.rs
++++ b/zellij-server/src/tab/mod.rs
+@@ -4976,6 +4976,6 @@
+-                            output.add_post_vte_instruction_to_client(client_id, show_cursor);
+                             output.add_post_vte_instruction_to_client(
+                                 client_id,
+                                 goto_cursor_position,
+                             );
++                            output.add_post_vte_instruction_to_client(client_id, show_cursor);
+                             self.cursor_positions_and_shape.insert(
+@@ -4986,17 +4986,12 @@
+-                    } else if not_occluded {
+-                        // Cursor is hidden by the app but not occluded by a floating
+-                        // pane. Position the host terminal cursor at the correct
+-                        // location (for IME) then hide it. The IME subsystem reads
+-                        // the cursor position regardless of visibility.
++                    } else {
++                        // Keep hidden or occluded cursors anchored to the active pane for IME
++                        // and host cursor animations, not the last rendered plugin.
+                         let hide_cursor = "\u{1b}[?25l";
+                         let goto_cursor_position = &format!(
+                             "\u{1b}[{};{}H",
+                             cursor_position_y + 1,
+                             cursor_position_x + 1,
+                         );
+                         output.add_post_vte_instruction_to_client(client_id, hide_cursor);
+                         output.add_post_vte_instruction_to_client(client_id, goto_cursor_position);
+-                    } else {
+-                        let hide_cursor = "\u{1b}[?25l";
+-                        output.add_post_vte_instruction_to_client(client_id, hide_cursor);
+                     }
+--- a/zellij-server/src/tab/unit/tab_integration_tests.rs
++++ b/zellij-server/src/tab/unit/tab_integration_tests.rs
+@@ -1133,6 +1133,54 @@
+         .and_then(|(x, y, visible)| if visible { Some((x, y)) } else { None });
+     (format!("{:?}", grid), coords)
+ }
++
++#[test]
++fn occluded_cursor_stays_at_active_terminal() {
++    let size = Size {
++        cols: 121,
++        rows: 20,
++    };
++    let client_id = 1;
++    let mut tab = create_new_tab(size, ModeInfo::default());
++    tab.set_pane_frames(PaneFrameStyle::None);
++    tab.handle_pty_bytes(1, b"\x1b[6;13H\x1b[?25h".to_vec())
++        .unwrap();
++    let coordinates = zellij_utils::data::FloatingPaneCoordinates {
++        pinned: Some(true),
++        borderless: Some(true),
++        ..zellij_utils::data::FloatingPaneCoordinates::default()
++            .with_x_fixed(8)
++            .with_y_fixed(3)
++            .with_width_fixed(30)
++            .with_height_fixed(8)
++    };
++    tab.new_floating_pane(
++        PaneId::Terminal(2),
++        None,
++        None,
++        false,
++        false,
++        Some(coordinates),
++        None,
++    )
++    .unwrap();
++    tab.handle_pty_bytes(2, b"Tooltip".to_vec()).unwrap();
++    let mut output = Output::default();
++    tab.render(&mut output, None).unwrap();
++    let rendered = output.serialize().unwrap().remove(&client_id).unwrap();
++    assert_eq!(tab.get_active_pane_id(client_id), Some(PaneId::Terminal(1)));
++    let (_, visible_cursor) =
++        take_snapshot_and_cursor_position(&rendered, size.rows, size.cols, Palette::default());
++    assert_eq!(visible_cursor, None);
++    // Reveal the stored hardware position, as IME and host cursor animations do.
++    let (_, stored_cursor) = take_snapshot_and_cursor_position(
++        &format!("{rendered}\x1b[?25h"),
++        size.rows,
++        size.cols,
++        Palette::default(),
++    );
++    assert_eq!(stored_cursor, Some((12, 5)));
++}
+ 
+ #[test]
+ fn increase_tiled_pane_sizes_with_stacked_resizes() {
+--- a/zellij-server/src/plugins/wasm_bridge.rs
++++ b/zellij-server/src/plugins/wasm_bridge.rs
+@@ -1109,8 +1109,10 @@
+         &mut self,
+         messages: Vec<(Option<PluginId>, Option<ClientId>, PipeMessage)>,
+         shutdown_sender: Sender<()>,
+-        mut notification_end: Option<NotificationEnd>,
++        notification_end: Option<NotificationEnd>,
+     ) -> Result<()> {
++        // A broadcast must not release the next key before every recipient has handled it.
++        let notification_end = notification_end.map(Arc::new);
+         let plugins_to_update: Vec<(
+             PluginId,
+             ClientId,
+@@ -1151,7 +1153,7 @@
+                         let plugin_id = *plugin_id;
+                         let client_id = *client_id;
+                         let _s = shutdown_sender.clone();
+-                        let notification_end = notification_end.take();
++                        let notification_end = notification_end.clone();
+                         move |senders, _plugin_map, _connected_clients, _plugin_cache, _engine| {
+                             let mut running_plugin = running_plugin.lock().unwrap();
+                             let mut plugin_render_assets = vec![];
