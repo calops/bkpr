@@ -3,13 +3,12 @@ use anyhow::{Context, Result, bail};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use shephrd::{PROTOCOL_VERSION, Pane, Snapshot, Status, Workspace};
+use shephrd::{PROTOCOL_VERSION, Pane, ProjectIdentity, Snapshot, Status, Workspace};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
@@ -218,160 +217,36 @@ fn ensure_remote_session(config: &Config, remote: &RemoteTarget) -> Result<()> {
 }
 
 #[derive(Clone)]
-enum Endpoint {
-    Local(PathBuf),
-    Remote {
-        ssh: PathBuf,
-        remote: RemoteTarget,
-        log: PathBuf,
-    },
+struct Endpoint {
+    ssh: PathBuf,
+    remote: RemoteTarget,
+    log: PathBuf,
 }
 
 pub(crate) struct Client {
     endpoint: Endpoint,
-    // Intentionally persistent: dropping the companion must not terminate this server.
-    server: Option<Child>,
     sequence: u64,
 }
 
 impl Client {
     pub fn new(config: &Config) -> Result<Self> {
-        let (endpoint, server) = if let Some(remote) = &config.remote {
-            validate_target(&remote.target)?;
-            if !remote.executable.starts_with('/') || remote.executable.contains(['\0', '\n', '\r'])
-            {
-                bail!("remote executable must be an absolute POSIX path");
-            }
-            ensure_remote_session(config, remote)?;
-            (
-                Endpoint::Remote {
-                    ssh: config.ssh.clone(),
-                    remote: remote.clone(),
-                    log: config.log_path.clone(),
-                },
-                None,
-            )
-        } else {
-            let mut command = local_command(
-                &config.herdr,
-                &config.session,
-                config.herdr_config.as_deref(),
-            );
-            command.args(["session", "list", "--json"]);
-            let output = run_output(&mut command, None, API_TIMEOUT)?;
-            check_output(&output, "locating selected Herdr session")?;
-            #[derive(Deserialize)]
-            struct Session {
-                name: String,
-                default: bool,
-                socket_path: PathBuf,
-                session_dir: PathBuf,
-            }
-            #[derive(Deserialize)]
-            struct Sessions {
-                sessions: Vec<Session>,
-            }
-            let sessions = serde_json::from_slice::<Sessions>(&output.stdout)
-                .context("invalid Herdr session list")?
-                .sessions;
-            let socket = if let Some(selected) = sessions
-                .iter()
-                .find(|session| session.name == config.session)
-            {
-                selected.socket_path.clone()
-            } else {
-                sessions
-                    .iter()
-                    .find(|session| session.default)
-                    .context("Herdr did not report its default configuration directory")?
-                    .session_dir
-                    .join("sessions")
-                    .join(&config.session)
-                    .join("herdr.sock")
-            };
-            let mut server = None;
-            match crate::transport::connect(&socket, Duration::from_secs(1)) {
-                Ok(stream) => crate::transport::check_peer(&stream)?,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-                    ) =>
-                {
-                    let log = log_file(&config.log_path)?;
-                    let mut command = local_command(
-                        &config.herdr,
-                        &config.session,
-                        config.herdr_config.as_deref(),
-                    );
-                    command
-                        .arg("server")
-                        .current_dir(&config.cwd)
-                        .stdin(Stdio::null())
-                        .stdout(log.try_clone()?)
-                        .stderr(log);
-                    unsafe {
-                        command.pre_exec(|| {
-                            if libc::setsid() < 0 {
-                                return Err(std::io::Error::last_os_error());
-                            }
-                            Ok(())
-                        });
-                    }
-                    server = Some(
-                        command
-                            .spawn()
-                            .context("starting selected stock Herdr server")?,
-                    );
-                    let deadline = Instant::now() + API_TIMEOUT;
-                    loop {
-                        match crate::transport::connect(&socket, Duration::from_millis(200)) {
-                            Ok(stream) => {
-                                crate::transport::check_peer(&stream)?;
-                                break;
-                            }
-                            Err(error) if Instant::now() < deadline => {
-                                if server.as_mut().unwrap().try_wait()?.is_some() {
-                                    // A concurrent starter may have won. Only accept a genuinely live socket.
-                                    if let Ok(stream) = crate::transport::connect(
-                                        &socket,
-                                        Duration::from_millis(200),
-                                    ) {
-                                        crate::transport::check_peer(&stream)?;
-                                        break;
-                                    }
-                                    bail!(
-                                        "selected Herdr server exited before becoming ready; see {}: {error}",
-                                        config.log_path.display()
-                                    );
-                                }
-                                thread::sleep(Duration::from_millis(50));
-                            }
-                            Err(error) => {
-                                return Err(error).context("waiting for selected Herdr server");
-                            }
-                        }
-                    }
-                }
-                Err(error) => return Err(error).context("connecting to selected Herdr session"),
-            }
-            (Endpoint::Local(socket), server)
-        };
+        let remote = &config.remote;
+        validate_target(&remote.target)?;
+        if !remote.executable.starts_with('/') || remote.executable.contains(['\0', '\n', '\r']) {
+            bail!("remote executable must be an absolute POSIX path");
+        }
+        ensure_remote_session(config, remote)?;
         Ok(Self {
-            endpoint,
-            server,
+            endpoint: Endpoint {
+                ssh: config.ssh.clone(),
+                remote: remote.clone(),
+                log: config.log_path.clone(),
+            },
             sequence: 0,
         })
     }
 
-    pub fn started_server(&self) -> bool {
-        self.server.is_some()
-    }
-
     pub fn request(&mut self, method: &str, params: Value) -> Result<Value> {
-        if let Some(server) = self.server.as_mut() {
-            let _ = server.try_wait();
-        }
         self.sequence += 1;
         let id = format!("shephrd:{}:{}", std::process::id(), self.sequence);
         let mut connection = self.endpoint.connect()?;
@@ -469,101 +344,40 @@ impl Drop for Subscription {
 
 impl Endpoint {
     fn connect(&self) -> Result<Connection> {
-        match self {
-            Self::Local(path) => {
-                let stream = crate::transport::connect(path, Duration::from_secs(2))
-                    .with_context(|| format!("connecting to Herdr {}", path.display()))?;
-                crate::transport::check_peer(&stream)?;
-                stream.set_nonblocking(true)?;
-                Ok(Connection {
-                    reader: BufReader::new(Input::Local(stream.try_clone()?)),
-                    writer: OutputStream::Local(stream),
-                    child: None,
-                    awaiting_marker: false,
-                    buffer: Vec::new(),
-                })
-            }
-            Self::Remote { ssh, remote, log } => {
-                let mut command = Command::new(ssh);
-                command
-                    .args(ssh_args(&remote.target, false))
-                    .arg(remote_command(remote, &["remote-api-bridge"]))
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(log_file(log)?)
-                    .process_group(0);
-                transient_child(&mut command);
-                let mut child = command
-                    .spawn()
-                    .context("starting SSH Herdr public API bridge")?;
-                let reader = child.stdout.take().unwrap();
-                let writer = child.stdin.take().unwrap();
-                if let Err(error) =
-                    nonblocking(reader.as_raw_fd()).and_then(|_| nonblocking(writer.as_raw_fd()))
-                {
-                    terminate(&mut child);
-                    return Err(error);
-                }
-                Ok(Connection {
-                    reader: BufReader::new(Input::Remote(reader)),
-                    writer: OutputStream::Remote(writer),
-                    child: Some(child),
-                    awaiting_marker: true,
-                    buffer: Vec::new(),
-                })
-            }
+        let mut command = Command::new(&self.ssh);
+        command
+            .args(ssh_args(&self.remote.target, false))
+            .arg(remote_command(&self.remote, &["remote-api-bridge"]))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(log_file(&self.log)?)
+            .process_group(0);
+        transient_child(&mut command);
+        let mut child = command
+            .spawn()
+            .context("starting SSH Herdr public API bridge")?;
+        let reader = child.stdout.take().unwrap();
+        let writer = child.stdin.take().unwrap();
+        if let Err(error) =
+            nonblocking(reader.as_raw_fd()).and_then(|_| nonblocking(writer.as_raw_fd()))
+        {
+            terminate(&mut child);
+            return Err(error);
         }
-    }
-}
-
-enum Input {
-    Local(UnixStream),
-    Remote(ChildStdout),
-}
-impl Read for Input {
-    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Local(stream) => stream.read(bytes),
-            Self::Remote(stream) => stream.read(bytes),
-        }
-    }
-}
-impl AsRawFd for Input {
-    fn as_raw_fd(&self) -> RawFd {
-        match self {
-            Self::Local(stream) => stream.as_raw_fd(),
-            Self::Remote(stream) => stream.as_raw_fd(),
-        }
-    }
-}
-enum OutputStream {
-    Local(UnixStream),
-    Remote(ChildStdin),
-}
-impl Write for OutputStream {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Local(stream) => stream.write(bytes),
-            Self::Remote(stream) => stream.write(bytes),
-        }
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-impl AsRawFd for OutputStream {
-    fn as_raw_fd(&self) -> RawFd {
-        match self {
-            Self::Local(stream) => stream.as_raw_fd(),
-            Self::Remote(stream) => stream.as_raw_fd(),
-        }
+        Ok(Connection {
+            reader: BufReader::new(reader),
+            writer,
+            child,
+            awaiting_marker: true,
+            buffer: Vec::new(),
+        })
     }
 }
 
 struct Connection {
-    reader: BufReader<Input>,
-    writer: OutputStream,
-    child: Option<Child>,
+    reader: BufReader<ChildStdout>,
+    writer: ChildStdin,
+    child: Child,
     awaiting_marker: bool,
     buffer: Vec<u8>,
 }
@@ -638,9 +452,7 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        if let Some(child) = self.child.as_mut() {
-            terminate(child);
-        }
+        terminate(&mut self.child);
     }
 }
 
@@ -1034,8 +846,12 @@ impl RawSnapshot {
                             .get("description")
                             .and_then(|description| nonempty(Some(description)))
                     })
-                    .or_else(|| agent.and_then(|agent| nonempty(agent.title.as_deref())))
-                    .or_else(|| nonempty(pane.title.as_deref()))
+                    .or_else(|| {
+                        agent.and_then(|agent| {
+                            nonempty(agent.title.as_deref()).and_then(description_title)
+                        })
+                    })
+                    .or_else(|| nonempty(pane.title.as_deref()).and_then(description_title))
                     .or_else(|| nonempty(pane.terminal_title_stripped.as_deref()))
                     .unwrap_or(status.label());
                 Pane {
@@ -1047,7 +863,12 @@ impl RawSnapshot {
                     description: description.into(),
                     harness: harness.map(str::to_owned),
                     status,
+                    attention: None,
                     cwd: pane.foreground_cwd.as_ref().or(pane.cwd.as_ref()).cloned(),
+                    branch: None,
+                    branch_changes: None,
+                    project: None,
+                    ci: None,
                 }
             })
             .collect();
@@ -1070,8 +891,19 @@ impl RawSnapshot {
                     id: workspace.workspace_id.clone(),
                     name: workspace.label.clone(),
                     active_tab_id: workspace.active_tab_id.clone(),
-                    projects: names,
+                    projects: names
+                        .into_iter()
+                        .map(|name| ProjectIdentity {
+                            id: format!(
+                                "unknown:{}:{}:{name}",
+                                config.remote.target, workspace.workspace_id
+                            ),
+                            name,
+                            repository: false,
+                        })
+                        .collect(),
                     status: workspace.agent_status,
+                    attention: None,
                 }
             })
             .collect();
@@ -1096,7 +928,14 @@ impl RawSnapshot {
                     && let Some(name) = projects.name(cwd)
                     && (name.repository || !*has_worktree)
                 {
-                    workspace.projects.push(name.name.clone());
+                    workspace
+                        .projects
+                        .retain(|project| project.name != name.name);
+                    workspace.projects.push(ProjectIdentity {
+                        id: format!("remote:{}:{cwd}", config.remote.target),
+                        name: name.name.clone(),
+                        repository: false,
+                    });
                 }
             }
         }
@@ -1123,10 +962,21 @@ fn nonempty(value: Option<&str>) -> Option<&str> {
     value.filter(|value| !value.trim().is_empty())
 }
 
-struct ProjectName {
-    name: String,
-    repository: bool,
+fn description_title(title: &str) -> Option<&str> {
+    // Herdr strips activity frames from OSC titles, but not producer metadata titles.
+    let title = title.trim();
+    let first = title.chars().next()?;
+    let rest = &title[first.len_utf8()..];
+    let activity = matches!(first, '\u{2800}'..='\u{28ff}') || "·✢✳✶✻✽◐◓◑◒".contains(first);
+    let title = if activity && (rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+        rest.trim()
+    } else {
+        title
+    };
+    (!title.is_empty()).then_some(title)
 }
+
+use crate::project::{ProjectName, directory_name, repository_name};
 
 pub(crate) struct ProjectCache {
     names: HashMap<String, Option<ProjectName>>,
@@ -1152,7 +1002,7 @@ impl ProjectCache {
                     Err(mpsc::RecvTimeoutError::Timeout) => continue,
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
-                let name = discover_project(&cwd, remote.as_ref(), &ssh);
+                let name = discover_project(&cwd, &remote, &ssh);
                 if completed.send((cwd, name)).is_err() {
                     break;
                 }
@@ -1196,7 +1046,7 @@ impl Drop for ProjectCache {
     }
 }
 
-fn discover_project(cwd: &str, remote: Option<&RemoteTarget>, ssh: &Path) -> Option<ProjectName> {
+fn discover_project(cwd: &str, remote: &RemoteTarget, ssh: &Path) -> Option<ProjectName> {
     let git_args = [
         "-C",
         cwd,
@@ -1205,60 +1055,47 @@ fn discover_project(cwd: &str, remote: Option<&RemoteTarget>, ssh: &Path) -> Opt
         "--show-toplevel",
         "--git-common-dir",
     ];
-    let (mut command, timeout) = if let Some(remote) = remote {
-        let mut command = Command::new(ssh);
-        let script = format!(
-            "exec git {}",
-            git_args
-                .iter()
-                .map(|arg| shell_quote(arg))
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
-        command
-            .args(ssh_args(&remote.target, false))
-            .arg(format!("/bin/sh -c {}", shell_quote(&script)));
-        (command, Duration::from_secs(2))
-    } else {
-        let mut command = Command::new("git");
-        command.args(git_args);
-        (command, Duration::from_millis(800))
-    };
-    let discovered = run_output(&mut command, None, timeout)
+    let mut command = Command::new(ssh);
+    let script = format!(
+        "exec git {}",
+        git_args
+            .iter()
+            .map(|arg| shell_quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    command
+        .args(ssh_args(&remote.target, false))
+        .arg(format!("/bin/sh -c {}", shell_quote(&script)));
+    let discovered = run_output(&mut command, None, Duration::from_secs(2))
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| repository_name(&output.stdout))
         .map(|name| ProjectName {
             name,
             repository: true,
+            branch: None,
+            branch_changes: None,
+            repository_id: None,
+            ci: None,
+            source: None,
         });
-    discovered.or_else(|| {
-        Some(ProjectName {
-            name: Path::new(cwd).file_name()?.to_str()?.to_owned(),
-            repository: false,
-        })
-    })
-}
-
-fn repository_name(output: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(output).ok()?;
-    let mut lines = text.lines().rev();
-    let common = Path::new(lines.next()?);
-    let root = Path::new(lines.next()?);
-    if !root.is_absolute() || !common.is_absolute() {
-        return None;
-    }
-    let repository = if common.file_name().is_some_and(|name| name == ".git") {
-        common.parent()?
-    } else {
-        root
-    };
-    repository.file_name()?.to_str().map(str::to_owned)
+    discovered.or_else(|| directory_name(Path::new(cwd)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn descriptions_drop_activity_frames_without_losing_task_text() {
+        assert_eq!(description_title(" ⠋ 修复🙂标题 "), Some("修复🙂标题"));
+        assert_eq!(description_title("✳ Fix parser"), Some("Fix parser"));
+        assert_eq!(description_title("◐   "), None);
+        assert_eq!(description_title("⠋task"), Some("⠋task"));
+        assert_eq!(description_title("★ production"), Some("★ production"));
+        assert_eq!(description_title("task ⠋ detail"), Some("task ⠋ detail"));
+    }
 
     #[test]
     fn linked_worktree_projects_use_repository_not_branch_directory() {

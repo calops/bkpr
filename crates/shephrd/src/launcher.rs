@@ -17,31 +17,33 @@ use crate::{backend, herdr, transport};
 
 #[derive(Debug, Args)]
 pub struct Options {
-    /// Named persistent Herdr session (default: shephrd, or saved machine session).
-    #[arg(long)]
+    /// Open or attach to a named session.
+    #[arg(long, help_heading = "Session")]
     pub session: Option<String>,
-    /// Saved Herdr SSH machine label or ID.
-    #[arg(long, conflicts_with = "remote")]
+    /// Connect using a saved Herdr machine label or ID.
+    #[arg(long, conflicts_with = "remote", help_heading = "Remote sessions")]
     pub machine: Option<String>,
-    /// OpenSSH destination; credentials and host keys remain owned by OpenSSH.
-    #[arg(long, conflicts_with = "machine")]
+    /// Connect to a remote Herdr session at an SSH destination.
+    #[arg(long, conflicts_with = "machine", help_heading = "Remote sessions")]
     pub remote: Option<String>,
     /// Explicit remote Herdr executable; otherwise discover the stock installation.
-    #[arg(long, env = "SHEPHRD_REMOTE_HERDR")]
+    #[arg(long, env = "SHEPHRD_REMOTE_HERDR", hide = true)]
     pub remote_herdr: Option<String>,
-    #[arg(long, env = "SHEPHRD_HERDR", default_value = "herdr")]
+    /// Local Herdr executable used only to resolve saved remote machines.
+    #[arg(long, env = "SHEPHRD_HERDR", default_value = "herdr", hide = true)]
     pub herdr: PathBuf,
-    /// Explicit Herdr configuration, not inherited from an enclosing Herdr pane.
-    #[arg(long, env = "SHEPHRD_HERDR_CONFIG")]
+    /// Herdr configuration used only for saved remote-machine lookup.
+    #[arg(long, env = "SHEPHRD_HERDR_CONFIG", hide = true)]
     pub herdr_config: Option<PathBuf>,
-    #[arg(long, env = "SHEPHRD_ZELLIJ", default_value = "zellij")]
+    #[arg(long, env = "SHEPHRD_ZELLIJ", default_value = "zellij", hide = true)]
     pub zellij: PathBuf,
-    #[arg(long, env = "SHEPHRD_SSH", default_value = "ssh")]
+    #[arg(long, env = "SHEPHRD_SSH", default_value = "ssh", hide = true)]
     pub ssh: PathBuf,
     /// Frontend WASM artifact; bundled automatically by the product package.
-    #[arg(long, env = "SHEPHRD_PLUGIN")]
+    #[arg(long, env = "SHEPHRD_PLUGIN", hide = true)]
     pub plugin: Option<PathBuf>,
-    #[arg(long, default_value_t = 38, value_parser = clap::value_parser!(u16).range(16..=120))]
+    /// Sidebar width in columns (16–120).
+    #[arg(long, default_value_t = 38, value_parser = clap::value_parser!(u16).range(16..=120), help_heading = "Session")]
     pub sidebar_width: u16,
 }
 
@@ -50,18 +52,21 @@ pub fn run(options: Options) -> Result<()> {
         bail!("launch requires an interactive terminal");
     }
     let program = env::current_exe().context("locate native shephrd command")?;
-    let herdr_bin = executable(&options.herdr)?;
     let zellij = executable(&options.zellij)?;
-    let ssh = executable(&options.ssh)?;
-    let plugin = plugin_path(options.plugin, &program)?;
+    let plugin = plugin_path(options.plugin.clone(), &program)?;
     check_zellij(&zellij)?;
-    let herdr_config = options
-        .herdr_config
-        .map(fs::canonicalize)
-        .transpose()
-        .context("locate explicitly selected Herdr configuration")?;
+    if options.machine.is_none() && options.remote.is_none() {
+        return run_native(&options, &program, &zellij, &plugin);
+    }
+    let ssh = executable(&options.ssh)?;
 
     let (machine, target, saved_session) = if let Some(selector) = options.machine.as_deref() {
+        let herdr_bin = executable(&options.herdr)?;
+        let herdr_config = options
+            .herdr_config
+            .map(fs::canonicalize)
+            .transpose()
+            .context("locate explicitly selected Herdr configuration")?;
         let machine = herdr::resolve_machine(&herdr_bin, selector, herdr_config.as_deref())?;
         if !machine.enabled {
             bail!("saved machine {} is disabled", machine.label);
@@ -79,24 +84,17 @@ pub fn run(options: Options) -> Result<()> {
         .or(saved_session)
         .unwrap_or_else(|| "shephrd".into());
     backend::validate_session(&session)?;
-    let remote = if let Some(target) = target {
-        Some(if let Some(executable) = options.remote_herdr {
-            backend::RemoteTarget {
-                target,
-                session: session.clone(),
-                executable,
-            }
-        } else {
-            herdr::discover_remote(&ssh, &target, &session)?
-        })
+    let target = target.context("remote endpoint is required")?;
+    let remote = if let Some(executable) = options.remote_herdr {
+        backend::RemoteTarget {
+            target,
+            session: session.clone(),
+            executable,
+        }
     } else {
-        None
+        herdr::discover_remote(&ssh, &target, &session)?
     };
-    let identity = format!(
-        "{}\0{}",
-        remote.as_ref().map_or("local", |r| r.target.as_str()),
-        session
-    );
+    let identity = format!("{}\0{}", remote.target, session);
     let identity_hash = hash_identity(&identity);
     let runtime = runtime_root()?.join(format!("{identity_hash:016x}"));
     private_directory(&runtime)?;
@@ -124,8 +122,6 @@ pub fn run(options: Options) -> Result<()> {
         session,
         machine,
         remote,
-        herdr: herdr_bin,
-        herdr_config,
         ssh,
         zellij: zellij.clone(),
         zellij_session: zellij_session.clone(),
@@ -187,10 +183,7 @@ pub fn run(options: Options) -> Result<()> {
                 2,
                 Action::CreateWorkspace {
                     label: None,
-                    cwd: config
-                        .remote
-                        .is_none()
-                        .then(|| config.cwd.to_string_lossy().into_owned()),
+                    cwd: None,
                 },
             ),
         )?;
@@ -209,7 +202,7 @@ pub fn run(options: Options) -> Result<()> {
     let layout_path = runtime.join("layout.kdl");
     private_file(
         &layout_path,
-        layout(&config, initial, options.sidebar_width)?.as_bytes(),
+        layout(&config, &state, initial, options.sidebar_width)?.as_bytes(),
     )?;
     drop(lock);
 
@@ -236,6 +229,103 @@ pub fn run(options: Options) -> Result<()> {
     }
     if server_alive && let Some(mut child) = owned_backend.0.take() {
         let _ = child.try_wait();
+    }
+    Ok(())
+}
+
+fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -> Result<()> {
+    let session = options.session.as_deref().unwrap_or("shephrd");
+    backend::validate_session(session)?;
+    let identity_hash = hash_identity(&format!("native-local\0{session}"));
+    let runtime = runtime_root()?.join(format!("native-{identity_hash:016x}"));
+    private_directory(&runtime)?;
+    let config_dir = runtime.join("zellij");
+    private_directory(&config_dir)?;
+    let lock = startup_lock(&runtime)?;
+    let zellij_session = format!("shephrd-native-{identity_hash:016x}");
+    let existing = session_exists(zellij, &config_dir, &zellij_session)?;
+    let config_path = config_dir.join("config.kdl");
+    let layout_path = runtime.join("layout.kdl");
+    if !existing {
+        let bin = runtime.join("bin");
+        private_directory(&bin)?;
+        let wrapper = bin.join("claude");
+        private_file(&wrapper, crate::claude::wrapper(program, &bin)?.as_bytes())?;
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700))?;
+        let cwd = env::current_dir().context("locate native launch directory")?;
+        let cwd = cwd
+            .to_str()
+            .context("native launch directory is not UTF-8")?;
+        let program = program
+            .to_str()
+            .context("native program path is not UTF-8")?;
+        let plugin = plugin.to_str().context("native plugin path is not UTF-8")?;
+        let plugin_url = format!("file:{plugin}");
+        let configuration = BTreeMap::from([
+            ("role".into(), "sidebar".into()),
+            ("mode".into(), "native".into()),
+            ("session".into(), session.into()),
+            ("program".into(), program.into()),
+            ("plugin_url".into(), plugin_url.clone()),
+            ("initial_cwd".into(), cwd.into()),
+            ("sidebar_width".into(), options.sidebar_width.to_string()),
+        ]);
+        let mut config = ZELLIJ_CONFIG.to_owned();
+        let mut owner_configuration = configuration.clone();
+        owner_configuration.insert("role".into(), "native-owner".into());
+        owner_configuration.insert("caller_cwd".into(), cwd.into());
+        config.push_str(&format!(
+            "\nload_plugins {{\n {} {{\n",
+            serde_json::to_string(&plugin_url)?,
+        ));
+        for (key, value) in &owner_configuration {
+            config.push_str(&format!("  {key} {}\n", serde_json::to_string(value)?));
+        }
+        config.push_str(" }\n}\n");
+        private_file(&config_path, config.as_bytes())?;
+        private_file(
+            &layout_path,
+            shephrd::native_layout(
+                &plugin_url,
+                &configuration,
+                "Workspace",
+                cwd,
+                usize::from(options.sidebar_width),
+            )?
+            .as_bytes(),
+        )?;
+    }
+    drop(lock);
+    let mut client = zellij_command(zellij, &config_dir);
+    client
+        .arg("--config")
+        .arg(&config_path)
+        .env("SHEPHRD_ZELLIJ", zellij);
+    if !existing {
+        let bin = runtime.join("bin");
+        let inherited_wrapper = env::var_os("SHEPHRD_CLAUDE_WRAPPER_DIR").map(PathBuf::from);
+        let mut paths = vec![bin.clone()];
+        paths.extend(
+            env::split_paths(&env::var_os("PATH").unwrap_or_default())
+                .filter(|path| inherited_wrapper.as_ref() != Some(path)),
+        );
+        client
+            .env(
+                "PATH",
+                env::join_paths(paths).context("construct native session PATH")?,
+            )
+            .env("SHEPHRD_CLAUDE_WRAPPER_DIR", bin);
+    }
+    if existing {
+        client.args(["attach", &zellij_session]);
+    } else {
+        client
+            .args(["--session", &zellij_session, "--new-session-with-layout"])
+            .arg(&layout_path);
+    }
+    let status = client.status().context("launch native Zellij client")?;
+    if !status.success() && !session_exists(zellij, &config_dir, &zellij_session)? {
+        bail!("Zellij exited with {status}");
     }
     Ok(())
 }
@@ -290,19 +380,37 @@ fn initial_pane(state: &Snapshot) -> Option<&str> {
         .or_else(|| state.panes.first().map(|pane| pane.id.as_str()))
 }
 
-fn layout(config: &backend::Config, pane: &str, width: u16) -> Result<String> {
-    let quote = |value: &str| serde_json::to_string(value);
-    let mut out = format!(
-        "layout {{\n pane split_direction=\"vertical\" {{\n  pane size={width} borderless=true {{\n   plugin location={} {{\n",
-        quote(&config.plugin_url)?
-    );
-    for (key, value) in &config.plugin_configuration {
-        out.push_str(&format!("    {key} {}\n", quote(value)?));
-    }
-    out.push_str(&format!("   }}\n  }}\n  pane name={} command={} focus=true {{\n   args \"attach\" \"--socket\" {} \"--pane\" {}\n  }}\n }}\n}}\n",
-        quote(&format!("shephrd:{pane}"))?, quote(&config.program.to_string_lossy())?,
-        quote(&config.socket.to_string_lossy())?, quote(pane)?));
-    Ok(out)
+fn layout(config: &backend::Config, state: &Snapshot, pane: &str, width: u16) -> Result<String> {
+    let terminal = state
+        .panes
+        .iter()
+        .find(|terminal| terminal.id == pane)
+        .context("initial terminal is absent from snapshot")?;
+    let workspace = state
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == terminal.workspace_id)
+        .context("initial workspace is absent from snapshot")?;
+    let command = shephrd::CommandSpec {
+        executable: config.program.to_string_lossy().into_owned(),
+        args: vec![
+            "attach".into(),
+            "--socket".into(),
+            config.socket.to_string_lossy().into_owned(),
+            "--pane".into(),
+            pane.into(),
+        ],
+        cwd: Some(config.cwd.to_string_lossy().into_owned()),
+        env: BTreeMap::new(),
+    };
+    Ok(shephrd::attachment_layout(
+        &config.plugin_url,
+        &config.plugin_configuration,
+        pane,
+        &command,
+        &format!("{} · {}", workspace.name, terminal.name),
+        usize::from(width),
+    )?)
 }
 
 fn zellij_command(program: &Path, config_dir: &Path) -> Command {
@@ -375,7 +483,7 @@ fn check_zellij(program: &Path) -> Result<()> {
     Ok(())
 }
 
-fn runtime_root() -> Result<PathBuf> {
+pub(crate) fn runtime_root() -> Result<PathBuf> {
     let base = if let Some(dir) = env::var_os("XDG_RUNTIME_DIR") {
         PathBuf::from(dir).join("shephrd")
     } else {
@@ -389,7 +497,7 @@ fn runtime_root() -> Result<PathBuf> {
     Ok(base)
 }
 
-fn private_directory(path: &Path) -> Result<()> {
+pub(crate) fn private_directory(path: &Path) -> Result<()> {
     fs::create_dir_all(path)?;
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_dir()
@@ -426,7 +534,7 @@ fn private_log(path: &Path) -> Result<File> {
         .open(path)?)
 }
 
-fn startup_lock(runtime: &Path) -> Result<File> {
+pub(crate) fn startup_lock(runtime: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -476,27 +584,24 @@ fn hash_identity(identity: &str) -> u64 {
 
 use std::os::fd::AsRawFd;
 
-// Normal must be the fallback for sidebar keys; the authorized frontend starts in Locked.
+// The sidebar accepts keyboard focus only through the explicit control binding.
 const ZELLIJ_CONFIG: &str = r#"default_mode "normal"
 pane_frames false
 mouse_hover_effects true
 focus_follows_mouse false
+mouse_click_through true
 session_serialization false
 show_startup_tips false
 show_release_notes false
-keybinds clear-defaults=true {
+keybinds {
     locked {
-        bind "Ctrl Space" { SwitchToMode "Normal"; FocusPreviousPane; }
+        bind "Ctrl Space" { MessagePlugin { name "shephrd-controls"; payload "toggle"; }; }
     }
     normal {
-        bind "Ctrl Space" "Esc" { SwitchToMode "Locked"; }
+        bind "Ctrl Space" { MessagePlugin { name "shephrd-controls"; payload "toggle"; }; }
+        bind "Esc" { MessagePlugin { name "shephrd-controls"; payload "leave"; }; SwitchToMode "Locked"; }
         bind "Tab" { FocusNextPane; }
         bind "Shift Tab" { FocusPreviousPane; }
-        bind "Alt Left" { MoveFocus "Left"; }
-        bind "Alt Right" { MoveFocus "Right"; }
-        bind "Alt Up" { MoveFocus "Up"; }
-        bind "Alt Down" { MoveFocus "Down"; }
-        bind "Ctrl q" { Quit; }
         bind "Ctrl d" { Detach; }
     }
 }
