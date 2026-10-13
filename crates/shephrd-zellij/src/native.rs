@@ -228,9 +228,8 @@ fn clock_millis() -> u64 {
 }
 
 pub fn configuration_valid(configuration: &BTreeMap<String, String>, role: &str) -> bool {
-    configuration.len() == 7
+    configuration.len() == 6
         && configuration.get("role").map(String::as_str) == Some(role)
-        && configuration.get("mode").map(String::as_str) == Some("native")
         && configuration.get("session").is_some_and(|s| !s.is_empty())
         && ["program", "initial_cwd"].iter().all(|key| {
             configuration
@@ -636,7 +635,6 @@ impl Model {
             instance_id: self.instance.clone(),
             revision: self.revision,
             session: self.configuration["session"].clone(),
-            machine: None,
             connected: error.is_none(),
             error: error
                 .or_else(|| self.project_error.clone())
@@ -1111,7 +1109,7 @@ pub struct Owner {
 impl Owner {
     pub fn load(&mut self, configuration: &BTreeMap<String, String>) {
         let mut configuration = configuration.clone();
-        // This key belongs to SDK routing, not the seven-key native application contract.
+        // This key belongs to SDK routing, not the native application contract.
         configuration.remove("caller_cwd");
         let ids = get_plugin_ids();
         self.client_id = ids.client_id;
@@ -1920,11 +1918,6 @@ impl Owner {
                 }
                 self.schedule();
                 Ok(None)
-            }
-            Action::PaneClosed { .. }
-            | Action::RegisterPane { .. }
-            | Action::ResolveAttachment { .. } => {
-                Err("Attachment actions are unavailable for native terminals".to_owned())
             }
         }
     }

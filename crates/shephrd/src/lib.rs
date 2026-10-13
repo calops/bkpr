@@ -132,58 +132,11 @@ pub struct Snapshot {
     /// Owner-local revision, independent of terminal event counters and recovery cursors.
     pub revision: u64,
     pub session: String,
-    pub machine: Option<String>,
     pub connected: bool,
     pub error: Option<String>,
     pub focused_pane_id: Option<String>,
     pub workspaces: Vec<Workspace>,
     pub panes: Vec<Pane>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CommandSpec {
-    pub executable: String,
-    pub args: Vec<String>,
-    pub cwd: Option<String>,
-    #[serde(default)]
-    pub env: std::collections::BTreeMap<String, String>,
-}
-
-pub fn attachment_layout(
-    plugin_url: &str,
-    configuration: &std::collections::BTreeMap<String, String>,
-    pane_id: &str,
-    command: &CommandSpec,
-    tab_name: &str,
-    sidebar_width: usize,
-) -> Result<String, serde_json::Error> {
-    use std::fmt::Write;
-
-    let quote = |value: &str| serde_json::to_string(value);
-    let mut layout = format!(
-        "layout {{\n tab name={} focus=true {{\n  pane split_direction=\"vertical\" {{\n   pane size={sidebar_width} borderless=true {{\n    plugin location={} {{\n",
-        quote(tab_name)?,
-        quote(plugin_url)?
-    );
-    for (key, value) in configuration {
-        writeln!(layout, "     {key} {}", quote(value)?).unwrap();
-    }
-    write!(
-        layout,
-        "    }}\n   }}\n   pane name={} command={} focus=true",
-        quote(&format!("shephrd:{pane_id}"))?,
-        quote(&command.executable)?
-    )
-    .unwrap();
-    if let Some(cwd) = &command.cwd {
-        write!(layout, " cwd={}", quote(cwd)?).unwrap();
-    }
-    layout.push_str(" {\n    args");
-    for argument in &command.args {
-        write!(layout, " {}", quote(argument)?).unwrap();
-    }
-    layout.push_str("\n   }\n  }\n }\n}\n");
-    Ok(layout)
 }
 
 /// Native tabs contain ordinary Zellij-owned terminals, including stock-created tabs.
@@ -215,17 +168,7 @@ pub fn native_layout(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Effect {
-    OpenPane {
-        pane_id: String,
-        command: CommandSpec,
-    },
-    FocusPane {
-        zellij_pane_id: u32,
-    },
-    /// Resolved executable for the native attachment process, not for the plugin.
-    Attachment {
-        command: CommandSpec,
-    },
+    FocusPane { zellij_pane_id: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,16 +204,6 @@ pub enum Action {
         label: String,
     },
     ClosePane {
-        pane_id: String,
-    },
-    RegisterPane {
-        pane_id: String,
-        zellij_pane_id: u32,
-    },
-    PaneClosed {
-        zellij_pane_id: u32,
-    },
-    ResolveAttachment {
         pane_id: String,
     },
     /// Enables targeted state publication only after the real sidebar has loaded.

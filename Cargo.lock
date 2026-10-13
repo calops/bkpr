@@ -1705,10 +1705,8 @@ dependencies = [
  "anyhow",
  "clap",
  "libc",
- "parking_lot",
  "serde",
  "serde_json",
- "signal-hook",
 ]
 
 [[package]]

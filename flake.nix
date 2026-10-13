@@ -7,11 +7,6 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    herdr = {
-      url = "github:herdrdev/herdr/v0.9.3";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.rust-overlay.follows = "rust-overlay";
-    };
   };
 
   outputs =
@@ -19,7 +14,6 @@
       self,
       nixpkgs,
       rust-overlay,
-      herdr,
     }:
     let
       systems = [
@@ -90,7 +84,7 @@
             ];
           };
           native = rustPlatform.buildRustPackage {
-            pname = "shephrd-companion";
+            pname = "shephrd-native";
             version = "0.1.0";
             inherit src;
             cargoLock.lockFileContents = builtins.readFile ./Cargo.lock;
@@ -144,14 +138,11 @@
                 ln -s ${native}/share/licenses/shephrd/LICENSE "$out/share/licenses/shephrd/LICENSE"
                 makeWrapper ${native}/bin/shephrd "$out/bin/shephrd" \
                   --set SHEPHRD_PLUGIN ${plugin}/share/shephrd/shephrd-zellij.wasm \
-                  --set SHEPHRD_HERDR ${herdr.packages.${system}.default}/bin/herdr \
                   --set SHEPHRD_ZELLIJ ${zellij}/bin/zellij \
-                  --set SHEPHRD_SSH ${pkgs.openssh}/bin/ssh \
                   --prefix PATH : ${
                     pkgs.lib.makeBinPath [
                       pkgs.git
                       pkgs.gh
-                      pkgs.openssh
                     ]
                   }
               '';
@@ -159,7 +150,7 @@
         {
           default = product;
           shephrd = product;
-          shephrd-companion = native;
+          shephrd-native = native;
           shephrd-zellij = plugin;
         }
       );
@@ -183,9 +174,7 @@
           default = pkgs.mkShell {
             packages = [
               (toolchainFor pkgs)
-              herdr.packages.${system}.default
               zellij
-              pkgs.openssh
               pkgs.git
               pkgs.gh
               pkgs.pkg-config
@@ -195,10 +184,8 @@
               pkgs.openssl
               pkgs.curl
             ];
-            SHEPHRD_HERDR = "${herdr.packages.${system}.default}/bin/herdr";
             SHEPHRD_ZELLIJ = "${zellij}/bin/zellij";
             SHEPHRD_ZELLIJ_VENDOR = pkgs.zellij-unwrapped.cargoDeps;
-            SHEPHRD_SSH = "${pkgs.openssh}/bin/ssh";
             shellHook = ''
               export SHEPHRD_PLUGIN="$PWD/target/wasm32-wasip1/debug/shephrd-zellij.wasm"
               if [ -x "$PWD/target/zellij-dev/target/debug/zellij" ]; then

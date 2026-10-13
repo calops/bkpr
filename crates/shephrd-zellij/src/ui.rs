@@ -6,7 +6,7 @@ use shephrd::{Attention, ProjectIdentity, Snapshot, Status};
 use unicode_width::UnicodeWidthStr;
 
 pub const RESET: &str = "\u{1b}[0m";
-// Match the original Herdr sidebar palette, independently of Zellij's UI theme.
+// Keep the sidebar palette independent of Zellij's UI theme.
 pub const BASE: &str = "\u{1b}[22;38;2;205;214;244;48;2;24;24;37m";
 pub const MUTED: &str = "\u{1b}[22;38;2;108;112;134m";
 pub const BRIGHT: &str = "\u{1b}[22;38;2;166;173;200m";
@@ -911,14 +911,22 @@ fn render_content_row(
         RowKind::Workspace { index, collapsed } => {
             let workspace = &state.workspaces[*index];
             let dot = truncate("● ", columns);
-            let icon = truncate(
-                status_icon(workspace.status, workspace.attention),
-                columns.saturating_sub(width(&dot)),
-            );
+            let icon = if *collapsed {
+                truncate(
+                    status_icon(workspace.status, workspace.attention),
+                    columns.saturating_sub(width(&dot)),
+                )
+            } else {
+                String::new()
+            };
             let available = columns.saturating_sub(width(&dot) + width(&icon));
-            let groups = workspace_ci(state, &workspace.id);
-            let ci_status = (!groups.is_empty())
-                .then(|| CiStatus::aggregate(groups.iter().map(|(_, ci)| ci_state(ci))));
+            let ci_status = if *collapsed {
+                let groups = workspace_ci(state, &workspace.id);
+                (!groups.is_empty())
+                    .then(|| CiStatus::aggregate(groups.iter().map(|(_, ci)| ci_state(ci))))
+            } else {
+                None
+            };
             let badge = ci_status
                 .map(|_| ci_badge(available.saturating_sub(2)))
                 .unwrap_or_default();
@@ -1084,15 +1092,7 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                     .filter(|p| &p.workspace_id == id)
                     .collect();
                 subtitle.spans.push(PopupSpan::new(
-                    format!(
-                        " · {} {}",
-                        panes.len(),
-                        if state.instance_id.starts_with("native:") {
-                            "terminals"
-                        } else {
-                            "attachments"
-                        }
-                    ),
+                    format!(" · {} terminals", panes.len()),
                     PopupColor::Muted,
                 ));
                 let groups = workspace_ci(state, id);
@@ -1403,7 +1403,7 @@ impl Modal {
         }
     }
 
-    pub fn lines(&self, columns: usize, native: bool) -> (Vec<String>, Option<(usize, usize)>) {
+    pub fn lines(&self, columns: usize) -> (Vec<String>, Option<(usize, usize)>) {
         match self {
             Self::Create {
                 name,
@@ -1461,12 +1461,7 @@ impl Modal {
                     "Close permanently?".to_owned(),
                     name.clone(),
                     String::new(),
-                    if native {
-                        "This terminates native processes."
-                    } else {
-                        "This terminates Herdr PTYs."
-                    }
-                    .to_owned(),
+                    "This terminates native terminals.".to_owned(),
                     "Enter / y confirm".to_owned(),
                     "Esc / n cancel".to_owned(),
                 ],
@@ -1537,7 +1532,6 @@ mod tests {
             instance_id: "native:test".to_owned(),
             revision: 1,
             session: "test".to_owned(),
-            machine: None,
             connected: true,
             error: None,
             focused_pane_id: Some("1".to_owned()),
