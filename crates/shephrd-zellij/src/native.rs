@@ -20,28 +20,6 @@ pub const STATE: &str = "shephrd-native-state";
 pub const QUERY: &str = "shephrd-native-query";
 pub const PROJECT: &str = "shephrd-native-project";
 pub const REFRESH_CI: &str = "shephrd-native-refresh-ci";
-pub const CANCEL_HOVER: &str = "shephrd-native-cancel-hover";
-pub const HOVER_PREPARED: &str = "shephrd-native-hover-prepared";
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct HoverPrepared {
-    pub client_id: u16,
-    pub client: String,
-    pub request_id: u64,
-    pub epoch: String,
-    pub terminal_id: String,
-    pub pointer: UiHover,
-    pub sidebar_id: u32,
-    pub prepared: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct HoverCancel {
-    pub client_id: u16,
-    pub client: String,
-    pub through_request_id: u64,
-}
-
 #[derive(Serialize, Deserialize)]
 struct NativeCiRefresh {
     client_id: u16,
@@ -53,8 +31,6 @@ pub struct NativeRequest {
     pub client: String,
     pub client_id: u16,
     pub request: Request,
-    #[serde(default)]
-    pub hover: Option<UiHover>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -82,16 +58,6 @@ pub struct UiSelection {
     pub client: String,
     pub request_id: u64,
     pub terminal_id: String,
-    #[serde(default)]
-    pub hover: Option<UiHover>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct UiHover {
-    pub x: usize,
-    pub y: usize,
-    #[serde(default)]
-    pub key: String,
 }
 
 /// Zellij 0.45.1 reports PaneUpdate then TabUpdate from the same screen state.
@@ -285,13 +251,11 @@ pub fn send(
     client: &str,
     client_id: u16,
     request: &Request,
-    hover: Option<UiHover>,
 ) -> Result<(), serde_json::Error> {
     let payload = serde_json::to_string(&NativeRequest {
         client: client.to_owned(),
         client_id,
         request: request.clone(),
-        hover,
     })?;
     let mut message = MessageToPlugin::new(REQUEST).with_payload(payload);
     if let Some(owner_id) = owner_id {
@@ -311,25 +275,6 @@ pub fn refresh_ci(
         target: target.clone(),
     })?;
     let mut message = MessageToPlugin::new(REFRESH_CI).with_payload(payload);
-    if let Some(owner_id) = owner_id {
-        message = message.with_destination_plugin_id(owner_id);
-    }
-    pipe_message_to_plugin(message);
-    Ok(())
-}
-
-pub fn cancel_hover(
-    owner_id: Option<u32>,
-    client_id: u16,
-    client: &str,
-    through_request_id: u64,
-) -> Result<(), serde_json::Error> {
-    let payload = serde_json::to_string(&HoverCancel {
-        client_id,
-        client: client.to_owned(),
-        through_request_id,
-    })?;
-    let mut message = MessageToPlugin::new(CANCEL_HOVER).with_payload(payload);
     if let Some(owner_id) = owner_id {
         message = message.with_destination_plugin_id(owner_id);
     }
@@ -934,18 +879,6 @@ impl Model {
             })
     }
 
-    fn hover_cancel_authorized(&self, source: u32, cancel: &HoverCancel) -> bool {
-        self.frontends.contains(&source)
-            && self
-                .frontend_clients
-                .get(&source)
-                .is_some_and(|clients| clients.contains(&cancel.client_id))
-            && cancel.client.starts_with(&format!("{source}:"))
-            && self
-                .receipts
-                .contains_key(&format!("{source}:{}", cancel.client))
-    }
-
     fn project_ticket(&mut self, cwd: &str, owner: u32) -> Option<ProjectTicket> {
         let ticket = ProjectTicket {
             generation: *self.project_generations.get(cwd).unwrap_or(&0),
@@ -1170,7 +1103,6 @@ pub struct Owner {
     // UI intent is ephemeral and client-isolated; canonical focus remains host-authoritative.
     ui_selections: BTreeMap<u16, UiSelection>,
     ui_selection_revisions: BTreeMap<u16, u64>,
-    cancelled_hovers: BTreeMap<u16, BTreeMap<String, u64>>,
     selection_revision: u64,
     published_selection_revision: u64,
     selection_epoch: String,
@@ -1196,7 +1128,6 @@ impl Owner {
         );
         self.ui_selections.clear();
         self.ui_selection_revisions.clear();
-        self.cancelled_hovers.clear();
         self.selection_revision = 0;
         self.published_selection_revision = 0;
         self.configuration = configuration.clone();
@@ -1326,13 +1257,7 @@ impl Owner {
         changed || confirmed
     }
 
-    fn select_ui(&mut self, client: &str, request_id: u64, pane: u32, hover: Option<UiHover>) {
-        let hover = hover.filter(|_| {
-            self.cancelled_hovers
-                .get(&self.client_id)
-                .and_then(|clients| clients.get(client))
-                .is_none_or(|through| request_id > *through)
-        });
+    fn select_ui(&mut self, client: &str, request_id: u64, pane: u32) {
         self.selection_revision += 1;
         self.ui_selection_revisions
             .insert(self.client_id, self.selection_revision);
@@ -1343,34 +1268,8 @@ impl Owner {
                 client: client.to_owned(),
                 request_id,
                 terminal_id: format!("terminal_{pane}"),
-                hover,
             },
         );
-    }
-
-    fn apply_hover_cancel(&mut self, cancel: &HoverCancel) -> bool {
-        let through = self
-            .cancelled_hovers
-            .entry(cancel.client_id)
-            .or_default()
-            .entry(cancel.client.clone())
-            .or_default();
-        *through = (*through).max(cancel.through_request_id);
-        let Some(selection) = self.ui_selections.get_mut(&cancel.client_id) else {
-            return false;
-        };
-        if selection.client != cancel.client
-            || selection.request_id > *through
-            || selection.hover.is_none()
-        {
-            return false;
-        }
-        selection.hover = None;
-        self.selection_revision += 1;
-        selection.revision = self.selection_revision;
-        self.ui_selection_revisions
-            .insert(cancel.client_id, self.selection_revision);
-        true
     }
 
     fn clear_selection(&mut self, client_id: u16, expected: Option<(&str, u64)>) {
@@ -1872,10 +1771,6 @@ impl Owner {
                     let prefix = format!("{id}:");
                     model.receipts.retain(|key, _| !key.starts_with(&prefix));
                 }
-                let prefix = format!("{id}:");
-                for clients in self.cancelled_hovers.values_mut() {
-                    clients.retain(|client, _| !client.starts_with(&prefix));
-                }
                 self.save();
             }
             Event::RunCommandResult(code, stdout, stderr, context) if self.granted => {
@@ -2095,114 +1990,6 @@ impl Owner {
     }
 
     pub fn pipe(&mut self, message: PipeMessage) -> bool {
-        if message.name == HOVER_PREPARED {
-            let PipeSource::Plugin(source) = message.source else {
-                return false;
-            };
-            let Some(payload) = message.payload.filter(|p| p.len() <= 4096) else {
-                return false;
-            };
-            let Ok(ready) = serde_json::from_str::<HoverPrepared>(&payload) else {
-                return false;
-            };
-            if !self.granted
-                || ready.client_id != self.client_id
-                || ready.epoch != self.selection_epoch
-                || ready.sidebar_id != source
-                || !self
-                    .ui_selections
-                    .get(&self.client_id)
-                    .is_some_and(|selection| {
-                        selection.client == ready.client
-                            && selection.request_id == ready.request_id
-                            && selection.terminal_id == ready.terminal_id
-                            && selection.hover.as_ref() == Some(&ready.pointer)
-                    })
-            {
-                return false;
-            }
-            let Some(model) = self.model.as_ref() else {
-                return false;
-            };
-            let Some(destination) = ready
-                .client
-                .split(':')
-                .next()
-                .and_then(|id| id.parse().ok())
-            else {
-                return false;
-            };
-            let same_tab = self
-                .topology
-                .reconciled
-                .as_ref()
-                .is_some_and(|(_, manifest)| {
-                    manifest.panes.values().any(|panes| {
-                        panes.iter().any(|pane| pane.is_plugin && pane.id == source)
-                            && panes.iter().any(|pane| {
-                                !pane.is_plugin && terminal_id(&ready.terminal_id) == Some(pane.id)
-                            })
-                    })
-                });
-            if same_tab
-                && model.frontends.contains(&source)
-                && model.frontends.contains(&destination)
-            {
-                pipe_message_to_plugin(
-                    MessageToPlugin::new(HOVER_PREPARED)
-                        .with_destination_plugin_id(destination)
-                        .with_payload(payload),
-                );
-            }
-            return false;
-        }
-        if message.name == CANCEL_HOVER {
-            let PipeSource::Plugin(source) = &message.source else {
-                return false;
-            };
-            if !self.granted {
-                return false;
-            }
-            let Some(payload) = message
-                .payload
-                .as_deref()
-                .filter(|payload| payload.len() <= MAX_MESSAGE_BYTES)
-            else {
-                return false;
-            };
-            let Ok(cancel) = serde_json::from_str::<HoverCancel>(payload) else {
-                return false;
-            };
-            if cancel.client_id != self.client_id {
-                return false;
-            }
-            self.recover();
-            if !self
-                .model
-                .as_ref()
-                .is_some_and(|model| model.hover_cancel_authorized(*source, &cancel))
-            {
-                return false;
-            }
-            let changed = self.apply_hover_cancel(&cancel);
-            // Canonical confirmation may already have cleared the owner's selection,
-            // while a destination replica still holds the deferred pointer handoff.
-            if let Some(model) = self.model.as_ref() {
-                for (frontend, clients) in &model.frontend_clients {
-                    if model.frontends.contains(frontend) && clients.contains(&self.client_id) {
-                        pipe_message_to_plugin(
-                            MessageToPlugin::new(CANCEL_HOVER)
-                                .with_destination_plugin_id(*frontend)
-                                .with_payload(payload),
-                        );
-                    }
-                }
-            }
-            if changed {
-                self.publish();
-            }
-            return false;
-        }
         if message.name == REFRESH_CI {
             let PipeSource::Plugin(source) = message.source else {
                 return false;
@@ -2379,7 +2166,7 @@ impl Owner {
             if selects_ui {
                 if receipt.error.is_none() {
                     if let Some(pane) = receipt.focus {
-                        self.select_ui(&envelope.client, receipt.request_id, pane, envelope.hover);
+                        self.select_ui(&envelope.client, receipt.request_id, pane);
                     }
                 } else {
                     self.clear_selection(
@@ -2823,16 +2610,7 @@ mod tests {
             model: Some(model),
             ..Owner::default()
         };
-        owner.select_ui(
-            "sidebar-one",
-            7,
-            2,
-            Some(UiHover {
-                x: 5,
-                y: 8,
-                key: "pane:terminal_2".into(),
-            }),
-        );
+        owner.select_ui("sidebar-one", 7, 2);
         let first = owner.state(1).unwrap();
         assert_eq!(
             first.snapshot.focused_pane_id.as_deref(),
@@ -2843,14 +2621,7 @@ mod tests {
             "terminal_2"
         );
         assert_eq!(first.ui_selection.as_ref().unwrap().request_id, 7);
-        assert_eq!(
-            first.ui_selection.as_ref().unwrap().hover,
-            Some(UiHover {
-                x: 5,
-                y: 8,
-                key: "pane:terminal_2".into()
-            })
-        );
+
         assert_eq!(
             first.ui_selection.as_ref().unwrap().revision,
             first.ui_selection_revision
@@ -2871,7 +2642,7 @@ mod tests {
         assert_eq!(replicas.len(), 2);
         assert_eq!(replicas[0], replicas[1]);
         owner.client_id = 2;
-        owner.select_ui("sidebar-two", 1, 1, None);
+        owner.select_ui("sidebar-two", 1, 1);
         assert_eq!(owner.ui_selections.get(&1), first.ui_selection.as_ref());
         assert!(owner.state(1).unwrap().ui_selection_epoch.is_empty());
         let second = owner.state(2).unwrap();
@@ -2880,7 +2651,6 @@ mod tests {
             Some("terminal_3")
         );
         assert_eq!(second.ui_selection.as_ref().unwrap().client, "sidebar-two");
-        assert!(second.ui_selection.as_ref().unwrap().hover.is_none());
         assert!(second.ui_selection_revision > first.ui_selection_revision);
         let bytes = serde_json::to_vec(owner.model.as_ref().unwrap()).unwrap();
         let persisted = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap();
@@ -2921,8 +2691,8 @@ mod tests {
             model: Some(model),
             ..Owner::default()
         };
-        owner.select_ui("sidebar", 1, 2, None);
-        owner.select_ui("sidebar", 2, 3, None);
+        owner.select_ui("sidebar", 1, 2);
+        owner.select_ui("sidebar", 2, 3);
         let pending_revision = owner.state(1).unwrap().ui_selection_revision;
         owner.clear_selection(1, Some(("sidebar", 1)));
         owner.clear_selection(1, Some(("another-sidebar", 2)));
@@ -2948,96 +2718,17 @@ mod tests {
         let confirmed = owner.state(1).unwrap();
         assert!(confirmed.ui_selection.is_none());
         assert!(confirmed.ui_selection_revision > pending_revision);
-        owner.select_ui("sidebar", 3, 2, None);
+        owner.select_ui("sidebar", 3, 2);
         let before_error = owner.state(1).unwrap().ui_selection_revision;
         owner.clear_selection(1, Some(("sidebar", 3)));
         assert!(owner.state(1).unwrap().ui_selection.is_none());
         assert!(owner.state(1).unwrap().ui_selection_revision > before_error);
-        owner.select_ui("sidebar", 4, 2, None);
+        owner.select_ui("sidebar", 4, 2);
         let before_close = owner.state(1).unwrap().ui_selection_revision;
         owner.model.as_mut().unwrap().close_pane(2);
         owner.prune_selections();
         assert!(owner.state(1).unwrap().ui_selection.is_none());
         assert!(owner.state(1).unwrap().ui_selection_revision > before_close);
-    }
-
-    #[test]
-    fn hover_cancel_is_source_bound_and_cannot_reintroduce_departed_pointer_handoffs() {
-        let mut model = model();
-        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1), pane(2)])]));
-        model.record_focus(1, 1);
-        model.frontends.insert(7);
-        model.frontend_clients.insert(7, BTreeSet::from([1]));
-        model.receipts.insert(
-            "7:7:session".into(),
-            Receipt {
-                request_id: 10,
-                error: None,
-                focus: Some(2),
-            },
-        );
-        let cancel = HoverCancel {
-            client_id: 1,
-            client: "7:session".into(),
-            through_request_id: 10,
-        };
-        assert!(model.hover_cancel_authorized(7, &cancel));
-        assert!(!model.hover_cancel_authorized(8, &cancel));
-        assert!(!model.hover_cancel_authorized(
-            7,
-            &HoverCancel {
-                client_id: 2,
-                ..cancel.clone()
-            }
-        ));
-        assert!(!model.hover_cancel_authorized(
-            7,
-            &HoverCancel {
-                client: "8:session".into(),
-                ..cancel.clone()
-            }
-        ));
-        let mut owner = Owner {
-            client_id: 1,
-            model: Some(model),
-            ..Owner::default()
-        };
-        let hover = UiHover {
-            x: 4,
-            y: 3,
-            key: "pane:terminal_2".into(),
-        };
-        owner.select_ui(&cancel.client, 10, 2, Some(hover.clone()));
-        let before = owner.selection_revision;
-        assert!(owner.apply_hover_cancel(&cancel));
-        assert!(owner.selection_revision > before);
-        let selection = owner.ui_selections.get(&1).unwrap();
-        assert_eq!(selection.terminal_id, "terminal_2");
-        assert!(selection.hover.is_none());
-        assert_eq!(owner.model.as_ref().unwrap().focus.get(&1), Some(&1));
-        let revision = owner.selection_revision;
-        assert!(!owner.apply_hover_cancel(&cancel));
-        assert_eq!(owner.selection_revision, revision);
-        owner.select_ui(&cancel.client, 9, 2, Some(hover.clone()));
-        assert!(owner.ui_selections[&1].hover.is_none());
-        owner.select_ui(&cancel.client, 11, 2, Some(hover.clone()));
-        assert_eq!(owner.ui_selections[&1].hover, Some(hover.clone()));
-        assert!(!owner.apply_hover_cancel(&cancel));
-        owner.clear_selection(1, None);
-        // A leave after canonical confirmation still leaves a tombstone.
-        assert!(!owner.apply_hover_cancel(&HoverCancel {
-            through_request_id: 11,
-            ..cancel.clone()
-        }));
-        owner.select_ui(&cancel.client, 11, 2, Some(hover.clone()));
-        assert!(owner.ui_selections[&1].hover.is_none());
-        owner.select_ui("8:other", 1, 2, Some(hover.clone()));
-        assert_eq!(owner.ui_selections[&1].hover, Some(hover.clone()));
-        owner.client_id = 2;
-        owner.select_ui(&cancel.client, 10, 2, Some(hover.clone()));
-        assert_eq!(owner.ui_selections[&2].hover, Some(hover));
-        let persisted = serde_json::to_value(owner.model.as_ref().unwrap()).unwrap();
-        assert!(persisted.get("cancelled_hovers").is_none());
     }
 
     #[test]

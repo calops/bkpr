@@ -7,16 +7,19 @@ use zellij_tile::prelude::*;
 
 pub const UPDATE: &str = "shephrd-tooltip";
 pub const READY: &str = "shephrd-tooltip-ready";
-pub const HOVER: &str = "shephrd-tooltip-hover";
+pub const DISMISS: &str = "shephrd-tooltip-dismiss";
 pub const REFRESH: &str = "shephrd-tooltip-refresh";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Ready {
     pub id: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DismissNotice {
     pub instance: String,
-    pub revision: u64,
     pub key: String,
-    pub prepared: bool,
+    pub revision: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,13 +28,6 @@ pub struct RefreshRequest {
     pub revision: u64,
     pub key: String,
     pub target: CiRefreshTarget,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct PointerOwnership {
-    pub instance: String,
-    pub key: String,
-    pub inside: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -62,10 +58,10 @@ pub struct Controller {
     pub id: Option<u32>,
     pub pending: Option<Tooltip>,
     revision: u64,
+    open_revision: u64,
     launched: bool,
     instance: String,
     refresh_requested: Vec<CiRefreshTarget>,
-    prepared_revision: Option<u64>,
 }
 
 impl Default for Controller {
@@ -78,21 +74,26 @@ impl Default for Controller {
             id: None,
             pending: None,
             revision: 0,
+            open_revision: 0,
             launched: false,
             instance,
             refresh_requested: Vec::new(),
-            prepared_revision: None,
         }
     }
 }
 
 impl Controller {
+    pub fn begin_open(&mut self) {
+        self.open_revision = self.revision.saturating_add(1);
+    }
+
     pub fn update(
         &mut self,
         owner: u32,
         configuration: &BTreeMap<String, String>,
-        tooltip: Option<(ui::PopupContent, Placement)>,
+        tooltip: Option<(&ui::PopupContent, Placement)>,
     ) {
+        let empty = ui::PopupContent::default();
         let (visible, content, coordinates, connection) = match tooltip {
             Some((content, placement)) => (
                 true,
@@ -100,16 +101,11 @@ impl Controller {
                 placement.coordinates,
                 Some(placement.connection),
             ),
-            None => (
-                false,
-                ui::PopupContent::default(),
-                FloatingPaneCoordinates::default(),
-                None,
-            ),
+            None => (false, &empty, FloatingPaneCoordinates::default(), None),
         };
         if self.pending.as_ref().is_some_and(|old| {
             old.visible == visible
-                && old.content == content
+                && &old.content == content
                 && old.coordinates == coordinates
                 && old.connection == connection
         }) {
@@ -123,12 +119,11 @@ impl Controller {
                     .any(|row| row.refresh.as_ref() == Some(target))
         });
         self.revision = self.revision.saturating_add(1);
-        self.prepared_revision = None;
         self.pending = Some(Tooltip {
             instance: self.instance.clone(),
             revision: self.revision,
             visible,
-            content,
+            content: content.clone(),
             coordinates,
             connection,
         });
@@ -158,6 +153,17 @@ impl Controller {
         true
     }
 
+    pub fn accept_dismiss(&self, source: u32, notice: &DismissNotice) -> bool {
+        self.id == Some(source)
+            && self.pending.as_ref().is_some_and(|state| {
+                state.visible
+                    && state.instance == notice.instance
+                    && state.content.key == notice.key
+                    && notice.revision >= self.open_revision
+                    && notice.revision <= state.revision
+            })
+    }
+
     pub fn ready(
         &mut self,
         ready: &Ready,
@@ -170,26 +176,10 @@ impl Controller {
         let first = self.id.is_none();
         self.id = Some(ready.id);
         self.launched = true;
-        if ready.prepared
-            && self.pending.as_ref().is_some_and(|state| {
-                state.visible
-                    && state.instance == ready.instance
-                    && state.revision == ready.revision
-                    && state.content.key == ready.key
-            })
-        {
-            self.prepared_revision = Some(ready.revision);
-        }
         if first {
             self.send(owner, configuration);
         }
         true
-    }
-
-    pub fn prepared(&self) -> bool {
-        self.pending
-            .as_ref()
-            .is_some_and(|state| state.visible && self.prepared_revision == Some(state.revision))
     }
 
     fn send(&mut self, owner: u32, configuration: &BTreeMap<String, String>) {
@@ -350,16 +340,51 @@ fn wrapped_rows(rows: &[ui::PopupRow], columns: usize) -> Vec<PopupLine> {
 }
 
 fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
+    if !row.prefix.is_empty() {
+        let prefix_width = row
+            .prefix
+            .iter()
+            .map(|span| ui::width(&ui::clean(&span.text)))
+            .sum::<usize>()
+            .min(columns.saturating_sub(1));
+        let mut title = row.clone();
+        title.prefix.clear();
+        let start = output.len();
+        wrap_row(&title, columns.saturating_sub(prefix_width), output);
+        for (index, line) in output[start..].iter_mut().enumerate() {
+            if index == 0 {
+                let mut prefix = row.prefix.clone();
+                let mut remaining = prefix_width;
+                for span in &mut prefix {
+                    span.text = ui::truncate(&span.text, remaining);
+                    remaining = remaining.saturating_sub(ui::width(&span.text));
+                }
+                prefix.append(&mut line.row.spans);
+                line.row.spans = prefix;
+            } else {
+                line.row.indent = prefix_width;
+            }
+        }
+        return;
+    }
     let right: usize = row
         .right
         .iter()
         .map(|span| ui::width(&ui::clean(&span.text)))
         .sum();
-    let right_columns = right.min(if row.suffix.is_empty() {
-        columns
+    let button = row
+        .right
+        .iter()
+        .any(|span| span.text == ui::refresh_button_text());
+    let right_columns = if button && right > columns {
+        0
     } else {
-        columns / 2
-    });
+        right.min(if row.suffix.is_empty() {
+            columns
+        } else {
+            columns / 2
+        })
+    };
     let body_columns = columns
         .saturating_sub(right_columns + usize::from(right_columns != 0 && right_columns < columns));
     let suffix_width: usize = row
@@ -385,7 +410,11 @@ fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
             .sum::<usize>()
             > body_columns;
     let budget = body_columns.saturating_sub(usize::from(clipped));
-    let mut right = row.right.clone();
+    let mut right = if button && right_columns == 0 {
+        Vec::new()
+    } else {
+        row.right.clone()
+    };
     let mut remaining = right_columns;
     for span in &mut right {
         span.text = ui::truncate(&span.text, remaining);
@@ -398,7 +427,7 @@ fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
         refresh: row
             .refresh
             .clone()
-            .filter(|_| right_columns >= ui::width(ui::REFRESH_ICON)),
+            .filter(|_| right_columns >= ui::refresh_button_width()),
         ..ui::PopupRow::default()
     };
     let mut used = 0;
@@ -468,17 +497,30 @@ fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
 
 const OSC8_CLOSE: &str = "\u{1b}]8;;\u{1b}\\";
 
+#[cfg(test)]
 fn render_line(row: &ui::PopupRow, columns: usize) -> String {
+    render_action_line(row, columns, false)
+}
+
+fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bool) -> String {
     let right: usize = row
         .right
         .iter()
         .map(|span| ui::width(&ui::clean(&span.text)))
         .sum();
-    let right_columns = right.min(if row.suffix.is_empty() {
-        columns
+    let button = row
+        .right
+        .iter()
+        .any(|span| span.text == ui::refresh_button_text());
+    let right_columns = if button && right > columns {
+        0
     } else {
-        columns / 2
-    });
+        right.min(if row.suffix.is_empty() {
+            columns
+        } else {
+            columns / 2
+        })
+    };
     let body_columns = columns
         .saturating_sub(right_columns + usize::from(right_columns != 0 && right_columns < columns));
     let suffix_width: usize = row
@@ -496,14 +538,19 @@ fn render_line(row: &ui::PopupRow, columns: usize) -> String {
         .map(|span| ui::width(&ui::clean(&span.text)))
         .sum();
     let mut rendered = String::from(OSC8_CLOSE);
+    rendered.push_str(&" ".repeat(row.indent.min(body_columns)));
+    let body_columns = body_columns.saturating_sub(row.indent);
     if let Some(link) = row.link.as_deref().and_then(ui::safe_link) {
         rendered.push_str("\u{1b}]8;;");
         rendered.push_str(link);
         rendered.push_str("\u{1b}\\");
     }
-    let mut used = 0;
+    let mut used = row.indent.min(columns);
     for span in &row.spans {
-        let text = ui::truncate(&span.text, body_columns.saturating_sub(suffix_width + used));
+        let text = ui::truncate(
+            &span.text,
+            body_columns.saturating_sub(suffix_width + used.saturating_sub(row.indent)),
+        );
         used += ui::width(&text);
         rendered.push_str("\u{1b}[22m");
         rendered.push_str(span.color.ansi());
@@ -524,15 +571,22 @@ fn render_line(row: &ui::PopupRow, columns: usize) -> String {
     rendered.push_str(&" ".repeat(columns.saturating_sub(used + right_columns)));
     let mut used_right = 0;
     for span in &row.right {
+        if hovered && row.refresh.is_some() {
+            rendered.push_str("\u{1b}[1;38;2;30;30;46;48;2;137;180;250m");
+        }
         let text = ui::truncate(&span.text, right_columns.saturating_sub(used_right));
         used_right += ui::width(&text);
         rendered.push_str("\u{1b}[22m");
-        rendered.push_str(span.color.ansi());
-        if span.bold {
+        if !(hovered && row.refresh.is_some()) {
+            rendered.push_str(span.color.ansi());
+        }
+        if span.bold || (hovered && row.refresh.is_some()) {
             rendered.push_str("\u{1b}[1m");
         }
         rendered.push_str(&text);
     }
+    rendered.push_str(ui::RESET);
+    rendered.push_str(ui::BASE);
     rendered
 }
 
@@ -639,14 +693,13 @@ pub struct Overlay {
     pub id: u32,
     granted: bool,
     owner_seen: bool,
-    pointer_inside: bool,
+    refresh_hover: Option<CiRefreshTarget>,
     state: Option<Tooltip>,
     error: Option<String>,
     layout: RefCell<PopupLayout>,
     viewport: Cell<usize>,
     columns: Cell<usize>,
     rows: Cell<usize>,
-    announced_revision: Cell<Option<u64>>,
     refresh_requested: Vec<CiRefreshTarget>,
 }
 
@@ -678,7 +731,7 @@ impl Overlay {
                 {
                     self.owner_seen = true;
                     self.apply();
-                    self.announce(false);
+                    self.announce();
                 } else {
                     close_self();
                 }
@@ -698,28 +751,28 @@ impl Overlay {
                     close_self();
                 }
             }
-            Event::Mouse(Mouse::Hover(line, column)) if self.granted => {
-                let inside = line >= 0
-                    && (line as usize) < self.rows.get()
-                    && column < self.columns.get()
-                    && self.state.as_ref().is_some_and(|state| state.visible);
-                if inside != self.pointer_inside {
-                    self.pointer_inside = inside;
-                    if let (Some(owner), Some(state)) = (self.owner, &self.state) {
-                        let pointer = PointerOwnership {
-                            instance: state.instance.clone(),
-                            key: state.content.key.clone(),
-                            inside,
-                        };
-                        if let Ok(payload) = serde_json::to_string(&pointer) {
-                            pipe_message_to_plugin(
-                                MessageToPlugin::new(HOVER)
-                                    .with_destination_plugin_id(owner)
-                                    .with_payload(payload),
-                            );
-                        }
+            Event::Mouse(Mouse::LeftClick(-1, column) | Mouse::RightClick(-1, column))
+                if self.granted && column == u16::MAX as usize =>
+            {
+                if let (Some(owner), Some(state)) = (self.owner, &self.state)
+                    && state.visible
+                {
+                    let notice = DismissNotice {
+                        instance: state.instance.clone(),
+                        key: state.content.key.clone(),
+                        revision: state.revision,
+                    };
+                    if let Ok(payload) = serde_json::to_string(&notice) {
+                        pipe_message_to_plugin(
+                            MessageToPlugin::new(DISMISS)
+                                .with_destination_plugin_id(owner)
+                                .with_payload(payload),
+                        );
                     }
                 }
+            }
+            Event::Mouse(Mouse::Hover(line, column)) if self.granted => {
+                self.refresh_hover = self.refresh_at(line, column).map(|request| request.target);
             }
             Event::Mouse(Mouse::LeftClick(line, column)) if self.granted => {
                 if let (Some(owner), Some(request)) = (self.owner, self.refresh_at(line, column))
@@ -734,10 +787,12 @@ impl Overlay {
                 }
             }
             Event::Mouse(Mouse::ScrollUp(lines)) if self.granted => {
+                self.refresh_hover = None;
                 let mut layout = self.layout.borrow_mut();
                 layout.scroll = layout.scroll.saturating_sub(lines);
             }
             Event::Mouse(Mouse::ScrollDown(lines)) if self.granted => {
+                self.refresh_hover = None;
                 let mut layout = self.layout.borrow_mut();
                 layout.scroll = layout
                     .scroll
@@ -785,14 +840,14 @@ impl Overlay {
             || !tooltip.visible
         {
             layout.scroll = 0;
-            self.pointer_inside = false;
+            self.refresh_hover = None;
         }
         layout.columns = usize::MAX;
         drop(layout);
         self.state = Some(tooltip);
         self.apply();
         if self.granted {
-            self.announce(false);
+            self.announce();
         }
         true
     }
@@ -809,7 +864,7 @@ impl Overlay {
         }
         let row = &layout.lines.get(line as usize - 1 + layout.scroll)?.row;
         let target = row.refresh.as_ref()?;
-        let icon_width = ui::width(ui::REFRESH_ICON);
+        let icon_width = ui::refresh_button_width();
         let end = self.columns.get().checked_sub(1)?;
         if icon_width > layout.columns
             || column < end.saturating_sub(icon_width)
@@ -841,16 +896,9 @@ impl Overlay {
         }
     }
 
-    fn announce(&self, prepared: bool) {
+    fn announce(&self) {
         let Some(owner) = self.owner else { return };
-        let state = self.state.as_ref();
-        let ready = Ready {
-            id: self.id,
-            instance: state.map(|s| s.instance.clone()).unwrap_or_default(),
-            revision: state.map(|s| s.revision).unwrap_or_default(),
-            key: state.map(|s| s.content.key.clone()).unwrap_or_default(),
-            prepared,
-        };
+        let ready = Ready { id: self.id };
         if let Ok(payload) = serde_json::to_string(&ready) {
             pipe_message_to_plugin(
                 MessageToPlugin::new(READY)
@@ -861,22 +909,6 @@ impl Overlay {
     }
 
     pub fn render(&self, rows: usize, columns: usize) {
-        let expected_size = FloatingPaneCoordinates::default()
-            .with_width_fixed(columns)
-            .with_height_fixed(rows);
-        if self.granted
-            && self.state.as_ref().is_some_and(|state| {
-                state.visible
-                    && self.announced_revision.get() != Some(state.revision)
-                    && state.coordinates.width == expected_size.width
-                    && state.coordinates.height == expected_size.height
-            })
-        {
-            // The host releases render-generated messages only after applying this frame.
-            self.announce(true);
-            self.announced_revision
-                .set(self.state.as_ref().map(|state| state.revision));
-        }
         self.rows.set(rows);
         self.viewport.set(rows.saturating_sub(3));
         self.columns.set(columns);
@@ -915,7 +947,16 @@ impl Overlay {
             } else {
                 row.checked_sub(1)
                     .and_then(|i| layout.lines.get(i + layout.scroll))
-                    .map(|line| render_line(&line.row, content_columns))
+                    .map(|line| {
+                        render_action_line(
+                            &line.row,
+                            content_columns,
+                            line.row.refresh.as_ref().is_some_and(|target| {
+                                self.refresh_hover.as_ref() == Some(target)
+                                    && !self.refresh_requested.contains(target)
+                            }),
+                        )
+                    })
                     .unwrap_or_else(|| " ".repeat(content_columns))
             };
             let connection = self
@@ -938,33 +979,6 @@ impl Overlay {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn actual_host_leave_sentinel_releases_overlay_pointer_ownership() {
-        let mut overlay = Overlay {
-            granted: true,
-            state: Some(Tooltip {
-                instance: "owner".to_owned(),
-                revision: 1,
-                visible: true,
-                content: ui::PopupContent::default(),
-                coordinates: FloatingPaneCoordinates::default(),
-                connection: None,
-            }),
-            ..Overlay::default()
-        };
-        overlay.viewport.set(5);
-        overlay.columns.set(20);
-        overlay.rows.set(8);
-        overlay.event(Event::Mouse(Mouse::Hover(2, 4)));
-        assert!(overlay.pointer_inside);
-        overlay.event(Event::Mouse(Mouse::Hover(0, usize::from(u16::MAX))));
-        assert!(!overlay.pointer_inside);
-        overlay.event(Event::Mouse(Mouse::Hover(2, 4)));
-        assert!(overlay.pointer_inside);
-        overlay.event(Event::Mouse(Mouse::Hover(-1, 0)));
-        assert!(!overlay.pointer_inside);
-    }
 
     fn row(text: &str, color: ui::PopupColor) -> ui::PopupRow {
         ui::PopupRow {
@@ -1046,7 +1060,11 @@ mod tests {
             "日本語 CI summary with long wrapping context",
             ui::PopupColor::Text,
         );
-        header.right = vec![row(ui::REFRESH_ICON, ui::PopupColor::Text).spans.remove(0)];
+        header.right = vec![
+            row(ui::refresh_button_text(), ui::PopupColor::Text)
+                .spans
+                .remove(0),
+        ];
         header.link = Some("https://example.com/checks".to_owned());
         header.refresh = Some(CiRefreshTarget {
             repository: shephrd::ci_contract::ForgeRepository {
@@ -1063,7 +1081,7 @@ mod tests {
     #[test]
     fn refresh_hit_is_only_the_rendered_unlinked_icon_not_wrapping_or_chrome() {
         let header = refresh_header();
-        for columns in 0_usize..=64 {
+        for columns in 0_usize..=100 {
             let mut overlay = Overlay {
                 granted: true,
                 owner: Some(7),
@@ -1088,7 +1106,10 @@ mod tests {
             for line in -1..=9 {
                 for column in 0..=columns {
                     let hit = overlay.refresh_at(line, column);
-                    let expected = columns >= 3 && line == 3 && column == columns - 2;
+                    let expected = columns >= ui::refresh_button_width() + 2
+                        && line == 3
+                        && column >= columns - 1 - ui::refresh_button_width()
+                        && column < columns - 1;
                     assert_eq!(hit.is_some(), expected, "{columns}: ({line}, {column})");
                     if let Some(hit) = hit {
                         assert_eq!(hit.target, header.refresh.clone().unwrap());
@@ -1098,19 +1119,119 @@ mod tests {
                     }
                 }
             }
-            if columns >= 3 {
+            if columns >= ui::refresh_button_width() + 2 {
                 let mut terminal = TerminalConsumer::default();
                 terminal.consume(&render_line(
                     &overlay.layout.borrow().lines[2].row,
                     columns - 2,
                 ));
-                assert_eq!(
-                    terminal.glyphs.last(),
-                    Some(&(ui::REFRESH_ICON.chars().next().unwrap(), None))
-                );
+                assert_eq!(terminal.glyphs.last(), Some(&(']', None)));
                 overlay.event(Event::Mouse(Mouse::LeftClick(3, columns - 2)));
                 assert!(overlay.refresh_at(3, columns - 2).is_none());
                 assert!(overlay.state.as_ref().unwrap().visible);
+            }
+        }
+    }
+
+    #[test]
+    fn refresh_button_hover_loading_and_artwork_cells_are_bounded_and_unlinked() {
+        let header = refresh_header();
+        assert_eq!(
+            ui::width(ui::refresh_button_text()),
+            ui::refresh_button_width()
+        );
+        for columns in 0..=100 {
+            for enabled in [true, false] {
+                let mut source = header.clone();
+                source.truncate = true;
+                if !enabled {
+                    source.refresh = None;
+                    source.right[0].color = ui::PopupColor::Muted;
+                }
+                let lines = wrapped_rows(&[source], columns);
+                assert_eq!(lines.len(), 1);
+                let normal = render_action_line(&lines[0].row, columns, false);
+                let hover = render_action_line(&lines[0].row, columns, true);
+                let mut terminal = TerminalConsumer::default();
+                terminal.consume(&hover);
+                assert_eq!(ui::width(&terminal.text()), columns);
+                assert_eq!(
+                    normal != hover,
+                    enabled && columns >= ui::refresh_button_width()
+                );
+                if columns >= ui::refresh_button_width() {
+                    assert!(terminal.text().ends_with(ui::refresh_button_text()));
+                    let start = columns - ui::refresh_button_width();
+                    assert!(terminal.cell_links()[start..].iter().all(Option::is_none));
+                    assert!(terminal.text().ends_with("\u{f021}  ]"));
+                } else {
+                    assert!(!terminal.text().contains('\u{f021}'));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_ci_reason_never_wraps_past_single_summary_row() {
+        let mut summary = refresh_header();
+        summary.spans = row(
+            &format!(
+                "CI · Unavailable · stale · {}",
+                "provider failure 日本語 e\u{301} ".repeat(40)
+            ),
+            ui::PopupColor::Ci(shephrd::ci_contract::CiStatus::Unknown),
+        )
+        .spans;
+        summary.truncate = true;
+        for columns in 0..=100 {
+            let lines = wrapped_rows(&[summary.clone()], columns);
+            assert_eq!(lines.len(), 1);
+            let mut terminal = TerminalConsumer::default();
+            terminal.consume(&render_line(&lines[0].row, columns));
+            assert_eq!(ui::width(&terminal.text()), columns);
+            if columns >= ui::refresh_button_width() {
+                assert!(terminal.text().ends_with(ui::refresh_button_text()));
+            }
+        }
+    }
+
+    #[test]
+    fn request_titles_hang_under_fixed_prefix_without_linking_indent_or_padding() {
+        for prefix in ["icon #7 ", "icon #123456789 "] {
+            let mut source = row(
+                "日本語 title e\u{301} with enough words to wrap repeatedly",
+                ui::PopupColor::Text,
+            );
+            source.prefix = row(prefix, ui::PopupColor::Text).spans;
+            source.link = Some("https://forge.example.com/repository/pull/7".to_owned());
+            for columns in 0..=100 {
+                let lines = wrapped_rows(&[source.clone()], columns);
+                let indent = ui::width(prefix).min(columns.saturating_sub(1));
+                for (index, line) in lines.iter().enumerate() {
+                    let mut terminal = TerminalConsumer::default();
+                    terminal.consume(&render_line(&line.row, columns));
+                    assert_eq!(ui::width(&terminal.text()), columns);
+                    if index > 0 {
+                        assert!(terminal.text().starts_with(&" ".repeat(indent)));
+                        assert!(terminal.cell_links()[..indent].iter().all(Option::is_none));
+                    }
+                    let links = terminal.cell_links();
+                    for (glyph, link) in &terminal.glyphs {
+                        if !glyph.is_whitespace() {
+                            assert_eq!(link.as_deref(), source.link.as_deref());
+                        }
+                    }
+                    assert_eq!(links.len(), columns);
+                    assert!(terminal.link.is_none());
+                }
+                if columns > ui::width(prefix) + 8 && lines.len() > 1 {
+                    assert!(lines[0].row.plain().starts_with(prefix));
+                    assert!(
+                        lines[1..]
+                            .iter()
+                            .all(|line| line.row.indent == ui::width(prefix))
+                    );
+                }
             }
         }
     }

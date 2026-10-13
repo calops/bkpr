@@ -429,8 +429,8 @@ impl PopupColor {
         match self {
             Self::Text => TEXT,
             Self::Muted => MUTED,
-            Self::Added => ADDED,
-            Self::Deleted => DELETED,
+            Self::Added => "\u{1b}[22;38;2;166;227;161m",
+            Self::Deleted => "\u{1b}[22;38;2;243;139;168m",
             Self::Native(status) => status_color(*status),
             Self::Ci(status) => ci_color(*status),
             Self::Project(project) => project_color(Some(project)),
@@ -464,6 +464,12 @@ impl PopupSpan {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PopupRow {
+    /// First-line linked prefix; wrapped titles hang under its end.
+    #[serde(default)]
+    pub prefix: Vec<PopupSpan>,
+    /// Unlinked leading cells on a wrapped continuation.
+    #[serde(default)]
+    pub indent: usize,
     pub spans: Vec<PopupSpan>,
     /// Body suffix kept visible when a long branch name is truncated.
     #[serde(default)]
@@ -495,8 +501,9 @@ impl PopupRow {
     }
 
     pub fn plain(&self) -> String {
-        self.spans
+        self.prefix
             .iter()
+            .chain(&self.spans)
             .chain(&self.suffix)
             .map(|span| clean(&span.text))
             .collect()
@@ -624,17 +631,15 @@ fn forge_repository(ci: &CiSnapshot, project: Option<&ProjectIdentity>) -> Popup
 
 fn request_row(request: &shephrd::ci_contract::ChangeRequest) -> PopupRow {
     PopupRow {
-        spans: vec![
-            PopupSpan::new(
-                format!(
-                    "{}  #{} ",
-                    request_presentation(request.state).0,
-                    request.number
-                ),
-                PopupColor::ChangeRequest(request.state),
+        prefix: vec![PopupSpan::new(
+            format!(
+                "{}  #{} ",
+                request_presentation(request.state).0,
+                request.number
             ),
-            PopupSpan::new(request.title.clone(), PopupColor::Text),
-        ],
+            PopupColor::ChangeRequest(request.state),
+        )],
+        spans: vec![PopupSpan::new(request.title.clone(), PopupColor::Text)],
         link: safe_link(&request.url).map(str::to_owned),
         ..PopupRow::default()
     }
@@ -664,9 +669,15 @@ fn duration(seconds: Option<u64>) -> String {
     }
 }
 
-pub const REFRESH_ICON: &str = "\u{f021}"; // nf-fa-refresh
+pub fn refresh_button_text() -> &'static str {
+    "[ \u{f021}  ]"
+}
 
-fn ci_rows(ci: &CiSnapshot) -> Vec<PopupRow> {
+pub fn refresh_button_width() -> usize {
+    6
+}
+
+fn ci_summary(ci: &CiSnapshot) -> PopupRow {
     let status = ci_state(ci);
     let label = match ci.fetch_state {
         CiFetchState::Loading => "Loading",
@@ -675,13 +686,17 @@ fn ci_rows(ci: &CiSnapshot) -> Vec<PopupRow> {
     };
     let mut summary = PopupRow {
         spans: vec![
-            PopupSpan::new(format!("{WORKFLOW} CI · {label}"), PopupColor::Ci(status)).bold(),
+            PopupSpan::new(
+                format!("{WORKFLOW} CI · {} {label}", ci_glyph(status)),
+                PopupColor::Ci(status),
+            )
+            .bold(),
         ],
         ..PopupRow::default()
     };
     if !ci.repository.host.is_empty() && !ci.repository.path.is_empty() && !ci.head_sha.is_empty() {
         summary.right.push(PopupSpan::new(
-            REFRESH_ICON,
+            refresh_button_text(),
             if ci.fetch_state == CiFetchState::Loading {
                 PopupColor::Muted
             } else {
@@ -713,7 +728,35 @@ fn ci_rows(ci: &CiSnapshot) -> Vec<PopupRow> {
             PopupColor::Native(Status::Working),
         ));
     }
-    let mut rows = vec![summary];
+    summary.truncate = true;
+    if ci.truncated {
+        summary
+            .spans
+            .push(PopupSpan::new(" · incomplete", PopupColor::Muted));
+    }
+    if let Some(error) = &ci.error {
+        let detail = error
+            .split_whitespace()
+            .map(|word| {
+                if word.starts_with("https://") || word.starts_with("http://") {
+                    "[provider link]"
+                } else {
+                    word
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        summary.spans.push(PopupSpan::new(
+            format!(" · {detail}"),
+            PopupColor::Native(Status::Blocked),
+        ));
+    }
+    summary
+}
+
+fn ci_rows(ci: &CiSnapshot) -> Vec<PopupRow> {
+    let status = ci_state(ci);
+    let mut rows = vec![ci_summary(ci)];
     if let Some(error) = &ci.error {
         let detail = error
             .split_whitespace()
@@ -1065,14 +1108,6 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                         .filter(|(identity, _)| identity.id == project.id)
                         .collect();
                     let mut rows = Vec::new();
-                    let mut requests = std::collections::BTreeSet::new();
-                    for (_, ci) in &sources {
-                        if let Some(request) = &ci.change_request
-                            && requests.insert(request.number)
-                        {
-                            rows.push(request_row(request));
-                        }
-                    }
                     let mut contexts: Vec<&shephrd::Pane> = Vec::new();
                     for pane in &panes {
                         if pane
@@ -1099,6 +1134,14 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                     if project.repository && contexts.is_empty() {
                         rows.extend(branch_rows(None, None));
                     }
+                    let mut requests = std::collections::BTreeSet::new();
+                    for (_, ci) in &sources {
+                        if let Some(request) = &ci.change_request
+                            && requests.insert(request.number)
+                        {
+                            rows.push(request_row(request));
+                        }
+                    }
                     rows.push(PopupRow::default());
                     rows.push(PopupRow::heading("Checks"));
                     if sources.is_empty() {
@@ -1111,16 +1154,17 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                             PopupColor::Muted,
                         ));
                     } else {
-                        for (index, (_, ci)) in sources.iter().enumerate() {
-                            if index != 0 {
-                                rows.push(PopupRow::default());
-                            }
+                        for (_, ci) in &sources {
+                            let mut summary = ci_summary(ci);
                             if sources.len() > 1
                                 && let Some(branch) = ci.branch.as_deref()
                             {
-                                rows.push(PopupRow::text(branch, PopupColor::Muted));
+                                summary.spans.insert(
+                                    0,
+                                    PopupSpan::new(format!("{branch} · "), PopupColor::Muted),
+                                );
                             }
-                            rows.extend(ci_rows(ci));
+                            rows.push(summary);
                         }
                     }
                     sections.push(PopupSection {
@@ -1210,12 +1254,16 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                         .as_ref()
                         .is_some_and(|project| project.repository)
                 {
-                    repository.extend(branch_rows(
+                    let branches = branch_rows(
                         pane.branch
                             .as_deref()
                             .or_else(|| pane.ci.as_ref().and_then(|ci| ci.branch.as_deref())),
                         pane.branch_changes.as_ref(),
-                    ));
+                    );
+                    repository.splice(
+                        usize::from(!repository.is_empty())..usize::from(!repository.is_empty()),
+                        branches,
+                    );
                 }
                 let mut sections = Vec::new();
                 if !repository.is_empty() {
@@ -1657,7 +1705,7 @@ mod tests {
                 .collect();
             assert_eq!(headers.len(), 1);
             assert_eq!(headers[0].refresh, Some(target.clone()));
-            assert_eq!(headers[0].right[0].text, REFRESH_ICON);
+            assert_eq!(headers[0].right[0].text, refresh_button_text());
             assert!(headers[0].link.is_none());
         }
         for pane in &mut state.panes {
@@ -1670,14 +1718,17 @@ mod tests {
             .into_iter()
             .find(|row| !row.right.is_empty())
             .unwrap();
-        assert_eq!(header.right[0].text, REFRESH_ICON);
+        assert_eq!(header.right[0].text, refresh_button_text());
         assert_eq!(header.right[0].color, PopupColor::Muted);
         state.panes[0].ci.as_mut().unwrap().head_sha.clear();
         assert!(
             tooltip(&Item::Pane("1".to_owned()), &state)
                 .rows()
                 .iter()
-                .all(|row| row.right.iter().all(|span| span.text != REFRESH_ICON))
+                .all(|row| row
+                    .right
+                    .iter()
+                    .all(|span| span.text != refresh_button_text()))
         );
         state.panes[0].ci = None;
         assert!(
@@ -1689,7 +1740,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_ci_deduplicates_shared_commit_and_exposes_exact_checks() {
+    fn workspace_ci_deduplicates_shared_commit_and_summarizes_sources_without_jobs() {
         let mut state = snapshot();
         let mut duplicate = state.panes[0].clone();
         duplicate.id = "2".to_owned();
@@ -1702,7 +1753,7 @@ mod tests {
             rows.iter()
                 .filter(|row| row.plain().contains("unit tests"))
                 .count(),
-            1
+            0
         );
         assert_eq!(popup.sections.len(), 1);
         assert!(
@@ -1727,6 +1778,28 @@ mod tests {
         );
         state.panes[1].ci.as_mut().unwrap().head_sha = "different-current-commit".to_owned();
         assert_eq!(workspace_ci(&state, "workspace").len(), 2);
+        state.panes[1].ci.as_mut().unwrap().fetch_state = CiFetchState::Unavailable;
+        state.panes[1].ci.as_mut().unwrap().error = Some("provider unavailable 日本語".repeat(30));
+        let workspace_rows = tooltip(&Item::Workspace("workspace".to_owned()), &state).rows();
+        let summaries: Vec<_> = workspace_rows
+            .iter()
+            .filter(|row| row.refresh.is_some())
+            .collect();
+        assert_eq!(summaries.len(), 2);
+        assert!(summaries.iter().all(|row| row.truncate));
+        assert!(
+            summaries
+                .iter()
+                .any(|row| row.plain().contains("Unavailable")
+                    && row.plain().contains("provider unavailable 日本語")
+                    && row.plain().contains("stale"))
+        );
+        assert!(
+            !workspace_rows
+                .iter()
+                .any(|row| row.plain().contains("unit tests"))
+        );
+
         let popup = tooltip(&Item::Pane("1".to_owned()), &state);
         let rows = popup.rows();
         assert!(popup.intro.iter().any(|row| {
@@ -2050,18 +2123,6 @@ mod tests {
         ] {
             assert_eq!(duration(seconds), expected);
         }
-        let snapshot = ci(CiStatus::Passed);
-        let rows = ci_rows(&snapshot);
-        let check = rows.iter().find(|row| row.truncate).unwrap();
-        assert_eq!(
-            check
-                .right
-                .iter()
-                .map(|span| span.text.as_str())
-                .collect::<String>(),
-            "2:03"
-        );
-        assert!(!check.plain().contains("12"));
     }
 
     #[test]
@@ -2255,12 +2316,6 @@ mod tests {
                 .filter(|row| row.link.as_deref() == Some("https://github.com/owner/repo"))
                 .count(),
             1
-        );
-        assert_eq!(
-            rows.iter()
-                .filter(|row| row.plain().contains("unit tests"))
-                .count(),
-            2
         );
         assert_eq!(
             rows.iter()
