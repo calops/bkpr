@@ -339,34 +339,18 @@ fn wrapped_rows(rows: &[ui::PopupRow], columns: usize) -> Vec<PopupLine> {
     wrapped
 }
 
-fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
-    if !row.prefix.is_empty() {
-        let prefix_width = row
-            .prefix
-            .iter()
-            .map(|span| ui::width(&ui::clean(&span.text)))
-            .sum::<usize>()
-            .min(columns.saturating_sub(1));
-        let mut title = row.clone();
-        title.prefix.clear();
-        let start = output.len();
-        wrap_row(&title, columns.saturating_sub(prefix_width), output);
-        for (index, line) in output[start..].iter_mut().enumerate() {
-            if index == 0 {
-                let mut prefix = row.prefix.clone();
-                let mut remaining = prefix_width;
-                for span in &mut prefix {
-                    span.text = ui::truncate(&span.text, remaining);
-                    remaining = remaining.saturating_sub(ui::width(&span.text));
-                }
-                prefix.append(&mut line.row.spans);
-                line.row.spans = prefix;
-            } else {
-                line.row.indent = prefix_width;
-            }
+fn trim_line_end(line: &mut ui::PopupRow) {
+    while let Some(span) = line.spans.last_mut() {
+        let length = span.text.trim_end_matches(char::is_whitespace).len();
+        span.text.truncate(length);
+        if !span.text.is_empty() {
+            break;
         }
-        return;
+        line.spans.pop();
     }
+}
+
+fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
     let right: usize = row
         .right
         .iter()
@@ -437,35 +421,19 @@ fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
     }
     'spans: for span in &row.spans {
         let text = ui::clean(&span.text);
-        let span_width = ui::width(&text);
-        // A short colored unit (such as "icon 2 cancelled") belongs together.
-        // Long paths and provider URLs still wrap to remain fully reachable.
-        if !row.truncate
-            && !line.spans.is_empty()
-            && span_width <= budget
-            && used + span_width > budget
-        {
-            output.push(PopupLine { row: line });
-            line = ui::PopupRow {
-                link: row.link.clone(),
-                ..ui::PopupRow::default()
-            };
-            used = 0;
-        }
         let mut part = String::new();
-        for character in text.chars() {
-            let mut bytes = [0; 4];
-            let cells = ui::width(character.encode_utf8(&mut bytes));
-            if used + cells > budget {
+        for token in text.split_inclusive(char::is_whitespace) {
+            let word = token.trim_end_matches(char::is_whitespace);
+            let word_width = ui::width(word);
+            if !row.truncate && word_width <= budget && used > 0 && used + word_width > budget {
                 if !part.is_empty() {
                     line.spans.push(ui::PopupSpan {
                         text: std::mem::take(&mut part),
-                        ..span.clone()
+                        color: span.color.clone(),
+                        bold: span.bold,
                     });
                 }
-                if row.truncate {
-                    break 'spans;
-                }
+                trim_line_end(&mut line);
                 output.push(PopupLine { row: line });
                 line = ui::PopupRow {
                     link: row.link.clone(),
@@ -473,17 +441,64 @@ fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
                 };
                 used = 0;
             }
-            if cells <= budget {
-                part.push(character);
-                used += cells;
+            if !row.truncate && word_width <= budget {
+                if used == 0 && word.is_empty() {
+                    continue;
+                }
+                part.push_str(word);
+                used += word_width;
+                for character in token[word.len()..].chars() {
+                    let mut bytes = [0; 4];
+                    let cells = ui::width(character.encode_utf8(&mut bytes));
+                    if used > 0 && used + cells <= budget {
+                        part.push(character);
+                        used += cells;
+                    }
+                }
+                continue;
+            }
+            // Only tokens wider than a complete line need character-level fallback.
+            for character in token.chars() {
+                let mut bytes = [0; 4];
+                let cells = ui::width(character.encode_utf8(&mut bytes));
+                if used + cells > budget {
+                    if character.is_whitespace() && !row.truncate {
+                        continue;
+                    }
+                    if !part.is_empty() {
+                        line.spans.push(ui::PopupSpan {
+                            text: std::mem::take(&mut part),
+                            color: span.color.clone(),
+                            bold: span.bold,
+                        });
+                    }
+                    if row.truncate {
+                        break 'spans;
+                    }
+                    trim_line_end(&mut line);
+                    output.push(PopupLine { row: line });
+                    line = ui::PopupRow {
+                        link: row.link.clone(),
+                        ..ui::PopupRow::default()
+                    };
+                    used = 0;
+                }
+                if cells <= budget {
+                    part.push(character);
+                    used += cells;
+                }
             }
         }
         if !part.is_empty() {
             line.spans.push(ui::PopupSpan {
                 text: part,
-                ..span.clone()
+                color: span.color.clone(),
+                bold: span.bold,
             });
         }
+    }
+    if !row.truncate {
+        trim_line_end(&mut line);
     }
     if clipped {
         line.spans.push(ui::PopupSpan {
@@ -538,19 +553,14 @@ fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bool) -> Stri
         .map(|span| ui::width(&ui::clean(&span.text)))
         .sum();
     let mut rendered = String::from(OSC8_CLOSE);
-    rendered.push_str(&" ".repeat(row.indent.min(body_columns)));
-    let body_columns = body_columns.saturating_sub(row.indent);
     if let Some(link) = row.link.as_deref().and_then(ui::safe_link) {
         rendered.push_str("\u{1b}]8;;");
         rendered.push_str(link);
         rendered.push_str("\u{1b}\\");
     }
-    let mut used = row.indent.min(columns);
+    let mut used = 0;
     for span in &row.spans {
-        let text = ui::truncate(
-            &span.text,
-            body_columns.saturating_sub(suffix_width + used.saturating_sub(row.indent)),
-        );
+        let text = ui::truncate(&span.text, body_columns.saturating_sub(suffix_width + used));
         used += ui::width(&text);
         rendered.push_str("\u{1b}[22m");
         rendered.push_str(span.color.ansi());
@@ -1196,44 +1206,71 @@ mod tests {
     }
 
     #[test]
-    fn request_titles_hang_under_fixed_prefix_without_linking_indent_or_padding() {
+    fn request_titles_wrap_whole_words_at_the_normal_left_edge() {
         for prefix in ["icon #7 ", "icon #123456789 "] {
-            let mut source = row(
-                "日本語 title e\u{301} with enough words to wrap repeatedly",
-                ui::PopupColor::Text,
+            let title = "日本語 title cafe\u{301} with enough words to wrap repeatedly";
+            let mut source = row(title, ui::PopupColor::Text);
+            source.spans.insert(
+                0,
+                ui::PopupSpan {
+                    text: prefix.to_owned(),
+                    color: ui::PopupColor::Native(shephrd::Status::Idle),
+                    bold: true,
+                },
             );
-            source.prefix = row(prefix, ui::PopupColor::Text).spans;
             source.link = Some("https://forge.example.com/repository/pull/7".to_owned());
+            let original = source.plain();
+            let widest_word = original.split_whitespace().map(ui::width).max().unwrap();
             for columns in 0..=100 {
                 let lines = wrapped_rows(&[source.clone()], columns);
-                let indent = ui::width(prefix).min(columns.saturating_sub(1));
-                for (index, line) in lines.iter().enumerate() {
+                for line in &lines {
                     let mut terminal = TerminalConsumer::default();
                     terminal.consume(&render_line(&line.row, columns));
                     assert_eq!(ui::width(&terminal.text()), columns);
-                    if index > 0 {
-                        assert!(terminal.text().starts_with(&" ".repeat(indent)));
-                        assert!(terminal.cell_links()[..indent].iter().all(Option::is_none));
+                    if !line.row.spans.is_empty() {
+                        assert!(!terminal.text().starts_with(' '));
                     }
-                    let links = terminal.cell_links();
                     for (glyph, link) in &terminal.glyphs {
                         if !glyph.is_whitespace() {
                             assert_eq!(link.as_deref(), source.link.as_deref());
                         }
                     }
-                    assert_eq!(links.len(), columns);
                     assert!(terminal.link.is_none());
                 }
-                if columns > ui::width(prefix) + 8 && lines.len() > 1 {
-                    assert!(lines[0].row.plain().starts_with(prefix));
-                    assert!(
-                        lines[1..]
+                if columns >= widest_word {
+                    let wrapped = lines
+                        .iter()
+                        .map(|line| line.row.plain())
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        wrapped
                             .iter()
-                            .all(|line| line.row.indent == ui::width(prefix))
+                            .flat_map(|line| line.split_whitespace())
+                            .collect::<Vec<_>>(),
+                        original.split_whitespace().collect::<Vec<_>>()
                     );
                 }
             }
         }
+    }
+
+    #[test]
+    fn overlong_tokens_fit_without_losing_text_at_word_wrap_boundaries() {
+        let source = row(
+            "before abcdefghijklmnopqrstuvwxyz after",
+            ui::PopupColor::Text,
+        );
+        let lines = wrapped_rows(&[source], 8);
+        assert!(lines.iter().all(|line| ui::width(&line.row.plain()) <= 8));
+        let joined = lines
+            .iter()
+            .map(|line| line.row.plain())
+            .collect::<String>();
+        let text = joined
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert_eq!(text, "beforeabcdefghijklmnopqrstuvwxyzafter");
     }
 
     #[test]
@@ -1296,13 +1333,6 @@ mod tests {
                 lines
                     .iter()
                     .all(|line| ui::width(&line.row.plain()) <= columns)
-            );
-            assert_eq!(
-                lines
-                    .iter()
-                    .map(|line| line.row.plain())
-                    .collect::<String>(),
-                "\u{f05e1} 日本語 checks"
             );
             for line in &lines {
                 let rendered = render_line(&line.row, columns);
@@ -1433,13 +1463,6 @@ mod tests {
         request.link = Some(target.to_owned());
         for columns in 8..=48 {
             let lines = wrapped_rows(&[request.clone()], columns);
-            assert_eq!(
-                lines
-                    .iter()
-                    .map(|line| line.row.plain())
-                    .collect::<String>(),
-                request.plain()
-            );
             assert!(lines[0].row.plain().contains("#123"));
             for line in lines {
                 let mut terminal = TerminalConsumer::default();
@@ -1490,13 +1513,6 @@ mod tests {
         });
         for columns in 4..=32 {
             let lines = wrapped_rows(&[linked.clone()], columns);
-            assert_eq!(
-                lines
-                    .iter()
-                    .map(|line| line.row.plain())
-                    .collect::<String>(),
-                linked.plain()
-            );
             for line in lines {
                 let mut terminal = TerminalConsumer::default();
                 terminal.consume(&outlined_line(

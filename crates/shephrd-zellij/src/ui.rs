@@ -464,12 +464,6 @@ impl PopupSpan {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PopupRow {
-    /// First-line linked prefix; wrapped titles hang under its end.
-    #[serde(default)]
-    pub prefix: Vec<PopupSpan>,
-    /// Unlinked leading cells on a wrapped continuation.
-    #[serde(default)]
-    pub indent: usize,
     pub spans: Vec<PopupSpan>,
     /// Body suffix kept visible when a long branch name is truncated.
     #[serde(default)]
@@ -501,9 +495,8 @@ impl PopupRow {
     }
 
     pub fn plain(&self) -> String {
-        self.prefix
+        self.spans
             .iter()
-            .chain(&self.spans)
             .chain(&self.suffix)
             .map(|span| clean(&span.text))
             .collect()
@@ -631,15 +624,17 @@ fn forge_repository(ci: &CiSnapshot, project: Option<&ProjectIdentity>) -> Popup
 
 fn request_row(request: &shephrd::ci_contract::ChangeRequest) -> PopupRow {
     PopupRow {
-        prefix: vec![PopupSpan::new(
-            format!(
-                "{}  #{} ",
-                request_presentation(request.state).0,
-                request.number
+        spans: vec![
+            PopupSpan::new(
+                format!(
+                    "{}  #{} ",
+                    request_presentation(request.state).0,
+                    request.number
+                ),
+                PopupColor::ChangeRequest(request.state),
             ),
-            PopupColor::ChangeRequest(request.state),
-        )],
-        spans: vec![PopupSpan::new(request.title.clone(), PopupColor::Text)],
+            PopupSpan::new(request.title.clone(), PopupColor::Text),
+        ],
         link: safe_link(&request.url).map(str::to_owned),
         ..PopupRow::default()
     }
