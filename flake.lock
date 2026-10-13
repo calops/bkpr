@@ -1,29 +1,5 @@
 {
   "nodes": {
-    "herdr": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ],
-        "rust-overlay": [
-          "rust-overlay"
-        ]
-      },
-      "locked": {
-        "lastModified": 1790708764,
-        "narHash": "sha256-uu452Xe23pSvFk7w7fKPjiaqY5QenUIljao2SFAxpc0=",
-        "owner": "herdrdev",
-        "repo": "herdr",
-        "rev": "7b116c05bfda646af39d2524c54e70c751f57ee8",
-        "type": "github"
-      },
-      "original": {
-        "owner": "herdrdev",
-        "ref": "v0.9.3",
-        "repo": "herdr",
-        "type": "github"
-      }
-    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1789546076,
@@ -42,7 +18,6 @@
     },
     "root": {
       "inputs": {
-        "herdr": "herdr",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay"
       }

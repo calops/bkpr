@@ -2,11 +2,9 @@ mod native;
 mod overlay;
 mod ui;
 
-use serde_json::from_slice;
-use shephrd::{Action, Effect, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Request, Response, Snapshot};
+use shephrd::{Action, Effect, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Request, Snapshot};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write;
-use std::path::Path;
 use std::time::{Duration, Instant};
 use ui::{Item, Modal};
 use zellij_tile::prelude::*;
@@ -48,7 +46,6 @@ struct Frontend {
     id: u32,
     client_id: u16,
     overlay_role: bool,
-    native_mode: bool,
     native_owner_role: bool,
     native_owner: native::Owner,
     native_owner_id: Option<u32>,
@@ -63,13 +60,10 @@ struct Frontend {
     theme: ui::Theme,
     granted: bool,
     snapshot: Option<Snapshot>,
-    state_buffers: BTreeMap<String, String>,
     error: Option<String>,
     queue: VecDeque<Request>,
     in_flight: Option<Request>,
-    close_targets: Vec<u32>,
     request_id: u64,
-    panes: BTreeMap<u32, String>,
     manifest: PaneManifest,
     tabs: Vec<TabInfo>,
     native_focus: Option<u32>,
@@ -156,20 +150,6 @@ impl Frontend {
     }
 
     fn enqueue(&mut self, action: Action) {
-        // Background registration/focus notifications can arrive more than once.
-        if !self.native_mode
-            && matches!(
-                &action,
-                Action::RegisterPane { .. } | Action::FocusPane { .. } | Action::Snapshot
-            )
-            && (self.queue.iter().any(|request| request.action == action)
-                || self
-                    .in_flight
-                    .as_ref()
-                    .is_some_and(|request| request.action == action))
-        {
-            return;
-        }
         self.request_id = self.request_id.saturating_add(1);
         let item = match &action {
             Action::SelectWorkspace { workspace_id } => Some(Item::Workspace(workspace_id.clone())),
@@ -326,82 +306,23 @@ impl Frontend {
         let Some(request) = self.queue.pop_front() else {
             return;
         };
-        self.close_targets = self
-            .panes
-            .iter()
-            .filter_map(|(native, public)| {
-                let closes = match &request.action {
-                    Action::ClosePane { pane_id } => pane_id == public,
-                    Action::CloseWorkspace { workspace_id } => {
-                        self.snapshot.as_ref().is_some_and(|state| {
-                            state.panes.iter().any(|pane| {
-                                &pane.id == public && &pane.workspace_id == workspace_id
-                            })
-                        })
-                    }
-                    _ => false,
-                };
-                closes.then_some(*native)
-            })
-            .collect();
-        if self.native_mode {
-            if let Err(error) = native::send(
-                self.native_owner_id,
-                &self.native_client,
-                self.client_id,
-                &request,
-            ) {
-                self.error = Some(format!("Cannot encode native request: {error}"));
-                self.finish_selection(request.request_id, true);
-            } else {
-                self.in_flight = Some(request);
-            }
-            return;
+        if let Err(error) = native::send(
+            self.native_owner_id,
+            &self.native_client,
+            self.client_id,
+            &request,
+        ) {
+            self.error = Some(format!("Cannot encode native request: {error}"));
+            self.finish_selection(request.request_id, true);
+        } else {
+            self.in_flight = Some(request);
         }
-        let json = match serde_json::to_string(&request) {
-            Ok(json) => json,
-            Err(error) => {
-                self.error = Some(format!("Cannot encode request: {error}"));
-                self.finish_selection(request.request_id, true);
-                return;
-            }
-        };
-        let Some(program) = self.configuration.get("program") else {
-            return;
-        };
-        let Some(socket) = self.configuration.get("socket") else {
-            return;
-        };
-        let context =
-            BTreeMap::from([("shephrd_request".to_owned(), request.request_id.to_string())]);
-        run_command(
-            &[program, "request", "--socket", socket, "--json", &json],
-            context,
-        );
-        self.in_flight = Some(request);
     }
 
     fn startup(&mut self) {
-        if self.native_mode {
-            self.error = None;
-            self.enqueue(Action::RegisterFrontend);
-            self.enqueue(Action::Snapshot);
-            return;
-        }
         self.error = None;
         self.enqueue(Action::RegisterFrontend);
         self.enqueue(Action::Snapshot);
-        let mappings: Vec<_> = self
-            .panes
-            .iter()
-            .map(|(native, public)| (public.clone(), *native))
-            .collect();
-        for (pane_id, zellij_pane_id) in mappings {
-            self.enqueue(Action::RegisterPane {
-                pane_id,
-                zellij_pane_id,
-            });
-        }
     }
 
     fn native_response(&mut self, envelope: native::NativeResponse) {
@@ -430,7 +351,7 @@ impl Frontend {
         } else {
             let valid = response
                 .state
-                .map(|state| self.accept_snapshot(state, true))
+                .map(|state| self.accept_snapshot(state))
                 .unwrap_or(true);
             if let Some(error) = response.error {
                 self.error = Some(error);
@@ -457,19 +378,15 @@ impl Frontend {
         self.dispatch();
     }
 
-    fn validate_snapshot(
-        &self,
-        state: &Snapshot,
-        allow_instance_change: bool,
-    ) -> Result<bool, String> {
+    fn validate_snapshot(&self, state: &Snapshot) -> Result<bool, String> {
         if state.protocol != PROTOCOL_VERSION {
             return Err(format!(
-                "Unsupported companion protocol {} (need {PROTOCOL_VERSION})",
+                "Unsupported native owner protocol {} (need {PROTOCOL_VERSION})",
                 state.protocol
             ));
         }
         if state.instance_id.is_empty() {
-            return Err("Missing companion instance identity".to_owned());
+            return Err("Missing native owner instance identity".to_owned());
         }
         if let Some(current) = &self.snapshot
             && current.instance_id == state.instance_id
@@ -481,17 +398,9 @@ impl Frontend {
                 return if state == current {
                     Ok(false)
                 } else {
-                    Err("Conflicting state at the same companion revision".to_owned())
+                    Err("Conflicting state at the same native owner revision".to_owned())
                 };
             }
-        }
-        if !allow_instance_change
-            && self
-                .snapshot
-                .as_ref()
-                .is_some_and(|current| current.instance_id != state.instance_id)
-        {
-            return Err("Companion restarted; press R to reconnect".to_owned());
         }
         let workspaces: BTreeSet<_> = state.workspaces.iter().map(|w| w.id.as_str()).collect();
         let panes: BTreeSet<_> = state.panes.iter().map(|p| p.id.as_str()).collect();
@@ -504,13 +413,13 @@ impl Frontend {
                 .iter()
                 .any(|p| !workspaces.contains(p.workspace_id.as_str()))
         {
-            return Err("Malformed companion workspace/pane identities".to_owned());
+            return Err("Malformed native owner workspace/pane identities".to_owned());
         }
         Ok(true)
     }
 
-    fn accept_snapshot(&mut self, state: Snapshot, allow_instance_change: bool) -> bool {
-        match self.validate_snapshot(&state, allow_instance_change) {
+    fn accept_snapshot(&mut self, state: Snapshot) -> bool {
+        match self.validate_snapshot(&state) {
             Ok(true) => {
                 if self
                     .snapshot
@@ -519,8 +428,7 @@ impl Frontend {
                 {
                     self.reset_pending_actions();
                 }
-                let follow_focus = self.native_mode
-                    && self.desired_selection.is_none()
+                let follow_focus = self.desired_selection.is_none()
                     && self.relayed_selection.is_none()
                     && !self.local_selection
                     && self.modal.is_none()
@@ -551,59 +459,6 @@ impl Frontend {
                 false
             }
         }
-    }
-
-    fn state_pipe(&mut self, source: &str, payload: Option<String>) -> bool {
-        let mut buffer = self.state_buffers.remove(source).unwrap_or_default();
-        let ended = payload.is_none();
-        if let Some(payload) = payload {
-            let buffered = self.state_buffers.values().map(String::len).sum::<usize>();
-            if buffer
-                .len()
-                .saturating_add(payload.len())
-                .saturating_add(buffered)
-                > MAX_MESSAGE_BYTES
-            {
-                self.error = Some("Oversized companion state stream ignored".to_owned());
-                return true;
-            }
-            buffer.push_str(&payload);
-        }
-        while let Some(newline) = buffer.find('\n') {
-            let line = buffer[..newline].trim();
-            if !line.is_empty() {
-                match serde_json::from_str::<Snapshot>(line) {
-                    Ok(state) => {
-                        self.accept_snapshot(state, false);
-                    }
-                    Err(error) => {
-                        self.error =
-                            Some(format!("Malformed companion state update ignored: {error}"))
-                    }
-                }
-            }
-            buffer.drain(..=newline);
-        }
-        if !buffer.trim().is_empty() {
-            // CLI -- payloads may be complete without a newline. STDIN chunks retain an
-            // incomplete object until the next record boundary or EOF.
-            match serde_json::from_str::<Snapshot>(&buffer) {
-                Ok(state) => {
-                    self.accept_snapshot(state, false);
-                }
-                Err(error) if error.is_eof() && !ended => {
-                    if self.state_buffers.len() < 4 {
-                        self.state_buffers.insert(source.to_owned(), buffer);
-                    } else {
-                        self.error = Some("Too many concurrent companion state streams".to_owned());
-                    }
-                }
-                Err(error) => {
-                    self.error = Some(format!("Malformed companion state update ignored: {error}"))
-                }
-            }
-        }
-        true
     }
 
     fn reconcile_cursor(&mut self) {
@@ -658,7 +513,7 @@ impl Frontend {
                         Item::Workspace(pane.workspace_id.clone())
                     }
                 });
-        } else if self.native_mode && !self.local_selection && self.modal.is_none() {
+        } else if !self.local_selection && self.modal.is_none() {
             self.cursor = state
                 .focused_pane_id
                 .as_ref()
@@ -700,263 +555,29 @@ impl Frontend {
         self.finish_user_action();
     }
 
-    fn response(
-        &mut self,
-        code: Option<i32>,
-        stdout: Vec<u8>,
-        stderr: Vec<u8>,
-        context: BTreeMap<String, String>,
-    ) {
-        let Some(id) = context
-            .get("shephrd_request")
-            .and_then(|id| id.parse::<u64>().ok())
-        else {
-            return;
-        };
-        if self
-            .in_flight
-            .as_ref()
-            .is_none_or(|request| request.request_id != id)
-        {
-            return;
-        }
-        let Some(request) = self.in_flight.take() else {
-            return;
-        };
-        let close_targets = std::mem::take(&mut self.close_targets);
-        let response = if stdout.len() <= MAX_MESSAGE_BYTES {
-            from_slice::<Response>(&stdout).ok()
-        } else {
-            None
-        };
-        let mut failed = true;
-        match response {
-            Some(response)
-                if response.protocol == PROTOCOL_VERSION
-                    && response.request_id == request.request_id =>
-            {
-                let valid = response
-                    .state
-                    .map(|state| self.accept_snapshot(state, true))
-                    .unwrap_or(true);
-                if let Some(error) = response.error {
-                    self.error = Some(error);
-                } else if code != Some(0) {
-                    self.error = Some(format!(
-                        "Companion request exited {:?}: {}",
-                        code,
-                        ui::clean(&String::from_utf8_lossy(&stderr))
-                    ));
-                } else if valid {
-                    failed = false;
-                    if !matches!(
-                        request.action,
-                        Action::RegisterPane { .. }
-                            | Action::PaneClosed { .. }
-                            | Action::FocusPane { .. }
-                            | Action::Snapshot
-                    ) {
-                        self.error = None;
-                    }
-                    if matches!(
-                        request.action,
-                        Action::CreateWorkspace { .. } | Action::CreatePane { .. }
-                    ) && let Some(state) = &self.snapshot
-                        && let Some(focused) = &state.focused_pane_id
-                    {
-                        self.cursor = Some(Item::Pane(focused.clone()));
-                        if let Some(pane) = state.panes.iter().find(|pane| &pane.id == focused) {
-                            self.collapsed.remove(&pane.workspace_id);
-                        }
-                        self.reconcile_cursor();
-                    }
-                    for native in close_targets {
-                        close_terminal_pane(native);
-                    }
-                    for effect in response.effects {
-                        self.effect(effect);
-                    }
-                }
-            }
-            Some(response) => {
-                self.error = Some(format!(
-                    "Invalid response protocol/request identity ({}/{})",
-                    response.protocol, response.request_id
-                ))
-            }
-            None => {
-                self.error = Some(format!(
-                    "Companion request failed ({code:?}): {}",
-                    if stderr.is_empty() {
-                        "invalid or oversized JSON response".to_owned()
-                    } else {
-                        ui::truncate(&String::from_utf8_lossy(&stderr), 512)
-                    }
-                ))
-            }
-        }
-        self.finish_selection(request.request_id, failed);
-        self.dispatch();
-    }
-
     fn effect(&mut self, effect: Effect) {
-        match effect {
-            Effect::FocusPane { zellij_pane_id } => {
-                let exists = self
-                    .manifest
-                    .panes
-                    .values()
-                    .flatten()
-                    .any(|pane| !pane.is_plugin && pane.id == zellij_pane_id);
-                if exists {
-                    self.leave_control(false);
-                    switch_to_input_mode(&InputMode::Locked);
-                    focus_terminal_pane(zellij_pane_id, false, false);
-                } else {
-                    self.error = Some(format!(
-                        "Native pane {zellij_pane_id} is no longer open; select again"
-                    ));
-                    self.panes.remove(&zellij_pane_id);
-                    if self.native_mode {
-                        self.enqueue(Action::Snapshot);
-                    } else {
-                        self.enqueue(Action::PaneClosed { zellij_pane_id });
-                    }
-                }
-            }
-            Effect::OpenPane { pane_id, command } => {
-                if self.native_mode {
-                    self.error = Some("Native owner returned an attachment effect".to_owned());
-                    return;
-                }
-                if let Some((&native_id, _)) =
-                    self.panes.iter().find(|(_, public)| *public == &pane_id)
-                {
-                    if get_pane_info(PaneId::Terminal(native_id)).is_some() {
-                        self.leave_control(false);
-                        switch_to_input_mode(&InputMode::Locked);
-                        focus_terminal_pane(native_id, false, false);
-                        return;
-                    }
-                    self.panes.remove(&native_id);
-                    self.enqueue(Action::PaneClosed {
-                        zellij_pane_id: native_id,
-                    });
-                }
-                let tab_name = self.snapshot.as_ref().and_then(|state| {
-                    let pane = state.panes.iter().find(|pane| pane.id == pane_id)?;
-                    let workspace = state
-                        .workspaces
-                        .iter()
-                        .find(|workspace| workspace.id == pane.workspace_id)?;
-                    Some(format!(
-                        "{} · {}",
-                        ui::clean(&workspace.name),
-                        ui::clean(&pane.name)
-                    ))
-                });
-                let Some(tab_name) = tab_name else {
-                    self.error = Some(format!("Attachment {pane_id} has no workspace"));
-                    return;
-                };
-                let sidebar_width = self
-                    .manifest
-                    .panes
-                    .values()
-                    .flatten()
-                    .find(|pane| pane.is_plugin && pane.id == self.id)
-                    .map_or(self.columns, |pane| pane.pane_columns);
-                let layout = match shephrd::attachment_layout(
-                    &self.configuration["plugin_url"],
-                    &self.configuration,
-                    &pane_id,
-                    &command,
-                    &tab_name,
-                    sidebar_width,
-                ) {
-                    Ok(layout) => layout,
-                    Err(error) => {
-                        self.error = Some(format!("Could not build attachment tab: {error}"));
-                        return;
-                    }
-                };
-                switch_to_input_mode(&InputMode::Locked);
-                if new_tabs_with_layout(&layout).is_empty() {
-                    self.error = Some(format!("Zellij could not open attachment tab {pane_id}"));
-                }
-            }
-            Effect::Attachment { .. } => {
-                self.error =
-                    Some("Companion returned an attachment-only effect to the sidebar".to_owned())
-            }
-        }
-    }
-
-    fn register_pane(&mut self, native_id: u32, public_id: String) {
-        if self.panes.get(&native_id) == Some(&public_id) {
-            return;
-        }
-        self.panes.insert(native_id, public_id.clone());
-        self.enqueue(Action::RegisterPane {
-            pane_id: public_id,
-            zellij_pane_id: native_id,
-        });
-    }
-
-    fn forget_pane(&mut self, id: u32) {
-        if self.panes.remove(&id).is_some() {
-            self.enqueue(Action::PaneClosed { zellij_pane_id: id });
-        }
-        if self.native_focus == Some(id) {
-            self.native_focus = None;
-        }
-    }
-
-    fn close_attachment(&mut self, id: u32) {
-        // The command is only a proxy. Dropping it must not kill a live Herdr PTY.
-        self.forget_pane(id);
-        close_terminal_pane(id);
-    }
-
-    fn pane_update(&mut self, manifest: PaneManifest) {
-        if self.native_mode {
-            self.manifest = manifest;
-            self.reconcile_cursor();
-            self.synchronize_focus();
-            self.refresh_tooltip();
-            return;
-        }
-        let initial: Vec<_> = manifest
-            .panes
-            .values()
-            .flatten()
-            .filter(|pane| !pane.is_plugin && !pane.exited)
-            .filter_map(|pane| {
-                pane.title
-                    .strip_prefix("shephrd:")
-                    .filter(|id| !id.is_empty())
-                    .map(|id| (pane.id, id.to_owned()))
-            })
-            .collect();
-        self.manifest = manifest;
-        for (native, public) in initial {
-            self.register_pane(native, public);
-        }
-        let exited: Vec<_> = self
+        let Effect::FocusPane { zellij_pane_id } = effect;
+        let exists = self
             .manifest
             .panes
             .values()
             .flatten()
-            .filter(|pane| {
-                !pane.is_plugin
-                    && pane.exited
-                    && (self.panes.contains_key(&pane.id) || pane.title.starts_with("shephrd:"))
-            })
-            .map(|pane| pane.id)
-            .collect();
-        for id in exited {
-            self.close_attachment(id);
+            .any(|pane| !pane.is_plugin && pane.id == zellij_pane_id);
+        if exists {
+            self.leave_control(false);
+            switch_to_input_mode(&InputMode::Locked);
+            focus_terminal_pane(zellij_pane_id, false, false);
+        } else {
+            self.error = Some(format!(
+                "Native pane {zellij_pane_id} is no longer open; select again"
+            ));
+            self.enqueue(Action::Snapshot);
         }
+    }
+
+    fn pane_update(&mut self, manifest: PaneManifest) {
+        self.manifest = manifest;
+        self.reconcile_cursor();
         self.synchronize_focus();
         self.refresh_tooltip();
     }
@@ -995,8 +616,7 @@ impl Frontend {
                 self.leave_control(false);
             }
         }
-        if self.native_mode
-            && self.local_selection
+        if self.local_selection
             && !self.keyboard_control
             && focus_known
             && !sidebar_focused
@@ -1011,20 +631,6 @@ impl Frontend {
             return;
         }
         self.native_focus = focused;
-        if self.native_mode {
-            return;
-        }
-        let Some(public) = focused.and_then(|native| self.panes.get(&native)).cloned() else {
-            return;
-        };
-        if self
-            .snapshot
-            .as_ref()
-            .and_then(|state| state.focused_pane_id.as_ref())
-            != Some(&public)
-        {
-            self.enqueue(Action::FocusPane { pane_id: public });
-        }
     }
 
     fn selection_pending(&self) -> bool {
@@ -1066,7 +672,7 @@ impl Frontend {
         let PipeSource::Plugin(source) = source else {
             return None;
         };
-        if !self.native_mode || !self.granted || !self.visible || self.modal.is_some() {
+        if !self.granted || !self.visible || self.modal.is_some() {
             return None;
         }
         let content = ui::tooltip(self.popup_item.as_ref()?, self.snapshot.as_ref()?);
@@ -1561,10 +1167,7 @@ impl Frontend {
         let heading = self
             .snapshot
             .as_ref()
-            .map(|state| match &state.machine {
-                Some(machine) => format!("shephrd · {} · {machine}", state.session),
-                None => format!("shephrd · {}", state.session),
-            })
+            .map(|state| format!("shephrd · {}", state.session))
             .unwrap_or_else(|| "shephrd".to_owned());
         let status = if let Some(error) = &self.error {
             error.clone()
@@ -1575,8 +1178,8 @@ impl Frontend {
                 state
                     .error
                     .clone()
-                    .unwrap_or_else(|| "Herdr disconnected".to_owned())
-            } else if self.native_mode && state.error.is_some() {
+                    .unwrap_or_else(|| "Native owner unavailable".to_owned())
+            } else if state.error.is_some() {
                 state.error.clone().unwrap_or_default()
             } else if self.synchronizing(Instant::now()) {
                 "Synchronizing…".to_owned()
@@ -1584,16 +1187,9 @@ impl Frontend {
                 String::new()
             }
         } else {
-            if self.native_mode {
-                "Connecting to native owner…".to_owned()
-            } else {
-                "Connecting to companion…".to_owned()
-            }
+            "Connecting to native owner…".to_owned()
         };
-        let modal_render = self
-            .modal
-            .as_ref()
-            .map(|modal| modal.lines(columns, self.native_mode));
+        let modal_render = self.modal.as_ref().map(|modal| modal.lines(columns));
         // Host commands share stdout with rendering; emit them before any terminal bytes.
         let cursor = modal_render
             .as_ref()
@@ -1622,14 +1218,7 @@ impl Frontend {
                 format!(
                     "{}{}{}",
                     ui::MUTED,
-                    ui::fit(
-                        if self.native_mode {
-                            "↑↓ select · Enter focus · Space fold"
-                        } else {
-                            "↑↓ select · Enter attach · Space fold"
-                        },
-                        columns
-                    ),
+                    ui::fit("↑↓ select · Enter focus · Space fold", columns),
                     ui::RESET
                 )
             } else if row == rows.saturating_sub(1) {
@@ -1750,7 +1339,6 @@ impl ZellijPlugin for Frontend {
         self.overlay_role = configuration
             .get("role")
             .is_some_and(|role| role == "overlay");
-        self.native_mode = configuration.get("mode").map(String::as_str) == Some("native");
         self.native_owner_role =
             configuration.get("role").map(String::as_str) == Some("native-owner");
         self.native_client = format!(
@@ -1779,37 +1367,14 @@ impl ZellijPlugin for Frontend {
             EventType::Timer,
             EventType::PaneUpdate,
             EventType::TabUpdate,
-            EventType::RunCommandResult,
-            EventType::CommandPaneExited,
             EventType::PaneClosed,
             EventType::Visible,
             EventType::BeforeClose,
             EventType::PastedText,
         ]);
-        let valid = if self.native_mode {
-            native::configuration_valid(&self.configuration, "sidebar")
-        } else {
-            self.configuration.get("role").map(String::as_str) == Some("sidebar")
-                && self.configuration.len() == 4
-                && self
-                    .configuration
-                    .get("socket")
-                    .is_some_and(|path| Path::new(path).is_absolute())
-                && self
-                    .configuration
-                    .get("program")
-                    .is_some_and(|path| Path::new(path).is_absolute())
-                && self
-                    .configuration
-                    .get("plugin_url")
-                    .is_some_and(|url| url.starts_with("file:"))
-        };
+        let valid = native::configuration_valid(&self.configuration, "sidebar");
         if !valid {
-            self.error = Some(if self.native_mode {
-                "Invalid native sidebar configuration".to_owned()
-            } else {
-                "Invalid sidebar configuration: role/socket/program/plugin_url required".to_owned()
-            });
+            self.error = Some("Invalid native sidebar configuration".to_owned());
             return;
         }
         let version = get_zellij_version();
@@ -1837,10 +1402,7 @@ impl ZellijPlugin for Frontend {
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
                 self.error = Some("Required permissions denied; reload to authorize".to_owned())
             }
-            Event::RunCommandResult(code, stdout, stderr, context) => {
-                self.response(code, stdout, stderr, context)
-            }
-            Event::PaneUpdate(manifest) if self.granted && self.native_mode => {
+            Event::PaneUpdate(manifest) if self.granted => {
                 let before = (
                     self.native_focus,
                     self.local_selection,
@@ -1856,7 +1418,7 @@ impl ZellijPlugin for Frontend {
                         self.popup_item.clone(),
                     );
             }
-            Event::TabUpdate(tabs) if self.granted && self.native_mode => {
+            Event::TabUpdate(tabs) if self.granted => {
                 let before = (
                     self.native_focus,
                     self.local_selection,
@@ -1883,32 +1445,9 @@ impl ZellijPlugin for Frontend {
                         self.popup_item.clone(),
                     );
             }
-            Event::PaneUpdate(manifest) if self.granted => self.pane_update(manifest),
-            Event::TabUpdate(tabs) if self.granted => {
-                if self
-                    .tabs
-                    .iter()
-                    .find(|tab| tab.active)
-                    .map(|tab| tab.position)
-                    != tabs.iter().find(|tab| tab.active).map(|tab| tab.position)
-                {
-                    self.hide_tooltip();
-                }
-                self.tabs = tabs;
-                self.synchronize_focus();
-                self.refresh_tooltip();
-            }
-            Event::CommandPaneExited(id, _, _)
-                if !self.native_mode && self.panes.contains_key(&id) =>
-            {
-                self.close_attachment(id);
-            }
-            Event::PaneClosed(PaneId::Terminal(id)) if self.granted && !self.native_mode => {
-                self.forget_pane(id)
-            }
             Event::PaneClosed(PaneId::Plugin(id)) => {
                 self.tooltip.forget(id);
-                if self.native_mode && self.native_owner_id == Some(id) && self.granted {
+                if self.native_owner_id == Some(id) && self.granted {
                     self.native_owner_id = None;
                     self.reset_pending_actions();
                     self.reconcile_cursor();
@@ -1938,18 +1477,16 @@ impl ZellijPlugin for Frontend {
                 }
             }
             Event::Visible(visible) => {
-                if self.native_mode && self.visible == visible {
+                if self.visible == visible {
                     return false;
                 }
                 self.visible = visible;
                 if !visible {
                     self.leave_control(false);
-                    if self.native_mode {
-                        self.local_selection = false;
-                        self.reconcile_cursor();
-                    }
+                    self.local_selection = false;
+                    self.reconcile_cursor();
                     self.hide_tooltip();
-                } else if self.native_mode {
+                } else {
                     self.reconcile_cursor();
                     self.ensure_cursor_visible();
                     self.refresh_tooltip();
@@ -1974,10 +1511,7 @@ impl ZellijPlugin for Frontend {
         if message.name == CONTROL_PIPE {
             return self.control_pipe(&message);
         }
-        if self.native_mode
-            && self.granted
-            && matches!(message.name.as_str(), native::RESPONSE | native::STATE)
-        {
+        if self.granted && matches!(message.name.as_str(), native::RESPONSE | native::STATE) {
             let PipeSource::Plugin(owner) = message.source else {
                 return false;
             };
@@ -2017,7 +1551,7 @@ impl ZellijPlugin for Frontend {
                     || current.revision < state.snapshot.revision
             });
             let discovered = self.native_owner_id.is_none();
-            if !self.accept_snapshot(state.snapshot, true) {
+            if !self.accept_snapshot(state.snapshot) {
                 return true;
             }
             let relay_changed = self.accept_selection_relay(
@@ -2068,15 +1602,7 @@ impl ZellijPlugin for Frontend {
                 .and_then(|payload| serde_json::from_str::<overlay::DismissNotice>(payload).ok())
                 .is_some_and(|notice| self.accept_dismiss(&message.source, &notice));
         }
-        if self.native_mode || message.name != "shephrd-state" || !self.granted {
-            return false;
-        }
-        let PipeSource::Cli(source) = message.source else {
-            return false;
-        };
-        let repaint = self.state_pipe(&source, message.payload);
-        unblock_cli_pipe_input(&source);
-        repaint
+        false
     }
 
     fn render(&mut self, rows: usize, columns: usize) {
@@ -2092,7 +1618,7 @@ impl ZellijPlugin for Frontend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shephrd::{Pane, Status, Workspace};
+    use shephrd::{Pane, Response, Status, Workspace};
 
     fn snapshot(revision: u64, focused: &str) -> Snapshot {
         Snapshot {
@@ -2100,7 +1626,6 @@ mod tests {
             instance_id: "native:test".to_owned(),
             revision,
             session: "test".to_owned(),
-            machine: None,
             connected: true,
             error: None,
             focused_pane_id: Some(focused.to_owned()),
@@ -2137,13 +1662,12 @@ mod tests {
 
     fn frontend() -> Frontend {
         let mut frontend = Frontend {
-            native_mode: true,
             id: 99,
             rows: 20,
             columns: 40,
             ..Frontend::default()
         };
-        frontend.accept_snapshot(snapshot(1, "terminal_1"), true);
+        frontend.accept_snapshot(snapshot(1, "terminal_1"));
         frontend
     }
 
@@ -2222,7 +1746,7 @@ mod tests {
 
     #[test]
     fn ci_refresh_validates_source_live_popup_revision_and_exact_current_head() {
-        for case in 0..17 {
+        for case in 0..16 {
             let (mut frontend, mut request) = ci_refresh_frontend();
             let mut source = PipeSource::Plugin(100);
             match case {
@@ -2255,9 +1779,8 @@ mod tests {
                         .unwrap()
                         .fetch_state = shephrd::ci_contract::CiFetchState::Loading
                 }
-                14 => frontend.native_mode = false,
-                15 => frontend.granted = false,
-                16 => {
+                14 => frontend.granted = false,
+                15 => {
                     frontend.modal = Some(Modal::Close {
                         item: Item::Pane("terminal_1".to_owned()),
                         name: "Terminal".to_owned(),
@@ -2403,7 +1926,7 @@ mod tests {
         let mut updated = frontend.snapshot.clone().unwrap();
         updated.revision += 1;
         updated.panes[1].description = "fresh metadata for original target".to_owned();
-        frontend.accept_snapshot(updated, true);
+        frontend.accept_snapshot(updated);
         assert_popup(&frontend, &item);
         assert!(
             frontend
@@ -2442,7 +1965,7 @@ mod tests {
         let mut snapshot = frontend.snapshot.clone().unwrap();
         snapshot.revision += 1;
         snapshot.panes[0].description = "async original target update 日本語".to_owned();
-        frontend.accept_snapshot(snapshot, true);
+        frontend.accept_snapshot(snapshot);
         assert!(
             frontend
                 .tooltip
@@ -2582,7 +2105,7 @@ mod tests {
         let mut state = snapshot(2, "terminal_1");
         state.panes[1].workspace_id = "workspace_1".to_owned();
         state.panes[0].branch = Some("feature/main".to_owned());
-        assert!(frontend.accept_snapshot(state, true));
+        assert!(frontend.accept_snapshot(state));
         let item = Item::Pane("terminal_1".to_owned());
         let band = ui::item_band(&frontend.tree_cache, &item).unwrap();
         let top = band.start() - 1 + 2;
@@ -2826,7 +2349,7 @@ mod tests {
         )));
         assert_eq!(
             frontend.error.as_deref(),
-            Some("Conflicting state at the same companion revision"),
+            Some("Conflicting state at the same native owner revision"),
         );
         assert_eq!(frontend.cursor, Some(Item::Pane("terminal_1".to_owned())));
     }
@@ -2842,7 +2365,7 @@ mod tests {
 
         host_focus(&mut frontend, PaneId::Plugin(99));
         frontend.key(KeyWithModifier::new(BareKey::Home));
-        frontend.accept_snapshot(snapshot(2, "terminal_1"), true);
+        frontend.accept_snapshot(snapshot(2, "terminal_1"));
         assert!(frontend.keyboard_control);
         assert_eq!(
             frontend.cursor,
@@ -2850,7 +2373,7 @@ mod tests {
         );
 
         host_focus(&mut frontend, PaneId::Terminal(2));
-        frontend.accept_snapshot(snapshot(3, "terminal_2"), true);
+        frontend.accept_snapshot(snapshot(3, "terminal_2"));
         assert!(!frontend.keyboard_control);
         assert!(frontend.control_terminal.is_none());
         assert_eq!(frontend.cursor, Some(Item::Pane("terminal_2".to_owned())));
@@ -2865,8 +2388,8 @@ mod tests {
         assert_eq!(destination.cursor, source.cursor);
 
         let state = snapshot(2, "terminal_2");
-        source.accept_snapshot(state.clone(), true);
-        destination.accept_snapshot(state, true);
+        source.accept_snapshot(state.clone());
+        destination.accept_snapshot(state);
         assert_eq!(source.cursor, Some(Item::Pane("terminal_2".to_owned())));
         assert_eq!(destination.cursor, source.cursor);
     }
@@ -2881,7 +2404,7 @@ mod tests {
             Some(Item::Workspace("workspace_1".to_owned()))
         );
 
-        frontend.accept_snapshot(snapshot(2, "terminal_1"), true);
+        frontend.accept_snapshot(snapshot(2, "terminal_1"));
         host_focus(&mut frontend, PaneId::Plugin(99));
         assert_eq!(
             frontend.cursor,
@@ -2889,7 +2412,7 @@ mod tests {
         );
 
         host_focus(&mut frontend, PaneId::Terminal(2));
-        frontend.accept_snapshot(snapshot(3, "terminal_2"), true);
+        frontend.accept_snapshot(snapshot(3, "terminal_2"));
         assert_eq!(frontend.cursor, Some(Item::Pane("terminal_2".to_owned())));
     }
 
@@ -2911,7 +2434,7 @@ mod tests {
         let request = frontend.queue.pop_front().unwrap();
         frontend.in_flight = Some(request);
         let state = snapshot(2, "terminal_2");
-        frontend.accept_snapshot(state.clone(), true);
+        frontend.accept_snapshot(state.clone());
         frontend.native_response(native::NativeResponse {
             client: frontend.native_client.clone(),
             client_id: frontend.client_id,
@@ -2925,7 +2448,7 @@ mod tests {
         });
         assert!(!frontend.local_selection);
         assert_eq!(frontend.cursor, Some(item));
-        frontend.accept_snapshot(snapshot(3, "terminal_1"), true);
+        frontend.accept_snapshot(snapshot(3, "terminal_1"));
         assert_eq!(frontend.cursor, Some(Item::Pane("terminal_1".to_owned())));
     }
 
@@ -2972,7 +2495,7 @@ mod tests {
         assert_eq!(frontend.cursor, Some(latest.clone()));
         assert!(frontend.desired_selection.as_ref().unwrap().acknowledged);
         assert!(frontend.pending_user_action.is_some());
-        frontend.accept_snapshot(snapshot(3, "terminal_1"), true);
+        frontend.accept_snapshot(snapshot(3, "terminal_1"));
         assert_eq!(frontend.cursor, Some(latest));
         assert!(frontend.desired_selection.is_none());
         assert!(frontend.pending_user_action.is_none());
@@ -3010,7 +2533,7 @@ mod tests {
         removed.in_flight = removed.queue.pop_front();
         let mut state = snapshot(2, "terminal_1");
         state.panes.retain(|pane| pane.id != "terminal_2");
-        removed.accept_snapshot(state.clone(), true);
+        removed.accept_snapshot(state.clone());
         assert!(removed.desired_selection.is_none());
         assert_eq!(removed.cursor, Some(Item::Pane("terminal_1".to_owned())));
         acknowledge(&mut removed, state, Some("Terminal is no longer open"));
@@ -3038,7 +2561,7 @@ mod tests {
             destination.cursor,
             Some(Item::Pane("terminal_2".to_owned()))
         );
-        destination.accept_snapshot(snapshot(2, "terminal_1"), true);
+        destination.accept_snapshot(snapshot(2, "terminal_1"));
         assert_eq!(
             destination.cursor,
             Some(Item::Pane("terminal_2".to_owned()))
@@ -3048,7 +2571,7 @@ mod tests {
             destination.cursor,
             Some(Item::Pane("terminal_2".to_owned()))
         );
-        destination.accept_snapshot(snapshot(3, "terminal_2"), true);
+        destination.accept_snapshot(snapshot(3, "terminal_2"));
         assert!(destination.relayed_selection.is_none());
         assert!(destination.pending_user_action.is_none());
     }
@@ -3168,7 +2691,7 @@ mod tests {
             item: Item::Pane("terminal_1".to_owned()),
             input: ui::Input::new("Terminal 1".to_owned()),
         });
-        frontend.accept_snapshot(snapshot(2, "terminal_2"), true);
+        frontend.accept_snapshot(snapshot(2, "terminal_2"));
         host_focus(&mut frontend, PaneId::Terminal(2));
         assert_eq!(frontend.cursor, Some(Item::Pane("terminal_1".to_owned())));
         frontend.modal = None;
@@ -3293,7 +2816,7 @@ mod tests {
             let mut state = snapshot(revision, "terminal_1");
             state.panes[0].harness = Some("omp".to_owned());
             state.panes[0].branch = branch.map(str::to_owned);
-            assert!(frontend.accept_snapshot(state, true));
+            assert!(frontend.accept_snapshot(state));
             assert_eq!(frontend.cursor, Some(Item::Pane("terminal_2".to_owned())));
             assert_eq!(frontend.hover, Some(Item::Pane("terminal_1".to_owned())));
             assert_eq!(

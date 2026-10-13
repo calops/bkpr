@@ -1,21 +1,16 @@
 mod agent;
-mod backend;
 mod ci;
 mod claude;
-mod herdr;
 mod launcher;
 mod project;
 mod project_watch;
-mod transport;
 
 use std::io::{self, Write};
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use shephrd::{Action, Effect, MAX_MESSAGE_BYTES, Request};
+use shephrd::MAX_MESSAGE_BYTES;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -23,8 +18,8 @@ use shephrd::{Action, Effect, MAX_MESSAGE_BYTES, Request};
     version,
     disable_help_subcommand = true,
     override_usage = "shephrd [OPTIONS]",
-    about = "Persistent terminal workspaces with an agent-aware sidebar",
-    after_help = "Examples:\n  shephrd                         Open or attach to the default workspace session\n  shephrd --session work          Open or attach to a named session\n  shephrd --remote user@host      Connect to a remote Herdr session over SSH\n  shephrd --machine laptop        Connect using a saved Herdr machine"
+    about = "Persistent local Zellij workspaces with an agent-aware sidebar",
+    after_help = "Examples:\n  shephrd                         Open or attach to the default local session\n  shephrd --session work          Open or attach to a named local session\n  shephrd --sidebar-width 44      Set the sidebar width\n\nSessions use native Zellij terminals.\nAutomatic Git branch, diff and CI reporting is available on Linux."
 )]
 struct Cli {
     #[command(flatten)]
@@ -41,7 +36,7 @@ enum Commands {
         #[command(subcommand)]
         command: AgentCommands,
     },
-    /// Discover a local directory's project name without starting a backend.
+    /// Discover a local directory's project name.
     #[command(hide = true)]
     Project {
         #[arg(long)]
@@ -60,28 +55,6 @@ enum Commands {
         json: String,
         #[arg(long)]
         listener_fd: i32,
-    },
-    /// Run the remote Herdr companion (normally started by the launcher).
-    #[command(hide = true)]
-    Backend {
-        #[arg(long)]
-        config: PathBuf,
-    },
-    /// Issue a versioned semantic request to a running remote companion.
-    #[command(hide = true)]
-    Request {
-        #[arg(long)]
-        socket: PathBuf,
-        #[arg(long)]
-        json: String,
-    },
-    /// Attach a real native terminal to a persistent Herdr pane.
-    #[command(hide = true)]
-    Attach {
-        #[arg(long)]
-        socket: PathBuf,
-        #[arg(long)]
-        pane: String,
     },
     /// Launch the real Claude with session-local title callbacks.
     #[command(hide = true)]
@@ -144,57 +117,6 @@ fn run() -> Result<()> {
         Some(Commands::ProjectWatch { json }) => project_watch::sync(&json),
         Some(Commands::ProjectWatchDaemon { json, listener_fd }) => {
             project_watch::serve(&json, listener_fd)
-        }
-        Some(Commands::Backend { config }) => {
-            let bytes =
-                std::fs::read(&config).with_context(|| format!("read {}", config.display()))?;
-            let config: backend::Config =
-                serde_json::from_slice(&bytes).context("invalid backend configuration")?;
-            backend::run(config)
-        }
-        Some(Commands::Request { socket, json }) => {
-            if json.len() > MAX_MESSAGE_BYTES {
-                bail!("request exceeds {MAX_MESSAGE_BYTES} bytes");
-            }
-            let request: Request = serde_json::from_str(&json).context("invalid request JSON")?;
-            let response = transport::request(&socket, &request)?;
-            let mut stdout = io::stdout().lock();
-            serde_json::to_writer(&mut stdout, &response)?;
-            writeln!(stdout)?;
-            stdout.flush()?;
-            if let Some(error) = response.error {
-                bail!("{error}");
-            }
-            Ok(())
-        }
-        Some(Commands::Attach { socket, pane }) => {
-            let response = transport::request(
-                &socket,
-                &Request::new(1, Action::ResolveAttachment { pane_id: pane }),
-            )?;
-            if let Some(error) = response.error {
-                bail!("{error}");
-            }
-            let command = response
-                .effects
-                .into_iter()
-                .find_map(|effect| match effect {
-                    Effect::Attachment { command } => Some(command),
-                    _ => None,
-                })
-                .context("companion did not return an attachment command")?;
-            let mut child = Command::new(&command.executable);
-            child.args(&command.args);
-            if let Some(cwd) = command.cwd {
-                child.current_dir(cwd);
-            }
-            for (key, _) in std::env::vars_os() {
-                if key.to_string_lossy().starts_with("HERDR_") {
-                    child.env_remove(key);
-                }
-            }
-            child.envs(&command.env);
-            Err(child.exec()).with_context(|| format!("execute attachment {}", command.executable))
         }
     }
 }

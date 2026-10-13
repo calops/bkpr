@@ -1,6 +1,6 @@
 # shephrd
 
-Workspace-first native Zellij terminals and sidebar. One Rust workspace, two executables: a native launcher/remote companion and a Rust WASM plugin.
+Workspace-first native Zellij terminals and sidebar. One Rust workspace, two executables: a native launcher/metadata helper and a Rust WASM plugin.
 
 ## Run
 
@@ -18,9 +18,11 @@ nix profile install .
 shephrd --session project
 ```
 
-`shephrd --help` shows session selection, sidebar width, remote connections and launch examples. Internal process/project inspection and companion commands are not public launcher commands. Developer overrides remain available but are hidden from help: `--zellij` / `SHEPHRD_ZELLIJ`, `--plugin` / `SHEPHRD_PLUGIN`, `--ssh` / `SHEPHRD_SSH`, `--herdr` / `SHEPHRD_HERDR`, `--herdr-config` / `SHEPHRD_HERDR_CONFIG` and `--remote-herdr` / `SHEPHRD_REMOTE_HERDR`. They select runtime executables or configuration; they do not change the default local/remote architecture.
+`shephrd --help` shows session selection, sidebar width and launch examples. Clap generates option help from the Rust parser declarations; examples are a hand-written footer. Internal process/project inspection and metadata-helper commands are hidden. Developer overrides remain available but are hidden from help: `--zellij` / `SHEPHRD_ZELLIJ` and `--plugin` / `SHEPHRD_PLUGIN`. The product supports native Zellij sessions only; there are no remote-backend or saved-machine options.
 
-The default package bundles the native executable, WASM plugin, Zellij 0.45.1, Herdr 0.9.3, Git, GitHub CLI and OpenSSH. Bundled Zellij patches cursor-render ordering (position/shape before showing the cursor), completes keybinding broadcasts only after every recipient has handled them, implements OSC 7501 Program Status Protocol and pushes native status/topology events to authorized subscribers. Local sessions use native Zellij terminals: no local Herdr process, persistent PTY companion or second PTY owner. A session-private native helper owns Git filesystem events and shared CI requests. Herdr and the remote companion remain in use for remote sessions and saved-machine discovery.
+The default package bundles the native executable, WASM plugin, Zellij 0.45.1, Git and GitHub CLI. Bundled Zellij patches cursor-render ordering (position/shape before showing the cursor), completes keybinding broadcasts only after every recipient has handled them, implements OSC 7501 Program Status Protocol and pushes native status/topology events to authorized subscribers. Sessions use native Zellij terminals without a second PTY owner. A session-private native helper owns Git filesystem events and shared CI requests.
+
+The native-only cutover was exercised in actual Kitty (`target/native-cutover-proof-7od044u3/evidence.json`): startup, right-click context details, collapsed-only workspace badges, ordinary Zellij splits/new tabs, terminal resizing, inactive-terminal OSC status, Git branch event delivery and detach/reattach with unchanged configuration and owner identity. Removed backend options/helpers fail CLI parsing; help exposes only session and sidebar-width options. All 162 workspace tests, host/WASI Clippy and debug builds passed, and the native package wrapper/devshell evaluated without a legacy backend dependency. These were private protocol/CI fixtures, not authenticated harness turns or live provider queries. Private sessions, helpers, GUI processes and scripts were removed; no release build or live-session activation was performed.
 
 On first launch, click the sidebar and approve its Zellij permission request with `y`. The plugin needs application-state access, application-state changes, command execution, plugin messaging and CLI-pipe input. No pane-content permission or viewport inspection is needed. Authorization is cached by Zellij for the plugin artifact. Press Ctrl+Space before using keyboard selection and Enter activation in the sidebar.
 
@@ -38,7 +40,7 @@ The presentation refinement passed an actual private terminal-emitter PTY smoke:
 
 Antigravity recognition was exercised with the actual installed `agy` 1.3.3 in a private PTY: the inspector returned its live foreground PID, OS birth identity and private working directory. A rendered-row smoke checked the teal rocket, normal title color and unknown status with `pyte`; this was not a full sidebar UI or authenticated agent-turn verification. The 44 workspace tests and native/WASM debug builds passed.
 
-Every native program uses the same CWD-based second line: muted `󰘬 branch` context and available whole-branch changes/CI. Detached HEAD uses `󰘬 detached @ <short SHA>`. Without a Git branch, the program description is shown instead. Harness recognition does not change detail-row layout. Git metadata follows actual foreground CWD using filesystem events, including atomic HEAD replacement, Git initialization and independent linked-worktree HEADs. Live Git watching currently requires Linux inotify and pidfd support (kernel 5.3+); remote Herdr sessions have no demonstrated branch event stream.
+Every native program uses the same CWD-based second line: muted `󰘬 branch` context and available whole-branch changes/CI. Detached HEAD uses `󰘬 detached @ <short SHA>`. Without a Git branch, the program description is shown instead. Harness recognition does not change detail-row layout. Git metadata follows actual foreground CWD using filesystem events, including atomic HEAD replacement, Git initialization and independent linked-worktree HEADs. Live Git watching currently requires Linux inotify and pidfd support (kernel 5.3+).
 
 Branch detail rows append whole-branch `+added -deleted` counts in subdued green/red when space permits. They compare the committed `HEAD` tree with its merge-base, not the working tree or the base branch's current tip. The diff always covers the entire repository, including from a nested foreground CWD or with `diff.relative=true`; rename detection avoids counting unchanged moves as added/deleted content. The base is resolved locally: an explicit `branch.<name>.gh-merge-base` setting is authoritative; otherwise the tracking remote's default HEAD, origin's default HEAD, available remote main/master refs and local main/master are considered in that order. No automatic fetch is performed. Missing, unborn or unrelated bases are unavailable rather than reported as zero. Base/ref changes use the existing filesystem event watcher.
 
@@ -121,7 +123,7 @@ An active application can emit OSC 133 prompt markers for its own TUI transcript
 
 ### GitHub CI
 
-CI monitoring is automatic for native Linux sessions whose actual foreground Git repository has an explicit `github.com` HTTPS/SSH remote and a valid current commit. It reuses `gh`'s active authentication context without switching accounts, editing credentials or fetching Git remotes. Multiple saved GitHub accounts do not imply automatic per-repository account selection: a private repository inaccessible to the active account remains unavailable. GitHub Enterprise, SSH aliases and remote Herdr CI are not currently monitored.
+CI monitoring is automatic for native Linux sessions whose actual foreground Git repository has an explicit `github.com` HTTPS/SSH remote and a valid current commit. It reuses `gh`'s active authentication context without switching accounts, editing credentials or fetching Git remotes. Multiple saved GitHub accounts do not imply automatic per-repository account selection: a private repository inaccessible to the active account remains unavailable. GitHub Enterprise and SSH aliases are not currently monitored.
 
 The one session-private helper shares requests across panes and linked worktrees. A GraphQL request batches up to 16 distinct repository/commit sources; the request budget is at most one request per minute per native session. Pending/running checks refresh after 60 seconds; unresolved or incomplete results after 300 seconds. A complete, error-free result with all checks in known final states is cached without another scheduled query until HEAD/source changes or manual refresh. Authentication failures back off for 1800 seconds; network failures back off from 120 to 1800 seconds. Requests have a 20-second deadline and honor provider rate budgets, reset times and `Retry-After`. Git metadata itself remains filesystem-event-driven. A branch/HEAD/source change cancels obsolete requests, and server exit reaps owned children.
 
@@ -161,28 +163,6 @@ Actual native UI proof is in `target/ui-project-ci-smoke-tgvqv6ny/` and `target/
 
 Named metadata pipe requests connect directly to the requested Zellij socket rather than rejecting it through a separate global session-discovery probe. A real paused-server smoke delivered a query and fresh branch publication in 0.43 seconds, used one named-socket connection and kept the helper alive (`target/ci-native-smoke-jlm6yfyo/`). Missing named sessions fail immediately. The complete eight-patch chain applies to pristine Zellij 0.45.1 with zero fuzz and matches all 16 affected runtime source/test files byte-for-byte; no Nix release build or live-session activation was performed.
 
-### SSH and saved machines
-
-Install Herdr 0.9.3 on the remote POSIX host first, configure noninteractive OpenSSH authentication, and establish its host key through your normal SSH workflow.
-
-```sh
-nix run . -- --remote user@host
-nix run . -- --remote user@host --session project
-nix run . -- --remote user@host --remote-herdr /absolute/path/to/herdr
-nix run . -- --machine saved-label-or-id
-```
-
-Remote discovery checks the installed stock bridge capability. Missing selected sessions are started through Herdr's public `remote-client-bridge`; closing that bootstrap connection leaves the detached server alive. There is no remote installation or deployment step. Password prompts and unknown/mismatched host keys fail rather than silently changing SSH policy.
-
-Saved machines use Herdr's existing catalog. A saved profile supplies its session unless `--session` overrides it. To create one with the stock CLI available in the devshell:
-
-```sh
-nix develop
-herdr machine add user@host --label box --remote-session project
-```
-
-Use `--herdr-config /absolute/path/to/config.yaml` for an explicitly selected Herdr configuration when using saved machines or remote support. Enclosing-pane `HERDR_*` variables do not select the backend. Ordinary local launch does not resolve Herdr or SSH. Sidebar width is in public help; executable/config overrides are documented under **Run** but hidden from normal help. The bundled wrapper otherwise pins its dependencies.
-
 ## Controls
 
 | Context | Key | Action |
@@ -197,7 +177,7 @@ Use `--herdr-config /absolute/path/to/config.yaml` for an explicitly selected He
 | Control mode | Ctrl+d | Detach the Zellij client |
 | Control mode | Ctrl+q | Quit the Zellij session |
 | Sidebar | arrows / j / k | Select row |
-| Sidebar | Enter | Focus native terminal; remote: focus/open attachment |
+| Sidebar | Enter | Focus native terminal |
 | Sidebar | Space | Fold/unfold the selected workspace |
 | Sidebar | double click anywhere in a group | Fold/unfold that workspace |
 | Sidebar | Right click | Open item details without activating its terminal |
@@ -206,17 +186,19 @@ Use `--herdr-config /absolute/path/to/config.yaml` for an explicitly selected He
 | Sidebar | N | Create pane in selected workspace |
 | Sidebar | r | Rename selected workspace/pane |
 | Sidebar | x | Confirm termination of selected workspace/terminal |
-| Sidebar | R | Request current native state; remote: register/reconnect |
+| Sidebar | R | Request current native state |
 | Dialog | Tab | Switch workspace-name/directory fields |
 | Dialog | Ctrl+u | Clear current field |
 | Dialog | arrows / Home / End / Backspace / Delete | Edit Unicode text |
 | Dialog | Enter / Esc | Submit / cancel |
 
-Other stock Zellij bindings remain available, including resize, move, scroll and session modes. Local stock-created tabs and splits appear in the sidebar. A split inherits its tab's workspace; moving to an existing tab adopts that tab's workspace; breaking out to a new tab retains the source workspace. Tab reordering preserves workspace membership. Terminal closure removes its row; held exited panes remain visible and can retain completed protocol records. Remote native tabs and splits remain outside the Herdr sidebar.
+Other stock Zellij bindings remain available, including resize, move, scroll and session modes. Stock-created tabs and splits appear in the sidebar. A split inherits its tab's workspace; moving to an existing tab adopts that tab's workspace; breaking out to a new tab retains the source workspace. Tab reordering preserves workspace membership. Terminal closure removes its row; held exited panes remain visible and can retain completed protocol records.
 
 The private keybinding configuration extends stock Zellij defaults; it does not use `clear-defaults`. Stock `Ctrl+g`, pane/tab/resize/move/scroll/session modes and Alt-direction navigation are retained. The additions are `Ctrl+Space` for explicit sidebar control entry/exit, Normal-mode Tab/Shift+Tab cycling and a Normal-mode Ctrl+d detach shortcut. Mouse clicks and hover do not enter sidebar controls; renaming and other edit dialogs require explicit keyboard control.
 
-Workspace details show colored project/repository names. Every native program uses the same CWD-based branch, adjacent subdued addition/deletion counts and status-colored workflow badge, or its description outside Git. Harness icons sit next to solid project dots with artwork padding; full harness names remain in popups. Right-aligned first-line icons retain native agent status independently. Workspace dots use the normal light foreground; collapsed groups retain aggregate status/CI. Selecting a terminal does not select its workspace.
+The sidebar currently has a fixed cell-width layout constraint (`pane size=38` by default), not a flexible initial-width preference. A targeted resize remained at 38 columns even with explicit sidebar focus in the native-only runtime smoke; an ordinary terminal resize changed 59 to 65 columns without losing OSC metadata. New tabs also use the configured startup width rather than adopting a manually changed width. These are layout limitations, not harness-reporting requirements.
+
+Workspace details show colored project/repository names. Every native program uses the same CWD-based branch, adjacent subdued addition/deletion counts and status-colored workflow badge, or its description outside Git. Harness icons sit next to solid project dots with artwork padding; full harness names remain in popups. Right-aligned first-line icons retain native agent status independently. Workspace dots use the normal light foreground; aggregate status/CI icons appear only while the group is collapsed and disappear when expanded. Selecting a terminal does not select its workspace.
 
 Sidebar items have no blank spacer rows. Hover only changes the normal row highlight. Rounded context-item borders are painted over tree guides and surrounding rows, joining the open popup without changing item positions; its opening follows the visible item band when clamped to the screen. The outline can cover neighboring row content while details are open rather than reserving permanent spacing.
 
@@ -230,37 +212,29 @@ Clicked selection is owned optimistically by the sidebar: the newest requested r
 
 ## Ownership and persistence
 
-### Local
-
 Zellij owns local PTYs, terminal input/output, scrollback, tabs/panes and detach persistence. Shephrd owns workspace grouping, editable names and metadata. Native close terminates the terminal; confirmed sidebar close terminates the selected terminal or all terminals/tabs in its workspace. There is no terminal hide/unhide operation.
 
-Detach preserves running native terminals and workspace labels. Launching the same local session attaches to it without rewriting its configuration. Terminating the Zellij server need not preserve its processes. Native local sessions use a separate namespace from the old Herdr-backed local sessions; existing sessions are not migrated or terminated automatically.
+Detach preserves running native terminals and workspace labels. Launching the same session attaches to it without rewriting its configuration. Terminating the Zellij server need not preserve its processes.
 
-### Remote
-
-Herdr still owns remote logical workspaces, terminals, agent metadata and persistent PTYs. Closing a native remote attachment only detaches it; selecting its sidebar row reattaches to the same remote terminal. Confirmed sidebar close terminates the selected remote pane/workspace. Stock direct attachments allow one active client per terminal; shephrd does not silently take over another client.
-
-Remote attachment commands are removed when they exit, rather than held for rerun. Detaching leaves Zellij and the remote companion running. Quitting Zellij ends its companion, but remote Herdr PTYs remain alive. Stop them explicitly with `herdr --session NAME server stop` on the remote host when no longer wanted.
-
-Private launcher files live under `$XDG_RUNTIME_DIR/shephrd/<target-session-hash>` or the state-directory fallback. Remote companion sockets/config/logs are current-user-only. Shephrd starts no system or user service.
+Private launcher files live under `$XDG_RUNTIME_DIR/shephrd/<session-hash>` or the state-directory fallback and are current-user-only. Shephrd starts no system or user service.
 
 ## Architecture
 
-```text
-Local sidebar -> Zellij plugin messages -> session-wide WASM metadata owner
-Local terminal -> native Zellij PTY
-
-Remote sidebar -> native semantic IPC -> Herdr public API over SSH
-Remote terminal -> shephrd attach -> Herdr terminal attachment -> remote PTY
+```mermaid
+flowchart LR
+    Sidebar[Sidebar] -->|Plugin messages| Owner[Session-wide WASM metadata owner]
+    Owner -->|Watch subscriptions| Helper[Native Git/CI helper]
+    Helper -->|Metadata events| Owner
+    Terminal[Application] --> PTY[Native Zellij PTY]
 ```
 
 The local metadata owner is a genuine session-wide background plugin, loaded once by the private startup configuration, not a hidden pane tied to one tab or another PTY server. It requests permissions only after an authorized sidebar contacts it. Complete SDK subscription sets and paired initial pane/tab reports preserve topology delivery across tab switches and authorization. Stable tab/terminal IDs, a session-scoped atomic metadata cache and request receipts preserve labels and prevent duplicate actions across client replicas. Every callback checks authoritative cache bytes; unchanged bytes reuse the decoded model and read/write buffers. Unchanged publications and irrelevant frontend events do not repaint the sidebar. Focus and request execution remain client-scoped; `caller_cwd` is normalized to one owner identity across tabs.
 
-Local terminal transport stays native: WASM does not replay application output. The native owner sends generation-tagged CWD watch sets to one session-private Git/CI helper. Filesystem events refresh canonical repository identity and branch metadata, including linked worktrees; CI uses the explicitly approved adaptive shared polling schedule. Obsolete directory/owner generations and CI requests cannot overwrite current metadata. The one-shot `shephrd project --cwd /absolute/path` command remains a discovery/debug interface. Remote project-name discovery remains asynchronous on the remote host.
+Terminal transport stays native: WASM does not replay application output. The native owner sends generation-tagged CWD watch sets to one session-private Git/CI helper. Filesystem events refresh canonical repository identity and branch metadata, including linked worktrees; CI uses the explicitly approved adaptive shared polling schedule. Obsolete directory/owner generations and CI requests cannot overwrite current metadata. The one-shot `shephrd project --cwd /absolute/path` command remains a discovery/debug interface.
 
 Bundled Zellij pushes changed terminal-owned protocol records and explicit clears through permission-gated `CustomMessage("program_status", ...)` events, including initial records from inactive terminals. No CLI status collection or SDK wire-format change is needed. Native topology/command/directory events trigger batched, single-flight process inspection; 30 ms one-shot coalescing and a five-second request deadline are not recurring polling timers. Inspection returns only process identity, harness and CWD; late inspections cannot overwrite pushed status. No terminal-output notifications, pane-content permission or viewport reads are needed. Protocol working/blocked expiry and retained done/error follow terminal lifetime, not an inspection heartbeat.
 
-The remote companion's private IPC is versioned newline-framed JSON with a 4 MiB message limit and peer-UID checks. Snapshot revisions are ordered within an owner instance. Remote state publication streams through CLI-pipe stdin rather than a potentially oversized argv element. The shared contract is in `crates/shephrd/src/lib.rs`.
+The shared native snapshot/request contract is in `crates/shephrd/src/lib.rs`, with bounded messages and revisions ordered within an owner instance. Metadata updates travel through permission-gated Zellij plugin messages, not a remote companion transport.
 
 The WASM plugin keeps its render output separate from stdout-encoded host commands, flushes each frame, memoizes cursor updates and acknowledges CLI input messages. These are required by the pinned Zellij SDK's runtime protocol.
 
@@ -274,7 +248,7 @@ cargo build --locked -p shephrd-zellij --target wasm32-wasip1
 cargo run --locked -p shephrd -- --session dev
 ```
 
-The devshell provides the pinned Rust toolchain, WASI target, Rust Analyzer, Clippy, rustfmt, stock Herdr/Zellij, OpenSSH, Git, GitHub CLI and Python with `pyte` for PTY smoke tooling. It selects the local debug WASM artifact and an existing debug Zellij binary automatically. `SHEPHRD_ZELLIJ_VENDOR` exposes the cached dependency vendor root for the local runtime build. Iterate with Cargo so `target/` and debug artifacts are reused; entering the shell does not rebuild patched Zellij. Keep temporary smoke scripts under `target/smoke/`, with private short-path fixtures under `target/` for Unix-domain sockets; nothing requires external temporary scripts or hardcoded interpreter/store paths.
+The devshell provides the pinned Rust toolchain, WASI target, Rust Analyzer, Clippy, rustfmt, stock Zellij, Git, GitHub CLI and Python with `pyte` for PTY smoke tooling. It selects the local debug WASM artifact and an existing debug Zellij binary automatically. `SHEPHRD_ZELLIJ_VENDOR` exposes the cached dependency vendor root for the local runtime build. Iterate with Cargo so `target/` and debug artifacts are reused; entering the shell does not rebuild patched Zellij. Keep temporary smoke scripts under `target/smoke/`, with private short-path fixtures under `target/` for Unix-domain sockets; nothing requires external temporary scripts or hardcoded interpreter/store paths.
 
 For Zellij protocol/cursor development, prepare a local checkout once:
 
@@ -309,7 +283,7 @@ The final serialized PTY matrix passed 24 startup/reattach and 24 resize query b
 Run tests inside the devshell. Use Nix builds only for packaging validation:
 
 ```sh
-nix build .#shephrd-companion
+nix build .#shephrd-native
 nix build .#shephrd-zellij
 nix build .#shephrd
 nix develop --command cargo test --locked --workspace
@@ -352,7 +326,7 @@ Generic OSC 7501 reports work for any emitting local application. Claude and omp
 
 Unicode names work through paste. Stock Zellij 0.45.1 plugin key decoding still constrains typed non-Latin dialog input; this cutover does not fix it. Notification passthrough remains required but deferred.
 
-Remote support still uses unmodified Herdr. Its rendered direct-attachment stream does not forward application-origin clipboard sequences, focus-mode notifications or graphics. Zellij/terminal-owned selection copying is a separate path. Enhanced keyboard reporting remains constrained by the remote stock stack; `Ctrl+b q` is reserved by Herdr's direct attachment.
+Remote sessions and saved-machine profiles are not implemented.
 
 ## Product direction
 
@@ -364,7 +338,7 @@ Native local ownership, workspace/sidebar state and generic OSC program status a
 - Capture requirements follow the chosen features, rather than requiring raw recordings or a durable conversation archive.
 - Use push/event-driven updates whenever possible. Discuss the need and tradeoffs before introducing unavoidable polling.
 - Notification passthrough is required; its implementation is deferred.
-- SSH/machines redesign remains deferred; existing remote support stays in place.
+- SSH/machines support remains deferred.
 - For remote support, nested Zellij guest sessions are the chosen direction, conditional on seamless navigation through the host session's shephrd plugin. That integration still needs validation.
 
 ### Local feature contract
@@ -394,8 +368,8 @@ Ownership/sidebar behavior and generic OSC program status are implemented. Claud
 
 **Boundaries**
 
-- Do not carry over Herdr's worktree-management APIs, plugin registry, custom-command framework, independent PTY daemon, automatic agent resurrection or transcript archives.
-- Notification passthrough remains required but deferred. Remote implementation remains deferred, and the local cutover must not silently remove existing remote support.
+- Keep worktree-management APIs, plugin registries, custom-command frameworks, independent PTY daemons, automatic agent resurrection and transcript archives outside this product.
+- Notification passthrough remains required but deferred. Remote implementation remains deferred.
 
 
 ### Project overview popup direction

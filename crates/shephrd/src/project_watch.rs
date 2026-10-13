@@ -38,14 +38,15 @@ mod linux {
     use std::ffi::CString;
     use std::fs::OpenOptions;
     use std::io::{Read, Write};
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::os::unix::process::CommandExt;
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Stdio};
-    use std::time::Duration;
+    use std::process::{Child, Command, Output, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     const PIPE: &str = "shephrd-native-project";
     const LISTENER_FD: i32 = 198;
@@ -80,7 +81,7 @@ mod linux {
             bail!("project watch request exceeds message limit");
         }
         let request: Request = serde_json::from_str(json)?;
-        crate::backend::validate_session(&request.session)?;
+        launcher::validate_session(&request.session)?;
         if request.server <= 0
             || request
                 .watches
@@ -399,10 +400,180 @@ mod linux {
             "--",
             &json,
         ]);
-        let output = crate::herdr::run_output(&mut command, None, Duration::from_secs(2))?;
-        crate::herdr::check_output(&output, "publish native Git metadata")
+        let output = run_output(&mut command, None, Duration::from_secs(2))?;
+        check_output(&output, "publish native Git metadata")
     }
 
+    fn nonblocking(fd: RawFd) -> Result<()> {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+    fn terminate(child: &mut Child) {
+        if child.try_wait().ok().flatten().is_none() {
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.kill();
+        }
+        let _ = child.wait();
+    }
+
+    fn transient_child(command: &mut Command) {
+        #[cfg(target_os = "linux")]
+        {
+            let parent = unsafe { libc::getpid() };
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::getppid() != parent {
+                        return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                    }
+                    Ok(())
+                });
+            }
+        }
+    }
+
+    pub(crate) fn run_output(
+        command: &mut Command,
+        input: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<Output> {
+        command
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        transient_child(command);
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("starting {:?}", command.get_program()))?;
+        let outcome = (|| {
+            let deadline = Instant::now() + timeout;
+            let mut stdout = child.stdout.take().unwrap();
+            let mut stderr = child.stderr.take().unwrap();
+            let mut stdin = child.stdin.take();
+            nonblocking(stdout.as_raw_fd())?;
+            nonblocking(stderr.as_raw_fd())?;
+            if let Some(stdin) = &stdin {
+                nonblocking(stdin.as_raw_fd())?;
+            }
+            let mut remaining = input.unwrap_or_default();
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let mut scratch = [0u8; 8192];
+            loop {
+                if Instant::now() >= deadline {
+                    bail!("subprocess {:?} timed out", command.get_program());
+                }
+                if let Some(writer) = stdin.as_mut() {
+                    if remaining.is_empty() {
+                        stdin.take();
+                    } else {
+                        match writer.write(remaining) {
+                            Ok(0) => bail!("subprocess input closed"),
+                            Ok(count) => remaining = &remaining[count..],
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::WouldBlock
+                                        | std::io::ErrorKind::Interrupted
+                                ) => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                }
+                for (reader, bytes) in [
+                    (&mut stdout as &mut dyn Read, &mut out),
+                    (&mut stderr as &mut dyn Read, &mut err),
+                ] {
+                    loop {
+                        match reader.read(&mut scratch) {
+                            Ok(0) => break,
+                            Ok(count) => {
+                                if bytes.len() + count > shephrd::MAX_MESSAGE_BYTES {
+                                    bail!("subprocess output exceeds message limit");
+                                }
+                                bytes.extend_from_slice(&scratch[..count]);
+                            }
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::WouldBlock
+                                        | std::io::ErrorKind::Interrupted
+                                ) =>
+                            {
+                                break;
+                            }
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                }
+                if let Some(status) = child.try_wait()? {
+                    if !remaining.is_empty() {
+                        bail!("subprocess exited before reading its complete input");
+                    }
+                    // Pipes were drained above; a final drain handles bytes written just before exit.
+                    for (reader, bytes) in [
+                        (&mut stdout as &mut dyn Read, &mut out),
+                        (&mut stderr as &mut dyn Read, &mut err),
+                    ] {
+                        loop {
+                            match reader.read(&mut scratch) {
+                                Ok(0) => break,
+                                Ok(count) => {
+                                    if bytes.len() + count > shephrd::MAX_MESSAGE_BYTES {
+                                        bail!("subprocess output exceeds message limit");
+                                    }
+                                    bytes.extend_from_slice(&scratch[..count]);
+                                }
+                                Err(error)
+                                    if matches!(
+                                        error.kind(),
+                                        std::io::ErrorKind::WouldBlock
+                                            | std::io::ErrorKind::Interrupted
+                                    ) =>
+                                {
+                                    break;
+                                }
+                                Err(error) => return Err(error.into()),
+                            }
+                        }
+                    }
+                    return Ok(Output {
+                        status,
+                        stdout: out,
+                        stderr: err,
+                    });
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        })();
+        if outcome.is_err() {
+            terminate(&mut child);
+        }
+        outcome
+    }
+
+    pub(crate) fn check_output(output: &Output, context: &str) -> Result<()> {
+        if !output.status.success() {
+            bail!(
+                "{context}: {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
     fn change_subscription(
         active: &Request,
         next: &Request,
@@ -645,6 +816,28 @@ mod linux {
     mod tests {
         use super::*;
         use crate::project::tests::Repository;
+
+        #[test]
+        fn bounded_subprocess_preserves_input_output_and_exit_status() {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "cat; printf diagnostic >&2; exit 7"]);
+            let output =
+                run_output(&mut command, Some(b"payload"), Duration::from_secs(2)).unwrap();
+            assert_eq!(output.stdout, b"payload");
+            assert_eq!(output.stderr, b"diagnostic");
+            assert_eq!(output.status.code(), Some(7));
+            assert!(check_output(&output, "publish metadata").is_err());
+        }
+
+        #[test]
+        fn bounded_subprocess_times_out_and_reaps_the_child() {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "exec sleep 30"]);
+            let started = Instant::now();
+            let error = run_output(&mut command, None, Duration::from_millis(50)).unwrap_err();
+            assert!(error.to_string().contains("timed out"));
+            assert!(started.elapsed() < Duration::from_secs(2));
+        }
 
         #[test]
         fn refresh_control_is_independent_of_sequence_and_never_rediscovers_or_replays_subscriptions()
