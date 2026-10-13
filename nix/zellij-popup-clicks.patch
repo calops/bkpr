@@ -1,6 +1,127 @@
 --- a/zellij-server/src/tab/mouse_handler.rs
 +++ b/zellij-server/src/tab/mouse_handler.rs
-@@ -1515,6 +1515,14 @@
+@@ -1,5 +1,5 @@
+ use std::time::Instant;
+-use zellij_utils::data::{Direction, Resize, ResizeStrategy};
++use zellij_utils::data::{Direction, Event, Mouse, Resize, ResizeStrategy};
+ use zellij_utils::errors::prelude::*;
+ use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
+ use zellij_utils::pane_size::PaneGeom;
+@@ -13,6 +13,26 @@
+ 
+ use super::{Pane, Tab};
+ 
++// Outside presses are ordinary subscribed plugin mouse updates, not an input grab.
++// The impossible row distinguishes them from real relative popup coordinates.
++fn passive_outside_press(event: &MouseEvent) -> Option<Mouse> {
++    if event.event_type != MouseEventType::Press
++        || event.wheel_up
++        || event.wheel_down
++        || event.wheel_left
++        || event.wheel_right
++    {
++        return None;
++    }
++    if event.right {
++        Some(Mouse::RightClick(-1, u16::MAX as usize))
++    } else if event.left || event.middle {
++        Some(Mouse::LeftClick(-1, u16::MAX as usize))
++    } else {
++        None
++    }
++}
++
+ fn clear_hover_for_client(tab: &mut Tab, client_id: ClientId) -> bool {
+     let mut cleared = false;
+     if let Some(prev_pid) = tab.mouse_hover_pane_id.remove(&client_id) {
+@@ -183,6 +203,10 @@
+         pane_id: PaneId,
+         position: Position,
+     },
++    RightClickPlugin {
++        pane_id: PaneId,
++        position: Position,
++    },
+     SendToTerminal {
+         pane_id: PaneId,
+         event: MouseEvent,
+@@ -222,6 +246,7 @@
+     edge: Option<PaneEdge>,
+     is_floating: bool,
+     terminal_wants_mouse: bool,
++    selectable: bool,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -359,6 +384,7 @@
+         client_id: ClientId,
+         passthrough_pane_id: Option<PaneId>,
+     ) -> Result<MouseEffect> {
++        Self::notify_passive_plugins_of_outside_press(tab, event, client_id);
+         if let Some(effect) = Self::intercept_guest_modal_mouse_event(tab, event, client_id)? {
+             return Ok(effect);
+         }
+@@ -367,6 +393,37 @@
+         Self::execute_mouse_action(tab, action, event, client_id)
+     }
+ 
++    fn notify_passive_plugins_of_outside_press(
++        tab: &Tab,
++        event: &MouseEvent,
++        client_id: ClientId,
++    ) {
++        let outside_press = match passive_outside_press(event) {
++            Some(outside_press) => outside_press,
++            None => return,
++        };
++        for id in tab.floating_panes.pane_ids() {
++            let plugin_id = match id {
++                PaneId::Plugin(plugin_id) => *plugin_id,
++                PaneId::Terminal(_) => continue,
++            };
++            if let Some(pane) = tab.floating_panes.get_pane(*id) {
++                if !pane.selectable()
++                    && pane.borderless()
++                    && (tab.floating_panes.panes_are_visible()
++                        || pane.position_and_size().is_pinned)
++                    && !pane.contains(&event.position)
++                {
++                    let _ = tab.senders.send_to_plugin(PluginInstruction::Update(vec![(
++                        Some(plugin_id),
++                        Some(client_id),
++                        Event::Mouse(outside_press.clone()),
++                    )]));
++                }
++            }
++        }
++    }
++
+     fn intercept_guest_modal_mouse_event(
+         tab: &mut Tab,
+         event: &MouseEvent,
+@@ -517,6 +574,7 @@
+             edge,
+             is_floating,
+             terminal_wants_mouse,
++            selectable: pane.selectable(),
+         })
+     }
+ 
+@@ -778,6 +836,13 @@
+                 pane_id: _,
+                 position,
+             } => Self::execute_focus_pane(tab, position, client_id),
++            MouseAction::RightClickPlugin { pane_id, position } => {
++                if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
++                    let relative_position = pane.relative_position(&position);
++                    pane.handle_right_click(&relative_position, client_id);
++                }
++                Ok(MouseEffect::default())
++            },
+             MouseAction::FocusPaneAndClickThrough {
+                 pane_id: _,
+                 position,
+@@ -1515,6 +1580,14 @@
                      return Ok(MouseAction::ShowFloatingPanesAndFocus { pane_id: pinned_id });
                  }
                  if ctx.pinned_unselectable.is_some() {
@@ -15,7 +136,23 @@
                      return Ok(MouseAction::NoAction);
                  }
              }
-@@ -1957,4 +1965,32 @@
+@@ -1537,6 +1610,15 @@
+             let Some(pane_id) = ctx.pane_id_at_position else {
+                 return Ok(MouseAction::NoAction);
+             };
++            if event.event_type == MouseEventType::Press
++                && matches!(pane_id, PaneId::Plugin(_))
++                && ctx.clicked_pane.map(|pane| !pane.selectable).unwrap_or(false)
++            {
++                return Ok(MouseAction::RightClickPlugin {
++                    pane_id,
++                    position: event.position,
++                });
++            }
+             let is_active_pane = Some(pane_id) == ctx.active_pane_id;
+             if is_active_pane {
+                 return Ok(MouseAction::SendToTerminal {
+@@ -1957,4 +2039,33 @@
              );
          }
      }
@@ -35,6 +172,7 @@
 +                edge: None,
 +                is_floating: true,
 +                terminal_wants_mouse: false,
++                selectable: false,
 +            });
 +            let expected = if matches!(pane_id, PaneId::Plugin(_)) {
 +                MouseAction::StartSelection { pane_id, position }
@@ -48,3 +186,241 @@
 +        }
 +    }
  }
+--- a/zellij-server/src/tab/unit/tab_integration_tests.rs
++++ b/zellij-server/src/tab/unit/tab_integration_tests.rs
+@@ -1182,6 +1182,235 @@
+     assert_eq!(stored_cursor, Some((12, 5)));
+ }
+ 
++fn passive_popup_mouse_updates(
++    receiver: &Receiver<(PluginInstruction, ErrorContext)>,
++) -> Vec<(Option<u32>, Option<ClientId>, zellij_utils::data::Mouse)> {
++    let mut mouse_updates = vec![];
++    while let Ok((instruction, _)) = receiver.try_recv() {
++        if let PluginInstruction::Update(updates) = instruction {
++            for (plugin_id, client_id, event) in updates {
++                if let zellij_utils::data::Event::Mouse(mouse) = event {
++                    mouse_updates.push((plugin_id, client_id, mouse));
++                }
++            }
++        }
++    }
++    mouse_updates
++}
++
++#[test]
++fn passive_popup_outside_press_preserves_terminal_mouse_input() {
++    use zellij_utils::data::Mouse;
++    let (mut tab, receiver) =
++        create_new_tab_with_plugin_receiver(Size { cols: 121, rows: 20 }, ModeInfo::default());
++    let (writer_sender, writer_receiver): ChannelWithContext<PtyWriteInstruction> = channels::unbounded();
++    tab.senders.replace_to_pty_writer(SenderWithContext::new(writer_sender));
++    tab.set_pane_frames(PaneFrameStyle::None);
++    tab.handle_pty_bytes(1, b"\x1b[?1000h\x1b[?1006h".to_vec()).unwrap();
++    tab.new_floating_pane(PaneId::Plugin(2), None, None, false, false, None, None).unwrap();
++    tab.set_pane_selectable(PaneId::Plugin(2), false);
++    tab.floating_panes.change_pane_coordinates(
++        PaneId::Plugin(2),
++        FloatingPaneCoordinates {
++            pinned: Some(true), borderless: Some(true),
++            ..FloatingPaneCoordinates::default().with_x_fixed(8).with_y_fixed(3)
++                .with_width_fixed(30).with_height_fixed(8)
++        },
++    ).unwrap();
++    passive_popup_mouse_updates(&receiver);
++    while writer_receiver.try_recv().is_ok() {}
++    let position = Position::new(15, 60);
++    for (event, code) in [
++        (MouseEvent::new_left_press_event(position), 0),
++        (MouseEvent::new_right_press_event(position), 2),
++        (MouseEvent::new_middle_press_event(position), 1),
++    ] {
++        tab.handle_mouse_event(&event, 1).unwrap();
++        let outside = if event.right { Mouse::RightClick(-1, u16::MAX as usize) }
++            else { Mouse::LeftClick(-1, u16::MAX as usize) };
++        assert_eq!(passive_popup_mouse_updates(&receiver), vec![(Some(2), Some(1), outside)]);
++        let mut writes = vec![];
++        while let Ok((instruction, _)) = writer_receiver.try_recv() {
++            if let PtyWriteInstruction::Write(bytes, _, _) = instruction {
++                writes.push(bytes);
++            }
++        }
++        assert_eq!(writes, vec![format!("\x1b[<{};61;16M", code).into_bytes()]);
++        assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(1)));
++    }
++}
++
++#[test]
++fn passive_popup_tiled_sidebar_right_click_does_not_focus() {
++    use zellij_utils::data::Mouse;
++    let (mut tab, receiver) =
++        create_new_tab_with_plugin_receiver(Size { cols: 121, rows: 20 }, ModeInfo::default());
++    tab.set_pane_frames(PaneFrameStyle::None);
++    tab.new_pane(
++        PaneId::Plugin(2), None, None, false, false,
++        NewPanePlacement::Tiled { direction: None, borderless: Some(true) },
++        Some(1), None,
++    ).unwrap();
++    tab.set_pane_selectable(PaneId::Plugin(2), false);
++    tab.tiled_panes.focus_pane(PaneId::Terminal(1), 1);
++    let info = tab.get_pane_info(PaneId::Plugin(2)).unwrap();
++    passive_popup_mouse_updates(&receiver);
++    tab.handle_mouse_event(&MouseEvent::new_right_press_event(
++        Position::new((info.pane_y + 1) as i32, (info.pane_x + 2) as u16)), 1).unwrap();
++    assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(1)));
++    assert_eq!(passive_popup_mouse_updates(&receiver),
++        vec![(Some(2), Some(1), Mouse::RightClick(1, 2))]);
++}
++
++#[test]
++fn passive_popup_right_click_dispatches_without_focus_or_hover() {
++    use zellij_utils::data::Mouse;
++    let (mut tab, receiver) =
++        create_new_tab_with_plugin_receiver(Size { cols: 121, rows: 20 }, ModeInfo::default());
++    tab.set_pane_frames(PaneFrameStyle::None);
++    for pane_id in [PaneId::Plugin(2), PaneId::Terminal(2)] {
++        tab.new_floating_pane(pane_id, None, None, false, false, None, None).unwrap();
++        tab.set_pane_selectable(pane_id, false);
++        tab.floating_panes.change_pane_coordinates(
++            pane_id,
++            FloatingPaneCoordinates {
++                pinned: Some(true),
++                borderless: Some(true),
++                ..FloatingPaneCoordinates::default()
++                    .with_x_fixed(8).with_y_fixed(3)
++                    .with_width_fixed(30).with_height_fixed(8)
++            },
++        ).unwrap();
++        passive_popup_mouse_updates(&receiver);
++        tab.handle_mouse_event(&MouseEvent::new_right_press_event(Position::new(4, 10)), 1)
++            .unwrap();
++        assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(1)));
++        assert!(!tab.floating_panes.panes_are_visible());
++        assert_eq!(
++            passive_popup_mouse_updates(&receiver),
++            if matches!(pane_id, PaneId::Plugin(_)) {
++                vec![(Some(2), Some(1), Mouse::RightClick(1, 2))]
++            } else {
++                vec![]
++            },
++        );
++        tab.floating_panes.remove_pane(pane_id);
++    }
++}
++
++#[test]
++fn passive_popup_outside_press_notifies_current_client_and_routes_once() {
++    use zellij_utils::data::Mouse;
++    use zellij_utils::input::mouse::MouseEventType;
++    let (mut tab, receiver) =
++        create_new_tab_with_plugin_receiver(Size { cols: 121, rows: 20 }, ModeInfo::default());
++    tab.set_pane_frames(PaneFrameStyle::None);
++    // A second passive plugin is the original click target. Its callback proves
++    // dismissal notification does not consume or duplicate the real press.
++    for (plugin_id, x) in [(2, 8), (3, 50)] {
++        tab.new_floating_pane(PaneId::Plugin(plugin_id), None, None, false, false, None, None)
++            .unwrap();
++        tab.set_pane_selectable(PaneId::Plugin(plugin_id), false);
++        tab.floating_panes.change_pane_coordinates(
++            PaneId::Plugin(plugin_id),
++            FloatingPaneCoordinates {
++                pinned: Some(true),
++                borderless: Some(true),
++                ..FloatingPaneCoordinates::default()
++                    .with_x_fixed(x).with_y_fixed(3)
++                    .with_width_fixed(30).with_height_fixed(8)
++            },
++        ).unwrap();
++    }
++    passive_popup_mouse_updates(&receiver);
++    let position = Position::new(4, 52);
++    for event in [
++        MouseEvent::new_left_press_event(position),
++        MouseEvent::new_right_press_event(position),
++        MouseEvent::new_middle_press_event(position),
++    ] {
++        tab.handle_mouse_event(&event, 1).unwrap();
++        let updates = passive_popup_mouse_updates(&receiver);
++        let outside = if event.right { Mouse::RightClick(-1, u16::MAX as usize) }
++            else { Mouse::LeftClick(-1, u16::MAX as usize) };
++        let mut expected = vec![(Some(2), Some(1), outside)];
++        if event.left {
++            expected.push((Some(3), Some(1), Mouse::LeftClick(1, 2)));
++        } else if event.right {
++            expected.push((Some(3), Some(1), Mouse::RightClick(1, 2)));
++        }
++        assert_eq!(updates, expected);
++        assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(1)));
++    }
++    for mut event in [
++        MouseEvent::new_left_press_event(position),
++        MouseEvent::new_right_press_event(position),
++        MouseEvent::new_middle_press_event(position),
++    ] {
++        event.event_type = MouseEventType::Release;
++        tab.handle_mouse_event(&event, 1).unwrap();
++        assert!(passive_popup_mouse_updates(&receiver).iter()
++            .all(|(_, _, mouse)| !matches!(mouse, Mouse::LeftClick(-1, _) | Mouse::RightClick(-1, _))));
++    }
++    for event in [
++        MouseEvent::new_buttonless_motion(position),
++        MouseEvent::new_middle_motion_event(position),
++        MouseEvent::new_scroll_up_event(position),
++        MouseEvent::new_scroll_down_event(position),
++    ] {
++        tab.handle_mouse_event(&event, 1).unwrap();
++        assert!(passive_popup_mouse_updates(&receiver).iter()
++            .all(|(_, _, mouse)| !matches!(mouse, Mouse::LeftClick(-1, _) | Mouse::RightClick(-1, _))));
++    }
++}
++
++#[test]
++fn passive_popup_outside_press_uses_current_bounds_and_visibility() {
++    use zellij_utils::data::Mouse;
++    let (mut tab, receiver) =
++        create_new_tab_with_plugin_receiver(Size { cols: 121, rows: 20 }, ModeInfo::default());
++    tab.set_pane_frames(PaneFrameStyle::None);
++    tab.new_floating_pane(PaneId::Plugin(2), None, None, false, false, None, None).unwrap();
++    tab.set_pane_selectable(PaneId::Plugin(2), false);
++    for (x, y, width, height) in [(8, 3, 30, 8), (9, 4, 10, 5)] {
++        tab.floating_panes.change_pane_coordinates(
++            PaneId::Plugin(2),
++            FloatingPaneCoordinates {
++                pinned: Some(true),
++                borderless: Some(true),
++                ..FloatingPaneCoordinates::default().with_x_fixed(x).with_y_fixed(y)
++                    .with_width_fixed(width).with_height_fixed(height)
++            },
++        ).unwrap();
++        passive_popup_mouse_updates(&receiver);
++        for position in [
++            Position::new(y as i32, x as u16),
++            Position::new((y + height - 1) as i32, (x + width - 1) as u16),
++        ] {
++            tab.handle_mouse_event(&MouseEvent::new_right_press_event(position), 1).unwrap();
++            assert!(passive_popup_mouse_updates(&receiver).iter()
++                .all(|(_, _, mouse)| !matches!(mouse, Mouse::RightClick(-1, _))));
++        }
++        for position in [
++            Position::new(y as i32 - 1, x as u16),
++            Position::new(y as i32, (x - 1) as u16),
++            Position::new((y + height) as i32, x as u16),
++            Position::new(y as i32, (x + width) as u16),
++        ] {
++            tab.handle_mouse_event(&MouseEvent::new_right_press_event(position), 1).unwrap();
++            assert_eq!(passive_popup_mouse_updates(&receiver),
++                vec![(Some(2), Some(1), Mouse::RightClick(-1, u16::MAX as usize))]);
++        }
++    }
++    tab.floating_panes.change_pane_coordinates(
++        PaneId::Plugin(2),
++        FloatingPaneCoordinates { pinned: Some(false), ..FloatingPaneCoordinates::default() },
++    ).unwrap();
++    passive_popup_mouse_updates(&receiver);
++    tab.handle_mouse_event(&MouseEvent::new_right_press_event(Position::new(0, 0)), 1).unwrap();
++    assert!(passive_popup_mouse_updates(&receiver).is_empty());
++}
++
+ #[test]
+ fn increase_tiled_pane_sizes_with_stacked_resizes() {
+     // this is the default resizing algorithm
