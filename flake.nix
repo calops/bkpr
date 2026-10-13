@@ -1,5 +1,5 @@
 {
-  description = "shephrd — workspace-first Herdr composition in Zellij";
+  description = "shephrd — workspace-first native Zellij terminals and sidebar";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/b1b875982b17dabde9b4a37f3e229e74913e6db3";
@@ -36,6 +36,37 @@
           overlays = [ rust-overlay.overlays.default ];
         };
       toolchainFor = pkgs: pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+      zellijFor =
+        pkgs:
+        pkgs.zellij.override {
+          zellij-unwrapped = pkgs.zellij-unwrapped.overrideAttrs (old: {
+            patches = (old.patches or [ ]) ++ [
+              ./nix/zellij-cursor.patch
+              ./nix/zellij-program-status.patch
+              ./nix/zellij-program-status-events.patch
+              ./nix/zellij-host-replies.patch
+              ./nix/zellij-cli-session.patch
+              ./nix/zellij-popup-clicks.patch
+              ./nix/zellij-overlay-geometry.patch
+              ./nix/zellij-plugin-messages.patch
+            ];
+            doCheck = true;
+            cargoTestFlags = [
+              "--package"
+              "zellij-server"
+              "--lib"
+              "program_status"
+            ];
+            postCheck = (old.postCheck or "") + ''
+              cargo test --offline --package zellij-client --lib stdin_ansi_parser
+              cargo test --offline --package zellij-client --lib stdin_handler
+              cargo test --offline --package zellij-server --lib pinned_nonselectable_plugin
+              cargo test --offline --package zellij-server --lib render_messages_tests -- --test-threads=1
+              cargo test --offline --package zellij-server --lib screen_tab_switch_
+              cargo test --offline --package zellij-server --lib screen_plugin_
+            '';
+          });
+        };
     in
     {
       packages = forAllSystems (
@@ -43,6 +74,7 @@
         let
           pkgs = pkgsFor system;
           toolchain = toolchainFor pkgs;
+          zellij = zellijFor pkgs;
           rustPlatform = pkgs.makeRustPlatform {
             cargo = toolchain;
             rustc = toolchain;
@@ -112,11 +144,12 @@
                 makeWrapper ${native}/bin/shephrd "$out/bin/shephrd" \
                   --set SHEPHRD_PLUGIN ${plugin}/share/shephrd/shephrd-zellij.wasm \
                   --set SHEPHRD_HERDR ${herdr.packages.${system}.default}/bin/herdr \
-                  --set SHEPHRD_ZELLIJ ${pkgs.zellij}/bin/zellij \
+                  --set SHEPHRD_ZELLIJ ${zellij}/bin/zellij \
                   --set SHEPHRD_SSH ${pkgs.openssh}/bin/ssh \
                   --prefix PATH : ${
                     pkgs.lib.makeBinPath [
                       pkgs.git
+                      pkgs.gh
                       pkgs.openssh
                     ]
                   }
@@ -134,7 +167,7 @@
         default = {
           type = "app";
           program = "${self.packages.${system}.shephrd}/bin/shephrd";
-          meta.description = "Launch shephrd with its bundled Zellij frontend and upstream Herdr";
+          meta.description = "Launch shephrd with native Zellij terminals and its bundled sidebar";
         };
         shephrd = self.apps.${system}.default;
       });
@@ -143,22 +176,33 @@
         system:
         let
           pkgs = pkgsFor system;
+          zellij = pkgs.zellij;
         in
         {
           default = pkgs.mkShell {
             packages = [
               (toolchainFor pkgs)
               herdr.packages.${system}.default
-              pkgs.zellij
+              zellij
               pkgs.openssh
               pkgs.git
+              pkgs.gh
               pkgs.pkg-config
+              (pkgs.python3.withPackages (ps: [ ps.pyte ]))
+            ];
+            buildInputs = [
+              pkgs.openssl
+              pkgs.curl
             ];
             SHEPHRD_HERDR = "${herdr.packages.${system}.default}/bin/herdr";
-            SHEPHRD_ZELLIJ = "${pkgs.zellij}/bin/zellij";
+            SHEPHRD_ZELLIJ = "${zellij}/bin/zellij";
+            SHEPHRD_ZELLIJ_VENDOR = pkgs.zellij-unwrapped.cargoDeps;
             SHEPHRD_SSH = "${pkgs.openssh}/bin/ssh";
             shellHook = ''
-              export SHEPHRD_PLUGIN="$PWD/target/wasm32-wasip1/release/shephrd-zellij.wasm"
+              export SHEPHRD_PLUGIN="$PWD/target/wasm32-wasip1/debug/shephrd-zellij.wasm"
+              if [ -x "$PWD/target/zellij-dev/target/debug/zellij" ]; then
+                export SHEPHRD_ZELLIJ="$PWD/target/zellij-dev/target/debug/zellij"
+              fi
             '';
           };
         }

@@ -1,0 +1,1044 @@
+--- a/zellij-server/src/panes/floating_panes/mod.rs
++++ b/zellij-server/src/panes/floating_panes/mod.rs
+@@ -35,6 +35,29 @@
+ const RESIZE_INCREMENT_WIDTH: usize = 5;
+ const RESIZE_INCREMENT_HEIGHT: usize = 2;
+ 
++fn is_passive_plugin(pane: &dyn Pane) -> bool {
++    !pane.selectable() && pane.borderless() && matches!(pane.pid(), PaneId::Plugin(_))
++}
++
++fn coordinate_viewport(
++    pane: &dyn Pane,
++    is_pinned: bool,
++    display_area: Size,
++    viewport: Viewport,
++) -> Viewport {
++    if is_pinned && is_passive_plugin(pane) {
++        // Passive UI overlays can join reserved chrome without entering keyboard focus.
++        Viewport {
++            x: 0,
++            y: 0,
++            cols: display_area.cols,
++            rows: display_area.rows,
++        }
++    } else {
++        viewport
++    }
++}
++
+ pub struct FloatingPanes {
+     panes: BTreeMap<PaneId, Box<dyn Pane>>,
+     display_area: Rc<RefCell<Size>>,
+@@ -119,6 +142,22 @@
+         }
+         self.set_force_render();
+     }
++    pub fn collect_ui_overlay_geometries(&self, geometries: &mut Vec<(PaneId, PaneGeom)>) {
++        for (id, pane) in &self.panes {
++            if self
++                .fullscreen_pane_id
++                .is_some_and(|fullscreen| fullscreen != *id)
++                || !is_passive_plugin(pane.as_ref())
++            {
++                continue;
++            }
++            let geom = pane.position_and_size();
++            if geom.is_pinned {
++                geometries.push((*id, geom));
++            }
++        }
++    }
++
+     pub fn stack(&self) -> Option<FloatingPanesStack> {
+         if *self.fullscreen_covers_ui.borrow() {
+             return None;
+@@ -1110,8 +1149,8 @@
+ 
+         {
+             let viewport = { self.viewport.borrow().clone() };
++            let display_area = *self.display_area.borrow();
+             let pane = self.get_pane_mut(pane_id).with_context(err_context)?;
+-            let mut pane_geom = pane.position_and_size();
+             if let Some(pinned) = new_coordinates.pinned.as_ref() {
+                 pane.set_pinned(*pinned);
+             }
+@@ -1122,6 +1161,9 @@
+                     pane.set_borderless(false);
+                 };
+             }
++            let mut pane_geom = pane.position_and_size();
++            let viewport =
++                coordinate_viewport(pane.as_ref(), pane_geom.is_pinned, display_area, viewport);
+             pane_geom.adjust_coordinates(new_coordinates, viewport);
+             pane.set_geom(pane_geom);
+             pane.set_should_render(true);
+--- a/zellij-server/src/panes/floating_panes/floating_pane_grid.rs
++++ b/zellij-server/src/panes/floating_panes/floating_pane_grid.rs
+@@ -116,6 +116,12 @@
+ 
+         for (pane_id, pane) in panes.iter_mut() {
+             let mut new_pane_geom = pane.current_geom();
++            let new_viewport = super::coordinate_viewport(
++                pane.as_ref(),
++                new_pane_geom.is_pinned,
++                space,
++                new_viewport,
++            );
+             let desired_pane_geom = desired_pane_positions
+                 .get(pane_id)
+                 .with_context(|| {
+--- a/zellij-server/src/tab/mod.rs
++++ b/zellij-server/src/tab/mod.rs
+@@ -212,6 +212,9 @@
+     pub senders: ThreadSenders,
+     synchronize_is_active: bool,
+     should_clear_display_before_rendering: bool,
++    previous_ui_overlay_geometries: Vec<(PaneId, PaneGeom)>,
++    ui_overlay_geometries: Vec<(PaneId, PaneGeom)>,
++    ui_overlay_damage: String,
+     mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
+     default_mode_info: ModeInfo,
+     pub style: Style,
+@@ -988,6 +991,9 @@
+             os_api,
+             senders,
+             should_clear_display_before_rendering: false,
++            previous_ui_overlay_geometries: Vec::new(),
++            ui_overlay_geometries: Vec::new(),
++            ui_overlay_damage: String::new(),
+             style,
+             mode_info,
+             default_mode_info,
+@@ -2289,6 +2295,7 @@
+         Ok(())
+     }
+     pub fn remove_client(&mut self, client_id: ClientId) {
++        self.clear_mouse_hover_for_client(client_id);
+         self.focus_pane_id = None;
+         self.mode_info
+             .borrow_mut()
+@@ -4866,6 +4873,54 @@
+         Ok(())
+     }
+ 
++    fn clear_vacated_ui_overlay_surface(&mut self) {
++        use std::fmt::Write as _;
++
++        self.ui_overlay_damage.clear();
++        self.ui_overlay_geometries.clear();
++        if !self.tiled_panes.fullscreen_covers_ui() {
++            self.floating_panes
++                .collect_ui_overlay_geometries(&mut self.ui_overlay_geometries);
++        }
++        let display = *self.display_area.borrow();
++        for (id, old) in &self.previous_ui_overlay_geometries {
++            let vacated = match self.ui_overlay_geometries.binary_search_by_key(id, |(id, _)| *id) {
++                Ok(index) => {
++                    let current = &self.ui_overlay_geometries[index].1;
++                    current.x > old.x
++                        || current.y > old.y
++                        || current.x + current.cols.as_usize() < old.x + old.cols.as_usize()
++                        || current.y + current.rows.as_usize() < old.y + old.rows.as_usize()
++                }
++                Err(_) => true,
++            };
++            if !vacated {
++                continue;
++            }
++            let right = (old.x + old.cols.as_usize()).min(display.cols);
++            let bottom = (old.y + old.rows.as_usize()).min(display.rows);
++            if old.x < right {
++                for row in old.y..bottom {
++                    write!(
++                        self.ui_overlay_damage,
++                        "\u{1b}[{};{}H\u{1b}[{}X",
++                        row + 1,
++                        old.x + 1,
++                        right - old.x
++                    ).unwrap();
++                }
++            }
++        }
++        std::mem::swap(
++            &mut self.previous_ui_overlay_geometries,
++            &mut self.ui_overlay_geometries,
++        );
++        if !self.ui_overlay_damage.is_empty() {
++            // Repaint only after clearing the old overlay, including unowned chrome cells.
++            self.set_force_render();
++        }
++    }
++
+     pub fn render(
+         &mut self,
+         output: &mut Output,
+@@ -4887,6 +4942,9 @@
+         if self.stacked_pane_list_is_active() {
+             self.groupify_all();
+         }
++        if client_id_override.is_none() {
++            self.clear_vacated_ui_overlay_surface();
++        }
+         self.update_active_panes_in_pty_thread()
+             .with_context(err_context)?;
+ 
+@@ -4959,6 +5017,15 @@
+             );
+             output.mark_host_display_cleared_for_clients(connected_clients.iter().copied());
+             self.should_clear_display_before_rendering = false;
++        } else if !self.ui_overlay_damage.is_empty() {
++            output.add_pre_vte_instruction_to_multiple_clients(
++                connected_clients.iter().copied(),
++                "\u{1b}[m",
++            );
++            output.add_pre_vte_instruction_to_multiple_clients(
++                connected_clients.iter().copied(),
++                &self.ui_overlay_damage,
++            );
+         }
+     }
+     fn render_cursor(&mut self, output: &mut Output) {
+@@ -6572,6 +6639,27 @@
+         MouseHandler::handle_mouse_event(self, event, client_id, passthrough_pane_id)
+     }
+ 
++    pub(crate) fn replay_mouse_hover(
++        &mut self,
++        position: Position,
++        client_id: ClientId,
++    ) -> Result<MouseEffect> {
++        MouseHandler::replay_mouse_hover(self, position, client_id)
++    }
++
++    pub(crate) fn can_replay_mouse_hover(&self) -> bool {
++        MouseHandler::can_replay_mouse_hover(self)
++    }
++
++    pub(crate) fn clear_mouse_hover_for_client(&mut self, client_id: ClientId) {
++        MouseHandler::clear_mouse_hover_for_client(self, client_id);
++    }
++
++    #[cfg(test)]
++    pub(crate) fn has_plugin_mouse_hover_for_client(&self, client_id: ClientId) -> bool {
++        self.plugin_hover_pane_id.contains_key(&client_id)
++    }
++
+     pub fn copy_selection(&self, client_id: ClientId) -> Result<()> {
+         let selected_text = self
+             .get_active_pane(client_id)
+@@ -6672,8 +6760,7 @@
+             .send_to_plugin(PluginInstruction::Update(plugin_updates))
+             .with_context(|| format!("failed to set visibility of tab to {visible}"))?;
+         if !visible {
+-            self.mouse_hover_pane_id.clear();
+-            self.plugin_hover_pane_id.clear();
++            self.clear_mouse_hover_state();
+         }
+         Ok(())
+     }
+@@ -7673,10 +7760,15 @@
+         self.word_separators = word_separators;
+     }
+     pub fn clear_mouse_hover_state(&mut self) {
+-        self.mouse_hover_pane_id.clear();
+-        self.plugin_hover_pane_id.clear();
++        while let Some(client_id) = self.plugin_hover_pane_id.keys().next().copied() {
++            self.clear_mouse_hover_for_client(client_id);
++        }
++        while let Some(client_id) = self.mouse_hover_pane_id.keys().next().copied() {
++            self.clear_mouse_hover_for_client(client_id);
++        }
+         self.mouse_last_pane_id.clear();
+         self.mouse_help_text_visible.clear();
++        self.last_mouse_activity_time.clear();
+     }
+     pub fn update_web_sharing(&mut self, web_sharing: WebSharing) {
+         let old_value = self.web_sharing;
+--- a/zellij-server/src/tab/unit/tab_integration_tests.rs
++++ b/zellij-server/src/tab/unit/tab_integration_tests.rs
+@@ -1183,6 +1183,159 @@
+ }
+ 
+ #[test]
++fn pinned_nonselectable_plugin_overlay_uses_display_coordinates() {
++    use zellij_utils::data::FloatingPaneCoordinates;
++    use zellij_utils::pane_size::Viewport;
++
++    let size = Size {
++        cols: 121,
++        rows: 20,
++    };
++    let (mut tab, _plugin_receiver) =
++        create_new_tab_with_plugin_receiver(size, ModeInfo::default());
++    tab.set_pane_frames(PaneFrameStyle::None);
++    for (pane_id, selectable, pinned, borderless) in [
++        (PaneId::Plugin(2), false, true, true),
++        (PaneId::Plugin(3), true, true, true),
++        (PaneId::Plugin(4), false, false, true),
++        (PaneId::Plugin(5), false, true, false),
++        (PaneId::Terminal(2), false, true, true),
++    ] {
++        tab.new_floating_pane(pane_id, None, None, false, false, None, None)
++            .unwrap();
++        tab.set_pane_selectable(pane_id, selectable);
++        *tab.viewport.borrow_mut() = Viewport {
++            x: 38,
++            y: 2,
++            cols: 83,
++            rows: 18,
++        };
++        let coordinates = FloatingPaneCoordinates {
++            pinned: Some(pinned),
++            borderless: Some(borderless),
++            ..FloatingPaneCoordinates::default()
++                .with_x_fixed(37)
++                .with_y_fixed(1)
++                .with_width_fixed(30)
++                .with_height_fixed(8)
++        };
++        tab.floating_panes
++            .change_pane_coordinates(pane_id, coordinates)
++            .unwrap();
++        let info = tab.get_pane_info(pane_id).unwrap();
++        let overlay = matches!(pane_id, PaneId::Plugin(_)) && !selectable && pinned && borderless;
++        assert_eq!(
++            (info.pane_x, info.pane_y),
++            if overlay { (37, 1) } else { (38, 2) }
++        );
++        assert_eq!(
++            tab.floating_panes
++                .get_pane(pane_id)
++                .unwrap()
++                .position_and_size()
++                .is_pinned,
++            pinned
++        );
++        assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(1)));
++        if overlay {
++            tab.floating_panes.resize(Size {
++                cols: 100,
++                rows: 18,
++            });
++            let resized = tab.get_pane_info(pane_id).unwrap();
++            assert_eq!((resized.pane_x, resized.pane_y), (37, 1));
++            tab.floating_panes
++                .change_pane_coordinates(
++                    pane_id,
++                    FloatingPaneCoordinates {
++                        pinned: Some(false),
++                        ..FloatingPaneCoordinates::default()
++                            .with_x_fixed(37)
++                            .with_y_fixed(1)
++                    },
++                )
++                .unwrap();
++            let unpinned = tab.get_pane_info(pane_id).unwrap();
++            assert_eq!((unpinned.pane_x, unpinned.pane_y), (38, 2));
++            assert!(
++                !tab.floating_panes
++                    .get_pane(pane_id)
++                    .unwrap()
++                    .position_and_size()
++                    .is_pinned
++            );
++        }
++    }
++}
++
++#[test]
++fn pinned_nonselectable_plugin_overlay_clears_vacated_separator() {
++    use zellij_utils::data::FloatingPaneCoordinates;
++    use zellij_utils::pane_size::{Dimension, Offset, Viewport};
++
++    let size = Size {
++        cols: 121,
++        rows: 20,
++    };
++    let (mut tab, _plugin_receiver) =
++        create_new_tab_with_plugin_receiver(size, ModeInfo::default());
++    tab.set_pane_frames(PaneFrameStyle::None);
++    let app = tab.tiled_panes.get_pane_mut(PaneId::Terminal(1)).unwrap();
++    let mut app_geom = app.position_and_size();
++    app_geom.x = 38;
++    app_geom.cols = Dimension::fixed(size.cols - 38);
++    app.set_geom(app_geom);
++    app.set_content_offset(Offset::default());
++    tab.new_floating_pane(PaneId::Plugin(2), None, None, false, false, None, None)
++        .unwrap();
++    tab.set_pane_selectable(PaneId::Plugin(2), false);
++    *tab.viewport.borrow_mut() = Viewport {
++        x: 38,
++        y: 0,
++        cols: 83,
++        rows: 20,
++    };
++    let coordinates = |y, height| FloatingPaneCoordinates {
++        pinned: Some(true),
++        borderless: Some(true),
++        ..FloatingPaneCoordinates::default()
++            .with_x_fixed(37)
++            .with_y_fixed(y)
++            .with_width_fixed(30)
++            .with_height_fixed(height)
++    };
++    let paint = |rows| {
++        let mut bytes = String::from("\x1b[2J");
++        for row in 1..=rows {
++            bytes.push_str(&format!("\x1b[{row};1HX"));
++        }
++        bytes.into_bytes()
++    };
++    let mut tape = String::new();
++    let snapshot = |tab: &mut Tab, tape: &mut String| {
++        let mut output = Output::default();
++        tab.render(&mut output, None).unwrap();
++        tape.push_str(&output.serialize().unwrap().remove(&1).unwrap());
++        take_snapshot(tape, size.rows, size.cols, Palette::default())
++    };
++    tab.change_floating_pane_coordinates(&PaneId::Plugin(2), coordinates(0, 18))
++        .unwrap();
++    tab.handle_plugin_bytes(2, 1, paint(18)).unwrap();
++    assert_eq!(snapshot(&mut tab, &mut tape).matches('X').count(), 18);
++    tab.change_floating_pane_coordinates(&PaneId::Plugin(2), coordinates(4, 3))
++        .unwrap();
++    tab.handle_plugin_bytes(2, 1, paint(3)).unwrap();
++    assert_eq!(snapshot(&mut tab, &mut tape).matches('X').count(), 3);
++    tab.change_floating_pane_coordinates(&PaneId::Plugin(2), coordinates(8, 3))
++        .unwrap();
++    assert_eq!(snapshot(&mut tab, &mut tape).matches('X').count(), 3);
++    tab.suppress_pane(PaneId::Plugin(2), Some(1));
++    tab.set_force_render();
++    assert_eq!(snapshot(&mut tab, &mut tape).matches('X').count(), 0);
++    assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(1)));
++}
++
++#[test]
+ fn increase_tiled_pane_sizes_with_stacked_resizes() {
+     // this is the default resizing algorithm
+     let size = Size {
+--- a/zellij-server/src/screen.rs
++++ b/zellij-server/src/screen.rs
+@@ -1547,6 +1547,7 @@
+     /// The indices of this [`Screen`]'s active [`Tab`]s.
+     active_tab_ids: BTreeMap<ClientId, usize>,
+     client_sizes: HashMap<ClientId, Size>,
++    last_mouse_positions: HashMap<ClientId, Position>,
+     global_last_active_tab_id: usize,
+     tab_history: BTreeMap<ClientId, Vec<usize>>,
+     pane_history: BTreeMap<ClientId, Vec<PaneId>>,
+@@ -1757,6 +1758,7 @@
+             connected_clients: Rc::new(RefCell::new(HashMap::new())),
+             active_tab_ids: BTreeMap::new(),
+             client_sizes: HashMap::new(),
++            last_mouse_positions: HashMap::new(),
+             global_last_active_tab_id: 0,
+             tabs: BTreeMap::new(),
+             last_single_pane_tab_names: HashMap::new(),
+@@ -2131,16 +2133,6 @@
+                         self.update_client_tab_focus(client_id, new_tab_index);
+                     }
+ 
+-                    if let Some(current_tab) = self.get_indexed_tab_mut(current_tab_index) {
+-                        if current_tab.has_no_connected_clients() {
+-                            current_tab.visible(false).with_context(err_context)?;
+-                        }
+-                    } else {
+-                        Err::<(), _>(anyhow!("Tab index {:?} not found", current_tab_index))
+-                            .with_context(err_context)
+-                            .non_fatal();
+-                    }
+-
+                     // Clear tab bell notification for the newly active tab
+                     if let Some(new_tab) = self.tabs.get_mut(&new_tab_index) {
+                         let tab_id = new_tab.id;
+@@ -2165,6 +2157,26 @@
+                         }
+                         let _ = self.sync_scroll_mode_on_focus(affected_client_id);
+                     }
++                    if let Some(current_tab) = self.get_indexed_tab_mut(current_tab_index) {
++                        if current_tab.has_no_connected_clients() {
++                            current_tab.visible(false).with_context(err_context)?;
++                        }
++                    }
++                    for affected_client_id in affected_client_ids {
++                        let can_replay = if let Some(current_tab) =
++                            self.get_indexed_tab_mut(current_tab_index)
++                        {
++                            let can_replay = current_tab.can_replay_mouse_hover();
++                            current_tab.clear_mouse_hover_for_client(affected_client_id);
++                            can_replay
++                        } else {
++                            false
++                        };
++                        if can_replay {
++                            self.replay_mouse_hover(affected_client_id)
++                                .with_context(err_context)?;
++                        }
++                    }
+                     return self.render(None).with_context(err_context);
+                 },
+                 Err(err) => Err::<(), _>(err).with_context(err_context).non_fatal(),
+@@ -4147,6 +4159,77 @@
+         }
+     }
+ 
++    fn add_plugin_pane(
++        &mut self,
++        plugin_id: PluginId,
++        pane_title: String,
++        run_plugin: Run,
++        start_suppressed: bool,
++        should_focus_plugin: bool,
++        placement: NewPanePlacement,
++        tab_index: Option<usize>,
++        client_id: Option<ClientId>,
++    ) -> Result<()> {
++        let connected_client_id = client_id.and_then(|client_id| {
++            if self.active_tab_ids.contains_key(&client_id) {
++                Some(client_id)
++            } else {
++                self.get_first_client_id()
++            }
++        });
++        let target_tab = if let Some(tab_index) = tab_index {
++            self.tabs.get_mut(&tab_index)
++        } else {
++            connected_client_id.and_then(|client_id| self.get_active_tab_mut(client_id).ok())
++        };
++        if let Some(tab) = target_tab {
++            tab.new_pane(
++                PaneId::Plugin(plugin_id),
++                Some(pane_title),
++                Some(run_plugin),
++                start_suppressed,
++                should_focus_plugin,
++                placement,
++                if tab_index.is_some() { None } else { connected_client_id },
++                None,
++            )?;
++        } else {
++            log::error!("Plugin destination tab not found: {:?}", tab_index);
++        }
++        Ok(())
++    }
++
++    fn apply_plugin_render_assets(
++        &mut self,
++        mut plugin_render_assets: Vec<PluginRenderAsset>,
++    ) -> Result<()> {
++        for index in 0..plugin_render_assets.len() {
++            let (preceding, later) = plugin_render_assets.split_at_mut(index + 1);
++            let asset = &mut preceding[index];
++            let nonempty_frame = !asset.bytes.is_empty();
++            let bytes = std::mem::take(&mut asset.bytes);
++            let mut applied = false;
++            for tab in self.tabs.values_mut() {
++                if tab.has_plugin(asset.plugin_id) {
++                    tab.handle_plugin_bytes(asset.plugin_id, asset.client_id, bytes)
++                        .context("failed to process plugin bytes")?;
++                    applied = nonempty_frame;
++                    break;
++                }
++            }
++            if !applied
++                || (!asset.render_messages.is_empty()
++                    && later.iter().any(|next| {
++                        next.plugin_id == asset.plugin_id && next.client_id == asset.client_id
++                    }))
++            {
++                asset.render_messages.clear();
++            }
++            self.render_blocker.remove_blocking_plugin(asset.plugin_id);
++        }
++        self.render(Some(plugin_render_assets))
++    }
++
+     pub fn render(&mut self, plugin_render_assets: Option<Vec<PluginRenderAsset>>) -> Result<()> {
+         // here we schedule the RenderToClients background job which debounces renders every 10ms
+         // rather than actually rendering
+@@ -4160,7 +4243,15 @@
+             .bus
+             .senders
+             .send_to_background_jobs(BackgroundJob::RenderToClients);
+-        if let Some(plugin_render_assets) = plugin_render_assets {
++        if let Some(mut plugin_render_assets) = plugin_render_assets {
++            for asset in &mut plugin_render_assets {
++                for message in asset.render_messages.drain(..) {
++                    self.bus.senders.send_to_plugin(PluginInstruction::MessageFromPlugin {
++                        source_plugin_id: asset.plugin_id,
++                        message,
++                    }).context("failed to deliver rendered plugin message").non_fatal();
++                }
++            }
+             let _ = self
+                 .bus
+                 .senders
+@@ -5113,6 +5204,7 @@
+         let err_context = || format!("failed to remove client {client_id}");
+ 
+         self.set_client_dimmed(client_id, false, None);
++        self.last_mouse_positions.remove(&client_id);
+         let passthrough_panes: Vec<PaneId> = self
+             .nested_guest_choices
+             .iter()
+@@ -6150,12 +6242,15 @@
+         Ok(())
+     }
+     /// Collect plugin IDs that should receive a broadcast event for a given client.
+-    /// Returns plugin IDs from the client's active tab plus background plugins
+-    /// subscribed to the given event type.
++    /// Tab topology includes inactive tabs so their plugins can prepare unfocused UI;
++    /// other events target active-tab plugins and subscribed background plugins.
+     fn targeted_plugin_ids(&self, client_id: ClientId, event_type: EventType) -> Vec<PluginId> {
+         let mut plugin_ids = Vec::new();
+-        // Active-tab plugins
+-        if let Some(active_tab_id) = self.active_tab_ids.get(&client_id) {
++        if event_type == EventType::TabUpdate {
++            for tab in self.tabs.values() {
++                plugin_ids.extend(tab.get_plugin_ids());
++            }
++        } else if let Some(active_tab_id) = self.active_tab_ids.get(&client_id) {
+             if let Some(tab) = self.tabs.get(active_tab_id) {
+                 plugin_ids.extend(tab.get_plugin_ids());
+             }
+@@ -7276,7 +7371,16 @@
+             }
+         }
+     }
++    fn replay_mouse_hover(&mut self, client_id: ClientId) -> Result<()> {
++        if let Some(position) = self.last_mouse_positions.get(&client_id).copied() {
++            let tab = self.get_active_tab_mut(client_id)?;
++            tab.replay_mouse_hover(position, client_id)?;
++        }
++        Ok(())
++    }
++
+     pub fn handle_mouse_event(&mut self, event: MouseEvent, client_id: ClientId) {
++        self.last_mouse_positions.insert(client_id, event.position);
+         let is_bare_motion = event.event_type == MouseEventType::Motion
+             && !event.left
+             && !event.right
+@@ -8322,23 +8426,8 @@
+             ScreenInstruction::PaneTitleChanged => {
+                 screen.log_and_report_session_state()?;
+             },
+-            ScreenInstruction::PluginBytes(mut plugin_render_assets) => {
+-                for plugin_render_asset in plugin_render_assets.iter_mut() {
+-                    let plugin_id = plugin_render_asset.plugin_id;
+-                    let client_id = plugin_render_asset.client_id;
+-                    let vte_bytes: Vec<u8> = plugin_render_asset.bytes.drain(..).collect();
+-
+-                    let all_tabs = screen.get_tabs_mut();
+-                    for tab in all_tabs.values_mut() {
+-                        if tab.has_plugin(plugin_id) {
+-                            tab.handle_plugin_bytes(plugin_id, client_id, vte_bytes)
+-                                .context("failed to process plugin bytes")?;
+-                            break;
+-                        }
+-                    }
+-                    screen.render_blocker.remove_blocking_plugin(plugin_id);
+-                }
+-                screen.render(Some(plugin_render_assets))?;
++            ScreenInstruction::PluginBytes(plugin_render_assets) => {
++                screen.apply_plugin_render_assets(plugin_render_assets)?;
+             },
+             ScreenInstruction::Render => {
+                 screen.render(None)?;
+@@ -10938,34 +11027,17 @@
+                     } else {
+                         log::error!("Must have pane id to replace or connected client_id if replacing a pane");
+                     }
+-                } else if let Some(client_id) = client_id {
+-                    active_tab_and_connected_client_id!(screen, client_id, |active_tab: &mut Tab, _client_id: ClientId| {
+-                        active_tab.new_pane(
+-                            PaneId::Plugin(plugin_id),
+-                            Some(pane_title),
+-                            Some(run_plugin),
+-                            start_suppressed,
+-                            should_focus_plugin.unwrap_or(true),
+-                            new_pane_placement,
+-                            Some(client_id),
+-                            None,
+-                        )
+-                    }, ?);
+-                } else if let Some(active_tab) =
+-                    tab_index.and_then(|tab_index| screen.tabs.get_mut(&tab_index))
+-                {
+-                    active_tab.new_pane(
+-                        PaneId::Plugin(plugin_id),
+-                        Some(pane_title),
+-                        Some(run_plugin),
++                } else {
++                    screen.add_plugin_pane(
++                        plugin_id,
++                        pane_title,
++                        run_plugin,
+                         start_suppressed,
+                         should_focus_plugin.unwrap_or(true),
+                         new_pane_placement,
+-                        None,
+-                        None,
++                        tab_index,
++                        client_id,
+                     )?;
+-                } else {
+-                    log::error!("Tab index not found: {:?}", tab_index);
+                 }
+                 if let Some(loading_indication) = plugin_loading_message_cache.remove(&plugin_id) {
+                     screen.update_plugin_loading_stage(plugin_id, loading_indication);
+--- a/zellij-server/src/tab/mouse_handler.rs
++++ b/zellij-server/src/tab/mouse_handler.rs
+@@ -367,6 +367,51 @@
+         Self::execute_mouse_action(tab, action, event, client_id)
+     }
+ 
++    pub(crate) fn clear_mouse_hover_for_client(tab: &mut Tab, client_id: ClientId) {
++        clear_hover_for_client(tab, client_id);
++        tab.mouse_last_pane_id.remove(&client_id);
++        tab.mouse_help_text_visible.remove(&client_id);
++        tab.last_mouse_activity_time.remove(&client_id);
++    }
++
++    pub(crate) fn can_replay_mouse_hover(tab: &Tab) -> bool {
++        tab.pane_being_resized_with_mouse.is_none()
++            && tab.selecting_with_mouse_in_pane.is_none()
++            && !tab.floating_panes.pane_is_being_moved_with_mouse()
++    }
++
++    pub(crate) fn replay_mouse_hover(
++        tab: &mut Tab,
++        position: Position,
++        client_id: ClientId,
++    ) -> Result<MouseEffect> {
++        if !tab.mouse_hover_effects || !Self::can_replay_mouse_hover(tab) {
++            return Ok(MouseEffect::default());
++        }
++        let pane_id = Self::get_pane_at(tab, &position, false)?.map(|pane| pane.pid());
++        let previous_plugin = tab.plugin_hover_pane_id.get(&client_id).copied();
++        // A tab change is not terminal input or a focus-follows-mouse motion.
++        let effect = Self::execute_update_hover(tab, pane_id, Some(position), client_id)?;
++        for id in tab.tiled_panes.pane_ids().chain(tab.floating_panes.pane_ids()) {
++            if Some(*id) == pane_id || Some(*id) == previous_plugin
++                || !matches!(id, PaneId::Plugin(_))
++            {
++                continue;
++            }
++            if let Some(pane) = tab.get_pane_with_id(*id) {
++                if !pane.selectable() && pane.borderless() {
++                    // Unfocused UI can be staged while its tab is hidden. Synchronize
++                    // missed passive panes too, even if they never owned host hover.
++                    let _ = pane.mouse_event(
++                        &MouseEvent::new_buttonless_motion(Position::new(0, u16::MAX)),
++                        client_id,
++                    );
++                }
++            }
++        }
++        Ok(effect)
++    }
++
+     fn intercept_guest_modal_mouse_event(
+         tab: &mut Tab,
+         event: &MouseEvent,
+--- a/zellij-server/src/unit/screen_tests.rs
++++ b/zellij-server/src/unit/screen_tests.rs
+@@ -915,6 +915,298 @@
+         .expect("TEST");
+ }
+ 
++fn tab_switch_mouse_fixture(
++    mirrored: bool,
++) -> (
++    Screen,
++    Receiver<(PluginInstruction, ErrorContext)>,
++    Receiver<(PtyWriteInstruction, ErrorContext)>,
++) {
++    let size = Size { cols: 121, rows: 20 };
++    let (mut screen, _, _) = create_new_screen_with_capture(size, true, true, true, mirrored);
++    let (to_plugin, plugin_receiver) = channels::unbounded();
++    let (to_writer, writer_receiver) = channels::unbounded();
++    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
++    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(to_writer));
++    new_tab(&mut screen, 1, 0);
++    new_tab(&mut screen, 2, 1);
++    for (tab_id, plugin_id) in [(0, 10), (1, 11)] {
++        let tab = screen.tabs.get_mut(&tab_id).unwrap();
++        tab.new_floating_pane(
++            PaneId::Plugin(plugin_id),
++            None,
++            None,
++            false,
++            false,
++            Some(FloatingPaneCoordinates {
++                pinned: Some(true),
++                borderless: Some(true),
++                ..FloatingPaneCoordinates::default()
++                    .with_x_fixed(8)
++                    .with_y_fixed(3)
++                    .with_width_fixed(30)
++                    .with_height_fixed(8)
++            }),
++            None,
++        ).unwrap();
++        tab.set_pane_selectable(PaneId::Plugin(plugin_id), false);
++        tab.update_focus_follows_mouse(true);
++    }
++    screen.go_to_tab(1, 1).unwrap();
++    while plugin_receiver.try_recv().is_ok() {}
++    while writer_receiver.try_recv().is_ok() {}
++    (screen, plugin_receiver, writer_receiver)
++}
++
++fn mouse_fixture_updates(
++    receiver: &Receiver<(PluginInstruction, ErrorContext)>,
++) -> Vec<(Option<u32>, Option<ClientId>, Event)> {
++    let mut updates = Vec::new();
++    while let Ok((instruction, _)) = receiver.try_recv() {
++        if let PluginInstruction::Update(events) = instruction {
++            updates.extend(events);
++        }
++    }
++    updates
++}
++
++fn mouse_fixture_hovers(
++    updates: &[(Option<u32>, Option<ClientId>, Event)],
++) -> Vec<(u32, ClientId, zellij_utils::data::Mouse)> {
++    updates.iter().filter_map(|(plugin_id, client_id, event)| match event {
++        Event::Mouse(mouse) => Some(((*plugin_id)?, (*client_id)?, *mouse)),
++        _ => None,
++    }).collect()
++}
++
++#[test]
++fn screen_tab_switch_replays_plugin_hover_and_physical_exit() {
++    use zellij_utils::data::Mouse;
++    let (mut screen, plugin_receiver, writer_receiver) = tab_switch_mouse_fixture(true);
++    screen.tabs.get_mut(&1).unwrap()
++        .handle_pty_bytes(2, b"\x1b[6;13H\x1b[?25h".to_vec()).unwrap();
++    screen.handle_mouse_event(MouseEvent::new_buttonless_motion(Position::new(5, 12)), 1);
++    assert_eq!(
++        mouse_fixture_hovers(&mouse_fixture_updates(&plugin_receiver)),
++        vec![(10, 1, Mouse::Hover(2, 4))]
++    );
++    screen.go_to_tab(2, 1).unwrap();
++    let updates = mouse_fixture_updates(&plugin_receiver);
++    assert_eq!(
++        mouse_fixture_hovers(&updates),
++        vec![(10, 1, Mouse::Hover(0, u16::MAX as usize)), (11, 1, Mouse::Hover(2, 4))]
++    );
++    let source_topology = updates.iter().position(|(pid, cid, event)| {
++        *pid == Some(10) && *cid == Some(1) && matches!(event,
++            Event::TabUpdate(tabs) if tabs.iter().any(|tab| tab.position == 1 && tab.active))
++    }).unwrap();
++    let source_hidden = updates.iter().position(|(pid, _, event)| {
++        *pid == Some(10) && matches!(event, Event::Visible(false))
++    }).unwrap();
++    let source_exit = updates.iter().position(|(pid, cid, event)| {
++        *pid == Some(10) && *cid == Some(1)
++            && matches!(event, Event::Mouse(Mouse::Hover(0, column)) if *column == u16::MAX as usize)
++    }).unwrap();
++    assert!(source_topology < source_hidden && source_hidden < source_exit);
++    assert_eq!(screen.get_active_pane_id(&1), Some(PaneId::Terminal(2)));
++    assert_eq!(
++        screen.get_active_tab(1).unwrap().get_active_terminal_cursor_position(1),
++        Some((12, 5, true))
++    );
++    screen.handle_mouse_event(MouseEvent::new_buttonless_motion(Position::new(18, 100)), 1);
++    assert_eq!(
++        mouse_fixture_hovers(&mouse_fixture_updates(&plugin_receiver)),
++        vec![(11, 1, Mouse::Hover(0, u16::MAX as usize))]
++    );
++    assert!(!screen.get_active_tab(1).unwrap().has_plugin_mouse_hover_for_client(1));
++    assert!(!writer_receiver.try_recv().is_ok(), "hover replay must not inject application input");
++}
++
++#[test]
++fn screen_tab_switch_hover_ownership_is_per_client() {
++    use zellij_utils::data::Mouse;
++    let (mut screen, plugin_receiver, _) = tab_switch_mouse_fixture(false);
++    screen.set_client_size(2, Size { cols: 121, rows: 20 });
++    screen.add_client(2, false).unwrap();
++    screen.handle_mouse_event(MouseEvent::new_buttonless_motion(Position::new(5, 12)), 1);
++    screen.handle_mouse_event(MouseEvent::new_buttonless_motion(Position::new(6, 14)), 2);
++    mouse_fixture_updates(&plugin_receiver);
++    screen.go_to_tab(2, 1).unwrap();
++    let updates = mouse_fixture_updates(&plugin_receiver);
++    assert_eq!(
++        mouse_fixture_hovers(&updates),
++        vec![(10, 1, Mouse::Hover(0, u16::MAX as usize)), (11, 1, Mouse::Hover(2, 4))]
++    );
++    assert_eq!(screen.get_active_tab(2).unwrap().id, 0);
++    assert!(screen.get_active_tab(2).unwrap().has_plugin_mouse_hover_for_client(2));
++    assert!(!updates.iter().any(|(pid, _, event)|
++        *pid == Some(10) && matches!(event, Event::Visible(false))));
++    screen.handle_mouse_event(MouseEvent::new_buttonless_motion(Position::new(18, 100)), 2);
++    assert_eq!(
++        mouse_fixture_hovers(&mouse_fixture_updates(&plugin_receiver)),
++        vec![(10, 2, Mouse::Hover(0, u16::MAX as usize))]
++    );
++}
++
++#[test]
++fn screen_tab_switch_does_not_invent_or_reuse_disconnected_pointer() {
++    let (mut screen, plugin_receiver, _) = tab_switch_mouse_fixture(true);
++    screen.go_to_tab(2, 1).unwrap();
++    assert!(mouse_fixture_hovers(&mouse_fixture_updates(&plugin_receiver)).is_empty());
++    screen.handle_mouse_event(MouseEvent::new_buttonless_motion(Position::new(5, 12)), 1);
++    mouse_fixture_updates(&plugin_receiver);
++    screen.remove_client(1).unwrap();
++    assert!(!screen.last_mouse_positions.contains_key(&1));
++    screen.add_client(1, false).unwrap();
++    mouse_fixture_updates(&plugin_receiver);
++    screen.go_to_tab(1, 1).unwrap();
++    assert!(mouse_fixture_hovers(&mouse_fixture_updates(&plugin_receiver)).is_empty());
++}
++
++#[test]
++fn screen_tab_switch_hover_replay_respects_mouse_grab_and_disabled_hover() {
++    for grabbed in [false, true] {
++        let (mut screen, plugin_receiver, _) = tab_switch_mouse_fixture(true);
++        screen.handle_mouse_event(MouseEvent::new_buttonless_motion(Position::new(5, 12)), 1);
++        mouse_fixture_updates(&plugin_receiver);
++        if grabbed {
++            screen.tabs.get_mut(&0).unwrap().selecting_with_mouse_in_pane =
++                Some(PaneId::Terminal(1));
++        } else {
++            screen.tabs.get_mut(&1).unwrap().update_mouse_hover_effects(false);
++        }
++        screen.go_to_tab(2, 1).unwrap();
++        assert!(mouse_fixture_hovers(&mouse_fixture_updates(&plugin_receiver))
++            .iter().all(|(pid, _, _)| *pid != 11));
++        assert_eq!(screen.get_active_pane_id(&1), Some(PaneId::Terminal(2)));
++    }
++}
++
++#[test]
++fn screen_tab_switch_hover_replay_does_not_focus_or_forward_terminal_tracking() {
++    let (mut screen, plugin_receiver, writer_receiver) = tab_switch_mouse_fixture(true);
++    let destination = screen.tabs.get_mut(&1).unwrap();
++    destination.vertical_split(PaneId::Terminal(3), None, 1, None, None).unwrap();
++    destination.handle_pty_bytes(2, b"\x1b[?1003h\x1b[?1006h".to_vec()).unwrap();
++    assert_eq!(destination.get_active_pane_id(1), Some(PaneId::Terminal(3)));
++    screen.handle_mouse_event(MouseEvent::new_buttonless_motion(Position::new(1, 20)), 1);
++    mouse_fixture_updates(&plugin_receiver);
++    while writer_receiver.try_recv().is_ok() {}
++    screen.go_to_tab(2, 1).unwrap();
++    assert_eq!(screen.get_active_pane_id(&1), Some(PaneId::Terminal(3)));
++    assert!(writer_receiver.try_recv().is_err());
++    screen.handle_mouse_event(MouseEvent::new_buttonless_motion(Position::new(1, 20)), 1);
++    assert_eq!(screen.get_active_pane_id(&1), Some(PaneId::Terminal(2)));
++}
++
++#[test]
++fn screen_plugin_render_messages_follow_applied_nonempty_frame() {
++    use crate::plugins::PluginRenderAsset;
++    use zellij_utils::data::MessageToPlugin;
++    let (mut screen, plugin_receiver, _) = tab_switch_mouse_fixture(true);
++    let message = || MessageToPlugin::new("frame-applied");
++    let mut frame = PluginRenderAsset::new(11, 1, b"\x1b[HREADY".to_vec());
++    frame.render_messages.push(message());
++    let mut missing = PluginRenderAsset::new(99, 1, b"missing".to_vec());
++    missing.render_messages.push(message());
++    let mut empty = PluginRenderAsset::new(11, 1, vec![]);
++    empty.render_messages.push(message());
++    screen.apply_plugin_render_assets(vec![frame, missing]).unwrap();
++    let mut delivered = Vec::new();
++    while let Ok((instruction, _)) = plugin_receiver.try_recv() {
++        if let PluginInstruction::MessageFromPlugin { source_plugin_id, message } = instruction {
++            delivered.push((source_plugin_id, message.message_name));
++            let mut output = crate::output::Output::default();
++            let tab = screen.tabs.get_mut(&1).unwrap();
++            tab.add_client(1, None).unwrap();
++            tab.render(&mut output, None).unwrap();
++            let bytes = output.serialize().unwrap().remove(&1).unwrap();
++            assert!(bytes.contains("READY"), "message released before its matching pane frame");
++        }
++    }
++    assert_eq!(delivered, vec![(11, "frame-applied".to_owned())]);
++    screen.apply_plugin_render_assets(vec![empty]).unwrap();
++    assert!(plugin_receiver.try_iter().all(|(instruction, _)| {
++        !matches!(instruction, PluginInstruction::MessageFromPlugin { .. })
++    }));
++    // A later frame in the same batch supersedes earlier readiness, even when empty.
++    let mut superseded = PluginRenderAsset::new(11, 1, b"\x1b[HOLD".to_vec());
++    superseded.render_messages.push(message());
++    screen.apply_plugin_render_assets(vec![
++        superseded,
++        PluginRenderAsset::new(11, 1, vec![]),
++    ]).unwrap();
++    assert!(plugin_receiver.try_iter().all(|(instruction, _)| {
++        !matches!(instruction, PluginInstruction::MessageFromPlugin { .. })
++    }));
++}
++
++#[test]
++fn screen_tab_switch_synchronizes_staged_passive_misses_from_known_pointer() {
++    use zellij_utils::data::Mouse;
++    let (mut screen, plugin_receiver, _) = tab_switch_mouse_fixture(true);
++    screen.handle_mouse_event(MouseEvent::new_buttonless_motion(Position::new(18, 100)), 1);
++    mouse_fixture_updates(&plugin_receiver);
++    screen.go_to_tab(2, 1).unwrap();
++    assert_eq!(
++        mouse_fixture_hovers(&mouse_fixture_updates(&plugin_receiver)),
++        vec![(11, 1, Mouse::Hover(0, u16::MAX as usize))]
++    );
++}
++
++#[test]
++fn screen_tab_switch_mirrored_clients_replay_their_own_known_positions() {
++    use zellij_utils::data::Mouse;
++    let (mut screen, plugin_receiver, _) = tab_switch_mouse_fixture(true);
++    screen.set_client_size(2, Size { cols: 121, rows: 20 });
++    screen.add_client(2, false).unwrap();
++    screen.handle_mouse_event(MouseEvent::new_buttonless_motion(Position::new(5, 12)), 1);
++    screen.handle_mouse_event(MouseEvent::new_buttonless_motion(Position::new(6, 14)), 2);
++    mouse_fixture_updates(&plugin_receiver);
++    screen.go_to_tab(2, 1).unwrap();
++    let hovers = mouse_fixture_hovers(&mouse_fixture_updates(&plugin_receiver));
++    assert!(hovers.contains(&(10, 1, Mouse::Hover(0, u16::MAX as usize))));
++    assert!(hovers.contains(&(10, 2, Mouse::Hover(0, u16::MAX as usize))));
++    assert!(hovers.contains(&(11, 1, Mouse::Hover(2, 4))));
++    assert!(hovers.contains(&(11, 2, Mouse::Hover(3, 6))));
++    assert_eq!(hovers.len(), 4);
++}
++
++#[test]
++fn screen_plugin_origin_tab_is_authoritative_before_focus_and_first_frame() {
++    use crate::plugins::PluginRenderAsset;
++    let (mut screen, plugin_receiver, _) = tab_switch_mouse_fixture(true);
++    let plugin = RunPluginOrAlias::from_url("file:/fixture.wasm", &None, None, None).unwrap();
++    let coordinates = FloatingPaneCoordinates {
++        pinned: Some(true),
++        borderless: Some(true),
++        ..FloatingPaneCoordinates::default()
++            .with_x_fixed(40)
++            .with_y_fixed(3)
++            .with_width_fixed(30)
++            .with_height_fixed(8)
++    };
++    screen.add_plugin_pane(
++        12, "prepared".to_owned(), Run::Plugin(plugin), false, false,
++        NewPanePlacement::with_floating_pane_coordinates(Some(coordinates)),
++        Some(1), Some(1),
++    ).unwrap();
++    assert!(screen.tabs.get(&1).unwrap().has_plugin(12));
++    assert!(!screen.tabs.get(&0).unwrap().has_plugin(12));
++    screen.tabs.get_mut(&1).unwrap().set_pane_selectable(PaneId::Plugin(12), false);
++    screen.apply_plugin_render_assets(vec![
++        PluginRenderAsset::new(12, 1, b"\x1b[HSTAGED".to_vec()),
++    ]).unwrap();
++    assert_eq!(screen.get_active_tab(1).unwrap().id, 0);
++    assert_eq!(screen.get_active_pane_id(&1), Some(PaneId::Terminal(1)));
++    screen.go_to_tab(2, 1).unwrap();
++    let mut output = crate::output::Output::default();
++    screen.get_active_tab_mut(1).unwrap().render(&mut output, None).unwrap();
++    assert!(output.serialize().unwrap().remove(&1).unwrap().contains("STAGED"));
++    assert_eq!(screen.get_active_pane_id(&1), Some(PaneId::Terminal(2)));
++    mouse_fixture_updates(&plugin_receiver);
++}
++
+ #[test]
+ fn open_new_tab() {
+     let size = Size {
