@@ -61,6 +61,7 @@
               cargo test --offline --package zellij-client --lib stdin_ansi_parser
               cargo test --offline --package zellij-client --lib stdin_handler
               cargo test --offline --package zellij-server --lib pinned_nonselectable_plugin
+              cargo test --offline --package zellij-server --lib passive_popup
               cargo test --offline --package zellij-server --lib render_messages_tests -- --test-threads=1
               cargo test --offline --package zellij-server --lib screen_tab_switch_
               cargo test --offline --package zellij-server --lib screen_plugin_

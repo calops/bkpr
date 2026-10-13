@@ -257,7 +257,7 @@
          let old_value = self.web_sharing;
 --- a/zellij-server/src/tab/unit/tab_integration_tests.rs
 +++ b/zellij-server/src/tab/unit/tab_integration_tests.rs
-@@ -1183,6 +1183,159 @@
+@@ -1412,6 +1412,159 @@
  }
  
  #[test]
@@ -689,8 +689,8 @@
                      screen.update_plugin_loading_stage(plugin_id, loading_indication);
 --- a/zellij-server/src/tab/mouse_handler.rs
 +++ b/zellij-server/src/tab/mouse_handler.rs
-@@ -367,6 +367,51 @@
-         Self::execute_mouse_action(tab, action, event, client_id)
+@@ -424,6 +424,51 @@
+         }
      }
  
 +    pub(crate) fn clear_mouse_hover_for_client(tab: &mut Tab, client_id: ClientId) {
