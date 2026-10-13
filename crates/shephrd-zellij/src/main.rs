@@ -27,25 +27,19 @@ struct DesiredSelection {
     item: Item,
     request_id: u64,
     acknowledged: bool,
-    hover: Option<native::UiHover>,
-}
-
-struct HoverHandoff {
-    terminal_id: String,
-    pointer: native::UiHover,
-    client: String,
-    request_id: u64,
-}
-
-struct PendingHoverFocus {
-    ready: native::HoverPrepared,
-    pane_id: u32,
-    deadline: Instant,
 }
 
 struct PendingUserAction {
     started: Instant,
     shown: bool,
+}
+
+struct CachedPopup {
+    item: Item,
+    instance: String,
+    revision: u64,
+    formatted_at: u64,
+    content: ui::PopupContent,
 }
 
 #[derive(Default)]
@@ -89,16 +83,8 @@ struct Frontend {
     tree_cache: Vec<ui::TreeRow>,
     items: Vec<Item>,
     hover: Option<Item>,
-    pending_hover_handoff: Option<HoverHandoff>,
-    active_hover_handoff: Option<HoverHandoff>,
-    latest_hover_request: Option<(u64, native::UiHover)>,
-    cancelled_hover: BTreeMap<String, u64>,
-    pending_hover_focus: Option<PendingHoverFocus>,
-    prepared_handoff: Option<native::HoverPrepared>,
-    announced_handoff: Option<native::HoverPrepared>,
-    sidebar_hovered: bool,
-    tooltip_hovered: bool,
-    tooltip_leave_deadline: Option<Instant>,
+    popup_item: Option<Item>,
+    popup_cache: VecDeque<CachedPopup>,
     last_click: Option<(Item, Instant)>,
     modal: Option<Modal>,
     scroll: usize,
@@ -115,7 +101,6 @@ impl Frontend {
         if self.keyboard_control {
             return;
         }
-        self.cancel_local_hover();
         self.control_terminal = self.native_focus;
         self.keyboard_control = true;
         self.control_has_focus = false;
@@ -171,10 +156,6 @@ impl Frontend {
     }
 
     fn enqueue(&mut self, action: Action) {
-        self.enqueue_with_hover(action, None);
-    }
-
-    fn enqueue_with_hover(&mut self, action: Action, hover: Option<native::UiHover>) {
         // Background registration/focus notifications can arrive more than once.
         if !self.native_mode
             && matches!(
@@ -196,17 +177,13 @@ impl Frontend {
             _ => None,
         };
         if let Some(item) = item {
-            self.pending_hover_focus = None;
-            self.prepared_handoff = None;
             self.cursor = Some(item.clone());
             self.relayed_selection = None;
             self.local_selection = true;
-            self.latest_hover_request = hover.clone().map(|pointer| (self.request_id, pointer));
             self.desired_selection = Some(DesiredSelection {
                 item,
                 request_id: self.request_id,
                 acknowledged: false,
-                hover,
             });
         }
         if Self::user_action(&action) {
@@ -306,12 +283,6 @@ impl Frontend {
         self.relayed_selection = None;
         self.relay_revision = 0;
         self.relay_epoch.clear();
-        self.pending_hover_handoff = None;
-        self.active_hover_handoff = None;
-        self.latest_hover_request = None;
-        self.pending_hover_focus = None;
-        self.prepared_handoff = None;
-        self.announced_handoff = None;
         self.pending_user_action = None;
         self.local_selection = self.keyboard_control || self.modal.is_some();
     }
@@ -320,57 +291,28 @@ impl Frontend {
         &mut self,
         epoch: String,
         revision: u64,
-        mut selection: Option<native::UiSelection>,
+        selection: Option<native::UiSelection>,
     ) -> bool {
         // Other client-owner replicas publish canonical state, not our relay channel.
         if epoch.is_empty() {
             return false;
         }
         let epoch_changed = epoch != self.relay_epoch;
-        if epoch_changed && let Some(pending) = self.pending_hover_focus.take() {
-            self.error =
-                Some("Native owner restarted during popup handoff; select again".to_owned());
-            self.finish_selection(pending.ready.request_id, true);
-        }
         if epoch_changed {
             self.relay_epoch = epoch;
             self.relay_revision = 0;
             self.relayed_selection = None;
-            self.pending_hover_handoff = None;
-            self.active_hover_handoff = None;
-            self.prepared_handoff = None;
-            self.announced_handoff = None;
         }
         if !epoch_changed && revision <= self.relay_revision {
             return false;
         }
         self.relay_revision = revision;
-        if let Some(relay) = &mut selection
-            && self
-                .cancelled_hover
-                .get(&relay.client)
-                .is_some_and(|through| relay.request_id <= *through)
-        {
-            relay.hover = None;
-        }
         self.relayed_selection = selection.filter(|relay| {
             relay.revision == revision
                 && self.desired_selection.as_ref().is_none_or(|desired| {
                     relay.client == self.native_client && relay.request_id >= desired.request_id
                 })
         });
-        if let Some(relay) = &self.relayed_selection {
-            self.pending_hover_handoff = if relay.client != self.native_client {
-                relay.hover.clone().map(|pointer| HoverHandoff {
-                    terminal_id: relay.terminal_id.clone(),
-                    pointer,
-                    client: relay.client.clone(),
-                    request_id: relay.request_id,
-                })
-            } else {
-                None
-            };
-        }
         self.reconcile_cursor();
         self.ensure_cursor_visible();
         self.refresh_tooltip();
@@ -408,7 +350,6 @@ impl Frontend {
                 &self.native_client,
                 self.client_id,
                 &request,
-                self.selection_hover(request.request_id),
             ) {
                 self.error = Some(format!("Cannot encode native request: {error}"));
                 self.finish_selection(request.request_id, true);
@@ -506,11 +447,6 @@ impl Frontend {
                 for effect in response.effects {
                     // A superseded click must not move host focus back to an older target.
                     if !obsolete_selection || !matches!(effect, Effect::FocusPane { .. }) {
-                        if let Effect::FocusPane { zellij_pane_id } = effect
-                            && self.defer_hover_focus(request.request_id, zellij_pane_id)
-                        {
-                            continue;
-                        }
                         self.effect(effect);
                     }
                 }
@@ -689,8 +625,6 @@ impl Frontend {
         }) {
             self.desired_selection = None;
             self.local_selection = self.keyboard_control || self.modal.is_some();
-            self.pending_hover_focus = None;
-            self.prepared_handoff = None;
         }
         if self.relayed_selection.as_ref().is_some_and(|relay| {
             state.focused_pane_id.as_ref() == Some(&relay.terminal_id)
@@ -756,6 +690,12 @@ impl Frontend {
             .is_some_and(|hover| self.items.contains(hover))
         {
             self.hover = None;
+        }
+        if self.popup_item.as_ref().is_some_and(|item| match item {
+            Item::Workspace(id) => !state.workspaces.iter().any(|workspace| &workspace.id == id),
+            Item::Pane(id) => !state.panes.iter().any(|pane| &pane.id == id),
+        }) {
+            self.popup_item = None;
         }
         self.finish_user_action();
     }
@@ -1102,430 +1042,20 @@ impl Frontend {
             || self.queue.iter().any(selects)
     }
 
-    fn selection_hover(&self, request_id: u64) -> Option<native::UiHover> {
-        self.desired_selection
-            .as_ref()
-            .filter(|desired| desired.request_id == request_id)
-            .and_then(|desired| desired.hover.clone())
-    }
-
-    fn own_tab_active(&self) -> bool {
-        self.manifest.panes.iter().any(|(position, panes)| {
-            panes
-                .iter()
-                .any(|pane| pane.is_plugin && pane.id == self.id)
-                && self
-                    .tabs
-                    .iter()
-                    .any(|tab| tab.position == *position && tab.active)
-        })
-    }
-
-    fn defer_hover_focus(&mut self, request_id: u64, pane_id: u32) -> bool {
-        let Some(pointer) = self.selection_hover(request_id) else {
-            return false;
-        };
-        if !self.native_mode || self.keyboard_control || self.relay_epoch.is_empty() {
-            return false;
-        }
-        let Some((position, panes)) = self.manifest.panes.iter().find(|(_, panes)| {
-            panes
-                .iter()
-                .any(|pane| !pane.is_plugin && pane.id == pane_id)
-        }) else {
-            return false;
-        };
-        if self
-            .tabs
-            .iter()
-            .any(|tab| tab.position == *position && tab.active)
-        {
-            return false;
-        }
-        let Some(sidebar) = panes.iter().find(|pane| {
-            pane.is_plugin
-                && !pane.is_floating
-                && !pane.is_suppressed
-                && pane.plugin_url.as_ref() == self.configuration.get("plugin_url")
-        }) else {
-            self.cancel_local_hover();
-            self.error =
-                Some("Destination sidebar is unavailable; popup handoff cancelled".to_owned());
-            return false;
-        };
-        let ready = native::HoverPrepared {
-            client_id: self.client_id,
-            client: self.native_client.clone(),
-            request_id,
-            epoch: self.relay_epoch.clone(),
-            terminal_id: format!("terminal_{pane_id}"),
-            pointer,
-            sidebar_id: sidebar.id,
-            prepared: true,
-        };
-        if let Some(prepared) = self.prepared_handoff.as_ref() {
-            let mut expected = ready.clone();
-            expected.prepared = prepared.prepared;
-            if prepared == &expected {
-                if !prepared.prepared {
-                    self.cancel_local_hover();
-                    self.error = Some("Destination popup could not be prepared".to_owned());
-                }
-                return false;
-            }
-        }
-        self.pending_hover_focus = Some(PendingHoverFocus {
-            ready,
-            pane_id,
-            deadline: Instant::now() + Duration::from_secs(5),
-        });
-        set_timeout(5.0);
-        true
-    }
-
-    fn accept_hover_prepared(&mut self, ready: native::HoverPrepared) -> bool {
-        if ready.client_id != self.client_id
-            || ready.client != self.native_client
-            || ready.epoch != self.relay_epoch
-            || self.selection_hover(ready.request_id).as_ref() != Some(&ready.pointer)
-        {
-            return false;
-        }
-        let Some(desired) = self.desired_selection.as_ref() else {
-            return false;
-        };
-        if desired.request_id != ready.request_id {
-            return false;
-        }
-        if let Some(pending) = self.pending_hover_focus.as_ref() {
-            let mut expected = pending.ready.clone();
-            expected.prepared = ready.prepared;
-            if expected != ready {
-                return false;
-            }
-            let pending = self.pending_hover_focus.take().unwrap();
-            if !ready.prepared {
-                self.cancel_local_hover();
-                self.error = Some("Destination popup could not be prepared".to_owned());
-            }
-            self.effect(Effect::FocusPane {
-                zellij_pane_id: pending.pane_id,
-            });
-        } else {
-            self.prepared_handoff = Some(ready);
-        }
-        true
-    }
-
-    fn announce_hover_prepared(&mut self, prepared: bool) {
-        let Some(handoff) = self
-            .active_hover_handoff
-            .as_ref()
-            .or(self.pending_hover_handoff.as_ref())
-        else {
-            return;
-        };
-        let ready = native::HoverPrepared {
-            client_id: self.client_id,
-            client: handoff.client.clone(),
-            request_id: handoff.request_id,
-            epoch: self.relay_epoch.clone(),
-            terminal_id: handoff.terminal_id.clone(),
-            pointer: handoff.pointer.clone(),
-            sidebar_id: self.id,
-            prepared,
-        };
-        if self.announced_handoff.as_ref() == Some(&ready) {
-            return;
-        }
-        let Some(owner) = self.native_owner_id else {
-            return;
-        };
-        if let Ok(payload) = serde_json::to_string(&ready) {
-            pipe_message_to_plugin(
-                MessageToPlugin::new(native::HOVER_PREPARED)
-                    .with_destination_plugin_id(owner)
-                    .with_payload(payload),
-            );
-            self.announced_handoff = Some(ready);
-        }
-    }
-
-    fn expire_hover_focus(&mut self, now: Instant) -> bool {
-        if self
-            .pending_hover_focus
-            .as_ref()
-            .is_none_or(|pending| now < pending.deadline)
-        {
-            return false;
-        }
-        let pending = self.pending_hover_focus.take().unwrap();
-        self.cancel_local_hover();
-        if self
-            .desired_selection
-            .as_ref()
-            .is_some_and(|desired| desired.request_id == pending.ready.request_id)
-        {
-            self.effect(Effect::FocusPane {
-                zellij_pane_id: pending.pane_id,
-            });
-        }
-        self.error =
-            Some("Destination popup preparation timed out; hover handoff cancelled".to_owned());
-        true
-    }
-
-    fn accept_hover_cancel(&mut self, marker: &native::HoverCancel) -> bool {
-        if marker.client_id != self.client_id {
-            return false;
-        }
-        let through = self
-            .cancelled_hover
-            .entry(marker.client.clone())
-            .or_default();
-        if marker.through_request_id <= *through {
-            return false;
-        }
-        *through = marker.through_request_id;
-        if marker.client == self.native_client {
-            if let Some(desired) = &mut self.desired_selection
-                && desired.request_id <= *through
-            {
-                desired.hover = None;
-            }
-            if self
-                .latest_hover_request
-                .as_ref()
-                .is_some_and(|(id, _)| *id <= *through)
-            {
-                self.latest_hover_request = None;
-            }
-        }
-        if let Some(relay) = &mut self.relayed_selection
-            && relay.client == marker.client
-            && relay.request_id <= *through
-        {
-            relay.hover = None;
-        }
-        if self.pending_hover_handoff.as_ref().is_some_and(|handoff| {
-            handoff.client == marker.client && handoff.request_id <= *through
-        }) {
-            self.pending_hover_handoff = None;
-        }
-        if self.active_hover_handoff.as_ref().is_some_and(|handoff| {
-            handoff.client == marker.client && handoff.request_id <= *through
-        }) {
-            self.hide_tooltip();
-        }
-        if self.prepared_handoff.as_ref().is_some_and(|ready| {
-            ready.client == marker.client && ready.request_id <= marker.through_request_id
-        }) {
-            self.prepared_handoff = None;
-        }
-        if self.pending_hover_focus.as_ref().is_some_and(|pending| {
-            pending.ready.client == marker.client
-                && pending.ready.request_id <= marker.through_request_id
-        }) {
-            let pending = self.pending_hover_focus.take().unwrap();
-            if self
-                .desired_selection
-                .as_ref()
-                .is_some_and(|desired| desired.request_id == pending.ready.request_id)
-            {
-                self.effect(Effect::FocusPane {
-                    zellij_pane_id: pending.pane_id,
-                });
-            }
-        }
-        true
-    }
-
-    fn cancel_local_hover(&mut self) {
-        let latest = self.latest_hover_request.take();
-        let handoff = self
-            .pending_hover_handoff
-            .take()
-            .or_else(|| self.active_hover_handoff.take());
-        // Local pointer departure still uses the joined-popup leave grace. The
-        // tombstone blocks replay; only a remote cancellation dismisses an adopted popup.
-        self.active_hover_handoff = None;
-        if let Some(handoff) = handoff {
-            self.accept_hover_cancel(&native::HoverCancel {
-                client_id: self.client_id,
-                client: handoff.client,
-                through_request_id: handoff.request_id,
-            });
-        }
-        if let Some((through_request_id, _)) = latest {
-            let marker = native::HoverCancel {
-                client_id: self.client_id,
-                client: self.native_client.clone(),
-                through_request_id,
-            };
-            if self.accept_hover_cancel(&marker)
-                && self.native_mode
-                && self.granted
-                && let Err(error) = native::cancel_hover(
-                    self.native_owner_id,
-                    self.client_id,
-                    &self.native_client,
-                    through_request_id,
-                )
-            {
-                self.error = Some(format!("Cannot encode hover cancellation: {error}"));
-            }
-        }
-        self.pending_hover_handoff = None;
-    }
-
-    fn mouse_keeps_clicked_pointer(&self, mouse: &Mouse) -> bool {
-        let Mouse::Hover(line, column) = mouse else {
-            return false;
-        };
-        if *line < 0 || *line as usize >= self.rows || *column >= self.columns {
-            return false;
-        }
-        let Some(sidebar) = self
-            .manifest
-            .panes
-            .values()
-            .flatten()
-            .find(|pane| pane.is_plugin && pane.id == self.id)
-        else {
-            return false;
-        };
-        let pointer = self
-            .latest_hover_request
-            .as_ref()
-            .map(|(_, pointer)| pointer)
-            .or_else(|| {
-                self.active_hover_handoff
-                    .as_ref()
-                    .map(|handoff| &handoff.pointer)
-            })
-            .or_else(|| {
-                self.pending_hover_handoff
-                    .as_ref()
-                    .map(|handoff| &handoff.pointer)
-            });
-        pointer.is_some_and(|pointer| {
-            pointer.x == sidebar.pane_content_x + *column
-                && pointer.y == sidebar.pane_content_y + *line as usize
-        })
-    }
-    fn adopt_hover_handoff(&mut self) {
-        if self.modal.is_some() || self.keyboard_control {
-            self.announce_hover_prepared(false);
-            self.cancel_local_hover();
-            return;
-        }
-        if self.pending_hover_handoff.is_none() {
-            return;
-        }
-        let Some((position, sidebar)) = self.manifest.panes.iter().find_map(|(position, panes)| {
-            panes
-                .iter()
-                .find(|pane| pane.is_plugin && pane.id == self.id && !pane.is_suppressed)
-                .map(|pane| (*position, pane))
-        }) else {
-            self.announce_hover_prepared(false);
-            return;
-        };
-        if !self.manifest.panes.get(&position).is_some_and(|panes| {
-            panes.iter().any(|pane| {
-                !pane.is_plugin
-                    && self.pending_hover_handoff.as_ref().is_some_and(|handoff| {
-                        handoff.terminal_id == format!("terminal_{}", pane.id)
-                    })
-            })
-        }) {
-            return;
-        }
-        let handoff = self.pending_hover_handoff.as_ref().unwrap();
-        if self
-            .cancelled_hover
-            .get(&handoff.client)
-            .is_some_and(|through| handoff.request_id <= *through)
-        {
-            self.pending_hover_handoff = None;
-            return;
-        }
-        let item = (|| {
-            let line = handoff.pointer.y.checked_sub(sidebar.pane_content_y)?;
-            let column = handoff.pointer.x.checked_sub(sidebar.pane_content_x)?;
-            let (rows, columns) =
-                self.sidebar_dimensions(sidebar.pane_content_rows, sidebar.pane_content_columns);
-            if line < 2 || line >= rows.saturating_sub(2) || column >= columns {
-                return None;
-            }
-            let item = ui::item_at(&self.tree_cache, self.scroll + line - 2)?;
-            let matches_target = match &item {
-                Item::Pane(id) => {
-                    id == &handoff.terminal_id
-                        && handoff.pointer.key.strip_prefix("pane:") == Some(id.as_str())
-                }
-                Item::Workspace(id) => {
-                    handoff.pointer.key.strip_prefix("workspace:") == Some(id.as_str())
-                        && self.snapshot.as_ref().is_some_and(|state| {
-                            state.panes.iter().any(|pane| {
-                                pane.id == handoff.terminal_id && &pane.workspace_id == id
-                            })
-                        })
-                }
-            };
-            matches_target.then_some(item)
-        })();
-        if let Some(item) = item {
-            self.active_hover_handoff = self.pending_hover_handoff.take();
-            self.hover = Some(item);
-            self.tooltip_hovered = false;
-            self.tooltip_pointer(true, true);
-        } else {
-            self.announce_hover_prepared(false);
-            self.pending_hover_handoff = None;
-        }
-    }
-
     fn hide_tooltip(&mut self) {
-        self.pending_hover_handoff = None;
-        self.active_hover_handoff = None;
-        self.hover = None;
-        self.sidebar_hovered = false;
-        self.tooltip_hovered = false;
-        self.tooltip_leave_deadline = None;
+        self.popup_item = None;
         self.tooltip.update(self.id, &self.configuration, None);
     }
 
-    fn tooltip_pointer(&mut self, sidebar: bool, inside: bool) {
-        if sidebar {
-            self.sidebar_hovered = inside;
-        } else {
-            self.tooltip_hovered = inside;
+    fn accept_dismiss(&mut self, source: &PipeSource, notice: &overlay::DismissNotice) -> bool {
+        let PipeSource::Plugin(source) = source else {
+            return false;
+        };
+        if !self.tooltip.accept_dismiss(*source, notice) {
+            return false;
         }
-        if inside {
-            self.tooltip_leave_deadline = None;
-        } else if !self.sidebar_hovered
-            && !self.tooltip_hovered
-            && self.hover.is_some()
-            && self.tooltip_leave_deadline.is_none()
-        {
-            // Host leave/enter events arrive through different plugin callbacks.
-            // One short grace interval lets the popup claim the pointer first.
-            self.tooltip_leave_deadline = Some(Instant::now() + Duration::from_millis(100));
-            set_timeout(0.1);
-        }
-    }
-
-    fn expire_tooltip(&mut self, now: Instant) -> bool {
-        if self
-            .tooltip_leave_deadline
-            .is_some_and(|deadline| now >= deadline)
-        {
-            self.hide_tooltip();
-            true
-        } else {
-            false
-        }
+        self.hide_tooltip();
+        true
     }
 
     fn accept_ci_refresh(
@@ -1539,7 +1069,7 @@ impl Frontend {
         if !self.native_mode || !self.granted || !self.visible || self.modal.is_some() {
             return None;
         }
-        let content = ui::tooltip(self.hover.as_ref()?, self.snapshot.as_ref()?);
+        let content = ui::tooltip(self.popup_item.as_ref()?, self.snapshot.as_ref()?);
         if content.key != request.key
             || !content
                 .rows()
@@ -1556,69 +1086,83 @@ impl Frontend {
         if !self.granted || self.overlay_role {
             return;
         }
-        self.adopt_hover_handoff();
-        let tooltip =
-            if (self.visible || self.active_hover_handoff.is_some()) && self.modal.is_none() {
-                self.hover
-                    .as_ref()
-                    .zip(self.snapshot.as_ref())
-                    .and_then(|(item, snapshot)| {
-                        let (position, sidebar) =
-                            self.manifest.panes.iter().find_map(|(position, panes)| {
-                                panes
-                                    .iter()
-                                    .find(|pane| pane.is_plugin && pane.id == self.id)
-                                    .map(|pane| (*position, pane))
-                            })?;
-                        if sidebar.is_suppressed {
-                            return None;
-                        }
-                        let tab = self.tabs.iter().find(|tab| {
-                            tab.position == position
-                                && (tab.active || self.active_hover_handoff.is_some())
-                        })?;
-                        let content = ui::tooltip(item, snapshot);
-                        if content.is_empty() {
-                            return None;
-                        }
-                        let band = ui::item_band(&self.tree_cache, item)?;
-                        let content_rows = if self.rows > 0 {
-                            self.rows
-                        } else {
-                            sidebar.pane_content_rows
-                        };
-                        let height = content_rows.saturating_sub(4);
-                        if height == 0
-                            || band.end().saturating_add(1) < self.scroll
-                            || band.start().saturating_sub(1) >= self.scroll + height
-                        {
-                            return None;
-                        }
-                        let top = band
-                            .start()
-                            .saturating_add(1)
-                            .saturating_sub(self.scroll)
-                            .max(1);
-                        let bottom = band.end().saturating_add(1).min(self.scroll + height - 1)
-                            - self.scroll
-                            + 2;
-                        let placement =
-                            overlay::geometry(sidebar, self.columns, tab, top..=bottom, &content)?;
-                        Some((content, placement))
-                    })
-            } else {
-                None
-            };
-        self.tooltip.update(self.id, &self.configuration, tooltip);
-        if self.active_hover_handoff.is_some()
-            && !self
-                .tooltip
-                .pending
+        let cache_index =
+            self.popup_item
                 .as_ref()
-                .is_some_and(|state| state.visible)
-        {
-            self.announce_hover_prepared(false);
-        }
+                .zip(self.snapshot.as_ref())
+                .map(|(item, snapshot)| {
+                    if let Some(index) = self.popup_cache.iter().position(|entry| {
+                        entry.item == *item
+                            && entry.instance == snapshot.instance_id
+                            && entry.revision == snapshot.revision
+                    }) {
+                        return index;
+                    }
+                    self.popup_cache.retain(|entry| entry.item != *item);
+                    if self.popup_cache.len() == 8 {
+                        self.popup_cache.pop_front();
+                    }
+                    self.popup_cache.push_back(CachedPopup {
+                        item: item.clone(),
+                        instance: snapshot.instance_id.clone(),
+                        revision: snapshot.revision,
+                        formatted_at: Self::popup_clock(),
+                        content: ui::tooltip(item, snapshot),
+                    });
+                    self.popup_cache.len() - 1
+                });
+        let tooltip = if self.visible && self.modal.is_none() {
+            self.popup_item
+                .as_ref()
+                .zip(self.snapshot.as_ref())
+                .and_then(|(item, _snapshot)| {
+                    let (position, sidebar) =
+                        self.manifest.panes.iter().find_map(|(position, panes)| {
+                            panes
+                                .iter()
+                                .find(|pane| pane.is_plugin && pane.id == self.id)
+                                .map(|pane| (*position, pane))
+                        })?;
+                    if sidebar.is_suppressed {
+                        return None;
+                    }
+                    let tab = self
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.position == position && tab.active)?;
+                    let content = &self.popup_cache.get(cache_index?)?.content;
+                    if content.is_empty() {
+                        return None;
+                    }
+                    let band = ui::item_band(&self.tree_cache, item)?;
+                    let content_rows = if self.rows > 0 {
+                        self.rows
+                    } else {
+                        sidebar.pane_content_rows
+                    };
+                    let height = content_rows.saturating_sub(4);
+                    if height == 0
+                        || band.end().saturating_add(1) < self.scroll
+                        || band.start().saturating_sub(1) >= self.scroll + height
+                    {
+                        return None;
+                    }
+                    let top = band
+                        .start()
+                        .saturating_add(1)
+                        .saturating_sub(self.scroll)
+                        .max(1);
+                    let bottom = band.end().saturating_add(1).min(self.scroll + height - 1)
+                        - self.scroll
+                        + 2;
+                    let placement =
+                        overlay::geometry(sidebar, self.columns, tab, top..=bottom, content)?;
+                    Some((content, placement))
+                })
+        } else {
+            None
+        };
+        self.tooltip.update(self.id, &self.configuration, tooltip);
     }
 
     fn navigate(&mut self, amount: isize) {
@@ -1655,14 +1199,12 @@ impl Frontend {
         }
     }
 
-    fn activate(&mut self, hover: Option<native::UiHover>) {
+    fn activate(&mut self) {
         match self.cursor.clone() {
             Some(Item::Workspace(workspace_id)) => {
-                self.enqueue_with_hover(Action::SelectWorkspace { workspace_id }, hover)
+                self.enqueue(Action::SelectWorkspace { workspace_id })
             }
-            Some(Item::Pane(pane_id)) => {
-                self.enqueue_with_hover(Action::SelectPane { pane_id }, hover)
-            }
+            Some(Item::Pane(pane_id)) => self.enqueue(Action::SelectPane { pane_id }),
             None => {}
         }
     }
@@ -1688,7 +1230,6 @@ impl Frontend {
     }
 
     fn edit_selected(&mut self, close: bool) {
-        self.cancel_local_hover();
         let Some(item) = self.cursor.clone() else {
             return;
         };
@@ -1803,7 +1344,6 @@ impl Frontend {
     }
 
     fn key(&mut self, key: KeyWithModifier) {
-        self.cancel_local_hover();
         self.last_click = None;
         if self.modal.is_some() {
             self.modal_key(key);
@@ -1823,7 +1363,7 @@ impl Frontend {
             BareKey::PageDown => self.navigate((self.rows.saturating_sub(4) as isize / 2).max(1)),
             BareKey::Home | BareKey::Char('g') => self.navigate(isize::MIN),
             BareKey::End | BareKey::Char('G') => self.navigate(isize::MAX),
-            BareKey::Enter => self.activate(None),
+            BareKey::Enter => self.activate(),
             BareKey::Left | BareKey::Right | BareKey::Char(' ') => {
                 let workspace = self
                     .cursor
@@ -1882,32 +1422,24 @@ impl Frontend {
         }
     }
 
+    fn popup_clock() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |now| now.as_secs())
+    }
+
     fn mouse(&mut self, mouse: Mouse) {
-        if matches!(&mouse, Mouse::Hover(line, column)
-            if *line < 0 || *line as usize >= self.rows || *column >= self.columns)
-            && self.native_mode
-            && !self.tabs.is_empty()
-            && !self.own_tab_active()
-        {
-            self.hide_tooltip();
-            return;
-        }
-        if !self.mouse_keeps_clicked_pointer(&mouse) {
-            self.cancel_local_hover();
-        }
         if self.modal.is_some() {
-            self.hide_tooltip();
             return;
         }
-        match mouse {
+        let (line, column) = match mouse {
             Mouse::Hover(line, column)
-                if line < 0 || line as usize >= self.rows || column >= self.columns =>
-            {
-                self.tooltip_pointer(true, false);
-            }
+            | Mouse::LeftClick(line, column)
+            | Mouse::RightClick(line, column) => (line, column),
             Mouse::ScrollUp(lines) => {
                 self.scroll = self.scroll.saturating_sub(lines);
-                self.hide_tooltip();
+                self.refresh_tooltip();
+                return;
             }
             Mouse::ScrollDown(lines) => {
                 self.scroll = self.scroll.saturating_add(lines).min(
@@ -1915,84 +1447,55 @@ impl Frontend {
                         .len()
                         .saturating_sub(self.rows.saturating_sub(4)),
                 );
-                self.hide_tooltip();
+                self.refresh_tooltip();
+                return;
             }
-            Mouse::Hover(line, column)
-            | Mouse::LeftClick(line, column)
-            | Mouse::RightClick(line, column) => {
-                let tree = &self.tree_cache;
-                let index = (line >= 2
-                    && (line as usize) < self.rows.saturating_sub(2)
-                    && column < self.columns)
-                    .then(|| self.scroll + line as usize - 2);
-                let item = index.and_then(|index| ui::item_at(tree, index));
-                self.tooltip_pointer(
-                    true,
-                    line >= 0 && (line as usize) < self.rows && column < self.columns,
-                );
-                if self.hover != item {
-                    self.tooltip_hovered = false;
-                    self.hover = item.clone();
-                    self.refresh_tooltip();
-                }
-                if !matches!(mouse, Mouse::Hover(_, _)) {
-                    if let Some(item) = item {
-                        let group = self
-                            .snapshot
-                            .as_ref()
-                            .and_then(|state| item.workspace_id(state).map(str::to_owned))
-                            .or_else(|| {
-                                index
-                                    .and_then(|index| self.tree_cache.get(index))
-                                    .and_then(|row| row.workspace_id.clone())
-                            });
-                        self.local_selection = true;
-                        self.cursor = Some(item.clone());
-                        if matches!(mouse, Mouse::RightClick(_, _)) && !self.keyboard_control {
-                            return;
-                        }
-                        if matches!(mouse, Mouse::RightClick(_, _)) {
-                            self.hide_tooltip();
-                            self.last_click = None;
-                            self.edit_selected(false);
-                            return;
-                        }
-                        let now = Instant::now();
-                        let double = self.last_click.as_ref().is_some_and(|(old, at)| {
-                            old == &item && now.duration_since(*at) < Duration::from_millis(350)
-                        });
-                        if double {
-                            self.last_click = None;
-                            if let Some(group) = group {
-                                self.fold(group, None);
-                            }
-                        } else {
-                            self.last_click = Some((item, now));
-                        }
-                        // A non-selectable sidebar receives the press without taking input focus.
-                        let pointer = self
-                            .manifest
-                            .panes
-                            .values()
-                            .flatten()
-                            .find(|pane| pane.is_plugin && pane.id == self.id)
-                            .map(|sidebar| native::UiHover {
-                                x: sidebar.pane_content_x + column,
-                                y: sidebar.pane_content_y + line as usize,
-                                key: match self.cursor.as_ref().unwrap() {
-                                    Item::Pane(id) => format!("pane:{id}"),
-                                    Item::Workspace(id) => format!("workspace:{id}"),
-                                },
-                            });
-                        self.activate(pointer);
-                    } else {
-                        self.hide_tooltip();
-                        self.last_click = None;
-                    }
-                }
-            }
-            _ => {}
+            _ => return,
+        };
+        let index =
+            (line >= 2 && (line as usize) < self.rows.saturating_sub(2) && column < self.columns)
+                .then(|| self.scroll + line as usize - 2);
+        let item = index.and_then(|index| ui::item_at(&self.tree_cache, index));
+        if matches!(mouse, Mouse::Hover(_, _)) {
+            self.hover = item;
+            return;
         }
+        self.hover = item.clone();
+        self.hide_tooltip();
+        if matches!(mouse, Mouse::RightClick(_, _)) {
+            self.last_click = None;
+            // Relative last-checked age is event-driven: quiet frozen results are
+            // reformatted on explicit reopening, never by hover or a polling timer.
+            let now = Self::popup_clock();
+            self.popup_cache.retain(|entry| entry.formatted_at == now);
+            self.tooltip.begin_open();
+            self.popup_item = item;
+            self.refresh_tooltip();
+            return;
+        }
+        let Some(item) = item else {
+            self.last_click = None;
+            return;
+        };
+        let group = self
+            .snapshot
+            .as_ref()
+            .and_then(|state| item.workspace_id(state).map(str::to_owned));
+        self.local_selection = true;
+        self.cursor = Some(item.clone());
+        let now = Instant::now();
+        let double = self.last_click.as_ref().is_some_and(|(old, at)| {
+            old == &item && now.duration_since(*at) < Duration::from_millis(350)
+        });
+        if double {
+            self.last_click = None;
+            if let Some(group) = group {
+                self.fold(group, None);
+            }
+        } else {
+            self.last_click = Some((item, now));
+        }
+        self.activate();
     }
 
     fn sidebar_dimensions(&self, rows: usize, columns: usize) -> (usize, usize) {
@@ -2032,16 +1535,13 @@ impl Frontend {
         self.scroll = self
             .scroll
             .min(self.tree_cache.len().saturating_sub(body_height));
-        if (resized || self.scroll != old_scroll) && self.hover.is_some() {
+        if (resized || self.scroll != old_scroll) && self.popup_item.is_some() {
             // Keep the shared outline in sync before emitting any rendering bytes.
             self.refresh_tooltip();
         }
-        if self.tooltip.prepared() {
-            self.announce_hover_prepared(true);
-        }
         let tree = &self.tree_cache;
-        let hover_band = self
-            .hover
+        let popup_band = self
+            .popup_item
             .as_ref()
             .and_then(|item| ui::item_band(tree, item));
         let joined = self
@@ -2192,7 +1692,7 @@ impl Frontend {
         for row in 1..rows.saturating_sub(2) {
             if self.modal.is_none()
                 && columns > 0
-                && let Some(band) = &hover_band
+                && let Some(band) = &popup_band
             {
                 let index = self.scroll as isize + row as isize - 2;
                 let first = *band.start() as isize - 1;
@@ -2345,7 +1845,7 @@ impl ZellijPlugin for Frontend {
                     self.native_focus,
                     self.local_selection,
                     self.scroll,
-                    self.pending_hover_handoff.is_some(),
+                    self.popup_item.clone(),
                 );
                 self.pane_update(manifest);
                 return before
@@ -2353,7 +1853,7 @@ impl ZellijPlugin for Frontend {
                         self.native_focus,
                         self.local_selection,
                         self.scroll,
-                        self.pending_hover_handoff.is_some(),
+                        self.popup_item.clone(),
                     );
             }
             Event::TabUpdate(tabs) if self.granted && self.native_mode => {
@@ -2361,8 +1861,17 @@ impl ZellijPlugin for Frontend {
                     self.native_focus,
                     self.local_selection,
                     self.scroll,
-                    self.pending_hover_handoff.is_some(),
+                    self.popup_item.clone(),
                 );
+                if self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.active)
+                    .map(|tab| tab.position)
+                    != tabs.iter().find(|tab| tab.active).map(|tab| tab.position)
+                {
+                    self.hide_tooltip();
+                }
                 self.tabs = tabs;
                 self.synchronize_focus();
                 self.refresh_tooltip();
@@ -2371,11 +1880,20 @@ impl ZellijPlugin for Frontend {
                         self.native_focus,
                         self.local_selection,
                         self.scroll,
-                        self.pending_hover_handoff.is_some(),
+                        self.popup_item.clone(),
                     );
             }
             Event::PaneUpdate(manifest) if self.granted => self.pane_update(manifest),
             Event::TabUpdate(tabs) if self.granted => {
+                if self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.active)
+                    .map(|tab| tab.position)
+                    != tabs.iter().find(|tab| tab.active).map(|tab| tab.position)
+                {
+                    self.hide_tooltip();
+                }
                 self.tabs = tabs;
                 self.synchronize_focus();
                 self.refresh_tooltip();
@@ -2412,9 +1930,7 @@ impl ZellijPlugin for Frontend {
             Event::Mouse(mouse) if self.granted => self.mouse(mouse),
             Event::Timer(_) if self.granted => {
                 let now = Instant::now();
-                return self.expire_tooltip(now)
-                    | self.expire_user_action(now)
-                    | self.expire_hover_focus(now);
+                return self.expire_user_action(now);
             }
             Event::PastedText(text) if self.granted => {
                 if let Some(input) = self.modal.as_mut().and_then(Modal::input_mut) {
@@ -2454,30 +1970,6 @@ impl ZellijPlugin for Frontend {
         }
         if self.native_owner_role {
             return self.native_owner.pipe(message);
-        }
-        if message.name == native::HOVER_PREPARED {
-            if !matches!(message.source, PipeSource::Plugin(owner) if self.native_owner_id == Some(owner))
-            {
-                return false;
-            }
-            return message
-                .payload
-                .filter(|p| p.len() <= 4096)
-                .and_then(|payload| serde_json::from_str(&payload).ok())
-                .is_some_and(|ready| self.accept_hover_prepared(ready));
-        }
-        if message.name == native::CANCEL_HOVER {
-            if !self.native_mode
-                || !self.granted
-                || !matches!(message.source, PipeSource::Plugin(owner) if self.native_owner_id == Some(owner))
-            {
-                return false;
-            }
-            return message
-                .payload
-                .filter(|payload| payload.len() <= 4096)
-                .and_then(|payload| serde_json::from_str::<native::HoverCancel>(&payload).ok())
-                .is_some_and(|marker| self.accept_hover_cancel(&marker));
         }
         if message.name == CONTROL_PIPE {
             return self.control_pipe(&message);
@@ -2536,13 +2028,8 @@ impl ZellijPlugin for Frontend {
             self.native_owner_id = Some(owner);
             if discovered
                 && let Some(request) = self.in_flight.as_ref()
-                && let Err(error) = native::send(
-                    Some(owner),
-                    &self.native_client,
-                    self.client_id,
-                    request,
-                    self.selection_hover(request.request_id),
-                )
+                && let Err(error) =
+                    native::send(Some(owner), &self.native_client, self.client_id, request)
             {
                 self.error = Some(format!("Cannot encode native request: {error}"));
                 return true;
@@ -2564,7 +2051,6 @@ impl ZellijPlugin for Frontend {
                 && let Ok(request) = serde_json::from_str::<overlay::RefreshRequest>(&payload)
                 && let Some(target) = self.accept_ci_refresh(&message.source, &request)
             {
-                self.tooltip_pointer(false, true);
                 if let Err(error) =
                     native::refresh_ci(self.native_owner_id, self.client_id, &target)
                 {
@@ -2574,19 +2060,13 @@ impl ZellijPlugin for Frontend {
             }
             return false;
         }
-        if message.name == overlay::HOVER {
-            if let (PipeSource::Plugin(source), Some(payload)) = (message.source, message.payload)
-                && self.tooltip.id == Some(source)
-                && let Ok(pointer) = serde_json::from_str::<overlay::PointerOwnership>(&payload)
-                && self.tooltip.pending.as_ref().is_some_and(|state| {
-                    state.visible
-                        && state.instance == pointer.instance
-                        && state.content.key == pointer.key
-                })
-            {
-                self.tooltip_pointer(false, pointer.inside);
-            }
-            return false;
+        if message.name == overlay::DISMISS {
+            return message
+                .payload
+                .as_deref()
+                .filter(|payload| payload.len() <= 4096)
+                .and_then(|payload| serde_json::from_str::<overlay::DismissNotice>(payload).ok())
+                .is_some_and(|notice| self.accept_dismiss(&message.source, &notice));
         }
         if self.native_mode || message.name != "shephrd-state" || !self.granted {
             return false;
@@ -2613,93 +2093,6 @@ impl ZellijPlugin for Frontend {
 mod tests {
     use super::*;
     use shephrd::{Pane, Status, Workspace};
-
-    #[test]
-    fn pointer_crossing_keeps_popup_until_pointer_leaves_both_panes() {
-        let mut frontend = Frontend {
-            hover: Some(Item::Pane("terminal_1".to_owned())),
-            ..Frontend::default()
-        };
-        frontend.tooltip_pointer(true, true);
-        frontend.mouse(Mouse::Hover(0, usize::from(u16::MAX)));
-        assert!(frontend.hover.is_some());
-        let deadline = frontend.tooltip_leave_deadline.unwrap();
-        // Repeated host leave sentinels must not postpone dismissal indefinitely.
-        frontend.mouse(Mouse::Hover(0, usize::from(u16::MAX)));
-        assert_eq!(frontend.tooltip_leave_deadline, Some(deadline));
-        frontend.tooltip_pointer(false, true);
-        assert!(frontend.tooltip_leave_deadline.is_none());
-        assert!(!frontend.expire_tooltip(deadline + Duration::from_millis(1)));
-        assert!(frontend.hover.is_some());
-        frontend.tooltip_pointer(false, false);
-        let deadline = frontend.tooltip_leave_deadline.unwrap();
-        assert!(frontend.expire_tooltip(deadline));
-        assert!(frontend.hover.is_none());
-        assert!(!frontend.keyboard_control);
-        assert!(!frontend.control_has_focus);
-    }
-
-    #[test]
-    fn returning_to_sidebar_cancels_popup_leave_without_changing_selection() {
-        let item = Item::Pane("terminal_1".to_owned());
-        let mut frontend = Frontend {
-            hover: Some(item.clone()),
-            cursor: Some(item.clone()),
-            ..Frontend::default()
-        };
-        frontend.tooltip_pointer(false, true);
-        frontend.tooltip_pointer(false, false);
-        let deadline = frontend.tooltip_leave_deadline.unwrap();
-        frontend.tooltip_pointer(true, true);
-        assert!(!frontend.expire_tooltip(deadline));
-        assert_eq!(frontend.cursor, Some(item));
-        assert!(frontend.hover.is_some());
-    }
-
-    #[test]
-    fn overlay_pointer_ownership_rejects_stale_popup_keys_and_instances() {
-        let mut frontend = Frontend {
-            hover: Some(Item::Pane("terminal_1".to_owned())),
-            ..Frontend::default()
-        };
-        frontend.tooltip.id = Some(100);
-        frontend.tooltip.pending = Some(overlay::Tooltip {
-            instance: "current-owner".to_owned(),
-            revision: 1,
-            visible: true,
-            content: ui::PopupContent {
-                key: "pane:terminal_1".to_owned(),
-                ..ui::PopupContent::default()
-            },
-            coordinates: FloatingPaneCoordinates::default(),
-            connection: None,
-        });
-        for (instance, key) in [
-            ("old-owner", "pane:terminal_1"),
-            ("current-owner", "workspace:other"),
-        ] {
-            frontend.pipe(native_message(
-                overlay::HOVER,
-                overlay::PointerOwnership {
-                    instance: instance.to_owned(),
-                    key: key.to_owned(),
-                    inside: true,
-                },
-            ));
-            assert!(!frontend.tooltip_hovered);
-        }
-        frontend.pipe(native_message(
-            overlay::HOVER,
-            overlay::PointerOwnership {
-                instance: "current-owner".to_owned(),
-                key: "pane:terminal_1".to_owned(),
-                inside: true,
-            },
-        ));
-        assert!(frontend.tooltip_hovered);
-        assert!(!frontend.keyboard_control);
-        assert!(!frontend.control_has_focus);
-    }
 
     fn snapshot(revision: u64, focused: &str) -> Snapshot {
         Snapshot {
@@ -2808,7 +2201,8 @@ mod tests {
             error: None,
             truncated: false,
         });
-        frontend.hover = Some(Item::Pane("terminal_1".to_owned()));
+        frontend.tooltip.begin_open();
+        frontend.popup_item = Some(Item::Pane("terminal_1".to_owned()));
         frontend.refresh_tooltip();
         frontend.tooltip.id = Some(100);
         let state = frontend.tooltip.pending.as_ref().unwrap();
@@ -2846,7 +2240,7 @@ mod tests {
                 }
                 9 => frontend.tooltip.pending.as_mut().unwrap().visible = false,
                 10 => frontend.visible = false,
-                11 => frontend.hover = Some(Item::Pane("terminal_2".to_owned())),
+                11 => frontend.popup_item = Some(Item::Pane("terminal_2".to_owned())),
                 12 => {
                     frontend.snapshot.as_mut().unwrap().panes[0]
                         .ci
@@ -2926,6 +2320,7 @@ mod tests {
         );
         frontend.snapshot.as_mut().unwrap().panes[0].description =
             "Updated native activity".to_owned();
+        frontend.snapshot.as_mut().unwrap().revision += 1;
         frontend.refresh_tooltip();
         let mut current = request.clone();
         current.revision = frontend.tooltip.pending.as_ref().unwrap().revision;
@@ -2939,6 +2334,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .fetch_state = shephrd::ci_contract::CiFetchState::Loading;
+        frontend.snapshot.as_mut().unwrap().revision += 1;
         frontend.refresh_tooltip();
         current.revision = frontend.tooltip.pending.as_ref().unwrap().revision;
         assert!(
@@ -2951,6 +2347,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .fetch_state = shephrd::ci_contract::CiFetchState::Ready;
+        frontend.snapshot.as_mut().unwrap().revision += 1;
         frontend.refresh_tooltip();
         current.revision = frontend.tooltip.pending.as_ref().unwrap().revision;
         assert!(
@@ -2961,99 +2358,182 @@ mod tests {
         assert!(frontend.tooltip.pending.as_ref().unwrap().visible);
     }
 
+    fn context_click(frontend: &mut Frontend, item: &Item) {
+        let row = frontend
+            .tree_cache
+            .iter()
+            .position(|row| row.item.as_ref() == Some(item))
+            .unwrap();
+        frontend.mouse(Mouse::RightClick((row + 2 - frontend.scroll) as isize, 5));
+    }
+
+    #[test]
+    fn hover_is_highlight_only_and_right_click_preserves_selection_and_open_target() {
+        let mut frontend = popup_frontend();
+        let item = Item::Pane("terminal_2".to_owned());
+        let row = frontend
+            .tree_cache
+            .iter()
+            .position(|row| row.item.as_ref() == Some(&item))
+            .unwrap();
+        let cursor = frontend.cursor.clone();
+        frontend.mouse(Mouse::Hover((row + 2) as isize, 5));
+        assert_eq!(frontend.hover, Some(item.clone()));
+        assert!(frontend.popup_item.is_none());
+        assert!(
+            frontend
+                .tooltip
+                .pending
+                .as_ref()
+                .is_none_or(|state| !state.visible)
+        );
+        context_click(&mut frontend, &item);
+        assert_popup(&frontend, &item);
+        assert_eq!(frontend.cursor, cursor);
+        assert!(!frontend.local_selection);
+        assert!(!frontend.keyboard_control);
+        assert!(frontend.queue.is_empty());
+        assert!(frontend.in_flight.is_none());
+        frontend.mouse(Mouse::Hover(2, 5));
+        assert_ne!(frontend.hover, Some(item.clone()));
+        assert_popup(&frontend, &item);
+        frontend.mouse(Mouse::Hover(0, u16::MAX as usize));
+        assert!(frontend.hover.is_none());
+        assert_popup(&frontend, &item);
+        let mut updated = frontend.snapshot.clone().unwrap();
+        updated.revision += 1;
+        updated.panes[1].description = "fresh metadata for original target".to_owned();
+        frontend.accept_snapshot(updated, true);
+        assert_popup(&frontend, &item);
+        assert!(
+            frontend
+                .tooltip
+                .pending
+                .as_ref()
+                .unwrap()
+                .content
+                .rows()
+                .iter()
+                .any(|row| row.plain().contains("fresh metadata for original target"))
+        );
+        frontend.granted = false; // Queue normal selection without invoking the host transport.
+        click_item(&mut frontend, item.clone());
+        assert!(frontend.popup_item.is_none());
+        assert_eq!(frontend.cursor, Some(item));
+        assert!(frontend.desired_selection.is_some());
+    }
+
+    #[test]
+    fn cached_context_reopens_then_async_snapshot_refreshes_only_the_open_item() {
+        let mut frontend = popup_frontend();
+        let first = Item::Pane("terminal_1".to_owned());
+        let second = Item::Pane("terminal_2".to_owned());
+        context_click(&mut frontend, &first);
+        let original = frontend.tooltip.pending.as_ref().unwrap().content.clone();
+        context_click(&mut frontend, &second);
+        context_click(&mut frontend, &first);
+        assert_eq!(frontend.tooltip.pending.as_ref().unwrap().content, original);
+        let before = frontend.tooltip.pending.as_ref().unwrap().revision;
+        for line in [2, 3, 4, 6, 8, -1] {
+            frontend.mouse(Mouse::Hover(line, 5));
+            assert_eq!(frontend.tooltip.pending.as_ref().unwrap().revision, before);
+            assert_eq!(frontend.tooltip.pending.as_ref().unwrap().content, original);
+        }
+        let mut snapshot = frontend.snapshot.clone().unwrap();
+        snapshot.revision += 1;
+        snapshot.panes[0].description = "async original target update 日本語".to_owned();
+        frontend.accept_snapshot(snapshot, true);
+        assert!(
+            frontend
+                .tooltip
+                .pending
+                .as_ref()
+                .unwrap()
+                .content
+                .rows()
+                .iter()
+                .any(|row| row.plain().contains("async original target update 日本語"))
+        );
+        context_click(&mut frontend, &second);
+        assert!(
+            !frontend
+                .tooltip
+                .pending
+                .as_ref()
+                .unwrap()
+                .content
+                .rows()
+                .iter()
+                .any(|row| row.plain().contains("async original target update 日本語"))
+        );
+        context_click(&mut frontend, &first);
+        assert!(
+            frontend
+                .tooltip
+                .pending
+                .as_ref()
+                .unwrap()
+                .content
+                .rows()
+                .iter()
+                .any(|row| row.plain().contains("async original target update 日本語"))
+        );
+    }
+
+    #[test]
+    fn dismissal_rejects_stale_card_revisions_keys_instances_and_senders() {
+        for case in 0..5 {
+            let (mut frontend, _) = ci_refresh_frontend();
+            let state = frontend.tooltip.pending.as_ref().unwrap();
+            let mut notice = overlay::DismissNotice {
+                instance: state.instance.clone(),
+                key: state.content.key.clone(),
+                revision: state.revision,
+            };
+            let mut source = PipeSource::Plugin(100);
+            match case {
+                0 => source = PipeSource::Plugin(101),
+                1 => notice.instance = "old".to_owned(),
+                2 => notice.key = "pane:terminal_2".to_owned(),
+                3 => notice.revision = notice.revision.saturating_sub(1),
+                4 => source = PipeSource::Cli("forged".to_owned()),
+                _ => unreachable!(),
+            }
+            assert!(!frontend.accept_dismiss(&source, &notice));
+            assert!(frontend.popup_item.is_some());
+        }
+        let (mut frontend, _) = ci_refresh_frontend();
+        let state = frontend.tooltip.pending.as_ref().unwrap();
+        let old = overlay::DismissNotice {
+            instance: state.instance.clone(),
+            key: state.content.key.clone(),
+            revision: state.revision,
+        };
+        frontend.snapshot.as_mut().unwrap().panes[0].description = "metadata arrived".to_owned();
+        frontend.snapshot.as_mut().unwrap().revision += 1;
+        frontend.refresh_tooltip();
+        assert!(frontend.tooltip.accept_dismiss(100, &old));
+        context_click(&mut frontend, &Item::Pane("terminal_1".to_owned()));
+        assert!(!frontend.accept_dismiss(&PipeSource::Plugin(100), &old));
+        let state = frontend.tooltip.pending.as_ref().unwrap();
+        let current = overlay::DismissNotice {
+            instance: state.instance.clone(),
+            key: state.content.key.clone(),
+            revision: state.revision,
+        };
+        assert!(frontend.accept_dismiss(&PipeSource::Plugin(100), &current));
+        assert!(frontend.popup_item.is_none());
+        assert!(!frontend.tooltip.pending.as_ref().unwrap().visible);
+    }
+
     fn assert_popup(frontend: &Frontend, item: &Item) {
-        assert_eq!(frontend.hover.as_ref(), Some(item));
-        assert!(frontend.sidebar_hovered);
-        assert!(frontend.tooltip_leave_deadline.is_none());
+        assert_eq!(frontend.popup_item.as_ref(), Some(item));
         let popup = frontend.tooltip.pending.as_ref().unwrap();
         assert!(popup.visible);
         assert_eq!(
             popup.content,
             ui::tooltip(item, frontend.snapshot.as_ref().unwrap())
         );
-    }
-
-    #[test]
-    fn click_without_prior_hover_opens_popup_and_same_item_ack_keeps_it_open() {
-        let mut frontend = popup_frontend();
-        let item = Item::Pane("terminal_2".to_owned());
-        click_item(&mut frontend, item.clone());
-        assert_popup(&frontend, &item);
-        assert_eq!(frontend.cursor, Some(item.clone()));
-        assert!(!frontend.keyboard_control);
-        assert!(!frontend.control_has_focus);
-        assert_eq!(frontend.render_cursor, Some(None));
-        acknowledge(&mut frontend, snapshot(2, "terminal_2"), None);
-        assert_popup(&frontend, &item);
-        let mut metadata = snapshot(3, "terminal_2");
-        metadata.panes[1].description = "Live activity".to_owned();
-        assert!(frontend.accept_snapshot(metadata, true));
-        assert_popup(&frontend, &item);
-        frontend.last_click = None;
-        let revision = frontend.tooltip.pending.as_ref().unwrap().revision;
-        click_item(&mut frontend, item.clone());
-        assert_popup(&frontend, &item);
-        assert_eq!(
-            frontend.tooltip.pending.as_ref().unwrap().revision,
-            revision
-        );
-    }
-
-    #[test]
-    fn asynchronous_host_focus_releases_keyboard_control_without_clearing_pointer() {
-        let mut frontend = popup_frontend();
-        frontend.keyboard_control = true;
-        frontend.control_has_focus = true;
-        let item = Item::Pane("terminal_2".to_owned());
-        click_item(&mut frontend, item.clone());
-        frontend.synchronize_focus();
-        frontend.refresh_tooltip();
-        assert!(!frontend.keyboard_control);
-        assert!(!frontend.control_has_focus);
-        assert_popup(&frontend, &item);
-        frontend.manifest.panes.get_mut(&0).unwrap()[1].id = 2;
-        frontend.synchronize_focus();
-        frontend.refresh_tooltip();
-        assert_popup(&frontend, &item);
-    }
-
-    #[test]
-    fn pointer_exit_modal_escape_hidden_sidebar_and_removed_target_dismiss_popup() {
-        let item = Item::Pane("terminal_2".to_owned());
-        let mut frontend = popup_frontend();
-        click_item(&mut frontend, item.clone());
-        frontend.mouse(Mouse::Hover(0, usize::from(u16::MAX)));
-        let deadline = frontend.tooltip_leave_deadline.unwrap();
-        assert!(!frontend.expire_tooltip(deadline - Duration::from_millis(1)));
-        assert!(frontend.expire_tooltip(deadline));
-        assert!(!frontend.tooltip.pending.as_ref().unwrap().visible);
-        assert!(frontend.hover.is_none());
-        frontend.last_click = None;
-        click_item(&mut frontend, item.clone());
-        frontend.edit_selected(false);
-        assert!(frontend.modal.is_some());
-        assert!(frontend.hover.is_none());
-        assert!(!frontend.tooltip.pending.as_ref().unwrap().visible);
-        frontend.mouse(Mouse::LeftClick(4, 2));
-        assert!(frontend.hover.is_none());
-        frontend.modal = None;
-        frontend.last_click = None;
-        click_item(&mut frontend, item.clone());
-        frontend.key(KeyWithModifier::new(BareKey::Esc));
-        assert!(frontend.hover.is_none());
-        frontend.last_click = None;
-        click_item(&mut frontend, item.clone());
-        frontend.update(Event::Visible(false));
-        assert!(frontend.hover.is_none());
-        assert!(!frontend.tooltip.pending.as_ref().unwrap().visible);
-        frontend.visible = true;
-        frontend.last_click = None;
-        click_item(&mut frontend, item);
-        let mut removed = snapshot(2, "terminal_1");
-        removed.panes.retain(|pane| pane.id != "terminal_2");
-        assert!(frontend.accept_snapshot(removed, true));
-        assert!(frontend.hover.is_none());
-        assert!(!frontend.tooltip.pending.as_ref().unwrap().visible);
     }
 
     // Consume the actual frame's cursor positioning and styles into terminal cells.
@@ -3115,7 +2595,7 @@ mod tests {
                 .collect::<String>()
                 .contains("Terminal 2")
         );
-        frontend.hover = Some(item.clone());
+        frontend.popup_item = Some(item.clone());
         let outlined = sidebar_cells(&mut frontend, 20, 40);
         assert!(outlined[top][1..39].iter().all(|cell| *cell == '─'));
         assert!(outlined[bottom][1..39].iter().all(|cell| *cell == '─'));
@@ -3140,7 +2620,7 @@ mod tests {
         frontend.hide_tooltip();
         assert_eq!(sidebar_cells(&mut frontend, 20, 40), baseline);
         // At the viewport edge, omit the clipped horizontal edge, never cover our caption.
-        frontend.hover = Some(item);
+        frontend.popup_item = Some(item);
         frontend.scroll = *band.start();
         let clipped = sidebar_cells(&mut frontend, 8, 40);
         assert!(clipped[2].iter().collect::<String>().contains("Terminal 1"));
@@ -3151,7 +2631,7 @@ mod tests {
         let mut frontend = frontend();
         frontend.render_cursor = Some(None);
         let baseline = sidebar_cells(&mut frontend, 20, 40);
-        frontend.hover = Some(Item::Workspace("workspace_1".to_owned()));
+        frontend.popup_item = Some(Item::Workspace("workspace_1".to_owned()));
         let outlined = sidebar_cells(&mut frontend, 20, 40);
         assert_eq!(outlined[1][0], '╭');
         assert_eq!(outlined[1][39], '╮');
@@ -3543,509 +3023,7 @@ mod tests {
             request_id,
             client: client.to_owned(),
             terminal_id: terminal.to_owned(),
-            hover: None,
         }
-    }
-
-    fn cross_tab_frontends() -> (Frontend, Frontend) {
-        let mut source = popup_frontend();
-        source.native_client = "99:source".to_owned();
-        source.native_owner_id = Some(100);
-        source.relay_epoch = "owner".to_owned();
-        source.tabs.push(TabInfo {
-            position: 1,
-            display_area_rows: 24,
-            display_area_columns: 120,
-            ..TabInfo::default()
-        });
-        let mut sidebar = source.manifest.panes[&0][0].clone();
-        sidebar.id = 98;
-        source.manifest.panes.insert(
-            1,
-            vec![
-                sidebar,
-                PaneInfo {
-                    id: 2,
-                    ..PaneInfo::default()
-                },
-            ],
-        );
-        let mut destination = popup_frontend();
-        destination.id = 98;
-        destination.native_client = "98:destination".to_owned();
-        destination.native_owner_id = Some(100);
-        destination.visible = false;
-        destination.tabs = source.tabs.clone();
-        destination.manifest = source.manifest.clone();
-        (source, destination)
-    }
-
-    fn clicked_handoff() -> (Frontend, Frontend, native::UiSelection) {
-        let (mut source, destination) = cross_tab_frontends();
-        click_item(&mut source, Item::Pane("terminal_2".to_owned()));
-        let desired = source.desired_selection.as_ref().unwrap();
-        let mut selection = relay(1, desired.request_id, &source.native_client, "terminal_2");
-        selection.hover = desired.hover.clone();
-        (source, destination, selection)
-    }
-
-    #[test]
-    fn popup_prepared_revision_rejects_registration_and_old_render_ack() {
-        let (_, mut destination, selection) = clicked_handoff();
-        assert!(destination.accept_selection_relay("owner".to_owned(), 1, Some(selection)));
-        let tooltip = destination.tooltip.pending.as_ref().unwrap();
-        let mut ready = overlay::Ready {
-            id: 101,
-            instance: tooltip.instance.clone(),
-            revision: tooltip.revision,
-            key: tooltip.content.key.clone(),
-            prepared: false,
-        };
-        assert!(
-            destination
-                .tooltip
-                .ready(&ready, destination.id, &destination.configuration)
-        );
-        assert!(!destination.tooltip.prepared());
-        ready.prepared = true;
-        ready.revision = ready.revision.saturating_sub(1);
-        assert!(
-            destination
-                .tooltip
-                .ready(&ready, destination.id, &destination.configuration)
-        );
-        assert!(!destination.tooltip.prepared());
-        ready.revision += 1;
-        assert!(
-            destination
-                .tooltip
-                .ready(&ready, destination.id, &destination.configuration)
-        );
-        assert!(destination.tooltip.prepared());
-        destination.hide_tooltip();
-        assert!(
-            destination
-                .tooltip
-                .ready(&ready, destination.id, &destination.configuration)
-        );
-        assert!(!destination.tooltip.prepared());
-    }
-
-    fn prepared_popup(destination: &mut Frontend) -> native::HoverPrepared {
-        let tooltip = destination.tooltip.pending.as_ref().unwrap();
-        let ready = overlay::Ready {
-            id: 101,
-            instance: tooltip.instance.clone(),
-            revision: tooltip.revision,
-            key: tooltip.content.key.clone(),
-            prepared: true,
-        };
-        assert!(
-            destination
-                .tooltip
-                .ready(&ready, destination.id, &destination.configuration)
-        );
-        let mut frame = Vec::new();
-        destination.render_sidebar_to(20, 40, &mut frame);
-        assert!(!frame.is_empty());
-        destination.announced_handoff.clone().unwrap()
-    }
-
-    #[test]
-    fn inactive_destination_prepares_card_before_mouse_focus_is_released() {
-        let (mut source, mut destination, selection) = clicked_handoff();
-        let request_id = selection.request_id;
-        assert!(source.defer_hover_focus(request_id, 2));
-        assert_popup(&source, &Item::Pane("terminal_2".to_owned()));
-        assert!(destination.accept_selection_relay("owner".to_owned(), 1, Some(selection)));
-        assert!(!destination.visible);
-        assert!(!destination.own_tab_active());
-        assert_popup(&destination, &Item::Pane("terminal_2".to_owned()));
-        assert!(!destination.tooltip.prepared());
-        let ready = prepared_popup(&mut destination);
-        assert!(source.pending_hover_focus.is_some());
-        assert!(source.accept_hover_prepared(ready));
-        assert!(source.pending_hover_focus.is_none());
-        assert!(!source.keyboard_control);
-        assert!(!destination.keyboard_control);
-    }
-
-    #[test]
-    fn keyboard_and_same_tab_focus_do_not_wait_for_popup_preparation() {
-        let (mut source, _, selection) = clicked_handoff();
-        assert!(!source.defer_hover_focus(selection.request_id, 1));
-        source.desired_selection.as_mut().unwrap().hover = None;
-        assert!(!source.defer_hover_focus(selection.request_id, 2));
-        assert!(source.pending_hover_focus.is_none());
-        let (mut source, _, selection) = clicked_handoff();
-        source.enter_control();
-        assert!(!source.defer_hover_focus(selection.request_id, 2));
-        assert!(source.pending_hover_focus.is_none());
-    }
-
-    #[test]
-    fn prepared_token_rejects_old_epoch_target_pointer_request_and_cancel() {
-        let (mut source, mut destination, selection) = clicked_handoff();
-        let request_id = selection.request_id;
-        assert!(destination.accept_selection_relay("owner".to_owned(), 1, Some(selection)));
-        let ready = prepared_popup(&mut destination);
-        assert!(source.defer_hover_focus(request_id, 2));
-        for changed in 0..5 {
-            let mut obsolete = ready.clone();
-            match changed {
-                0 => obsolete.epoch = "old-owner".to_owned(),
-                1 => obsolete.terminal_id = "terminal_1".to_owned(),
-                2 => obsolete.pointer.x += 1,
-                3 => obsolete.request_id += 1,
-                _ => obsolete.sidebar_id += 1,
-            }
-            assert!(!source.accept_hover_prepared(obsolete));
-            assert!(source.pending_hover_focus.is_some());
-        }
-        source.mouse(Mouse::Hover(0, usize::from(u16::MAX)));
-        assert!(source.pending_hover_focus.is_none());
-        assert!(!source.accept_hover_prepared(ready));
-        assert!(source.selection_hover(request_id).is_none());
-    }
-
-    #[test]
-    fn failed_staging_releases_current_selection_without_replaying_hover() {
-        let (mut source, mut destination, mut selection) = clicked_handoff();
-        let request_id = selection.request_id;
-        assert!(source.defer_hover_focus(request_id, 2));
-        selection.hover.as_mut().unwrap().x = 40;
-        // Matching physical token with geometry outside destination bounds is rejected.
-        source.desired_selection.as_mut().unwrap().hover = selection.hover.clone();
-        source.pending_hover_focus.as_mut().unwrap().ready.pointer =
-            selection.hover.clone().unwrap();
-        assert!(destination.accept_selection_relay("owner".to_owned(), 1, Some(selection)));
-        assert!(destination.hover.is_none());
-        let failed = destination.announced_handoff.clone().unwrap();
-        assert!(!failed.prepared);
-        assert!(source.accept_hover_prepared(failed.clone()));
-        assert!(source.pending_hover_focus.is_none());
-        assert!(source.desired_selection.as_ref().unwrap().hover.is_none());
-        assert!(!source.accept_hover_prepared(failed));
-    }
-
-    #[test]
-    fn preparation_deadline_is_one_shot_and_late_ready_cannot_reopen_card() {
-        let (mut source, mut destination, selection) = clicked_handoff();
-        let request_id = selection.request_id;
-        assert!(destination.accept_selection_relay("owner".to_owned(), 1, Some(selection)));
-        let ready = prepared_popup(&mut destination);
-        assert!(source.defer_hover_focus(request_id, 2));
-        let deadline = source.pending_hover_focus.as_ref().unwrap().deadline;
-        assert!(!source.expire_hover_focus(deadline - Duration::from_nanos(1)));
-        assert!(source.pending_hover_focus.is_some());
-        assert!(source.expire_hover_focus(deadline));
-        assert!(source.error.is_some());
-        assert!(source.pending_hover_focus.is_none());
-        assert!(source.selection_hover(request_id).is_none());
-        assert!(!source.accept_hover_prepared(ready));
-        assert!(!source.expire_hover_focus(deadline + Duration::from_secs(1)));
-    }
-
-    #[test]
-    fn newer_click_keyboard_and_owner_restart_invalidate_preparation_deadline() {
-        let (mut source, _, selection) = clicked_handoff();
-        assert!(source.defer_hover_focus(selection.request_id, 2));
-        let old_deadline = source.pending_hover_focus.as_ref().unwrap().deadline;
-        source.last_click = None;
-        click_item(&mut source, Item::Pane("terminal_1".to_owned()));
-        assert!(source.pending_hover_focus.is_none());
-        assert!(!source.expire_hover_focus(old_deadline));
-        assert_eq!(source.cursor, Some(Item::Pane("terminal_1".to_owned())));
-
-        let (mut source, _, selection) = clicked_handoff();
-        assert!(source.defer_hover_focus(selection.request_id, 2));
-        let old_deadline = source.pending_hover_focus.as_ref().unwrap().deadline;
-        source.enter_control();
-        assert!(source.pending_hover_focus.is_none());
-        assert!(!source.expire_hover_focus(old_deadline));
-
-        let (mut source, _, selection) = clicked_handoff();
-        assert!(source.defer_hover_focus(selection.request_id, 2));
-        let old_deadline = source.pending_hover_focus.as_ref().unwrap().deadline;
-        assert!(source.accept_selection_relay("new-owner".to_owned(), 0, None));
-        assert!(source.pending_hover_focus.is_none());
-        assert!(source.desired_selection.is_none());
-        assert!(!source.expire_hover_focus(old_deadline));
-
-        let (mut source, _, selection) = clicked_handoff();
-        assert!(source.defer_hover_focus(selection.request_id, 2));
-        let old_deadline = source.pending_hover_focus.as_ref().unwrap().deadline;
-        let mut state = snapshot(2, "terminal_1");
-        state.panes.retain(|pane| pane.id != "terminal_2");
-        assert!(source.accept_snapshot(state, true));
-        assert!(source.pending_hover_focus.is_none());
-        assert!(source.desired_selection.is_none());
-        assert!(!source.expire_hover_focus(old_deadline));
-    }
-
-    fn hover_cancel_message(client_id: u16, client: &str, request_id: u64) -> PipeMessage {
-        native_message(
-            native::CANCEL_HOVER,
-            native::HoverCancel {
-                client_id,
-                client: client.to_owned(),
-                through_request_id: request_id,
-            },
-        )
-    }
-
-    #[test]
-    fn actual_source_departure_before_slow_focus_never_reopens_destination_popup() {
-        let (mut source, mut destination, selection) = clicked_handoff();
-        let request_id = selection.request_id;
-        source.mouse(Mouse::Hover(0, usize::from(u16::MAX)));
-        assert!(source.desired_selection.as_ref().unwrap().hover.is_none());
-        assert!(source.selection_hover(request_id).is_none());
-        assert_eq!(
-            source.cancelled_hover.get(&source.native_client),
-            Some(&request_id)
-        );
-        assert!(destination.pipe(hover_cancel_message(
-            destination.client_id,
-            &source.native_client,
-            request_id
-        )));
-        // The original selection payload can arrive after the cancellation marker.
-        assert!(destination.accept_selection_relay("owner".to_owned(), 1, Some(selection)));
-        assert!(destination.pending_hover_handoff.is_none());
-        destination.accept_snapshot(snapshot(2, "terminal_2"), true);
-        destination.update(Event::Visible(true));
-        assert!(destination.hover.is_none());
-        assert!(
-            !destination
-                .tooltip
-                .pending
-                .as_ref()
-                .is_some_and(|tooltip| tooltip.visible)
-        );
-        assert_eq!(
-            destination.cursor,
-            Some(Item::Pane("terminal_2".to_owned()))
-        );
-    }
-
-    #[test]
-    fn cancel_after_canonical_confirmation_clears_retained_hidden_handoff() {
-        let (mut source, mut destination, selection) = clicked_handoff();
-        let request_id = selection.request_id;
-        assert!(destination.accept_selection_relay("owner".to_owned(), 1, Some(selection)));
-        source.finish_selection(request_id, false);
-        source.accept_snapshot(snapshot(2, "terminal_2"), true);
-        assert!(source.desired_selection.is_none());
-        assert!(source.latest_hover_request.is_some());
-        destination.accept_snapshot(snapshot(2, "terminal_2"), true);
-        assert!(destination.accept_selection_relay("owner".to_owned(), 2, None));
-        assert!(destination.active_hover_handoff.is_some());
-        source.mouse(Mouse::Hover(-1, 0));
-        assert_eq!(
-            source.cancelled_hover.get(&source.native_client),
-            Some(&request_id)
-        );
-        assert!(destination.pipe(hover_cancel_message(
-            destination.client_id,
-            &source.native_client,
-            request_id
-        )));
-        assert!(destination.pending_hover_handoff.is_none());
-        destination.update(Event::Visible(true));
-        assert!(destination.hover.is_none());
-    }
-
-    #[test]
-    fn old_or_foreign_cancel_preserves_newer_click_and_handoff() {
-        let (mut source, mut destination, old_selection) = clicked_handoff();
-        source.last_click = None;
-        click_item(&mut source, Item::Pane("terminal_2".to_owned()));
-        let desired = source.desired_selection.as_ref().unwrap();
-        let mut new_selection = relay(2, desired.request_id, &source.native_client, "terminal_2");
-        new_selection.hover = desired.hover.clone();
-        assert!(new_selection.request_id > old_selection.request_id);
-        let marker = native::HoverCancel {
-            client_id: source.client_id,
-            client: source.native_client.clone(),
-            through_request_id: old_selection.request_id,
-        };
-        assert!(!source.accept_hover_cancel(&marker)); // The newer click already cancelled this older request.
-        assert!(source.desired_selection.as_ref().unwrap().hover.is_some());
-        assert!(source.latest_hover_request.is_some());
-        assert!(destination.accept_selection_relay(
-            "owner".to_owned(),
-            2,
-            Some(new_selection.clone())
-        ));
-        assert!(destination.pipe(hover_cancel_message(
-            destination.client_id,
-            &source.native_client,
-            old_selection.request_id
-        )));
-        assert!(destination.active_hover_handoff.is_some());
-        let mut forged = hover_cancel_message(
-            destination.client_id,
-            &source.native_client,
-            new_selection.request_id,
-        );
-        forged.source = PipeSource::Plugin(101);
-        assert!(!destination.pipe(forged));
-        assert!(!destination.pipe(hover_cancel_message(
-            destination.client_id + 1,
-            &source.native_client,
-            new_selection.request_id
-        )));
-        assert!(destination.active_hover_handoff.is_some());
-        destination.update(Event::Visible(true));
-        assert_popup(&destination, &Item::Pane("terminal_2".to_owned()));
-        assert!(!destination.pipe(hover_cancel_message(
-            destination.client_id,
-            &source.native_client,
-            old_selection.request_id
-        )));
-        assert!(destination.hover.is_some());
-        assert!(
-            source
-                .queue
-                .iter()
-                .any(|request| request.request_id == new_selection.request_id)
-        );
-        source.mouse(Mouse::Hover(0, usize::from(u16::MAX)));
-        assert!(source.selection_hover(new_selection.request_id).is_none());
-        assert!(source.desired_selection.as_ref().unwrap().hover.is_none());
-        assert!(destination.pipe(hover_cancel_message(
-            destination.client_id,
-            &source.native_client,
-            new_selection.request_id
-        )));
-        assert!(destination.hover.is_none());
-        assert!(!destination.tooltip.pending.as_ref().unwrap().visible);
-    }
-
-    #[test]
-    fn stationary_visibility_preserves_intent_but_pointer_motion_and_keyboard_cancel_it() {
-        let (mut source, _, selection) = clicked_handoff();
-        let pointer = selection.hover.unwrap();
-        source.mouse(Mouse::Hover(pointer.y as isize, pointer.x));
-        assert!(source.selection_hover(selection.request_id).is_some());
-        source.update(Event::Visible(false));
-        assert!(source.selection_hover(selection.request_id).is_some());
-        assert!(!source.cancelled_hover.contains_key(&source.native_client));
-        source.update(Event::Visible(true));
-        source.mouse(Mouse::Hover(pointer.y as isize, pointer.x + 1));
-        assert!(source.selection_hover(selection.request_id).is_none());
-        let (mut source, _, selection) = clicked_handoff();
-        source.key(KeyWithModifier::new(BareKey::Char('r')));
-        assert!(source.selection_hover(selection.request_id).is_none());
-        assert!(source.modal.is_some());
-        assert_eq!(
-            source.cancelled_hover.get(&source.native_client),
-            Some(&selection.request_id)
-        );
-    }
-
-    #[test]
-    fn physical_click_handoff_survives_tab_visibility_and_is_consumed_once() {
-        let (mut source, mut destination) = cross_tab_frontends();
-        source.native_client = "source".to_owned();
-        let item = Item::Pane("terminal_2".to_owned());
-        click_item(&mut source, item.clone());
-        let desired = source.desired_selection.as_ref().unwrap();
-        let pointer = desired.hover.clone().unwrap();
-        let row = source
-            .tree_cache
-            .iter()
-            .position(|row| row.item.as_ref() == Some(&item))
-            .unwrap();
-        assert_eq!(
-            pointer,
-            native::UiHover {
-                x: 5,
-                y: row + 2,
-                key: "pane:terminal_2".to_owned(),
-            }
-        );
-        let mut selection = relay(1, desired.request_id, "source", "terminal_2");
-        selection.hover = Some(pointer);
-        assert!(destination.accept_selection_relay("epoch".to_owned(), 1, Some(selection.clone())));
-        assert_popup(&destination, &item);
-        assert!(destination.active_hover_handoff.is_some());
-        // Host focus confirmation can clear canonical selection before Visible arrives.
-        assert!(destination.accept_snapshot(snapshot(2, "terminal_2"), true));
-        assert!(destination.accept_selection_relay("epoch".to_owned(), 2, None));
-        source.update(Event::Visible(false));
-        assert!(source.hover.is_none());
-        destination.update(Event::Visible(true));
-        for tab in &mut destination.tabs {
-            tab.active = tab.position == 1;
-        }
-        assert_popup(&destination, &item);
-        assert!(destination.pending_hover_handoff.is_none());
-        assert!(!destination.keyboard_control);
-        assert_eq!(destination.render_cursor, Some(None));
-        destination.mouse(Mouse::Hover(0, usize::from(u16::MAX)));
-        let deadline = destination.tooltip_leave_deadline.unwrap();
-        assert!(destination.expire_tooltip(deadline));
-        assert!(!destination.accept_selection_relay("epoch".to_owned(), 1, Some(selection)));
-        assert!(destination.accept_snapshot(snapshot(3, "terminal_2"), true));
-        assert!(destination.hover.is_none());
-        assert!(!destination.tooltip.pending.as_ref().unwrap().visible);
-    }
-
-    #[test]
-    fn handoff_rejects_wrong_coordinates_keyboard_modal_and_obsolete_selection() {
-        let (_, mut destination) = cross_tab_frontends();
-        destination.native_client = "destination".to_owned();
-        for (revision, x, y) in [(1, 5, 0), (2, 40, 7), (3, 5, 4), (4, 5, 7)] {
-            let pointer = native::UiHover {
-                x,
-                y,
-                key: "pane:terminal_2".to_owned(),
-            };
-            let mut selection = relay(revision, revision, "source", "terminal_2");
-            selection.hover = Some(pointer);
-            assert!(destination.accept_selection_relay(
-                "epoch".to_owned(),
-                revision,
-                Some(selection)
-            ));
-            assert!(destination.hover.is_none());
-            assert!(destination.pending_hover_handoff.is_none());
-        }
-        assert!(destination.accept_selection_relay(
-            "epoch".to_owned(),
-            5,
-            Some(relay(5, 5, "source", "terminal_2")),
-        ));
-        assert!(destination.hover.is_none());
-        destination.modal = Some(Modal::Rename {
-            item: Item::Pane("terminal_1".to_owned()),
-            input: ui::Input::new("Terminal 1".to_owned()),
-        });
-        let mut selection = relay(6, 6, "source", "terminal_2");
-        selection.hover = Some(native::UiHover {
-            x: 5,
-            y: 8,
-            key: "pane:terminal_2".to_owned(),
-        });
-        assert!(destination.accept_selection_relay("epoch".to_owned(), 6, Some(selection.clone())));
-        assert!(destination.pending_hover_handoff.is_none());
-        destination.modal = None;
-        destination.refresh_tooltip();
-        assert!(destination.hover.is_none());
-        assert!(!destination.accept_selection_relay("epoch".to_owned(), 6, Some(selection)));
-        destination.cursor = Some(Item::Pane("terminal_2".to_owned()));
-        destination.key(KeyWithModifier::new(BareKey::Enter));
-        assert!(
-            destination
-                .desired_selection
-                .as_ref()
-                .unwrap()
-                .hover
-                .is_none()
-        );
-        assert!(destination.hover.is_none());
     }
 
     #[test]
@@ -4136,21 +3114,6 @@ mod tests {
         frontend.queue.clear();
         frontend.finish_user_action();
         assert!(frontend.pending_user_action.is_none());
-    }
-
-    #[test]
-    fn tooltip_leave_deadline_composes_with_the_delayed_action_deadline() {
-        let mut frontend = frontend();
-        let start = Instant::now();
-        click_item(&mut frontend, Item::Pane("terminal_2".to_owned()));
-        frontend.pending_user_action.as_mut().unwrap().started = start;
-        frontend.hover = Some(Item::Pane("terminal_2".to_owned()));
-        frontend.tooltip_leave_deadline = Some(start + Duration::from_millis(100));
-        let now = start + Duration::from_millis(100);
-        assert!(frontend.expire_tooltip(now) | frontend.expire_user_action(now));
-        assert!(frontend.hover.is_none());
-        assert_eq!(frontend.cursor, Some(Item::Pane("terminal_2".to_owned())));
-        assert!(frontend.expire_user_action(start + Duration::from_secs(2)));
     }
 
     #[test]
