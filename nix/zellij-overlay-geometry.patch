@@ -110,7 +110,53 @@
              style,
              mode_info,
              default_mode_info,
-@@ -2289,6 +2295,7 @@
+@@ -1735,7 +1741,6 @@
+         self.swap_layouts
+             .set_base_layout((layout.clone(), floating_panes_layout.clone()));
+         match LayoutApplier::new(
+-            &self.viewport,
+             &self.senders,
+             &self.sixel_image_store,
+             &self.kitty_image_store,
+@@ -1824,7 +1829,6 @@
+         self.swap_layouts
+             .set_base_layout((layout.clone(), floating_panes_layout.clone()));
+         match LayoutApplier::new(
+-            &self.viewport,
+             &self.senders,
+             &self.sixel_image_store,
+             &self.kitty_image_store,
+@@ -1879,12 +1883,7 @@
+                 self.tiled_panes.reapply_pane_frames();
+                 self.is_pending = false;
+ 
+-                LayoutApplier::offset_viewport(
+-                    self.viewport.clone(),
+-                    self.display_area.clone(),
+-                    &mut self.tiled_panes,
+-                    self.pane_frame_style,
+-                );
++                self.tiled_panes.set_pane_frames(self.pane_frame_style);
+ 
+                 self.apply_buffered_instructions().non_fatal();
+             },
+@@ -1918,7 +1917,6 @@
+             .swap_floating_panes(&self.floating_panes, search_backwards)
+         {
+             LayoutApplier::new(
+-                &self.viewport,
+                 &self.senders,
+                 &self.sixel_image_store,
+                 &self.kitty_image_store,
+@@ -1960,7 +1958,6 @@
+             .swap_tiled_panes(&self.tiled_panes, search_backwards)
+         {
+             let application_res = LayoutApplier::new(
+-                &self.viewport,
+                 &self.senders,
+                 &self.sixel_image_store,
+                 &self.kitty_image_store,
+@@ -2289,6 +2286,7 @@
          Ok(())
      }
      pub fn remove_client(&mut self, client_id: ClientId) {
@@ -118,7 +164,7 @@
          self.focus_pane_id = None;
          self.mode_info
              .borrow_mut()
-@@ -4866,6 +4873,54 @@
+@@ -4866,6 +4864,54 @@
          Ok(())
      }
  
@@ -173,7 +219,7 @@
      pub fn render(
          &mut self,
          output: &mut Output,
-@@ -4887,6 +4942,9 @@
+@@ -4887,6 +4933,9 @@
          if self.stacked_pane_list_is_active() {
              self.groupify_all();
          }
@@ -183,7 +229,7 @@
          self.update_active_panes_in_pty_thread()
              .with_context(err_context)?;
  
-@@ -4959,6 +5017,15 @@
+@@ -4959,6 +5008,15 @@
              );
              output.mark_host_display_cleared_for_clients(connected_clients.iter().copied());
              self.should_clear_display_before_rendering = false;
@@ -199,7 +245,35 @@
          }
      }
      fn render_cursor(&mut self, output: &mut Output) {
-@@ -6572,6 +6639,27 @@
+@@ -5157,12 +5215,7 @@
+         self.senders
+             .send_to_pty_writer(PtyWriteInstruction::ApplyCachedResizes)
+             .with_context(|| format!("failed to update plugins with mode info"))?;
+-        LayoutApplier::offset_viewport(
+-            self.viewport.clone(),
+-            self.display_area.clone(),
+-            &mut self.tiled_panes,
+-            self.pane_frame_style,
+-        );
++        self.tiled_panes.set_pane_frames(self.pane_frame_style);
+         if let Some(pane_id) = fullscreen_pane_to_restore {
+             if self.tiled_panes.panes_contain(&pane_id) {
+                 if fullscreen_covered_ui {
+@@ -5672,12 +5725,7 @@
+         }
+         // we do this here because if there is a non-selectable pane on the edge, we consider it
+         // outside the viewport (a ui-pane, eg. the status-bar and tab-bar) and need to adjust for it
+-        LayoutApplier::offset_viewport(
+-            self.viewport.clone(),
+-            self.display_area.clone(),
+-            &mut self.tiled_panes,
+-            self.pane_frame_style,
+-        );
++        self.tiled_panes.set_pane_frames(self.pane_frame_style);
+     }
+     pub fn set_mouse_selection_support(&mut self, pane_id: PaneId, selection_support: bool) {
+         MouseHandler::set_mouse_selection_support(self, pane_id, selection_support);
+@@ -6572,6 +6620,27 @@
          MouseHandler::handle_mouse_event(self, event, client_id, passthrough_pane_id)
      }
  
@@ -227,7 +301,7 @@
      pub fn copy_selection(&self, client_id: ClientId) -> Result<()> {
          let selected_text = self
              .get_active_pane(client_id)
-@@ -6672,8 +6760,7 @@
+@@ -6672,8 +6741,7 @@
              .send_to_plugin(PluginInstruction::Update(plugin_updates))
              .with_context(|| format!("failed to set visibility of tab to {visible}"))?;
          if !visible {
@@ -237,7 +311,7 @@
          }
          Ok(())
      }
-@@ -7673,10 +7760,15 @@
+@@ -7673,10 +7741,15 @@
          self.word_separators = word_separators;
      }
      pub fn clear_mouse_hover_state(&mut self) {
@@ -257,10 +331,117 @@
          let old_value = self.web_sharing;
 --- a/zellij-server/src/tab/unit/tab_integration_tests.rs
 +++ b/zellij-server/src/tab/unit/tab_integration_tests.rs
-@@ -1412,6 +1412,159 @@
+@@ -1412,6 +1412,266 @@
  }
  
  #[test]
++fn viewport_geometry_regressions_follow_borderless_sidebar_pane_and_display_resizes() {
++    let size = Size {
++        cols: 200,
++        rows: 30,
++    };
++    let layout = r#"
++        layout {
++            pane split_direction="vertical" {
++                pane size="20%" borderless=true {
++                    plugin location="zellij:strider"
++                }
++                pane focus=true
++            }
++        }
++    "#;
++    let (tiled_layout, floating_layout) =
++        Layout::from_kdl(layout, Some("viewport.kdl".into()), None, None)
++            .unwrap()
++            .template
++            .unwrap();
++    let mut plugin_ids = HashMap::new();
++    plugin_ids.insert(
++        RunPluginOrAlias::from_url("zellij:strider", &None, None, None).unwrap(),
++        vec![1],
++    );
++    let mut tab = create_new_tab_with_swap_layouts(
++        size,
++        ModeInfo::default(),
++        (vec![], vec![]),
++        Some((
++            tiled_layout,
++            floating_layout,
++            vec![(1, None)],
++            vec![],
++            plugin_ids,
++        )),
++        false,
++        false,
++    );
++    tab.set_pane_selectable(PaneId::Plugin(1), false);
++
++    let assert_geometry = |tab: &Tab, size: Size| {
++        let sidebar = tab.get_pane_info(PaneId::Plugin(1)).unwrap();
++        let terminal = tab.get_pane_info(PaneId::Terminal(1)).unwrap();
++        let viewport = tab.viewport.borrow();
++        let sidebar_right = sidebar.pane_x + sidebar.pane_columns;
++        assert!(!sidebar.is_selectable);
++        assert_eq!((sidebar.pane_x, sidebar.pane_y), (0, 0));
++        assert_eq!(sidebar.pane_rows, size.rows);
++        assert_eq!((viewport.x, viewport.y), (sidebar_right, 0));
++        assert_eq!(
++            (viewport.cols, viewport.rows),
++            (size.cols - sidebar_right, size.rows)
++        );
++        assert_eq!(viewport.x + viewport.cols, size.cols);
++        assert_eq!(
++            (terminal.pane_x, terminal.pane_y),
++            (viewport.x, viewport.y)
++        );
++        assert_eq!(
++            (terminal.pane_columns, terminal.pane_rows),
++            (viewport.cols, viewport.rows)
++        );
++        // With frames disabled, the application fills the viewport without an extra separator cell.
++        assert_eq!(
++            (terminal.pane_content_x, terminal.pane_content_y),
++            (terminal.pane_x, terminal.pane_y)
++        );
++        assert_eq!(
++            (terminal.pane_content_columns, terminal.pane_content_rows),
++            (terminal.pane_columns, terminal.pane_rows)
++        );
++        assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(1)));
++        sidebar.pane_columns
++    };
++    let mut previous_width = assert_geometry(&tab, size);
++    for resize in [Resize::Increase, Resize::Decrease] {
++        for _ in 0..3 {
++            tab.resize_pane_with_id(
++                ResizeStrategy::new(resize, Some(Direction::Right)),
++                PaneId::Plugin(1),
++            )
++            .unwrap();
++            let width = assert_geometry(&tab, size);
++            match resize {
++                Resize::Increase => assert!(width > previous_width),
++                Resize::Decrease => assert!(width < previous_width),
++            }
++            previous_width = width;
++        }
++    }
++    for size in [
++        Size {
++            cols: 250,
++            rows: 35,
++        },
++        Size {
++            cols: 150,
++            rows: 25,
++        },
++    ] {
++        tab.resize_whole_tab(size).unwrap();
++        assert_geometry(&tab, size);
++    }
++}
++
++#[test]
 +fn pinned_nonselectable_plugin_overlay_uses_display_coordinates() {
 +    use zellij_utils::data::FloatingPaneCoordinates;
 +    use zellij_utils::pane_size::Viewport;
@@ -741,6 +922,34 @@
      fn intercept_guest_modal_mouse_event(
          tab: &mut Tab,
          event: &MouseEvent,
+@@ -724,18 +769,20 @@
+     ) -> Result<()> {
+         let err_context = || format!("failed to resize tiled pane {pane_id:?}");
+ 
+-        let viewport = tab.viewport.borrow();
+-        let viewport_cols = viewport.cols;
+-        let viewport_rows = viewport.rows;
++        // Resize percentages apply to the whole tiled grid, including edge UI panes.
++        // Copy dimensions so frame reconciliation can mutably update the viewport.
++        let display_area = *tab.display_area.borrow();
++        let display_cols = display_area.cols;
++        let display_rows = display_area.rows;
+ 
+         let change_by_percent = (
+-            if viewport_cols > 0 {
+-                (change_by.0 / viewport_cols as f64) * 100.0
++            if display_cols > 0 {
++                (change_by.0 / display_cols as f64) * 100.0
+             } else {
+                 0.0
+             },
+-            if viewport_rows > 0 {
+-                (change_by.1 / viewport_rows as f64) * 100.0
++            if display_rows > 0 {
++                (change_by.1 / display_rows as f64) * 100.0
+             } else {
+                 0.0
+             },
 --- a/zellij-server/src/unit/screen_tests.rs
 +++ b/zellij-server/src/unit/screen_tests.rs
 @@ -915,6 +915,298 @@
@@ -1042,3 +1251,883 @@
  #[test]
  fn open_new_tab() {
      let size = Size {
+--- a/zellij-server/src/panes/tiled_panes/mod.rs
++++ b/zellij-server/src/panes/tiled_panes/mod.rs
+@@ -50,13 +50,16 @@
+     // if the pane is not on the bottom or right edge on the screen, we need to reserve one space
+     // from its content to leave room for the boundary between it and the next pane (if it doesn't
+     // draw its own frame)
+-    let columns_offset = if position_and_size.x + position_and_size.cols.as_usize() < viewport.cols
++    let columns_offset = if position_and_size.x + position_and_size.cols.as_usize()
++        < viewport.x + viewport.cols
+     {
+         1
+     } else {
+         0
+     };
+-    let rows_offset = if position_and_size.y + position_and_size.rows.as_usize() < viewport.rows {
++    let rows_offset = if position_and_size.y + position_and_size.rows.as_usize()
++        < viewport.y + viewport.rows
++    {
+         1
+     } else {
+         0
+@@ -532,25 +535,44 @@
+             })
+             .collect()
+     }
+-    pub fn non_selectable_pane_geoms_inside_viewport(&self) -> Vec<Viewport> {
+-        self.panes
+-            .values()
+-            .filter_map(|p| {
+-                let geom = p.position_and_size();
+-                // a borderless plugin pane is part of the ui (eg. the tab-bar or the status-bar)
+-                // and so is offset out of the viewport just like a non-selectable pane - we cannot
+-                // rely on selectability alone here, because a plugin only reports it once it has
+-                // loaded, and until then we'd be calculating (and sending to the pty) wrong sizes
+-                // for the other panes in this tab
+-                let is_ui_pane =
+-                    !p.selectable() || (p.borderless() && matches!(p.pid(), PaneId::Plugin(_)));
+-                if is_ui_pane && is_inside_viewport(&self.viewport.borrow(), p) {
+-                    Some(geom.into())
+-                } else {
+-                    None
++    fn update_viewport(&mut self) {
++        // Geometry changes can move borderless UI panes as well as application panes.
++        // Derive the viewport from the display each time, never from its previous offset.
++        let display_viewport: Viewport = (*self.display_area.borrow()).into();
++        let mut viewport = display_viewport;
++        for pane in self.panes.values() {
++            // Plugin selectability is reported asynchronously; borderless plugins are UI
++            // even before that report, or while temporarily accepting keyboard controls.
++            let is_ui_pane = !pane.selectable()
++                || (pane.borderless() && matches!(pane.pid(), PaneId::Plugin(_)));
++            if !is_ui_pane || !is_inside_viewport(&display_viewport, pane) {
++                continue;
++            }
++            let geometry = pane.position_and_size();
++            let columns = geometry.cols.as_usize();
++            let rows = geometry.rows.as_usize();
++            if geometry.x == viewport.x
++                && geometry.x + columns == viewport.x + viewport.cols
++            {
++                if geometry.y == viewport.y {
++                    viewport.y += rows;
++                    viewport.rows -= rows;
++                } else if geometry.y + rows == viewport.y + viewport.rows {
++                    viewport.rows -= rows;
+                 }
+-            })
+-            .collect()
++            }
++            if geometry.y == viewport.y
++                && geometry.y + rows == viewport.y + viewport.rows
++            {
++                if geometry.x == viewport.x {
++                    viewport.x += columns;
++                    viewport.cols -= columns;
++                } else if geometry.x + columns == viewport.x + viewport.cols {
++                    viewport.cols -= columns;
++                }
++            }
++        }
++        *self.viewport.borrow_mut() = viewport;
+     }
+     pub fn first_selectable_pane_id(&self) -> Option<PaneId> {
+         self.panes
+@@ -609,6 +631,7 @@
+     }
+     pub fn set_pane_frames(&mut self, pane_frame_style: PaneFrameStyle) {
+         self.pane_frame_style = pane_frame_style;
++        self.update_viewport();
+         let draws_full_frames = pane_frame_style.draws_full_frames();
+         let draws_titles = pane_frame_style.draws_titles();
+         let single_selectable_tiled_pane = self
+@@ -1968,11 +1991,7 @@
+             },
+         }
+ 
+-        for pane in self.panes.values_mut() {
+-            // TODO: only for the panes whose width/height actually changed
+-            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
+-        }
+-        self.reset_boundaries();
++        self.set_pane_frames(self.pane_frame_style);
+         Ok(pane_size_changed)
+     }
+ 
+@@ -1997,10 +2016,7 @@
+                 .with_context(err_context);
+         }
+ 
+-        for pane in self.panes.values_mut() {
+-            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
+-        }
+-        self.reset_boundaries();
++        self.set_pane_frames(self.pane_frame_style);
+         Ok(())
+     }
+ 
+@@ -3172,10 +3188,7 @@
+ 
+ #[allow(clippy::borrowed_box)]
+ pub fn is_inside_viewport(viewport: &Viewport, pane: &Box<dyn Pane>) -> bool {
+-    let pane_position_and_size = pane.current_geom();
+-    pane_position_and_size.y >= viewport.y
+-        && pane_position_and_size.y + pane_position_and_size.rows.as_usize()
+-            <= viewport.y + viewport.rows
++    pane_geom_is_inside_viewport(viewport, &pane.current_geom())
+ }
+ 
+ pub fn pane_geom_is_inside_viewport(viewport: &Viewport, geom: &PaneGeom) -> bool {
+@@ -3184,3 +3197,43 @@
+         && geom.x >= viewport.x
+         && geom.x + geom.cols.as_usize() <= viewport.x + viewport.cols
+ }
++
++#[cfg(test)]
++mod viewport_geometry_regressions {
++    use super::*;
++    use super::pane_resizer_test_mock::{dim_fixed, spec, MockPane};
++
++    #[test]
++    fn horizontal_ui_panes_stay_outside_the_application_viewport_at_every_width() {
++        for sidebar_width in [10, 38, 79, 80, 81, 120, 150] {
++            let viewport = Viewport {
++                x: sidebar_width,
++                y: 2,
++                cols: 160 - sidebar_width,
++                rows: 30,
++            };
++            let sidebar: Box<dyn Pane> = Box::new(MockPane::from_spec(spec(
++                1, 0, 2, dim_fixed(sidebar_width), dim_fixed(30),
++            )));
++            let terminal: Box<dyn Pane> = Box::new(MockPane::from_spec(spec(
++                2, sidebar_width, 2, dim_fixed(viewport.cols), dim_fixed(30),
++            )));
++            assert!(!is_inside_viewport(&viewport, &sidebar));
++            assert!(is_inside_viewport(&viewport, &terminal));
++        }
++    }
++
++    #[test]
++    fn separator_offsets_use_absolute_right_and_bottom_viewport_edges() {
++        let viewport = Viewport { x: 80, y: 3, cols: 80, rows: 30 };
++        for (x, y, cols, rows, expected) in [
++            (80, 3, 30, 12, (1, 1)),
++            (110, 3, 50, 12, (0, 1)),
++            (80, 15, 30, 18, (1, 0)),
++            (80, 3, 80, 30, (0, 0)),
++        ] {
++            let geometry = spec(1, x, y, dim_fixed(cols), dim_fixed(rows)).geom();
++            assert_eq!(pane_content_offset(&geometry, &viewport), expected);
++        }
++    }
++}
+--- a/zellij-server/src/ui/boundaries.rs
++++ b/zellij-server/src/ui/boundaries.rs
+@@ -510,7 +510,9 @@
+                 let coordinates = Coordinates::new(col, boundary_y_coords);
+                 let symbol_to_add = if col == first_col_coordinates && col != self.viewport.x {
+                     BoundarySymbol::new(boundary_type::TOP_LEFT).color(color)
+-                } else if col == last_col_coordinates - 1 && col != self.viewport.cols - 1 {
++                } else if col == last_col_coordinates - 1
++                    && col != self.viewport.x + self.viewport.cols - 1
++                {
+                     BoundarySymbol::new(boundary_type::TOP_RIGHT).color(color)
+                 } else {
+                     BoundarySymbol::new(boundary_type::HORIZONTAL).color(color)
+@@ -564,7 +566,9 @@
+                 let coordinates = Coordinates::new(col, boundary_y_coords);
+                 let symbol_to_add = if col == first_col_coordinates && col != self.viewport.x {
+                     BoundarySymbol::new(boundary_type::BOTTOM_LEFT).color(color)
+-                } else if col == last_col_coordinates - 1 && col != self.viewport.cols - 1 {
++                } else if col == last_col_coordinates - 1
++                    && col != self.viewport.x + self.viewport.cols - 1
++                {
+                     BoundarySymbol::new(boundary_type::BOTTOM_RIGHT).color(color)
+                 } else {
+                     BoundarySymbol::new(boundary_type::HORIZONTAL).color(color)
+@@ -602,7 +606,7 @@
+         Ok(character_chunks)
+     }
+     fn rect_right_boundary_is_before_screen_edge(&self, rect: &dyn Pane) -> bool {
+-        rect.x() + rect.cols() < self.viewport.cols
++        rect.x() + rect.cols() < self.viewport.x + self.viewport.cols
+     }
+     fn rect_bottom_boundary_is_before_screen_edge(&self, rect: &dyn Pane) -> bool {
+         rect.y() + rect.rows() < self.viewport.y + self.viewport.rows
+@@ -637,8 +641,8 @@
+         rect.y() + rect.rows()
+     }
+     fn rect_bottom_boundary_col_start(&self, rect: &dyn Pane) -> usize {
+-        if rect.x() == 0 {
+-            0
++        if rect.x() == self.viewport.x {
++            self.viewport.x
+         } else {
+             rect.x() - 1
+         }
+--- a/zellij-server/src/tab/layout_applier.rs
++++ b/zellij-server/src/tab/layout_applier.rs
+@@ -21,11 +21,10 @@
+     data::{Palette, Style},
+     input::layout::{FloatingPaneLayout, Run, RunPluginOrAlias, TiledPaneLayout},
+     input::options::PaneFrameStyle,
+-    pane_size::{PaneGeom, Size, SizeInPixels, Viewport},
++    pane_size::{PaneGeom, Size, SizeInPixels},
+ };
+ 
+ pub struct LayoutApplier<'a> {
+-    viewport: Rc<RefCell<Viewport>>, // includes all non-UI panes
+     senders: ThreadSenders,
+     sixel_image_store: Rc<RefCell<SixelImageStore>>,
+     kitty_image_store: Rc<RefCell<KittyImageStore>>,
+@@ -51,7 +50,6 @@
+ 
+ impl<'a> LayoutApplier<'a> {
+     pub fn new(
+-        viewport: &Rc<RefCell<Viewport>>,
+         senders: &ThreadSenders,
+         sixel_image_store: &Rc<RefCell<SixelImageStore>>,
+         kitty_image_store: &Rc<RefCell<KittyImageStore>>,
+@@ -74,7 +72,6 @@
+         explicitly_disable_kitty_keyboard_protocol: bool,
+         blocking_terminal: Option<(u32, NotificationEnd)>,
+     ) -> Self {
+-        let viewport = viewport.clone();
+         let senders = senders.clone();
+         let sixel_image_store = sixel_image_store.clone();
+         let kitty_image_store = kitty_image_store.clone();
+@@ -87,7 +84,6 @@
+         let display_area = display_area.clone();
+         let os_api = os_api.clone();
+         LayoutApplier {
+-            viewport,
+             senders,
+             sixel_image_store,
+             kitty_image_store,
+@@ -230,12 +226,7 @@
+         );
+         pane_applier.finalize_tiled_state();
+ 
+-        LayoutApplier::offset_viewport(
+-            self.viewport.clone(),
+-            self.display_area.clone(),
+-            self.tiled_panes,
+-            self.pane_frame_style,
+-        );
++        self.tiled_panes.set_pane_frames(self.pane_frame_style);
+         Ok(())
+     }
+     pub fn override_tiled_panes_layout_for_existing_panes(
+@@ -323,12 +314,7 @@
+             self.tiled_panes.expand_pane_in_stack(*pane_id);
+         }
+ 
+-        LayoutApplier::offset_viewport(
+-            self.viewport.clone(),
+-            self.display_area.clone(),
+-            self.tiled_panes,
+-            self.pane_frame_style,
+-        );
++        self.tiled_panes.set_pane_frames(self.pane_frame_style);
+         Ok(())
+     }
+     fn close_non_retained_panes(
+@@ -1039,50 +1025,6 @@
+         self.tiled_panes.resize(new_screen_size);
+         Ok(())
+     }
+-    pub fn offset_viewport(
+-        viewport: Rc<RefCell<Viewport>>,
+-        display_area: Rc<RefCell<Size>>,
+-        tiled_panes: &mut TiledPanes,
+-        pane_frame_style: PaneFrameStyle,
+-    ) {
+-        {
+-            // reset viewport before reapplying offset
+-            let mut viewport = viewport.borrow_mut();
+-            *viewport = (*display_area.borrow()).into();
+-        }
+-        let boundary_geoms = tiled_panes.non_selectable_pane_geoms_inside_viewport();
+-        {
+-            // curly braces here is so that we free viewport immediately when we're done
+-            let mut viewport = viewport.borrow_mut();
+-            for position_and_size in boundary_geoms {
+-                if position_and_size.x == viewport.x
+-                    && position_and_size.x + position_and_size.cols == viewport.x + viewport.cols
+-                {
+-                    if position_and_size.y == viewport.y {
+-                        viewport.y += position_and_size.rows;
+-                        viewport.rows -= position_and_size.rows;
+-                    } else if position_and_size.y + position_and_size.rows
+-                        == viewport.y + viewport.rows
+-                    {
+-                        viewport.rows -= position_and_size.rows;
+-                    }
+-                }
+-                if position_and_size.y == viewport.y
+-                    && position_and_size.y + position_and_size.rows == viewport.y + viewport.rows
+-                {
+-                    if position_and_size.x == viewport.x {
+-                        viewport.x += position_and_size.cols;
+-                        viewport.cols -= position_and_size.cols;
+-                    } else if position_and_size.x + position_and_size.cols
+-                        == viewport.x + viewport.cols
+-                    {
+-                        viewport.cols -= position_and_size.cols;
+-                    }
+-                }
+-            }
+-        }
+-        tiled_panes.set_pane_frames(pane_frame_style);
+-    }
+     fn adjust_viewport(&mut self) -> Result<()> {
+         // here we offset the viewport after applying a tiled panes layout
+         // from borderless panes that are on the edges of the
+@@ -1097,12 +1039,7 @@
+             *display_area
+         };
+         self.resize_whole_tab(display_area).context(err_context)?;
+-        LayoutApplier::offset_viewport(
+-            self.viewport.clone(),
+-            self.display_area.clone(),
+-            self.tiled_panes,
+-            self.pane_frame_style,
+-        );
++        self.tiled_panes.set_pane_frames(self.pane_frame_style);
+         Ok(())
+     }
+     fn set_focused_tiled_pane(&mut self, focus_pane_id: Option<PaneId>, client_id: ClientId) {
+--- a/zellij-server/src/tab/unit/layout_applier_tests.rs
++++ b/zellij-server/src/tab/unit/layout_applier_tests.rs
+@@ -598,7 +598,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -684,7 +683,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -771,7 +769,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -857,7 +854,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -943,7 +939,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -1032,7 +1027,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -1117,7 +1111,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -1205,7 +1198,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -1290,7 +1282,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -1375,7 +1366,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -1469,7 +1459,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -1564,7 +1553,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -1673,7 +1661,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -1765,7 +1752,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -1869,7 +1855,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -1974,7 +1959,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -2084,7 +2068,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -2198,7 +2181,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -2288,7 +2270,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -2384,7 +2365,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -2487,7 +2467,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -2596,7 +2575,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -2665,7 +2643,7 @@
+         rows: 50,
+     };
+     let (
+-        viewport,
++        _,
+         senders,
+         sixel_image_store,
+         link_handler,
+@@ -2688,7 +2666,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -2766,7 +2743,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -2866,7 +2842,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -3011,7 +2986,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -3144,7 +3118,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -3283,7 +3256,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -3411,7 +3383,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -3537,7 +3508,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -3668,7 +3638,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -3788,7 +3757,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -3900,7 +3868,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -4014,7 +3981,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -4141,7 +4107,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -4281,7 +4246,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -4425,7 +4389,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -4569,7 +4532,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -4716,7 +4678,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -4850,7 +4811,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -4964,7 +4924,6 @@
+     ) = create_layout_applier_fixtures(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -5090,7 +5049,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -5232,7 +5190,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -5379,7 +5336,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -5479,7 +5435,7 @@
+         rows: 40,
+     };
+     let (
+-        viewport,
++        _,
+         senders,
+         sixel_image_store,
+         link_handler,
+@@ -5504,7 +5460,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -5613,7 +5568,7 @@
+         rows: 40,
+     };
+     let (
+-        viewport,
++        _,
+         senders,
+         sixel_image_store,
+         link_handler,
+@@ -5638,7 +5593,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -5787,7 +5741,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -5946,7 +5899,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -6086,7 +6038,7 @@
+         rows: 40,
+     };
+     let (
+-        viewport,
++        _,
+         senders,
+         sixel_image_store,
+         link_handler,
+@@ -6111,7 +6063,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -6273,7 +6224,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -6407,7 +6357,7 @@
+         rows: 40,
+     };
+     let (
+-        viewport,
++        _,
+         senders,
+         sixel_image_store,
+         link_handler,
+@@ -6432,7 +6382,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -6547,7 +6496,7 @@
+         rows: 40,
+     };
+     let (
+-        viewport,
++        _,
+         senders,
+         sixel_image_store,
+         link_handler,
+@@ -6572,7 +6521,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -6702,7 +6650,7 @@
+         rows: 40,
+     };
+     let (
+-        viewport,
++        _,
+         senders,
+         sixel_image_store,
+         link_handler,
+@@ -6727,7 +6675,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -6852,7 +6799,7 @@
+         rows: 40,
+     };
+     let (
+-        viewport,
++        _,
+         senders,
+         sixel_image_store,
+         link_handler,
+@@ -6877,7 +6824,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -7010,7 +6956,7 @@
+         rows: 40,
+     };
+     let (
+-        viewport,
++        _,
+         senders,
+         sixel_image_store,
+         link_handler,
+@@ -7035,7 +6981,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),
+@@ -7193,7 +7138,6 @@
+     ) = create_layout_applier_fixtures_with_receivers(size);
+ 
+     let mut applier = LayoutApplier::new(
+-        &viewport,
+         &senders,
+         &sixel_image_store,
+         &Rc::new(RefCell::new(KittyImageStore::default())),

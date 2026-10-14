@@ -225,12 +225,20 @@ pub fn width(text: &str) -> usize {
 }
 
 pub fn truncate(text: &str, columns: usize) -> String {
-    let text = clean(text);
-    if width(&text) <= columns {
-        return text.into_owned();
-    }
     if columns == 0 {
         return String::new();
+    }
+    let text = clean(text);
+    // ASCII has no contextual or double-width cells; avoid rescanning every prefix.
+    if text.is_ascii() {
+        return if text.len() <= columns {
+            text.into_owned()
+        } else {
+            format!("{}…", &text[..columns - 1])
+        };
+    }
+    if width(&text) <= columns {
+        return text.into_owned();
     }
     let budget = columns - 1;
     let mut end = 0;
@@ -1486,6 +1494,24 @@ mod tests {
         let legitimate = "日本語 · العربية · π · 👩\u{200d}💻 · ک\u{200c}تاب";
         assert_eq!(clean(legitimate), legitimate);
         assert_eq!(clean("name\u{1b}\n\r\u{7}"), "name");
+    }
+
+    #[test]
+    fn clipped_labels_respect_cell_budgets_and_sanitize_before_slicing() {
+        for (text, columns, expected) in [
+            ("abcdef", 0, ""),
+            ("abcdef", 1, "…"),
+            ("abcdef", 4, "abc…"),
+            ("abcd", 4, "abcd"),
+            ("ab\ncd", 4, "abcd"),
+            ("日本語", 4, "日…"),
+            ("e\u{301}xyz", 3, "e\u{301}x…"),
+            ("👩\u{200d}💻xy", 3, "👩\u{200d}💻…"),
+        ] {
+            let clipped = truncate(text, columns);
+            assert_eq!(clipped, expected);
+            assert!(width(&clipped) <= columns);
+        }
     }
 
     fn identity(id: &str) -> ProjectIdentity {
