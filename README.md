@@ -168,6 +168,8 @@ Named metadata pipe requests connect directly to the requested Zellij socket rat
 | Context | Key | Action |
 | --- | --- | --- |
 | Application | Ctrl+Space | Enter sidebar controls with explicit keyboard focus |
+| Application | Alt+Shift+Right | Split the focused terminal vertically; open the new pane on the right |
+| Application | Alt+Shift+Down | Split the focused terminal horizontally; open the new pane below |
 | Control mode | Ctrl+Space / Esc | Return to the previous application pane in Locked mode |
 | Control mode | Tab / Shift+Tab | Cycle pane focus; leaving the sidebar ends sidebar controls |
 | Any mode | Ctrl+g | Toggle stock Locked mode; locking sidebar navigation returns to the application |
@@ -193,6 +195,10 @@ Named metadata pipe requests connect directly to the requested Zellij socket rat
 | Dialog | Enter / Esc | Submit / cancel |
 
 Other stock Zellij bindings remain available, including resize, move, scroll and session modes. Stock-created tabs and splits appear in the sidebar. A split inherits its tab's workspace; moving to an existing tab adopts that tab's workspace; breaking out to a new tab retains the source workspace. Tab reordering preserves workspace membership. Terminal closure removes its row; held exited panes remain visible and can retain completed protocol records.
+
+Direct split shortcuts work in both Locked application mode and Normal mode, without entering sidebar controls first. New splits are native Zellij panes in the same tab/workspace, focus the new terminal, and remain discoverable by harness/status integration.
+
+The direct shortcuts were exercised through actual Kitty-generated keys in both modes (`target/split-shortcut-proof-2ezjng0u/split-evidence.json`): each right/down action created and focused one correctly positioned native pane, all panes stayed in the original tab/workspace, and an existing controlled OSC working report remained intact. No model turn or global/live-session configuration change was involved.
 
 The private keybinding configuration extends stock Zellij defaults; it does not use `clear-defaults` or import the user's personal Zellij configuration. Stock `Ctrl+g`, pane/tab/resize/move/scroll/session modes and Alt-direction navigation are retained. Ctrl+Space explicitly enters/leaves sidebar controls. Normal-mode overrides are Esc to leave controls and lock, Tab/Shift+Tab to cycle focus, and Ctrl+d to detach. Startup, sidebar activation and control exit select Locked application mode to avoid intercepting application shortcuts; Ctrl+g unlocks the stock bindings. This mode policy is independent of harness reporting. Mouse clicks and hover do not enter sidebar controls; renaming and other edit dialogs require explicit keyboard control.
 
