@@ -306,6 +306,19 @@ mouse_click_through true
 session_serialization false
 show_startup_tips false
 show_release_notes false
+theme "shephrd"
+themes {
+    shephrd {
+        frame_selected {
+            base 108 112 134
+            background 24 24 37
+            emphasis_0 250 179 135
+            emphasis_1 166 227 161
+            emphasis_2 203 166 247
+            emphasis_3 137 180 250
+        }
+    }
+}
 keybinds {
     locked {
         bind "Ctrl Space" { MessagePlugin { name "shephrd-controls"; payload "toggle"; }; }
