@@ -322,9 +322,13 @@ themes {
 keybinds {
     locked {
         bind "Ctrl Space" { MessagePlugin { name "shephrd-controls"; payload "toggle"; }; }
+        bind "Alt Shift Right" { NewPane "Right"; }
+        bind "Alt Shift Down" { NewPane "Down"; }
     }
     normal {
         bind "Ctrl Space" { MessagePlugin { name "shephrd-controls"; payload "toggle"; }; }
+        bind "Alt Shift Right" { NewPane "Right"; }
+        bind "Alt Shift Down" { NewPane "Down"; }
         bind "Esc" { MessagePlugin { name "shephrd-controls"; payload "leave"; }; SwitchToMode "Locked"; }
         bind "Tab" { FocusNextPane; }
         bind "Shift Tab" { FocusPreviousPane; }
