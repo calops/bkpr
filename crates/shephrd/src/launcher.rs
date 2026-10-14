@@ -60,6 +60,14 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
         let wrapper = bin.join("claude");
         private_file(&wrapper, crate::claude::wrapper(program, &bin)?.as_bytes())?;
         fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700))?;
+        for name in ["agy", "antigravity"] {
+            let wrapper = bin.join(name);
+            private_file(
+                &wrapper,
+                crate::agy::wrapper(program, &bin, name)?.as_bytes(),
+            )?;
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700))?;
+        }
         let cwd = env::current_dir().context("locate native launch directory")?;
         let cwd = cwd
             .to_str()
@@ -110,7 +118,7 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
         .env("SHEPHRD_ZELLIJ", zellij);
     if !existing {
         let bin = runtime.join("bin");
-        let inherited_wrapper = env::var_os("SHEPHRD_CLAUDE_WRAPPER_DIR").map(PathBuf::from);
+        let inherited_wrapper = env::var_os("SHEPHRD_HARNESS_WRAPPER_DIR").map(PathBuf::from);
         let mut paths = vec![bin.clone()];
         paths.extend(
             env::split_paths(&env::var_os("PATH").unwrap_or_default())
@@ -121,7 +129,7 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
                 "PATH",
                 env::join_paths(paths).context("construct native session PATH")?,
             )
-            .env("SHEPHRD_CLAUDE_WRAPPER_DIR", bin);
+            .env("SHEPHRD_HARNESS_WRAPPER_DIR", bin);
     }
     if existing {
         client.args(["attach", &zellij_session]);
