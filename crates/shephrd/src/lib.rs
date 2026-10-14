@@ -97,6 +97,7 @@ pub struct Workspace {
     pub name: String,
     pub active_tab_id: String,
     pub projects: Vec<ProjectIdentity>,
+    /// Program status aggregated only from recognized harness members.
     pub status: Status,
     pub attention: Option<Attention>,
 }
@@ -109,6 +110,7 @@ pub struct Pane {
     pub tab_id: String,
     pub name: String,
     pub description: String,
+    /// Recognized harness identity, never an arbitrary OSC application id.
     pub harness: Option<String>,
     pub status: Status,
     pub attention: Option<Attention>,

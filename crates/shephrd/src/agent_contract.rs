@@ -25,8 +25,9 @@ pub struct AgentExecution {
     pub cwd: Option<String>,
 }
 
-pub fn harness_name(harness: &str) -> &str {
-    match harness {
+/// Display name only for a recognized harness, never an arbitrary OSC app id.
+pub fn harness_name(harness: &str) -> Option<&'static str> {
+    Some(match harness {
         "claude" | "claude-code" => "Claude Code",
         "codex" => "Codex",
         "opencode" => "OpenCode",
@@ -37,8 +38,8 @@ pub fn harness_name(harness: &str) -> &str {
         "aider" => "Aider",
         "cline" => "Cline CLI",
         "goose" => "Goose",
-        other => other,
-    }
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

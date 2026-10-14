@@ -171,10 +171,23 @@ impl NativeProgram {
             .max_by_key(|record| record.status().priority())
     }
 
-    fn attention(&self) -> Option<Attention> {
+    fn harness_records(&self, has_process_harness: bool) -> impl Iterator<Item = &ProgramStatus> {
+        self.records.iter().filter(move |record| {
+            record
+                .app
+                .as_deref()
+                .map_or(has_process_harness, |app| harness_name(app).is_some())
+        })
+    }
+
+    fn harness_record(&self, has_process_harness: bool) -> Option<&ProgramStatus> {
+        self.harness_records(has_process_harness)
+            .max_by_key(|record| record.status().priority())
+    }
+
+    fn harness_attention(&self, has_process_harness: bool) -> Option<Attention> {
         Attention::aggregate(
-            self.records
-                .iter()
+            self.harness_records(has_process_harness)
                 .filter(|record| record.status() == Status::Blocked)
                 .map(ProgramStatus::attention),
         )
@@ -194,17 +207,24 @@ impl NativeProgram {
         self.title().map(display_text)
     }
 
-    fn same_display(&self, other: &Self, renamed: bool) -> bool {
+    fn same_display(&self, other: &Self, renamed: bool, has_process_harness: bool) -> bool {
         let (Some(previous), Some(current)) = (self.dominant(), other.dominant()) else {
             return false;
         };
+        let previous_harness = self.harness_record(has_process_harness);
+        let current_harness = other.harness_record(has_process_harness);
         previous.state == current.state
-            && self.attention() == other.attention()
             && previous.kind == current.kind
             && previous.progress == current.progress
             && previous.app == current.app
             && previous.msg == current.msg
             && (renamed || self.title() == other.title())
+            && previous_harness.map(ProgramStatus::status)
+                == current_harness.map(ProgramStatus::status)
+            && previous_harness.and_then(|record| record.app.as_deref())
+                == current_harness.and_then(|record| record.app.as_deref())
+            && self.harness_attention(has_process_harness)
+                == other.harness_attention(has_process_harness)
     }
 
     fn description(&self) -> String {
@@ -550,29 +570,32 @@ impl Model {
             .panes
             .iter()
             .map(|(id, pane)| {
-                let agent = self.agents.get(id);
+                let agent = self
+                    .agents
+                    .get(id)
+                    .filter(|agent| harness_name(&agent.harness).is_some());
                 let program = self.program_status.get(id);
                 let project = pane.cwd.as_deref().and_then(|cwd| self.projects.get(cwd));
                 let record = program.and_then(NativeProgram::dominant);
+                let harness_record =
+                    program.and_then(|program| program.harness_record(agent.is_some()));
+                let harness = harness_record
+                    .and_then(|record| record.app.as_deref())
+                    .or_else(|| agent.map(|agent| agent.harness.as_str()));
                 let reported_name = program
                     .and_then(NativeProgram::label)
                     .or_else(|| {
-                        pane.has_native_title.then(|| {
-                            native_title(
-                                &pane.name,
-                                record
-                                    .and_then(|r| r.app.as_deref())
-                                    .or_else(|| agent.map(|agent| agent.harness.as_str())),
-                            )
-                            .to_owned()
-                        })
+                        pane.has_native_title
+                            .then(|| native_title(&pane.name, harness).to_owned())
                     })
                     .or_else(|| {
                         record
                             .and_then(|r| r.app.as_deref())
-                            .map(|app| harness_name(app).to_owned())
+                            .map(|app| harness_name(app).unwrap_or(app).to_owned())
                     })
-                    .or_else(|| agent.map(|agent| harness_name(&agent.harness).to_owned()));
+                    .or_else(|| {
+                        agent.and_then(|agent| harness_name(&agent.harness).map(str::to_owned))
+                    });
                 Pane {
                     id: format!("terminal_{id}"),
                     terminal_id: format!("terminal_{id}"),
@@ -597,17 +620,22 @@ impl Model {
                             pane.command.join(" ")
                         )
                     },
-                    harness: record
-                        .and_then(|r| r.app.clone())
-                        .or_else(|| agent.map(|agent| agent.harness.clone())),
-                    status: if let Some(record) = record {
+                    harness: harness.map(str::to_owned),
+                    // Generic raw status is retained only on non-harness panes; presentation
+                    // and workspace summaries must gate program status on harness identity.
+                    status: if let Some(record) = harness_record {
                         record.status()
-                    } else if pane.shell && agent.is_none() {
+                    } else if harness.is_some() {
+                        Status::Unknown
+                    } else if let Some(record) = record {
+                        record.status()
+                    } else if pane.shell {
                         Status::Idle
                     } else {
                         Status::Unknown
                     },
-                    attention: program.and_then(NativeProgram::attention),
+                    attention: program
+                        .and_then(|program| program.harness_attention(agent.is_some())),
                     cwd: pane.cwd.clone(),
                     branch: project.and_then(|project| project.branch.clone()),
                     branch_changes: project.and_then(|project| project.branch_changes.clone()),
@@ -656,12 +684,13 @@ impl Model {
                     active_tab_id,
                     projects: projects.into_values().collect(),
                     status: members()
+                        .filter(|pane| pane.harness.is_some())
                         .map(|pane| pane.status)
                         .max_by_key(|status| status.priority())
                         .unwrap_or(Status::Unknown),
                     attention: Attention::aggregate(
                         members()
-                            .filter(|pane| pane.status == Status::Blocked)
+                            .filter(|pane| pane.harness.is_some() && pane.status == Status::Blocked)
                             .map(|pane| pane.attention),
                     ),
                 }
@@ -1065,7 +1094,13 @@ impl Model {
         }
         let program = NativeProgram { records };
         let changed = self.panes.get(&pane_id).is_some_and(|pane| {
-            previous.is_none_or(|previous| !previous.same_display(&program, pane.renamed))
+            let has_process_harness = self
+                .agents
+                .get(&pane_id)
+                .is_some_and(|agent| harness_name(&agent.harness).is_some());
+            previous.is_none_or(|previous| {
+                !previous.same_display(&program, pane.renamed, has_process_harness)
+            })
         });
         self.program_status.insert(pane_id, program);
         Ok(changed)
@@ -1096,15 +1131,14 @@ impl Model {
         // Process discovery supplies identity/CWD only; semantic state remains terminal-owned.
         let mut changed = self.agent_error.is_some();
         for id in self.panes.keys() {
-            if self
-                .program_status
+            let previous = self
+                .agents
                 .get(id)
-                .and_then(NativeProgram::dominant)
-                .is_none_or(|record| record.app.is_none())
-            {
-                changed |= self.agents.get(id).map(|agent| &agent.harness)
-                    != agents.get(id).map(|agent| &agent.harness);
-            }
+                .filter(|agent| harness_name(&agent.harness).is_some());
+            let current = agents
+                .get(id)
+                .filter(|agent| harness_name(&agent.harness).is_some());
+            changed |= previous.map(|agent| &agent.harness) != current.map(|agent| &agent.harness);
         }
         for (id, agent) in &agents {
             if let Some(cwd) = &agent.cwd {
@@ -3616,7 +3650,7 @@ mod tests {
     }
 
     #[test]
-    fn pushed_status_wins_in_flight_inspection_and_survives_execution_exit() {
+    fn generic_pushed_status_is_not_borrowed_by_late_process_identification() {
         let mut model = model();
         model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
         model.observe_roots(BTreeMap::from([(1, 101)]));
@@ -3637,7 +3671,11 @@ mod tests {
                 1_001,
             )
             .unwrap();
-        assert_eq!(model.snapshot(None, 1).panes[0].status, Status::Working);
+        let snapshot = model.snapshot(None, 1);
+        assert_eq!(snapshot.panes[0].harness.as_deref(), Some("claude"));
+        assert_eq!(snapshot.panes[0].status, Status::Unknown);
+        assert_eq!(snapshot.panes[0].attention, None);
+        assert_eq!(snapshot.workspaces[0].status, Status::Unknown);
         model
             .apply_program_status(ProgramStatusUpdate {
                 pane_id: 1,
@@ -3647,7 +3685,8 @@ mod tests {
         model.observe_roots(BTreeMap::new());
         let snapshot = model.snapshot(None, 1);
         assert_eq!(snapshot.panes[0].status, Status::Done);
-        assert_eq!(snapshot.panes[0].harness.as_deref(), Some("cargo"));
+        assert_eq!(snapshot.panes[0].harness, None);
+        assert_eq!(snapshot.workspaces[0].status, Status::Unknown);
     }
 
     #[test]
@@ -3794,7 +3833,10 @@ mod tests {
         inspect_programs(&mut model, vec![next.clone()], vec![cargo], 6_000);
         let snapshot = model.snapshot(None, 1);
         assert_eq!(snapshot.panes[0].name, "Compile project");
-        assert_eq!(snapshot.panes[0].harness.as_deref(), Some("cargo"));
+        assert_eq!(snapshot.panes[0].harness.as_deref(), Some("claude"));
+        assert_eq!(snapshot.panes[0].status, Status::Unknown);
+        assert_eq!(snapshot.panes[0].description, "Compiled successfully");
+        assert_eq!(snapshot.workspaces[0].status, Status::Unknown);
         inspect_programs(&mut model, vec![next], vec![], 7_000);
         assert_eq!(model.snapshot(None, 1).panes[0].status, Status::Unknown);
     }
@@ -3933,5 +3975,241 @@ mod tests {
         assert_eq!(resumed.panes[1].attention, None);
         assert_eq!(resumed.workspaces[0].attention, None);
         assert_eq!(resumed.workspaces[0].status, Status::Working);
+    }
+
+    #[test]
+    fn arbitrary_reporters_keep_metadata_but_never_enter_harness_summaries() {
+        let mut model = model();
+        let mut terminal = pane(1);
+        terminal.title.clear();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![terminal])]));
+        model.observe_cwd(1, "/repo".to_owned());
+        model
+            .projects
+            .insert("/repo".to_owned(), passing_project("head"));
+        let metadata = model.snapshot(None, 1).panes.remove(0);
+        for app in ["cargo", "git", "shell", "unknown-app"] {
+            for state in ["working", "blocked", "error", "done"] {
+                let mut record = program(state, app);
+                record.kind = (state == "blocked").then(|| "permission".to_owned());
+                record.msg = Some("Useful program message".to_owned());
+                model
+                    .apply_program_status(ProgramStatusUpdate {
+                        pane_id: 1,
+                        records: vec![record.clone()],
+                    })
+                    .unwrap();
+                let snapshot = model.snapshot(None, 1);
+                let pane = &snapshot.panes[0];
+                assert_eq!(pane.harness, None, "{app} {state}");
+                assert_eq!(pane.status, record.status());
+                assert_eq!(pane.attention, None);
+                assert_eq!(pane.name, app);
+                assert_eq!(pane.description, "Useful program message");
+                assert_eq!(pane.branch, metadata.branch);
+                assert_eq!(pane.branch_changes, metadata.branch_changes);
+                assert_eq!(pane.project, metadata.project);
+                assert_eq!(pane.ci, metadata.ci);
+                assert_eq!(snapshot.workspaces[0].status, Status::Unknown);
+                assert_eq!(snapshot.workspaces[0].attention, None);
+            }
+        }
+        model
+            .apply_program_status(ProgramStatusUpdate {
+                pane_id: 1,
+                records: vec![program("working", "claude-code")],
+            })
+            .unwrap();
+        let snapshot = model.snapshot(None, 1);
+        let pane = &snapshot.panes[0];
+        assert_eq!(pane.harness.as_deref(), Some("claude-code"));
+        assert_eq!(pane.status, Status::Working);
+        assert_eq!(pane.branch, metadata.branch);
+        assert_eq!(pane.branch_changes, metadata.branch_changes);
+        assert_eq!(pane.project, metadata.project);
+        assert_eq!(pane.ci, metadata.ci);
+    }
+
+    #[test]
+    fn mixed_reports_project_harness_status_independently_of_generic_dominance() {
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
+        let mut generic = program("blocked", "cargo");
+        generic.kind = Some("question".to_owned());
+        generic.title = Some("Compile project".to_owned());
+        generic.msg = Some("Compiler prompt".to_owned());
+        generic.progress = Some(75);
+        let mut harness = program("working", "claude-code");
+        harness.id = "agent".to_owned();
+        for (state, kind, status, attention) in [
+            ("working", None, Status::Working, None),
+            ("idle", None, Status::Idle, None),
+            (
+                "blocked",
+                Some("permission"),
+                Status::Blocked,
+                Some(Attention::Permission),
+            ),
+            ("error", None, Status::Blocked, Some(Attention::Error)),
+        ] {
+            harness.state = state.to_owned();
+            harness.kind = kind.map(str::to_owned);
+            // Keep the generic record last so it remains the raw dominant record
+            // even when both records are blocked.
+            assert!(
+                model
+                    .apply_program_status(ProgramStatusUpdate {
+                        pane_id: 1,
+                        records: vec![harness.clone(), generic.clone()],
+                    })
+                    .unwrap()
+            );
+            let snapshot = model.snapshot(None, 1);
+            assert_eq!(snapshot.panes[0].harness.as_deref(), Some("claude-code"));
+            assert_eq!(snapshot.panes[0].status, status);
+            assert_eq!(snapshot.panes[0].attention, attention);
+            assert_eq!(snapshot.panes[0].name, "Compile project");
+            assert_eq!(snapshot.panes[0].description, "Compiler prompt · 75%");
+            assert_eq!(snapshot.workspaces[0].status, status);
+            assert_eq!(snapshot.workspaces[0].attention, attention);
+        }
+        model.observe_roots(BTreeMap::from([(1, 101)]));
+        inspect(&mut model, vec![execution(1)], 1_000);
+        model
+            .apply_program_status(ProgramStatusUpdate {
+                pane_id: 1,
+                records: vec![generic],
+            })
+            .unwrap();
+        let snapshot = model.snapshot(None, 1);
+        assert_eq!(snapshot.panes[0].harness.as_deref(), Some("claude"));
+        assert_eq!(snapshot.panes[0].status, Status::Unknown);
+        assert_eq!(snapshot.panes[0].attention, None);
+        assert_eq!(snapshot.workspaces[0].status, Status::Unknown);
+        assert_eq!(snapshot.workspaces[0].attention, None);
+    }
+
+    #[test]
+    fn app_less_reports_require_live_recognized_process_identity() {
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
+        model.observe_roots(BTreeMap::from([(1, 101)]));
+        model.observe_command(1, vec!["bash".to_owned()]);
+        let mut anonymous = program("blocked", "claude");
+        anonymous.app = None;
+        anonymous.kind = Some("permission".to_owned());
+        let mut generic = program("error", "cargo");
+        generic.id = "compiler".to_owned();
+        model
+            .apply_program_status(ProgramStatusUpdate {
+                pane_id: 1,
+                records: vec![anonymous.clone(), generic.clone()],
+            })
+            .unwrap();
+        let snapshot = model.snapshot(None, 1);
+        assert_eq!(snapshot.panes[0].harness, None);
+        assert_eq!(snapshot.panes[0].attention, None);
+        assert_eq!(snapshot.workspaces[0].status, Status::Unknown);
+
+        let ticket = model.agent_ticket(5, 1, 1_000).unwrap();
+        assert!(
+            model
+                .apply_agents(
+                    &ticket,
+                    InspectResponse {
+                        executions: vec![execution(1)]
+                    },
+                    1_001,
+                )
+                .unwrap()
+        );
+        let snapshot = model.snapshot(None, 1);
+        assert_eq!(snapshot.panes[0].harness.as_deref(), Some("claude"));
+        assert_eq!(snapshot.panes[0].status, Status::Blocked);
+        assert_eq!(snapshot.panes[0].attention, Some(Attention::Permission));
+        assert_eq!(
+            snapshot.workspaces[0].attention,
+            Some(Attention::Permission)
+        );
+
+        // A new explicit unrelated app must not retain the anonymous harness status.
+        model
+            .apply_program_status(ProgramStatusUpdate {
+                pane_id: 1,
+                records: vec![generic],
+            })
+            .unwrap();
+        let snapshot = model.snapshot(None, 1);
+        assert_eq!(snapshot.panes[0].status, Status::Unknown);
+        assert_eq!(snapshot.panes[0].attention, None);
+        model
+            .apply_program_status(ProgramStatusUpdate {
+                pane_id: 1,
+                records: vec![],
+            })
+            .unwrap();
+        assert_eq!(model.snapshot(None, 1).panes[0].status, Status::Unknown);
+        inspect(&mut model, Vec::new(), 1_500);
+        let snapshot = model.snapshot(None, 1);
+        assert_eq!(snapshot.panes[0].harness, None);
+        assert_eq!(snapshot.panes[0].status, Status::Idle);
+
+        let mut next = execution(1);
+        next.harness = "goose".to_owned();
+        next.identity = "next-birth".to_owned();
+        inspect(&mut model, vec![next], 2_000);
+        let snapshot = model.snapshot(None, 1);
+        assert_eq!(snapshot.panes[0].harness.as_deref(), Some("goose"));
+        assert_eq!(snapshot.panes[0].status, Status::Unknown);
+        assert_eq!(snapshot.panes[0].attention, None);
+    }
+
+    #[test]
+    fn mixed_workspace_ignores_generic_attention_and_shell_idle() {
+        let mut model = model();
+        model.reconcile(
+            &[tab(10, 0)],
+            &manifest(&[(0, vec![pane(1), pane(2), pane(3)])]),
+        );
+        model.observe_roots(BTreeMap::from([(1, 101)]));
+        model.observe_command(3, vec!["bash".to_owned()]);
+        inspect(&mut model, vec![execution(1)], 1_000);
+        let mut generic = program("blocked", "cargo");
+        generic.kind = Some("permission".to_owned());
+        model
+            .apply_program_status(ProgramStatusUpdate {
+                pane_id: 2,
+                records: vec![generic],
+            })
+            .unwrap();
+        let snapshot = model.snapshot(None, 1);
+        assert_eq!(snapshot.panes[0].status, Status::Unknown);
+        assert_eq!(snapshot.panes[1].harness, None);
+        assert_eq!(snapshot.panes[2].status, Status::Idle);
+        assert_eq!(snapshot.workspaces[0].status, Status::Unknown);
+        assert_eq!(snapshot.workspaces[0].attention, None);
+        for state in ["working", "done", "idle"] {
+            let record = program(state, "claude-code");
+            model
+                .apply_program_status(ProgramStatusUpdate {
+                    pane_id: 1,
+                    records: vec![record.clone()],
+                })
+                .unwrap();
+            let snapshot = model.snapshot(None, 1);
+            assert_eq!(snapshot.workspaces[0].status, record.status());
+            assert_eq!(snapshot.workspaces[0].attention, None);
+        }
+        model
+            .apply_program_status(ProgramStatusUpdate {
+                pane_id: 1,
+                records: vec![],
+            })
+            .unwrap();
+        inspect(&mut model, vec![], 2_000);
+        let snapshot = model.snapshot(None, 1);
+        assert!(snapshot.panes.iter().all(|pane| pane.harness.is_none()));
+        assert_eq!(snapshot.workspaces[0].status, Status::Unknown);
+        assert_eq!(snapshot.workspaces[0].attention, None);
     }
 }
