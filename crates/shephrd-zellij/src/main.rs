@@ -1224,6 +1224,8 @@ impl Frontend {
         for row in 0..rows {
             let line = if row == 0 {
                 format!("\u{1b}[1m{}{}", ui::fit(&heading, columns), ui::RESET)
+            } else if row == 1 && status.is_empty() {
+                String::new()
             } else if row == 1 {
                 let color = if !status.is_empty()
                     && (self.error.is_some()
@@ -1272,21 +1274,19 @@ impl Frontend {
                         .as_deref()
                         .is_some_and(|id| selected_group == Some(id)),
                 )
+            } else if row == 2
+                && self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|state| state.workspaces.is_empty())
+            {
+                ui::fit("No workspaces · n to create", columns)
             } else {
-                ui::fit(
-                    if row == 2
-                        && self
-                            .snapshot
-                            .as_ref()
-                            .is_some_and(|state| state.workspaces.is_empty())
-                    {
-                        "No workspaces · n to create"
-                    } else {
-                        ""
-                    },
-                    columns,
-                )
+                String::new()
             };
+            // Each host render starts with a fresh grid. EL0 from column one preserves
+            // Zellij's current background (EL2 drops it), without parsing padded spaces.
+            let line = if line.is_empty() { "\u{1b}[0K" } else { &line };
             write!(
                 output,
                 "\u{1b}[{};1H{}{}{line}{}",
@@ -2108,6 +2108,11 @@ mod tests {
                                 let mut position = parameters.split(';');
                                 row = position.next().unwrap().parse::<usize>().unwrap() - 1;
                                 column = position.next().unwrap().parse::<usize>().unwrap() - 1;
+                            }
+                            'K' => {
+                                assert_eq!(parameters, "0");
+                                assert!(row < rows && column <= columns);
+                                cells[row][column..].fill(' ');
                             }
                             'm' => {}
                             _ => panic!("unexpected sidebar terminal command"),
