@@ -32,9 +32,9 @@ A single left click activates and highlights a workspace or terminal immediately
 
 Workspace and terminal first lines use solid `●` project indicators, not duplicate status circles. Workspace dots use the normal light foreground; pane dots and project labels share an identity-derived six-color palette, stable through branch changes, activity and linked worktrees. Canonical Git common-directory identity distinguishes same-named repositories; colors can repeat because the palette is finite. Non-Git/unknown pane identities remain neutral. Material Design Nerd Font icons at the right edge remain the agent lifecycle indicators: `󰏦` idle, `󰦖` working, `󰯅` permission approval, `󰆆` question, `󰍁` authentication, `󰗖` error, `󰀪` unspecified/mixed attention, `󰗡` done and `󰘥` unknown. Use a Nerd Font. Attention retains red coloring, with mixed or unspecified reasons shown generically. Branch detail rows and explicit `CI` badges are independent of agent state; hover popups retain activity/error descriptions and attention reasons.
 
-Both status and harness glyphs reserve a trailing blank cell for double-width Nerd Font artwork. Harness icons use the Codicon Claude logo (``) and OpenAI logo for Codex (``); omp uses Nerd Font pi (`󰏿`), OpenCode code tags (`󰅴`), Antigravity a rocket, and other applications an outlined robot (`󱙺`). The latter symbols are semantic fallbacks, not brand logos. The original native terminal-emitter smoke verified logo/name separation and the trailing status cell in `target/npb_pkotk8-evidence/`.
+Both status and harness glyphs reserve a trailing blank cell for double-width Nerd Font artwork. Claude, Codex and Copilot use their available Nerd Font brand glyphs; omp uses pi. OpenCode code tags, Antigravity's rocket, Cursor's pointer, Aider's pencil, Cline's robot and Goose's waterfowl are semantic icon fallbacks, not brand logos. Other applications use an outlined robot. The original native terminal-emitter smoke verified logo/name separation and the trailing status cell in `target/npb_pkotk8-evidence/`.
 
-Harness logos use distinct palette colors: Claude peach, omp purple (`#cba6f7`), Codex green, OpenCode blue and Antigravity teal (`#94e2d5`); unknown harnesses use normal text color. Agent titles use the normal foreground instead of purple, while descriptions remain muted. omp native-title decoration (`π` plus idle/attention/static separators or braille/pulse/ASCII spinner frames) is stripped for display so only the task label remains. Explicit shephrd renames and structured OSC 7501 titles are not stripped; the raw native title remains in the model and never determines status.
+Harness icons use palette colors: Claude peach, omp purple (`#cba6f7`), Codex/Aider green, OpenCode blue, Antigravity teal, Copilot lavender, Cline cyan and Goose yellow. Cursor uses the normal light foreground rather than muted gray. Agent titles use normal text color, while descriptions remain muted. omp native-title decoration (`π` plus idle/attention/static separators or braille/pulse/ASCII spinner frames) is stripped for display so only the task label remains. Explicit shephrd renames and structured OSC 7501 titles are not stripped; the raw native title remains in the model and never determines status.
 
 The presentation refinement passed an actual private terminal-emitter PTY smoke: all five logo colors, normal title foreground and all supported omp prefix/spinner variants were captured as rendered cells across native states. Evidence is in `target/smoke/colors-k2uvqngk-evidence/`. This verifies the protocol/UI surface, not genuine turns in every harness. All 44 workspace tests and host/WASI Clippy passed; the debug native and WASM builds passed.
 
@@ -51,6 +51,29 @@ The sidebar uses one Nerd Font `` (`nf-oct-workflow`) colored by CI status, w
 Verification: `target/compact-ui-proof-_q6i4591/evidence.json` records actual Kitty compact rows, adjacent branch totals, a single colored workflow icon, physical Ctrl+Shift+click opening exact PR/check URLs through a private recorder, unlinked chrome and zero whole-display clears across hovered harness transitions. `target/stable-ci-native-rif78dn9/acceptance.json` records three real foreground process birth/exit cycles with unchanged Git/CI/watch tickets and exactly one private provider query, followed by genuine HEAD invalidation without violating the request budget. The provider/model signals were controlled fixtures, not live GitHub/model results. All 115 workspace tests, three native overlay regressions and host/WASI Clippy passed; private fixtures/processes were removed. A minimal Bash fixture separately exposed stale shell/harness labels on return; that is not resolved by the directory-CI fix.
 
 Each sidebar-created terminal occupies its own native Zellij tab, grouped by logical workspace. `n` opens a new workspace in a full application-area view; `N` creates another terminal in the selected workspace in another full application-area view. Both use a resizable sidebar and one full-height application terminal, never a focus-dependent split. Selecting an existing local terminal switches to it rather than duplicating it. Explicit stock splits remain available.
+
+### Harness coverage and OSC reporting
+
+Process recognition covers ten practical CLI targets, not a measured global popularity ranking. Native and Nix-wrapped commands are supported, along with documented Node/Bun entrypoints and Aider's Python entrypoint/module. Cursor's packaged Node launcher is recognized through its installation path, including `--use-system-ca`; an arbitrary program named `agent`, a generic `index.js`, or a harness name in prompt arguments is not sufficient.
+
+Upstream reporting capabilities below were checked on **2026-10-14**. Recognition does not imply semantic status support. Shephrd consumes generic OSC 7501 for lifecycle/attention; progress, window titles, clipboard sequences and notifications are not substitutes.
+
+| Harness | Detected CLI | Current reporting and verified pending work |
+| --- | --- | --- |
+| Claude Code | `claude`, `claude-code` | Native **OSC 7501**, released in [2.1.295](https://github.com/anthropics/claude-code/releases/tag/v2.1.295). Existing launch-local supplementation is for display titles only. |
+| Codex | `codex` | **OSC 7501 in released [0.163.0-alpha.12](https://github.com/openai/codex/releases/tag/rust-v0.163.0-alpha.12)**, not stable [0.162.1](https://github.com/openai/codex/releases/tag/rust-v0.162.1). [The alpha producer](https://github.com/openai/codex/blob/rust-v0.163.0-alpha.12/codex-rs/tui/src/terminal_program_status.rs) reports idle/working/blocked and clear, without message/title/progress fields. |
+| OpenCode | `opencode` | Terminal titles exist; semantic **OSC 7501 [PR #54560](https://github.com/anomalyco/opencode/pull/54560) remains open**, not released support. |
+| omp | `omp` | Native **OSC 7501**, default-on `terminal.programStatus` since [18.8.7](https://github.com/can1357/oh-my-pi/releases/tag/v18.8.7), plus separate progress/title channels. Upstream Pi is a different product and is not identified as omp. |
+| Antigravity | `agy`, `antigravity` | Official [title](https://antigravity.google/docs/cli/title) and statusline customization APIs; no documented OSC 7501 producer located. The title docs do not specify an OSC selector. |
+| Cursor Agent | `cursor-agent`, official `agent` launcher | Optional [terminal-title status indicators](https://cursor.com/docs/cli/reference/configuration); no documented OSC 7501 producer located. The docs do not specify the title's OSC selector. |
+| GitHub Copilot CLI | `copilot` | Default-on **OSC 9;4 progress** and optional terminal notifications, not semantic OSC 7501; see [configuration](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference) and [OSC 777 notification release](https://github.com/github/copilot-cli/blob/main/changelog.md#1088---2026-09-22). |
+| Aider | `aider`, `python -m aider` | [OS notifications/BEL](https://aider.chat/docs/usage/notifications.html), not a located OSC 7501 producer. |
+| Cline CLI | `cline` | Native [terminal title updates](https://github.com/cline/cline/blob/main/apps/cli/src/tui/utils/terminal-title.ts); no OSC 7501 producer located. Its OSC 52 clipboard support is unrelated to agent status. |
+| Goose | `goose` | Opt-in [BEL notifications](https://github.com/aaif-goose/goose/blob/main/crates/goose-cli/src/session/output.rs); OSC 7501 is an [open feature request #12822](https://github.com/aaif-goose/goose/issues/12822), not an implemented or scheduled release. |
+
+A merged change in an alpha is not stable availability, and an open request/PR is not a release commitment. No stable Codex release date was established by these sources. omp's extension-UI dialog reporting also has a [pending correction](https://github.com/can1357/oh-my-pi/pull/15113); do not assume every custom dialog emits blocked status. This coverage adds recognition and presentation only: no new status adapter, hook, pane parsing, package upgrade or polling.
+
+Recognition was exercised through 20 real foreground-PTY process-signature fixtures (`target/harness-recognition-proof-b0fikndt/evidence.json`), covering all ten identities, Nix/cached executable names, packaged JavaScript launchers, Aider's Python script/module and unrelated-program rejection. Actual Kitty sidebar verification for the five added identities is in `target/split-shortcut-proof-2ezjng0u/harness-ui-evidence.json`: icons/colors, full popup names and application focus were checked, and every non-reporting fixture remained unknown rather than becoming artificially working/idle. These are controlled process fixtures, not authenticated third-party harness turns. All 172 workspace tests, host/WASI Clippy and debug native/WASM builds passed.
 
 ### Claude Code
 
@@ -342,7 +365,7 @@ The earlier event-driven latency smoke used a private 160×48 Linux PTY, ordinar
 
 ## Current limitations
 
-Generic OSC 7501 reports work for any emitting local application. Claude and omp (18.8.7 or newer) use their built-in producers. Non-reporting agents remain unknown with process/CWD identification only. Antigravity (`agy` or `antigravity`, including Nix-wrapped executables) is recognized and displayed with a teal rocket, but has no hook or status adapter. Claude's native-session wrapper supplements display titles only; semantic lifecycle extensions and rendered-screen fallbacks remain absent. Upstream Pi, Codex, OpenCode and Antigravity integrations remain selected future work.
+Generic OSC 7501 reports work for any emitting local application. Claude and omp have released native producers; Codex's checked alpha also emits the generic protocol, while stable availability and other harness capabilities are listed above. All ten selected harnesses are recognized independently of status transport. Non-reporting agents remain unknown with process/CWD identification and available display titles only. Claude's native-session wrapper supplements display titles only; no new harness-specific status adapters, semantic lifecycle extensions or rendered-screen fallbacks are introduced.
 
 Unicode names work through paste. Stock Zellij 0.45.1 plugin key decoding still constrains typed non-Latin dialog input; this cutover does not fix it. Notification passthrough remains required but deferred.
 
@@ -350,7 +373,7 @@ Remote sessions and saved-machine profiles are not implemented.
 
 ## Product direction
 
-Native local ownership, workspace/sidebar state and generic OSC program status are implemented. Claude and omp use native OSC only; additional integrations and the remote transport redesign remain outstanding.
+Native local ownership, workspace/sidebar state, ten-harness recognition and generic OSC program status are implemented. Semantic coverage follows each harness's actual native producer rather than being inferred from its name, title or progress indicator. Additional adapters and remote transport redesign remain separate future work.
 
 - Keep stock Zellij bindings until the full feature set is defined.
 - Zellij detach persistence is sufficient; PTYs need not survive termination of the Zellij server.
@@ -363,7 +386,7 @@ Native local ownership, workspace/sidebar state and generic OSC program status a
 
 ### Local feature contract
 
-Ownership/sidebar behavior and generic OSC program status are implemented. Claude and omp use their built-in OSC producers. The broader multi-agent requirements below remain agreed scope, not a claim that every selected integration exists.
+Ownership/sidebar behavior, ten-harness recognition and generic OSC program status are implemented. Native OSC 7501 producers provide semantic state; recognizing a harness without that producer does not invent working, blocked or completed status. The integration requirements below retain this distinction.
 
 **Ownership and terminal behavior**
 
@@ -384,7 +407,7 @@ Ownership/sidebar behavior and generic OSC program status are implemented. Claud
 
 - Independently implement agent identification, task descriptions and working/blocked/done/idle/unknown state, including workspace status aggregation and inactive-terminal updates.
 - Collect semantic state solely through OSC 7501. Claude and omp use native lifecycle producers; the Claude launch-local hook supplements only display titles through OSC 2. Live native OSC 0/2 titles may supply display labels, but never semantic activity. Process identity/CWD discovery is separate from semantic state. Protocol records are terminal-owned, with done/error retained according to protocol lifetime. Do not infer state from rendered UI, historical transcripts, application titles or process presence.
-- Selected integration targets are Claude Code, Pi/omp, Codex, OpenCode and Antigravity. Claude is required and the first priority. A Claude-focused initial cutover is explicitly acceptable if the other integrations materially complicate it; that scope reduction must be stated, not implied.
+- Selected recognition targets are Claude Code, Codex, OpenCode, omp, Antigravity, Cursor Agent, GitHub Copilot CLI, Aider, Cline CLI and Goose. Preserve independent identity for upstream Pi rather than treating it as omp; it is not one of these ten recognition targets. The capability table above distinguishes native semantic status from recognition-only coverage.
 
 **Boundaries**
 

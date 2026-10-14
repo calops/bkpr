@@ -32,6 +32,11 @@ pub fn harness_name(harness: &str) -> &str {
         "opencode" => "OpenCode",
         "omp" => "omp",
         "agy" | "antigravity" => "Antigravity",
+        "cursor" | "cursor-agent" => "Cursor Agent",
+        "copilot" | "copilot-cli" | "github-copilot" => "GitHub Copilot CLI",
+        "aider" => "Aider",
+        "cline" => "Cline CLI",
+        "goose" => "Goose",
         other => other,
     }
 }

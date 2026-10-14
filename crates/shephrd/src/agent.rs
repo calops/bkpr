@@ -36,35 +36,141 @@ fn bounded_read(mut reader: impl Read, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn recognize(executable: &Path, arguments: &[OsString]) -> Option<&'static str> {
-    let basename = executable.file_name()?.to_str()?;
-    if matches!(
-        basename,
-        "claude" | "claude-code" | ".claude-wrapped" | "claude.exe"
-    ) {
-        return Some("claude");
-    }
-    if matches!(basename, "node" | "nodejs" | "bun") {
-        let script = arguments.get(1)?.to_str()?;
-        if script.ends_with("/@anthropic-ai/claude-code/cli.js") {
-            return Some("claude");
+fn executable_name(executable: &Path) -> Option<&str> {
+    let name = executable.file_name()?.to_str()?;
+    Some(
+        name.strip_prefix('.')
+            .and_then(|name| name.strip_suffix("-wrapped"))
+            .unwrap_or(name),
+    )
+}
+
+fn is_python_runtime(name: &str) -> bool {
+    matches!(name, "python" | "python3")
+        || name.strip_prefix("python3.").is_some_and(|minor| {
+            !minor.is_empty() && minor.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn js_entrypoint(arguments: &[OsString]) -> Option<&str> {
+    let mut arguments = arguments.iter().skip(1);
+    while let Some(argument) = arguments.next() {
+        let argument = argument.to_str()?;
+        match argument {
+            "--" => return arguments.next()?.to_str(),
+            "--use-system-ca"
+            | "--no-warnings"
+            | "--no-deprecation"
+            | "--enable-source-maps"
+            | "--experimental-strip-types"
+            | "--inspect"
+            | "--inspect-brk" => {}
+            "--require"
+            | "-r"
+            | "--import"
+            | "--loader"
+            | "--experimental-loader"
+            | "--conditions"
+            | "-C"
+            | "--title"
+            | "--env-file"
+            | "--env-file-if-exists" => {
+                arguments.next()?;
+            }
+            option if option.starts_with("--eval=") || option.starts_with("--print=") => {
+                return None;
+            }
+            option if option.starts_with("--") && option.contains('=') => {}
+            option if option.starts_with('-') => return None,
+            script => return Some(script),
         }
     }
-    match basename {
-        "codex" | ".codex-wrapped" => Some("codex"),
-        "opencode" | ".opencode-wrapped" => Some("opencode"),
-        "omp" | ".omp-wrapped" => Some("omp"),
-        "agy" | "antigravity" | ".agy-wrapped" | ".antigravity-wrapped" => Some("agy"),
+    None
+}
+
+fn recognize_js(script: &str) -> Option<&'static str> {
+    if script.ends_with("/@anthropic-ai/claude-code/cli.js") {
+        Some("claude")
+    } else if script.ends_with("/@github/copilot/npm-loader.js") {
+        Some("copilot")
+    } else if script.ends_with("/cline/bin/cline") {
+        Some("cline")
+    } else if script.ends_with("/share/cursor-agent/index.js")
+        || (Path::new(script)
+            .file_name()
+            .is_some_and(|name| name == "index.js")
+            && Path::new(script)
+                .parent()
+                .and_then(Path::parent)
+                .is_some_and(|parent| {
+                    parent.file_name().is_some_and(|name| name == "versions")
+                        && parent
+                            .parent()
+                            .and_then(Path::file_name)
+                            .is_some_and(|name| name == "cursor-agent")
+                }))
+    {
+        Some("cursor")
+    } else {
+        None
+    }
+}
+
+fn recognize_python(arguments: &[OsString]) -> Option<&'static str> {
+    let mut arguments = arguments.iter().skip(1);
+    while let Some(argument) = arguments.next() {
+        let argument = argument.to_str()?;
+        match argument {
+            "-m" => {
+                return matches!(arguments.next()?.to_str()?, "aider" | "aider.main")
+                    .then_some("aider");
+            }
+            "-u" | "-B" | "-E" | "-I" | "-s" | "-S" | "-P" => {}
+            "-X" | "-W" => {
+                arguments.next()?;
+            }
+            option if option.starts_with("-X") || option.starts_with("-W") => {}
+            option if option.starts_with('-') && option != "--" => return None,
+            script => {
+                let script = if script == "--" {
+                    arguments.next()?.to_str()?
+                } else {
+                    script
+                };
+                return Path::new(script)
+                    .file_name()
+                    .is_some_and(|name| name == "aider" || name == ".aider-wrapped")
+                    .then_some("aider");
+            }
+        }
+    }
+    None
+}
+
+fn recognize(executable: &Path, arguments: &[OsString]) -> Option<&'static str> {
+    let name = executable_name(executable)?;
+    match name {
+        "claude" | "claude-code" | "claude.exe" => Some("claude"),
+        "codex" => Some("codex"),
+        "opencode" => Some("opencode"),
+        "omp" => Some("omp"),
+        "agy" | "antigravity" => Some("agy"),
+        "cursor-agent" => Some("cursor"),
+        "copilot" => Some("copilot"),
+        "aider" => Some("aider"),
+        "cline" | ".cline" => Some("cline"),
+        "goose" => Some("goose"),
+        "node" | "nodejs" | "bun" => recognize_js(js_entrypoint(arguments)?),
+        runtime if is_python_runtime(runtime) => recognize_python(arguments),
         _ => None,
     }
 }
 
 fn recognize_process(pid: i32) -> Result<Option<&'static str>> {
     let executable = platform::executable(pid)?;
-    let arguments = if matches!(
-        executable.file_name().and_then(|name| name.to_str()),
-        Some("node" | "nodejs" | "bun")
-    ) {
+    let arguments = if executable_name(&executable)
+        .is_some_and(|name| matches!(name, "node" | "nodejs" | "bun") || is_python_runtime(name))
+    {
         platform::arguments(pid)?
     } else {
         Vec::new()
@@ -639,5 +745,85 @@ mod tests {
             ),
             None
         );
+    }
+
+    fn recognize_arguments(executable: &str, arguments: &[&str]) -> Option<&'static str> {
+        let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+        recognize(Path::new(executable), &arguments)
+    }
+
+    #[test]
+    fn packaged_runtime_entrypoints_survive_wrappers_and_runtime_options() {
+        assert_eq!(
+            recognize_arguments("/bin/.copilot-wrapped", &[]),
+            Some("copilot")
+        );
+        assert_eq!(
+            recognize_arguments("/npm/cline/bin/.cline", &[]),
+            Some("cline")
+        );
+        for script in [
+            "/nix/store/hash-cursor-agent/share/cursor-agent/index.js",
+            "/home/user/.local/share/cursor-agent/versions/2026.10.01/index.js",
+        ] {
+            assert_eq!(
+                recognize_arguments("/bin/node", &["agent", "--use-system-ca", script]),
+                Some("cursor")
+            );
+        }
+        assert_eq!(
+            recognize_arguments(
+                "/bin/node",
+                &[
+                    "node",
+                    "--no-warnings",
+                    "/npm/@github/copilot/npm-loader.js"
+                ]
+            ),
+            Some("copilot")
+        );
+        assert_eq!(
+            recognize_arguments("/bin/node", &["node", "/npm/cline/bin/cline"]),
+            Some("cline")
+        );
+        assert_eq!(
+            recognize_arguments("/bin/python3.14", &["python", "-u", "/venv/bin/aider"]),
+            Some("aider")
+        );
+        assert_eq!(
+            recognize_arguments("/bin/python3", &["python", "-X", "utf8", "-m", "aider"]),
+            Some("aider")
+        );
+    }
+
+    #[test]
+    fn prompt_arguments_and_ambiguous_process_names_do_not_identify_harnesses() {
+        let claude = "/npm/@anthropic-ai/claude-code/cli.js";
+        for arguments in [
+            vec!["node", "--eval", "void 0", claude],
+            vec!["node", "--eval=void 0", claude],
+            vec!["node", "--title", claude, "/tmp/ordinary.js"],
+            vec!["node", "/tmp/ordinary.js", claude],
+            vec!["node", "/tmp/index.js", "cursor-agent"],
+            vec!["node", "/tmp/cursor-agent/index.js"],
+            vec!["node", "--require", claude],
+        ] {
+            assert_eq!(recognize_arguments("/bin/node", &arguments), None);
+        }
+        assert_eq!(
+            recognize_arguments("/bin/agent", &["cursor-agent", "copilot", "aider"]),
+            None
+        );
+        assert_eq!(
+            recognize_arguments("/bin/.copilot-wrapped-other", &[]),
+            None
+        );
+        for arguments in [
+            vec!["python", "-c", "import aider"],
+            vec!["python", "-m", "ordinary_module", "aider"],
+            vec!["python", "/tmp/ordinary.py", "/venv/bin/aider"],
+        ] {
+            assert_eq!(recognize_arguments("/bin/python3.14", &arguments), None);
+        }
     }
 }
