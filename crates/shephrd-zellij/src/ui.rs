@@ -835,12 +835,17 @@ fn status_icon(status: Status, attention: Option<Attention>) -> &'static str {
 
 fn harness_icon(harness: &str) -> &'static str {
     match harness {
-        "claude" | "claude-code" => "\u{ec82}", // nf-cod-claude
-        "omp" => "\u{f03ff}",                   // nf-md-pi
-        "codex" => "\u{ec81}",                  // nf-cod-openai
-        "opencode" => "\u{f0174}",              // nf-md-code_tags
-        "agy" | "antigravity" => "\u{f0463}",   // nf-md-rocket
-        _ => "\u{f167a}",                       // nf-md-robot_outline
+        "claude" | "claude-code" => "\u{ec82}",   // nf-cod-claude
+        "omp" => "\u{f03ff}",                     // nf-md-pi
+        "codex" => "\u{ec81}",                    // nf-cod-openai
+        "opencode" => "\u{f0174}",                // nf-md-code_tags
+        "agy" | "antigravity" => "\u{f0463}",     // nf-md-rocket
+        "cursor" | "cursor-agent" => "\u{f01bf}", // nf-md-cursor_default_outline
+        "copilot" | "copilot-cli" | "github-copilot" => "\u{ec1e}", // nf-cod-copilot
+        "aider" => "\u{f03eb}",                   // nf-md-pencil
+        "cline" => "\u{f06a9}",                   // nf-md-robot
+        "goose" => "\u{f01e5}",                   // nf-md-duck
+        _ => "\u{f167a}",                         // nf-md-robot_outline
     }
 }
 
@@ -851,6 +856,11 @@ fn harness_color(harness: &str) -> &'static str {
         "codex" => "\u{1b}[38;2;166;227;161m",
         "opencode" => "\u{1b}[38;2;137;180;250m",
         "agy" | "antigravity" => "\u{1b}[38;2;148;226;213m",
+        "cursor" | "cursor-agent" => TEXT,
+        "copilot" | "copilot-cli" | "github-copilot" => "\u{1b}[38;2;180;190;254m",
+        "aider" => "\u{1b}[38;2;166;227;161m",
+        "cline" => "\u{1b}[38;2;137;220;235m",
+        "goose" => "\u{1b}[38;2;249;226;175m",
         _ => TEXT,
     }
 }
