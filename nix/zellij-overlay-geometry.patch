@@ -331,7 +331,7 @@
          let old_value = self.web_sharing;
 --- a/zellij-server/src/tab/unit/tab_integration_tests.rs
 +++ b/zellij-server/src/tab/unit/tab_integration_tests.rs
-@@ -1412,6 +1412,266 @@
+@@ -1412,6 +1412,384 @@
  }
  
  #[test]
@@ -384,6 +384,9 @@
 +        assert!(!sidebar.is_selectable);
 +        assert_eq!((sidebar.pane_x, sidebar.pane_y), (0, 0));
 +        assert_eq!(sidebar.pane_rows, size.rows);
++        assert_eq!((sidebar.pane_content_x, sidebar.pane_content_y), (0, 0));
++        assert_eq!(sidebar.pane_content_columns + 1, sidebar.pane_columns);
++        assert_eq!(sidebar.pane_content_rows, sidebar.pane_rows);
 +        assert_eq!((viewport.x, viewport.y), (sidebar_right, 0));
 +        assert_eq!(
 +            (viewport.cols, viewport.rows),
@@ -439,6 +442,121 @@
 +        tab.resize_whole_tab(size).unwrap();
 +        assert_geometry(&tab, size);
 +    }
++}
++
++#[test]
++fn viewport_geometry_regressions_plain_mouse_drag_borderless_sidebar_gutter() {
++    let size = Size {
++        cols: 200,
++        rows: 30,
++    };
++    let layout = r#"
++        layout {
++            pane split_direction="vertical" {
++                pane size="20%" borderless=true {
++                    plugin location="zellij:strider"
++                }
++                pane focus=true
++            }
++        }
++    "#;
++    let (tiled_layout, floating_layout) =
++        Layout::from_kdl(layout, Some("viewport-mouse.kdl".into()), None, None)
++            .unwrap()
++            .template
++            .unwrap();
++    let mut plugin_ids = HashMap::new();
++    plugin_ids.insert(
++        RunPluginOrAlias::from_url("zellij:strider", &None, None, None).unwrap(),
++        vec![1],
++    );
++    let mut tab = create_new_tab_with_swap_layouts(
++        size,
++        ModeInfo::default(),
++        (vec![], vec![]),
++        Some((
++            tiled_layout,
++            floating_layout,
++            vec![(1, None)],
++            vec![],
++            plugin_ids,
++        )),
++        false,
++        false,
++    );
++    tab.set_pane_frames(PaneFrameStyle::None);
++    tab.set_pane_selectable(PaneId::Plugin(1), false);
++
++    let assert_geometry = |tab: &Tab| {
++        let sidebar = tab.get_pane_info(PaneId::Plugin(1)).unwrap();
++        let terminal = tab.get_pane_info(PaneId::Terminal(1)).unwrap();
++        let viewport = tab.viewport.borrow();
++        let sidebar_right = sidebar.pane_x + sidebar.pane_columns;
++        assert!(!sidebar.is_selectable);
++        assert_eq!((sidebar.pane_x, sidebar.pane_y), (0, 0));
++        assert_eq!(sidebar.pane_rows, size.rows);
++        assert_eq!((sidebar.pane_content_x, sidebar.pane_content_y), (0, 0));
++        assert_eq!(sidebar.pane_content_columns + 1, sidebar.pane_columns);
++        assert_eq!(sidebar.pane_content_rows, sidebar.pane_rows);
++        assert_eq!((viewport.x, viewport.y), (sidebar_right, 0));
++        assert_eq!(
++            (viewport.cols, viewport.rows),
++            (size.cols - sidebar_right, size.rows)
++        );
++        assert_eq!(viewport.x + viewport.cols, size.cols);
++        assert_eq!(
++            (terminal.pane_x, terminal.pane_y),
++            (viewport.x, viewport.y)
++        );
++        assert_eq!(
++            (terminal.pane_columns, terminal.pane_rows),
++            (viewport.cols, viewport.rows)
++        );
++        assert_eq!(
++            (terminal.pane_content_x, terminal.pane_content_y),
++            (terminal.pane_x, terminal.pane_y)
++        );
++        assert_eq!(
++            (terminal.pane_content_columns, terminal.pane_content_rows),
++            (terminal.pane_columns, terminal.pane_rows)
++        );
++        assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(1)));
++        let gutter = Position::new(5, (sidebar_right - 1).try_into().unwrap());
++        let pane = tab.tiled_panes.get_pane(PaneId::Plugin(1)).unwrap();
++        assert!(pane.position_is_on_frame(&gutter));
++        let content = Position::new(5, (sidebar_right - 2).try_into().unwrap());
++        assert!(!pane.position_is_on_frame(&content));
++        sidebar.pane_columns
++    };
++    let initial_width = assert_geometry(&tab);
++    // Each drag starts on the current gutter, without first clicking a plugin row.
++    // Cross the old startup viewport edge in both directions, then repeat wider.
++    for delta in [20isize, -30, 70, -20] {
++        let before = assert_geometry(&tab);
++        let gutter = Position::new(5, (before - 1).try_into().unwrap());
++        let target_column = (before as isize - 1 + delta) as usize;
++        let target = Position::new(5, target_column.try_into().unwrap());
++        tab.handle_mouse_event(&MouseEvent::new_left_press_event(gutter), 1)
++            .unwrap();
++        assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(1)));
++        tab.handle_mouse_event(&MouseEvent::new_left_motion_event(target), 1)
++            .unwrap();
++        let after_motion = assert_geometry(&tab);
++        let expected_width = (before as isize + delta) as usize;
++        assert!(
++            after_motion.abs_diff(expected_width) <= 2,
++            "sidebar width {after_motion} should follow pointer to {expected_width}"
++        );
++        if delta > 0 {
++            assert!(after_motion > before);
++        } else {
++            assert!(after_motion < before);
++        }
++        tab.handle_mouse_event(&MouseEvent::new_left_release_event(target), 1)
++            .unwrap();
++        assert_eq!(assert_geometry(&tab), after_motion);
++    }
++    assert!(assert_geometry(&tab) > initial_width);
 +}
 +
 +#[test]
@@ -1343,7 +1461,33 @@
          let draws_full_frames = pane_frame_style.draws_full_frames();
          let draws_titles = pane_frame_style.draws_titles();
          let single_selectable_tiled_pane = self
-@@ -1968,11 +1991,7 @@
+@@ -670,10 +693,21 @@
+                 }
+             } else if draws_full_frames && !pane.borderless() {
+                 pane.set_content_offset(Offset::frame(1));
+-            } else if draws_full_frames && pane.borderless() {
+-                pane.set_content_offset(Offset::default());
+-            } else if !is_inside_viewport(pane_viewport, pane) {
+-                pane.set_content_offset(Offset::default());
++            } else if (draws_full_frames && pane.borderless())
++                || !is_inside_viewport(pane_viewport, pane)
++            {
++                let geometry = pane.current_geom();
++                // Keep the shared boundary beside left-edge UI out of its paintable
++                // content. The native frame hit-test uses this same reserved cell.
++                let right = usize::from(
++                    !draws_full_frames
++                        && geometry.x < viewport.x
++                        && geometry.x + geometry.cols.as_usize() == viewport.x,
++                );
++                pane.set_content_offset(Offset {
++                    right,
++                    ..Offset::default()
++                });
+             } else {
+                 let mut position_and_size = pane.current_geom();
+                 let is_stacked = position_and_size.is_stacked();
+@@ -1968,11 +2002,7 @@
              },
          }
  
@@ -1356,7 +1500,7 @@
          Ok(pane_size_changed)
      }
  
-@@ -1997,10 +2016,7 @@
+@@ -1997,10 +2027,7 @@
                  .with_context(err_context);
          }
  
@@ -1368,7 +1512,7 @@
          Ok(())
      }
  
-@@ -3172,10 +3188,7 @@
+@@ -3172,10 +3199,7 @@
  
  #[allow(clippy::borrowed_box)]
  pub fn is_inside_viewport(viewport: &Viewport, pane: &Box<dyn Pane>) -> bool {
@@ -1380,7 +1524,7 @@
  }
  
  pub fn pane_geom_is_inside_viewport(viewport: &Viewport, geom: &PaneGeom) -> bool {
-@@ -3184,3 +3197,43 @@
+@@ -3184,3 +3208,43 @@
          && geom.x >= viewport.x
          && geom.x + geom.cols.as_usize() <= viewport.x + viewport.cols
  }
@@ -1426,6 +1570,17 @@
 +}
 --- a/zellij-server/src/ui/boundaries.rs
 +++ b/zellij-server/src/ui/boundaries.rs
+@@ -469,8 +469,8 @@
+         if !self.is_fully_inside_screen(rect) {
+             return;
+         }
+-        if rect.x() > self.viewport.x {
+-            // left boundary
++        if rect.x() > 0 {
++            // Include the shared resize boundary reserved by UI left of the viewport.
+             let boundary_x_coords = rect.x() - 1;
+             let first_row_coordinates =
+                 self.rect_right_boundary_row_start(rect, pane_is_stacked_under, content_offset);
 @@ -510,7 +510,9 @@
                  let coordinates = Coordinates::new(col, boundary_y_coords);
                  let symbol_to_add = if col == first_col_coordinates && col != self.viewport.x {
