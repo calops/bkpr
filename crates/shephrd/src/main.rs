@@ -1,4 +1,6 @@
 mod agent;
+mod agy;
+mod agy_status;
 mod ci;
 mod claude;
 mod launcher;
@@ -67,6 +69,22 @@ enum Commands {
     /// Receive a Claude UserPromptSubmit hook payload.
     #[command(hide = true)]
     ClaudeTitle,
+    /// Launch the real Antigravity with automatic session reporting.
+    #[command(hide = true)]
+    AgyLaunch {
+        #[arg(long)]
+        wrapper_dir: PathBuf,
+        #[arg(long, value_parser = ["agy", "antigravity"])]
+        name: String,
+        #[arg(last = true)]
+        arguments: Vec<std::ffi::OsString>,
+    },
+    /// Receive an Antigravity statusline payload without changing its output.
+    #[command(hide = true)]
+    AgyStatus {
+        #[arg(long, allow_hyphen_values = true)]
+        previous_command: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -93,6 +111,18 @@ fn run() -> Result<()> {
             arguments,
         }) => claude::launch(&wrapper_dir, arguments),
         Some(Commands::ClaudeTitle) => claude::prompt_title(),
+        Some(Commands::AgyLaunch {
+            wrapper_dir,
+            name,
+            arguments,
+        }) => agy::launch(&wrapper_dir, &name, arguments),
+        Some(Commands::AgyStatus { previous_command }) => {
+            let status = agy_status::report(previous_command)?;
+            if status != 0 {
+                std::process::exit(status);
+            }
+            Ok(())
+        }
         Some(Commands::Agent { command }) => match command {
             AgentCommands::Inspect { json } => {
                 let response = serde_json::to_vec(&agent::inspect(&json)?)?;
