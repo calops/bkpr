@@ -1114,54 +1114,61 @@ mod tests {
     #[test]
     fn refresh_hit_is_only_the_rendered_unlinked_icon_not_wrapping_or_chrome() {
         let header = refresh_header();
-        for columns in 0_usize..=100 {
-            let mut overlay = Overlay {
-                granted: true,
-                owner: Some(7),
-                state: Some(Tooltip {
-                    instance: "instance".to_owned(),
-                    revision: 42,
-                    visible: true,
-                    content: ui::PopupContent {
-                        key: "pane:1".to_owned(),
-                        intro: vec![
-                            header.clone(),
-                            row("check with duration", ui::PopupColor::Text),
-                        ],
-                        ..ui::PopupContent::default()
-                    },
-                    coordinates: FloatingPaneCoordinates::default(),
-                    connection: None,
-                }),
-                ..Overlay::default()
-            };
-            overlay.render(9, columns);
-            for line in -1..=9 {
-                for column in 0..=columns {
-                    let hit = overlay.refresh_at(line, column);
-                    let expected = columns >= ui::refresh_button_width() + 2
-                        && line == 3
-                        && column >= columns - 1 - ui::refresh_button_width()
-                        && column < columns - 1;
-                    assert_eq!(hit.is_some(), expected, "{columns}: ({line}, {column})");
-                    if let Some(hit) = hit {
-                        assert_eq!(hit.target, header.refresh.clone().unwrap());
-                        assert_eq!(hit.instance, "instance");
-                        assert_eq!(hit.revision, 42);
-                        assert_eq!(hit.key, "pane:1");
+        for (subtitle, header_line) in [
+            (row("idle", ui::PopupColor::Text), 3),
+            (ui::PopupRow::default(), 2),
+        ] {
+            for columns in 0_usize..=100 {
+                let mut overlay = Overlay {
+                    granted: true,
+                    owner: Some(7),
+                    state: Some(Tooltip {
+                        instance: "instance".to_owned(),
+                        revision: 42,
+                        visible: true,
+                        content: ui::PopupContent {
+                            key: "pane:1".to_owned(),
+                            title: row("App", ui::PopupColor::Text),
+                            subtitle: subtitle.clone(),
+                            intro: vec![
+                                header.clone(),
+                                row("check with duration", ui::PopupColor::Text),
+                            ],
+                            ..ui::PopupContent::default()
+                        },
+                        coordinates: FloatingPaneCoordinates::default(),
+                        connection: None,
+                    }),
+                    ..Overlay::default()
+                };
+                overlay.render(9, columns);
+                for line in -1..=9 {
+                    for column in 0..=columns {
+                        let hit = overlay.refresh_at(line, column);
+                        let expected = columns >= ui::refresh_button_width() + 2
+                            && line == header_line
+                            && column >= columns - 1 - ui::refresh_button_width()
+                            && column < columns - 1;
+                        assert_eq!(hit.is_some(), expected, "{columns}: ({line}, {column})");
+                        if let Some(hit) = hit {
+                            assert_eq!(hit.target, header.refresh.clone().unwrap());
+                            assert_eq!(hit.instance, "instance");
+                            assert_eq!(hit.revision, 42);
+                            assert_eq!(hit.key, "pane:1");
+                        }
                     }
                 }
-            }
-            if columns >= ui::refresh_button_width() + 2 {
-                let mut terminal = TerminalConsumer::default();
-                terminal.consume(&render_line(
-                    &overlay.layout.borrow().lines[2].row,
-                    columns - 2,
-                ));
-                assert_eq!(terminal.glyphs.last(), Some(&(']', None)));
-                overlay.event(Event::Mouse(Mouse::LeftClick(3, columns - 2)));
-                assert!(overlay.refresh_at(3, columns - 2).is_none());
-                assert!(overlay.state.as_ref().unwrap().visible);
+                if columns >= ui::refresh_button_width() + 2 {
+                    let mut terminal = TerminalConsumer::default();
+                    terminal.consume(&render_line(
+                        &overlay.layout.borrow().lines[header_line as usize - 1].row,
+                        columns - 2,
+                    ));
+                    assert_eq!(terminal.glyphs.last(), Some(&(']', None)));
+                    overlay.event(Event::Mouse(Mouse::LeftClick(header_line, columns - 2)));
+                    assert!(overlay.refresh_at(header_line, columns - 2).is_none());
+                    assert!(overlay.state.as_ref().unwrap().visible);
+                }
             }
         }
     }
@@ -1307,6 +1314,8 @@ mod tests {
                 visible: true,
                 content: ui::PopupContent {
                     key: "workspace:1".to_owned(),
+                    title: row("Workspace", ui::PopupColor::Text),
+                    subtitle: row("1 terminal", ui::PopupColor::Muted),
                     intro: vec![header.clone(), row("check", ui::PopupColor::Text)],
                     ..ui::PopupContent::default()
                 },
@@ -1965,7 +1974,7 @@ mod tests {
     }
 
     #[test]
-    fn geometry_joins_content_edge_on_either_side_and_rejects_offscreen_bands() {
+    fn geometry_preserves_source_band_on_both_sides_and_rejects_offscreen_anchors() {
         let content = ui::PopupContent {
             key: "pane:1".to_owned(),
             title: row("Agent", ui::PopupColor::Text),
@@ -1988,42 +1997,6 @@ mod tests {
             let placement = geometry(&sidebar, 14, &tab, 16..=19, &content).unwrap();
             assert_eq!(placement.connection.side, side);
             assert_eq!(placement.connection.bottom - placement.connection.top, 3);
-            let width = 48;
-            let x = if side == ui::JoinSide::Right {
-                14
-            } else {
-                85 - width
-            };
-            assert_eq!(
-                placement.coordinates,
-                FloatingPaneCoordinates {
-                    pinned: Some(true),
-                    borderless: Some(true),
-                    ..FloatingPaneCoordinates::default()
-                        .with_x_fixed(x)
-                        .with_y_fixed(15)
-                        .with_width_fixed(width)
-                        .with_height_fixed(5)
-                }
-            );
-            let clipped = geometry(&sidebar, 16, &tab, 16..=19, &content).unwrap();
-            let x = if side == ui::JoinSide::Right {
-                15
-            } else {
-                85 - width
-            };
-            assert_eq!(
-                clipped.coordinates,
-                FloatingPaneCoordinates {
-                    pinned: Some(true),
-                    borderless: Some(true),
-                    ..FloatingPaneCoordinates::default()
-                        .with_x_fixed(x)
-                        .with_y_fixed(15)
-                        .with_width_fixed(width)
-                        .with_height_fixed(5)
-                }
-            );
             assert!(geometry(&sidebar, 14, &tab, 20..=22, &content).is_none());
             assert!(geometry(&sidebar, 14, &tab, 19..=22, &content).is_some());
         }

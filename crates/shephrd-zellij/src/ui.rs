@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use shephrd::agent_contract::harness_name;
 use shephrd::ci_contract::{
     ChangeRequestState, CiFetchState, CiRefreshTarget, CiSnapshot, CiStatus, ForgeProvider,
 };
@@ -520,7 +521,13 @@ impl PopupSection {
 
 impl PopupContent {
     pub fn rows(&self) -> Vec<PopupRow> {
-        let mut rows = vec![self.title.clone(), self.subtitle.clone()];
+        let mut rows = vec![self.title.clone()];
+        if !self.subtitle.spans.is_empty()
+            || !self.subtitle.suffix.is_empty()
+            || !self.subtitle.right.is_empty()
+        {
+            rows.push(self.subtitle.clone());
+        }
         rows.extend(self.intro.iter().cloned());
         for section in &self.sections {
             rows.push(PopupRow::default());
@@ -833,6 +840,12 @@ fn status_icon(status: Status, attention: Option<Attention>) -> &'static str {
     }
 }
 
+fn pane_harness(pane: &shephrd::Pane) -> Option<&str> {
+    pane.harness
+        .as_deref()
+        .filter(|harness| harness_name(harness).is_some())
+}
+
 fn harness_icon(harness: &str) -> &'static str {
     match harness {
         "claude" | "claude-code" => "\u{ec82}",   // nf-cod-claude
@@ -921,7 +934,12 @@ fn render_content_row(
         RowKind::Workspace { index, collapsed } => {
             let workspace = &state.workspaces[*index];
             let dot = truncate("● ", columns);
-            let icon = if *collapsed {
+            let icon = if *collapsed
+                && state
+                    .panes
+                    .iter()
+                    .any(|pane| pane.workspace_id == workspace.id && pane_harness(pane).is_some())
+            {
                 truncate(
                     status_icon(workspace.status, workspace.attention),
                     columns.saturating_sub(width(&dot)),
@@ -952,7 +970,11 @@ fn render_content_row(
                 "{TEXT}{dot}{TEXT}\u{1b}[1m{name}\u{1b}[22m{MUTED}{tail}{}{}{badge}{}{icon}",
                 if badge.is_empty() { "" } else { " " },
                 ci_status.map(ci_color).unwrap_or(MUTED),
-                status_color(workspace.status),
+                if icon.is_empty() {
+                    MUTED
+                } else {
+                    status_color(workspace.status)
+                },
             )
         }
         RowKind::Projects {
@@ -970,15 +992,20 @@ fn render_content_row(
             let pane = &state.panes[*index];
             let lead = truncate(if *last { "╰─╴" } else { "├─╴" }, columns);
             let indicator = truncate("● ", columns.saturating_sub(width(&lead)));
-            let status = truncate(
-                status_icon(pane.status, pane.attention),
-                columns.saturating_sub(width(&lead) + width(&indicator)),
-            );
+            let harness = pane_harness(pane);
+            let status = if harness.is_some() {
+                truncate(
+                    status_icon(pane.status, pane.attention),
+                    columns.saturating_sub(width(&lead) + width(&indicator)),
+                )
+            } else {
+                String::new()
+            };
             let available =
                 columns.saturating_sub(width(&lead) + width(&indicator) + width(&status));
             // Keep the harness beside its status, with a trailing cell for wide glyphs.
-            let icon = pane.harness.as_deref().map(harness_icon).unwrap_or("");
-            let logo_color = pane.harness.as_deref().map(harness_color).unwrap_or(TEXT);
+            let icon = harness.map(harness_icon).unwrap_or("");
+            let logo_color = harness.map(harness_color).unwrap_or(TEXT);
             let icon_columns = width(icon) + usize::from(!icon.is_empty());
             let (icon, icon_columns) = if available >= icon_columns {
                 (icon, icon_columns)
@@ -990,7 +1017,11 @@ fn render_content_row(
                 "{guides}{lead}{}{indicator}{logo_color}{icon}{}{TEXT}{name}{}{status}",
                 project_color(pane.project.as_ref()),
                 if icon.is_empty() { "" } else { " " },
-                status_color(pane.status),
+                if status.is_empty() {
+                    MUTED
+                } else {
+                    status_color(pane.status)
+                },
             )
         }
         RowKind::Detail { index, last } => {
@@ -1095,16 +1126,21 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
             .iter()
             .find(|w| &w.id == id)
             .map(|workspace| {
-                let mut subtitle = native_summary(workspace.status, workspace.attention);
                 let panes: Vec<_> = state
                     .panes
                     .iter()
                     .filter(|p| &p.workspace_id == id)
                     .collect();
-                subtitle.spans.push(PopupSpan::new(
-                    format!(" · {} terminals", panes.len()),
-                    PopupColor::Muted,
-                ));
+                let subtitle = if panes.iter().any(|pane| pane_harness(pane).is_some()) {
+                    let mut subtitle = native_summary(workspace.status, workspace.attention);
+                    subtitle.spans.push(PopupSpan::new(
+                        format!(" · {} terminals", panes.len()),
+                        PopupColor::Muted,
+                    ));
+                    subtitle
+                } else {
+                    PopupRow::text(format!("{} terminals", panes.len()), PopupColor::Muted)
+                };
                 let groups = workspace_ci(state, id);
                 let mut sections = Vec::new();
                 for project in &workspace.projects {
@@ -1209,11 +1245,12 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
             .find(|p| &p.id == id)
             .map(|pane| {
                 let mut title = PopupRow::default();
-                if let Some(harness) = &pane.harness {
+                let harness = pane_harness(pane);
+                if let Some(harness) = harness {
                     title.spans.push(
                         PopupSpan::new(
                             format!("{} ", harness_icon(harness)),
-                            PopupColor::Harness(harness.clone()),
+                            PopupColor::Harness(harness.to_owned()),
                         )
                         .bold(),
                     );
@@ -1221,13 +1258,15 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                 title
                     .spans
                     .push(PopupSpan::new(pane.name.clone(), PopupColor::Text).bold());
-                let mut subtitle = native_summary(pane.status, pane.attention);
-                if let Some(harness) = &pane.harness {
-                    subtitle.spans.push(PopupSpan::new(
-                        format!(" · {}", shephrd::agent_contract::harness_name(harness)),
-                        PopupColor::Muted,
-                    ));
-                }
+                let subtitle = if let Some(name) = harness.and_then(harness_name) {
+                    let mut subtitle = native_summary(pane.status, pane.attention);
+                    subtitle
+                        .spans
+                        .push(PopupSpan::new(format!(" · {name}"), PopupColor::Muted));
+                    subtitle
+                } else {
+                    PopupRow::default()
+                };
                 let mut intro = Vec::new();
                 if let Some(cwd) = pane.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
                     intro.push(PopupRow::text(format!("\u{f07b} {cwd}"), PopupColor::Muted));
@@ -2355,5 +2394,251 @@ mod tests {
                 .iter()
                 .any(|span| span.color == PopupColor::Project(project.clone()))
         }));
+    }
+
+    #[test]
+    fn ordinary_programs_have_no_status_artwork_or_subtitle_and_keep_context() {
+        let mut state = snapshot();
+        state.panes[0].branch_changes = Some(changes());
+        state.panes[0].name = "abcdefghijklmno".to_owned();
+        let rows = tree(&state, &Default::default());
+        let pane_row = rows
+            .iter()
+            .find(|row| matches!(row.kind, RowKind::Pane { .. }))
+            .unwrap();
+        let detail_row = rows
+            .iter()
+            .find(|row| matches!(row.kind, RowKind::Detail { .. }))
+            .unwrap();
+        let harness_popup = tooltip(&Item::Pane("1".to_owned()), &state);
+        let detail = render_row(
+            detail_row,
+            &state,
+            &Theme::default(),
+            80,
+            false,
+            false,
+            false,
+        );
+        assert!(visible(&detail).contains("+1234 -567"));
+        assert!(visible(&detail).contains(WORKFLOW));
+        for harness in [None, Some("cargo"), Some("shell"), Some("unknown-app")] {
+            state.panes[0].harness = harness.map(str::to_owned);
+            let mut baseline = None;
+            for (status, attention) in [
+                (Status::Idle, None),
+                (Status::Working, None),
+                (Status::Done, None),
+                (Status::Unknown, None),
+                (Status::Blocked, Some(Attention::Permission)),
+                (Status::Blocked, Some(Attention::Question)),
+                (Status::Blocked, Some(Attention::Auth)),
+                (Status::Blocked, Some(Attention::Error)),
+            ] {
+                state.panes[0].status = status;
+                state.panes[0].attention = attention;
+                let rendered =
+                    render_row(pane_row, &state, &Theme::default(), 22, false, false, false);
+                let text = visible(&rendered);
+                assert_eq!(width(&text), 22);
+                assert!(text.contains(&state.panes[0].name));
+                assert!(!text.contains(status_icon(status, attention).trim_end()));
+                assert!(!text.contains(harness_icon("unknown-app")));
+                if let Some(baseline) = &baseline {
+                    assert_eq!(&rendered, baseline);
+                } else {
+                    baseline = Some(rendered);
+                }
+                let popup = tooltip(&Item::Pane("1".to_owned()), &state);
+                assert_eq!(popup.title.plain(), state.panes[0].name);
+                assert_eq!(popup.subtitle, PopupRow::default());
+                assert_eq!(popup.intro, harness_popup.intro);
+                assert_eq!(popup.sections, harness_popup.sections);
+                assert_eq!(popup.rows()[1], popup.intro[0]);
+                assert_eq!(
+                    render_row(
+                        detail_row,
+                        &state,
+                        &Theme::default(),
+                        80,
+                        false,
+                        false,
+                        false,
+                    ),
+                    detail
+                );
+                for row in &rows {
+                    for columns in 0..=40 {
+                        assert_eq!(
+                            width(&visible(&render_row(
+                                row,
+                                &state,
+                                &Theme::default(),
+                                columns,
+                                false,
+                                true,
+                                false,
+                            ))),
+                            columns
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn recognized_harnesses_keep_unknown_state_and_distinct_attention() {
+        let mut state = snapshot();
+        let rows = tree(&state, &Default::default());
+        let pane_row = rows
+            .iter()
+            .find(|row| matches!(row.kind, RowKind::Pane { .. }))
+            .unwrap();
+        for harness in ["codex", "cursor-agent", "agy", "claude-code"] {
+            state.panes[0].harness = Some(harness.to_owned());
+            for (status, attention) in [
+                (Status::Unknown, None),
+                (Status::Idle, None),
+                (Status::Working, None),
+                (Status::Done, None),
+                (Status::Blocked, Some(Attention::Permission)),
+                (Status::Blocked, Some(Attention::Question)),
+                (Status::Blocked, Some(Attention::Auth)),
+                (Status::Blocked, Some(Attention::Error)),
+            ] {
+                state.panes[0].status = status;
+                state.panes[0].attention = attention;
+                let rendered =
+                    render_row(pane_row, &state, &Theme::default(), 40, false, false, false);
+                assert!(visible(&rendered).contains(status_icon(status, attention)));
+                assert!(visible(&rendered).contains(harness_icon(harness)));
+                assert!(rendered.contains(harness_color(harness)));
+                let popup = tooltip(&Item::Pane("1".to_owned()), &state);
+                assert!(
+                    popup
+                        .subtitle
+                        .plain()
+                        .contains(status_icon(status, attention))
+                );
+                assert!(
+                    popup
+                        .subtitle
+                        .plain()
+                        .contains(harness_name(harness).unwrap())
+                );
+                assert_eq!(popup.subtitle.spans[0].color, PopupColor::Native(status));
+                assert_eq!(
+                    popup.title.spans[0].color,
+                    PopupColor::Harness(harness.to_owned())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_status_requires_a_member_harness_without_hiding_ci_or_counts() {
+        let mut state = snapshot();
+        state.panes[0].branch_changes = Some(changes());
+        let mut other = state.panes[0].clone();
+        other.id = "2".to_owned();
+        state.panes.push(other.clone());
+        let item = Item::Workspace("workspace".to_owned());
+        let harness_popup = tooltip(&item, &state);
+        state.panes[0].harness = None;
+        state.panes[1].harness = Some("cargo".to_owned());
+        other.id = "3".to_owned();
+        other.workspace_id = "elsewhere".to_owned();
+        state.panes.push(other);
+        let collapsed = tree(&state, &["workspace".to_owned()].into());
+        let expanded = tree(&state, &Default::default());
+        let mut baseline = None;
+        for status in [
+            Status::Unknown,
+            Status::Working,
+            Status::Blocked,
+            Status::Done,
+        ] {
+            state.workspaces[0].status = status;
+            state.workspaces[0].attention = Some(Attention::Permission);
+            let popup = tooltip(&item, &state);
+            assert_eq!(popup.sections, harness_popup.sections);
+            assert!(popup.subtitle.plain().contains('2'));
+            assert!(
+                popup
+                    .subtitle
+                    .spans
+                    .iter()
+                    .all(|span| span.color == PopupColor::Muted)
+            );
+            let rendered = render_row(
+                &collapsed[0],
+                &state,
+                &Theme::default(),
+                50,
+                false,
+                false,
+                false,
+            );
+            assert!(visible(&rendered).contains(WORKFLOW));
+            assert!(!visible(&rendered).contains(status_icon(status, Some(Attention::Permission))));
+            if let Some(baseline) = &baseline {
+                assert_eq!(&rendered, baseline);
+            } else {
+                baseline = Some(rendered);
+            }
+            for columns in 0..=60 {
+                assert_eq!(
+                    width(&visible(&render_row(
+                        &collapsed[0],
+                        &state,
+                        &Theme::default(),
+                        columns,
+                        false,
+                        false,
+                        false,
+                    ))),
+                    columns
+                );
+            }
+        }
+        let expanded_before = render_row(
+            &expanded[0],
+            &state,
+            &Theme::default(),
+            50,
+            false,
+            false,
+            false,
+        );
+        state.panes[1].harness = Some("codex".to_owned());
+        let popup = tooltip(&item, &state);
+        assert_eq!(
+            popup.subtitle.spans[0].color,
+            PopupColor::Native(Status::Done)
+        );
+        let rendered = render_row(
+            &collapsed[0],
+            &state,
+            &Theme::default(),
+            50,
+            false,
+            false,
+            false,
+        );
+        assert!(visible(&rendered).contains(status_icon(Status::Done, None)));
+        assert!(visible(&rendered).contains(WORKFLOW));
+        assert_eq!(
+            render_row(
+                &expanded[0],
+                &state,
+                &Theme::default(),
+                50,
+                false,
+                false,
+                false,
+            ),
+            expanded_before
+        );
     }
 }
