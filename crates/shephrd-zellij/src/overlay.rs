@@ -350,11 +350,11 @@ struct PopupLayout {
     scroll: usize,
 }
 
-struct PopupLine {
-    row: ui::PopupRow,
+pub(crate) struct PopupLine {
+    pub(crate) row: ui::PopupRow,
 }
 
-fn wrapped_rows(rows: &[ui::PopupRow], columns: usize) -> Vec<PopupLine> {
+pub(crate) fn wrapped_rows(rows: &[ui::PopupRow], columns: usize) -> Vec<PopupLine> {
     let mut wrapped = Vec::new();
     for row in rows {
         wrap_row(row, columns, &mut wrapped);
@@ -533,14 +533,14 @@ fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
     output.push(PopupLine { row: line });
 }
 
-const OSC8_CLOSE: &str = "\u{1b}]8;;\u{1b}\\";
+pub(crate) const OSC8_CLOSE: &str = "\u{1b}]8;;\u{1b}\\";
 
 #[cfg(test)]
 fn render_line(row: &ui::PopupRow, columns: usize) -> String {
     render_action_line(row, columns, false)
 }
 
-fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bool) -> String {
+pub(crate) fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bool) -> String {
     let right: usize = row
         .right
         .iter()
@@ -694,7 +694,7 @@ fn outline_edges(
     (left, right)
 }
 
-fn outlined_line(
+pub(crate) fn outlined_line(
     text: String,
     row: usize,
     rows: usize,
@@ -1566,6 +1566,105 @@ mod tests {
                 assert!(cells[text_width + 1..].iter().all(Option::is_none));
                 assert!(terminal.link.is_none());
             }
+        }
+    }
+
+    #[test]
+    fn pane_preview_links_keep_actual_pr_and_linear_targets_out_of_padding_and_chrome() {
+        use shephrd::ci_contract::{
+            ChangeRequest, ChangeRequestState, CiFetchState, CiSnapshot, CiStatus, ForgeProvider,
+            ForgeRepository, IssueTracker, LinkedIssue,
+        };
+        let pr = "https://github.com/owner/repo/pull/42";
+        let ticket = "https://linear.app/team/issue/ENG-42/unicode-preview";
+        let snapshot = shephrd::Snapshot {
+            protocol: shephrd::PROTOCOL_VERSION,
+            instance_id: "preview:test".to_owned(),
+            revision: 1,
+            session: "test".to_owned(),
+            connected: true,
+            error: None,
+            focused_pane_id: None,
+            workspaces: Vec::new(),
+            panes: vec![shephrd::Pane {
+                id: "pane".to_owned(),
+                terminal_id: "terminal_1".to_owned(),
+                workspace_id: "workspace".to_owned(),
+                tab_id: "tab".to_owned(),
+                name: "Editor".to_owned(),
+                description: String::new(),
+                harness: None,
+                status: shephrd::Status::Idle,
+                attention: None,
+                cwd: None,
+                branch: None,
+                branch_changes: None,
+                project: None,
+                ci: Some(CiSnapshot {
+                    status: CiStatus::NoChecks,
+                    checks: Vec::new(),
+                    change_request: Some(ChangeRequest {
+                        number: 42,
+                        title: "日本語 pull request title that wraps".to_owned(),
+                        url: pr.to_owned(),
+                        state: ChangeRequestState::Open,
+                        description: String::new(),
+                        issues: vec![LinkedIssue {
+                            provider: IssueTracker::Linear,
+                            identifier: "ENG-42".to_owned(),
+                            title: Some("日本語 linked ticket with wrapping context".to_owned()),
+                            url: ticket.to_owned(),
+                        }],
+                    }),
+                    fetch_state: CiFetchState::Ready,
+                    updated_at: 0,
+                    stale: false,
+                    error: None,
+                    repository: ForgeRepository {
+                        provider: ForgeProvider::Github,
+                        host: "github.com".to_owned(),
+                        path: "owner/repo".to_owned(),
+                        web_url: "https://github.com/owner/repo".to_owned(),
+                    },
+                    head_sha: "abc123".to_owned(),
+                    branch: None,
+                    truncated: false,
+                }),
+            }],
+        };
+        let content = ui::tooltip(&ui::Item::Pane("pane".to_owned()), &snapshot);
+        let rows = content.rows();
+        assert!(
+            rows.iter()
+                .any(|row| row.link.as_deref() == Some(pr) && row.plain().contains("#42"))
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.link.as_deref() == Some(ticket) && row.plain().contains("ENG-42"))
+        );
+        for columns in 4..=64 {
+            let mut destinations = std::collections::BTreeSet::new();
+            for line in wrapped_rows(&rows, columns) {
+                let mut terminal = TerminalConsumer::default();
+                terminal.consume(&outlined_line(
+                    render_line(&line.row, columns),
+                    1,
+                    3,
+                    columns + 2,
+                    None,
+                ));
+                let cells = terminal.cell_links();
+                assert_eq!(cells.len(), columns + 2);
+                assert!(cells[0].is_none() && cells[columns + 1].is_none());
+                let body = ui::width(&line.row.plain()).min(columns);
+                if let Some(target) = line.row.link.as_deref() {
+                    assert!(cells[1..body + 1].iter().all(|link| *link == Some(target)));
+                    destinations.insert(target.to_owned());
+                }
+                assert!(cells[body + 1..].iter().all(Option::is_none));
+                assert!(terminal.link.is_none());
+            }
+            assert!(destinations.contains(pr) && destinations.contains(ticket));
         }
     }
 

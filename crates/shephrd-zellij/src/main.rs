@@ -1,8 +1,12 @@
+mod finder;
+mod keyguide;
 mod native;
 mod overlay;
+mod pane_search;
 mod ui;
 
 use shephrd::{Action, Effect, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Request, Snapshot};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -40,6 +44,22 @@ struct CachedPopup {
     content: ui::PopupContent,
 }
 
+struct CachedKeyGuide {
+    context: keyguide::Context,
+    columns: usize,
+    max_rows: usize,
+    lines: Vec<String>,
+}
+
+struct FinderReturn {
+    sidebar: bool,
+    terminal: Option<u32>,
+    cursor: Option<Item>,
+    mode: InputMode,
+    ready: bool,
+    locked: bool,
+}
+
 #[derive(Default)]
 struct Frontend {
     configuration: BTreeMap<String, String>,
@@ -47,6 +67,7 @@ struct Frontend {
     client_id: u16,
     overlay_role: bool,
     native_owner_role: bool,
+    finder_role: bool,
     native_owner: native::Owner,
     native_owner_id: Option<u32>,
     native_client: String,
@@ -57,7 +78,13 @@ struct Frontend {
     control_terminal: Option<u32>,
     overlay: overlay::Overlay,
     tooltip: overlay::Controller,
+    finder_view: finder::Finder,
+    finder: finder::Controller,
+    finder_return: Option<FinderReturn>,
     theme: ui::Theme,
+    mode: Option<ModeInfo>,
+    keyguide: Option<CachedKeyGuide>,
+    keyguide_dirty: bool,
     granted: bool,
     snapshot: Option<Snapshot>,
     error: Option<String>,
@@ -91,6 +118,235 @@ struct Frontend {
 register_plugin!(Frontend);
 
 impl Frontend {
+    fn finder_dimensions(&self) -> Option<(usize, usize)> {
+        let tab = self.tabs.iter().find(|tab| tab.active)?;
+        (tab.display_area_columns > 0 && tab.display_area_rows > 0)
+            .then_some((tab.display_area_columns, tab.display_area_rows))
+    }
+
+    fn open_finder(&mut self) {
+        if !self.granted || !self.visible || self.modal.is_some() || self.finder.is_open() {
+            return;
+        }
+        let Some((columns, rows)) = self.finder_dimensions() else {
+            return;
+        };
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+        self.finder_return = Some(FinderReturn {
+            sidebar: self.keyboard_control,
+            terminal: self.control_terminal.or(self.native_focus),
+            cursor: self.cursor.clone(),
+            mode: self
+                .mode
+                .as_ref()
+                .map_or(InputMode::Normal, |mode| mode.mode),
+            ready: false,
+            locked: false,
+        });
+        self.finder
+            .open(self.id, &self.configuration, snapshot, columns, rows);
+        self.hide_tooltip();
+        // Keep ownership of input until the guest acknowledges all warmup keystrokes.
+        switch_to_input_mode(&InputMode::Locked);
+        self.reconcile_viewport(false);
+    }
+
+    fn refresh_finder(&mut self) {
+        if self.finder.is_open()
+            && let Some((columns, rows)) = self.finder_dimensions()
+            && let Some(snapshot) = self.snapshot.as_ref()
+        {
+            self.finder
+                .update(self.id, &self.configuration, snapshot, columns, rows);
+        }
+    }
+
+    fn close_finder(&mut self, restore: bool) {
+        self.finder.close(self.id, &self.configuration);
+        let Some(context) = self.finder_return.take() else {
+            return;
+        };
+        if restore && self.visible {
+            let terminal = context.terminal.filter(|id| {
+                self.manifest
+                    .panes
+                    .values()
+                    .flatten()
+                    .any(|pane| !pane.is_plugin && pane.id == *id)
+            });
+            if context.sidebar {
+                self.enter_control();
+                self.control_terminal = terminal;
+                self.cursor = context.cursor;
+                self.reconcile_cursor();
+                self.ensure_cursor_visible();
+            } else {
+                self.leave_control(false);
+                if let Some(id) = terminal {
+                    focus_terminal_pane(id, false, false);
+                }
+            }
+            switch_to_input_mode(&context.mode);
+        }
+        self.reconcile_viewport(false);
+    }
+
+    fn finder_pipe(&mut self, message: &PipeMessage) -> bool {
+        let Some(notice) = self.finder.pipe(message, self.id, &self.configuration) else {
+            return false;
+        };
+        match notice {
+            finder::Notice::Ready => {
+                let Some(context) = self.finder_return.as_mut() else {
+                    self.finder.close(self.id, &self.configuration);
+                    return false;
+                };
+                context.ready = true;
+                self.leave_control(false);
+                switch_to_input_mode(&InputMode::Locked);
+                if let Some(id) = self.finder.id {
+                    focus_plugin_pane(id, true, false);
+                }
+            }
+            finder::Notice::Cancelled { restore } => self.close_finder(restore),
+            finder::Notice::Selected { pane_id } => {
+                self.finder_return = None;
+                self.leave_control(false);
+                switch_to_input_mode(&InputMode::Locked);
+                self.cursor = Some(Item::Pane(pane_id));
+                self.activate();
+            }
+        }
+        self.reconcile_viewport(false);
+        true
+    }
+
+    fn keyguide_context(&self) -> keyguide::Context {
+        if self.finder.is_open() {
+            return keyguide::Context::Finder;
+        }
+        if !self.keyboard_control || !self.control_has_focus {
+            return keyguide::Context::Application;
+        }
+        match &self.modal {
+            Some(Modal::Create { .. }) => keyguide::Context::Edit {
+                multiple_fields: true,
+            },
+            Some(Modal::CreatePane { .. } | Modal::Rename { .. }) => keyguide::Context::Edit {
+                multiple_fields: false,
+            },
+            Some(Modal::Close { .. }) => keyguide::Context::Confirm,
+            None => keyguide::Context::Sidebar {
+                selected: self.cursor.is_some(),
+            },
+        }
+    }
+
+    fn accept_mode(&mut self, mode: ModeInfo) -> bool {
+        let changed = self.mode.as_ref().is_none_or(|current| {
+            current.mode != mode.mode
+                || current.base_mode != mode.base_mode
+                || current.keybinds != mode.keybinds
+        });
+        let dismiss_finder = self.finder_return.as_mut().is_some_and(|context| {
+            if mode.mode == InputMode::Locked {
+                context.locked = true;
+                false
+            } else {
+                context.locked
+            }
+        });
+        let leave_control = self.granted
+            && self.keyboard_control
+            && mode.mode == InputMode::Locked
+            && self.modal.is_none()
+            && !self.finder.is_open();
+        self.mode = Some(mode);
+        if dismiss_finder {
+            self.close_finder(false);
+        }
+        self.keyguide_dirty |= changed;
+        if leave_control {
+            self.leave_control(true);
+        }
+        if changed || leave_control {
+            self.reconcile_viewport(false);
+            self.refresh_tooltip();
+        }
+        changed || leave_control
+    }
+
+    fn refresh_keyguide(&mut self) -> bool {
+        let context = self.keyguide_context();
+        let available = self.rows.saturating_sub(2);
+        // Leave real tree content above the guide even on short terminals.
+        let mut content_rows = available.div_ceil(2).min(4);
+        if self.modal.is_some() {
+            let modal_rows = match self.modal {
+                Some(Modal::Create { .. }) => 5,
+                Some(Modal::Close { .. }) => 4,
+                _ => 3,
+            };
+            content_rows = content_rows.max(modal_rows.min(available.saturating_sub(1).max(1)));
+        }
+        let max_rows = available.saturating_sub(content_rows);
+        if !self.keyguide_dirty
+            && self.keyguide.as_ref().is_some_and(|cached| {
+                cached.context == context
+                    && cached.columns == self.columns
+                    && cached.max_rows == max_rows
+            })
+        {
+            return false;
+        }
+        let old_height = self
+            .keyguide
+            .as_ref()
+            .map_or(0, |cached| cached.lines.len());
+        let lines = keyguide::render(self.mode.as_ref(), context, self.columns, max_rows);
+        let height_changed = old_height != lines.len();
+        self.keyguide = Some(CachedKeyGuide {
+            context,
+            columns: self.columns,
+            max_rows,
+            lines,
+        });
+        self.keyguide_dirty = false;
+        height_changed
+    }
+
+    fn tree_height(&self) -> usize {
+        self.rows.saturating_sub(
+            2 + self
+                .keyguide
+                .as_ref()
+                .map_or(0, |cached| cached.lines.len()),
+        )
+    }
+
+    fn tree_end(&self) -> usize {
+        self.rows.min(2 + self.tree_height())
+    }
+
+    fn reconcile_viewport(&mut self, reveal: bool) -> bool {
+        let height_changed = self.refresh_keyguide();
+        let old_scroll = self.scroll;
+        self.scroll = self
+            .scroll
+            .min(self.tree_cache.len().saturating_sub(self.tree_height()));
+        if reveal || height_changed {
+            self.ensure_cursor_visible();
+        }
+        if height_changed || self.scroll != old_scroll {
+            self.hover = None;
+            self.last_click = None;
+            return true;
+        }
+        false
+    }
+
     fn enter_control(&mut self) {
         if self.keyboard_control {
             return;
@@ -137,6 +393,10 @@ impl Frontend {
         });
         if !active_sidebar {
             return false;
+        }
+        if self.finder.is_open() && matches!(message.payload.as_deref(), Some("toggle" | "leave")) {
+            self.close_finder(true);
+            return true;
         }
         match message.payload.as_deref() {
             Some("toggle") if !self.keyboard_control => self.enter_control(),
@@ -427,6 +687,7 @@ impl Frontend {
                     .is_some_and(|current| current.instance_id != state.instance_id)
                 {
                     self.reset_pending_actions();
+                    self.close_finder(false);
                 }
                 let follow_focus = self.desired_selection.is_none()
                     && self.relayed_selection.is_none()
@@ -451,6 +712,7 @@ impl Frontend {
                     self.ensure_cursor_visible();
                 }
                 self.refresh_tooltip();
+                self.refresh_finder();
                 true
             }
             Ok(false) => true,
@@ -692,6 +954,7 @@ impl Frontend {
         if !self.granted || self.overlay_role {
             return;
         }
+        self.reconcile_viewport(false);
         let cache_index =
             self.popup_item
                 .as_ref()
@@ -717,6 +980,7 @@ impl Frontend {
                     });
                     self.popup_cache.len() - 1
                 });
+        let height = self.tree_height();
         let tooltip = if self.visible && self.modal.is_none() {
             self.popup_item
                 .as_ref()
@@ -741,15 +1005,9 @@ impl Frontend {
                         return None;
                     }
                     let band = ui::item_band(&self.tree_cache, item)?;
-                    let content_rows = if self.rows > 0 {
-                        self.rows
-                    } else {
-                        sidebar.pane_content_rows
-                    };
-                    let height = content_rows.saturating_sub(4);
                     if height == 0
-                        || band.end().saturating_add(1) < self.scroll
-                        || band.start().saturating_sub(1) >= self.scroll + height
+                        || *band.end() < self.scroll
+                        || *band.start() >= self.scroll + height
                     {
                         return None;
                     }
@@ -789,6 +1047,7 @@ impl Frontend {
     }
 
     fn ensure_cursor_visible(&mut self) {
+        self.refresh_keyguide();
         let Some(cursor) = &self.cursor else { return };
         let Some(first) = self
             .tree_cache
@@ -797,12 +1056,19 @@ impl Frontend {
         else {
             return;
         };
-        let height = self.rows.saturating_sub(4);
+        let height = self.tree_height();
+        if height == 0 {
+            return;
+        }
+        let visible_rows = height.min(2);
         if first < self.scroll {
             self.scroll = first;
-        } else if first + 1 >= self.scroll + height && height > 0 {
-            self.scroll = (first + 2).saturating_sub(height);
+        } else if first + visible_rows > self.scroll + height {
+            self.scroll = first + visible_rows - height;
         }
+        self.scroll = self
+            .scroll
+            .min(self.tree_cache.len().saturating_sub(height));
     }
 
     fn activate(&mut self) {
@@ -950,7 +1216,23 @@ impl Frontend {
     }
 
     fn key(&mut self, key: KeyWithModifier) {
+        self.reconcile_viewport(false);
         self.last_click = None;
+        if self.finder.is_open() {
+            if key.bare_key == BareKey::Esc
+                && key.key_modifiers.is_empty()
+                && self
+                    .finder_return
+                    .as_ref()
+                    .is_some_and(|context| !context.ready)
+            {
+                self.close_finder(true);
+            } else {
+                self.finder
+                    .input(finder::Input::Key(key), self.id, &self.configuration);
+            }
+            return;
+        }
         if self.modal.is_some() {
             self.modal_key(key);
             return;
@@ -963,10 +1245,11 @@ impl Frontend {
         }
         self.local_selection = true;
         match key.bare_key {
+            BareKey::Char('/') if self.keyboard_control => self.open_finder(),
             BareKey::Up | BareKey::Char('k') => self.navigate(-1),
             BareKey::Down | BareKey::Char('j') => self.navigate(1),
-            BareKey::PageUp => self.navigate(-(self.rows.saturating_sub(4) as isize / 2).max(1)),
-            BareKey::PageDown => self.navigate((self.rows.saturating_sub(4) as isize / 2).max(1)),
+            BareKey::PageUp => self.navigate(-(self.tree_height() as isize / 2).max(1)),
+            BareKey::PageDown => self.navigate((self.tree_height() as isize / 2).max(1)),
             BareKey::Home | BareKey::Char('g') => self.navigate(isize::MIN),
             BareKey::End | BareKey::Char('G') => self.navigate(isize::MAX),
             BareKey::Enter => self.activate(),
@@ -1038,6 +1321,7 @@ impl Frontend {
         if self.modal.is_some() {
             return;
         }
+        self.reconcile_viewport(false);
         let (line, column) = match mouse {
             Mouse::Hover(line, column)
             | Mouse::LeftClick(line, column)
@@ -1048,19 +1332,17 @@ impl Frontend {
                 return;
             }
             Mouse::ScrollDown(lines) => {
-                self.scroll = self.scroll.saturating_add(lines).min(
-                    self.tree_cache
-                        .len()
-                        .saturating_sub(self.rows.saturating_sub(4)),
-                );
+                self.scroll = self
+                    .scroll
+                    .saturating_add(lines)
+                    .min(self.tree_cache.len().saturating_sub(self.tree_height()));
                 self.refresh_tooltip();
                 return;
             }
             _ => return,
         };
-        let index =
-            (line >= 2 && (line as usize) < self.rows.saturating_sub(2) && column < self.columns)
-                .then(|| self.scroll + line as usize - 2);
+        let index = (line >= 2 && (line as usize) < self.tree_end() && column < self.columns)
+            .then(|| self.scroll + line as usize - 2);
         let item = index.and_then(|index| ui::item_at(&self.tree_cache, index));
         if matches!(mouse, Mouse::Hover(_, _)) {
             self.hover = item;
@@ -1156,12 +1438,13 @@ impl Frontend {
         let resized = self.rows != rows || self.columns != columns;
         self.rows = rows;
         self.columns = columns;
-        let body_height = rows.saturating_sub(4);
-        let old_scroll = self.scroll;
-        self.scroll = self
-            .scroll
-            .min(self.tree_cache.len().saturating_sub(body_height));
-        if (resized || self.scroll != old_scroll) && self.popup_item.is_some() {
+        if resized {
+            self.refresh_finder();
+        }
+        let viewport_changed = self.reconcile_viewport(resized);
+        let body_height = self.tree_height();
+        let tree_end = self.tree_end();
+        if (resized || viewport_changed) && self.popup_item.is_some() {
             // Keep the shared outline in sync before emitting any rendering bytes.
             self.refresh_tooltip();
         }
@@ -1169,7 +1452,8 @@ impl Frontend {
         let popup_band = self
             .popup_item
             .as_ref()
-            .and_then(|item| ui::item_band(tree, item));
+            .and_then(|item| ui::item_band(tree, item))
+            .filter(|band| *band.end() >= self.scroll && *band.start() < self.scroll + body_height);
         let joined = self
             .tooltip
             .pending
@@ -1210,83 +1494,86 @@ impl Frontend {
             "Connecting to native owner…".to_owned()
         };
         let modal_render = self.modal.as_ref().map(|modal| modal.lines(columns));
+        let modal_scroll = modal_render
+            .as_ref()
+            .and_then(|(_, cursor)| *cursor)
+            .map_or(0, |(_, y)| (y + 1).saturating_sub(body_height));
         // Host commands share stdout with rendering; emit them before any terminal bytes.
         let cursor = modal_render
             .as_ref()
             .and_then(|(_, cursor)| *cursor)
-            .filter(|(x, y)| *x < columns && y + 2 < rows.saturating_sub(2))
-            .map(|(x, y)| (x, y + 2));
+            .filter(|(x, _)| *x < columns && body_height > 0)
+            .map(|(x, y)| (x, y + 2 - modal_scroll));
         // None means not initialized; Some(None) records an explicit host cursor hide.
         if self.render_cursor != Some(cursor) {
             self.render_cursor = Some(cursor);
             show_cursor(cursor);
         }
         for row in 0..rows {
-            let line = if row == 0 {
-                format!("\u{1b}[1m{}{}", ui::fit(&heading, columns), ui::RESET)
-            } else if row == 1 && status.is_empty() {
-                String::new()
-            } else if row == 1 {
-                let color = if !status.is_empty()
-                    && (self.error.is_some()
-                        || self.snapshot.as_ref().is_some_and(|state| !state.connected))
-                {
-                    ui::status_color(shephrd::Status::Blocked)
-                } else {
-                    ui::MUTED
-                };
-                format!("{color}{}{}", ui::fit(&status, columns), ui::RESET)
-            } else if row == rows.saturating_sub(2) {
-                format!(
-                    "{}{}{}",
-                    ui::MUTED,
-                    ui::fit("↑↓ select · Enter focus · Space fold", columns),
-                    ui::RESET
+            let line: Cow<'_, str> = if row >= tree_end {
+                Cow::Borrowed(
+                    &self.keyguide.as_ref().expect("formatted key guide").lines[row - tree_end],
                 )
-            } else if row == rows.saturating_sub(1) {
-                format!(
-                    "{}{}{}",
-                    ui::MUTED,
-                    ui::fit("n/N new · r rename · x close · R sync", columns),
-                    ui::RESET
-                )
-            } else if let Some((lines, _)) = &modal_render {
-                format!(
-                    "{}{}",
-                    ui::fit(
-                        lines.get(row - 2).map(String::as_str).unwrap_or(""),
-                        columns
-                    ),
-                    ui::RESET
-                )
-            } else if let (Some(tree_row), Some(state)) =
-                (tree.get(self.scroll + row - 2), self.snapshot.as_ref())
-            {
-                ui::render_row(
-                    tree_row,
-                    state,
-                    &self.theme,
-                    columns,
-                    tree_row.item.is_some() && tree_row.item == self.cursor,
-                    tree_row.item.is_some() && tree_row.item == self.hover,
-                    tree_row
-                        .workspace_id
-                        .as_deref()
-                        .is_some_and(|id| selected_group == Some(id)),
-                )
-            } else if row == 2
-                && self
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|state| state.workspaces.is_empty())
-            {
-                ui::fit("No workspaces · n to create", columns)
             } else {
-                String::new()
+                Cow::Owned(if row == 0 {
+                    format!("\u{1b}[1m{}{}", ui::fit(&heading, columns), ui::RESET)
+                } else if row == 1 && status.is_empty() {
+                    String::new()
+                } else if row == 1 {
+                    let color = if !status.is_empty()
+                        && (self.error.is_some()
+                            || self.snapshot.as_ref().is_some_and(|state| !state.connected))
+                    {
+                        ui::status_color(shephrd::Status::Blocked)
+                    } else {
+                        ui::MUTED
+                    };
+                    format!("{color}{}{}", ui::fit(&status, columns), ui::RESET)
+                } else if let Some((lines, _)) = &modal_render {
+                    format!(
+                        "{}{}",
+                        ui::fit(
+                            lines
+                                .get(row - 2 + modal_scroll)
+                                .map(String::as_str)
+                                .unwrap_or(""),
+                            columns
+                        ),
+                        ui::RESET
+                    )
+                } else if let (Some(tree_row), Some(state)) =
+                    (tree.get(self.scroll + row - 2), self.snapshot.as_ref())
+                {
+                    ui::render_row(
+                        tree_row,
+                        state,
+                        &self.theme,
+                        columns,
+                        tree_row.item.is_some() && tree_row.item == self.cursor,
+                        tree_row.item.is_some() && tree_row.item == self.hover,
+                        tree_row
+                            .workspace_id
+                            .as_deref()
+                            .is_some_and(|id| selected_group == Some(id)),
+                    )
+                } else if row == 2
+                    && self
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|state| state.workspaces.is_empty())
+                {
+                    ui::fit("No workspaces · n to create", columns)
+                } else {
+                    String::new()
+                })
             };
             // Each host render starts with a fresh grid. EL0 from column one preserves
             // Zellij's current background (EL2 drops it), without parsing padded spaces.
-            let line = if line.is_empty() { "\u{1b}[0K" } else { &line };
+            let line = if line.is_empty() {
+                "\u{1b}[0K"
+            } else {
+                line.as_ref()
+            };
             write!(
                 output,
                 "\u{1b}[{};1H{}{}{line}{}",
@@ -1297,8 +1584,8 @@ impl Frontend {
             )
             .expect("writing sidebar row");
         }
-        // Paint the outline last: it floats above guides and adjacent compact rows.
-        for row in 1..rows.saturating_sub(2) {
+        // Paint shared outlines above tree guides, never over the key guide.
+        for row in 1..tree_end {
             if self.modal.is_none()
                 && columns > 0
                 && let Some(band) = &popup_band
@@ -1351,7 +1638,7 @@ impl Frontend {
 }
 
 impl ZellijPlugin for Frontend {
-    fn load(&mut self, configuration: BTreeMap<String, String>) {
+    fn load(&mut self, mut configuration: BTreeMap<String, String>) {
         let ids = get_plugin_ids();
         self.id = ids.plugin_id;
         self.client_id = ids.client_id;
@@ -1361,6 +1648,11 @@ impl ZellijPlugin for Frontend {
             .is_some_and(|role| role == "overlay");
         self.native_owner_role =
             configuration.get("role").map(String::as_str) == Some("native-owner");
+        self.finder_role = configuration.get("role").map(String::as_str) == Some("finder");
+        if !self.overlay_role && !self.native_owner_role && !self.finder_role {
+            // Host event routing is not part of the sidebar's application configuration.
+            configuration.remove("mode_info_format");
+        }
         self.native_client = format!(
             "{}:{}",
             self.id,
@@ -1378,11 +1670,17 @@ impl ZellijPlugin for Frontend {
             self.native_owner.load(&self.configuration);
             return;
         }
+        if self.finder_role {
+            self.finder_view.load(&self.configuration, self.id);
+            return;
+        }
         set_selectable(true);
         subscribe(&[
             EventType::PermissionRequestResult,
             EventType::Key,
+            // Subscribe to ModeUpdate dispatch; lossless JSON arrives as a CustomMessage.
             EventType::ModeUpdate,
+            EventType::CustomMessage,
             EventType::Mouse,
             EventType::Timer,
             EventType::PaneUpdate,
@@ -1412,6 +1710,9 @@ impl ZellijPlugin for Frontend {
         if self.native_owner_role {
             return self.native_owner.event(event);
         }
+        if self.finder_role {
+            return self.finder_view.event(event);
+        }
         match event {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 self.granted = true;
@@ -1429,6 +1730,7 @@ impl ZellijPlugin for Frontend {
                     self.scroll,
                     self.popup_item.clone(),
                     self.sidebar_geometry(),
+                    self.keyguide_context(),
                 );
                 self.pane_update(manifest);
                 return before
@@ -1438,6 +1740,7 @@ impl ZellijPlugin for Frontend {
                         self.scroll,
                         self.popup_item.clone(),
                         self.sidebar_geometry(),
+                        self.keyguide_context(),
                     );
             }
             Event::TabUpdate(tabs) if self.granted => {
@@ -1446,6 +1749,7 @@ impl ZellijPlugin for Frontend {
                     self.local_selection,
                     self.scroll,
                     self.popup_item.clone(),
+                    self.keyguide_context(),
                     self.tabs
                         .iter()
                         .find(|tab| tab.active)
@@ -1459,16 +1763,19 @@ impl ZellijPlugin for Frontend {
                     != tabs.iter().find(|tab| tab.active).map(|tab| tab.position)
                 {
                     self.hide_tooltip();
+                    self.close_finder(false);
                 }
                 self.tabs = tabs;
                 self.synchronize_focus();
                 self.refresh_tooltip();
+                self.refresh_finder();
                 return before
                     != (
                         self.native_focus,
                         self.local_selection,
                         self.scroll,
                         self.popup_item.clone(),
+                        self.keyguide_context(),
                         self.tabs
                             .iter()
                             .find(|tab| tab.active)
@@ -1477,6 +1784,10 @@ impl ZellijPlugin for Frontend {
             }
             Event::PaneClosed(PaneId::Plugin(id)) => {
                 self.tooltip.forget(id);
+                if self.finder.id == Some(id) {
+                    self.finder.forget(id);
+                    self.finder_return = None;
+                }
                 if self.native_owner_id == Some(id) && self.granted {
                     self.native_owner_id = None;
                     self.reset_pending_actions();
@@ -1488,12 +1799,13 @@ impl ZellijPlugin for Frontend {
                     self.startup();
                 }
             }
-            Event::ModeUpdate(mode) if self.granted => {
-                if !self.keyboard_control || mode.mode != InputMode::Locked || self.modal.is_some()
-                {
+            Event::CustomMessage(name, payload)
+                if name == "mode_info" && payload.len() <= MAX_MESSAGE_BYTES =>
+            {
+                let Ok(mode) = serde_json::from_str::<ModeInfo>(&payload) else {
                     return false;
-                }
-                self.leave_control(true);
+                };
+                return self.accept_mode(mode);
             }
             Event::Key(key) if self.granted => self.key(key),
             Event::Mouse(mouse) if self.granted => self.mouse(mouse),
@@ -1502,7 +1814,10 @@ impl ZellijPlugin for Frontend {
                 return self.expire_user_action(now);
             }
             Event::PastedText(text) if self.granted => {
-                if let Some(input) = self.modal.as_mut().and_then(Modal::input_mut) {
+                if self.finder.is_open() {
+                    self.finder
+                        .input(finder::Input::Paste(text), self.id, &self.configuration);
+                } else if let Some(input) = self.modal.as_mut().and_then(Modal::input_mut) {
                     input.insert(&text);
                 }
             }
@@ -1512,6 +1827,7 @@ impl ZellijPlugin for Frontend {
                 }
                 self.visible = visible;
                 if !visible {
+                    self.close_finder(false);
                     self.leave_control(false);
                     self.local_selection = false;
                     self.reconcile_cursor();
@@ -1523,6 +1839,7 @@ impl ZellijPlugin for Frontend {
                 }
             }
             Event::BeforeClose if self.granted => {
+                self.close_finder(false);
                 self.leave_control(false);
                 self.tooltip.close(self.id, &self.configuration);
             }
@@ -1537,6 +1854,17 @@ impl ZellijPlugin for Frontend {
         }
         if self.native_owner_role {
             return self.native_owner.pipe(message);
+        }
+        if self.finder_role {
+            return self.finder_view.pipe(message);
+        }
+        if self.granted
+            && matches!(
+                message.name.as_str(),
+                finder::READY | finder::CANCEL | finder::SELECTED
+            )
+        {
+            return self.finder_pipe(&message);
         }
         if message.name == CONTROL_PIPE {
             return self.control_pipe(&message);
@@ -1638,6 +1966,8 @@ impl ZellijPlugin for Frontend {
     fn render(&mut self, rows: usize, columns: usize) {
         if self.overlay_role {
             self.overlay.render(rows, columns);
+        } else if self.finder_role {
+            self.finder_view.render(rows, columns);
         } else if !self.native_owner_role {
             self.render_sidebar(rows, columns);
         }
@@ -1730,6 +2060,352 @@ mod tests {
             ],
         );
         frontend
+    }
+
+    fn guide_mode(mode: InputMode) -> ModeInfo {
+        ModeInfo {
+            mode,
+            keybinds: vec![(
+                InputMode::Locked,
+                vec![(
+                    KeyWithModifier {
+                        bare_key: BareKey::Char('g'),
+                        key_modifiers: BTreeSet::from([KeyModifier::Ctrl]),
+                    },
+                    vec![actions::Action::SwitchToMode {
+                        input_mode: InputMode::Normal,
+                    }],
+                )],
+            )],
+            ..ModeInfo::default()
+        }
+    }
+
+    fn mode_event(mode: ModeInfo) -> Event {
+        Event::CustomMessage(
+            "mode_info".to_owned(),
+            serde_json::to_string(&mode).unwrap(),
+        )
+    }
+
+    fn populated_frontend() -> Frontend {
+        let mut frontend = popup_frontend();
+        let mut state = snapshot(2, "terminal_1");
+        let workspace = state.workspaces[0].clone();
+        let pane = state.panes[0].clone();
+        state.workspaces = (1..=12)
+            .map(|id| Workspace {
+                id: format!("workspace_{id}"),
+                name: format!("Workspace {id}"),
+                active_tab_id: format!("tab_{id}"),
+                ..workspace.clone()
+            })
+            .collect();
+        state.panes = (1..=12)
+            .map(|id| Pane {
+                id: format!("terminal_{id}"),
+                terminal_id: format!("terminal_{id}"),
+                workspace_id: format!("workspace_{id}"),
+                tab_id: format!("tab_{id}"),
+                name: format!("Terminal {id}"),
+                ..pane.clone()
+            })
+            .collect();
+        frontend.accept_snapshot(state);
+        frontend
+    }
+
+    #[test]
+    fn native_modes_and_remaps_repaint_without_claiming_sidebar_control() {
+        let mut frontend = popup_frontend();
+        frontend.synchronize_focus();
+        let focus = frontend.native_focus;
+        let cursor = frontend.cursor.clone();
+        assert!(frontend.mode.is_none());
+        for mode in [
+            InputMode::Locked,
+            InputMode::Normal,
+            InputMode::Resize,
+            InputMode::Pane,
+        ] {
+            let info = guide_mode(mode);
+            assert!(frontend.update(mode_event(info.clone())));
+            assert!(!frontend.update(mode_event(info)));
+            let mut state = frontend.snapshot.clone().unwrap();
+            state.revision += 1;
+            state.panes[0].status = Status::Working;
+            frontend.accept_snapshot(state);
+            assert_eq!(frontend.native_focus, focus);
+            assert_eq!(frontend.cursor, cursor);
+            assert!(!frontend.keyboard_control);
+            assert!(!frontend.control_has_focus);
+        }
+        let mut remapped = frontend.mode.clone().unwrap();
+        remapped.keybinds[0].1[0].0.bare_key = BareKey::Char('u');
+        assert!(frontend.update(mode_event(remapped.clone())));
+        remapped.session_name = Some("new session metadata".to_owned());
+        assert!(!frontend.update(mode_event(remapped)));
+    }
+
+    #[test]
+    fn lossless_mode_events_preserve_pipe_bindings_and_ignore_partial_sdk_updates() {
+        let mut frontend = popup_frontend();
+        let pending = sidebar_cells(&mut frontend, 24, 64)
+            .into_iter()
+            .flatten()
+            .collect::<String>();
+        assert!(pending.contains("Waiting for native keymap"));
+        assert!(!frontend.update(Event::ModeUpdate(guide_mode(InputMode::Locked))));
+        assert!(frontend.mode.is_none());
+
+        let mut info = guide_mode(InputMode::Locked);
+        info.keybinds[0].1.push((
+            "Ctrl Space".parse().unwrap(),
+            vec![actions::Action::KeybindPipe {
+                name: Some(CONTROL_PIPE.to_owned()),
+                payload: Some("toggle".to_owned()),
+                args: None,
+                plugin: None,
+                plugin_id: None,
+                configuration: None,
+                launch_new: false,
+                skip_cache: false,
+                floating: None,
+                in_place: None,
+                cwd: None,
+                pane_title: None,
+            }],
+        ));
+        assert!(frontend.update(mode_event(info.clone())));
+        assert_eq!(frontend.mode.as_ref().unwrap().keybinds, info.keybinds);
+        let frame = sidebar_cells(&mut frontend, 24, 64);
+        let text = frame.iter().flatten().collect::<String>();
+        assert!(text.contains("Ctrl+Space"));
+        assert!(text.contains("Ctrl+g"));
+        assert!(text.contains("sidebar"));
+
+        let mut stripped = guide_mode(InputMode::Normal);
+        stripped.keybinds.clear();
+        assert!(!frontend.update(Event::ModeUpdate(stripped)));
+        assert_eq!(frontend.mode.as_ref().unwrap().mode, InputMode::Locked);
+        assert_eq!(frontend.mode.as_ref().unwrap().keybinds, info.keybinds);
+        assert!(!frontend.keyguide_dirty);
+        assert_eq!(sidebar_cells(&mut frontend, 24, 64), frame);
+
+        info.keybinds[0].1[1].0 = "Ctrl x".parse().unwrap();
+        assert!(frontend.update(mode_event(info.clone())));
+        let remapped = sidebar_cells(&mut frontend, 24, 64)
+            .into_iter()
+            .flatten()
+            .collect::<String>();
+        assert!(remapped.contains("Ctrl+x"));
+        assert!(!remapped.contains("Ctrl+Space"));
+        assert!(!frontend.update(mode_event(info)));
+    }
+
+    #[test]
+    fn invalid_or_unrelated_mode_messages_preserve_the_last_complete_keymap() {
+        let mut frontend = popup_frontend();
+        assert!(!frontend.update(Event::CustomMessage("mode_info".to_owned(), "{".to_owned(),)));
+        assert!(frontend.mode.is_none());
+        let info = guide_mode(InputMode::Locked);
+        assert!(frontend.update(mode_event(info.clone())));
+        let frame = sidebar_cells(&mut frontend, 24, 64);
+        let mut invalid_mode = serde_json::to_value(&info).unwrap();
+        invalid_mode["mode"] = serde_json::json!("unsupported-mode");
+        let mut oversized = guide_mode(InputMode::Normal);
+        oversized.session_name = Some("x".repeat(MAX_MESSAGE_BYTES));
+        for event in [
+            Event::CustomMessage(
+                "unrelated".to_owned(),
+                serde_json::to_string(&guide_mode(InputMode::Normal)).unwrap(),
+            ),
+            Event::CustomMessage("mode_info".to_owned(), "{".to_owned()),
+            Event::CustomMessage("mode_info".to_owned(), "null".to_owned()),
+            Event::CustomMessage("mode_info".to_owned(), invalid_mode.to_string()),
+            mode_event(oversized),
+        ] {
+            assert!(!frontend.update(event));
+            assert_eq!(frontend.mode.as_ref().unwrap().mode, info.mode);
+            assert_eq!(frontend.mode.as_ref().unwrap().base_mode, info.base_mode);
+            assert_eq!(frontend.mode.as_ref().unwrap().keybinds, info.keybinds);
+            assert!(!frontend.keyguide_dirty);
+            assert_eq!(sidebar_cells(&mut frontend, 24, 64), frame);
+        }
+    }
+
+    #[test]
+    fn sidebar_focus_ack_repaints_even_without_a_terminal_focus_change() {
+        let mut frontend = popup_frontend();
+        frontend.keyboard_control = true;
+        frontend.local_selection = true;
+        frontend.update(mode_event(guide_mode(InputMode::Normal)));
+        let mut manifest = frontend.manifest.clone();
+        for pane in manifest.panes.values_mut().flatten() {
+            pane.is_focused = pane.is_plugin;
+        }
+        assert!(frontend.native_focus.is_none());
+        assert!(!frontend.control_has_focus);
+        assert!(frontend.update(Event::PaneUpdate(manifest)));
+        assert!(frontend.native_focus.is_none());
+        assert!(frontend.control_has_focus);
+        assert!(frontend.keyboard_control);
+    }
+
+    #[test]
+    fn locked_mode_still_leaves_controls_but_keeps_a_modal_active() {
+        for modal in [false, true] {
+            let mut frontend = popup_frontend();
+            frontend.keyboard_control = true;
+            frontend.control_has_focus = true;
+            frontend.local_selection = true;
+            if modal {
+                frontend.modal = Some(Modal::Rename {
+                    item: Item::Pane("terminal_1".to_owned()),
+                    input: ui::Input::new("name".to_owned()),
+                });
+            }
+            assert!(frontend.update(mode_event(guide_mode(InputMode::Locked))));
+            assert_eq!(frontend.keyboard_control, modal);
+            assert_eq!(frontend.control_has_focus, modal);
+            assert_eq!(frontend.modal.is_some(), modal);
+        }
+    }
+
+    #[test]
+    fn changing_guide_height_reveals_selection_and_reclips_an_open_card() {
+        let mut frontend = populated_frontend();
+        frontend.update(mode_event(guide_mode(InputMode::Locked)));
+        sidebar_cells(&mut frontend, 16, 24);
+        let application_height = frontend.tree_height();
+        frontend.keyboard_control = true;
+        frontend.control_has_focus = true;
+        assert!(frontend.update(mode_event(guide_mode(InputMode::Normal))));
+        let sidebar_height = frontend.tree_height();
+        assert!(sidebar_height < application_height);
+
+        frontend.keyboard_control = false;
+        frontend.control_has_focus = false;
+        frontend.update(mode_event(guide_mode(InputMode::Locked)));
+        frontend.cursor = frontend.items.first().cloned();
+        frontend.local_selection = true;
+        frontend.scroll = 0;
+        let item = frontend.tree_cache[sidebar_height..application_height]
+            .iter()
+            .find_map(|row| row.item.clone())
+            .expect("an entry covered by the taller guide");
+        frontend.popup_item = Some(item.clone());
+        frontend.refresh_tooltip();
+        assert!(frontend.tooltip.pending.as_ref().unwrap().visible);
+        frontend.keyboard_control = true;
+        frontend.control_has_focus = true;
+        assert!(frontend.update(mode_event(guide_mode(InputMode::Normal))));
+        assert_eq!(frontend.tree_height(), sidebar_height);
+        assert_eq!(frontend.popup_item, Some(item));
+        assert!(!frontend.tooltip.pending.as_ref().unwrap().visible);
+
+        frontend.cursor = frontend.items.last().cloned();
+        frontend.ensure_cursor_visible();
+        frontend.update(mode_event(guide_mode(InputMode::Resize)));
+        let selected = frontend
+            .tree_cache
+            .iter()
+            .position(|row| row.item == frontend.cursor)
+            .unwrap();
+        assert!(selected >= frontend.scroll);
+        assert!(selected < frontend.scroll + frontend.tree_height());
+        assert!(
+            frontend.scroll
+                <= frontend
+                    .tree_cache
+                    .len()
+                    .saturating_sub(frontend.tree_height())
+        );
+    }
+
+    #[test]
+    fn guide_rows_never_activate_hidden_entries_and_page_scroll_uses_the_tree() {
+        let mut frontend = populated_frontend();
+        frontend.keyboard_control = true;
+        frontend.control_has_focus = true;
+        frontend.update(mode_event(guide_mode(InputMode::Normal)));
+        let baseline = sidebar_cells(&mut frontend, 12, 24);
+        let item = frontend.tree_cache[..frontend.tree_height()]
+            .iter()
+            .rev()
+            .find_map(|row| row.item.clone())
+            .unwrap();
+        frontend.popup_item = Some(item);
+        frontend.refresh_tooltip();
+        assert!(frontend.tooltip.pending.as_ref().unwrap().visible);
+        let outlined = sidebar_cells(&mut frontend, 12, 24);
+        assert_eq!(
+            outlined[frontend.tree_end()..],
+            baseline[frontend.tree_end()..]
+        );
+        frontend.hide_tooltip();
+        frontend.granted = false; // Any accidental activation remains observable in the queue.
+        let cursor = frontend.cursor.clone();
+        let mut covered_entry = false;
+        for row in frontend.tree_end()..frontend.rows {
+            covered_entry |= ui::item_at(&frontend.tree_cache, frontend.scroll + row - 2).is_some();
+            frontend.mouse(Mouse::Hover(row as isize, 4));
+            assert!(frontend.hover.is_none());
+            frontend.mouse(Mouse::LeftClick(row as isize, 4));
+            frontend.mouse(Mouse::RightClick(row as isize, 4));
+            assert_eq!(frontend.cursor, cursor);
+            assert!(frontend.queue.is_empty());
+            assert!(frontend.popup_item.is_none());
+        }
+        assert!(covered_entry);
+        let before = frontend
+            .items
+            .iter()
+            .position(|item| Some(item) == frontend.cursor.as_ref())
+            .unwrap();
+        let page = (frontend.tree_height() / 2).max(1);
+        frontend.key(KeyWithModifier::new(BareKey::PageDown));
+        assert_eq!(frontend.cursor, Some(frontend.items[before + page].clone()));
+        frontend.mouse(Mouse::ScrollDown(usize::MAX));
+        assert_eq!(
+            frontend.scroll,
+            frontend
+                .tree_cache
+                .len()
+                .saturating_sub(frontend.tree_height())
+        );
+        frontend.mouse(Mouse::ScrollUp(usize::MAX));
+        assert_eq!(frontend.scroll, 0);
+    }
+
+    #[test]
+    fn tiny_sidebar_keeps_content_and_modal_cursor_above_the_guide() {
+        for rows in 0..=12 {
+            for columns in [0, 1, 2, 3, 24] {
+                let mut frontend = frontend();
+                frontend.render_cursor = Some(None);
+                frontend.keyboard_control = true;
+                frontend.control_has_focus = true;
+                frontend.modal = Some(Modal::Create {
+                    name: ui::Input::default(),
+                    cwd: ui::Input::default(),
+                    cwd_active: true,
+                });
+                frontend.update(mode_event(guide_mode(InputMode::Locked)));
+                sidebar_cells(&mut frontend, rows, columns);
+                assert!(frontend.tree_end() <= rows);
+                if rows > 2 {
+                    assert!(frontend.tree_height() > 0);
+                }
+                if rows > 2 && columns > 2 {
+                    let (x, y) = frontend.render_cursor.unwrap().unwrap();
+                    assert!(x < columns);
+                    assert!((2..frontend.tree_end()).contains(&y));
+                } else {
+                    assert_eq!(frontend.render_cursor, Some(None));
+                }
+            }
+        }
     }
 
     fn ci_refresh_frontend() -> (Frontend, overlay::RefreshRequest) {
@@ -2272,30 +2948,33 @@ mod tests {
     }
 
     #[test]
-    fn compact_pointer_mapping_excludes_headers_and_resolves_actual_neighbor() {
+    fn pointer_mapping_excludes_headers_gaps_and_footer() {
         let mut frontend = frontend();
         let cursor = frontend.cursor.clone();
-        let workspace = Item::Workspace("workspace_1".to_owned());
         frontend.tree_cache = ui::tree(
             frontend.snapshot.as_ref().unwrap(),
             &BTreeSet::from(["workspace_1".to_owned()]),
         );
-        assert_eq!(ui::item_band(&frontend.tree_cache, &workspace), Some(0..=0));
-        frontend.mouse(Mouse::Hover(2, 0));
-        assert_eq!(frontend.hover, Some(workspace));
-        frontend.mouse(Mouse::Hover(3, 0));
-        assert_eq!(
-            frontend.hover,
-            Some(Item::Workspace("workspace_2".to_owned()))
-        );
-        for line in [0, 1, 18, 19] {
-            frontend.mouse(Mouse::Hover(line, 0));
+        for id in ["workspace_1", "workspace_2"] {
+            let workspace = Item::Workspace(id.to_owned());
+            let start = *ui::item_band(&frontend.tree_cache, &workspace)
+                .unwrap()
+                .start();
+            frontend.mouse(Mouse::Hover((start - frontend.scroll + 2) as isize, 0));
+            assert_eq!(frontend.hover, Some(workspace));
+        }
+        let gaps: Vec<_> = frontend
+            .tree_cache
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| row.item.is_none().then_some(index + 2))
+            .collect();
+        for line in (0..2).chain(gaps).chain(frontend.tree_end()..frontend.rows) {
+            frontend.mouse(Mouse::Hover(line as isize, 0));
             assert_eq!(frontend.hover, None);
-            frontend.mouse(Mouse::LeftClick(line, 0));
+            frontend.mouse(Mouse::LeftClick(line as isize, 0));
             assert_eq!(frontend.cursor, cursor);
         }
-        frontend.mouse(Mouse::LeftClick(17, 0));
-        assert_eq!(frontend.cursor, cursor);
     }
 
     fn host_focus(frontend: &mut Frontend, pane_id: PaneId) {

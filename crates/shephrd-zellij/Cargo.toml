@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 shephrd = { path = "../shephrd" }
+nucleo-matcher = "0.3"
 serde.workspace = true
 serde_json.workspace = true
 unicode-width = "0.2"
