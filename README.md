@@ -65,6 +65,8 @@ Double click a workspace group to fold or unfold it. Stock resize, move, scroll 
 
 Press **Ctrl+Space**, then **/** to open a centered, whole-window finder. Search pane metadata without switching terminals. The selected match shows the same details as its context popup.
 
+Results underline matching text in blue and keep their project's sidebar color. Metadata-only matches include a short excerpt. Finder key hints appear in the sidebar.
+
 Plain text searches across metadata. Add filters to narrow the results:
 
 ```text

@@ -1,4 +1,5 @@
 mod finder;
+mod finder_entry;
 mod keyguide;
 mod native;
 mod overlay;

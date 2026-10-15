@@ -8,6 +8,7 @@ use nucleo_matcher::{Matcher, Utf32Str};
 use shephrd::agent_contract::harness_name;
 use shephrd::ci_contract::{ChangeRequestState, CiFetchState, ForgeProvider, IssueTracker};
 use shephrd::{Pane, Snapshot};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Match {
@@ -15,9 +16,9 @@ pub struct Match {
     pub score: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
-enum Field {
+pub(crate) enum Field {
     All,
     Pr,
     Branch,
@@ -48,11 +49,43 @@ impl Field {
     }
 }
 
+/// A metadata value, retaining the field that made a filter applicable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Value {
+    pub field: Field,
+    pub index: usize,
+}
+
+impl Value {
+    pub const fn new(field: Field, index: usize) -> Self {
+        Self { field, index }
+    }
+}
+
+impl Field {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "text",
+            Self::Pr => "pr",
+            Self::Branch => "branch",
+            Self::Project => "project",
+            Self::Workspace => "workspace",
+            Self::Harness => "harness",
+            Self::Status => "status",
+            Self::Ci => "ci",
+            Self::Cwd => "cwd",
+            Self::Ticket => "ticket",
+        }
+    }
+}
+
 #[derive(Default)]
 struct Text {
     utf8: String,
     unicode: Vec<char>,
     values: Vec<Range<usize>>,
+    byte_values: Vec<Range<usize>>,
+    byte_offsets: Vec<usize>,
     ascii: bool,
 }
 
@@ -61,6 +94,8 @@ impl Text {
         self.utf8.clear();
         self.unicode.clear();
         self.values.clear();
+        self.byte_values.clear();
+        self.byte_offsets.clear();
     }
 
     fn add(&mut self, text: &str) {
@@ -82,11 +117,14 @@ impl Text {
 
     fn prepare(&mut self) {
         self.ascii = self.utf8.is_ascii();
+        self.byte_values.extend(self.values.iter().cloned());
         if !self.ascii {
             for range in &mut self.values {
                 let start = self.unicode.len();
-                self.unicode
-                    .extend(nucleo_matcher::chars::graphemes(&self.utf8[range.clone()]));
+                for (offset, grapheme) in self.utf8[range.clone()].grapheme_indices(true) {
+                    self.byte_offsets.push(range.start + offset);
+                    self.unicode.push(grapheme.chars().next().unwrap());
+                }
                 *range = start..self.unicode.len();
             }
         }
@@ -106,6 +144,21 @@ impl Text {
             .iter()
             .filter_map(|range| atom.score(text.slice(range.clone()), matcher))
             .max()
+    }
+
+    fn glyph(&self, value: usize, index: usize) -> &str {
+        let range = &self.values[value];
+        if self.ascii {
+            &self.utf8[range.start + index..range.start + index + 1]
+        } else {
+            let start = self.byte_offsets[range.start + index];
+            let end = if index + 1 < range.len() {
+                self.byte_offsets[range.start + index + 1]
+            } else {
+                self.byte_values[value].end
+            };
+            &self.utf8[start..end]
+        }
     }
 }
 
@@ -274,6 +327,65 @@ struct Term {
     atom: Option<Atom>,
 }
 
+struct Highlight {
+    value: Value,
+    positions: Range<usize>,
+}
+
+/// Borrowed annotations for one displayed document; matcher scratch stays in Index.
+pub(crate) struct Annotations<'a> {
+    document: &'a Document,
+    highlights: &'a [Highlight],
+    positions: &'a [u32],
+}
+
+impl Annotations<'_> {
+    pub fn len(&self, value: Value) -> usize {
+        self.document.fields[value.field as usize].values[value.index].len()
+    }
+
+    pub fn glyph(&self, value: Value, index: usize) -> &str {
+        self.document.fields[value.field as usize].glyph(value.index, index)
+    }
+
+    pub fn matched(&self, value: Value, index: usize) -> bool {
+        self.highlights.iter().any(|highlight| {
+            highlight.value == value
+                && self.positions[highlight.positions.clone()].contains(&(index as u32))
+        })
+    }
+
+    pub fn match_bounds(&self, value: Value) -> Option<(usize, usize)> {
+        let mut bounds: Option<(usize, usize)> = None;
+        for position in self
+            .highlights
+            .iter()
+            .filter(|highlight| highlight.value == value)
+            .flat_map(|highlight| &self.positions[highlight.positions.clone()])
+        {
+            let position = *position as usize;
+            bounds = Some(match bounds {
+                Some((first, last)) => (first.min(position), last.max(position)),
+                None => (position, position),
+            });
+        }
+        bounds
+    }
+
+    pub fn contexts<'a>(&'a self, visible: &'a [Value]) -> impl Iterator<Item = Value> + 'a {
+        self.highlights
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, highlight)| {
+                (!visible.contains(&highlight.value)
+                    && !self.highlights[..index]
+                        .iter()
+                        .any(|earlier| earlier.value == highlight.value))
+                .then_some(highlight.value)
+            })
+    }
+}
+
 /// Reusable matcher, metadata documents, parsed query, and ranked results.
 /// Pane indices always refer to the most recently rebuilt snapshot.
 #[derive(Default)]
@@ -285,6 +397,8 @@ pub struct Index {
     token: String,
     terms: Vec<Term>,
     matches: Vec<Match>,
+    highlights: Vec<Highlight>,
+    positions: Vec<u32>,
 }
 
 impl Index {
@@ -343,6 +457,100 @@ impl Index {
 
     pub fn results(&self) -> &[Match] {
         &self.matches
+    }
+
+    pub(crate) fn value(&self, pane: usize, field: Field, value: &str) -> Option<Value> {
+        let text = &self.documents.get(pane)?.fields[field as usize];
+        text.byte_values
+            .iter()
+            .position(|range| &text.utf8[range.clone()] == value)
+            .map(|index| Value::new(field, index))
+    }
+
+    /// Annotate only a visible result, never rerank the corpus during rendering.
+    /// Prefer matching displayed values; otherwise retain the best full-metadata
+    /// value for a compact context excerpt. Presence tests have no glyph matches.
+    pub(crate) fn annotate(&mut self, pane: usize, visible: &[Value]) -> Annotations<'_> {
+        self.highlights.clear();
+        self.positions.clear();
+        let document = &self.documents[pane];
+        for term in &self.terms {
+            let Some(atom) = &term.atom else {
+                continue;
+            };
+            let before = self.highlights.len();
+            for &value in visible {
+                if term.field != Field::All && term.field != value.field {
+                    continue;
+                }
+                let text = &document.fields[value.field as usize];
+                let start = self.positions.len();
+                if atom
+                    .indices(
+                        text.view().slice(text.values[value.index].clone()),
+                        &mut self.matcher,
+                        &mut self.positions,
+                    )
+                    .is_some()
+                {
+                    self.highlights.push(Highlight {
+                        value,
+                        positions: start..self.positions.len(),
+                    });
+                } else {
+                    self.positions.truncate(start);
+                }
+            }
+            if self.highlights.len() != before {
+                continue;
+            }
+            let mut best = None;
+            for (field_index, text) in document.fields.iter().enumerate() {
+                if term.field != Field::All && term.field as usize != field_index {
+                    continue;
+                }
+                for (index, range) in text.values.iter().enumerate() {
+                    if let Some(score) =
+                        atom.score(text.view().slice(range.clone()), &mut self.matcher)
+                        && best
+                            .as_ref()
+                            .is_none_or(|(previous, _, _)| score > *previous)
+                    {
+                        best = Some((score, field_index, index));
+                    }
+                }
+            }
+            if let Some((_, field_index, index)) = best {
+                let text = &document.fields[field_index];
+                let start = self.positions.len();
+                let _ = atom.indices(
+                    text.view().slice(text.values[index].clone()),
+                    &mut self.matcher,
+                    &mut self.positions,
+                );
+                let field = [
+                    Field::All,
+                    Field::Pr,
+                    Field::Branch,
+                    Field::Project,
+                    Field::Workspace,
+                    Field::Harness,
+                    Field::Status,
+                    Field::Ci,
+                    Field::Cwd,
+                    Field::Ticket,
+                ][field_index];
+                self.highlights.push(Highlight {
+                    value: Value::new(field, index),
+                    positions: start..self.positions.len(),
+                });
+            }
+        }
+        Annotations {
+            document,
+            highlights: &self.highlights,
+            positions: &self.positions,
+        }
     }
 
     fn parse(&mut self, query: &str) {
@@ -770,5 +978,78 @@ mod tests {
         assert!(index.results()[1].score > index.results()[2].score);
         assert_eq!(panes(&mut index, ""), [0, 1, 2]);
         assert_eq!(panes(&mut index, "abc"), [0, 1, 2]);
+    }
+
+    #[test]
+    fn annotations_keep_filtered_pr_and_ticket_matches_in_their_own_values() {
+        let mut state = snapshot();
+        state.panes[0].name = "starvation LIN-42".into();
+        let mut index = Index::default();
+        index.rebuild(&state);
+        for (query, field, expected) in [
+            (
+                "pr:starvation",
+                Field::Pr,
+                "Eliminate starvation in the dispatcher",
+            ),
+            ("ticket:lockout", Field::Ticket, "Prevent worker lockout"),
+            ("ticket:LIN42", Field::Ticket, "LIN-42"),
+        ] {
+            assert_eq!(panes(&mut index, query), [0]);
+            let ranked = index.results().to_vec();
+            let name = index.value(0, Field::All, &state.panes[0].name).unwrap();
+            let visible = [name];
+            let annotations = index.annotate(0, &visible);
+            assert!(
+                (0..annotations.len(name)).all(|position| !annotations.matched(name, position))
+            );
+            let context = annotations.contexts(&visible).next().unwrap();
+            assert_eq!(context.field, field);
+            let context_text: String = (0..annotations.len(context))
+                .map(|position| annotations.glyph(context, position))
+                .collect();
+            assert_eq!(context_text, expected);
+            assert!(annotations.match_bounds(context).is_some());
+            assert_eq!(index.results(), ranked);
+        }
+    }
+
+    #[test]
+    fn visible_annotations_use_discontiguous_nucleo_alignment_and_presence_has_none() {
+        let mut index = Index::default();
+        let state = snapshot();
+        index.rebuild(&state);
+        let name = index.value(0, Field::All, "compiler").unwrap();
+        index.search("cmplr");
+        let visible = [name];
+        let annotations = index.annotate(0, &visible);
+        let matched: String = (0..annotations.len(name))
+            .filter(|position| annotations.matched(name, *position))
+            .map(|position| annotations.glyph(name, position))
+            .collect();
+        assert_eq!(matched, "cmplr");
+        assert!(annotations.contexts(&visible).next().is_none());
+        for query in ["", "pr:", "ticket:"] {
+            index.search(query);
+            let annotations = index.annotate(0, &visible);
+            assert!(annotations.match_bounds(name).is_none());
+            assert!(annotations.contexts(&visible).next().is_none());
+        }
+    }
+
+    #[test]
+    fn annotation_offsets_preserve_complete_unicode_graphemes() {
+        let mut state = snapshot();
+        state.panes[0].name = "Cafe\u{301} 👩\u{200d}💻 東京".into();
+        let mut index = Index::default();
+        index.rebuild(&state);
+        index.search("cafe");
+        let name = index.value(0, Field::All, &state.panes[0].name).unwrap();
+        let visible = [name];
+        let annotations = index.annotate(0, &visible);
+        assert_eq!(annotations.glyph(name, 3), "e\u{301}");
+        assert_eq!(annotations.glyph(name, 5), "👩\u{200d}💻");
+        assert!(annotations.matched(name, 3));
+        assert!(!annotations.matched(name, 5));
     }
 }

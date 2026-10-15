@@ -1957,6 +1957,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shephrd",
+ "unicode-segmentation",
  "unicode-width 0.2.2",
  "zellij-tile",
 ]

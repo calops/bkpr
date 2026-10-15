@@ -351,7 +351,7 @@ struct Layout {
     input: Rect,
     list: Rect,
     preview: Rect,
-    footer: Rect,
+    search: Option<Rect>,
     vertical: Option<Rect>,
     horizontal: Option<Rect>,
     border: bool,
@@ -394,22 +394,20 @@ impl Layout {
             width,
             height: 1,
         };
-        let footer = if border {
-            Rect {
-                x: margin,
-                y: rows - 2,
-                width,
-                height: 1,
-            }
-        } else {
-            Rect::default()
-        };
-        let top = margin + 1 + usize::from(border);
-        let bottom = if border { rows - 2 } else { rows };
+        // Keep input, list and preview reachable in three rows; larger views can
+        // spend one row on a search rule without stealing either body surface.
+        let search = (rows >= 4).then_some(Rect {
+            x: 0,
+            y: margin + 1,
+            width: columns,
+            height: 1,
+        });
+        let top = margin + 1 + usize::from(search.is_some());
+        let bottom = rows - margin;
         let body = bottom.saturating_sub(top);
         let mut result = Self {
             input,
-            footer,
+            search,
             border,
             ..Self::default()
         };
@@ -444,9 +442,9 @@ impl Layout {
             };
             if separator != 0 {
                 result.horizontal = Some(Rect {
-                    x: margin,
+                    x: 0,
                     y: top + list_height,
-                    width,
+                    width: columns,
                     height: 1,
                 });
             }
@@ -458,6 +456,42 @@ impl Layout {
             };
         }
         result
+    }
+
+    fn rule_line(self, separator: Rect) -> String {
+        let junction = (self.search == Some(separator))
+            .then_some(self.vertical)
+            .flatten()
+            .map(|vertical| vertical.x);
+        let mut line = String::with_capacity(separator.width * 3);
+        for column in separator.x..separator.x + separator.width {
+            line.push(if self.border && column == separator.x {
+                '├'
+            } else if self.border && column + 1 == separator.x + separator.width {
+                '┤'
+            } else if junction == Some(column) {
+                '┬'
+            } else {
+                '─'
+            });
+        }
+        line
+    }
+
+    fn bottom_line(self, columns: usize) -> String {
+        let mut line = String::with_capacity(columns * 3);
+        for column in 0..columns {
+            line.push(if column == 0 {
+                '╰'
+            } else if column + 1 == columns {
+                '╯'
+            } else if self.vertical.is_some_and(|vertical| vertical.x == column) {
+                '┴'
+            } else {
+                '─'
+            });
+        }
+        line
     }
 }
 
@@ -1026,7 +1060,9 @@ impl Finder {
             " ".repeat(columns)
         };
         let frame = [0, 1, rows.saturating_sub(1)].map(|row| {
-            if self.layout.border {
+            if self.layout.border && row + 1 == rows {
+                format!("{}{}", ui::BRIGHT, self.layout.bottom_line(columns))
+            } else if self.layout.border {
                 overlay::outlined_line(
                     " ".repeat(columns.saturating_sub(2)),
                     row,
@@ -1059,29 +1095,43 @@ impl Finder {
             );
         }
         if self.layout.border {
+            let count = self.index.results().len();
+            let total = self
+                .state
+                .as_ref()
+                .map_or(0, |state| state.snapshot.panes.len());
+            let title = format!(" Pane finder · {count}/{total} ");
             paint(
                 2,
                 0,
                 &format!(
                     "{}{}",
                     ui::BRIGHT,
-                    ui::truncate(" Pane finder ", columns.saturating_sub(4))
+                    ui::truncate(&title, columns.saturating_sub(4))
                 ),
             );
         }
         if input.height > 0 {
             paint(input.x, input.y, &format!("{}{prefix}{query}", ui::BRIGHT));
         }
+        if let Some(separator) = self.layout.search {
+            paint(
+                separator.x,
+                separator.y,
+                &format!("{}{}", ui::BRIGHT, self.layout.rule_line(separator)),
+            );
+        }
         if let Some(separator) = self.layout.vertical {
+            let line = format!("{}│", ui::BRIGHT);
             for row in separator.y..separator.y + separator.height {
-                paint(separator.x, row, &format!("{}│", ui::MUTED));
+                paint(separator.x, row, &line);
             }
         }
         if let Some(separator) = self.layout.horizontal {
             paint(
                 separator.x,
                 separator.y,
-                &format!("{}{}", ui::MUTED, "─".repeat(separator.width)),
+                &format!("{}{}", ui::BRIGHT, self.layout.rule_line(separator)),
             );
         }
         let list = self.layout.list;
@@ -1112,30 +1162,14 @@ impl Finder {
                 });
             paint(preview.x, preview.y + row, &text);
         }
-        let footer = self.layout.footer;
-        if footer.height > 0 {
-            let count = self.index.results().len();
-            let total = self
-                .state
-                .as_ref()
-                .map_or(0, |state| state.snapshot.panes.len());
-            let hint = format!(
-                "{count}/{total} panes · ↑↓ select · Enter open · Esc cancel · PgUp/PgDn preview"
-            );
-            paint(
-                footer.x,
-                footer.y,
-                &format!("{}{}", ui::MUTED, ui::fit(&hint, footer.width)),
-            );
-        }
         print!("{}{}", overlay::OSC8_CLOSE, ui::RESET);
     }
 
-    fn result_line(&self, index: usize, columns: usize) -> String {
+    fn result_line(&mut self, index: usize, columns: usize) -> String {
         let Some(state) = &self.state else {
             return " ".repeat(columns);
         };
-        let Some(result) = self.index.results().get(index) else {
+        if self.index.results().get(index).is_none() {
             return ui::fit(
                 if index == 0 && self.index.results().is_empty() {
                     "No matching panes"
@@ -1144,22 +1178,14 @@ impl Finder {
                 },
                 columns,
             );
-        };
-        let pane = &state.snapshot.panes[result.pane];
-        let workspace = state
-            .snapshot
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.id == pane.workspace_id)
-            .map(|workspace| workspace.name.as_str())
-            .unwrap_or(&pane.workspace_id);
-        let marker = if index == self.selection { "›" } else { " " };
-        let name = if let Some(branch) = pane.branch.as_deref() {
-            format!("{marker} {} · {} · {}", pane.name, workspace, branch)
-        } else {
-            format!("{marker} {} · {}", pane.name, workspace)
-        };
-        ui::fit(&name, columns)
+        }
+        crate::finder_entry::render(
+            &mut self.index,
+            &state.snapshot,
+            index,
+            index == self.selection,
+            columns,
+        )
     }
 }
 
@@ -1325,10 +1351,23 @@ mod tests {
             for rows in 0..=40 {
                 for compact in [Compact::Input, Compact::List, Compact::Preview] {
                     let layout = Layout::new(columns, rows, compact);
-                    let rects = [layout.input, layout.list, layout.preview, layout.footer];
+                    let rects = [
+                        layout.input,
+                        layout.list,
+                        layout.preview,
+                        layout.search.unwrap_or_default(),
+                        layout.vertical.unwrap_or_default(),
+                        layout.horizontal.unwrap_or_default(),
+                    ];
                     for rect in rects {
                         assert!(rect.x + rect.width <= columns);
                         assert!(rect.y + rect.height <= rows);
+                        if layout.border
+                            && [layout.input, layout.list, layout.preview].contains(&rect)
+                        {
+                            assert!(rect.x >= 1 && rect.x + rect.width < columns);
+                            assert!(rect.y >= 1 && rect.y + rect.height < rows);
+                        }
                     }
                     for (index, left) in rects.iter().enumerate() {
                         for right in &rects[index + 1..] {
@@ -1348,6 +1387,20 @@ mod tests {
                         assert!(layout.list.height > 0);
                         assert!(layout.preview.height > 0);
                     }
+                    if let Some(rule) = layout.search {
+                        assert_eq!(rule.y, layout.input.y + layout.input.height);
+                        assert_eq!(rule.width, columns);
+                        assert_eq!(ui::width(&layout.rule_line(rule)), columns);
+                        assert_eq!(layout.list.y, rule.y + 1);
+                    }
+                    if let Some(rule) = layout.horizontal {
+                        assert_eq!(rule.width, columns);
+                        assert_eq!(ui::width(&layout.rule_line(rule)), columns);
+                    }
+                    if layout.border {
+                        assert_eq!(ui::width(&layout.bottom_line(columns)), columns);
+                        assert_eq!(layout.preview.y + layout.preview.height, rows - 1);
+                    }
                 }
             }
         }
@@ -1356,6 +1409,133 @@ mod tests {
         assert!(wide.list.x + wide.list.width < wide.preview.x);
         let narrow = Layout::new(60, 25, Compact::Input);
         assert!(narrow.list.y + narrow.list.height < narrow.preview.y);
+    }
+
+    #[test]
+    fn wide_rules_join_the_frame_without_crossing_the_full_width_input() {
+        for rows in [7, 8, 25, 40] {
+            let columns = 110;
+            let layout = Layout::new(columns, rows, Compact::Input);
+            let search = layout.search.unwrap();
+            let vertical = layout.vertical.unwrap();
+            let top = layout.rule_line(search);
+            let bottom = layout.bottom_line(columns);
+            assert!(top.starts_with('├') && top.ends_with('┤'));
+            assert!(bottom.starts_with('╰') && bottom.ends_with('╯'));
+            assert_eq!(top.chars().nth(vertical.x), Some('┬'));
+            assert_eq!(bottom.chars().nth(vertical.x), Some('┴'));
+            assert_eq!(top.matches('┬').count(), 1);
+            assert_eq!(bottom.matches('┴').count(), 1);
+            assert_eq!(vertical.y, search.y + 1);
+            assert_eq!(vertical.y + vertical.height, rows - 1);
+            assert_eq!(layout.input.x, 1);
+            assert_eq!(layout.input.width, columns - 2);
+            assert!(layout.input.y + layout.input.height <= search.y);
+            assert_eq!(layout.list.height, rows - 4);
+            assert_eq!(layout.preview.height, rows - 4);
+            assert!(layout.horizontal.is_none());
+        }
+    }
+
+    #[test]
+    fn narrow_rules_join_both_sides_and_body_uses_the_last_interior_row() {
+        for rows in [7, 8, 25, 40] {
+            let columns = 60;
+            let layout = Layout::new(columns, rows, Compact::Input);
+            assert!(layout.vertical.is_none());
+            for separator in [layout.search.unwrap(), layout.horizontal.unwrap()] {
+                let line = layout.rule_line(separator);
+                assert_eq!(line, format!("├{}┤", "─".repeat(columns - 2)));
+            }
+            let middle = layout.horizontal.unwrap();
+            assert_eq!(middle.y, layout.list.y + layout.list.height);
+            assert_eq!(layout.preview.y, middle.y + 1);
+            assert_eq!(layout.preview.y + layout.preview.height, rows - 1);
+            assert_eq!(layout.list.height + layout.preview.height + 1, rows - 4);
+            assert_eq!(
+                layout.bottom_line(columns),
+                format!("╰{}╯", "─".repeat(columns - 2))
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_remains_in_the_input_surface_at_every_tiny_viewport() {
+        let mut finder = finder();
+        for character in "α界e\u{301} a long query".chars() {
+            finder.key(key(BareKey::Char(character)));
+        }
+        for columns in 0..=12 {
+            for rows in 0..=8 {
+                for compact in [Compact::Input, Compact::List, Compact::Preview] {
+                    let layout = Layout::new(columns, rows, compact);
+                    let input = layout.input;
+                    let prefix_width = if input.width >= 3 { 2 } else { 0 };
+                    let input_width = input.width.saturating_sub(prefix_width);
+                    let (query, offset) = finder.input.visible(input_width);
+                    assert_eq!(ui::width(&query), input_width);
+                    if input.height > 0 && input_width > 0 {
+                        let cursor = (input.x + prefix_width + offset, input.y);
+                        assert!(input.contains(cursor.1 as isize, cursor.0));
+                        assert!(cursor.0 < columns && cursor.1 < rows);
+                        assert!(!layout.list.contains(cursor.1 as isize, cursor.0));
+                        assert!(!layout.preview.contains(cursor.1 as isize, cursor.0));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reclaimed_body_rows_keep_scrolled_selection_and_rule_hit_testing_aligned() {
+        let mut finder = finder();
+        let mut update = state(1, 2);
+        let template = update.snapshot.panes[0].clone();
+        update.snapshot.panes = (0..32)
+            .map(|number| {
+                let mut pane = template.clone();
+                pane.id = format!("pane-{number}");
+                pane.terminal_id = format!("terminal_{number}");
+                pane
+            })
+            .collect();
+        assert!(finder.receive(update));
+        for (columns, rows) in [(110, 7), (60, 7), (110, 25), (60, 25)] {
+            finder.layout = Layout::new(columns, rows, Compact::Input);
+            finder.navigate(isize::MAX);
+            let list = finder.layout.list;
+            assert_eq!(finder.selection - finder.scroll, list.height - 1);
+            let expected = finder.state.as_ref().unwrap().snapshot.panes
+                [finder.index.results()[finder.scroll].pane]
+                .id
+                .clone();
+            finder.mouse(Mouse::LeftClick(list.y as isize, list.x));
+            assert_eq!(finder.selected.as_ref(), Some(&expected));
+            finder.navigate(isize::MAX);
+            let selected = finder.selected.clone();
+            for separator in [
+                finder.layout.search,
+                finder.layout.vertical,
+                finder.layout.horizontal,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                finder.mouse(Mouse::LeftClick(separator.y as isize, separator.x));
+                assert_eq!(finder.selected, selected);
+            }
+            finder.mouse(Mouse::LeftClick((rows - 1) as isize, list.x));
+            assert_eq!(finder.selected, selected);
+            let expected = finder.state.as_ref().unwrap().snapshot.panes
+                [finder.index.results()[finder.scroll + list.height - 1].pane]
+                .id
+                .clone();
+            finder.mouse(Mouse::LeftClick(
+                (list.y + list.height - 1) as isize,
+                list.x + list.width - 1,
+            ));
+            assert_eq!(finder.selected.as_ref(), Some(&expected));
+        }
     }
 
     #[test]
