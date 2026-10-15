@@ -1,4 +1,5 @@
 mod agent;
+mod agent_relay;
 mod ci;
 mod claude;
 mod launcher;
@@ -67,6 +68,12 @@ enum Commands {
     /// Receive a Claude UserPromptSubmit hook payload.
     #[command(hide = true)]
     ClaudeTitle,
+    /// Own a managed session's SSH-agent relay until its last attachment ends.
+    #[command(hide = true)]
+    AgentRelayDaemon {
+        #[arg(long)]
+        runtime: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -93,6 +100,7 @@ fn run() -> Result<()> {
             arguments,
         }) => claude::launch(&wrapper_dir, arguments),
         Some(Commands::ClaudeTitle) => claude::prompt_title(),
+        Some(Commands::AgentRelayDaemon { runtime }) => agent_relay::daemon(&runtime),
         Some(Commands::Agent { command }) => match command {
             AgentCommands::Inspect { json } => {
                 let response = serde_json::to_vec(&agent::inspect(&json)?)?;

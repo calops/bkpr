@@ -14,3 +14,11 @@ serde_json.workspace = true
 anyhow.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 libc = "0.2"
+pulldown-cmark = { version = "0.13", default-features = false }
+scraper = { version = "0.24", default-features = false }
+parking_lot = "0.12"
+tempfile = "3"
+tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "macros", "sync", "time"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["test-util"] }

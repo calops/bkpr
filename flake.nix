@@ -54,7 +54,7 @@
             postCheck = (old.postCheck or "") + ''
               cargo test --offline --package zellij-client --lib stdin_ansi_parser
               cargo test --offline --package zellij-client --lib stdin_handler
-              cargo test --offline --package zellij-server --lib pinned_nonselectable_plugin
+              cargo test --offline --package zellij-server --lib pinned_
               cargo test --offline --package zellij-server --lib passive_popup
               cargo test --offline --package zellij-server --lib viewport_geometry_regressions
               cargo test --offline --package zellij-server --lib test_ctrl_drag_resizes

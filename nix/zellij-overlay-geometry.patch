@@ -14,8 +14,8 @@
 +    display_area: Size,
 +    viewport: Viewport,
 +) -> Viewport {
-+    if is_pinned && is_passive_plugin(pane) {
-+        // Passive UI overlays can join reserved chrome without entering keyboard focus.
++    if is_pinned && pane.borderless() && matches!(pane.pid(), PaneId::Plugin(_)) {
++        // Pinned borderless UI, including focused modals, can cover reserved chrome.
 +        Viewport {
 +            x: 0,
 +            y: 0,
@@ -331,10 +331,100 @@
          let old_value = self.web_sharing;
 --- a/zellij-server/src/tab/unit/tab_integration_tests.rs
 +++ b/zellij-server/src/tab/unit/tab_integration_tests.rs
-@@ -1412,6 +1412,384 @@
+@@ -1412,6 +1412,474 @@
  }
  
  #[test]
++fn viewport_geometry_regressions_separator_does_not_highlight_on_hover() {
++    use crate::ui::boundaries::{Boundaries, Coordinates};
++    use crate::ui::pane_contents_and_ui::PaneContentsAndUi;
++    use zellij_utils::data::{PaletteColor, Style};
++
++    let size = Size {
++        cols: 200,
++        rows: 30,
++    };
++    let layout = r#"
++        layout {
++            pane split_direction="vertical" {
++                pane size="20%" borderless=true {
++                    plugin location="zellij:strider"
++                }
++                pane
++                pane focus=true
++            }
++        }
++    "#;
++    let (tiled_layout, floating_layout) =
++        Layout::from_kdl(layout, Some("separator-hover.kdl".into()), None, None)
++            .unwrap()
++            .template
++            .unwrap();
++    let mut plugin_ids = HashMap::new();
++    plugin_ids.insert(
++        RunPluginOrAlias::from_url("zellij:strider", &None, None, None).unwrap(),
++        vec![1],
++    );
++    let mut tab = create_new_tab_with_swap_layouts(
++        size,
++        ModeInfo::default(),
++        (vec![], vec![]),
++        Some((
++            tiled_layout,
++            floating_layout,
++            vec![(1, None), (2, None)],
++            vec![],
++            plugin_ids,
++        )),
++        false,
++        false,
++    );
++    tab.set_pane_selectable(PaneId::Plugin(1), false);
++    let viewport = *tab.viewport.borrow();
++    let mut style = Style::default();
++    style.colors.frame_selected.base = PaletteColor::Rgb((20, 30, 40));
++    style.colors.frame_highlight.base = PaletteColor::Rgb((70, 80, 90));
++    let mut separator = |hovered, focused, mode| {
++        let active = HashMap::from([(1, PaneId::Terminal(if focused { 1 } else { 2 }))]);
++        let hover = if hovered {
++            HashMap::from([(1, PaneId::Terminal(1))])
++        } else {
++            HashMap::new()
++        };
++        let mut output = Output::default();
++        let mut boundaries = Boundaries::new(viewport);
++        let pane = tab.tiled_panes.get_pane_mut(PaneId::Terminal(1)).unwrap();
++        let ui = PaneContentsAndUi::new(
++            pane,
++            &mut output,
++            style,
++            &active,
++            false,
++            None,
++            false,
++            false,
++            false,
++            &hover,
++            HashMap::new(),
++            false,
++            false,
++            false,
++            false,
++            Default::default(),
++        );
++        ui.render_pane_boundaries(1, mode, &mut boundaries, false, false, false);
++        boundaries.boundary_characters[&Coordinates::new(viewport.x - 1, 5)]
++            .as_terminal_character()
++            .unwrap()
++    };
++    let idle = separator(false, false, InputMode::Normal);
++    assert_eq!(separator(true, false, InputMode::Normal), idle);
++    let focused = separator(false, true, InputMode::Normal);
++    assert_eq!(separator(true, true, InputMode::Normal), focused);
++    assert_ne!(separator(true, true, InputMode::Resize), focused);
++}
++
++#[test]
 +fn viewport_geometry_regressions_follow_borderless_sidebar_pane_and_display_resizes() {
 +    let size = Size {
 +        cols: 200,
@@ -560,7 +650,7 @@
 +}
 +
 +#[test]
-+fn pinned_nonselectable_plugin_overlay_uses_display_coordinates() {
++fn pinned_borderless_plugin_overlay_uses_display_coordinates() {
 +    use zellij_utils::data::FloatingPaneCoordinates;
 +    use zellij_utils::pane_size::Viewport;
 +
@@ -600,7 +690,7 @@
 +            .change_pane_coordinates(pane_id, coordinates)
 +            .unwrap();
 +        let info = tab.get_pane_info(pane_id).unwrap();
-+        let overlay = matches!(pane_id, PaneId::Plugin(_)) && !selectable && pinned && borderless;
++        let overlay = matches!(pane_id, PaneId::Plugin(_)) && pinned && borderless;
 +        assert_eq!(
 +            (info.pane_x, info.pane_y),
 +            if overlay { (37, 1) } else { (38, 2) }
@@ -1623,6 +1713,22 @@
          } else {
              rect.x() - 1
          }
+--- a/zellij-server/src/ui/pane_contents_and_ui.rs
++++ b/zellij-server/src/ui/pane_contents_and_ui.rs
+@@ -492,9 +492,10 @@
+                 },
+                 _ => Some((self.style.colors.frame_highlight.base, 3)),
+             }
+-        } else if self
+-            .mouse_is_hovering_over_pane_for_clients
+-            .contains(&client_id)
++        } else if self.should_draw_pane_frames
++            && self
++                .mouse_is_hovering_over_pane_for_clients
++                .contains(&client_id)
+         {
+             Some((self.style.colors.frame_highlight.base, 1))
+         } else {
 --- a/zellij-server/src/tab/layout_applier.rs
 +++ b/zellij-server/src/tab/layout_applier.rs
 @@ -21,11 +21,10 @@

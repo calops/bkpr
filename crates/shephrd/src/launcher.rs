@@ -37,6 +37,9 @@ pub fn run(options: Options) -> Result<()> {
 }
 
 fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -> Result<()> {
+    // Capture the attaching terminal's source before setting the child-only
+    // stable relay address. Unset/empty is intentional, never a server fallback.
+    let agent_source = env::var_os("SSH_AUTH_SOCK");
     let session = options.session.as_deref().unwrap_or("shephrd");
     validate_session(session)?;
     let identity_hash = hash_identity(&format!("native-local\0{session}"));
@@ -110,12 +113,14 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
             .as_bytes(),
         )?;
     }
+    let agent_lease = crate::agent_relay::acquire_locked(program, &runtime, agent_source)?;
     drop(lock);
     let mut client = zellij_command(zellij, &config_dir);
     client
         .arg("--config")
         .arg(&config_path)
         .env("SHEPHRD_ZELLIJ", zellij);
+    client.env("SSH_AUTH_SOCK", agent_lease.socket());
     if !existing {
         let bin = runtime.join("bin");
         let inherited_wrapper = env::var_os("SHEPHRD_HARNESS_WRAPPER_DIR").map(PathBuf::from);
@@ -139,6 +144,9 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
             .arg(&layout_path);
     }
     let status = client.status().context("launch native Zellij client")?;
+    agent_lease
+        .release()
+        .context("release SSH-agent attachment lease")?;
     if !status.success() && !session_exists(zellij, &config_dir, &zellij_session)? {
         bail!("Zellij exited with {status}");
     }
@@ -330,13 +338,9 @@ themes {
 keybinds {
     locked {
         bind "Ctrl Space" { MessagePlugin { name "shephrd-controls"; payload "toggle"; }; }
-        bind "Alt Shift Right" { NewPane "Right"; }
-        bind "Alt Shift Down" { NewPane "Down"; }
     }
     normal {
         bind "Ctrl Space" { MessagePlugin { name "shephrd-controls"; payload "toggle"; }; }
-        bind "Alt Shift Right" { NewPane "Right"; }
-        bind "Alt Shift Down" { NewPane "Down"; }
         bind "Esc" { MessagePlugin { name "shephrd-controls"; payload "leave"; }; SwitchToMode "Locked"; }
         bind "Tab" { FocusNextPane; }
         bind "Shift Tab" { FocusPreviousPane; }

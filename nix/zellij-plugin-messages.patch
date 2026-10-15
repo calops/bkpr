@@ -120,7 +120,50 @@
                                  plugin_id,
                                  pane_id_to_replace,
                                  cwd,
-@@ -2171,27 +2150,10 @@
+@@ -2106,7 +2085,7 @@
+         | Event::HintText(..)
+         | Event::ActivePaneScroll(..)
+         | Event::InputReceived => PermissionType::ReadApplicationState,
+-        Event::CustomMessage(name, _) if name == "program_status" => {
++        Event::CustomMessage(name, _) if name == "program_status" || name == "mode_info" => {
+             PermissionType::ReadApplicationState
+         },
+         Event::WebServerStatus(..) => PermissionType::StartWebServer,
+@@ -2142,16 +2121,31 @@
+         (PermissionStatus::Granted, _) => {
+             let mut event = event.clone();
+             if let Event::ModeUpdate(mode_info) = &mut event {
++                let json_mode_info = running_plugin
++                    .store
++                    .data()
++                    .plugin
++                    .initial_userspace_configuration
++                    .inner()
++                    .get("mode_info_format")
++                    .map(String::as_str)
++                    == Some("json");
+                 if mode_info.base_mode.is_none() {
+                     mode_info.base_mode = Some(running_plugin.store.data().default_mode);
+                 }
+-                if plugin_subscriptions.contains(&EventType::InitialKeybinds) {
++                if !json_mode_info && plugin_subscriptions.contains(&EventType::InitialKeybinds) {
+                     // Plugin caches keybindings via InitialKeybinds — send lightweight ModeUpdate
+                     mode_info.keybinds = vec![];
+                 } else {
+-                    // Legacy plugin — send full keybindings as before
++                    // JSON mode updates must remain complete even for InitialKeybinds subscribers.
+                     mode_info.keybinds = running_plugin.store.data().keybinds.to_keybinds_vec();
+                 }
++                if json_mode_info {
++                    event = Event::CustomMessage(
++                        "mode_info".to_owned(),
++                        serde_json::to_string(mode_info).context("failed to serialize mode info")?,
++                    );
++                }
+             }
+             let protobuf_event: Result<ProtobufEvent, _> = event.clone().try_into();
+             match protobuf_event {
+@@ -2171,27 +2165,10 @@
                          should_render = true;
                      }
                      if rows > 0 && columns > 0 && should_render {
@@ -150,7 +193,7 @@
                      } else {
                          // This is a bit of a hack to get around the fact that plugins are allowed not to
                          // render and still unblock CLI pipes
-@@ -2267,3 +2229,7 @@
+@@ -2267,3 +2244,7 @@
          .context("failed to unblock input pipe");
      Ok(())
  }
@@ -306,7 +349,7 @@
                      pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
 --- a/zellij-server/src/plugins/unit/render_messages_tests.rs
 +++ b/zellij-server/src/plugins/unit/render_messages_tests.rs
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,408 @@
 +use super::*;
 +use crate::plugins::plugin_map::PluginEnv;
 +use crate::plugins::zellij_exports::zellij_exports;
@@ -588,6 +631,131 @@
 +            assert!(std::time::Instant::now() < deadline, "guest did not load");
 +            std::thread::yield_now();
 +        }
++    }
++}
++
++// The guest leaves stdin untouched, so decode the exact existing SDK wire written
++// by apply_event_to_plugin rather than testing a separate normalization helper.
++fn delivered_event(guest: &RunningPlugin) -> Event {
++    let bytes: Vec<u8> = guest.store.data().stdin_pipe.lock().unwrap().drain(..).collect();
++    let protobuf_bytes: Vec<u8> = serde_json::from_slice(&bytes).unwrap();
++    ProtobufEvent::decode(protobuf_bytes.as_slice()).unwrap().try_into().unwrap()
++}
++
++#[test]
++fn mode_info_json_preserves_pipe_identity_and_legacy_mode_delivery() {
++    use zellij_utils::data::{BareKey, KeyModifier, KeyWithModifier, ModeInfo};
++    use zellij_utils::input::actions::Action;
++
++    for format in [None, Some("protobuf"), Some("json")] {
++        for initial_keybinds in [false, true] {
++            for base_mode in [None, Some(InputMode::Normal)] {
++                let (mut guest, receiver) = running_guest(17, 2, 5, b"mode frame", false);
++                let key = KeyWithModifier {
++                    bare_key: BareKey::Char('x'),
++                    key_modifiers: [KeyModifier::Ctrl].into_iter().collect(),
++                };
++                let action = Action::KeybindPipe {
++                    name: Some("arbitrary-controls".into()),
++                    payload: Some("toggle-guide".into()),
++                    args: Some(BTreeMap::from([("argument".into(), "value".into())])),
++                    plugin: Some("file:/custom/controls.wasm".into()),
++                    plugin_id: None,
++                    configuration: Some(BTreeMap::from([("custom".into(), "setting".into())])),
++                    launch_new: false,
++                    skip_cache: false,
++                    floating: Some(true),
++                    in_place: Some(false),
++                    cwd: Some(PathBuf::from("/custom/cwd")),
++                    pane_title: Some("Custom controls".into()),
++                };
++                let env = guest.store.data_mut();
++                env.default_mode = InputMode::Locked;
++                env.keybinds.get_input_mode_mut(&InputMode::Locked).insert(key, vec![action]);
++                if let Some(format) = format {
++                    env.plugin.initial_userspace_configuration.insert("mode_info_format", format);
++                }
++                let subscriptions = if initial_keybinds {
++                    HashSet::from([EventType::InitialKeybinds])
++                } else {
++                    HashSet::new()
++                };
++                let mode = ModeInfo {
++                    mode: InputMode::Pane,
++                    base_mode,
++                    // Deliberately stale event data must yield to the client's effective keymap.
++                    keybinds: vec![(InputMode::Normal, vec![])],
++                    session_name: Some("custom-session".into()),
++                    editor: Some(PathBuf::from("/custom/editor")),
++                    shell: Some(PathBuf::from("/custom/shell")),
++                    ..Default::default()
++                };
++                let mut expected = mode.clone();
++                expected.base_mode = Some(base_mode.unwrap_or(InputMode::Locked));
++                expected.keybinds = guest.store.data().keybinds.to_keybinds_vec();
++                let senders = guest.store.data().senders.clone();
++                let mut assets = Vec::new();
++                apply_event_to_plugin(17, 2, &mut guest, &Event::ModeUpdate(mode),
++                    &mut assets, senders, &subscriptions).unwrap();
++                let delivered = delivered_event(&guest);
++                if format == Some("json") {
++                    match delivered {
++                        Event::CustomMessage(name, payload) => {
++                            assert_eq!(name, "mode_info");
++                            let actual: ModeInfo = serde_json::from_str(&payload).unwrap();
++                            // Includes KeybindPipe name, payload, plugin and configuration.
++                            assert_eq!(actual, expected);
++                        },
++                        event => panic!("expected lossless mode_info, received {event:?}"),
++                    }
++                } else {
++                    if initial_keybinds {
++                        expected.keybinds.clear();
++                    }
++                    let legacy: ProtobufEvent = Event::ModeUpdate(expected).try_into().unwrap();
++                    let legacy: Event = legacy.try_into().unwrap();
++                    assert_eq!(delivered, legacy);
++                    if !initial_keybinds {
++                        match delivered {
++                            Event::ModeUpdate(mode) => assert!(matches!(
++                                &mode.keybinds[0].1[0].1[0],
++                                Action::KeybindPipe { name: None, payload: None, plugin: None, .. }
++                            )),
++                            event => panic!("legacy plugin received {event:?}"),
++                        }
++                    }
++                }
++                // Exactly one callback/render; no paired partial/full event or deferred command.
++                assert_eq!(assets.len(), 1);
++                assert_eq!(assets[0].bytes, b"mode frame");
++                assert!(matches!(receiver.try_recv().unwrap().0,
++                    PluginInstruction::MessageFromPlugin { message, .. }
++                        if message.message_name == "immediate-update"));
++                assert!(receiver.try_recv().is_err());
++            }
++        }
++    }
++}
++
++#[test]
++fn mode_info_json_requires_read_application_state_permission() {
++    let (mut guest, receiver) = running_guest(17, 2, 5, b"mode frame", false);
++    guest.store.data_mut().plugin.initial_userspace_configuration
++        .insert("mode_info_format", "json");
++    guest.store.data_mut().set_permissions(HashSet::new());
++    for event in [
++        Event::ModeUpdate(Default::default()),
++        Event::CustomMessage("mode_info".into(), "{}".into()),
++    ] {
++        assert_eq!(check_event_permission(guest.store.data(), &event),
++            (PermissionStatus::Denied, Some(PermissionType::ReadApplicationState)));
++        let senders = guest.store.data().senders.clone();
++        let mut assets = Vec::new();
++        apply_event_to_plugin(17, 2, &mut guest, &event, &mut assets, senders, &HashSet::new())
++            .unwrap();
++        assert!(assets.is_empty());
++        assert!(guest.store.data().stdin_pipe.lock().unwrap().is_empty());
++        assert!(receiver.try_recv().is_err());
 +    }
 +}
 --- a/zellij-server/src/plugins/unit/snapshots/zellij_server__plugins__plugin_tests__block_input_plugin_command.snap

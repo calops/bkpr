@@ -1,9 +1,11 @@
 //! GitHub transport and response normalization; no provider protocol escapes this module.
 use super::{BatchResponse, CiSource, FetchError, RetryPolicy, empty, same_commit};
+use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+use scraper::{Html, Selector};
 use serde_json::{Value, json};
 use shephrd::ci_contract::{
     ChangeRequest, ChangeRequestState, CiCheck, CiFetchState, CiSnapshot, CiStatus, ForgeProvider,
-    ForgeRepository,
+    ForgeRepository, IssueTracker, LinkedIssue,
 };
 
 pub(super) fn repository(url: &str) -> Option<ForgeRepository> {
@@ -40,7 +42,7 @@ fn query(sources: &[CiSource]) -> String {
             .split_once('/')
             .expect("validated GitHub repository");
         query.push_str(&format!("r{index}:repository(owner:{owner},name:{name}) {{ object(expression:{sha}) {{ ... on Commit {{ ", owner=json!(owner), name=json!(name), sha=json!(source.sha)));
-        query.push_str("oid associatedPullRequests(first:10) { nodes { number title url isDraft state updatedAt headRefOid headRefName } pageInfo { hasNextPage } } statusCheckRollup { state contexts(first:100) { nodes { __typename ... on CheckRun { name status conclusion detailsUrl startedAt completedAt } ... on StatusContext { context state targetUrl } } pageInfo { hasNextPage } } }");
+        query.push_str("oid associatedPullRequests(first:10) { nodes { number title url body bodyHTML isDraft state updatedAt headRefOid headRefName } pageInfo { hasNextPage } } statusCheckRollup { state contexts(first:100) { nodes { __typename ... on CheckRun { name status conclusion detailsUrl startedAt completedAt } ... on StatusContext { context state targetUrl } } pageInfo { hasNextPage } } }");
         query.push_str(" } } } ");
     }
     query.push('}');
@@ -97,6 +99,170 @@ fn status(node: &Value) -> CiStatus {
     }
 }
 
+/// Only explicit canonical Linear issue URLs are evidence of an issue association.
+/// In particular, a bare ticket identifier never supplies a workspace or URL.
+fn linear_issue(url: &str) -> Option<LinkedIssue> {
+    if url.len() > 4096
+        || url
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+    {
+        return None;
+    }
+    let url = url.split(['?', '#']).next()?;
+    let path = url.strip_prefix("https://linear.app/")?;
+    if !path
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"-_/".contains(&byte))
+    {
+        return None;
+    }
+    let mut parts = path.trim_end_matches('/').split('/');
+    let workspace = parts.next()?;
+    if workspace.is_empty() || parts.next()? != "issue" {
+        return None;
+    }
+    let identifier = parts.next()?;
+    let (team, number) = identifier.rsplit_once('-')?;
+    if team.is_empty()
+        || team.len() > 32
+        || !team.as_bytes()[0].is_ascii_uppercase()
+        || !team
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+        || number.is_empty()
+        || !number.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    if let Some(slug) = parts.next()
+        && (slug.is_empty() || parts.next().is_some())
+    {
+        return None;
+    }
+    Some(LinkedIssue {
+        provider: IssueTracker::Linear,
+        identifier: identifier.to_owned(),
+        title: None,
+        url: url.trim_end_matches('/').to_owned(),
+    })
+}
+
+fn issue_title(label: &str, issue: &LinkedIssue) -> Option<String> {
+    let mut normalized = String::new();
+    let mut remaining = 512;
+    for word in label.split_whitespace() {
+        if !normalized.is_empty() {
+            normalized.push(' ');
+            remaining -= 1;
+        }
+        for c in word.chars().filter(|c| !c.is_control()).take(remaining) {
+            normalized.push(c);
+            remaining -= 1;
+        }
+        if remaining == 0 {
+            break;
+        }
+    }
+    let label = normalized.trim();
+    if label.is_empty() || label.starts_with("https://") || label == issue.identifier {
+        return None;
+    }
+    let label = label
+        .trim_start_matches('[')
+        .strip_prefix(&issue.identifier)
+        .map(|title| title.trim_start_matches([' ', ']', ':', '-', '–', '—']))
+        .unwrap_or(label);
+    (!label.is_empty()).then(|| label.to_owned())
+}
+
+fn insert_issue(issues: &mut Vec<LinkedIssue>, url: &str, label: &str, title: &str) {
+    let Some(mut issue) = linear_issue(url) else {
+        return;
+    };
+    issue.title = issue_title(title, &issue).or_else(|| issue_title(label, &issue));
+    // A pretty URL and a short URL can identify the same issue.
+    fn workspace(url: &str) -> Option<&str> {
+        url.strip_prefix("https://linear.app/")
+            .and_then(|path| path.split_once("/issue/"))
+            .map(|(workspace, _)| workspace)
+    }
+    if let Some(prior) = issues.iter_mut().find(|prior| {
+        prior.identifier == issue.identifier && workspace(&prior.url) == workspace(&issue.url)
+    }) {
+        if prior.title.is_none() {
+            prior.title = issue.title;
+        }
+    } else if issues.len() < 32 {
+        issues.push(issue);
+    }
+}
+
+fn linked_issues(body: &str, html: &str) -> Vec<LinkedIssue> {
+    // Bound parser work without truncating the description used by full-text search.
+    fn bounded(text: &str) -> &str {
+        let mut end = text.len().min(1024 * 1024);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        &text[..end]
+    }
+    let body = bounded(body);
+    let mut issues = Vec::new();
+    let mut link = None;
+    for event in Parser::new(body) {
+        match event {
+            Event::Start(Tag::Link {
+                dest_url, title, ..
+            }) => {
+                link = Some((dest_url, title, String::new()));
+            }
+            Event::Text(text) => {
+                if let Some((_, _, label)) = &mut link {
+                    label.push_str(&text);
+                } else {
+                    // Never accept a canonical-looking substring in another URL.
+                    for token in text.split_whitespace() {
+                        let url = token
+                            .trim_start_matches(['(', '[', '<'])
+                            .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '>']);
+                        insert_issue(&mut issues, url, "", "");
+                    }
+                }
+            }
+            Event::Code(text) => {
+                if let Some((_, _, label)) = &mut link {
+                    label.push_str(&text);
+                }
+            }
+            Event::End(TagEnd::Link) => {
+                if let Some((url, title, label)) = link.take() {
+                    insert_issue(&mut issues, &url, &label, &title);
+                }
+            }
+            _ => {}
+        }
+    }
+    // GitHub autolinks can resolve a raw ticket ID into a verified URL in bodyHTML.
+    // Raw HTML links in Markdown remain usable if rendered HTML is absent.
+    let document = Html::parse_fragment(if html.is_empty() { body } else { bounded(html) });
+    let selector = Selector::parse("a[href]").expect("static anchor selector");
+    for anchor in document.select(&selector) {
+        let url = anchor.value().attr("href").unwrap_or_default();
+        if !url.starts_with("https://linear.app/") {
+            continue;
+        }
+        let label = anchor.text().collect::<String>();
+        insert_issue(
+            &mut issues,
+            url,
+            &label,
+            anchor.value().attr("title").unwrap_or_default(),
+        );
+    }
+    issues
+}
+
 fn change_request(node: &Value) -> Option<ChangeRequest> {
     let state = match node["state"].as_str()? {
         "OPEN" => match node["isDraft"].as_bool()? {
@@ -112,6 +278,11 @@ fn change_request(node: &Value) -> Option<ChangeRequest> {
         title: text(node, "title")?,
         url: text(node, "url")?,
         state,
+        description: node["body"].as_str().unwrap_or_default().to_owned(),
+        issues: linked_issues(
+            node["body"].as_str().unwrap_or_default(),
+            node["bodyHTML"].as_str().unwrap_or_default(),
+        ),
     })
 }
 
@@ -450,6 +621,137 @@ fn epoch(value: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_description_and_markdown_linear_links_survive_provider_normalization() {
+        let body = "Searchable full description\n\n\
+            [ENG-42 Fix **unicode** rendering](https://linear.app/work/issue/ENG-42/fix-rendering)\n\
+            [ENG-43][ticket]\n\n\
+            [ticket]: https://linear.app/work/issue/ENG-43 \"Preserve link titles\"\n\n\
+            https://linear.app/work/issue/ENG-44/plain-url.";
+        let mut node = pr(7, "OPEN", false, "2026-10-13T12:00:00Z");
+        node["body"] = json!(body);
+        let snapshot = parse(&source(), &repository_result(vec![node], vec![]), 42).unwrap();
+        let request = snapshot.change_request.unwrap();
+        assert_eq!(request.description, body);
+        assert_eq!(
+            request
+                .issues
+                .iter()
+                .map(|issue| (
+                    issue.identifier.as_str(),
+                    issue.title.as_deref(),
+                    issue.url.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "ENG-42",
+                    Some("Fix unicode rendering"),
+                    "https://linear.app/work/issue/ENG-42/fix-rendering"
+                ),
+                (
+                    "ENG-43",
+                    Some("Preserve link titles"),
+                    "https://linear.app/work/issue/ENG-43"
+                ),
+                (
+                    "ENG-44",
+                    None,
+                    "https://linear.app/work/issue/ENG-44/plain-url"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn rendered_autolinks_supply_verified_urls_titles_and_html_entities() {
+        let issues = linked_issues(
+            "Fixes ENG-42 and OPS-9, whose workspace cannot be inferred from this text",
+            r#"<p><a href="https://linear.app/real-workspace/issue/ENG-42"
+                title="Fix &amp; simplify &quot;rendering&quot;"><span>ENG-42</span></a>
+                <a href='https://linear.app/other/issue/OPS-9'><b>OPS-9</b> Review &amp; ship</a></p>"#,
+        );
+        assert_eq!(issues.len(), 2);
+        assert_eq!(
+            issues[0].url,
+            "https://linear.app/real-workspace/issue/ENG-42"
+        );
+        assert_eq!(
+            issues[0].title.as_deref(),
+            Some("Fix & simplify \"rendering\"")
+        );
+        assert_eq!(issues[1].title.as_deref(), Some("Review & ship"));
+        let raw_html =
+            r#"<a href="https://linear.app/work/issue/ENG-7"><b>ENG-7</b> HTML-only body</a>"#;
+        let issues = linked_issues(raw_html, "");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].url, "https://linear.app/work/issue/ENG-7");
+        assert_eq!(issues[0].title.as_deref(), Some("HTML-only body"));
+    }
+
+    #[test]
+    fn unsupported_or_deceptive_issue_links_never_produce_metadata() {
+        for url in [
+            "http://linear.app/work/issue/ENG-42",
+            "https://linear.app.evil.test/work/issue/ENG-42",
+            "https://evil.test/https://linear.app/work/issue/ENG-42",
+            "https://linear.app@evil.test/work/issue/ENG-42",
+            "https://evil.test@linear.app/work/issue/ENG-42",
+            "https://linear.app:443/work/issue/ENG-42",
+            "https://linear.app/work/project/ENG-42",
+            "https://linear.app/work/issue/not-a-ticket",
+            "https://linear.app/work/issue/ENG-42/slug/extra",
+            "https://linear.app/work/issue/ENG-42%0a",
+            "https://linear.app/work/issue/ENG-42\\evil",
+            "javascript:https://linear.app/work/issue/ENG-42",
+        ] {
+            assert!(linear_issue(url).is_none(), "{url}");
+            let markdown = format!("[ENG-42]({url})\n\n{url}");
+            let html = format!("<a href='{url}'>ENG-42</a>");
+            assert!(linked_issues(&markdown, &html).is_empty(), "{url}");
+        }
+        assert!(
+            linked_issues(
+                "",
+                r#"<a href="https://linear.app/work/issue/ENG-42&#x0a;">Unsafe entity</a>"#
+            )
+            .is_empty()
+        );
+        assert!(linked_issues("ENG-42 #42 Linear ENG-42", "<p>ENG-42</p>").is_empty());
+        let request = change_request(&pr(7, "OPEN", false, "2026-10-13T12:00:00Z")).unwrap();
+        assert!(request.description.is_empty());
+        assert!(request.issues.is_empty());
+    }
+
+    #[test]
+    fn duplicate_issue_urls_merge_titles_but_not_different_workspaces() {
+        let issues = linked_issues(
+            "https://linear.app/work/issue/ENG-42\n\n\
+             [ENG-42](https://linear.app/work/issue/ENG-42/pretty-slug/)",
+            r#"<a href="https://linear.app/work/issue/ENG-42?source=github"
+                title="Useful title">ENG-42</a>
+                <a href="https://linear.app/other/issue/ENG-42">Other workspace issue</a>"#,
+        );
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].url, "https://linear.app/work/issue/ENG-42");
+        assert_eq!(issues[0].title.as_deref(), Some("Useful title"));
+        assert_eq!(issues[1].url, "https://linear.app/other/issue/ENG-42");
+    }
+
+    #[test]
+    fn issue_parsing_is_bounded_without_truncating_searchable_description() {
+        let body = (1..=40)
+            .map(|number| format!("https://linear.app/work/issue/ENG-{number}\n\n"))
+            .collect::<String>();
+        assert_eq!(linked_issues(&body, "").len(), 32);
+        let body = format!("{body}{} searchable-tail", "界".repeat(400_000));
+        let mut node = pr(7, "OPEN", false, "2026-10-13T12:00:00Z");
+        node["body"] = json!(body);
+        let request = change_request(&node).unwrap();
+        assert_eq!(request.description, body);
+        assert_eq!(request.issues.len(), 32);
+    }
 
     fn source() -> CiSource {
         CiSource {

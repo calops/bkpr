@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use shephrd::agent_contract::harness_name;
 use shephrd::ci_contract::{
     ChangeRequestState, CiFetchState, CiRefreshTarget, CiSnapshot, CiStatus, ForgeProvider,
+    IssueTracker, LinkedIssue,
 };
 use shephrd::{Attention, ProjectIdentity, Snapshot, Status};
 use unicode_width::UnicodeWidthStr;
@@ -58,6 +59,7 @@ pub struct TreeRow {
 
 #[derive(Clone)]
 pub enum RowKind {
+    Spacer,
     Workspace { index: usize, collapsed: bool },
     Projects { index: usize, has_children: bool },
     Pane { index: usize, last: bool },
@@ -67,6 +69,13 @@ pub enum RowKind {
 pub fn tree(state: &Snapshot, collapsed: &std::collections::BTreeSet<String>) -> Vec<TreeRow> {
     let mut rows = Vec::new();
     for (index, workspace) in state.workspaces.iter().enumerate() {
+        if index > 0 {
+            rows.push(TreeRow {
+                item: None,
+                workspace_id: None,
+                kind: RowKind::Spacer,
+            });
+        }
         let folded = collapsed.contains(&workspace.id);
         let children: Vec<_> = state
             .panes
@@ -614,18 +623,33 @@ fn request_presentation(state: ChangeRequestState) -> (&'static str, &'static st
 }
 
 fn forge_repository(ci: &CiSnapshot, project: Option<&ProjectIdentity>) -> PopupRow {
-    let mut repository = PopupRow::text(
-        format!(
+    let identity = match &ci.change_request {
+        Some(request) => format!(
+            "{} {} #{}",
+            provider_icon(ci.repository.provider),
+            ci.repository.path,
+            request.number
+        ),
+        None => format!(
             "{} {}",
             provider_icon(ci.repository.provider),
             ci.repository.path
         ),
+    };
+    let mut repository = PopupRow::text(
+        identity,
         project
             .cloned()
             .map(PopupColor::Project)
             .unwrap_or(PopupColor::Text),
     );
-    repository.link = safe_link(&ci.repository.web_url).map(str::to_owned);
+    repository.link = safe_link(
+        ci.change_request
+            .as_ref()
+            .map(|request| request.url.as_str())
+            .unwrap_or(&ci.repository.web_url),
+    )
+    .map(str::to_owned);
     repository
 }
 
@@ -633,11 +657,7 @@ fn request_row(request: &shephrd::ci_contract::ChangeRequest) -> PopupRow {
     PopupRow {
         spans: vec![
             PopupSpan::new(
-                format!(
-                    "{}  #{} ",
-                    request_presentation(request.state).0,
-                    request.number
-                ),
+                format!("{}  ", request_presentation(request.state).0),
                 PopupColor::ChangeRequest(request.state),
             ),
             PopupSpan::new(request.title.clone(), PopupColor::Text),
@@ -647,9 +667,39 @@ fn request_row(request: &shephrd::ci_contract::ChangeRequest) -> PopupRow {
     }
 }
 
-fn forge_context(ci: &CiSnapshot, project: Option<&ProjectIdentity>) -> Vec<PopupRow> {
+fn issue_row(issue: &LinkedIssue) -> PopupRow {
+    let icon = match issue.provider {
+        IssueTracker::Linear => "\u{f02e}", // nf-fa-bookmark
+    };
+    let mut label = format!("{icon} {}", issue.identifier);
+    if let Some(title) = issue
+        .title
+        .as_deref()
+        .filter(|title| !clean(title).trim().is_empty())
+    {
+        label.push_str(" · ");
+        label.push_str(title);
+    }
+    PopupRow {
+        spans: vec![PopupSpan::new(label, PopupColor::Text)],
+        link: safe_link(&issue.url).map(str::to_owned),
+        ..PopupRow::default()
+    }
+}
+
+fn forge_context(
+    ci: &CiSnapshot,
+    project: Option<&ProjectIdentity>,
+    branches: Vec<PopupRow>,
+) -> Vec<PopupRow> {
     let mut rows = vec![forge_repository(ci, project)];
-    rows.extend(ci.change_request.as_ref().map(request_row));
+    if let Some(request) = &ci.change_request {
+        rows.extend(request.issues.iter().map(issue_row));
+    }
+    rows.extend(branches);
+    if let Some(request) = &ci.change_request {
+        rows.push(request_row(request));
+    }
     rows
 }
 
@@ -899,6 +949,9 @@ pub fn render_row(
         hovered,
         selected_pane_group,
     );
+    if content.is_empty() {
+        return content;
+    }
     let background = if selected {
         theme.selected
     } else if hovered {
@@ -931,6 +984,7 @@ fn render_content_row(
         MUTED
     };
     let body = match &row.kind {
+        RowKind::Spacer => return String::new(),
         RowKind::Workspace { index, collapsed } => {
             let workspace = &state.workspaces[*index];
             let dot = truncate("● ", columns);
@@ -1149,6 +1203,18 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                         .filter(|(identity, _)| identity.id == project.id)
                         .collect();
                     let mut rows = Vec::new();
+                    let mut requests = std::collections::BTreeSet::new();
+                    for (index, (_, ci)) in sources.iter().enumerate() {
+                        if let Some(request) = &ci.change_request
+                            && requests.insert(request.number)
+                        {
+                            if index != 0 {
+                                rows.push(forge_repository(ci, Some(project)));
+                            }
+                            rows.extend(request.issues.iter().map(issue_row));
+                            rows.push(request_row(request));
+                        }
+                    }
                     let mut contexts: Vec<&shephrd::Pane> = Vec::new();
                     for pane in &panes {
                         if pane
@@ -1174,14 +1240,6 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                     }
                     if project.repository && contexts.is_empty() {
                         rows.extend(branch_rows(None, None));
-                    }
-                    let mut requests = std::collections::BTreeSet::new();
-                    for (_, ci) in &sources {
-                        if let Some(request) = &ci.change_request
-                            && requests.insert(request.number)
-                        {
-                            rows.push(request_row(request));
-                        }
                     }
                     rows.push(PopupRow::default());
                     rows.push(PopupRow::heading("Checks"));
@@ -1280,17 +1338,7 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                         ..PopupRow::default()
                     });
                 }
-                let mut repository = pane
-                    .ci
-                    .as_ref()
-                    .map(|ci| forge_context(ci, pane.project.as_ref()))
-                    .unwrap_or_else(|| {
-                        pane.project
-                            .as_ref()
-                            .map(|project| vec![repository_heading(project, None)])
-                            .unwrap_or_default()
-                    });
-                if pane.branch_changes.is_some()
+                let branches = if pane.branch_changes.is_some()
                     || pane.branch.is_some()
                     || pane.ci.is_some()
                     || pane
@@ -1298,17 +1346,26 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                         .as_ref()
                         .is_some_and(|project| project.repository)
                 {
-                    let branches = branch_rows(
+                    branch_rows(
                         pane.branch
                             .as_deref()
                             .or_else(|| pane.ci.as_ref().and_then(|ci| ci.branch.as_deref())),
                         pane.branch_changes.as_ref(),
-                    );
-                    repository.splice(
-                        usize::from(!repository.is_empty())..usize::from(!repository.is_empty()),
-                        branches,
-                    );
-                }
+                    )
+                } else {
+                    Vec::new()
+                };
+                let repository = if let Some(ci) = &pane.ci {
+                    forge_context(ci, pane.project.as_ref(), branches)
+                } else {
+                    let mut rows = pane
+                        .project
+                        .as_ref()
+                        .map(|project| vec![repository_heading(project, None)])
+                        .unwrap_or_default();
+                    rows.extend(branches);
+                    rows
+                };
                 let mut sections = Vec::new();
                 if !repository.is_empty() {
                     sections.push(PopupSection::named("Repository", repository));
@@ -1468,9 +1525,6 @@ impl Modal {
                         format!("  {name_line}"),
                         "Directory (optional):".to_owned(),
                         format!("  {cwd_line}"),
-                        String::new(),
-                        "Tab field · Enter create".to_owned(),
-                        "Esc cancel".to_owned(),
                     ],
                     Some(if *cwd_active {
                         (2 + cwd_cursor, 4)
@@ -1486,8 +1540,6 @@ impl Modal {
                         "Create terminal".to_owned(),
                         "Directory (optional):".to_owned(),
                         format!("  {line}"),
-                        String::new(),
-                        "Enter create · Esc cancel".to_owned(),
                     ],
                     Some((2 + cursor, 2)),
                 )
@@ -1495,13 +1547,7 @@ impl Modal {
             Self::Rename { input, .. } => {
                 let (line, cursor) = input.visible(columns.saturating_sub(2));
                 (
-                    vec![
-                        "Rename".to_owned(),
-                        String::new(),
-                        format!("  {line}"),
-                        String::new(),
-                        "Enter save · Esc cancel".to_owned(),
-                    ],
+                    vec!["Rename".to_owned(), String::new(), format!("  {line}")],
                     Some((2 + cursor, 2)),
                 )
             }
@@ -1511,8 +1557,6 @@ impl Modal {
                     name.clone(),
                     String::new(),
                     "This terminates native terminals.".to_owned(),
-                    "Enter / y confirm".to_owned(),
-                    "Esc / n cancel".to_owned(),
                 ],
                 None,
             ),
@@ -1585,6 +1629,8 @@ mod tests {
                 title: "Improve project metadata".to_owned(),
                 url: "https://github.com/owner/repo/pull/7".to_owned(),
                 state: ChangeRequestState::Open,
+                description: String::new(),
+                issues: Vec::new(),
             }),
             fetch_state: CiFetchState::Ready,
             updated_at: 1,
@@ -1815,28 +1861,32 @@ mod tests {
         assert_eq!(workspace_ci(&state, "workspace").len(), 1);
         let popup = tooltip(&Item::Workspace("workspace".to_owned()), &state);
         let rows = popup.rows();
+        let ci = state.panes[0].ci.as_ref().unwrap();
+        let request = ci.change_request.as_ref().unwrap();
+        let identities: Vec<_> = rows
+            .iter()
+            .filter(|row| row.plain().contains(&format!("#{}", request.number)))
+            .collect();
+        assert_eq!(identities.len(), 1);
+        assert!(identities[0].plain().contains(&ci.repository.path));
+        assert_eq!(identities[0].link.as_deref(), Some(request.url.as_str()));
         assert_eq!(
             rows.iter()
-                .filter(|row| row.plain().contains("unit tests"))
-                .count(),
-            0
-        );
-        assert_eq!(popup.sections.len(), 1);
-        assert!(
-            rows.iter().any(|row| row.plain().contains("#7")
-                && row.plain().contains("Improve project metadata"))
-        );
-        assert!(!rows.iter().any(|row| row.plain().contains("01234567")));
-        assert!(rows.iter().any(|row| row.plain().contains("ago")));
-        assert!(!rows.iter().any(|row| row.plain().contains("/repo/.git")
-            || row.plain().contains("https://")
-            || row.plain().contains("Unix")));
-        assert_eq!(
-            rows.iter()
-                .filter(|row| row.plain().contains("feature/日本語"))
+                .filter(|row| row.plain().contains(&request.title))
                 .count(),
             1
         );
+        let summaries: Vec<_> = rows.iter().filter_map(|row| row.refresh.as_ref()).collect();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].repository, ci.repository);
+        assert_eq!(summaries[0].head_sha, ci.head_sha);
+        assert_eq!(popup.sections.len(), 1);
+        for check in &ci.checks {
+            assert!(rows.iter().all(|row| !row.plain().contains(&check.name)));
+            if let Some(url) = &check.url {
+                assert!(rows.iter().all(|row| row.link.as_ref() != Some(url)));
+            }
+        }
         state.panes[1].ci.as_mut().unwrap().stale = true;
         assert_eq!(
             ci_state(workspace_ci(&state, "workspace")[0].1),
@@ -1853,18 +1903,27 @@ mod tests {
             .collect();
         assert_eq!(summaries.len(), 2);
         assert!(summaries.iter().all(|row| row.truncate));
-        assert!(
-            summaries
+        assert!(summaries.iter().any(|row| {
+            row.spans
                 .iter()
-                .any(|row| row.plain().contains("Unavailable")
-                    && row.plain().contains("provider unavailable 日本語")
-                    && row.plain().contains("stale"))
-        );
-        assert!(
-            !workspace_rows
-                .iter()
-                .any(|row| row.plain().contains("unit tests"))
-        );
+                .any(|span| span.color == PopupColor::Ci(CiStatus::Unknown))
+        }));
+        for pane in &state.panes {
+            for check in &pane.ci.as_ref().unwrap().checks {
+                assert!(
+                    workspace_rows
+                        .iter()
+                        .all(|row| !row.plain().contains(&check.name))
+                );
+                if let Some(url) = &check.url {
+                    assert!(
+                        workspace_rows
+                            .iter()
+                            .all(|row| row.link.as_ref() != Some(url))
+                    );
+                }
+            }
+        }
 
         let popup = tooltip(&Item::Pane("1".to_owned()), &state);
         let rows = popup.rows();
@@ -1979,6 +2038,50 @@ mod tests {
             assert_eq!(reserved, columns);
         }
         assert!(branch_counts(None, 80).is_none());
+    }
+
+    #[test]
+    fn workspace_gaps_stay_blank_and_unselectable_when_groups_fold() {
+        let mut state = snapshot();
+        for id in ["empty", "third"] {
+            let mut workspace = state.workspaces[0].clone();
+            workspace.id = id.to_owned();
+            state.workspaces.push(workspace);
+        }
+        for collapsed in [
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::from(["workspace".to_owned()]),
+            state
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.id.clone())
+                .collect(),
+        ] {
+            let rows = tree(&state, &collapsed);
+            assert!(!matches!(rows.first().unwrap().kind, RowKind::Spacer));
+            assert!(!matches!(rows.last().unwrap().kind, RowKind::Spacer));
+            for workspace in state.workspaces.iter().skip(1) {
+                let item = Item::Workspace(workspace.id.clone());
+                let header = *item_band(&rows, &item).unwrap().start();
+                let gap = header - 1;
+                assert!(matches!(rows[gap].kind, RowKind::Spacer));
+                assert!(rows[gap].workspace_id.is_none());
+                assert_eq!(item_at(&rows, gap), None);
+                assert_eq!(item_at(&rows, header), Some(item));
+                assert!(
+                    render_row(
+                        &rows[gap],
+                        &state,
+                        &Theme::default(),
+                        38,
+                        false,
+                        false,
+                        false
+                    )
+                    .is_empty()
+                );
+            }
+        }
     }
 
     #[test]
@@ -2204,10 +2307,10 @@ mod tests {
             ci.change_request.as_mut().unwrap().state = request_state;
             ci.change_request.as_mut().unwrap().title =
                 "日本語 title \u{1b}[31m untrusted".to_owned();
-            let context = forge_context(ci, Some(&identity("/repo/.git")));
+            let context = forge_context(ci, Some(&identity("/repo/.git")), Vec::new());
             assert_eq!(
                 context[0].link.as_deref(),
-                Some(ci.repository.web_url.as_str())
+                Some(ci.change_request.as_ref().unwrap().url.as_str())
             );
             assert_eq!(
                 context[1].link.as_deref(),
@@ -2259,10 +2362,10 @@ mod tests {
                 })
                 .collect();
             assert_eq!(names.len(), 1);
-            assert_eq!(names[0].plain(), "\u{f09b} owner/repo");
+            assert_eq!(names[0].plain(), "\u{f09b} owner/repo #7");
             assert_eq!(
                 names[0].link.as_deref(),
-                Some("https://github.com/owner/repo")
+                Some("https://github.com/owner/repo/pull/7")
             );
             assert_eq!(
                 names[0].spans[0].color.ansi(),
@@ -2287,6 +2390,125 @@ mod tests {
             assert_eq!(name.plain(), state.panes[0].project.as_ref().unwrap().name);
             assert!(name.link.is_none());
             assert!(rows.iter().all(|row| !row.plain().contains('\u{f09b}')));
+        }
+    }
+
+    #[test]
+    fn repository_identity_prefers_the_verified_request_without_inventing_links() {
+        let mut snapshot = ci(CiStatus::Passed);
+        snapshot.change_request.as_mut().unwrap().number = 42;
+        snapshot.change_request.as_mut().unwrap().url =
+            "https://github.com/owner/repo/pull/42".into();
+        let heading = forge_repository(&snapshot, None);
+        assert_eq!(
+            heading.link.as_deref(),
+            Some("https://github.com/owner/repo/pull/42")
+        );
+        assert!(heading.plain().ends_with("owner/repo #42"));
+        assert!(
+            !request_row(snapshot.change_request.as_ref().unwrap())
+                .plain()
+                .contains("#42")
+        );
+
+        snapshot.change_request.as_mut().unwrap().url = String::new();
+        assert!(forge_repository(&snapshot, None).link.is_none());
+        snapshot.change_request.as_mut().unwrap().url = "javascript:alert(1)".into();
+        assert!(forge_repository(&snapshot, None).link.is_none());
+        snapshot.change_request = None;
+        let heading = forge_repository(&snapshot, None);
+        assert_eq!(
+            heading.link.as_deref(),
+            Some("https://github.com/owner/repo")
+        );
+        assert!(!heading.plain().contains('#'));
+        snapshot.repository.web_url = String::new();
+        assert!(forge_repository(&snapshot, None).link.is_none());
+    }
+
+    #[test]
+    fn linked_tickets_follow_repository_identity_before_other_pane_context() {
+        let mut state = snapshot();
+        state.panes[0].branch_changes = Some(changes());
+        let request = state.panes[0]
+            .ci
+            .as_mut()
+            .unwrap()
+            .change_request
+            .as_mut()
+            .unwrap();
+        request.issues = vec![
+            LinkedIssue {
+                provider: IssueTracker::Linear,
+                identifier: "ENG-42".into(),
+                title: Some("Repair rendering".into()),
+                url: "https://linear.app/real-team/issue/ENG-42/repair-rendering".into(),
+            },
+            LinkedIssue {
+                provider: IssueTracker::Linear,
+                identifier: "OPS-9".into(),
+                title: None,
+                url: "https://linear.app/other-team/issue/OPS-9".into(),
+            },
+        ];
+        for item in [Item::Pane("1".into()), Item::Workspace("workspace".into())] {
+            let rows = tooltip(&item, &state).rows();
+            let heading = rows
+                .iter()
+                .position(|row| row.plain().contains("owner/repo #7"))
+                .unwrap();
+            assert_eq!(
+                rows[heading].link.as_deref(),
+                Some("https://github.com/owner/repo/pull/7")
+            );
+            assert_eq!(
+                rows[heading + 1].link.as_deref(),
+                Some("https://linear.app/real-team/issue/ENG-42/repair-rendering")
+            );
+            assert!(
+                rows[heading + 1]
+                    .plain()
+                    .contains("ENG-42 · Repair rendering")
+            );
+            assert_eq!(
+                rows[heading + 2].link.as_deref(),
+                Some("https://linear.app/other-team/issue/OPS-9")
+            );
+            assert!(rows[heading + 2].plain().ends_with("OPS-9"));
+            assert_eq!(
+                rows.iter().filter(|row| row.plain().contains("#7")).count(),
+                1
+            );
+            assert!(
+                rows.iter()
+                    .any(|row| !row.suffix.is_empty() && row.link.is_none())
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_multiple_requests_keep_each_identity_link_and_number_once() {
+        let mut state = snapshot();
+        let mut other = state.panes[0].clone();
+        other.id = "2".into();
+        let ci = other.ci.as_mut().unwrap();
+        ci.head_sha = "another-head".into();
+        ci.branch = Some("another-branch".into());
+        let request = ci.change_request.as_mut().unwrap();
+        request.number = 8;
+        request.url = "https://github.com/owner/repo/pull/8".into();
+        state.panes.push(other);
+        let rows = tooltip(&Item::Workspace("workspace".into()), &state).rows();
+        for number in [7, 8] {
+            let matching: Vec<_> = rows
+                .iter()
+                .filter(|row| row.plain().contains(&format!("#{number}")))
+                .collect();
+            assert_eq!(matching.len(), 1);
+            assert_eq!(
+                matching[0].link,
+                Some(format!("https://github.com/owner/repo/pull/{number}"))
+            );
         }
     }
 
@@ -2366,6 +2588,7 @@ mod tests {
         other.ci.as_mut().unwrap().repository.path = "someone/other".to_owned();
         other.ci.as_mut().unwrap().repository.web_url =
             "https://github.com/someone/other".to_owned();
+        other.ci.as_mut().unwrap().change_request = None;
         state.panes.push(other);
         let popup = tooltip(&Item::Workspace("workspace".to_owned()), &state);
         assert_eq!(popup.sections.len(), 2);
@@ -2379,7 +2602,13 @@ mod tests {
         let rows = popup.rows();
         assert_eq!(
             rows.iter()
-                .filter(|row| row.link.as_deref() == Some("https://github.com/owner/repo"))
+                .filter(
+                    |row| row.link.as_deref() == Some("https://github.com/owner/repo/pull/7")
+                        && row
+                            .spans
+                            .iter()
+                            .any(|span| matches!(span.color, PopupColor::Project(_)))
+                )
                 .count(),
             1
         );

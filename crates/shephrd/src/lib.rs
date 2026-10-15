@@ -165,7 +165,7 @@ pub fn native_layout(
     let sidebar_percent = sidebar_percent.clamp(1, 99);
     let quote = |value: &str| serde_json::to_string(value);
     let mut sidebar = format!(
-        "   pane size=\"{sidebar_percent}%\" borderless=true {{\n    plugin location={} {{\n",
+        "   pane size=\"{sidebar_percent}%\" borderless=true {{\n    plugin location={} {{\n     mode_info_format \"json\"\n",
         quote(plugin_url)?
     );
     for (key, value) in configuration {

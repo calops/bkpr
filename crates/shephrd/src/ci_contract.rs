@@ -30,12 +30,31 @@ pub enum ChangeRequestState {
     Closed,
 }
 
+/// Issue trackers are independent of the forge hosting a change request.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueTracker {
+    Linear,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LinkedIssue {
+    pub provider: IssueTracker,
+    pub identifier: String,
+    pub title: Option<String>,
+    pub url: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ChangeRequest {
     pub number: u64,
     pub title: String,
     pub url: String,
     pub state: ChangeRequestState,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub issues: Vec<LinkedIssue>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -118,6 +137,30 @@ pub struct CiSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prior_change_requests_deserialize_without_description_or_issues() {
+        let request: ChangeRequest = serde_json::from_value(serde_json::json!({
+            "number": 42,
+            "title": "Existing cached request",
+            "url": "https://github.com/owner/repo/pull/42",
+            "state": "open"
+        }))
+        .unwrap();
+        assert!(request.description.is_empty());
+        assert!(request.issues.is_empty());
+        let mut updated = request;
+        updated.description = "Full request body".into();
+        updated.issues.push(LinkedIssue {
+            provider: IssueTracker::Linear,
+            identifier: "ENG-42".into(),
+            title: Some("Keep linked metadata".into()),
+            url: "https://linear.app/team/issue/ENG-42/keep-metadata".into(),
+        });
+        let restored: ChangeRequest =
+            serde_json::from_value(serde_json::to_value(&updated).unwrap()).unwrap();
+        assert_eq!(restored, updated);
+    }
 
     #[test]
     fn failures_and_active_checks_take_precedence_over_success() {
