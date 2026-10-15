@@ -34,11 +34,11 @@ Attach with `shephrd --session project` to register the current agent. Direct `z
 
 ## Workspaces and navigation
 
-Application input starts in Zellij's **Locked** mode, so terminal shortcuts go to the application. Press **Ctrl+Space** to focus the sidebar, or **Ctrl+g** to unlock stock Zellij controls. The rounded guide at the bottom follows the current mode and effective keybindings.
+Application input starts in Zellij's **Locked** mode, so terminal shortcuts go to the application. Press **Ctrl+Space** to focus the sidebar, or **Ctrl+g** to unlock stock Zellij controls. The rounded guide follows the current mode and effective keybindings: Locked stays inside the sidebar; other modes can extend into the pane area without taking focus. Keys are right-aligned, descriptions left-aligned, with a centered gap when space permits; long binding groups wrap without dropping keys.
 
 A left click activates a workspace or terminal without moving keyboard focus into the sidebar. Hover highlights rows but doesn't steal focus. Right click opens persistent details; clicking outside dismisses them without consuming the application's click. Details include available activity, CWD, repository, pull request and checks, with clickable links.
 
-Each sidebar-created terminal opens in its own native tab, grouped under its workspace. Stock splits remain available. Drag the separator to resize the sidebar, or use Zellij's resize mode. New sidebar-created tabs inherit the current sidebar width.
+Each sidebar-created terminal opens in its own native tab, grouped under its workspace. Stock splits remain available. Drag the separator to resize the sidebar, or use Zellij's resize mode. New sidebar-created tabs inherit the current width, folds and scroll position while their live state arrives.
 
 | Context | Key | Action |
 | --- | --- | --- |
@@ -92,6 +92,8 @@ GitHub CI monitoring uses `gh`'s active authentication context. Run `gh auth log
 Requests are shared across panes and worktrees, batched, and limited to at most one request per minute per session. Pending checks refresh after a minute; unresolved results refresh less often. Complete terminal results stay cached until the commit/source changes or you click refresh in the details. Use refresh for same-commit reruns, newly added checks or PR-state changes. Refresh still respects request spacing and provider limits.
 
 Checks belong to the exact current commit. An unpushed or inaccessible commit is unknown, never passing. Missing, stale and incomplete data remain distinct from successful checks. Git metadata updates through filesystem events; CI uses the bounded refresh schedule above.
+
+Open PR links follow the branch even while local commits are unpushed. Linear links come from the PR description and its first ten comments; no Linear credentials or configuration are required.
 
 ## Coding harnesses
 

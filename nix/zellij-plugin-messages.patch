@@ -120,38 +120,42 @@
                                  plugin_id,
                                  pane_id_to_replace,
                                  cwd,
-@@ -2106,7 +2085,7 @@
+@@ -2106,7 +2085,9 @@
          | Event::HintText(..)
          | Event::ActivePaneScroll(..)
-         | Event::InputReceived => PermissionType::ReadApplicationState,
+-        | Event::InputReceived => PermissionType::ReadApplicationState,
 -        Event::CustomMessage(name, _) if name == "program_status" => {
-+        Event::CustomMessage(name, _) if name == "program_status" || name == "mode_info" => {
++        | Event::InputReceived
++        | Event::InitialKeybinds(..) => PermissionType::ReadApplicationState,
++        Event::CustomMessage(name, _)
++            if matches!(name.as_str(), "program_status" | "mode_info" | "keybinds_info") => {
              PermissionType::ReadApplicationState
          },
          Event::WebServerStatus(..) => PermissionType::StartWebServer,
-@@ -2142,16 +2121,31 @@
+@@ -2142,16 +2123,41 @@
          (PermissionStatus::Granted, _) => {
              let mut event = event.clone();
++            let json_mode_info = matches!(
++                event,
++                Event::ModeUpdate(..) | Event::InitialKeybinds(..)
++            ) && running_plugin
++                .store
++                .data()
++                .plugin
++                .initial_userspace_configuration
++                .inner()
++                .get("mode_info_format")
++                .map(String::as_str)
++                == Some("json");
              if let Event::ModeUpdate(mode_info) = &mut event {
-+                let json_mode_info = running_plugin
-+                    .store
-+                    .data()
-+                    .plugin
-+                    .initial_userspace_configuration
-+                    .inner()
-+                    .get("mode_info_format")
-+                    .map(String::as_str)
-+                    == Some("json");
                  if mode_info.base_mode.is_none() {
                      mode_info.base_mode = Some(running_plugin.store.data().default_mode);
                  }
--                if plugin_subscriptions.contains(&EventType::InitialKeybinds) {
-+                if !json_mode_info && plugin_subscriptions.contains(&EventType::InitialKeybinds) {
+                 if plugin_subscriptions.contains(&EventType::InitialKeybinds) {
                      // Plugin caches keybindings via InitialKeybinds — send lightweight ModeUpdate
                      mode_info.keybinds = vec![];
                  } else {
--                    // Legacy plugin — send full keybindings as before
-+                    // JSON mode updates must remain complete even for InitialKeybinds subscribers.
+                     // Legacy plugin — send full keybindings as before
                      mode_info.keybinds = running_plugin.store.data().keybinds.to_keybinds_vec();
                  }
 +                if json_mode_info {
@@ -160,10 +164,17 @@
 +                        serde_json::to_string(mode_info).context("failed to serialize mode info")?,
 +                    );
 +                }
++            } else if let Event::InitialKeybinds(keybinds) = &event {
++                if json_mode_info {
++                    event = Event::CustomMessage(
++                        "keybinds_info".to_owned(),
++                        serde_json::to_string(keybinds).context("failed to serialize keybinds")?,
++                    );
++                }
              }
              let protobuf_event: Result<ProtobufEvent, _> = event.clone().try_into();
              match protobuf_event {
-@@ -2171,27 +2165,10 @@
+@@ -2171,27 +2177,10 @@
                          should_render = true;
                      }
                      if rows > 0 && columns > 0 && should_render {
@@ -349,7 +360,7 @@
                      pipes_to_block_or_unblock(running_plugin, Some(&pipe_message.source));
 --- a/zellij-server/src/plugins/unit/render_messages_tests.rs
 +++ b/zellij-server/src/plugins/unit/render_messages_tests.rs
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,438 @@
 +use super::*;
 +use crate::plugins::plugin_map::PluginEnv;
 +use crate::plugins::zellij_exports::zellij_exports;
@@ -692,7 +703,11 @@
 +                };
 +                let mut expected = mode.clone();
 +                expected.base_mode = Some(base_mode.unwrap_or(InputMode::Locked));
-+                expected.keybinds = guest.store.data().keybinds.to_keybinds_vec();
++                expected.keybinds = if initial_keybinds {
++                    vec![]
++                } else {
++                    guest.store.data().keybinds.to_keybinds_vec()
++                };
 +                let senders = guest.store.data().senders.clone();
 +                let mut assets = Vec::new();
 +                apply_event_to_plugin(17, 2, &mut guest, &Event::ModeUpdate(mode),
@@ -703,15 +718,11 @@
 +                        Event::CustomMessage(name, payload) => {
 +                            assert_eq!(name, "mode_info");
 +                            let actual: ModeInfo = serde_json::from_str(&payload).unwrap();
-+                            // Includes KeybindPipe name, payload, plugin and configuration.
 +                            assert_eq!(actual, expected);
 +                        },
 +                        event => panic!("expected lossless mode_info, received {event:?}"),
 +                    }
 +                } else {
-+                    if initial_keybinds {
-+                        expected.keybinds.clear();
-+                    }
 +                    let legacy: ProtobufEvent = Event::ModeUpdate(expected).try_into().unwrap();
 +                    let legacy: Event = legacy.try_into().unwrap();
 +                    assert_eq!(delivered, legacy);
@@ -732,6 +743,34 @@
 +                    PluginInstruction::MessageFromPlugin { message, .. }
 +                        if message.message_name == "immediate-update"));
 +                assert!(receiver.try_recv().is_err());
++                if initial_keybinds {
++                    let keys = Event::InitialKeybinds(
++                        guest.store.data().keybinds.to_keybinds_vec(),
++                    );
++                    let senders = guest.store.data().senders.clone();
++                    apply_event_to_plugin(17, 2, &mut guest, &keys,
++                        &mut assets, senders, &subscriptions).unwrap();
++                    let delivered = delivered_event(&guest);
++                    if format == Some("json") {
++                        match delivered {
++                            Event::CustomMessage(name, payload) => {
++                                assert_eq!(name, "keybinds_info");
++                                let actual = serde_json::from_str(&payload).unwrap();
++                                // Cached keys retain pipe identity, payload and configuration.
++                                assert_eq!(Event::InitialKeybinds(actual), keys);
++                            },
++                            event => panic!("expected lossless keybinds_info, received {event:?}"),
++                        }
++                    } else {
++                        let legacy: ProtobufEvent = keys.try_into().unwrap();
++                        let legacy: Event = legacy.try_into().unwrap();
++                        assert_eq!(delivered, legacy);
++                    }
++                    assert!(matches!(receiver.try_recv().unwrap().0,
++                        PluginInstruction::MessageFromPlugin { message, .. }
++                            if message.message_name == "immediate-update"));
++                    assert!(receiver.try_recv().is_err());
++                }
 +            }
 +        }
 +    }
@@ -745,7 +784,9 @@
 +    guest.store.data_mut().set_permissions(HashSet::new());
 +    for event in [
 +        Event::ModeUpdate(Default::default()),
++        Event::InitialKeybinds(vec![]),
 +        Event::CustomMessage("mode_info".into(), "{}".into()),
++        Event::CustomMessage("keybinds_info".into(), "[]".into()),
 +    ] {
 +        assert_eq!(check_event_permission(guest.store.data(), &event),
 +            (PermissionStatus::Denied, Some(PermissionType::ReadApplicationState)));

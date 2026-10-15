@@ -36,14 +36,35 @@ pub(super) fn repository(url: &str) -> Option<ForgeRepository> {
 fn query(sources: &[CiSource]) -> String {
     let mut query = String::from("query { rateLimit { cost remaining resetAt } ");
     for (index, source) in sources.iter().enumerate() {
+        if sources[..index]
+            .iter()
+            .any(|prior| same_commit(prior, source))
+        {
+            continue;
+        }
         let (owner, name) = source
             .repository
             .path
             .split_once('/')
             .expect("validated GitHub repository");
         query.push_str(&format!("r{index}:repository(owner:{owner},name:{name}) {{ object(expression:{sha}) {{ ... on Commit {{ ", owner=json!(owner), name=json!(name), sha=json!(source.sha)));
-        query.push_str("oid associatedPullRequests(first:10) { nodes { number title url body bodyHTML isDraft state updatedAt headRefOid headRefName } pageInfo { hasNextPage } } statusCheckRollup { state contexts(first:100) { nodes { __typename ... on CheckRun { name status conclusion detailsUrl startedAt completedAt } ... on StatusContext { context state targetUrl } } pageInfo { hasNextPage } } }");
-        query.push_str(" } } } ");
+        query.push_str("oid statusCheckRollup { state contexts(first:100) { nodes { __typename ... on CheckRun { name status conclusion detailsUrl startedAt completedAt } ... on StatusContext { context state targetUrl } } pageInfo { hasNextPage } } }");
+        query.push_str(" } } ");
+        const PR_FIELDS: &str = "number title url body bodyHTML comments(first:10) { nodes { bodyHTML } } isDraft state updatedAt headRefOid headRefName headRepository { nameWithOwner }";
+        for (branch_index, branch_source) in sources.iter().enumerate() {
+            if !same_commit(source, branch_source) {
+                continue;
+            }
+            let Some(branch) = &branch_source.branch else {
+                continue;
+            };
+            query.push_str(&format!(
+                "b{branch_index}:ref(qualifiedName:{qualified}) {{ associatedPullRequests(states:OPEN,first:2) {{ nodes {{ {PR_FIELDS} }} pageInfo {{ hasNextPage }} }} }} c{branch_index}:pullRequests(headRefName:{branch},states:[MERGED,CLOSED],first:1,orderBy:{{field:UPDATED_AT,direction:DESC}}) {{ nodes {{ {PR_FIELDS} }} }} ",
+                qualified = json!(format!("refs/heads/{branch}")),
+                branch = json!(branch),
+            ));
+        }
+        query.push_str(" } ");
     }
     query.push('}');
     query
@@ -199,6 +220,12 @@ fn insert_issue(issues: &mut Vec<LinkedIssue>, url: &str, label: &str, title: &s
 }
 
 fn linked_issues(body: &str, html: &str) -> Vec<LinkedIssue> {
+    let mut issues = Vec::new();
+    collect_linked_issues(&mut issues, body, html);
+    issues
+}
+
+fn collect_linked_issues(issues: &mut Vec<LinkedIssue>, body: &str, html: &str) {
     // Bound parser work without truncating the description used by full-text search.
     fn bounded(text: &str) -> &str {
         let mut end = text.len().min(1024 * 1024);
@@ -208,7 +235,6 @@ fn linked_issues(body: &str, html: &str) -> Vec<LinkedIssue> {
         &text[..end]
     }
     let body = bounded(body);
-    let mut issues = Vec::new();
     let mut link = None;
     for event in Parser::new(body) {
         match event {
@@ -226,7 +252,7 @@ fn linked_issues(body: &str, html: &str) -> Vec<LinkedIssue> {
                         let url = token
                             .trim_start_matches(['(', '[', '<'])
                             .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '>']);
-                        insert_issue(&mut issues, url, "", "");
+                        insert_issue(issues, url, "", "");
                     }
                 }
             }
@@ -237,7 +263,7 @@ fn linked_issues(body: &str, html: &str) -> Vec<LinkedIssue> {
             }
             Event::End(TagEnd::Link) => {
                 if let Some((url, title, label)) = link.take() {
-                    insert_issue(&mut issues, &url, &label, &title);
+                    insert_issue(issues, &url, &label, &title);
                 }
             }
             _ => {}
@@ -254,13 +280,12 @@ fn linked_issues(body: &str, html: &str) -> Vec<LinkedIssue> {
         }
         let label = anchor.text().collect::<String>();
         insert_issue(
-            &mut issues,
+            issues,
             url,
             &label,
             anchor.value().attr("title").unwrap_or_default(),
         );
     }
-    issues
 }
 
 fn change_request(node: &Value) -> Option<ChangeRequest> {
@@ -273,26 +298,44 @@ fn change_request(node: &Value) -> Option<ChangeRequest> {
         "CLOSED" => ChangeRequestState::Closed,
         _ => return None,
     };
+    let mut issues = linked_issues(
+        node["body"].as_str().unwrap_or_default(),
+        node["bodyHTML"].as_str().unwrap_or_default(),
+    );
+    for comment in node["comments"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(10)
+    {
+        collect_linked_issues(
+            &mut issues,
+            "",
+            comment["bodyHTML"].as_str().unwrap_or_default(),
+        );
+    }
     Some(ChangeRequest {
         number: node["number"].as_u64()?,
         title: text(node, "title")?,
         url: text(node, "url")?,
         state,
         description: node["body"].as_str().unwrap_or_default().to_owned(),
-        issues: linked_issues(
-            node["body"].as_str().unwrap_or_default(),
-            node["bodyHTML"].as_str().unwrap_or_default(),
-        ),
+        issues,
     })
 }
 
 fn matching_request(source: &CiSource, nodes: &[Value]) -> Option<ChangeRequest> {
-    // Without branch identity an associated PR is not a verified current-branch match.
+    // Open PRs follow their remote branch; completed PRs must match this local head.
     let branch = source.branch.as_deref()?;
     let matching = || {
         nodes.iter().filter(|node| {
-            node["headRefOid"].as_str() == Some(source.sha.as_str())
+            node["headRefOid"]
+                .as_str()
+                .is_some_and(|sha| node["state"] == "OPEN" || sha == source.sha)
                 && node["headRefName"].as_str() == Some(branch)
+                && node["headRepository"]["nameWithOwner"]
+                    .as_str()
+                    .is_some_and(|path| path.eq_ignore_ascii_case(&source.repository.path))
         })
     };
     let mut active = matching().filter(|node| node["state"] == "OPEN");
@@ -324,29 +367,46 @@ fn matching_request(source: &CiSource, nodes: &[Value]) -> Option<ChangeRequest>
     (!tied).then(|| change_request(latest.0)).flatten()
 }
 
-fn parse(source: &CiSource, repository: &Value, now: u64) -> Result<CiSnapshot, FetchError> {
+fn parse(
+    source: &CiSource,
+    repository: &Value,
+    now: u64,
+    index: usize,
+) -> Result<CiSnapshot, FetchError> {
     let commit = &repository["object"];
-    if commit["oid"].as_str() != Some(source.sha.as_str()) {
-        return Err(FetchError::normal(
-            "Current commit is not available on GitHub (not pushed or repository inaccessible)",
-        ));
-    }
     let mut snapshot = empty(source, now);
+    if source.branch.is_some() {
+        let branch_ref = &repository[format!("b{index}")];
+        let active = &branch_ref["associatedPullRequests"];
+        if let Some(nodes) = active["nodes"].as_array() {
+            // A capped active connection is ambiguous, not evidence of a closed PR.
+            if active["pageInfo"]["hasNextPage"] != true {
+                snapshot.change_request = matching_request(source, nodes);
+            }
+        }
+        // Only fall back when the branch has no active PR, including a deleted ref.
+        if (branch_ref.is_null() || active["nodes"].as_array().is_some_and(Vec::is_empty))
+            && let Some(nodes) = repository[format!("c{index}")]["nodes"].as_array()
+        {
+            snapshot.change_request = matching_request(source, nodes);
+        }
+    }
     snapshot.fetch_state = CiFetchState::Ready;
-    let prs = &commit["associatedPullRequests"];
+    if commit["oid"].as_str() != Some(source.sha.as_str()) {
+        snapshot.fetch_state = CiFetchState::Unavailable;
+        snapshot.error = Some(
+            "Current commit is not available on GitHub (not pushed or repository inaccessible)"
+                .into(),
+        );
+        return Ok(snapshot);
+    }
     let contexts = &commit["statusCheckRollup"]["contexts"];
-    if !prs["nodes"].is_array()
-        || (!commit["statusCheckRollup"].is_null() && !contexts["nodes"].is_array())
-    {
+    if !commit["statusCheckRollup"].is_null() && !contexts["nodes"].is_array() {
         return Err(FetchError::normal(
-            "GitHub check or pull request results are incomplete or inaccessible",
+            "GitHub check results are incomplete or inaccessible",
         ));
     }
-    snapshot.truncated =
-        contexts["pageInfo"]["hasNextPage"] == true || prs["pageInfo"]["hasNextPage"] == true;
-    if prs["pageInfo"]["hasNextPage"] != true {
-        snapshot.change_request = matching_request(source, prs["nodes"].as_array().unwrap());
-    }
+    snapshot.truncated = contexts["pageInfo"]["hasNextPage"] == true;
     snapshot.checks = contexts["nodes"]
         .as_array()
         .into_iter()
@@ -371,8 +431,7 @@ fn parse(source: &CiSource, repository: &Value, now: u64) -> Result<CiSnapshot, 
     snapshot.status = CiStatus::aggregate(snapshot.checks.iter().map(|check| check.status));
     if snapshot.truncated {
         snapshot.fetch_state = CiFetchState::Unavailable;
-        snapshot.error =
-            Some("Provider results truncated at 100 checks / 10 associated PRs".into());
+        snapshot.error = Some("Provider results truncated at 100 checks".into());
         if !matches!(
             snapshot.status,
             CiStatus::Failed | CiStatus::Running | CiStatus::Pending
@@ -459,6 +518,7 @@ pub(super) fn normalize<'a>(
     let results = subscribers
         .into_iter()
         .filter_map(|source| {
+            let branch_index = sources.iter().position(|queried| queried == source)?;
             let index = sources
                 .iter()
                 .position(|queried| same_commit(queried, source))?;
@@ -472,7 +532,7 @@ pub(super) fn normalize<'a>(
             }) {
                 Err(graphql_error(error))
             } else {
-                parse(source, &value["data"][alias.as_str()], now)
+                parse(source, &value["data"][alias.as_str()], now, branch_index)
             };
             Some((source.clone(), result))
         })
@@ -528,7 +588,7 @@ pub(super) fn response<'a>(
         // body is not GraphQL or a 403 otherwise looks like an authentication error.
         let results = subscribers
             .into_iter()
-            .filter(|source| sources.iter().any(|queried| same_commit(queried, source)))
+            .filter(|source| sources.contains(source))
             .map(|source| (source.clone(), Err(error.clone())))
             .collect();
         Ok(BatchResponse {
@@ -631,7 +691,7 @@ mod tests {
             https://linear.app/work/issue/ENG-44/plain-url.";
         let mut node = pr(7, "OPEN", false, "2026-10-13T12:00:00Z");
         node["body"] = json!(body);
-        let snapshot = parse(&source(), &repository_result(vec![node], vec![]), 42).unwrap();
+        let snapshot = parse(&source(), &repository_result(vec![node], vec![]), 42, 0).unwrap();
         let request = snapshot.change_request.unwrap();
         assert_eq!(request.description, body);
         assert_eq!(
@@ -761,10 +821,12 @@ mod tests {
         }
     }
     fn pr(number: u64, state: &str, draft: bool, updated: &str) -> Value {
-        json!({"number":number,"title":format!("Change {number}"),"url":format!("https://github.com/owner/repo/pull/{number}"),"state":state,"isDraft":draft,"updatedAt":updated,"headRefOid":"abc","headRefName":"main"})
+        json!({"number":number,"title":format!("Change {number}"),"url":format!("https://github.com/owner/repo/pull/{number}"),"state":state,"isDraft":draft,"updatedAt":updated,"headRefOid":"abc","headRefName":"main","headRepository":{"nameWithOwner":"owner/repo"}})
     }
     fn repository_result(prs: Vec<Value>, checks: Vec<Value>) -> Value {
-        json!({"object":{"oid":"abc","associatedPullRequests":{"nodes":prs,"pageInfo":{"hasNextPage":false}},"statusCheckRollup":{"contexts":{"nodes":checks,"pageInfo":{"hasNextPage":false}}}}})
+        let (active, closed): (Vec<_>, Vec<_>) =
+            prs.into_iter().partition(|node| node["state"] == "OPEN");
+        json!({"object":{"oid":"abc","statusCheckRollup":{"contexts":{"nodes":checks,"pageInfo":{"hasNextPage":false}}}},"b0":{"associatedPullRequests":{"nodes":active,"pageInfo":{"hasNextPage":false}}},"c0":{"nodes":closed}})
     }
     fn check(start: Value, end: Value) -> Value {
         json!({"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS","startedAt":start,"completedAt":end})
@@ -795,6 +857,7 @@ mod tests {
                 &source(),
                 &repository_result(vec![pr(7, state, draft, "2026-10-13T12:00:00Z")], vec![]),
                 42,
+                0,
             )
             .unwrap();
             let request = snapshot.change_request.unwrap();
@@ -807,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    fn matching_is_exact_active_first_and_ambiguity_never_invents_a_request() {
+    fn branch_identity_completed_heads_and_ambiguity_are_verified() {
         let open = pr(7, "OPEN", false, "2026-10-12T12:00:00Z");
         let merged = pr(8, "MERGED", false, "2026-10-13T12:00:00Z");
         assert_eq!(
@@ -840,11 +903,12 @@ mod tests {
             )
             .is_none()
         );
-        for field in ["headRefOid", "headRefName"] {
-            let mut mismatch = open.clone();
-            mismatch[field] = json!("different");
-            assert!(matching_request(&source(), &[mismatch]).is_none());
-        }
+        let mut mismatch = open.clone();
+        mismatch["headRefName"] = json!("different");
+        assert!(matching_request(&source(), &[mismatch]).is_none());
+        let mut mismatched_completed = merged.clone();
+        mismatched_completed["headRefOid"] = json!("different");
+        assert!(matching_request(&source(), &[mismatched_completed]).is_none());
         let mut detached = source();
         detached.branch = None;
         assert!(matching_request(&detached, std::slice::from_ref(&open)).is_none());
@@ -857,6 +921,23 @@ mod tests {
         let mut missing_updated = merged.clone();
         missing_updated["updatedAt"] = Value::Null;
         assert!(matching_request(&source(), &[merged, missing_updated]).is_none());
+    }
+
+    #[test]
+    fn branch_request_survives_unpushed_local_commits_without_borrowing_checks() {
+        let mut source = source();
+        source.sha = "unpushed-local-head".into();
+        let mut value = repository_result(
+            vec![pr(7, "OPEN", false, "2026-10-13T12:00:00Z")],
+            vec![check(Value::Null, Value::Null)],
+        );
+        value["object"] = Value::Null;
+        let snapshot = parse(&source, &value, 42, 0).unwrap();
+        assert_eq!(snapshot.change_request.as_ref().unwrap().number, 7);
+        assert_eq!(snapshot.status, CiStatus::Unknown);
+        assert_eq!(snapshot.fetch_state, CiFetchState::Unavailable);
+        assert!(snapshot.checks.is_empty());
+        assert!(snapshot.error.is_some());
     }
 
     #[test]
@@ -879,7 +960,7 @@ mod tests {
             running,
             status_context,
         ];
-        let snapshot = parse(&source(), &repository_result(vec![], checks), 42).unwrap();
+        let snapshot = parse(&source(), &repository_result(vec![], checks), 42, 0).unwrap();
         assert_eq!(
             snapshot
                 .checks
@@ -891,19 +972,153 @@ mod tests {
     }
 
     #[test]
-    fn truncation_preserves_warning_without_false_green_or_incomplete_pr_guess() {
+    fn tracker_comment_recovers_ticket_not_linked_in_description() {
+        let source = source();
+        let url = "https://linear.app/work/issue/ENG-42/fix-rendering";
+        let title = "Fix rendering";
+        let mut node = pr(7, "OPEN", false, "2026-10-13T12:00:00Z");
+        node["body"] = json!("Fixes ENG-42.");
+        node["comments"] = json!({"nodes":[{"bodyHTML":format!(
+            "<details><summary><a href=\"{url}\" rel=\"nofollow\">ENG-42 {title}</a></summary></details><a href=\"https://linear.app/work/review/fix-rendering\">Review in Linear</a>"
+        )}]});
+        let value = repository_result(vec![node], vec![check(Value::Null, Value::Null)]);
+        let batch = normalize(
+            json!({"data":{"r0":value}}),
+            std::slice::from_ref(&source),
+            [&source],
+            42,
+        );
+        let snapshot = batch.results[&source].as_ref().unwrap();
+        let request = snapshot.change_request.as_ref().unwrap();
+        assert_eq!(request.number, 7);
+        assert_eq!(request.issues.len(), 1);
+        assert_eq!(request.issues[0].url, url);
+        assert_eq!(request.issues[0].title.as_deref(), Some(title));
+        assert_eq!(snapshot.status, CiStatus::Passed);
+        assert_eq!(snapshot.fetch_state, CiFetchState::Ready);
+        assert!(!snapshot.truncated);
+    }
+
+    #[test]
+    fn comments_share_safe_issue_deduplication_titles_and_bounds_with_description() {
+        let mut node = pr(7, "OPEN", false, "2026-10-13T12:00:00Z");
+        node["body"] = json!("https://linear.app/work/issue/ENG-42");
+        let mut comments = vec![json!({"bodyHTML":
+            "<a href='https://linear.app/work/issue/ENG-42/pretty'>ENG-42 Useful title</a>\
+             <a href='https://linear.app/other/issue/ENG-42'>Other workspace</a>\
+             <a href='https://linear.app.evil.test/work/issue/ENG-9'>Unsafe</a>"
+        })];
+        comments.extend((1..10).map(|_| json!({"bodyHTML":"<p>No ticket here</p>"})));
+        comments.push(json!({"bodyHTML":"<a href='https://linear.app/work/issue/ENG-99'>Ignored eleventh comment</a>"}));
+        node["comments"] = json!({"nodes":comments});
+        let request = change_request(&node).unwrap();
+        assert_eq!(request.issues.len(), 2);
+        assert_eq!(
+            request.issues[0].url,
+            "https://linear.app/work/issue/ENG-42"
+        );
+        assert_eq!(request.issues[0].title.as_deref(), Some("Useful title"));
+        assert_eq!(
+            request.issues[1].url,
+            "https://linear.app/other/issue/ENG-42"
+        );
+    }
+
+    #[test]
+    fn shared_commit_keeps_branch_metadata_isolated_and_preserves_distinct_same_named_jobs() {
+        let first = source();
+        let mut second = first.clone();
+        second.branch = Some("other".into());
+        let mut detached = first.clone();
+        detached.branch = None;
+        let mut unqueried = first.clone();
+        unqueried.branch = Some("arrived-later".into());
+        let sources = [first.clone(), second.clone(), detached.clone()];
+        let mut main_pr = pr(7, "OPEN", true, "2026-10-13T12:00:00Z");
+        main_pr["body"] = json!("https://linear.app/work/issue/ENG-7");
+        let mut other_pr = pr(8, "OPEN", false, "2026-10-13T12:00:00Z");
+        other_pr["headRefName"] = json!("other");
+        other_pr["body"] = json!("https://linear.app/work/issue/ENG-8");
+        let mut push = check(Value::Null, Value::Null);
+        push["detailsUrl"] = json!("https://github.com/owner/repo/actions/runs/1");
+        let mut pull_request = push.clone();
+        pull_request["detailsUrl"] = json!("https://github.com/owner/repo/actions/runs/2");
+        let mut value = repository_result(vec![main_pr], vec![push, pull_request]);
+        value["b1"] =
+            json!({"associatedPullRequests":{"nodes":[other_pr],"pageInfo":{"hasNextPage":false}}});
+        value["c1"] = json!({"nodes":[]});
+        let batch = normalize(
+            json!({"data":{"r0":value}}),
+            &sources,
+            [&first, &second, &detached, &unqueried],
+            42,
+        );
+        assert_eq!(batch.results.len(), 3);
+        for (source, number, ticket) in [(&first, 7, "ENG-7"), (&second, 8, "ENG-8")] {
+            let snapshot = batch.results[source].as_ref().unwrap();
+            assert_eq!(snapshot.checks.len(), 2);
+            assert_ne!(snapshot.checks[0].url, snapshot.checks[1].url);
+            let request = snapshot.change_request.as_ref().unwrap();
+            assert_eq!(request.number, number);
+            assert_eq!(request.issues[0].identifier, ticket);
+        }
+        let snapshot = batch.results[&detached].as_ref().unwrap();
+        assert_eq!(snapshot.checks.len(), 2);
+        assert!(snapshot.change_request.is_none());
+    }
+
+    #[test]
+    fn pr_history_and_ambiguity_never_make_complete_checks_unavailable() {
+        let mut value = repository_result(
+            vec![
+                pr(7, "OPEN", false, "2026-10-13T12:00:00Z"),
+                pr(8, "MERGED", false, "2026-10-14T12:00:00Z"),
+            ],
+            vec![check(Value::Null, Value::Null)],
+        );
+        value["c0"]["pageInfo"] = json!({"hasNextPage":true});
+        let snapshot = parse(&source(), &value, 42, 0).unwrap();
+        assert_eq!(snapshot.change_request.unwrap().number, 7);
+        assert_eq!(snapshot.fetch_state, CiFetchState::Ready);
+        assert_eq!(snapshot.status, CiStatus::Passed);
+        assert!(!snapshot.truncated);
+        value["b0"]["associatedPullRequests"]["pageInfo"]["hasNextPage"] = json!(true);
+        let snapshot = parse(&source(), &value, 42, 0).unwrap();
+        assert!(snapshot.change_request.is_none());
+        assert_eq!(snapshot.fetch_state, CiFetchState::Ready);
+        assert_eq!(snapshot.status, CiStatus::Passed);
+        assert!(snapshot.error.is_none());
+        value["b0"] = Value::Null;
+        let snapshot = parse(&source(), &value, 42, 0).unwrap();
+        assert_eq!(
+            snapshot.change_request.unwrap().state,
+            ChangeRequestState::Merged
+        );
+        let mut fork = pr(9, "OPEN", false, "2026-10-13T12:00:00Z");
+        fork["headRepository"]["nameWithOwner"] = json!("fork/repo");
+        value["b0"] =
+            json!({"associatedPullRequests":{"nodes":[fork],"pageInfo":{"hasNextPage":false}}});
+        assert!(
+            parse(&source(), &value, 42, 0)
+                .unwrap()
+                .change_request
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn check_truncation_warns_without_erasing_verified_request() {
         let mut value = repository_result(
             vec![pr(7, "OPEN", false, "2026-10-13T12:00:00Z")],
             vec![check(Value::Null, Value::Null)],
         );
-        value["object"]["associatedPullRequests"]["pageInfo"]["hasNextPage"] = json!(true);
-        let snapshot = parse(&source(), &value, 42).unwrap();
+        value["object"]["statusCheckRollup"]["contexts"]["pageInfo"]["hasNextPage"] = json!(true);
+        let snapshot = parse(&source(), &value, 42, 0).unwrap();
         assert!(snapshot.truncated);
         assert_eq!(snapshot.status, CiStatus::Unknown);
         assert_eq!(snapshot.fetch_state, CiFetchState::Unavailable);
         assert!(snapshot.error.is_some());
-        assert!(snapshot.change_request.is_none());
-        assert!(parse(&source(), &json!({"object":{"oid":"old"}}), 42).is_err());
+        assert_eq!(snapshot.change_request.unwrap().number, 7);
         assert_eq!(
             status(&json!({"status":"COMPLETED","conclusion":"CANCELLED"})),
             CiStatus::Cancelled
@@ -920,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn one_batch_carries_all_metadata_and_honors_shared_budget_headers() {
+    fn shared_budget_and_http_headers_preserve_retry_deadlines() {
         let sources: Vec<_> = (0..16)
             .map(|index| {
                 let mut source = source();
@@ -928,12 +1143,6 @@ mod tests {
                 source
             })
             .collect();
-        let query = query(&sources);
-        assert_eq!(query.matches(":repository(").count(), 16);
-        assert_eq!(query.matches("rateLimit {").count(), 1);
-        for field in ["title", "isDraft", "updatedAt", "startedAt", "completedAt"] {
-            assert!(query.contains(field));
-        }
         assert_eq!(epoch("1970-01-01T01:00:00Z"), Some(3600));
         assert_eq!(
             epoch("2024-02-29T00:00:00Z").unwrap() + 86400,

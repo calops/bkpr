@@ -10,6 +10,30 @@ pub const READY: &str = "shephrd-tooltip-ready";
 pub const DISMISS: &str = "shephrd-tooltip-dismiss";
 pub const REFRESH: &str = "shephrd-tooltip-refresh";
 
+pub const GUIDE_UPDATE: &str = "shephrd-guide";
+pub const GUIDE_READY: &str = "shephrd-guide-ready";
+const MAX_GUIDE_PAYLOAD: usize = 128 * 1024;
+const MAX_GUIDE_ROWS: usize = 256;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuideReady {
+    pub id: u32,
+    pub instance: String,
+    pub generation: u64,
+    pub revision: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct GuideFrame {
+    instance: String,
+    generation: u64,
+    revision: u64,
+    visible: bool,
+    closed: bool,
+    lines: Vec<String>,
+    coordinates: FloatingPaneCoordinates,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Ready {
     pub id: u32,
@@ -228,6 +252,190 @@ impl Controller {
             self.update(owner, configuration, None);
         }
         self.launched = false;
+    }
+}
+
+pub struct GuideController {
+    pub id: Option<u32>,
+    instance: String,
+    generation: u64,
+    revision: u64,
+    visible_revision: u64,
+    ready_revision: u64,
+    launched: bool,
+    pending: Option<GuideFrame>,
+}
+
+impl Default for GuideController {
+    fn default() -> Self {
+        Self {
+            id: None,
+            instance: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|time| time.as_nanos().to_string())
+                .unwrap_or_else(|_| "clock-unavailable".to_owned()),
+            generation: 1,
+            revision: 0,
+            visible_revision: 0,
+            ready_revision: 0,
+            launched: false,
+            pending: None,
+        }
+    }
+}
+
+impl GuideController {
+    pub fn update(
+        &mut self,
+        owner: u32,
+        configuration: &BTreeMap<String, String>,
+        frame: Option<(&[String], FloatingPaneCoordinates)>,
+    ) {
+        let frame = frame.filter(|(lines, _)| !lines.is_empty() && lines.len() <= MAX_GUIDE_ROWS);
+        let (visible, lines, mut coordinates) = match frame {
+            Some((lines, coordinates)) => (true, lines, coordinates),
+            None => (
+                false,
+                &[][..],
+                self.pending
+                    .as_ref()
+                    .map(|state| state.coordinates.clone())
+                    .unwrap_or_default(),
+            ),
+        };
+        coordinates.pinned = Some(true);
+        coordinates.borderless = Some(true);
+        if self.pending.as_ref().is_some_and(|old| {
+            old.visible == visible && old.lines == lines && old.coordinates == coordinates
+        }) {
+            return;
+        }
+        self.revision = self.revision.saturating_add(1);
+        if visible && !self.pending.as_ref().is_some_and(|state| state.visible) {
+            self.visible_revision = self.revision;
+        }
+        self.pending = Some(GuideFrame {
+            instance: self.instance.clone(),
+            generation: self.generation,
+            revision: self.revision,
+            visible,
+            closed: false,
+            lines: lines.to_vec(),
+            coordinates,
+        });
+        if self.launched || visible {
+            self.send(owner, configuration);
+        }
+    }
+
+    pub fn ready(
+        &mut self,
+        ready: &GuideReady,
+        owner: u32,
+        configuration: &BTreeMap<String, String>,
+    ) -> bool {
+        if !self.launched
+            || self.id.is_some_and(|id| id != ready.id)
+            || !self.pending.as_ref().is_some_and(|state| {
+                ready.instance == state.instance
+                    && ready.generation == state.generation
+                    && ready.revision > 0
+                    && ready.revision <= state.revision
+            })
+        {
+            return false;
+        }
+        let first = self.id.is_none();
+        self.id = Some(ready.id);
+        self.ready_revision = self.ready_revision.max(ready.revision);
+        if first {
+            self.send(owner, configuration);
+        }
+        true
+    }
+
+    pub fn ready_for_display(&self) -> bool {
+        self.id.is_some()
+            && self.ready_revision >= self.visible_revision
+            && self.pending.as_ref().is_some_and(|state| state.visible)
+    }
+
+    fn send(&mut self, owner: u32, configuration: &BTreeMap<String, String>) {
+        let Some(frame) = &mut self.pending else {
+            return;
+        };
+        let Ok(mut payload) = serde_json::to_string(frame) else {
+            return;
+        };
+        if payload.len() > MAX_GUIDE_PAYLOAD {
+            // Keep the inline fallback rather than exposing a partially delivered guide.
+            frame.visible = false;
+            frame.lines.clear();
+            let Ok(hidden) = serde_json::to_string(frame) else {
+                return;
+            };
+            payload = hidden;
+            if !self.launched {
+                return;
+            }
+        }
+        let mut message = MessageToPlugin::new(GUIDE_UPDATE).with_payload(payload);
+        if let Some(id) = self.id {
+            message.destination_plugin_id = Some(id);
+        } else {
+            let Some(url) = configuration.get("plugin_url") else {
+                return;
+            };
+            let mut config = configuration.clone();
+            config.insert("role".to_owned(), "guide-overlay".to_owned());
+            config.insert("owner".to_owned(), owner.to_string());
+            config.insert("guide_instance".to_owned(), self.instance.clone());
+            config.insert("guide_generation".to_owned(), self.generation.to_string());
+            message.plugin_url = Some(url.clone());
+            message.plugin_config = config;
+            message.new_plugin_args = Some(NewPluginArgs {
+                should_float: Some(true),
+                should_focus: Some(false),
+                pane_title: Some("shephrd shortcuts".to_owned()),
+                ..NewPluginArgs::default()
+            });
+            message.floating_pane_coordinates = Some(frame.coordinates.clone());
+        }
+        // A stable URL/config identity also coalesces updates while the first load is pending.
+        self.launched = true;
+        pipe_message_to_plugin(message);
+    }
+
+    fn reset(&mut self) {
+        self.id = None;
+        self.launched = false;
+        self.pending = None;
+        self.ready_revision = 0;
+        self.visible_revision = 0;
+        self.generation = self.generation.saturating_add(1);
+    }
+
+    pub fn forget(&mut self, id: u32) {
+        if self.id == Some(id) {
+            self.reset();
+        }
+    }
+
+    pub fn close(&mut self, owner: u32, configuration: &BTreeMap<String, String>) {
+        if let Some(id) = self.id {
+            close_plugin_pane(id);
+        } else if self.launched {
+            // Retire an in-flight instance too; a later launch has a different config identity.
+            if let Some(frame) = &mut self.pending {
+                self.revision = self.revision.saturating_add(1);
+                frame.revision = self.revision;
+                frame.visible = false;
+                frame.closed = true;
+                frame.lines.clear();
+            }
+            self.send(owner, configuration);
+        }
+        self.reset();
     }
 }
 
@@ -1009,6 +1217,293 @@ impl Overlay {
     }
 }
 
+#[derive(Default)]
+pub struct GuideOverlay {
+    owner: Option<u32>,
+    id: u32,
+    instance: String,
+    generation: u64,
+    granted: bool,
+    owner_seen: bool,
+    closed: bool,
+    shown: Option<bool>,
+    coordinates: Option<FloatingPaneCoordinates>,
+    state: Option<GuideFrame>,
+}
+
+impl GuideOverlay {
+    pub fn load(&mut self, configuration: &BTreeMap<String, String>, id: u32) {
+        self.id = id;
+        self.owner = configuration
+            .get("owner")
+            .and_then(|owner| owner.parse().ok());
+        self.instance = configuration
+            .get("guide_instance")
+            .cloned()
+            .unwrap_or_default();
+        self.generation = configuration
+            .get("guide_generation")
+            .and_then(|generation| generation.parse().ok())
+            .unwrap_or_default();
+        set_selectable(false);
+        subscribe(&[
+            EventType::PermissionRequestResult,
+            EventType::PaneUpdate,
+            EventType::PaneClosed,
+            EventType::BeforeClose,
+        ]);
+        request_permission(super::PERMISSIONS);
+    }
+
+    pub fn event(&mut self, event: Event) -> bool {
+        match event {
+            Event::PermissionRequestResult(PermissionStatus::Granted) => {
+                self.granted = true;
+                set_selectable(false);
+                if !self.instance.is_empty()
+                    && self.generation > 0
+                    && self
+                        .owner
+                        .is_some_and(|owner| get_pane_info(PaneId::Plugin(owner)).is_some())
+                {
+                    self.owner_seen = true;
+                    self.apply();
+                    return !self.closed;
+                }
+                self.retire();
+            }
+            Event::PermissionRequestResult(PermissionStatus::Denied) => {
+                self.closed = true;
+                self.state = None;
+            }
+            Event::PaneUpdate(manifest) => {
+                let found = manifest
+                    .panes
+                    .values()
+                    .flatten()
+                    .any(|pane| pane.is_plugin && Some(pane.id) == self.owner);
+                if found {
+                    self.owner_seen = true;
+                } else if self.owner_seen && self.granted {
+                    self.retire();
+                }
+            }
+            Event::PaneClosed(PaneId::Plugin(id)) if Some(id) == self.owner && self.granted => {
+                self.retire();
+            }
+            Event::BeforeClose => {
+                self.closed = true;
+                self.state = None;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    pub fn pipe(&mut self, message: PipeMessage) -> bool {
+        if message.name != GUIDE_UPDATE {
+            return false;
+        }
+        let PipeSource::Plugin(source) = message.source else {
+            return false;
+        };
+        if Some(source) != self.owner {
+            return false;
+        }
+        let Some(payload) = message.payload else {
+            return false;
+        };
+        if payload.len() > MAX_GUIDE_PAYLOAD {
+            return false;
+        }
+        let Ok(frame) = serde_json::from_str::<GuideFrame>(&payload) else {
+            return false;
+        };
+        if !self.accept(source, frame) {
+            return false;
+        }
+        self.apply();
+        !self.closed
+    }
+
+    fn accept(&mut self, source: u32, mut frame: GuideFrame) -> bool {
+        if self.closed
+            || Some(source) != self.owner
+            || self.instance.is_empty()
+            || frame.instance != self.instance
+            || frame.generation != self.generation
+            || frame.revision == 0
+            || frame.lines.len() > MAX_GUIDE_ROWS
+            || frame.visible && (frame.closed || frame.lines.is_empty())
+            || self
+                .state
+                .as_ref()
+                .is_some_and(|current| current.closed || frame.revision <= current.revision)
+        {
+            return false;
+        }
+        frame.coordinates.pinned = Some(true);
+        frame.coordinates.borderless = Some(true);
+        self.state = Some(frame);
+        true
+    }
+
+    fn retire(&mut self) {
+        if !self.closed {
+            self.closed = true;
+            self.state = None;
+            if self.granted {
+                close_self();
+            }
+        }
+    }
+
+    fn apply(&mut self) {
+        if !self.granted || self.closed {
+            return;
+        }
+        if self.state.as_ref().is_some_and(|state| state.closed) {
+            self.retire();
+            return;
+        }
+        match &self.state {
+            Some(state) if state.visible => {
+                let pane = PaneId::Plugin(self.id);
+                let restored = self.shown != Some(true);
+                if restored {
+                    // Unsuppressing restores native defaults before our explicit placement.
+                    show_pane_with_id(pane, true, false);
+                    self.shown = Some(true);
+                }
+                if restored || self.coordinates.as_ref() != Some(&state.coordinates) {
+                    change_floating_panes_coordinates(vec![(pane, state.coordinates.clone())]);
+                    self.coordinates = Some(state.coordinates.clone());
+                }
+            }
+            _ => {
+                if self.shown != Some(false) {
+                    hide_self();
+                    self.shown = Some(false);
+                    // Unsuppressing restores native defaults; always reapply our next geometry.
+                    self.coordinates = None;
+                }
+            }
+        }
+    }
+
+    pub fn render(&self, rows: usize, columns: usize) {
+        let Some(state) = self
+            .state
+            .as_ref()
+            .filter(|state| state.visible && !state.closed)
+        else {
+            return;
+        };
+        if !self.granted || self.closed || self.shown != Some(true) || rows == 0 || columns == 0 {
+            return;
+        }
+        let complete = state.lines.len() <= rows
+            && state.coordinates.width
+                == FloatingPaneCoordinates::default()
+                    .with_width_fixed(columns)
+                    .width
+            && state.coordinates.height
+                == FloatingPaneCoordinates::default()
+                    .with_height_fixed(rows)
+                    .height;
+        if complete {
+            let ready = GuideReady {
+                id: self.id,
+                instance: state.instance.clone(),
+                generation: state.generation,
+                revision: state.revision,
+            };
+            if let (Some(owner), Ok(payload)) = (self.owner, serde_json::to_string(&ready)) {
+                // Render-origin messages are delivered only after this complete frame is applied.
+                // Host commands still precede ANSI because both share the plugin's stdout.
+                pipe_message_to_plugin(
+                    MessageToPlugin::new(GUIDE_READY)
+                        .with_destination_plugin_id(owner)
+                        .with_payload(payload),
+                );
+            }
+        }
+        for row in 0..rows {
+            let (line, cells) = state
+                .lines
+                .get(row)
+                .map(|line| guide_line_prefix(line, columns))
+                .unwrap_or(("", 0));
+            print!(
+                "\u{1b}[{};1H{OSC8_CLOSE}{}{line}{OSC8_CLOSE}{}{}{:padding$}{}",
+                row + 1,
+                ui::RESET,
+                ui::RESET,
+                ui::BASE,
+                "",
+                ui::RESET,
+                padding = columns.saturating_sub(cells),
+            );
+        }
+    }
+}
+
+fn guide_line_prefix(line: &str, columns: usize) -> (&str, usize) {
+    let bytes = line.as_bytes();
+    let mut offset = 0;
+    let mut cells = 0;
+    while offset < bytes.len() {
+        if bytes[offset] == b'\x1b' {
+            let start = offset;
+            offset += 1;
+            match bytes.get(offset) {
+                Some(b'[') => {
+                    offset += 1;
+                    while offset < bytes.len() && !(0x40..=0x7e).contains(&bytes[offset]) {
+                        offset += 1;
+                    }
+                    if offset == bytes.len() {
+                        return (&line[..start], cells);
+                    }
+                    offset += 1;
+                }
+                Some(b']' | b'P' | b'_' | b'^') => {
+                    offset += 1;
+                    loop {
+                        match bytes.get(offset) {
+                            Some(b'\x07') => {
+                                offset += 1;
+                                break;
+                            }
+                            Some(b'\x1b') if bytes.get(offset + 1) == Some(&b'\\') => {
+                                offset += 2;
+                                break;
+                            }
+                            Some(_) => offset += 1,
+                            None => return (&line[..start], cells),
+                        }
+                    }
+                }
+                Some(_) => offset += 1,
+                None => return (&line[..start], cells),
+            }
+            continue;
+        }
+        let character = line[offset..].chars().next().unwrap();
+        if character.is_control() {
+            break;
+        }
+        let end = offset + character.len_utf8();
+        let width = ui::width(&line[offset..end]);
+        if cells + width > columns {
+            break;
+        }
+        cells += width;
+        offset = end;
+    }
+    (&line[..offset], cells)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1022,6 +1517,156 @@ mod tests {
             }],
             ..ui::PopupRow::default()
         }
+    }
+
+    fn guide_frame(revision: u64) -> GuideFrame {
+        GuideFrame {
+            instance: "guide:test".to_owned(),
+            generation: 2,
+            revision,
+            visible: true,
+            closed: false,
+            lines: vec!["\u{1b}[38;2;137;180;250mCtrl+p\u{1b}[0m Panes".to_owned()],
+            coordinates: FloatingPaneCoordinates::default()
+                .with_width_fixed(48)
+                .with_height_fixed(1),
+        }
+    }
+
+    fn guide_overlay() -> GuideOverlay {
+        GuideOverlay {
+            owner: Some(3),
+            id: 7,
+            instance: "guide:test".to_owned(),
+            generation: 2,
+            ..GuideOverlay::default()
+        }
+    }
+
+    #[test]
+    fn guide_consumer_isolates_owner_launch_and_revision() {
+        let mut guide = guide_overlay();
+        assert!(!guide.accept(4, guide_frame(1)));
+        let mut foreign = guide_frame(1);
+        foreign.instance = "another-guide".to_owned();
+        assert!(!guide.accept(3, foreign));
+        let mut old_launch = guide_frame(1);
+        old_launch.generation = 1;
+        assert!(!guide.accept(3, old_launch));
+        assert!(!guide.accept(3, guide_frame(0)));
+        assert!(guide.accept(3, guide_frame(2)));
+        assert!(!guide.accept(3, guide_frame(1)));
+        assert!(!guide.accept(3, guide_frame(2)));
+        let state = guide.state.as_ref().unwrap();
+        assert_eq!(state.coordinates.pinned, Some(true));
+        assert_eq!(state.coordinates.borderless, Some(true));
+
+        let mut hidden = guide_frame(3);
+        hidden.visible = false;
+        hidden.lines.clear();
+        assert!(guide.accept(3, hidden));
+        assert!(!guide.accept(3, guide_frame(2)));
+        assert!(!guide.state.as_ref().unwrap().visible);
+        assert!(guide.accept(3, guide_frame(4)));
+
+        let mut retired = guide_frame(5);
+        retired.visible = false;
+        retired.closed = true;
+        retired.lines.clear();
+        assert!(guide.accept(3, retired));
+        assert!(!guide.accept(3, guide_frame(6)));
+    }
+
+    #[test]
+    fn guide_consumer_requires_complete_bounded_frames() {
+        let mut guide = guide_overlay();
+        let mut empty = guide_frame(1);
+        empty.lines.clear();
+        assert!(!guide.accept(3, empty));
+        let mut oversized = guide_frame(1);
+        oversized.lines = vec![String::new(); MAX_GUIDE_ROWS + 1];
+        assert!(!guide.accept(3, oversized));
+        let mut contradictory = guide_frame(1);
+        contradictory.closed = true;
+        assert!(!guide.accept(3, contradictory));
+        assert!(guide.state.is_none());
+    }
+
+    #[test]
+    fn guide_readiness_survives_updates_but_requires_a_fresh_frame_after_hiding() {
+        let frame = guide_frame(3);
+        let mut guide = GuideController {
+            id: Some(7),
+            instance: frame.instance.clone(),
+            generation: frame.generation,
+            revision: frame.revision,
+            visible_revision: frame.revision,
+            launched: true,
+            pending: Some(frame),
+            ..GuideController::default()
+        };
+        let configuration = BTreeMap::new();
+        let mut ready = GuideReady {
+            id: 7,
+            instance: "guide:test".to_owned(),
+            generation: 2,
+            revision: 3,
+        };
+        assert!(!guide.ready_for_display());
+        assert!(guide.ready(&ready, 3, &configuration));
+        assert!(guide.ready_for_display());
+
+        guide.pending.as_mut().unwrap().revision = 4;
+        guide.revision = 4;
+        assert!(guide.ready_for_display());
+        ready.revision = 5;
+        assert!(!guide.ready(&ready, 3, &configuration));
+        ready.revision = 4;
+        ready.id = 8;
+        assert!(!guide.ready(&ready, 3, &configuration));
+        ready.id = 7;
+        assert!(guide.ready(&ready, 3, &configuration));
+
+        guide.pending.as_mut().unwrap().visible = false;
+        assert!(!guide.ready_for_display());
+        guide.pending.as_mut().unwrap().visible = true;
+        guide.pending.as_mut().unwrap().revision = 5;
+        guide.revision = 5;
+        guide.visible_revision = 5;
+        assert!(!guide.ready_for_display());
+        assert!(guide.ready(&ready, 3, &configuration));
+        assert!(!guide.ready_for_display());
+        ready.revision = 5;
+        assert!(guide.ready(&ready, 3, &configuration));
+        assert!(guide.ready_for_display());
+
+        guide.forget(8);
+        assert_eq!(guide.id, Some(7));
+        guide.forget(7);
+        assert!(guide.id.is_none());
+        assert!(guide.pending.is_none());
+        assert_eq!(guide.generation, 3);
+        assert!(!guide.ready(&ready, 3, &configuration));
+    }
+
+    #[test]
+    fn guide_clipping_preserves_complete_ansi_and_unicode_cells() {
+        let line = "\u{1b}[38;2;137;180;250mCtrl+p\u{1b}[0m \u{1b}]8;;https://example.test\u{1b}\\界e\u{301}\u{1b}]8;;\u{1b}\\";
+        for columns in 0..=12 {
+            let (prefix, cells) = guide_line_prefix(line, columns);
+            let mut terminal = TerminalConsumer::default();
+            terminal.consume(prefix);
+            terminal.consume(OSC8_CLOSE);
+            assert_eq!(ui::width(&terminal.text()), cells);
+            assert!(cells <= columns);
+            assert!(terminal.link.is_none());
+            if columns >= 10 {
+                assert!(terminal.text().ends_with("界e\u{301}"));
+            }
+        }
+        assert_eq!(guide_line_prefix("abc\u{1b}[38;2;1", 20), ("abc", 3));
+        assert_eq!(guide_line_prefix("abc\u{1b}]8;;unfinished", 20), ("abc", 3));
+        assert_eq!(guide_line_prefix("first\nsecond", 20), ("first", 5));
     }
 
     #[derive(Default)]

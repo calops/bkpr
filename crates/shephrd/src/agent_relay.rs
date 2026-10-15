@@ -788,8 +788,8 @@ mod tests {
             self.directory.path()
         }
         fn lease(&self, source: Option<OsString>) -> Lease {
-            let _lock = crate::launcher::startup_lock(self.runtime()).unwrap();
-            acquire_with(self.runtime(), source, |control, agent, bootstrap| {
+            let lock = crate::launcher::startup_lock(self.runtime()).unwrap();
+            let result = acquire_with(self.runtime(), source, |control, agent, bootstrap| {
                 let runtime = self.runtime().to_owned();
                 let (done, completed) = mpsc::channel();
                 let thread = thread::spawn(move || {
@@ -802,8 +802,17 @@ mod tests {
                     done: completed,
                 });
                 Ok(None)
+            });
+            drop(lock);
+            result.unwrap_or_else(|error| {
+                let failures: Vec<_> = self
+                    .workers
+                    .lock()
+                    .iter()
+                    .map(|worker| worker.done.recv_timeout(Duration::from_secs(1)))
+                    .collect();
+                panic!("lease registration failed: {error:#}; helper exits: {failures:?}");
             })
-            .unwrap()
         }
         fn finish(&self) {
             for worker in self.workers.lock().drain(..) {
@@ -885,10 +894,32 @@ mod tests {
         helper.finish();
         let stale_control = StdListener::bind(helper.runtime().join(CONTROL)).unwrap();
         let stale_agent = StdListener::bind(&old_process_address).unwrap();
+        #[cfg(target_os = "linux")]
+        let inherited = {
+            // Other tests can fork while these listeners are open: CLOEXEC only
+            // closes inherited copies on exec, not when we drop our copies.
+            // Linux shutdown affects every copy, making the fixture stale even
+            // while these duplicates model descriptors inherited by a child.
+            let inherited = [
+                stale_control.try_clone().unwrap(),
+                stale_agent.try_clone().unwrap(),
+            ];
+            for listener in [&stale_control, &stale_agent] {
+                assert_eq!(
+                    unsafe { libc::shutdown(listener.as_raw_fd(), libc::SHUT_RDWR) },
+                    0,
+                    "shut down stale fixture listener: {}",
+                    io::Error::last_os_error()
+                );
+            }
+            inherited
+        };
         drop((stale_control, stale_agent));
         let second = helper.lease(two.source());
         assert_eq!(second.socket(), old_process_address);
         assert_eq!(request(&mut connect(&old_process_address)), identity(2));
+        #[cfg(target_os = "linux")]
+        drop(inherited);
         second.release().unwrap();
         helper.finish();
     }

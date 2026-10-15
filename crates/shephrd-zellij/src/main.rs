@@ -37,6 +37,12 @@ struct PendingUserAction {
     shown: bool,
 }
 
+struct QueuedRequest {
+    request: Request,
+    return_mode: Option<InputMode>,
+    view: Option<native::SidebarView>,
+}
+
 struct CachedPopup {
     item: Item,
     instance: String,
@@ -50,6 +56,40 @@ struct CachedKeyGuide {
     columns: usize,
     max_rows: usize,
     lines: Vec<String>,
+    space: Option<GuideSpace>,
+    overlay_ready: bool,
+    reserved_rows: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct GuideSpace {
+    x: usize,
+    bottom: usize,
+    max_columns: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+struct ModeState {
+    mode: InputMode,
+    base_mode: Option<InputMode>,
+}
+
+#[derive(serde::Deserialize)]
+struct NativeStateIdentity {
+    client_id: u16,
+}
+
+#[derive(serde::Deserialize)]
+struct NativeResponseIdentity<'a> {
+    #[serde(borrow)]
+    client: &'a str,
+    client_id: u16,
+    response: NativeRequestIdentity,
+}
+
+#[derive(serde::Deserialize)]
+struct NativeRequestIdentity {
+    request_id: u64,
 }
 
 struct FinderReturn {
@@ -67,6 +107,7 @@ struct Frontend {
     id: u32,
     client_id: u16,
     overlay_role: bool,
+    guide_role: bool,
     native_owner_role: bool,
     finder_role: bool,
     native_owner: native::Owner,
@@ -79,18 +120,29 @@ struct Frontend {
     control_terminal: Option<u32>,
     overlay: overlay::Overlay,
     tooltip: overlay::Controller,
+    guide_view: overlay::GuideOverlay,
+    guide_popup: overlay::GuideController,
     finder_view: finder::Finder,
     finder: finder::Controller,
     finder_return: Option<FinderReturn>,
     theme: ui::Theme,
-    mode: Option<ModeInfo>,
+    mode: Option<ModeState>,
+    mode_intent: Option<InputMode>,
+    keybinds: Option<KeybindsVec>,
+    keybinds_payload: String,
     keyguide: Option<CachedKeyGuide>,
     keyguide_dirty: bool,
     granted: bool,
+    sidebar_bootstrap: Option<native::SidebarBootstrap>,
+    snapshot_is_bootstrap: bool,
+    bootstrap_view_pending: bool,
     snapshot: Option<Snapshot>,
+    response_state_valid: bool,
     error: Option<String>,
-    queue: VecDeque<Request>,
+    queue: VecDeque<QueuedRequest>,
     in_flight: Option<Request>,
+    in_flight_return_mode: Option<InputMode>,
+    in_flight_view: Option<native::SidebarView>,
     request_id: u64,
     manifest: PaneManifest,
     tabs: Vec<TabInfo>,
@@ -150,7 +202,7 @@ impl Frontend {
             .open(self.id, &self.configuration, snapshot, columns, rows);
         self.hide_tooltip();
         // Keep ownership of input until the guest acknowledges all warmup keystrokes.
-        switch_to_input_mode(&InputMode::Locked);
+        self.request_mode(InputMode::Locked);
         self.reconcile_viewport(false);
     }
 
@@ -189,7 +241,7 @@ impl Frontend {
                     focus_terminal_pane(id, false, false);
                 }
             }
-            switch_to_input_mode(&context.mode);
+            self.request_mode(context.mode);
         }
         self.reconcile_viewport(false);
     }
@@ -206,7 +258,7 @@ impl Frontend {
                 };
                 context.ready = true;
                 self.leave_control(false);
-                switch_to_input_mode(&InputMode::Locked);
+                self.request_mode(InputMode::Locked);
                 if let Some(id) = self.finder.id {
                     focus_plugin_pane(id, true, false);
                 }
@@ -215,7 +267,7 @@ impl Frontend {
             finder::Notice::Selected { pane_id } => {
                 self.finder_return = None;
                 self.leave_control(false);
-                switch_to_input_mode(&InputMode::Locked);
+                self.request_mode(InputMode::Locked);
                 self.cursor = Some(Item::Pane(pane_id));
                 self.activate();
             }
@@ -228,7 +280,7 @@ impl Frontend {
         if self.finder.is_open() {
             return keyguide::Context::Finder;
         }
-        if !self.keyboard_control || !self.control_has_focus {
+        if !self.keyboard_control {
             return keyguide::Context::Application;
         }
         match &self.modal {
@@ -245,14 +297,88 @@ impl Frontend {
         }
     }
 
-    fn accept_mode(&mut self, mode: ModeInfo) -> bool {
-        let changed = self.mode.as_ref().is_none_or(|current| {
-            current.mode != mode.mode
-                || current.base_mode != mode.base_mode
-                || current.keybinds != mode.keybinds
-        });
+    fn mode_message(&mut self, payload: &str) -> bool {
+        let Ok(mode) = serde_json::from_str::<ModeState>(payload) else {
+            return false;
+        };
+        let previous = self.guide_mode();
+        let changed = self.mode != Some(mode);
+        self.mode = Some(mode);
+        if self.mode_intent == Some(mode.mode) {
+            self.mode_intent = None;
+        }
+        self.mode_changed(mode.mode, changed || previous != self.guide_mode())
+    }
+
+    fn keybinds_message(&mut self, payload: String) -> bool {
+        if self.keybinds.is_some() && self.keybinds_payload == payload {
+            return false;
+        }
+        let Ok(keybinds) = serde_json::from_str::<KeybindsVec>(&payload) else {
+            return false;
+        };
+        self.keybinds_payload = payload;
+        if self.keybinds.as_ref() == Some(&keybinds) {
+            return false;
+        }
+        self.keybinds = Some(keybinds);
+        self.keyguide_dirty = true;
+        self.reconcile_viewport(false);
+        self.refresh_tooltip();
+        true
+    }
+
+    fn guide_mode(&self) -> Option<InputMode> {
+        self.mode_intent.or(self.mode.map(|mode| mode.mode))
+    }
+
+    fn extract_sidebar_bootstrap(&mut self, configuration: &mut BTreeMap<String, String>) {
+        self.sidebar_bootstrap = configuration
+            .remove("sidebar_bootstrap")
+            .filter(|payload| payload.len() <= MAX_MESSAGE_BYTES)
+            .and_then(|payload| serde_json::from_str::<native::SidebarBootstrap>(&payload).ok())
+            .filter(|bootstrap| matches!(self.validate_snapshot(&bootstrap.snapshot), Ok(true)));
+    }
+
+    fn apply_sidebar_bootstrap(&mut self) -> bool {
+        if !self.granted || self.snapshot.is_some() {
+            return false;
+        }
+        let Some(bootstrap) = self.sidebar_bootstrap.take() else {
+            return false;
+        };
+        if self.keybinds.is_none() {
+            let Some((keybinds, payload)) = bootstrap
+                .keymap
+                .load(&bootstrap.snapshot.instance_id, self.client_id)
+            else {
+                return false;
+            };
+            self.keybinds = Some(keybinds);
+            self.keybinds_payload = payload;
+        }
+        // This is only a pre-creation projection, never a live owner acknowledgement.
+        self.snapshot = Some(bootstrap.snapshot);
+        self.snapshot_is_bootstrap = true;
+        self.response_state_valid = false;
+        self.collapsed = bootstrap.view.collapsed;
+        self.scroll = bootstrap.view.scroll;
+        self.bootstrap_view_pending = true;
+        if self.mode.is_none() {
+            self.mode = Some(ModeState {
+                mode: bootstrap.mode,
+                base_mode: bootstrap.base_mode,
+            });
+        }
+        self.keyguide_dirty = true;
+        self.rebuild_tree();
+        self.reconcile_cursor();
+        true
+    }
+
+    fn mode_changed(&mut self, mode: InputMode, changed: bool) -> bool {
         let dismiss_finder = self.finder_return.as_mut().is_some_and(|context| {
-            if mode.mode == InputMode::Locked {
+            if mode == InputMode::Locked {
                 context.locked = true;
                 false
             } else {
@@ -261,10 +387,10 @@ impl Frontend {
         });
         let leave_control = self.granted
             && self.keyboard_control
-            && mode.mode == InputMode::Locked
+            && mode == InputMode::Locked
+            && self.mode_intent.is_none()
             && self.modal.is_none()
             && !self.finder.is_open();
-        self.mode = Some(mode);
         if dismiss_finder {
             self.close_finder(false);
         }
@@ -279,8 +405,41 @@ impl Frontend {
         changed || leave_control
     }
 
+    fn guide_space(&self) -> Option<GuideSpace> {
+        if !self.granted
+            || !self.visible
+            || self.guide_mode()? == InputMode::Locked
+            || self.popup_item.is_some()
+            || self.finder.is_open()
+        {
+            return None;
+        }
+        let (position, sidebar) = self.manifest.panes.iter().find_map(|(position, panes)| {
+            panes
+                .iter()
+                .find(|pane| pane.is_plugin && pane.id == self.id && !pane.is_suppressed)
+                .map(|pane| (*position, pane))
+        })?;
+        let tab = self
+            .tabs
+            .iter()
+            .find(|tab| tab.position == position && tab.active)?;
+        let x = sidebar.pane_content_x;
+        let bottom = sidebar
+            .pane_content_y
+            .saturating_add(self.rows)
+            .min(tab.display_area_rows);
+        let max_columns = tab.display_area_columns.saturating_sub(x);
+        (max_columns > self.columns && bottom > 0).then_some(GuideSpace {
+            x,
+            bottom,
+            max_columns,
+        })
+    }
+
     fn refresh_keyguide(&mut self) -> bool {
         let context = self.keyguide_context();
+        let space = self.guide_space();
         let available = self.rows.saturating_sub(2);
         // Leave real tree content above the guide even on short terminals.
         let mut content_rows = available.div_ceil(2).min(4);
@@ -298,6 +457,8 @@ impl Frontend {
                 cached.context == context
                     && cached.columns == self.columns
                     && cached.max_rows == max_rows
+                    && cached.space == space
+                    && cached.overlay_ready == self.guide_popup.ready_for_display()
             })
         {
             return false;
@@ -305,14 +466,59 @@ impl Frontend {
         let old_height = self
             .keyguide
             .as_ref()
-            .map_or(0, |cached| cached.lines.len());
-        let lines = keyguide::render(self.mode.as_ref(), context, self.columns, max_rows);
-        let height_changed = old_height != lines.len();
+            .map_or(0, |cached| cached.reserved_rows);
+        let mode = self.guide_mode().map(|input| keyguide::Mode {
+            input,
+            keybinds: self.keybinds.as_ref(),
+        });
+        let expanded = space.zip(mode).and_then(|(space, mode)| {
+            let guide = keyguide::render_expanded(
+                mode,
+                context,
+                self.columns,
+                space.max_columns,
+                max_rows.min(space.bottom),
+            );
+            (guide.columns > self.columns && !guide.lines.is_empty()).then_some((space, guide))
+        });
+        let (lines, reserved_rows) = if let Some((space, guide)) = expanded {
+            let height = guide.lines.len();
+            let coordinates = FloatingPaneCoordinates {
+                pinned: Some(true),
+                borderless: Some(true),
+                ..FloatingPaneCoordinates::default()
+                    .with_x_fixed(space.x)
+                    .with_y_fixed(space.bottom - height)
+                    .with_width_fixed(guide.columns)
+                    .with_height_fixed(height)
+            };
+            self.guide_popup.update(
+                self.id,
+                &self.configuration,
+                Some((&guide.lines, coordinates)),
+            );
+            if self.guide_popup.ready_for_display() {
+                (Vec::new(), height)
+            } else {
+                let lines = keyguide::render(mode, context, self.columns, max_rows);
+                let height = lines.len();
+                (lines, height)
+            }
+        } else {
+            self.guide_popup.update(self.id, &self.configuration, None);
+            let lines = keyguide::render(mode, context, self.columns, max_rows);
+            let height = lines.len();
+            (lines, height)
+        };
+        let height_changed = old_height != reserved_rows;
         self.keyguide = Some(CachedKeyGuide {
             context,
             columns: self.columns,
             max_rows,
             lines,
+            space,
+            overlay_ready: self.guide_popup.ready_for_display(),
+            reserved_rows,
         });
         self.keyguide_dirty = false;
         height_changed
@@ -323,7 +529,7 @@ impl Frontend {
             2 + self
                 .keyguide
                 .as_ref()
-                .map_or(0, |cached| cached.lines.len()),
+                .map_or(0, |cached| cached.reserved_rows),
         )
     }
 
@@ -337,7 +543,7 @@ impl Frontend {
         self.scroll = self
             .scroll
             .min(self.tree_cache.len().saturating_sub(self.tree_height()));
-        if reveal || height_changed {
+        if (reveal || height_changed) && !self.bootstrap_view_pending {
             self.ensure_cursor_visible();
         }
         if height_changed || self.scroll != old_scroll {
@@ -346,6 +552,12 @@ impl Frontend {
             return true;
         }
         false
+    }
+
+    fn request_mode(&mut self, input_mode: InputMode) {
+        self.mode_intent = Some(input_mode);
+        self.keyguide_dirty = true;
+        switch_to_input_mode(&input_mode);
     }
 
     fn enter_control(&mut self) {
@@ -358,7 +570,7 @@ impl Frontend {
         self.local_selection = true;
         self.hide_tooltip();
         set_selectable(true);
-        switch_to_input_mode(&InputMode::Normal);
+        self.request_mode(InputMode::Normal);
         focus_plugin_pane(self.id, false, false);
     }
 
@@ -403,7 +615,7 @@ impl Frontend {
             Some("toggle") if !self.keyboard_control => self.enter_control(),
             Some("toggle" | "leave") => {
                 self.leave_control(true);
-                switch_to_input_mode(&InputMode::Locked);
+                self.request_mode(InputMode::Locked);
             }
             _ => return false,
         }
@@ -430,7 +642,40 @@ impl Frontend {
         if Self::user_action(&action) {
             self.begin_user_action(Instant::now());
         }
-        self.queue.push_back(Request::new(self.request_id, action));
+        // New sidebars project the existing post-action application mode.
+        let return_mode = matches!(
+            action,
+            Action::CreateWorkspace { .. }
+                | Action::CreatePane { .. }
+                | Action::SelectWorkspace { .. }
+                | Action::SelectPane { .. }
+        )
+        .then_some(InputMode::Locked);
+        let creates_sidebar = match &action {
+            Action::CreateWorkspace { .. } | Action::CreatePane { .. } => true,
+            Action::SelectWorkspace { workspace_id } => {
+                self.snapshot.as_ref().is_some_and(|state| {
+                    !state
+                        .panes
+                        .iter()
+                        .any(|pane| &pane.workspace_id == workspace_id)
+                })
+            }
+            _ => false,
+        };
+        let view = creates_sidebar.then(|| native::SidebarView {
+            collapsed: self.collapsed.clone(),
+            scroll: self.scroll,
+        });
+        if creates_sidebar {
+            self.leave_control(false);
+            self.request_mode(InputMode::Locked);
+        }
+        self.queue.push_back(QueuedRequest {
+            request: Request::new(self.request_id, action),
+            return_mode,
+            view,
+        });
         self.dispatch();
     }
 
@@ -467,7 +712,7 @@ impl Frontend {
             || self
                 .queue
                 .iter()
-                .any(|request| Self::user_action(&request.action))
+                .any(|queued| Self::user_action(&queued.request.action))
     }
 
     fn finish_user_action(&mut self) {
@@ -520,6 +765,9 @@ impl Frontend {
     fn reset_pending_actions(&mut self) {
         self.queue.clear();
         self.in_flight = None;
+        self.in_flight_return_mode = None;
+        self.in_flight_view = None;
+        self.response_state_valid = false;
         self.desired_selection = None;
         self.relayed_selection = None;
         self.relay_revision = 0;
@@ -564,19 +812,29 @@ impl Frontend {
         if !self.granted || self.in_flight.is_some() {
             return;
         }
-        let Some(request) = self.queue.pop_front() else {
+        let Some(QueuedRequest {
+            request,
+            return_mode,
+            view,
+        }) = self.queue.pop_front()
+        else {
             return;
         };
+        self.response_state_valid = false;
         if let Err(error) = native::send(
             self.native_owner_id,
             &self.native_client,
             self.client_id,
             &request,
+            return_mode,
+            view.as_ref(),
         ) {
             self.error = Some(format!("Cannot encode native request: {error}"));
             self.finish_selection(request.request_id, true);
         } else {
             self.in_flight = Some(request);
+            self.in_flight_return_mode = return_mode;
+            self.in_flight_view = view;
         }
     }
 
@@ -598,6 +856,8 @@ impl Frontend {
         let Some(request) = self.in_flight.take() else {
             return;
         };
+        let return_mode = self.in_flight_return_mode.take();
+        self.in_flight_view = None;
         let obsolete_selection = matches!(
             request.action,
             Action::SelectWorkspace { .. } | Action::SelectPane { .. }
@@ -613,7 +873,10 @@ impl Frontend {
             let valid = response
                 .state
                 .map(|state| self.accept_snapshot(state))
-                .unwrap_or(true);
+                .unwrap_or(self.response_state_valid);
+            if !valid && self.error.is_none() {
+                self.error = Some("Native owner response arrived without valid state".to_owned());
+            }
             if let Some(error) = response.error {
                 self.error = Some(error);
             } else if valid {
@@ -629,7 +892,7 @@ impl Frontend {
                 for effect in response.effects {
                     // A superseded click must not move host focus back to an older target.
                     if !obsolete_selection || !matches!(effect, Effect::FocusPane { .. }) {
-                        self.effect(effect);
+                        self.effect(effect, return_mode);
                     }
                 }
             }
@@ -649,7 +912,8 @@ impl Frontend {
         if state.instance_id.is_empty() {
             return Err("Missing native owner instance identity".to_owned());
         }
-        if let Some(current) = &self.snapshot
+        if !self.snapshot_is_bootstrap
+            && let Some(current) = &self.snapshot
             && current.instance_id == state.instance_id
         {
             if state.revision < current.revision {
@@ -680,12 +944,13 @@ impl Frontend {
     }
 
     fn accept_snapshot(&mut self, state: Snapshot) -> bool {
-        match self.validate_snapshot(&state) {
+        let valid = match self.validate_snapshot(&state) {
             Ok(true) => {
-                if self
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|current| current.instance_id != state.instance_id)
+                if !self.snapshot_is_bootstrap
+                    && self
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|current| current.instance_id != state.instance_id)
                 {
                     self.reset_pending_actions();
                     self.close_finder(false);
@@ -708,6 +973,9 @@ impl Frontend {
                     self.collapsed.remove(&pane.workspace_id);
                 }
                 self.snapshot = Some(state);
+                self.snapshot_is_bootstrap = false;
+                self.bootstrap_view_pending &= !follow_focus;
+                self.rebuild_tree();
                 self.reconcile_cursor();
                 if follow_focus {
                     self.ensure_cursor_visible();
@@ -721,7 +989,17 @@ impl Frontend {
                 self.error = Some(error);
                 false
             }
-        }
+        };
+        self.response_state_valid = valid;
+        valid
+    }
+
+    fn rebuild_tree(&mut self) {
+        let Some(state) = &self.snapshot else { return };
+        self.collapsed
+            .retain(|id| state.workspaces.iter().any(|workspace| &workspace.id == id));
+        self.tree_cache = ui::tree(state, &self.collapsed);
+        self.items = ui::items(&self.tree_cache);
     }
 
     fn reconcile_cursor(&mut self) {
@@ -750,10 +1028,6 @@ impl Frontend {
         }) {
             self.relayed_selection = None;
         }
-        self.collapsed
-            .retain(|id| state.workspaces.iter().any(|w| &w.id == id));
-        self.tree_cache = ui::tree(state, &self.collapsed);
-        self.items = ui::items(&self.tree_cache);
         if let Some(desired) = &self.desired_selection {
             self.cursor = if self.items.contains(&desired.item) {
                 Some(desired.item.clone())
@@ -818,7 +1092,7 @@ impl Frontend {
         self.finish_user_action();
     }
 
-    fn effect(&mut self, effect: Effect) {
+    fn effect(&mut self, effect: Effect, return_mode: Option<InputMode>) {
         let Effect::FocusPane { zellij_pane_id } = effect;
         let exists = self
             .manifest
@@ -827,8 +1101,9 @@ impl Frontend {
             .flatten()
             .any(|pane| !pane.is_plugin && pane.id == zellij_pane_id);
         if exists {
+            let return_mode = return_mode.unwrap_or(InputMode::Locked);
             self.leave_control(false);
-            switch_to_input_mode(&InputMode::Locked);
+            self.request_mode(return_mode);
             focus_terminal_pane(zellij_pane_id, false, false);
         } else {
             self.error = Some(format!(
@@ -840,7 +1115,6 @@ impl Frontend {
 
     fn pane_update(&mut self, manifest: PaneManifest) {
         self.manifest = manifest;
-        self.reconcile_cursor();
         self.synchronize_focus();
         self.refresh_tooltip();
     }
@@ -908,7 +1182,7 @@ impl Frontend {
         };
         self.desired_selection.is_some()
             || self.in_flight.as_ref().is_some_and(selects)
-            || self.queue.iter().any(selects)
+            || self.queue.iter().any(|queued| selects(&queued.request))
     }
 
     fn hide_tooltip(&mut self) {
@@ -1097,6 +1371,7 @@ impl Frontend {
         } else {
             self.collapsed.remove(&workspace_id);
         }
+        self.rebuild_tree();
         self.reconcile_cursor();
         self.ensure_cursor_visible();
         self.refresh_tooltip();
@@ -1129,18 +1404,18 @@ impl Frontend {
             }
         });
         self.hide_tooltip();
-        switch_to_input_mode(&InputMode::Locked);
+        self.request_mode(InputMode::Locked);
     }
 
     fn modal_key(&mut self, key: KeyWithModifier) {
         if key.bare_key == BareKey::Esc {
             self.modal = None;
-            switch_to_input_mode(&InputMode::Normal);
+            self.request_mode(InputMode::Normal);
             return;
         }
         if matches!(self.modal, Some(Modal::Close { .. })) && key.bare_key == BareKey::Char('n') {
             self.modal = None;
-            switch_to_input_mode(&InputMode::Normal);
+            self.request_mode(InputMode::Normal);
             return;
         }
         if key.bare_key == BareKey::Enter
@@ -1179,7 +1454,7 @@ impl Frontend {
                     Item::Pane(pane_id) => Action::ClosePane { pane_id },
                 },
             };
-            switch_to_input_mode(&InputMode::Normal);
+            self.request_mode(InputMode::Normal);
             self.enqueue(action);
             return;
         }
@@ -1245,7 +1520,13 @@ impl Frontend {
             return;
         }
         self.local_selection = true;
-        match key.bare_key {
+        let bare_key = match key.bare_key {
+            BareKey::Char(character) if key.key_modifiers.contains(&KeyModifier::Shift) => {
+                BareKey::Char(character.to_ascii_uppercase())
+            }
+            bare_key => bare_key,
+        };
+        match bare_key {
             BareKey::Char('/') if self.keyboard_control => self.open_finder(),
             BareKey::Up | BareKey::Char('k') => self.navigate(-1),
             BareKey::Down | BareKey::Char('j') => self.navigate(1),
@@ -1265,7 +1546,7 @@ impl Frontend {
                     })
                     .map(str::to_owned);
                 if let Some(workspace) = workspace {
-                    let folded = match key.bare_key {
+                    let folded = match bare_key {
                         BareKey::Left => Some(true),
                         BareKey::Right => Some(false),
                         _ => None,
@@ -1280,7 +1561,7 @@ impl Frontend {
                     cwd_active: false,
                 });
                 self.hide_tooltip();
-                switch_to_input_mode(&InputMode::Locked);
+                self.request_mode(InputMode::Locked);
             }
             BareKey::Char('N') => {
                 let workspace = self
@@ -1298,7 +1579,7 @@ impl Frontend {
                         cwd: ui::Input::default(),
                     });
                     self.hide_tooltip();
-                    switch_to_input_mode(&InputMode::Locked);
+                    self.request_mode(InputMode::Locked);
                 }
             }
             BareKey::Char('r') => self.edit_selected(false),
@@ -1318,37 +1599,45 @@ impl Frontend {
             .map_or(0, |now| now.as_secs())
     }
 
-    fn mouse(&mut self, mouse: Mouse) {
+    fn mouse(&mut self, mouse: Mouse) -> bool {
         if self.modal.is_some() {
-            return;
+            return false;
         }
-        self.reconcile_viewport(false);
+        let viewport_changed = self.reconcile_viewport(false);
         let (line, column) = match mouse {
             Mouse::Hover(line, column)
             | Mouse::LeftClick(line, column)
             | Mouse::RightClick(line, column) => (line, column),
             Mouse::ScrollUp(lines) => {
+                let previous = self.scroll;
                 self.scroll = self.scroll.saturating_sub(lines);
-                self.refresh_tooltip();
-                return;
+                if self.scroll != previous {
+                    self.refresh_tooltip();
+                }
+                return viewport_changed || self.scroll != previous;
             }
             Mouse::ScrollDown(lines) => {
+                let previous = self.scroll;
                 self.scroll = self
                     .scroll
                     .saturating_add(lines)
                     .min(self.tree_cache.len().saturating_sub(self.tree_height()));
-                self.refresh_tooltip();
-                return;
+                if self.scroll != previous {
+                    self.refresh_tooltip();
+                }
+                return viewport_changed || self.scroll != previous;
             }
-            _ => return,
+            _ => return viewport_changed,
         };
         let index = (line >= 2 && (line as usize) < self.tree_end() && column < self.columns)
             .then(|| self.scroll + line as usize - 2);
         let item = index.and_then(|index| ui::item_at(&self.tree_cache, index));
         if matches!(mouse, Mouse::Hover(_, _)) {
+            let changed = self.hover != item;
             self.hover = item;
-            return;
+            return viewport_changed || changed;
         }
+        let changed = viewport_changed || self.hover != item || self.popup_item.is_some();
         self.hover = item.clone();
         self.hide_tooltip();
         if matches!(mouse, Mouse::RightClick(_, _)) {
@@ -1360,16 +1649,12 @@ impl Frontend {
             self.tooltip.begin_open();
             self.popup_item = item;
             self.refresh_tooltip();
-            return;
+            return true;
         }
         let Some(item) = item else {
             self.last_click = None;
-            return;
+            return changed;
         };
-        let group = self
-            .snapshot
-            .as_ref()
-            .and_then(|state| item.workspace_id(state).map(str::to_owned));
         self.local_selection = true;
         self.cursor = Some(item.clone());
         let now = Instant::now();
@@ -1378,6 +1663,10 @@ impl Frontend {
         });
         if double {
             self.last_click = None;
+            let group = self
+                .snapshot
+                .as_ref()
+                .and_then(|state| item.workspace_id(state).map(str::to_owned));
             if let Some(group) = group {
                 self.fold(group, None);
             }
@@ -1385,6 +1674,7 @@ impl Frontend {
             self.last_click = Some((item, now));
         }
         self.activate();
+        true
     }
 
     fn sidebar_geometry(&self) -> Option<[usize; 8]> {
@@ -1443,6 +1733,9 @@ impl Frontend {
             self.refresh_finder();
         }
         let viewport_changed = self.reconcile_viewport(resized);
+        if rows > 0 && columns > 0 {
+            self.bootstrap_view_pending = false;
+        }
         let body_height = self.tree_height();
         let tree_end = self.tree_end();
         if (resized || viewport_changed) && self.popup_item.is_some() {
@@ -1513,7 +1806,12 @@ impl Frontend {
         for row in 0..rows {
             let line: Cow<'_, str> = if row >= tree_end {
                 Cow::Borrowed(
-                    &self.keyguide.as_ref().expect("formatted key guide").lines[row - tree_end],
+                    self.keyguide
+                        .as_ref()
+                        .expect("formatted key guide")
+                        .lines
+                        .get(row - tree_end)
+                        .map_or("", String::as_str),
                 )
             } else {
                 Cow::Owned(if row == 0 {
@@ -1647,12 +1945,16 @@ impl ZellijPlugin for Frontend {
         self.overlay_role = configuration
             .get("role")
             .is_some_and(|role| role == "overlay");
+        self.guide_role = configuration.get("role").map(String::as_str) == Some("guide-overlay");
         self.native_owner_role =
             configuration.get("role").map(String::as_str) == Some("native-owner");
         self.finder_role = configuration.get("role").map(String::as_str) == Some("finder");
-        if !self.overlay_role && !self.native_owner_role && !self.finder_role {
+        if !self.overlay_role && !self.guide_role && !self.native_owner_role && !self.finder_role {
+            self.extract_sidebar_bootstrap(&mut configuration);
             // Host event routing is not part of the sidebar's application configuration.
             configuration.remove("mode_info_format");
+        } else {
+            configuration.remove("sidebar_bootstrap");
         }
         self.native_client = format!(
             "{}:{}",
@@ -1665,6 +1967,10 @@ impl ZellijPlugin for Frontend {
         self.configuration = configuration;
         if self.overlay_role {
             self.overlay.load(&self.configuration, self.id);
+            return;
+        }
+        if self.guide_role {
+            self.guide_view.load(&self.configuration, self.id);
             return;
         }
         if self.native_owner_role {
@@ -1681,6 +1987,7 @@ impl ZellijPlugin for Frontend {
             EventType::Key,
             // Subscribe to ModeUpdate dispatch; lossless JSON arrives as a CustomMessage.
             EventType::ModeUpdate,
+            EventType::InitialKeybinds,
             EventType::CustomMessage,
             EventType::Mouse,
             EventType::Timer,
@@ -1708,6 +2015,9 @@ impl ZellijPlugin for Frontend {
         if self.overlay_role {
             return self.overlay.event(event);
         }
+        if self.guide_role {
+            return self.guide_view.event(event);
+        }
         if self.native_owner_role {
             return self.native_owner.event(event);
         }
@@ -1718,7 +2028,9 @@ impl ZellijPlugin for Frontend {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 self.granted = true;
                 set_selectable(false);
-                switch_to_input_mode(&InputMode::Locked);
+                if !self.apply_sidebar_bootstrap() {
+                    self.request_mode(InputMode::Locked);
+                }
                 self.startup();
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
@@ -1785,6 +2097,8 @@ impl ZellijPlugin for Frontend {
             }
             Event::PaneClosed(PaneId::Plugin(id)) => {
                 self.tooltip.forget(id);
+                self.guide_popup.forget(id);
+                self.keyguide_dirty = true;
                 if self.finder.id == Some(id) {
                     self.finder.forget(id);
                     self.finder_return = None;
@@ -1803,13 +2117,15 @@ impl ZellijPlugin for Frontend {
             Event::CustomMessage(name, payload)
                 if name == "mode_info" && payload.len() <= MAX_MESSAGE_BYTES =>
             {
-                let Ok(mode) = serde_json::from_str::<ModeInfo>(&payload) else {
-                    return false;
-                };
-                return self.accept_mode(mode);
+                return self.mode_message(&payload);
+            }
+            Event::CustomMessage(name, payload)
+                if name == "keybinds_info" && payload.len() <= MAX_MESSAGE_BYTES =>
+            {
+                return self.keybinds_message(payload);
             }
             Event::Key(key) if self.granted => self.key(key),
-            Event::Mouse(mouse) if self.granted => self.mouse(mouse),
+            Event::Mouse(mouse) if self.granted => return self.mouse(mouse),
             Event::Timer(_) if self.granted => {
                 let now = Instant::now();
                 return self.expire_user_action(now);
@@ -1827,12 +2143,14 @@ impl ZellijPlugin for Frontend {
                     return false;
                 }
                 self.visible = visible;
+                self.keyguide_dirty = true;
                 if !visible {
                     self.close_finder(false);
                     self.leave_control(false);
                     self.local_selection = false;
                     self.reconcile_cursor();
                     self.hide_tooltip();
+                    self.guide_popup.update(self.id, &self.configuration, None);
                 } else {
                     self.reconcile_cursor();
                     self.ensure_cursor_visible();
@@ -1843,6 +2161,7 @@ impl ZellijPlugin for Frontend {
                 self.close_finder(false);
                 self.leave_control(false);
                 self.tooltip.close(self.id, &self.configuration);
+                self.guide_popup.close(self.id, &self.configuration);
             }
             _ => return false,
         }
@@ -1852,6 +2171,9 @@ impl ZellijPlugin for Frontend {
     fn pipe(&mut self, message: PipeMessage) -> bool {
         if self.overlay_role {
             return self.overlay.pipe(message);
+        }
+        if self.guide_role {
+            return self.guide_view.pipe(message);
         }
         if self.native_owner_role {
             return self.native_owner.pipe(message);
@@ -1881,34 +2203,44 @@ impl ZellijPlugin for Frontend {
                 return false;
             };
             if message.name == native::RESPONSE {
-                let Ok(envelope) = serde_json::from_str::<native::NativeResponse>(&payload) else {
+                let Ok(identity) = serde_json::from_str::<NativeResponseIdentity<'_>>(&payload)
+                else {
                     return false;
                 };
-                if envelope.client != self.native_client
-                    || envelope.client_id != self.client_id
+                if identity.client != self.native_client
+                    || identity.client_id != self.client_id
                     || self
                         .in_flight
                         .as_ref()
-                        .is_none_or(|request| request.request_id != envelope.response.request_id)
+                        .is_none_or(|request| request.request_id != identity.response.request_id)
                 {
                     return false;
                 }
+                let Ok(envelope) = serde_json::from_str::<native::NativeResponse>(&payload) else {
+                    return false;
+                };
                 self.native_owner_id = Some(owner);
                 self.native_response(envelope);
                 return true;
             }
-            let Ok(state) = serde_json::from_str::<native::NativeState>(&payload) else {
+            let Ok(identity) = serde_json::from_str::<NativeStateIdentity>(&payload) else {
                 return false;
             };
-            if state.client_id != self.client_id {
+            if identity.client_id != self.client_id {
                 return false;
             }
-            // Owner broadcasts also reach other client replicas and repeat the response
-            // snapshot. Neither is a reason to render; only a response acknowledges input.
-            let changed = self.snapshot.as_ref().is_none_or(|current| {
-                current.instance_id != state.snapshot.instance_id
-                    || current.revision < state.snapshot.revision
-            });
+            let Ok(state) = serde_json::from_str::<native::NativeState>(&payload) else {
+                self.response_state_valid = false;
+                self.error = Some("Malformed native owner state".to_owned());
+                return true;
+            };
+            // Owner broadcasts also reach other client replicas. Only a response
+            // acknowledges input; repeated canonical state is not a reason to render.
+            let changed = self.snapshot_is_bootstrap
+                || self.snapshot.as_ref().is_none_or(|current| {
+                    current.instance_id != state.snapshot.instance_id
+                        || current.revision < state.snapshot.revision
+                });
             let discovered = self.native_owner_id.is_none();
             if !self.accept_snapshot(state.snapshot) {
                 return true;
@@ -1921,13 +2253,34 @@ impl ZellijPlugin for Frontend {
             self.native_owner_id = Some(owner);
             if discovered
                 && let Some(request) = self.in_flight.as_ref()
-                && let Err(error) =
-                    native::send(Some(owner), &self.native_client, self.client_id, request)
+                && let Err(error) = native::send(
+                    Some(owner),
+                    &self.native_client,
+                    self.client_id,
+                    request,
+                    self.in_flight_return_mode,
+                    self.in_flight_view.as_ref(),
+                )
             {
                 self.error = Some(format!("Cannot encode native request: {error}"));
                 return true;
             }
             return changed || relay_changed;
+        }
+        if message.name == overlay::GUIDE_READY {
+            let was_ready = self.guide_popup.ready_for_display();
+            if let (PipeSource::Plugin(source), Some(payload)) = (message.source, message.payload)
+                && payload.len() <= 4096
+                && let Ok(ready) = serde_json::from_str::<overlay::GuideReady>(&payload)
+                && ready.id == source
+                && self.guide_popup.ready(&ready, self.id, &self.configuration)
+                && self.guide_popup.ready_for_display() != was_ready
+            {
+                self.keyguide_dirty = true;
+                self.reconcile_viewport(false);
+                return true;
+            }
+            return false;
         }
         if message.name == overlay::READY {
             if let (PipeSource::Plugin(source), Some(payload)) = (message.source, message.payload)
@@ -1967,6 +2320,8 @@ impl ZellijPlugin for Frontend {
     fn render(&mut self, rows: usize, columns: usize) {
         if self.overlay_role {
             self.overlay.render(rows, columns);
+        } else if self.guide_role {
+            self.guide_view.render(rows, columns);
         } else if self.finder_role {
             self.finder_view.render(rows, columns);
         } else if !self.native_owner_role {
@@ -2082,11 +2437,254 @@ mod tests {
         }
     }
 
-    fn mode_event(mode: ModeInfo) -> Event {
+    fn mode_event(mut mode: ModeInfo) -> Event {
+        mode.keybinds.clear();
         Event::CustomMessage(
             "mode_info".to_owned(),
             serde_json::to_string(&mode).unwrap(),
         )
+    }
+
+    fn keybinds_event(mode: &ModeInfo) -> Event {
+        Event::CustomMessage(
+            "keybinds_info".to_owned(),
+            serde_json::to_string(&mode.keybinds).unwrap(),
+        )
+    }
+
+    fn bootstrap_configuration(state: Snapshot, info: ModeInfo) -> BTreeMap<String, String> {
+        bootstrap_configuration_with_view(state, info, native::SidebarView::default())
+    }
+
+    fn bootstrap_configuration_with_view(
+        state: Snapshot,
+        info: ModeInfo,
+        view: native::SidebarView,
+    ) -> BTreeMap<String, String> {
+        let keymap = native::test_keymap_cache(&state.instance_id, &info.keybinds);
+        BTreeMap::from([(
+            "sidebar_bootstrap".to_owned(),
+            serde_json::json!({
+                "snapshot": state,
+                "mode": info.mode,
+                "base_mode": info.base_mode,
+                "keymap": keymap,
+                "view": view,
+            })
+            .to_string(),
+        )])
+    }
+
+    #[test]
+    fn invalid_keymap_cache_cannot_apply_a_partial_bootstrap_but_sdk_replay_can_replace_it() {
+        let info = guide_mode(InputMode::Locked);
+        let mut configuration = bootstrap_configuration(snapshot(1, "terminal_1"), info.clone());
+        let mut encoded: serde_json::Value =
+            serde_json::from_str(&configuration["sidebar_bootstrap"]).unwrap();
+        encoded["keymap"]["source"] = serde_json::json!("invalid/source");
+        configuration.insert("sidebar_bootstrap".to_owned(), encoded.to_string());
+        let mut frontend = Frontend {
+            granted: true,
+            ..Frontend::default()
+        };
+        frontend.extract_sidebar_bootstrap(&mut configuration.clone());
+        assert!(!frontend.apply_sidebar_bootstrap());
+        assert!(frontend.snapshot.is_none());
+        assert!(frontend.keybinds.is_none());
+        assert!(!frontend.response_state_valid);
+
+        frontend.extract_sidebar_bootstrap(&mut configuration);
+        assert!(frontend.update(keybinds_event(&info)));
+        assert!(frontend.apply_sidebar_bootstrap());
+        assert_eq!(frontend.keybinds.as_ref(), Some(&info.keybinds));
+        assert!(frontend.snapshot_is_bootstrap);
+        assert!(!frontend.response_state_valid);
+    }
+
+    #[test]
+    fn bootstrap_waits_for_permission_then_renders_a_complete_unfocused_projection() {
+        let mut frontend = Frontend {
+            render_cursor: Some(None),
+            ..Frontend::default()
+        };
+        let mut configuration =
+            bootstrap_configuration(snapshot(1, "terminal_1"), guide_mode(InputMode::Locked));
+        frontend.extract_sidebar_bootstrap(&mut configuration);
+        assert!(!configuration.contains_key("sidebar_bootstrap"));
+        assert!(!frontend.apply_sidebar_bootstrap());
+        assert!(frontend.snapshot.is_none());
+        assert!(frontend.tree_cache.is_empty());
+        let before: String = sidebar_cells(&mut frontend, 24, 64)
+            .iter()
+            .flatten()
+            .collect();
+        assert!(!before.contains("Workspace 1"));
+        assert!(!before.contains("Terminal 1"));
+
+        frontend.granted = true;
+        assert!(frontend.apply_sidebar_bootstrap());
+        assert!(frontend.snapshot_is_bootstrap);
+        assert!(!frontend.response_state_valid);
+        let warm: String = sidebar_cells(&mut frontend, 24, 64)
+            .iter()
+            .flatten()
+            .collect();
+        assert!(warm.contains("Workspace 1"));
+        assert!(warm.contains("Terminal 1"));
+        assert!(!warm.contains("Connecting to native owner"));
+        assert!(!warm.contains("Waiting for native keymap"));
+        assert!(!frontend.keyboard_control);
+        assert!(!frontend.control_has_focus);
+        assert!(frontend.native_focus.is_none());
+        assert!(frontend.mode_intent.is_none());
+        assert!(frontend.update(mode_event(guide_mode(InputMode::Normal))));
+        assert_eq!(frontend.guide_mode(), Some(InputMode::Normal));
+        assert!(!frontend.keyboard_control);
+        assert!(!frontend.control_has_focus);
+    }
+
+    #[test]
+    fn warm_permission_preserves_an_already_authoritative_mode_and_keymap() {
+        let mut frontend = Frontend::default();
+        let mut configuration =
+            bootstrap_configuration(snapshot(1, "terminal_1"), guide_mode(InputMode::Locked));
+        frontend.extract_sidebar_bootstrap(&mut configuration);
+        let mut actual = guide_mode(InputMode::Normal);
+        actual.keybinds.clear();
+        assert!(frontend.update(mode_event(actual.clone())));
+        assert!(frontend.update(keybinds_event(&actual)));
+        assert!(frontend.update(Event::PermissionRequestResult(PermissionStatus::Granted)));
+        assert_eq!(frontend.guide_mode(), Some(InputMode::Normal));
+        assert_eq!(frontend.keybinds.as_ref(), Some(&actual.keybinds));
+        assert!(frontend.mode_intent.is_none());
+        assert!(frontend.snapshot_is_bootstrap);
+        assert!(!frontend.response_state_valid);
+        assert!(matches!(
+            frontend.in_flight.as_ref().unwrap().action,
+            Action::RegisterFrontend
+        ));
+        assert!(matches!(
+            frontend.queue.front().unwrap().request.action,
+            Action::Snapshot
+        ));
+    }
+
+    #[test]
+    fn malformed_or_oversized_bootstrap_keeps_the_real_startup_path() {
+        let mut invalid_identity = snapshot(1, "terminal_1");
+        invalid_identity.panes[0].workspace_id = "missing".to_owned();
+        let mut invalid_protocol = snapshot(1, "terminal_1");
+        invalid_protocol.protocol = PROTOCOL_VERSION + 1;
+        let mut missing_instance = snapshot(1, "terminal_1");
+        missing_instance.instance_id.clear();
+        let mut payloads = vec!["not json".to_owned(), " ".repeat(MAX_MESSAGE_BYTES + 1)];
+        for state in [invalid_identity, invalid_protocol, missing_instance] {
+            payloads.push(
+                bootstrap_configuration(state, guide_mode(InputMode::Locked))
+                    .remove("sidebar_bootstrap")
+                    .unwrap(),
+            );
+        }
+        for payload in payloads {
+            let mut frontend = Frontend {
+                granted: true,
+                ..Frontend::default()
+            };
+            let mut configuration = BTreeMap::from([
+                ("sidebar_bootstrap".to_owned(), payload),
+                ("role".to_owned(), "sidebar".to_owned()),
+            ]);
+            frontend.extract_sidebar_bootstrap(&mut configuration);
+            assert_eq!(
+                configuration,
+                BTreeMap::from([("role".to_owned(), "sidebar".to_owned())])
+            );
+            assert!(!frontend.apply_sidebar_bootstrap());
+            assert!(frontend.snapshot.is_none());
+            assert!(!frontend.response_state_valid);
+            assert!(frontend.error.is_none());
+        }
+    }
+
+    #[test]
+    fn queued_creation_retains_return_mode_after_control_departure() {
+        let mut frontend = popup_frontend();
+        frontend.mode = Some(ModeState {
+            mode: InputMode::Locked,
+            base_mode: Some(InputMode::Normal),
+        });
+        frontend.enter_control();
+        frontend.in_flight = Some(Request::new(7, Action::Snapshot));
+        frontend.collapsed.insert("workspace_2".to_owned());
+        frontend.scroll = 4;
+        frontend.enqueue(Action::CreatePane {
+            workspace_id: "workspace_1".to_owned(),
+            cwd: None,
+        });
+        frontend.leave_control(false);
+        frontend.collapsed.clear();
+        frontend.scroll = 0;
+        frontend.mode = Some(ModeState {
+            mode: InputMode::Normal,
+            base_mode: Some(InputMode::Normal),
+        });
+        frontend.in_flight = None;
+        frontend.dispatch();
+        assert!(matches!(
+            frontend.in_flight.as_ref().unwrap().action,
+            Action::CreatePane { .. }
+        ));
+        assert_eq!(frontend.in_flight_return_mode, Some(InputMode::Locked));
+        let view = frontend.in_flight_view.as_ref().unwrap();
+        assert_eq!(view.collapsed, BTreeSet::from(["workspace_2".to_owned()]));
+        assert_eq!(view.scroll, 4);
+    }
+
+    #[test]
+    fn warm_first_frame_preserves_source_folds_and_scroll_before_live_focus_changes() {
+        let mut source = populated_frontend();
+        let info = guide_mode(InputMode::Locked);
+        source.update(mode_event(info.clone()));
+        source.update(keybinds_event(&info));
+        source.collapsed.insert("workspace_1".to_owned());
+        source.rebuild_tree();
+        source.reconcile_cursor();
+        sidebar_cells(&mut source, 12, 40);
+        source.scroll = 8;
+        let frame = sidebar_cells(&mut source, 12, 40);
+        assert_eq!(source.scroll, 8);
+
+        for live_before_first_frame in [false, true] {
+            let mut warm = Frontend {
+                granted: true,
+                render_cursor: Some(None),
+                ..Frontend::default()
+            };
+            let mut configuration = bootstrap_configuration_with_view(
+                source.snapshot.as_ref().unwrap().clone(),
+                info.clone(),
+                native::SidebarView {
+                    collapsed: source.collapsed.clone(),
+                    scroll: source.scroll,
+                },
+            );
+            warm.extract_sidebar_bootstrap(&mut configuration);
+            assert!(warm.apply_sidebar_bootstrap());
+            if live_before_first_frame {
+                assert!(warm.accept_snapshot(source.snapshot.as_ref().unwrap().clone()));
+            }
+            assert_eq!(sidebar_cells(&mut warm, 12, 40), frame);
+            assert_eq!(warm.collapsed, source.collapsed);
+            assert_eq!(warm.scroll, source.scroll);
+            assert!(!warm.bootstrap_view_pending);
+
+            let mut live = source.snapshot.as_ref().unwrap().clone();
+            live.revision += 1;
+            live.focused_pane_id = Some("terminal_12".to_owned());
+            assert!(warm.accept_snapshot(live));
+            assert_eq!(warm.cursor, Some(Item::Pane("terminal_12".to_owned())));
+            assert!(warm.scroll > source.scroll);
+        }
     }
 
     fn populated_frontend() -> Frontend {
@@ -2123,6 +2721,7 @@ mod tests {
         let focus = frontend.native_focus;
         let cursor = frontend.cursor.clone();
         assert!(frontend.mode.is_none());
+        assert!(frontend.update(keybinds_event(&guide_mode(InputMode::Locked))));
         for mode in [
             InputMode::Locked,
             InputMode::Normal,
@@ -2141,15 +2740,15 @@ mod tests {
             assert!(!frontend.keyboard_control);
             assert!(!frontend.control_has_focus);
         }
-        let mut remapped = frontend.mode.clone().unwrap();
+        let mut remapped = guide_mode(InputMode::Pane);
         remapped.keybinds[0].1[0].0.bare_key = BareKey::Char('u');
-        assert!(frontend.update(mode_event(remapped.clone())));
+        assert!(frontend.update(keybinds_event(&remapped)));
         remapped.session_name = Some("new session metadata".to_owned());
         assert!(!frontend.update(mode_event(remapped)));
     }
 
     #[test]
-    fn lossless_mode_events_preserve_pipe_bindings_and_ignore_partial_sdk_updates() {
+    fn lossless_keybind_events_preserve_pipe_bindings_and_ignore_partial_sdk_updates() {
         let mut frontend = popup_frontend();
         let pending = sidebar_cells(&mut frontend, 24, 64)
             .into_iter()
@@ -2178,7 +2777,8 @@ mod tests {
             }],
         ));
         assert!(frontend.update(mode_event(info.clone())));
-        assert_eq!(frontend.mode.as_ref().unwrap().keybinds, info.keybinds);
+        assert!(frontend.update(keybinds_event(&info)));
+        assert_eq!(frontend.keybinds.as_ref().unwrap(), &info.keybinds);
         let frame = sidebar_cells(&mut frontend, 24, 64);
         let text = frame.iter().flatten().collect::<String>();
         assert!(text.contains("Ctrl+Space"));
@@ -2189,19 +2789,94 @@ mod tests {
         stripped.keybinds.clear();
         assert!(!frontend.update(Event::ModeUpdate(stripped)));
         assert_eq!(frontend.mode.as_ref().unwrap().mode, InputMode::Locked);
-        assert_eq!(frontend.mode.as_ref().unwrap().keybinds, info.keybinds);
+        assert_eq!(frontend.keybinds.as_ref().unwrap(), &info.keybinds);
         assert!(!frontend.keyguide_dirty);
         assert_eq!(sidebar_cells(&mut frontend, 24, 64), frame);
 
         info.keybinds[0].1[1].0 = "Ctrl x".parse().unwrap();
-        assert!(frontend.update(mode_event(info.clone())));
+        assert!(frontend.update(keybinds_event(&info)));
         let remapped = sidebar_cells(&mut frontend, 24, 64)
             .into_iter()
             .flatten()
             .collect::<String>();
         assert!(remapped.contains("Ctrl+x"));
         assert!(!remapped.contains("Ctrl+Space"));
-        assert!(!frontend.update(mode_event(info)));
+        assert!(!frontend.update(keybinds_event(&info)));
+    }
+
+    #[test]
+    fn initial_keymap_and_mode_can_arrive_in_either_order_and_empty_remaps_are_authoritative() {
+        for keys_first in [false, true] {
+            let mut frontend = popup_frontend();
+            let cursor = frontend.cursor.clone();
+            let info = guide_mode(InputMode::Locked);
+            let (first, second) = if keys_first {
+                (keybinds_event(&info), mode_event(info.clone()))
+            } else {
+                (mode_event(info.clone()), keybinds_event(&info))
+            };
+            assert!(frontend.update(first));
+            assert!(frontend.update(second));
+            let complete = sidebar_cells(&mut frontend, 24, 64);
+            assert!(
+                complete
+                    .iter()
+                    .flatten()
+                    .collect::<String>()
+                    .contains("Ctrl+g")
+            );
+            assert!(frontend.update(mode_event(guide_mode(InputMode::Normal))));
+            assert_eq!(frontend.keybinds.as_ref().unwrap(), &info.keybinds);
+            assert!(frontend.update(mode_event(info.clone())));
+            assert_eq!(sidebar_cells(&mut frontend, 24, 64), complete);
+            assert!(!frontend.update(Event::InitialKeybinds(Vec::new())));
+            assert_eq!(frontend.keybinds.as_ref().unwrap(), &info.keybinds);
+            let mut empty = info;
+            empty.keybinds.clear();
+            assert!(frontend.update(keybinds_event(&empty)));
+            let remapped = sidebar_cells(&mut frontend, 24, 64);
+            assert!(
+                !remapped
+                    .iter()
+                    .flatten()
+                    .collect::<String>()
+                    .contains("Ctrl+g")
+            );
+            assert_eq!(frontend.cursor, cursor);
+            assert!(!frontend.keyboard_control);
+        }
+    }
+
+    #[test]
+    fn optimistic_guide_mode_does_not_acknowledge_host_mode_or_sidebar_focus() {
+        let mut frontend = popup_frontend();
+        frontend.update(keybinds_event(&guide_mode(InputMode::Locked)));
+        frontend.update(mode_event(guide_mode(InputMode::Locked)));
+        frontend.synchronize_focus();
+        frontend.enter_control();
+        assert_eq!(frontend.mode.as_ref().unwrap().mode, InputMode::Locked);
+        assert_eq!(frontend.guide_mode(), Some(InputMode::Normal));
+        assert!(!frontend.control_has_focus);
+        let immediate = sidebar_cells(&mut frontend, 20, 40);
+        assert!(
+            immediate
+                .iter()
+                .flatten()
+                .collect::<String>()
+                .contains("Unlocked · Sidebar")
+        );
+        assert!(!frontend.update(mode_event(guide_mode(InputMode::Locked))));
+        host_focus(&mut frontend, PaneId::Terminal(1));
+        assert!(frontend.keyboard_control);
+        assert!(!frontend.control_has_focus);
+        assert_eq!(sidebar_cells(&mut frontend, 20, 40), immediate);
+        assert!(frontend.update(mode_event(guide_mode(InputMode::Normal))));
+        assert!(frontend.mode_intent.is_none());
+        assert!(!frontend.control_has_focus);
+        host_focus(&mut frontend, PaneId::Plugin(99));
+        assert!(frontend.control_has_focus);
+        assert!(frontend.update(mode_event(guide_mode(InputMode::Locked))));
+        assert!(!frontend.keyboard_control);
     }
 
     #[test]
@@ -2211,6 +2886,7 @@ mod tests {
         assert!(frontend.mode.is_none());
         let info = guide_mode(InputMode::Locked);
         assert!(frontend.update(mode_event(info.clone())));
+        assert!(frontend.update(keybinds_event(&info)));
         let frame = sidebar_cells(&mut frontend, 24, 64);
         let mut invalid_mode = serde_json::to_value(&info).unwrap();
         invalid_mode["mode"] = serde_json::json!("unsupported-mode");
@@ -2225,32 +2901,24 @@ mod tests {
             Event::CustomMessage("mode_info".to_owned(), "null".to_owned()),
             Event::CustomMessage("mode_info".to_owned(), invalid_mode.to_string()),
             mode_event(oversized),
+            Event::CustomMessage("keybinds_info".to_owned(), "{".to_owned()),
+            Event::CustomMessage("keybinds_info".to_owned(), "null".to_owned()),
+            Event::CustomMessage(
+                "keybinds_info".to_owned(),
+                "[[\"Locked\",[]],[]]".to_owned(),
+            ),
+            Event::CustomMessage(
+                "keybinds_info".to_owned(),
+                " ".repeat(MAX_MESSAGE_BYTES + 1),
+            ),
         ] {
             assert!(!frontend.update(event));
             assert_eq!(frontend.mode.as_ref().unwrap().mode, info.mode);
             assert_eq!(frontend.mode.as_ref().unwrap().base_mode, info.base_mode);
-            assert_eq!(frontend.mode.as_ref().unwrap().keybinds, info.keybinds);
+            assert_eq!(frontend.keybinds.as_ref().unwrap(), &info.keybinds);
             assert!(!frontend.keyguide_dirty);
             assert_eq!(sidebar_cells(&mut frontend, 24, 64), frame);
         }
-    }
-
-    #[test]
-    fn sidebar_focus_ack_repaints_even_without_a_terminal_focus_change() {
-        let mut frontend = popup_frontend();
-        frontend.keyboard_control = true;
-        frontend.local_selection = true;
-        frontend.update(mode_event(guide_mode(InputMode::Normal)));
-        let mut manifest = frontend.manifest.clone();
-        for pane in manifest.panes.values_mut().flatten() {
-            pane.is_focused = pane.is_plugin;
-        }
-        assert!(frontend.native_focus.is_none());
-        assert!(!frontend.control_has_focus);
-        assert!(frontend.update(Event::PaneUpdate(manifest)));
-        assert!(frontend.native_focus.is_none());
-        assert!(frontend.control_has_focus);
-        assert!(frontend.keyboard_control);
     }
 
     #[test]
@@ -2277,6 +2945,7 @@ mod tests {
     fn changing_guide_height_reveals_selection_and_reclips_an_open_card() {
         let mut frontend = populated_frontend();
         frontend.update(mode_event(guide_mode(InputMode::Locked)));
+        frontend.update(keybinds_event(&guide_mode(InputMode::Locked)));
         sidebar_cells(&mut frontend, 16, 24);
         let application_height = frontend.tree_height();
         frontend.keyboard_control = true;
@@ -2330,6 +2999,7 @@ mod tests {
         frontend.keyboard_control = true;
         frontend.control_has_focus = true;
         frontend.update(mode_event(guide_mode(InputMode::Normal)));
+        frontend.update(keybinds_event(&guide_mode(InputMode::Normal)));
         let baseline = sidebar_cells(&mut frontend, 12, 24);
         let item = frontend.tree_cache[..frontend.tree_height()]
             .iter()
@@ -2393,6 +3063,7 @@ mod tests {
                     cwd_active: true,
                 });
                 frontend.update(mode_event(guide_mode(InputMode::Locked)));
+                frontend.update(keybinds_event(&guide_mode(InputMode::Locked)));
                 sidebar_cells(&mut frontend, rows, columns);
                 assert!(frontend.tree_end() <= rows);
                 if rows > 2 {
@@ -2932,6 +3603,31 @@ mod tests {
     }
 
     #[test]
+    fn pointer_motion_and_clamped_scroll_only_repaint_visible_changes() {
+        let mut frontend = popup_frontend();
+        sidebar_cells(&mut frontend, 20, 40);
+        let item = Item::Pane("terminal_1".to_owned());
+        let row = frontend
+            .tree_cache
+            .iter()
+            .position(|row| row.item.as_ref() == Some(&item))
+            .unwrap()
+            + 2;
+        assert!(frontend.update(Event::Mouse(Mouse::Hover(row as isize, 4))));
+        assert!(!frontend.update(Event::Mouse(Mouse::Hover(row as isize, 5))));
+        assert!(!frontend.update(Event::Mouse(Mouse::ScrollUp(1))));
+        assert!(frontend.update(Event::Mouse(Mouse::RightClick(row as isize, 5))));
+        let revision = frontend.tooltip.pending.as_ref().unwrap().revision;
+        assert!(!frontend.update(Event::Mouse(Mouse::Hover(row as isize, 6))));
+        assert_eq!(
+            frontend.tooltip.pending.as_ref().unwrap().revision,
+            revision
+        );
+        assert_popup(&frontend, &item);
+        assert!(frontend.update(Event::Mouse(Mouse::Hover(0, 5))));
+    }
+
+    #[test]
     fn hovering_actual_source_rows_retains_item_and_terminal_selection() {
         let mut frontend = frontend();
         let item = Item::Pane("terminal_1".to_owned());
@@ -3009,6 +3705,97 @@ mod tests {
         }
     }
 
+    fn take_queued_request(frontend: &mut Frontend) {
+        let queued = frontend.queue.pop_front().unwrap();
+        frontend.in_flight = Some(queued.request);
+        frontend.in_flight_return_mode = queued.return_mode;
+        frontend.in_flight_view = queued.view;
+    }
+
+    #[test]
+    fn bootstrap_does_not_authorize_an_ack_without_live_state() {
+        let mut frontend = Frontend {
+            granted: true,
+            ..Frontend::default()
+        };
+        let mut configuration =
+            bootstrap_configuration(snapshot(1, "terminal_1"), guide_mode(InputMode::Locked));
+        frontend.extract_sidebar_bootstrap(&mut configuration);
+        assert!(frontend.apply_sidebar_bootstrap());
+        frontend.in_flight = Some(Request::new(7, Action::Snapshot));
+        frontend.native_response(native::NativeResponse {
+            client: frontend.native_client.clone(),
+            client_id: frontend.client_id,
+            response: Response {
+                protocol: PROTOCOL_VERSION,
+                request_id: 7,
+                state: None,
+                effects: vec![Effect::FocusPane { zellij_pane_id: 1 }],
+                error: None,
+            },
+        });
+        assert_eq!(
+            frontend.error.as_deref(),
+            Some("Native owner response arrived without valid state")
+        );
+        assert!(!frontend.response_state_valid);
+        assert!(frontend.mode_intent.is_none());
+        assert!(frontend.in_flight.is_none());
+    }
+
+    #[test]
+    fn live_state_replaces_stale_bootstrap_then_enforces_same_instance_conflicts() {
+        let mut frontend = Frontend {
+            granted: true,
+            native_owner_id: Some(100),
+            ..Frontend::default()
+        };
+        let mut stale = snapshot(99, "terminal_2");
+        stale.workspaces[0].name = "Stale projection".to_owned();
+        let mut configuration = bootstrap_configuration(stale, guide_mode(InputMode::Locked));
+        frontend.extract_sidebar_bootstrap(&mut configuration);
+        assert!(frontend.apply_sidebar_bootstrap());
+        frontend.in_flight = Some(Request::new(7, Action::Snapshot));
+        let live = snapshot(1, "terminal_1");
+        assert!(frontend.pipe(native_message(
+            native::STATE,
+            native::NativeState {
+                client_id: frontend.client_id,
+                snapshot: live.clone(),
+                ui_selection: None,
+                ui_selection_revision: 0,
+                ui_selection_epoch: String::new(),
+            },
+        )));
+        assert_eq!(frontend.snapshot.as_ref(), Some(&live));
+        assert!(!frontend.snapshot_is_bootstrap);
+        assert!(frontend.response_state_valid);
+        assert_eq!(frontend.in_flight.as_ref().unwrap().request_id, 7);
+        assert!(frontend.pipe(native_message(
+            native::RESPONSE,
+            native::NativeResponse {
+                client: frontend.native_client.clone(),
+                client_id: frontend.client_id,
+                response: Response {
+                    protocol: PROTOCOL_VERSION,
+                    request_id: 7,
+                    state: None,
+                    effects: Vec::new(),
+                    error: None,
+                },
+            },
+        )));
+        assert!(frontend.in_flight.is_none());
+        assert!(frontend.error.is_none());
+        assert!(!frontend.accept_snapshot(snapshot(1, "terminal_2")));
+        assert_eq!(
+            frontend.error.as_deref(),
+            Some("Conflicting state at the same native owner revision")
+        );
+        assert_eq!(frontend.snapshot.as_ref(), Some(&live));
+        assert!(!frontend.response_state_valid);
+    }
+
     #[test]
     fn native_publication_does_not_acknowledge_input_or_redraw_unchanged_state() {
         let mut frontend = frontend();
@@ -3070,7 +3857,7 @@ mod tests {
                         response: Response {
                             protocol: PROTOCOL_VERSION,
                             request_id,
-                            state: Some(state.clone()),
+                            state: None,
                             effects: Vec::new(),
                             error: None,
                         },
@@ -3079,6 +3866,42 @@ mod tests {
                 matches,
             );
             assert_eq!(frontend.in_flight.is_none(), matches);
+        }
+    }
+
+    #[test]
+    fn no_state_acknowledgement_requires_a_valid_publication_before_applying_effects() {
+        for invalid in [false, true] {
+            let mut frontend = popup_frontend();
+            frontend.keyboard_control = true;
+            frontend.control_has_focus = true;
+            frontend.local_selection = true;
+            frontend.in_flight = Some(Request::new(7, Action::Snapshot));
+            frontend.response_state_valid = false;
+            if invalid {
+                assert!(!frontend.accept_snapshot(snapshot(1, "terminal_2")));
+            }
+            let expected = if invalid {
+                "Conflicting state at the same native owner revision"
+            } else {
+                "Native owner response arrived without valid state"
+            };
+            frontend.native_response(native::NativeResponse {
+                client: frontend.native_client.clone(),
+                client_id: frontend.client_id,
+                response: Response {
+                    protocol: PROTOCOL_VERSION,
+                    request_id: 7,
+                    state: None,
+                    effects: vec![Effect::FocusPane { zellij_pane_id: 1 }],
+                    error: None,
+                },
+            });
+            assert_eq!(frontend.error.as_deref(), Some(expected));
+            assert!(frontend.keyboard_control);
+            assert!(frontend.control_has_focus);
+            assert!(frontend.mode_intent.is_none());
+            assert!(frontend.in_flight.is_none());
         }
     }
 
@@ -3108,9 +3931,17 @@ mod tests {
         let mut frontend = frontend();
         host_focus(&mut frontend, PaneId::Terminal(1));
         frontend.enter_control();
+        assert!(matches!(
+            frontend.keyguide_context(),
+            keyguide::Context::Sidebar { .. }
+        ));
         host_focus(&mut frontend, PaneId::Terminal(1));
         assert!(frontend.keyboard_control);
         assert!(!frontend.control_has_focus);
+        assert!(matches!(
+            frontend.keyguide_context(),
+            keyguide::Context::Sidebar { .. }
+        ));
 
         host_focus(&mut frontend, PaneId::Plugin(99));
         frontend.key(KeyWithModifier::new(BareKey::Home));
@@ -3168,6 +3999,9 @@ mod tests {
     #[test]
     fn activation_keeps_optimistic_selection_until_already_broadcast_response() {
         let mut frontend = frontend();
+        frontend.render_cursor = Some(None);
+        let mut initial = Vec::new();
+        frontend.render_sidebar_to(20, 40, &mut initial);
         let item = Item::Pane("terminal_2".to_owned());
         let line = frontend
             .tree_cache
@@ -3177,27 +4011,42 @@ mod tests {
             + 2;
         frontend.mouse(Mouse::LeftClick(line as isize, 5));
         assert_eq!(frontend.cursor, Some(item.clone()));
+        frontend.hover = None;
+        let mut immediate = Vec::new();
+        frontend.render_sidebar_to(20, 40, &mut immediate);
+        assert_ne!(immediate, initial);
+        assert_eq!(
+            frontend
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .focused_pane_id
+                .as_deref(),
+            Some("terminal_1"),
+        );
         host_focus(&mut frontend, PaneId::Terminal(1));
         assert_eq!(frontend.cursor, Some(item.clone()));
+        frontend.accept_snapshot(snapshot(2, "terminal_1"));
+        let mut stale = Vec::new();
+        frontend.render_sidebar_to(20, 40, &mut stale);
+        assert_eq!(stale, immediate);
 
-        let request = frontend.queue.pop_front().unwrap();
-        frontend.in_flight = Some(request);
-        let state = snapshot(2, "terminal_2");
-        frontend.accept_snapshot(state.clone());
+        take_queued_request(&mut frontend);
+        frontend.accept_snapshot(snapshot(3, "terminal_2"));
         frontend.native_response(native::NativeResponse {
             client: frontend.native_client.clone(),
             client_id: frontend.client_id,
             response: Response {
                 protocol: PROTOCOL_VERSION,
                 request_id: 1,
-                state: Some(state),
+                state: None,
                 effects: Vec::new(),
                 error: None,
             },
         });
         assert!(!frontend.local_selection);
         assert_eq!(frontend.cursor, Some(item));
-        frontend.accept_snapshot(snapshot(3, "terminal_1"));
+        frontend.accept_snapshot(snapshot(4, "terminal_1"));
         assert_eq!(frontend.cursor, Some(Item::Pane("terminal_1".to_owned())));
     }
 
@@ -3231,7 +4080,7 @@ mod tests {
         let first = Item::Pane("terminal_2".to_owned());
         let latest = Item::Pane("terminal_1".to_owned());
         click_item(&mut frontend, first);
-        frontend.in_flight = frontend.queue.pop_front();
+        take_queued_request(&mut frontend);
         click_item(&mut frontend, latest.clone());
         assert_eq!(frontend.cursor, Some(latest.clone()));
         acknowledge(&mut frontend, snapshot(2, "terminal_2"), None);
@@ -3239,7 +4088,7 @@ mod tests {
         assert_eq!(frontend.cursor, Some(latest.clone()));
         assert_eq!(frontend.desired_selection.as_ref().unwrap().request_id, 2);
         assert!(!frontend.desired_selection.as_ref().unwrap().acknowledged);
-        frontend.in_flight = frontend.queue.pop_front();
+        take_queued_request(&mut frontend);
         acknowledge(&mut frontend, snapshot(2, "terminal_2"), None);
         assert_eq!(frontend.cursor, Some(latest.clone()));
         assert!(frontend.desired_selection.as_ref().unwrap().acknowledged);
@@ -3254,7 +4103,7 @@ mod tests {
     fn repeated_target_clicks_still_require_the_latest_request_identity() {
         let mut frontend = frontend();
         click_item(&mut frontend, Item::Pane("terminal_2".to_owned()));
-        frontend.in_flight = frontend.queue.pop_front();
+        take_queued_request(&mut frontend);
         click_item(&mut frontend, Item::Pane("terminal_1".to_owned()));
         click_item(&mut frontend, Item::Pane("terminal_2".to_owned()));
         acknowledge(&mut frontend, snapshot(2, "terminal_2"), None);
@@ -3267,7 +4116,7 @@ mod tests {
     fn latest_selection_failure_or_target_removal_repairs_to_confirmed_focus() {
         let mut failed = frontend();
         click_item(&mut failed, Item::Pane("terminal_2".to_owned()));
-        failed.in_flight = failed.queue.pop_front();
+        take_queued_request(&mut failed);
         acknowledge(
             &mut failed,
             snapshot(2, "terminal_1"),
@@ -3279,7 +4128,7 @@ mod tests {
 
         let mut removed = frontend();
         click_item(&mut removed, Item::Pane("terminal_2".to_owned()));
-        removed.in_flight = removed.queue.pop_front();
+        take_queued_request(&mut removed);
         let mut state = snapshot(2, "terminal_1");
         state.panes.retain(|pane| pane.id != "terminal_2");
         removed.accept_snapshot(state.clone());
@@ -3330,7 +4179,7 @@ mod tests {
         let mut frontend = frontend();
         frontend.native_client = "source".to_owned();
         click_item(&mut frontend, Item::Pane("terminal_2".to_owned()));
-        frontend.in_flight = frontend.queue.pop_front();
+        take_queued_request(&mut frontend);
         click_item(&mut frontend, Item::Pane("terminal_1".to_owned()));
         frontend.accept_selection_relay(
             "owner".to_owned(),
@@ -3444,8 +4293,7 @@ mod tests {
         host_focus(&mut frontend, PaneId::Terminal(2));
         assert_eq!(frontend.cursor, Some(Item::Pane("terminal_1".to_owned())));
         frontend.modal = None;
-        frontend.collapsed.insert("workspace_2".to_owned());
-        frontend.reconcile_cursor();
+        frontend.fold("workspace_2".to_owned(), Some(true));
         assert_eq!(
             frontend.cursor,
             Some(Item::Workspace("workspace_2".to_owned()))
@@ -3577,5 +4425,31 @@ mod tests {
                 1,
             );
         }
+    }
+
+    #[test]
+    fn shifted_terminal_shortcut_keeps_the_existing_workspace() {
+        for key in [
+            KeyWithModifier::new(BareKey::Char('N')),
+            KeyWithModifier {
+                bare_key: BareKey::Char('n'),
+                key_modifiers: [KeyModifier::Shift].into_iter().collect(),
+            },
+        ] {
+            let mut frontend = popup_frontend();
+            let pane = &frontend.snapshot.as_ref().unwrap().panes[0];
+            let workspace = pane.workspace_id.clone();
+            frontend.cursor = Some(Item::Pane(pane.id.clone()));
+            frontend.keyboard_control = true;
+            frontend.key(key);
+            assert!(matches!(
+                frontend.modal,
+                Some(Modal::CreatePane { workspace_id, .. }) if workspace_id == workspace
+            ));
+        }
+        let mut frontend = popup_frontend();
+        frontend.keyboard_control = true;
+        frontend.key(KeyWithModifier::new(BareKey::Char('n')));
+        assert!(matches!(frontend.modal, Some(Modal::Create { .. })));
     }
 }

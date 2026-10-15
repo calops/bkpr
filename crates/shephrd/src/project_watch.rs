@@ -880,11 +880,11 @@ mod linux {
             monitor.sync([source.clone()].into_iter());
             let final_response = serde_json::json!({"data": {
                 "r0": {"object": {"oid": source.sha,
-                    "associatedPullRequests": {"nodes": [], "pageInfo": {"hasNextPage": false}},
                     "statusCheckRollup": {"contexts": {"nodes": [{
                         "__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"
                     }], "pageInfo": {"hasNextPage": false}}}
-                }}, "rateLimit": {"remaining": 5000}
+                }, "b0": {"associatedPullRequests": {"nodes": [], "pageInfo": {"hasNextPage": false}}},
+                    "c0": {"nodes": []}}, "rateLimit": {"remaining": 5000}
             }});
             monitor.finish_json_fixture(std::slice::from_ref(&source), final_response.clone());
             assert_eq!(monitor.timeout(), -1);
