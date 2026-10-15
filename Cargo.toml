@@ -17,3 +17,7 @@ serde_json = "1"
 [profile.release]
 lto = "thin"
 strip = true
+
+# The WASI SDK decodes messages in both generated guest code and dependency code.
+[profile.dev]
+opt-level = 1

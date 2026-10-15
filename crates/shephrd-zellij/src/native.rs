@@ -31,6 +31,19 @@ pub struct NativeRequest {
     pub client: String,
     pub client_id: u16,
     pub request: Request,
+    #[serde(default)]
+    pub return_mode: Option<InputMode>,
+    #[serde(default)]
+    pub view: Option<SidebarView>,
+}
+
+#[derive(Serialize)]
+struct NativeRequestRef<'a> {
+    client: &'a str,
+    client_id: u16,
+    request: &'a Request,
+    return_mode: Option<InputMode>,
+    view: Option<&'a SidebarView>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -50,6 +63,125 @@ pub struct NativeState {
     pub ui_selection_revision: u64,
     #[serde(default)]
     pub ui_selection_epoch: String,
+}
+
+/// A creation-time projection, never an acknowledgement of the live owner stream.
+#[derive(Deserialize)]
+pub struct SidebarBootstrap {
+    pub snapshot: Snapshot,
+    pub mode: InputMode,
+    pub base_mode: Option<InputMode>,
+    pub keymap: KeymapCacheRef,
+    #[serde(default)]
+    pub view: SidebarView,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+pub struct SidebarView {
+    pub collapsed: BTreeSet<String>,
+    pub scroll: usize,
+}
+
+#[cfg(not(test))]
+const KEYMAP_CACHE_DIRECTORY: &str = "/cache";
+#[cfg(test)]
+const KEYMAP_CACHE_DIRECTORY: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../target/sidebar-keymap-cache"
+);
+
+/// Immutable, owner/client-scoped keymap publication, separate from per-tab configuration.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct KeymapCacheRef {
+    instance_id: String,
+    source: String,
+    client_id: u16,
+    generation: u64,
+    content_hash: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+struct KeymapCache {
+    reference: KeymapCacheRef,
+    payload: String,
+}
+
+fn keymap_hash(payload: &str) -> u64 {
+    payload.bytes().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
+impl KeymapCacheRef {
+    fn path(&self) -> Option<PathBuf> {
+        if self.source.is_empty()
+            || self.source.len() > 128
+            || !self
+                .source
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte == b':')
+        {
+            return None;
+        }
+        Some(Path::new(KEYMAP_CACHE_DIRECTORY).join(format!(
+            "shephrd-keymap-{}-{}.json",
+            self.source, self.generation
+        )))
+    }
+
+    pub fn load(&self, instance_id: &str, client_id: u16) -> Option<(KeybindsVec, String)> {
+        if self.instance_id != instance_id || self.client_id != client_id {
+            return None;
+        }
+        let file = std::fs::File::open(self.path()?).ok()?;
+        let mut bytes = Vec::new();
+        file.take((MAX_MESSAGE_BYTES * 2 + 4096 + 1) as u64)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() > MAX_MESSAGE_BYTES * 2 + 4096 {
+            return None;
+        }
+        let cache: KeymapCache = serde_json::from_slice(&bytes).ok()?;
+        if cache.reference != *self
+            || cache.payload.len() > MAX_MESSAGE_BYTES
+            || keymap_hash(&cache.payload) != self.content_hash
+        {
+            return None;
+        }
+        let keybinds = serde_json::from_str(&cache.payload).ok()?;
+        Some((keybinds, cache.payload))
+    }
+}
+
+#[cfg(test)]
+pub fn test_keymap_cache(instance_id: &str, keybinds: &KeybindsVec) -> KeymapCacheRef {
+    std::fs::create_dir_all(KEYMAP_CACHE_DIRECTORY).unwrap();
+    let mut owner = Owner {
+        model: Some(Model::new(BTreeMap::new(), instance_id.to_owned())),
+        selection_epoch: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string(),
+        ..Owner::default()
+    };
+    owner.cache_keymap(serde_json::to_string(keybinds).unwrap());
+    owner.keymap_cache.unwrap()
+}
+
+#[derive(Clone, Copy, Deserialize)]
+struct GuideMode {
+    mode: InputMode,
+    base_mode: Option<InputMode>,
+}
+
+#[derive(Serialize)]
+struct SidebarBootstrapRef<'a> {
+    snapshot: Snapshot,
+    mode: InputMode,
+    base_mode: Option<InputMode>,
+    keymap: &'a KeymapCacheRef,
+    view: &'a SidebarView,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -307,11 +439,15 @@ pub fn send(
     client: &str,
     client_id: u16,
     request: &Request,
+    return_mode: Option<InputMode>,
+    view: Option<&SidebarView>,
 ) -> Result<(), serde_json::Error> {
-    let payload = serde_json::to_string(&NativeRequest {
-        client: client.to_owned(),
+    let payload = serde_json::to_string(&NativeRequestRef {
+        client,
         client_id,
-        request: request.clone(),
+        request,
+        return_mode,
+        view,
     })?;
     let mut message = MessageToPlugin::new(REQUEST).with_payload(payload);
     if let Some(owner_id) = owner_id {
@@ -343,6 +479,8 @@ pub fn restart_owner(
     closed_id: u32,
 ) -> std::io::Result<()> {
     let mut owner_configuration = configuration.clone();
+    owner_configuration.remove("sidebar_bootstrap");
+    owner_configuration.remove("mode_info_format");
     owner_configuration.insert("role".to_owned(), "native-owner".to_owned());
     owner_configuration.insert(
         "caller_cwd".to_owned(),
@@ -362,12 +500,16 @@ pub fn restart_owner(
         .create_new(true)
         .open(claim)
     {
-        Ok(_) => load_new_plugin(
-            &configuration["plugin_url"],
-            owner_configuration,
-            true,
-            false,
-        ),
+        // Opt into the host's authorized, lossless guide stream without changing identity.
+        Ok(_) => {
+            owner_configuration.insert("mode_info_format".to_owned(), "json".to_owned());
+            load_new_plugin(
+                &configuration["plugin_url"],
+                owner_configuration,
+                true,
+                false,
+            );
+        }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error),
     }
@@ -649,6 +791,15 @@ impl Model {
         let workspaces = self
             .workspaces
             .iter()
+            // Tab bindings are persisted before Zellij delivers the new terminal's topology.
+            // A pending-only workspace is not public topology yet, including during replay
+            // of an older coherent report or an unrelated metadata publication.
+            .filter(|(id, _)| {
+                panes.iter().any(|pane| &pane.workspace_id == *id)
+                    || self.tabs.iter().any(|(tab, workspace)| {
+                        workspace == *id && !self.pending_tabs.contains(tab)
+                    })
+            })
             .map(|(id, workspace)| {
                 let members = || panes.iter().filter(|p| &p.workspace_id == id);
                 let projects: BTreeMap<_, _> = members()
@@ -813,14 +964,15 @@ impl Model {
         self.program_status
             .retain(|id, _| !self.closed_panes.contains(id));
         self.agent_roots.retain(|id, _| alive.contains(id));
-        // Preserve bindings for newly created tabs until their first manifest arrives.
+        // Preserve new bindings until their terminal arrives, not merely the tab/plugin.
         let known_tabs: BTreeSet<_> = tabs
             .iter()
             .filter(|tab| !self.closed_tabs.contains(&tab.tab_id))
             .map(|t| t.tab_id)
             .collect();
         let previous_count = self.tabs.len();
-        self.pending_tabs.retain(|id| !known_tabs.contains(id));
+        self.pending_tabs
+            .retain(|id| !self.panes.values().any(|pane| pane.tab == *id));
         self.tabs
             .retain(|id, _| known_tabs.contains(id) || self.pending_tabs.contains(id));
         changed |= self.tabs.len() != previous_count;
@@ -1175,13 +1327,20 @@ pub struct Owner {
     selection_revision: u64,
     published_selection_revision: u64,
     selection_epoch: String,
+    // Host guide state belongs to this client replica, not the persisted canonical model.
+    guide_mode: Option<GuideMode>,
+    keymap_cache: Option<KeymapCacheRef>,
+    keymap_payload: String,
+    keymap_generation: u64,
 }
 
 impl Owner {
     pub fn load(&mut self, configuration: &BTreeMap<String, String>) {
         let mut configuration = configuration.clone();
-        // This key belongs to SDK routing, not the native application contract.
+        // SDK routing and creation projections are not application identity.
         configuration.remove("caller_cwd");
+        configuration.remove("mode_info_format");
+        configuration.remove("sidebar_bootstrap");
         let ids = get_plugin_ids();
         self.client_id = ids.client_id;
         self.id = ids.plugin_id;
@@ -1199,6 +1358,10 @@ impl Owner {
         self.ui_selection_revisions.clear();
         self.selection_revision = 0;
         self.published_selection_revision = 0;
+        self.guide_mode = None;
+        self.keymap_cache = None;
+        self.keymap_payload.clear();
+        self.keymap_generation = 0;
         self.configuration = configuration.clone();
         self.refresh_metadata = true;
         subscribe(&[
@@ -1211,6 +1374,9 @@ impl Owner {
             EventType::PaneClosed,
             EventType::RunCommandResult,
             EventType::Timer,
+            EventType::ModeUpdate,
+            EventType::InitialKeybinds,
+            EventType::CustomMessage,
         ]);
         if !configuration_valid(&configuration, "native-owner") {
             self.error = Some(format!(
@@ -1295,6 +1461,49 @@ impl Owner {
             self.error = Some(format!("Cannot retain native metadata: {error}"));
         } else {
             std::mem::swap(&mut self.storage_bytes, &mut self.storage_buffer);
+        }
+    }
+
+    fn cache_keymap(&mut self, payload: String) {
+        // Compare all bytes, not a revision, size, or digest, before avoiding a decode/write.
+        if self.keymap_cache.is_some() && self.keymap_payload == payload {
+            return;
+        }
+        if serde_json::from_str::<KeybindsVec>(&payload).is_err() {
+            return;
+        }
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        self.keymap_generation += 1;
+        let reference = KeymapCacheRef {
+            instance_id: model.instance.clone(),
+            source: format!("{}:{}", self.server, self.selection_epoch),
+            client_id: self.client_id,
+            generation: self.keymap_generation,
+            content_hash: keymap_hash(&payload),
+        };
+        let Some(path) = reference.path() else {
+            return;
+        };
+        let cache = KeymapCache { reference, payload };
+        let result = serde_json::to_vec(&cache)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| {
+                let temporary = path.with_extension("pending");
+                std::fs::write(&temporary, bytes)?;
+                std::fs::rename(temporary, &path)
+            });
+        match result {
+            Ok(()) => {
+                self.keymap_cache = Some(cache.reference);
+                self.keymap_payload = cache.payload;
+            }
+            Err(error) => {
+                // Do not permit a later creation to reuse a stale guide after a remap.
+                self.keymap_cache = None;
+                self.error = Some(format!("Cannot retain native keymap: {error}"));
+            }
         }
     }
 
@@ -1399,10 +1608,10 @@ impl Owner {
         })
     }
 
-    fn publish(&mut self) {
+    fn publish(&mut self) -> bool {
         self.prune_selections();
         let Some(model) = self.model.as_mut() else {
-            return;
+            return false;
         };
         let changed = model.published_revision != Some(model.revision)
             || model.published_error != self.error
@@ -1414,20 +1623,37 @@ impl Owner {
         }
         self.save();
         if !changed {
-            return;
+            return false;
         }
-        let Some(model) = &self.model else { return };
-        for (frontend, clients) in &model.frontend_clients {
-            for client_id in clients {
-                let state = self.state(*client_id).expect("native model available");
-                let payload = serde_json::to_string(&state).expect("serializing native state");
+        let Some(model) = &self.model else {
+            return false;
+        };
+        // Snapshot construction includes all pane/project metadata. Every sidebar for a
+        // client consumes identical state, so build and encode it once, not once per tab.
+        let clients: BTreeSet<_> = model.frontend_clients.values().flatten().copied().collect();
+        for client_id in clients {
+            let state = self.state(client_id).expect("native model available");
+            let mut payload = serde_json::to_string(&state).expect("serializing native state");
+            let mut frontends = model
+                .frontend_clients
+                .iter()
+                .filter(|(_, clients)| clients.contains(&client_id))
+                .map(|(frontend, _)| *frontend)
+                .peekable();
+            while let Some(frontend) = frontends.next() {
+                let payload = if frontends.peek().is_some() {
+                    payload.clone()
+                } else {
+                    std::mem::take(&mut payload)
+                };
                 pipe_message_to_plugin(
                     MessageToPlugin::new(STATE)
-                        .with_destination_plugin_id(*frontend)
+                        .with_destination_plugin_id(frontend)
                         .with_payload(payload),
                 );
             }
         }
+        true
     }
 
     fn schedule(&mut self) {
@@ -1711,7 +1937,11 @@ impl Owner {
                 self.granted = true;
                 self.recover();
                 self.save();
-                subscribe(&[EventType::CustomMessage]);
+                subscribe(&[
+                    EventType::ModeUpdate,
+                    EventType::InitialKeybinds,
+                    EventType::CustomMessage,
+                ]);
                 if let Some(announcement) = self.state(self.client_id) {
                     let payload = serde_json::to_string(&announcement)
                         .expect("serializing native owner announcement");
@@ -1727,6 +1957,20 @@ impl Owner {
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
                 self.error = Some("Native owner permissions denied".to_owned())
+            }
+            Event::CustomMessage(name, payload)
+                if self.granted && name == "mode_info" && payload.len() <= MAX_MESSAGE_BYTES =>
+            {
+                if let Ok(mode) = serde_json::from_str::<GuideMode>(&payload) {
+                    self.guide_mode = Some(mode);
+                }
+            }
+            Event::CustomMessage(name, payload)
+                if self.granted
+                    && name == "keybinds_info"
+                    && payload.len() <= MAX_MESSAGE_BYTES =>
+            {
+                self.cache_keymap(payload);
             }
             Event::CustomMessage(name, payload) if self.granted && name == "program_status" => {
                 if payload.len() > MAX_MESSAGE_BYTES {
@@ -1749,17 +1993,15 @@ impl Owner {
             }
             Event::PaneUpdate(manifest) if self.granted => {
                 self.topology.panes(manifest);
-                if self.synchronize_focus(true) {
-                    self.publish();
-                }
             }
             Event::TabUpdate(tabs) if self.granted => {
-                let topology_changed = self.topology.tabs(tabs);
-                if self.synchronize_focus(true) {
+                if self.topology.tabs(tabs) {
+                    // PaneUpdate and TabUpdate already form a coherent screen event.
+                    // Commit it now; a debounce delayed creation/focus and repeated
+                    // synchronous focus reads before the same eventual reconciliation.
+                    self.reconcile();
+                } else if self.synchronize_focus(true) {
                     self.publish();
-                }
-                if topology_changed {
-                    self.schedule();
                 }
                 if self.topology.pending.is_none()
                     && (self.topology.ready.is_some() || self.topology.reconciled.is_some())
@@ -1889,7 +2131,13 @@ impl Owner {
         self.schedule();
     }
 
-    fn action(&mut self, source: u32, action: Action) -> Result<Option<u32>, String> {
+    fn action(
+        &mut self,
+        source: u32,
+        action: Action,
+        return_mode: Option<InputMode>,
+        view: Option<&SidebarView>,
+    ) -> Result<Option<u32>, String> {
         if let Some(error) = &self.error {
             return Err(error.clone());
         }
@@ -1926,12 +2174,14 @@ impl Owner {
                 if let Some(id) = id {
                     Ok(Some(id))
                 } else {
-                    self.create_tab(source, Some(workspace_id), None, None)
+                    self.create_tab(source, Some(workspace_id), None, None, return_mode, view)
                 }
             }
-            Action::CreateWorkspace { label, cwd } => self.create_tab(source, None, label, cwd),
+            Action::CreateWorkspace { label, cwd } => {
+                self.create_tab(source, None, label, cwd, return_mode, view)
+            }
             Action::CreatePane { workspace_id, cwd } => {
-                self.create_tab(source, Some(workspace_id), None, cwd)
+                self.create_tab(source, Some(workspace_id), None, cwd, return_mode, view)
             }
             Action::RenameWorkspace {
                 workspace_id,
@@ -2006,6 +2256,8 @@ impl Owner {
         workspace: Option<String>,
         label: Option<String>,
         cwd: Option<String>,
+        return_mode: Option<InputMode>,
+        view: Option<&SidebarView>,
     ) -> Result<Option<u32>, String> {
         let sidebar_percent = self.topology.sidebar_percent(source)?;
         let model = self
@@ -2037,6 +2289,25 @@ impl Owner {
         };
         let mut sidebar_configuration = self.configuration.clone();
         sidebar_configuration.insert("role".to_owned(), "sidebar".to_owned());
+        let mode = self.guide_mode.ok_or("Native input mode is unavailable")?;
+        let keymap = self
+            .keymap_cache
+            .as_ref()
+            .ok_or("Native keymap is unavailable")?;
+        let default_view = SidebarView::default();
+        let bootstrap = SidebarBootstrapRef {
+            // Capture before native creation mutates topology or allocates a workspace.
+            snapshot: model.snapshot(self.error.clone(), self.client_id),
+            mode: return_mode.unwrap_or(mode.mode),
+            base_mode: mode.base_mode,
+            keymap,
+            view: view.unwrap_or(&default_view),
+        };
+        sidebar_configuration.insert(
+            "sidebar_bootstrap".to_owned(),
+            serde_json::to_string(&bootstrap)
+                .map_err(|error| format!("Cannot encode sidebar bootstrap: {error}"))?,
+        );
         // Preserve startup configuration/owner identity; geometry is inherited separately.
         let layout = shephrd::native_layout(
             &self.configuration["plugin_url"],
@@ -2055,8 +2326,8 @@ impl Owner {
             model.tabs.insert(*id, workspace.clone());
             model.pending_tabs.insert(*id);
         }
-        // Lifecycle events will populate the actual native pane; no fabricated terminal record.
-        self.schedule();
+        // Lifecycle events will populate and publish the actual native pane. Its paired
+        // topology event reconciles immediately; there is no fabricated terminal or timer.
         Ok(None)
     }
 
@@ -2219,10 +2490,9 @@ impl Owner {
             .and_then(|m| m.receipts.get(&key))
             .filter(|r| r.request_id >= envelope.request.request_id)
             .cloned();
-        let send_current_state =
-            receipt.is_some() || matches!(envelope.request.action, Action::RegisterFrontend);
+        let mut published = false;
         if receipt.is_some() && focus_changed {
-            self.publish();
+            published = self.publish();
         }
         let receipt = receipt.unwrap_or_else(|| {
             if let Some(model) = self.model.as_mut() {
@@ -2241,7 +2511,12 @@ impl Owner {
                 envelope.request.action,
                 Action::SelectPane { .. } | Action::SelectWorkspace { .. }
             );
-            let result = self.action(source, envelope.request.action);
+            let result = self.action(
+                source,
+                envelope.request.action,
+                envelope.return_mode,
+                envelope.view.as_ref(),
+            );
             let receipt = Receipt {
                 request_id: envelope.request.request_id,
                 error: result.as_ref().err().cloned(),
@@ -2265,10 +2540,10 @@ impl Owner {
                 }
                 model.receipts.insert(key, receipt.clone());
             }
-            self.publish();
+            published = self.publish();
             receipt
         });
-        if send_current_state && let Some(state) = self.state(self.client_id) {
+        if !published && let Some(state) = self.state(self.client_id) {
             let payload =
                 serde_json::to_string(&state).expect("serializing native selection state");
             pipe_message_to_plugin(
@@ -2277,18 +2552,15 @@ impl Owner {
                     .with_payload(payload),
             );
         }
-        // Registration and duplicate requests always receive their full canonical state here,
-        // even when the shared publication revision already matches.
+        // Exactly one full STATE precedes this acknowledgement, even for registration
+        // and duplicate requests whose canonical revision did not change.
         let response = NativeResponse {
             client: envelope.client,
             client_id: self.client_id,
             response: Response {
                 protocol: PROTOCOL_VERSION,
                 request_id: envelope.request.request_id,
-                state: self
-                    .model
-                    .as_ref()
-                    .map(|m| m.snapshot(self.error.clone(), self.client_id)),
+                state: None,
                 effects: receipt
                     .focus
                     .map(|zellij_pane_id| Effect::FocusPane { zellij_pane_id })
@@ -2332,6 +2604,85 @@ fn is_shell(command: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keymap_cache_compares_bytes_and_keeps_creation_refs_immutable() {
+        std::fs::create_dir_all(KEYMAP_CACHE_DIRECTORY).unwrap();
+        let epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string();
+        let mut owner = Owner {
+            model: Some(model()),
+            selection_epoch: epoch.clone(),
+            client_id: 7,
+            ..Owner::default()
+        };
+        let keys: KeybindsVec = vec![(
+            InputMode::Locked,
+            vec![("Ctrl a".parse().unwrap(), Vec::new())],
+        )];
+        let first_payload = serde_json::to_string(&keys).unwrap();
+        owner.cache_keymap(first_payload.clone());
+        let first = owner.keymap_cache.clone().unwrap();
+        let original_bytes = std::fs::read(first.path().unwrap()).unwrap();
+        owner.cache_keymap(first_payload.clone());
+        assert_eq!(owner.keymap_generation, 1);
+        assert_eq!(owner.keymap_cache.as_ref(), Some(&first));
+        assert_eq!(
+            std::fs::read(first.path().unwrap()).unwrap(),
+            original_bytes
+        );
+        assert_eq!(first.load("test-instance", 7).unwrap().0, keys);
+        assert!(first.load("other-session", 7).is_none());
+        assert!(first.load("test-instance", 8).is_none());
+
+        let mut remapped = keys.clone();
+        remapped[0].1[0].0 = "Ctrl b".parse().unwrap();
+        let remapped_payload = serde_json::to_string(&remapped).unwrap();
+        assert_eq!(first_payload.len(), remapped_payload.len());
+        owner.cache_keymap(remapped_payload.clone());
+        let second = owner.keymap_cache.clone().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(second.load("test-instance", 7).unwrap().0, remapped);
+        assert_eq!(first.load("test-instance", 7).unwrap().0, keys);
+        owner.cache_keymap("{invalid".to_owned());
+        assert_eq!(owner.keymap_cache.as_ref(), Some(&second));
+
+        // Even a valid same-sized keymap cannot replace the referenced publication.
+        let mut corrupt: KeymapCache = serde_json::from_slice(&original_bytes).unwrap();
+        corrupt.payload = remapped_payload.clone();
+        std::fs::write(first.path().unwrap(), serde_json::to_vec(&corrupt).unwrap()).unwrap();
+        assert!(first.load("test-instance", 7).is_none());
+        std::fs::write(
+            first.path().unwrap(),
+            vec![b' '; MAX_MESSAGE_BYTES * 2 + 4097],
+        )
+        .unwrap();
+        assert!(first.load("test-instance", 7).is_none());
+
+        let mut replacement = Owner {
+            model: Some(model()),
+            selection_epoch: format!("{epoch}:9"),
+            client_id: 7,
+            ..Owner::default()
+        };
+        replacement.cache_keymap(remapped_payload);
+        let replaced = replacement.keymap_cache.unwrap();
+        assert_ne!(replaced.source, second.source);
+        assert_eq!(replaced.load("test-instance", 7).unwrap().0, remapped);
+        // Matching payload/hash alone cannot authorize a different owner's publication.
+        std::fs::write(
+            replaced.path().unwrap(),
+            std::fs::read(second.path().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(replaced.load("test-instance", 7).is_none());
+        for reference in [first, second, replaced] {
+            std::fs::remove_file(reference.path().unwrap()).unwrap();
+        }
+    }
 
     fn model() -> Model {
         Model::new(
@@ -3002,19 +3353,60 @@ mod tests {
     }
 
     #[test]
-    fn created_tab_binding_survives_an_older_coherent_report() {
+    fn pending_creation_replays_without_changing_the_existing_sidebar_snapshot() {
         let mut model = model();
         model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
+        model.record_focus(1, 1);
+        model.panes.get_mut(&1).unwrap().name = "Custom terminal".to_owned();
+        model.panes.get_mut(&1).unwrap().renamed = true;
+        model.observe_cwd(1, "/repo".into());
+        assert!(model.sync_project_watches(5));
+        assert!(model.apply_project(project_update(
+            &model,
+            "/repo",
+            passing_project("current-sha"),
+        )));
+        let watches = model.project_watches.clone();
+        let projects = model.projects.clone();
+        let original = model.snapshot(None, 1);
+        let existing = model.panes[&1].workspace.clone();
         let created = model.workspace("Created workspace".to_owned());
         model.tabs.insert(20, created.clone());
         model.pending_tabs.insert(20);
+        model.tabs.insert(30, existing.clone());
+        model.pending_tabs.insert(30);
+        assert_eq!(model.snapshot(None, 1), original);
+
+        // Another owner replica or a new sidebar can recover while creation is in flight.
+        model = Model::decode(&serde_json::to_vec(&model).unwrap()).unwrap();
         model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
         assert_eq!(model.workspaces[&created].name, "Created workspace");
+        assert_eq!(model.snapshot(None, 1), original);
         model.reconcile(
-            &[tab(10, 0), tab(20, 1)],
-            &manifest(&[(0, vec![pane(1)]), (1, vec![pane(2)])]),
+            &[tab(10, 0), tab(20, 1), tab(30, 2)],
+            &manifest(&[(0, vec![pane(1)]), (1, vec![]), (2, vec![])]),
         );
+        assert_eq!(model.pending_tabs, BTreeSet::from([20, 30]));
+        assert_eq!(model.snapshot(None, 1), original);
+
+        model.reconcile(
+            &[tab(10, 0), tab(20, 1), tab(30, 2)],
+            &manifest(&[(0, vec![pane(1)]), (1, vec![pane(2)]), (2, vec![pane(3)])]),
+        );
+        assert!(model.pending_tabs.is_empty());
         assert_eq!(model.panes[&2].workspace, created);
+        assert_eq!(model.panes[&3].workspace, existing);
+        assert!(model.project_watches == watches);
+        assert!(model.projects == projects);
+        assert!(!model.sync_project_watches(5));
+        let complete = model.snapshot(None, 1);
+        assert_eq!(complete.workspaces.len(), 2);
+        assert_eq!(complete.panes.len(), 3);
+        assert_eq!(complete.panes[0], original.panes[0]);
+        assert_eq!(complete.focused_pane_id, original.focused_pane_id);
+        let replayed: Snapshot =
+            serde_json::from_slice(&serde_json::to_vec(&complete).unwrap()).unwrap();
+        assert_eq!(replayed, complete);
     }
 
     #[test]

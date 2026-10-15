@@ -1,7 +1,7 @@
 use crate::ui;
 use std::fmt::Write;
 use zellij_tile::prelude::actions::{Action, SearchDirection, SearchOption};
-use zellij_tile::prelude::{BareKey, Direction, InputMode, KeyWithModifier, ModeInfo, Resize};
+use zellij_tile::prelude::{BareKey, Direction, InputMode, KeyWithModifier, KeybindsVec, Resize};
 
 const TITLE: &str = "\x1b[22;38;2;203;166;247m";
 const KEY: &str = "\x1b[22;38;2;137;180;250m";
@@ -13,6 +13,12 @@ pub enum Context {
     Edit { multiple_fields: bool },
     Confirm,
     Finder,
+}
+
+#[derive(Clone, Copy)]
+pub struct Mode<'a> {
+    pub input: InputMode,
+    pub keybinds: Option<&'a KeybindsVec>,
 }
 
 struct Hint {
@@ -42,11 +48,12 @@ fn mode_name(mode: InputMode) -> &'static str {
     }
 }
 
-fn bindings(mode: &ModeInfo) -> &Bindings {
-    // ModeInfo already contains the effective, merged keymap. Do not reconstruct shared defaults.
+fn bindings<'a>(mode: Mode<'a>) -> &'a Bindings {
+    // InitialKeybinds already contains the effective, merged keymap.
     mode.keybinds
-        .iter()
-        .find(|(candidate, _)| *candidate == mode.mode)
+        .into_iter()
+        .flatten()
+        .find(|(candidate, _)| *candidate == mode.input)
         .map_or(&[], |(_, bindings)| bindings.as_slice())
 }
 
@@ -406,15 +413,15 @@ fn local_hint(
     }
 }
 
-fn hints(mode: &ModeInfo, context: Context) -> Vec<Hint> {
+fn hints(mode: Mode<'_>, context: Context) -> Vec<Hint> {
     let bindings = bindings(mode);
     let mut hints = Vec::new();
     for (key, actions) in bindings {
-        if let Some((description, priority)) = native_hint(actions, mode.mode, context) {
+        if let Some((description, priority)) = native_hint(actions, mode.input, context) {
             add_hint(&mut hints, key_name(key), description, priority);
         }
     }
-    if is_sidebar_mode(mode.mode) {
+    if is_sidebar_mode(mode.input) {
         let mut local = |keys: &[BareKey], ctrl, text, priority| {
             local_hint(&mut hints, bindings, keys, ctrl, text, priority);
         };
@@ -481,17 +488,17 @@ fn hints(mode: &ModeInfo, context: Context) -> Vec<Hint> {
     hints
 }
 
-fn title(mode: Option<&ModeInfo>, context: Context) -> String {
+fn title(mode: Option<Mode<'_>>, context: Context) -> String {
     let Some(mode) = mode else {
         return "… Connecting".to_owned();
     };
-    let icon = if mode.mode == InputMode::Locked {
+    let icon = if mode.input == InputMode::Locked {
         "\u{f023}"
     } else {
         "\u{f11c}"
     };
-    let mut title = format!("{icon} {}", mode_name(mode.mode));
-    if is_sidebar_mode(mode.mode) {
+    let mut title = format!("{icon} {}", mode_name(mode.input));
+    if is_sidebar_mode(mode.input) {
         title.push_str(match context {
             Context::Application => "",
             Context::Sidebar { .. } => " · Sidebar",
@@ -503,30 +510,116 @@ fn title(mode: Option<&ModeInfo>, context: Context) -> String {
     title
 }
 
-fn alias_keys(hint: &Hint, budget: usize) -> String {
-    // Favor compact, recognizable arrows over duplicate vi aliases; retain remapped keys as-is.
+fn ordered_keys(hint: &Hint) -> Vec<&str> {
     let mut keys: Vec<&str> = hint.keys.iter().map(String::as_str).collect();
     keys.sort_by_key(|key| {
         let arrow = key.chars().last().is_some_and(|c| "←↓↑→".contains(c));
-        (!arrow, ui::width(key), *key)
+        let uppercase_letter = key.len() == 1 && key.as_bytes()[0].is_ascii_uppercase();
+        (!arrow, ui::width(key), uppercase_letter, *key)
     });
+    keys
+}
+
+fn short_modifier(modifier: &str) -> Option<&'static str> {
+    match modifier {
+        "Ctrl" => Some("C-"),
+        "Alt" => Some("A-"),
+        "Shift" => Some("S-"),
+        "Super" => Some("Super-"),
+        _ => None,
+    }
+}
+
+fn compact_key_width(key: &str) -> usize {
+    let mut width = 0;
+    let mut suffix = key;
+    while let Some((modifier, rest)) = suffix.split_once('+') {
+        let Some(abbreviation) = short_modifier(modifier) else {
+            break;
+        };
+        width += abbreviation.len();
+        suffix = rest;
+    }
+    width + ui::width(suffix)
+}
+
+fn compact_key(key: &str) -> String {
+    let mut compact = String::with_capacity(key.len());
+    let mut suffix = key;
+    while let Some((modifier, rest)) = suffix.split_once('+') {
+        let Some(abbreviation) = short_modifier(modifier) else {
+            break;
+        };
+        compact.push_str(abbreviation);
+        suffix = rest;
+    }
+    compact.push_str(suffix);
+    compact
+}
+
+fn key_prefix(key: &str) -> Option<&str> {
+    key.rfind('+').map(|end| &key[..=end])
+}
+
+fn alias_width(keys: &[&str]) -> usize {
+    let mut previous_prefix = None;
+    let mut width = 0;
+    for (index, key) in keys.iter().enumerate() {
+        let prefix = key_prefix(key);
+        let label = prefix
+            .filter(|prefix| Some(*prefix) == previous_prefix)
+            .map_or(*key, |prefix| &key[prefix.len()..]);
+        width += usize::from(index > 0) + ui::width(label);
+        previous_prefix = prefix;
+    }
+    width
+}
+
+fn alias_rows(keys: &[&str], budget: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut line = String::new();
+    let mut width = 0;
+    let mut previous_prefix = None;
+    for key in keys {
+        let full = if ui::width(key) > budget {
+            std::borrow::Cow::Owned(compact_key(key))
+        } else {
+            std::borrow::Cow::Borrowed(*key)
+        };
+        if ui::width(&full) > budget {
+            return Vec::new();
+        }
+        let prefix = matches!(full, std::borrow::Cow::Borrowed(_))
+            .then(|| key_prefix(key))
+            .flatten();
+        let mut label = prefix
+            .filter(|prefix| Some(*prefix) == previous_prefix)
+            .map_or(full.as_ref(), |prefix| &key[prefix.len()..]);
+        if !line.is_empty() && width + 1 + ui::width(label) > budget {
+            rows.push(std::mem::take(&mut line));
+            width = 0;
+            label = &full;
+        }
+        if !line.is_empty() {
+            line.push('/');
+            width += 1;
+        }
+        line.push_str(label);
+        width += ui::width(label);
+        previous_prefix = prefix;
+    }
+    if !line.is_empty() {
+        rows.push(line);
+    }
+    rows
+}
+
+fn alias_keys(hint: &Hint, budget: usize) -> String {
+    let keys = ordered_keys(hint);
     if let Some(key) = keys.first()
         && ui::width(key) > budget
     {
-        let mut compact = String::with_capacity(key.len());
-        let mut suffix = *key;
-        while let Some((modifier, rest)) = suffix.split_once('+') {
-            let abbreviation = match modifier {
-                "Ctrl" => "C-",
-                "Alt" => "A-",
-                "Shift" => "S-",
-                "Super" => "Super-",
-                _ => break,
-            };
-            compact.push_str(abbreviation);
-            suffix = rest;
-        }
-        compact.push_str(suffix);
+        let compact = compact_key(key);
         return if ui::width(&compact) <= budget {
             compact
         } else {
@@ -580,6 +673,12 @@ impl Line {
         }
     }
 
+    fn pad_to(&mut self, cells: usize) {
+        self.ansi
+            .extend(std::iter::repeat_n(' ', cells.saturating_sub(self.cells)));
+        self.cells = self.cells.max(cells);
+    }
+
     fn finish(mut self, columns: usize) -> String {
         self.ansi.push_str(ui::BASE);
         self.ansi
@@ -588,62 +687,114 @@ impl Line {
     }
 }
 
-fn body(hints: &[Hint], columns: usize, max_rows: usize) -> Vec<String> {
-    let mut rows = Vec::new();
-    let mut line = Line::default();
-    'hints: for hint in hints {
-        if rows.len() == max_rows {
-            break;
+struct Body<'a> {
+    entries: Vec<(Vec<&'a str>, &'a str)>,
+    single_key_width: usize,
+    two_row_key_width: usize,
+    description_width: usize,
+}
+
+impl<'a> Body<'a> {
+    fn new(hints: &'a [Hint]) -> Self {
+        let mut body = Self {
+            entries: Vec::with_capacity(hints.len()),
+            single_key_width: 0,
+            two_row_key_width: 0,
+            description_width: 0,
+        };
+        for hint in hints {
+            let keys = ordered_keys(hint);
+            if keys.is_empty() {
+                continue;
+            }
+            body.single_key_width = body.single_key_width.max(
+                keys.iter()
+                    .map(|key| compact_key_width(key))
+                    .max()
+                    .unwrap_or(0),
+            );
+            body.two_row_key_width = body.two_row_key_width.max(alias_width(&keys).div_ceil(2));
+            body.description_width = body.description_width.max(ui::width(&hint.description));
+            body.entries.push((keys, hint.description.as_str()));
         }
-        let key_budget = columns
-            .saturating_sub(4)
-            .max(1)
-            .min((columns * 2 / 3).max(1));
-        let keys = alias_keys(hint, key_budget);
-        if keys.is_empty() {
-            continue;
+        body
+    }
+
+    fn unwrapped_columns(&self) -> usize {
+        self.single_key_width.max(self.two_row_key_width) + 2 + self.description_width
+    }
+
+    fn render(&self, columns: usize, max_rows: usize) -> Vec<String> {
+        if columns < 4 || max_rows == 0 {
+            return Vec::new();
         }
-        let natural = ui::width(&keys) + 1 + ui::width(&hint.description);
-        if line.cells > 0 && line.cells + 2 + natural > columns {
-            rows.push(std::mem::take(&mut line).finish(columns));
+        let minimum_key_width = self.single_key_width.max(self.two_row_key_width);
+        let centered_key_width = (columns - 2) / 2;
+        let key_width = if self.unwrapped_columns() <= columns {
+            centered_key_width.clamp(minimum_key_width, columns - 2 - self.description_width)
+        } else {
+            centered_key_width.max(self.single_key_width)
+        }
+        .clamp(1, columns - 3);
+        let description_start = key_width + 2;
+        let key_line = |keys: Option<String>| {
+            let mut line = Line::default();
+            if let Some(keys) = keys {
+                line.pad_to(key_width - ui::width(&keys));
+                line.push_group(&keys, KEY);
+            }
+            line.pad_to(description_start);
+            line
+        };
+        let mut rows = Vec::new();
+        'hints: for (keys, description) in &self.entries {
             if rows.len() == max_rows {
                 break;
             }
-        }
-        let hint_start = rows.len();
-        if line.cells > 0 {
-            line.push("  ", ui::MUTED);
-        }
-        line.push_group(&keys, KEY);
-        for word in hint.description.split_whitespace() {
-            let required = 1 + ui::width(word);
-            if line.cells + required > columns {
-                rows.push(std::mem::take(&mut line).finish(columns));
+            let key_rows = alias_rows(keys, key_width);
+            if key_rows.is_empty() {
+                continue;
+            }
+            let hint_start = rows.len();
+            let mut key_rows = key_rows.into_iter();
+            let mut line = key_line(key_rows.next());
+            for word in description.split_whitespace() {
+                let space = usize::from(line.cells > description_start);
+                if line.cells + space + ui::width(word) > columns && space > 0 {
+                    rows.push(line.finish(columns));
+                    if rows.len() == max_rows {
+                        rows.truncate(hint_start);
+                        continue 'hints;
+                    }
+                    line = key_line(key_rows.next());
+                } else if space > 0 {
+                    line.push(" ", ui::MUTED);
+                }
+                let word = ui::truncate(word, columns.saturating_sub(line.cells));
+                line.push(&word, ui::MUTED);
+            }
+            rows.push(line.finish(columns));
+            for keys in key_rows {
                 if rows.len() == max_rows {
                     rows.truncate(hint_start);
                     continue 'hints;
                 }
-                // Descriptions wrap only at word boundaries; no slices through ANSI sequences.
-                if columns > 2 {
-                    line.push("  ", ui::MUTED);
-                }
-            } else {
-                line.push(" ", ui::MUTED);
+                rows.push(key_line(Some(keys)).finish(columns));
             }
-            let word = ui::truncate(word, columns.saturating_sub(line.cells));
-            line.push(&word, ui::MUTED);
         }
+        rows
     }
-    if line.cells > 0 && rows.len() < max_rows {
-        rows.push(line.finish(columns));
-    }
-    rows
+}
+
+#[cfg(test)]
+fn body(hints: &[Hint], columns: usize, max_rows: usize) -> Vec<String> {
+    Body::new(hints).render(columns, max_rows)
 }
 
 /// A footer only: callers reserve its returned height and anchor it within the sidebar viewport.
 /// Styling is applied after plain-text fitting, so truncation never splits terminal escapes.
 pub fn render(
-    mode: Option<&ModeInfo>,
+    mode: Option<Mode<'_>>,
     context: Context,
     columns: usize,
     max_rows: usize,
@@ -651,10 +802,77 @@ pub fn render(
     if columns == 0 || max_rows == 0 {
         return Vec::new();
     }
+    let hints = available_hints(mode, context);
+    let layout = Body::new(&hints);
+    render_frame(
+        &title(mode, context),
+        mode.is_none_or(|mode| mode.keybinds.is_none()),
+        &hints,
+        &layout,
+        columns,
+        max_rows,
+    )
+}
+
+pub(crate) struct ExpandedGuide {
+    pub columns: usize,
+    pub lines: Vec<String>,
+}
+
+/// A bordered guide sized within the available display space, including its border cells.
+/// Prefer 48–72 columns and the sidebar width; smaller displays take precedence.
+pub(crate) fn render_expanded(
+    mode: Mode<'_>,
+    context: Context,
+    sidebar_columns: usize,
+    max_columns: usize,
+    max_rows: usize,
+) -> ExpandedGuide {
+    if max_columns == 0 || max_rows == 0 {
+        return ExpandedGuide {
+            columns: 0,
+            lines: Vec::new(),
+        };
+    }
+    let mode = Some(mode);
+    let hints = available_hints(mode, context);
+    let layout = Body::new(&hints);
     let title = title(mode, context);
-    let hints = mode.map(|mode| hints(mode, context)).unwrap_or_default();
+    let columns = (layout.unwrapped_columns() + 4)
+        .max(ui::width(&title) + 5)
+        .max(sidebar_columns)
+        .clamp(48, 72)
+        .min(max_columns);
+    let lines = render_frame(
+        &title,
+        mode.is_none_or(|mode| mode.keybinds.is_none()),
+        &hints,
+        &layout,
+        columns,
+        max_rows,
+    );
+    ExpandedGuide { columns, lines }
+}
+
+fn available_hints(mode: Option<Mode<'_>>, context: Context) -> Vec<Hint> {
+    mode.filter(|mode| mode.keybinds.is_some())
+        .map(|mode| hints(mode, context))
+        .unwrap_or_default()
+}
+
+fn render_frame(
+    title: &str,
+    waiting: bool,
+    hints: &[Hint],
+    layout: &Body<'_>,
+    columns: usize,
+    max_rows: usize,
+) -> Vec<String> {
+    if columns == 0 || max_rows == 0 {
+        return Vec::new();
+    }
     if columns < 8 || max_rows < 3 {
-        let mut compact_title = title;
+        let mut compact_title = title.to_owned();
         if max_rows == 1
             && let Some(hint) = hints.first()
             && ui::width(&compact_title) + 4 < columns
@@ -670,7 +888,7 @@ pub fn render(
         let mut rows = vec![title_line.finish(columns)];
         if max_rows > 1 {
             if hints.is_empty() {
-                let message = if mode.is_none() {
+                let message = if waiting {
                     "Waiting for keys"
                 } else {
                     "No shortcuts"
@@ -683,15 +901,15 @@ pub fn render(
                     base = ui::BASE
                 ));
             } else {
-                rows.extend(body(&hints, columns, max_rows - 1));
+                rows.extend(layout.render(columns, max_rows - 1));
             }
         }
         return rows;
     }
     let inner = columns - 4;
-    let mut content = body(&hints, inner, max_rows - 2);
+    let mut content = layout.render(inner, max_rows - 2);
     if content.is_empty() {
-        let message = if mode.is_none() {
+        let message = if waiting {
             "Waiting for native keymap"
         } else if !hints.is_empty() {
             "Widen for shortcuts"
@@ -700,7 +918,7 @@ pub fn render(
         };
         content.push(format!("{}{}", ui::MUTED, ui::fit(message, inner)));
     }
-    let heading = ui::truncate(&title, columns - 5);
+    let heading = ui::truncate(title, columns - 5);
     let trailing = columns - 5 - ui::width(&heading);
     let mut rows = Vec::with_capacity(content.len() + 2);
     rows.push(format!(
@@ -733,6 +951,14 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zellij_tile::prelude::ModeInfo;
+
+    fn view(info: &ModeInfo) -> Mode<'_> {
+        Mode {
+            input: info.mode,
+            keybinds: Some(&info.keybinds),
+        }
+    }
 
     fn mode(mode: InputMode, keys: &[(&str, Vec<Action>)]) -> ModeInfo {
         ModeInfo {
@@ -802,7 +1028,7 @@ mod tests {
             InputMode::Normal,
             vec![("Ctrl g".parse().unwrap(), vec![switch(InputMode::Locked)])],
         ));
-        let found = hints(&info, Context::Application);
+        let found = hints(view(&info), Context::Application);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].keys, ["Alt+u"]);
         assert_eq!(
@@ -849,7 +1075,7 @@ mod tests {
                 ("c", vec![create(), switch(InputMode::Locked)]),
             ],
         );
-        let found = hints(&info, Context::Application);
+        let found = hints(view(&info), Context::Application);
         assert_eq!(found.len(), 2);
         assert!(found.iter().any(|hint| hint.keys == ["a", "b"]));
         assert!(found.iter().any(|hint| hint.keys == ["c"]));
@@ -865,15 +1091,15 @@ mod tests {
                 ("Enter", vec![Action::NoOp]),
             ],
         );
-        assert!(hints(&info, Context::Application).is_empty());
-        let found = hints(&info, Context::Sidebar { selected: true });
+        assert!(hints(view(&info), Context::Application).is_empty());
+        let found = hints(view(&info), Context::Sidebar { selected: true });
         assert!(
             !found
                 .iter()
                 .flat_map(|hint| &hint.keys)
                 .any(|key| key == "n" || key == "Enter" || key == "Ctrl+Space")
         );
-        let confirmation = hints(&info, Context::Confirm);
+        let confirmation = hints(view(&info), Context::Confirm);
         assert!(
             confirmation
                 .iter()
@@ -891,15 +1117,15 @@ mod tests {
     #[test]
     fn sidebar_toggle_requires_an_active_supporting_binding() {
         let mut info = mode(InputMode::Locked, &[("Alt s", vec![toggle()])]);
-        let found = hints(&info, Context::Application);
+        let found = hints(view(&info), Context::Application);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].keys, ["Alt+s"]);
         assert_ne!(
             found[0].description,
-            hints(&info, Context::Sidebar { selected: false })[0].description
+            hints(view(&info), Context::Sidebar { selected: false })[0].description
         );
         info.mode = InputMode::Resize;
-        assert!(hints(&info, Context::Application).is_empty());
+        assert!(hints(view(&info), Context::Application).is_empty());
         // Compound bindings are not mistaken for a plain mode transition or a no-op.
         let compound = native_hint(
             &[toggle(), switch(InputMode::Locked)],
@@ -940,9 +1166,9 @@ mod tests {
                 ("Esc", vec![switch(InputMode::Normal)]),
             ],
         );
-        let app = hints(&info, Context::Application);
+        let app = hints(view(&info), Context::Application);
         let edit = hints(
-            &info,
+            view(&info),
             Context::Edit {
                 multiple_fields: true,
             },
@@ -963,8 +1189,8 @@ mod tests {
     #[test]
     fn selection_and_dialog_fields_change_only_available_actions() {
         let info = mode(InputMode::Locked, &[]);
-        let empty = hints(&info, Context::Sidebar { selected: false });
-        let selected = hints(&info, Context::Sidebar { selected: true });
+        let empty = hints(view(&info), Context::Sidebar { selected: false });
+        let selected = hints(view(&info), Context::Sidebar { selected: true });
         assert!(
             !empty
                 .iter()
@@ -978,13 +1204,13 @@ mod tests {
                 .any(|key| key == "Enter")
         );
         let one = hints(
-            &info,
+            view(&info),
             Context::Edit {
                 multiple_fields: false,
             },
         );
         let many = hints(
-            &info,
+            view(&info),
             Context::Edit {
                 multiple_fields: true,
             },
@@ -1017,7 +1243,7 @@ mod tests {
                 ("F12", vec![switch(InputMode::Normal)]),
             ],
         );
-        let rendered = render(Some(&info), Context::Application, 20, 3);
+        let rendered = render(Some(view(&info)), Context::Application, 20, 3);
         assert_eq!(rendered.len(), 3);
         let content = plain(&rendered[1]);
         assert!(content.contains("F12"));
@@ -1058,6 +1284,153 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_grid_aligns_key_ends_and_wrapped_descriptions() {
+        let hints = [
+            Hint {
+                keys: vec!["Ctrl+Space".to_owned()],
+                description: "open sidebar".to_owned(),
+                priority: 0,
+            },
+            Hint {
+                keys: vec!["Esc".to_owned()],
+                description: "close".to_owned(),
+                priority: 1,
+            },
+            Hint {
+                keys: vec!["↑".to_owned(), "↓".to_owned()],
+                description: "move focus between panes".to_owned(),
+                priority: 2,
+            },
+        ];
+        let rows: Vec<_> = body(&hints, 28, 8).iter().map(|row| plain(row)).collect();
+        let description_start = rows[0].find("open sidebar").unwrap();
+        for (keys, description) in [
+            ("Ctrl+Space", "open sidebar"),
+            ("Esc", "close"),
+            ("↑/↓", "move focus"),
+        ] {
+            let row = rows.iter().find(|row| row.contains(description)).unwrap();
+            let key_start = row.find(keys).unwrap();
+            assert_eq!(
+                ui::width(&row[..key_start]) + ui::width(keys),
+                description_start - 2
+            );
+            assert_eq!(
+                ui::width(&row[..row.find(description).unwrap()]),
+                description_start
+            );
+        }
+        let continuation = rows
+            .iter()
+            .find(|row| row.contains("between panes"))
+            .unwrap();
+        assert!(continuation[..description_start].chars().all(|c| c == ' '));
+        assert_eq!(continuation.find("between panes"), Some(description_start));
+        assert!(rows.iter().all(|row| ui::width(row) == 28));
+    }
+
+    #[test]
+    fn focus_aliases_wrap_completely_around_a_centered_gutter() {
+        let hints = [Hint {
+            keys: ["←", "↑", "→", "↓", "Alt+↑", "Alt+↓", "h", "j", "k", "l"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            description: "focus panes".to_owned(),
+            priority: 0,
+        }];
+        let columns = 33;
+        let rows: Vec<_> = body(&hints, columns, 8)
+            .iter()
+            .map(|row| plain(row))
+            .collect();
+        assert_eq!(rows.len(), 2);
+        let key_width = (columns - 2) / 2;
+        let key_rows: Vec<String> = rows
+            .iter()
+            .map(|row| row.chars().take(key_width).collect())
+            .collect();
+        let aliases: Vec<_> = key_rows
+            .iter()
+            .flat_map(|row| row.trim().split('/'))
+            .collect();
+        for key in ["←", "↑", "→", "↓", "h", "j", "k", "l"] {
+            assert!(aliases.contains(&key), "missing {key}: {key_rows:?}");
+        }
+        assert!(key_rows[0].contains("Alt+↑/↓"));
+        let description_start = ui::width(&rows[0][..rows[0].find("focus panes").unwrap()]);
+        assert!((key_width + description_start).abs_diff(columns) <= 1);
+        assert!(rows.iter().all(|row| ui::width(row) == columns));
+    }
+
+    #[test]
+    fn expanded_width_fits_long_operations_without_description_wrapping() {
+        let info = mode(
+            InputMode::Tmux,
+            &[(
+                "F1",
+                vec![
+                    Action::ToggleFocusFullscreen,
+                    Action::ToggleFloatingPanes,
+                    Action::TogglePaneEmbedOrFloating,
+                ],
+            )],
+        );
+        let expanded = render_expanded(view(&info), Context::Application, 38, 120, 12);
+        assert!(expanded.columns > 48 && expanded.columns <= 72);
+        assert_eq!(expanded.lines.len(), 3);
+        assert!(
+            render(Some(view(&info)), Context::Application, 38, 12).len() > expanded.lines.len()
+        );
+        assert_eq!(
+            render_expanded(view(&info), Context::Application, 64, 120, 12).columns,
+            64
+        );
+        assert_eq!(
+            render_expanded(view(&info), Context::Application, 100, 120, 12).columns,
+            72
+        );
+    }
+
+    #[test]
+    fn expanded_layout_respects_display_edges_and_complete_ansi_rows() {
+        let info = mode(
+            InputMode::Normal,
+            &[
+                ("Ctrl Space", vec![toggle()]),
+                ("Esc", vec![switch(InputMode::Locked)]),
+                ("Ctrl p", vec![switch(InputMode::Pane)]),
+            ],
+        );
+        for columns in [0, 1, 3, 7, 8, 38, 47, 48, 60, 71, 72, 96] {
+            for rows in [0, 1, 2, 3, 4, 12] {
+                for sidebar in [0, 38, 64, 100] {
+                    let guide = render_expanded(
+                        view(&info),
+                        Context::Sidebar { selected: true },
+                        sidebar,
+                        columns,
+                        rows,
+                    );
+                    assert!(guide.columns <= columns.min(72));
+                    assert!(guide.lines.len() <= rows);
+                    if columns == 0 || rows == 0 {
+                        assert_eq!(guide.columns, 0);
+                        assert!(guide.lines.is_empty());
+                    } else {
+                        assert!(guide.columns >= columns.min(48));
+                        assert!(guide.columns >= sidebar.min(columns).min(72));
+                        assert!(!guide.lines.is_empty());
+                    }
+                    for line in guide.lines {
+                        assert_eq!(ui::width(&plain(&line)), guide.columns);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn all_layouts_fit_without_fragmenting_ansi() {
         let info = mode(
             InputMode::Normal,
@@ -1080,7 +1453,7 @@ mod tests {
                     Context::Confirm,
                     Context::Finder,
                 ] {
-                    for mode in [None, Some(&info)] {
+                    for mode in [None, Some(view(&info))] {
                         let rendered = render(mode, context, columns, rows);
                         assert!(rendered.len() <= rows);
                         if columns == 0 || rows == 0 {

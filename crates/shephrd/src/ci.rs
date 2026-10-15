@@ -1,4 +1,5 @@
 //! Shared forge CI batching, scheduling, and cache; Git discovery is event-driven.
+//! Requests share commit checks while retaining each subscriber's branch metadata.
 use shephrd::ci_contract::{
     CiFetchState, CiRefreshTarget, CiSnapshot, CiStatus, ForgeProvider, ForgeRepository,
 };
@@ -266,7 +267,7 @@ mod linux {
                 let result = if now >= pending.deadline {
                     Err(FetchError::normal("CI request timed out"))
                 } else {
-                    response(&mut pending, &self.entries)
+                    response(&mut pending)
                 };
                 self.finish(&pending.sources, result);
             }
@@ -280,12 +281,12 @@ mod linux {
             self.next_request = now + Duration::from_secs(ACTIVE_SECONDS);
             self.requests += 1;
             eprintln!(
-                "CI batch {}: {} repositories/commits",
+                "CI batch {}: {} logical targets",
                 self.requests,
                 sources.len()
             );
-            for (source, entry) in &mut self.entries {
-                if sources.iter().any(|queried| same_commit(queried, source)) {
+            for source in &sources {
+                if let Some(entry) = self.entries.get_mut(source) {
                     refreshing(&mut entry.snapshot);
                 }
             }
@@ -307,22 +308,27 @@ mod linux {
                 })
                 .collect();
             due.sort_by_key(|(_, entry)| entry.due);
-            let mut sources: Vec<CiSource> = Vec::new();
+            let mut commits: Vec<&CiSource> = Vec::new();
             for (source, _) in due {
-                if sources.first().is_some_and(|first| {
+                if commits.first().is_some_and(|first| {
                     first.repository.provider != source.repository.provider
                         || first.repository.host != source.repository.host
                 }) {
                     continue;
                 }
-                if !sources.iter().any(|other| same_commit(other, source)) {
-                    sources.push(source.clone());
+                if !commits.iter().any(|other| same_commit(other, source)) {
+                    commits.push(source);
                 }
-                if sources.len() == BATCH {
+                if commits.len() == BATCH {
                     break;
                 }
             }
-            sources
+            // The budget counts commits, not their independently queried branches.
+            self.entries
+                .keys()
+                .filter(|source| commits.iter().any(|commit| same_commit(commit, source)))
+                .cloned()
+                .collect()
         }
         fn finish(
             &mut self,
@@ -356,10 +362,10 @@ mod linux {
                     .next_request
                     .max(now + Duration::from_secs(delay.max(ACTIVE_SECONDS)));
             }
-            for (source, entry) in &mut self.entries {
-                if !sources.iter().any(|queried| same_commit(queried, source)) {
+            for source in sources {
+                let Some(entry) = self.entries.get_mut(source) else {
                     continue;
-                }
+                };
                 let result = match &mut response {
                     Err(error) => Err(error.clone()),
                     Ok(batch) => batch.results.remove(source).unwrap_or_else(|| {
@@ -491,10 +497,7 @@ mod linux {
             deadline: Instant::now() + Duration::from_secs(DEADLINE_SECONDS),
         })
     }
-    fn response(
-        pending: &mut Pending,
-        subscribers: &BTreeMap<CiSource, Entry>,
-    ) -> Result<BatchResponse, FetchError> {
+    fn response(pending: &mut Pending) -> Result<BatchResponse, FetchError> {
         let status = pending
             .child
             .wait()
@@ -527,7 +530,7 @@ mod linux {
                 &bytes,
                 &stderr,
                 &pending.sources,
-                subscribers.keys(),
+                pending.sources.iter(),
                 timestamp(),
             ),
         }
@@ -544,9 +547,8 @@ mod linux {
                 sources: &[CiSource],
                 response: Result<Value, FetchError>,
             ) {
-                let batch = response.map(|value| {
-                    github::normalize(value, sources, self.entries.keys(), timestamp())
-                });
+                let batch = response
+                    .map(|value| github::normalize(value, sources, sources.iter(), timestamp()));
                 self.finish(sources, batch);
             }
             pub(crate) fn finish_json_fixture(&mut self, sources: &[CiSource], value: Value) {
@@ -558,6 +560,46 @@ mod linux {
                 repository: github::repository("https://github.com/owner/repo").unwrap(),
                 sha: sha.into(),
                 branch: Some("main".into()),
+            }
+        }
+
+        fn pull_request(source: &CiSource, number: u64) -> Value {
+            json!({
+                "number": number,
+                "title": format!("Request {number}"),
+                "url": format!("https://github.com/owner/repo/pull/{number}"),
+                "state": "OPEN",
+                "isDraft": false,
+                "headRefName": source.branch,
+                "headRefOid": source.sha,
+                "headRepository": {"nameWithOwner": source.repository.path},
+                "body": "",
+                "bodyHTML": "",
+                "comments": {"nodes": []}
+            })
+        }
+
+        fn pending_fixture(sources: &[CiSource]) -> Pending {
+            let mut command = Command::new("sleep");
+            command.arg("60");
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = command.spawn().unwrap();
+            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id(), 0) } as i32;
+            assert!(fd >= 0);
+            Pending {
+                child,
+                fd: unsafe { OwnedFd::from_raw_fd(fd) },
+                stdout: memory_file().unwrap(),
+                stderr: memory_file().unwrap(),
+                sources: sources.to_vec(),
+                deadline: Instant::now() + Duration::from_secs(60),
             }
         }
 
@@ -579,10 +621,14 @@ mod linux {
         }
 
         fn finish_snapshot(monitor: &mut Monitor, source: &CiSource, snapshot: CiSnapshot) {
-            let results = monitor
+            let sources: Vec<_> = monitor
                 .entries
                 .keys()
                 .filter(|candidate| same_commit(candidate, source))
+                .cloned()
+                .collect();
+            let results = sources
+                .iter()
                 .map(|candidate| {
                     let mut snapshot = snapshot.clone();
                     snapshot.branch = candidate.branch.clone();
@@ -590,7 +636,7 @@ mod linux {
                 })
                 .collect();
             monitor.finish(
-                std::slice::from_ref(source),
+                &sources,
                 Ok(BatchResponse {
                     results,
                     global_error: None,
@@ -679,7 +725,7 @@ mod linux {
             }
             assert_eq!(monitor.requests, 0);
             assert_eq!(monitor.next_request, budget);
-            assert_eq!(monitor.due_batch(budget).len(), 1);
+            assert_eq!(monitor.due_batch(budget).len(), 2);
             for subscriber in [&source, &linked] {
                 let current = monitor.snapshot(subscriber).unwrap();
                 assert_eq!(current.fetch_state, CiFetchState::Loading);
@@ -876,16 +922,44 @@ mod linux {
             );
             assert!(monitor.snapshot(&old).is_none());
             let mut linked = new.clone();
-            linked.branch = Some("linked".into());
+            linked.branch = Some("next".into());
             assert!(same_commit(&new, &linked));
-            let value = json!({"data":{"r0":{"object":{"oid":"def","associatedPullRequests":{"nodes":[],"pageInfo":{"hasNextPage":false}},"statusCheckRollup":null}},"rateLimit":{"remaining":5000}}});
+            let value = json!({
+                "data": {
+                    "r0": {
+                        "object": {"oid": "def", "statusCheckRollup": null},
+                        "b0": {
+                            "associatedPullRequests": {
+                                "nodes": [pull_request(&new, 101)],
+                                "pageInfo": {"hasNextPage": false}
+                            }
+                        },
+                        "c0": {"nodes": []},
+                        "b1": {
+                            "associatedPullRequests": {
+                                "nodes": [pull_request(&linked, 102)],
+                                "pageInfo": {"hasNextPage": false}
+                            }
+                        },
+                        "c1": {"nodes": []}
+                    },
+                    "rateLimit": {"remaining": 5000}
+                }
+            });
             monitor.sync([new.clone(), linked.clone()].into_iter());
-            monitor.finish_fixture(std::slice::from_ref(&new), Ok(value));
+            let sources = monitor.due_batch(monitor.retry_request.max(Instant::now()));
+            assert_eq!(sources, vec![new.clone(), linked.clone()]);
+            monitor.finish_fixture(&sources, Ok(value));
             assert_eq!(monitor.snapshot(&new).unwrap().status, CiStatus::NoChecks);
             assert_eq!(
                 monitor.snapshot(&linked).unwrap().status,
                 CiStatus::NoChecks
             );
+            for (subscriber, number) in [(&new, 101), (&linked, 102)] {
+                let snapshot = monitor.snapshot(subscriber).unwrap();
+                assert_eq!(snapshot.branch, subscriber.branch);
+                assert_eq!(snapshot.change_request.unwrap().number, number);
+            }
             assert!(
                 monitor.entries[&new]
                     .due
@@ -906,9 +980,6 @@ mod linux {
                     "r0": {
                         "object": {
                             "oid": "old",
-                            "associatedPullRequests": {
-                                "nodes": [], "pageInfo": {"hasNextPage": false}
-                            },
                             "statusCheckRollup": {
                                 "contexts": {
                                     "nodes": [{
@@ -918,7 +989,11 @@ mod linux {
                                     "pageInfo": {"hasNextPage": false}
                                 }
                             }
-                        }
+                        },
+                        "b0": {"associatedPullRequests": {
+                            "nodes": [], "pageInfo": {"hasNextPage": false}
+                        }},
+                        "c0": {"nodes": []}
                     },
                     "rateLimit": {"remaining": 5000}
                 }
@@ -973,23 +1048,27 @@ mod linux {
         #[test]
         fn batching_deduplicates_commits_bounds_work_and_backoff_stops_launches() {
             let mut monitor = Monitor::new();
-            let sources = (0..20).map(|index| source(&format!("sha{index}")));
-            monitor.sync(sources);
-            let mut linked = source("sha0");
+            let mut sources: Vec<_> = (0..20)
+                .map(|index| source(&format!("sha{index}")))
+                .collect();
+            let mut linked = sources[0].clone();
             linked.branch = Some("linked".into());
-            monitor.entries.insert(
-                linked,
-                Entry {
-                    snapshot: empty(&source("sha0"), 0),
-                    due: Some(Instant::now()),
-                    manual: false,
-                },
-            );
-            assert_eq!(monitor.due_batch(Instant::now()).len(), BATCH);
+            sources.push(linked.clone());
+            monitor.sync(sources.into_iter());
+            // A subscriber's own later timer must not exclude its branch metadata
+            // when another subscriber has already made their shared commit due.
+            monitor.entries.get_mut(&linked).unwrap().due =
+                Some(Instant::now() + Duration::from_secs(IDLE_SECONDS));
             let batch = monitor.due_batch(Instant::now());
+            assert_eq!(batch.len(), BATCH + 1);
+            let commits: BTreeSet<_> = batch
+                .iter()
+                .map(|source| (&source.repository, &source.sha))
+                .collect();
+            assert_eq!(commits.len(), BATCH);
             assert_eq!(
                 batch.iter().filter(|source| source.sha == "sha0").count(),
-                1
+                2
             );
             monitor.finish_fixture(
                 &batch,
@@ -1041,7 +1120,31 @@ mod linux {
             let first = source("first");
             let second = source("second");
             monitor.sync([first.clone(), second.clone()].into_iter());
-            let response = json!({"data":{"r0":null,"r1":{"object":{"oid":"second","associatedPullRequests":{"nodes":[],"pageInfo":{"hasNextPage":false}},"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}],"pageInfo":{"hasNextPage":false}}}}},"rateLimit":{"remaining":4999,"cost":1}},"errors":[{"type":"NOT_FOUND","path":["r0"]}]});
+            let response = json!({
+                "data": {
+                    "r0": null,
+                    "r1": {
+                        "object": {
+                            "oid": "second",
+                            "statusCheckRollup": {
+                                "contexts": {
+                                    "nodes": [{
+                                        "__typename": "CheckRun", "name": "test",
+                                        "status": "COMPLETED", "conclusion": "SUCCESS"
+                                    }],
+                                    "pageInfo": {"hasNextPage": false}
+                                }
+                            }
+                        },
+                        "b1": {"associatedPullRequests": {
+                            "nodes": [], "pageInfo": {"hasNextPage": false}
+                        }},
+                        "c1": {"nodes": []}
+                    },
+                    "rateLimit": {"remaining": 4999, "cost": 1}
+                },
+                "errors": [{"type": "NOT_FOUND", "path": ["r0"]}]
+            });
             monitor.finish_fixture(&[first.clone(), second.clone()], Ok(response));
             assert_eq!(monitor.snapshot(&first).unwrap().status, CiStatus::Unknown);
             assert_eq!(monitor.snapshot(&second).unwrap().status, CiStatus::Passed);
@@ -1058,33 +1161,105 @@ mod linux {
         }
 
         #[test]
+        fn subscribers_added_in_flight_wait_for_their_own_branch_metadata() {
+            for succeeds in [true, false] {
+                let mut monitor = Monitor::new();
+                let source = source("shared");
+                let mut linked = source.clone();
+                linked.branch = Some("next".into());
+                monitor.sync([source.clone()].into_iter());
+                let queried = monitor.due_batch(Instant::now());
+                monitor.pending = Some(pending_fixture(&queried));
+                let fd = monitor.fd();
+                monitor.sync([source.clone(), linked.clone()].into_iter());
+                let due = monitor.entries[&linked].due;
+                monitor.refresh(&target(&linked));
+                assert_eq!(monitor.fd(), fd);
+                let pending = monitor.pending.take().unwrap();
+                assert_eq!(pending.sources, queried);
+                let mut value = json!({
+                    "data": {
+                        "r0": {
+                            "object": {
+                                "oid": "shared",
+                                "statusCheckRollup": {
+                                    "contexts": {
+                                        "nodes": [{
+                                            "__typename": "CheckRun", "name": "test",
+                                            "status": "COMPLETED", "conclusion": "SUCCESS"
+                                        }],
+                                        "pageInfo": {"hasNextPage": false}
+                                    }
+                                }
+                            },
+                            "b0": {"associatedPullRequests": {
+                                "nodes": [pull_request(&source, 101)],
+                                "pageInfo": {"hasNextPage": false}
+                            }},
+                            "c0": {"nodes": []}
+                        },
+                        "rateLimit": {"remaining": 5000}
+                    }
+                });
+                monitor.finish_fixture(
+                    &pending.sources,
+                    if succeeds {
+                        Ok(value.clone())
+                    } else {
+                        Err(FetchError::normal("offline"))
+                    },
+                );
+                drop(pending);
+                assert_eq!(monitor.snapshot(&linked), Some(empty(&linked, 0)));
+                assert_eq!(monitor.entries[&linked].due, due);
+                let next = monitor.due_batch(monitor.retry_request.max(Instant::now()));
+                assert_eq!(next, vec![source.clone(), linked.clone()]);
+                if succeeds {
+                    assert!(monitor.entries[&source].due.is_none());
+                    assert_eq!(
+                        monitor
+                            .snapshot(&source)
+                            .unwrap()
+                            .change_request
+                            .unwrap()
+                            .number,
+                        101
+                    );
+                    value["data"]["r0"]["b1"] = json!({"associatedPullRequests": {
+                        "nodes": [pull_request(&linked, 102)],
+                        "pageInfo": {"hasNextPage": false}
+                    }});
+                    value["data"]["r0"]["c1"] = json!({"nodes": []});
+                    monitor.finish_fixture(&next, Ok(value));
+                    assert_eq!(
+                        monitor
+                            .snapshot(&linked)
+                            .unwrap()
+                            .change_request
+                            .unwrap()
+                            .number,
+                        102
+                    );
+                    assert!(monitor.entries.values().all(|entry| entry.due.is_none()));
+                } else {
+                    assert_eq!(
+                        monitor.snapshot(&source).unwrap().fetch_state,
+                        CiFetchState::Unavailable
+                    );
+                }
+            }
+        }
+
+        #[test]
         fn generation_changes_and_monitor_exit_reap_owned_requests() {
             for change_generation in [false, true] {
-                let mut command = Command::new("sleep");
-                command.arg("60");
-                unsafe {
-                    command.pre_exec(|| {
-                        if libc::setsid() == -1 {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                        Ok(())
-                    });
-                }
-                let child = command.spawn().unwrap();
-                let pid = child.id() as i32;
-                let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
-                assert!(fd >= 0);
                 let old = source("old");
                 let mut monitor = Monitor::new();
                 monitor.sync([old.clone()].into_iter());
-                monitor.pending = Some(Pending {
-                    child,
-                    fd: unsafe { OwnedFd::from_raw_fd(fd) },
-                    stdout: memory_file().unwrap(),
-                    stderr: memory_file().unwrap(),
-                    sources: vec![old],
-                    deadline: Instant::now() + Duration::from_secs(60),
-                });
+                let pending = pending_fixture(std::slice::from_ref(&old));
+                let pid = pending.child.id() as i32;
+                let fd = pending.fd.as_raw_fd();
+                monitor.pending = Some(pending);
                 monitor.sync([source("old"), source("unrelated")].into_iter());
                 assert_eq!(monitor.fd(), fd);
                 monitor.sync([source("old")].into_iter());

@@ -92,6 +92,7 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
         let mut owner_configuration = configuration.clone();
         owner_configuration.insert("role".into(), "native-owner".into());
         owner_configuration.insert("caller_cwd".into(), cwd.into());
+        owner_configuration.insert("mode_info_format".into(), "json".into());
         config.push_str(&format!(
             "\nload_plugins {{\n {} {{\n",
             serde_json::to_string(&plugin_url)?,
