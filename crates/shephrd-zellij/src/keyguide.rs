@@ -145,13 +145,14 @@ fn native_hint(actions: &[Action], mode: InputMode, context: Context) -> Option<
             {
                 match payload.as_deref() {
                     Some("toggle") => (
-                        if application {
+                        if application || context == Context::Finder {
                             "sidebar"
                         } else {
                             "return to app"
                         },
                         0,
                     ),
+                    Some("leave") if context == Context::Finder => ("close finder", 0),
                     Some("leave") if !application => ("return to app", 0),
                     Some("leave") => continue,
                     _ => return None,
@@ -459,6 +460,15 @@ fn hints(mode: &ModeInfo, context: Context) -> Vec<Hint> {
             }
             Context::Finder => {
                 local(&[Esc], false, "close finder", 0);
+                local(&[Enter], false, "open", 1);
+                local(&[Up, Down], false, "select", 2);
+                local(
+                    &[Char('n'), Char('p'), Char('j'), Char('k')],
+                    true,
+                    "select",
+                    2,
+                );
+                local(&[PageUp, PageDown], false, "preview", 3);
                 local(&[Char('u')], true, "clear search", 10);
             }
         }
@@ -1068,6 +1078,7 @@ mod tests {
                         multiple_fields: true,
                     },
                     Context::Confirm,
+                    Context::Finder,
                 ] {
                     for mode in [None, Some(&info)] {
                         let rendered = render(mode, context, columns, rows);
