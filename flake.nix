@@ -90,6 +90,7 @@
             version = "0.1.0";
             inherit src;
             cargoLock.lockFileContents = builtins.readFile ./Cargo.lock;
+            nativeCheckInputs = [ pkgs.git ];
             cargoBuildFlags = [
               "-p"
               "shephrd"
