@@ -30,7 +30,15 @@ pub fn run(options: Options) -> Result<()> {
         bail!("launch requires an interactive terminal");
     }
     let program = env::current_exe().context("locate native bkpr command")?;
-    let zellij = executable(&options.zellij)?;
+    let bundled_zellij = program.with_file_name("zellij");
+    let zellij = if options.zellij == Path::new("zellij")
+        && env::var_os("BKPR_ZELLIJ").is_none()
+        && bundled_zellij.is_file()
+    {
+        executable(&bundled_zellij)?
+    } else {
+        executable(&options.zellij)?
+    };
     let plugin = plugin_path(options.plugin.clone(), &program)?;
     check_zellij(&zellij)?;
     run_native(&options, &program, &zellij, &plugin)
@@ -47,9 +55,10 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
     private_directory(&runtime)?;
     let config_dir = runtime.join("zellij");
     private_directory(&config_dir)?;
+    let socket_dir = zellij_socket_dir()?;
     let lock = startup_lock(&runtime)?;
     let zellij_session = format!("bkpr-native-{identity_hash:016x}");
-    let existing = session_exists(zellij, &config_dir, &zellij_session)?;
+    let existing = session_exists(zellij, &config_dir, &socket_dir, &zellij_session)?;
     let config_path = config_dir.join("config.kdl");
     let layout_path = runtime.join("layout.kdl");
     if !existing {
@@ -124,7 +133,7 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
     }
     let agent_lease = crate::agent_relay::acquire_locked(program, &runtime, agent_source)?;
     drop(lock);
-    let mut client = zellij_command(zellij, &config_dir);
+    let mut client = zellij_command(zellij, &config_dir, &socket_dir);
     client
         .arg("--config")
         .arg(&config_path)
@@ -156,7 +165,7 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
     agent_lease
         .release()
         .context("release SSH-agent attachment lease")?;
-    if !status.success() && !session_exists(zellij, &config_dir, &zellij_session)? {
+    if !status.success() && !session_exists(zellij, &config_dir, &socket_dir, &zellij_session)? {
         bail!("Zellij exited with {status}");
     }
     Ok(())
@@ -183,7 +192,7 @@ fn terminal_columns() -> Result<usize> {
     Ok(columns)
 }
 
-fn zellij_command(program: &Path, config_dir: &Path) -> Command {
+fn zellij_command(program: &Path, config_dir: &Path, socket_dir: &Path) -> Command {
     let mut command = Command::new(program);
     for (key, _) in env::vars_os() {
         if key.to_string_lossy().starts_with("ZELLIJ") {
@@ -193,12 +202,13 @@ fn zellij_command(program: &Path, config_dir: &Path) -> Command {
     command
         .arg("--config-dir")
         .arg(config_dir)
-        .env("ZELLIJ_CONFIG_DIR", config_dir);
+        .env("ZELLIJ_CONFIG_DIR", config_dir)
+        .env("ZELLIJ_SOCKET_DIR", socket_dir);
     command
 }
 
-fn session_exists(program: &Path, config_dir: &Path, name: &str) -> Result<bool> {
-    let result = zellij_command(program, config_dir)
+fn session_exists(program: &Path, config_dir: &Path, socket_dir: &Path, name: &str) -> Result<bool> {
+    let result = zellij_command(program, config_dir, socket_dir)
         .args(["list-sessions", "--no-formatting"])
         .output()?;
     let stdout = String::from_utf8(result.stdout)?;
@@ -231,12 +241,17 @@ fn executable(path: &Path) -> Result<PathBuf> {
 }
 
 fn plugin_path(explicit: Option<PathBuf>, program: &Path) -> Result<PathBuf> {
+    let bundled = program.with_file_name("bkpr-zellij.wasm");
     let path = explicit.unwrap_or_else(|| {
-        program
-            .parent()
-            .and_then(Path::parent)
-            .unwrap_or(Path::new("target"))
-            .join("wasm32-wasip1/release/bkpr-zellij.wasm")
+        if bundled.is_file() {
+            bundled
+        } else {
+            program
+                .parent()
+                .and_then(Path::parent)
+                .unwrap_or(Path::new("target"))
+                .join("wasm32-wasip1/release/bkpr-zellij.wasm")
+        }
     });
     fs::canonicalize(&path).with_context(|| format!("frontend not found at {}; build `cargo build -p bkpr-zellij --target wasm32-wasip1 --release` or use the bundled Nix package", path.display()))
 }
@@ -244,13 +259,19 @@ fn plugin_path(explicit: Option<PathBuf>, program: &Path) -> Result<PathBuf> {
 fn check_zellij(program: &Path) -> Result<()> {
     let result = Command::new(program).arg("--version").output()?;
     let version = String::from_utf8(result.stdout)?;
-    if !result.status.success() || version.trim() != "zellij 0.45.1" {
+    if !result.status.success() || version.trim() != "zellij 0.45.1-bkpr.1" {
         bail!(
-            "this frontend requires Zellij 0.45.1; detected {}",
+            "this frontend requires Zellij 0.45.1-bkpr.1; detected {}",
             version.trim()
         );
     }
     Ok(())
+}
+
+pub(crate) fn zellij_socket_dir() -> Result<PathBuf> {
+    let path = runtime_root()?.join("z");
+    private_directory(&path)?;
+    Ok(path)
 }
 
 pub(crate) fn runtime_root() -> Result<PathBuf> {

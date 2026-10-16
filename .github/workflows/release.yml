@@ -35,7 +35,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
-          sha256sum ./*.nix-store.gz > SHA256SUMS
+          sha256sum ./*.tar.gz > SHA256SUMS
           cd ..
           node .github/scripts/release-notes.mjs "$TAG" > release-notes.md
       - uses: softprops/action-gh-release@v3

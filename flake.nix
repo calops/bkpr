@@ -34,20 +34,22 @@
           overlays = [ rust-overlay.overlays.default ];
         };
       toolchainFor = pkgs: pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+      zellijPatchNames = [
+        "zellij-cursor.patch"
+        "zellij-program-status.patch"
+        "zellij-program-status-events.patch"
+        "zellij-host-replies.patch"
+        "zellij-cli-session.patch"
+        "zellij-popup-clicks.patch"
+        "zellij-overlay-geometry.patch"
+        "zellij-plugin-messages.patch"
+        "zellij-version.patch"
+      ];
       zellijFor =
         pkgs:
         pkgs.zellij.override {
           zellij-unwrapped = pkgs.zellij-unwrapped.overrideAttrs (old: {
-            patches = (old.patches or [ ]) ++ [
-              ./nix/zellij-cursor.patch
-              ./nix/zellij-program-status.patch
-              ./nix/zellij-program-status-events.patch
-              ./nix/zellij-host-replies.patch
-              ./nix/zellij-cli-session.patch
-              ./nix/zellij-popup-clicks.patch
-              ./nix/zellij-overlay-geometry.patch
-              ./nix/zellij-plugin-messages.patch
-            ];
+            patches = (old.patches or [ ]) ++ map (name: ./nix + "/${name}") zellijPatchNames;
             doCheck = true;
             cargoTestFlags = [
               "--package"
@@ -70,6 +72,7 @@
         };
     in
     {
+      inherit zellijPatchNames;
       packages = forAllSystems (
         system:
         let
@@ -146,13 +149,7 @@
                 ln -s ${native}/share/licenses/bkpr/LICENSE "$out/share/licenses/bkpr/LICENSE"
                 makeWrapper ${native}/bin/bkpr "$out/bin/bkpr" \
                   --set BKPR_PLUGIN ${plugin}/share/bkpr/bkpr-zellij.wasm \
-                  --set BKPR_ZELLIJ ${zellij}/bin/zellij \
-                  --prefix PATH : ${
-                    pkgs.lib.makeBinPath [
-                      pkgs.git
-                      pkgs.gh
-                    ]
-                  }
+                  --set BKPR_ZELLIJ ${zellij}/bin/zellij
               '';
         in
         {
