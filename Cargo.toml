@@ -1,13 +1,13 @@
 [workspace]
-members = ["crates/shephrd", "crates/shephrd-zellij"]
-default-members = ["crates/shephrd"]
+members = ["crates/bkpr", "crates/bkpr-zellij"]
+default-members = ["crates/bkpr"]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/calops/shephrd"
+repository = "https://github.com/calops/bkpr"
 
 [workspace.dependencies]
 anyhow = "1"

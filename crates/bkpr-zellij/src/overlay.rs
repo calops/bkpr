@@ -1,21 +1,21 @@
 use crate::ui;
 use serde::{Deserialize, Serialize};
-use shephrd::ci_contract::CiRefreshTarget;
+use bkpr::ci_contract::CiRefreshTarget;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
-pub const UPDATE: &str = "shephrd-tooltip";
-pub const READY: &str = "shephrd-tooltip-ready";
-pub const POINTER: &str = "shephrd-tooltip-pointer";
-pub const POINTER_QUERY: &str = "shephrd-tooltip-pointer-query";
-pub const REFRESH: &str = "shephrd-tooltip-refresh";
-pub const ERROR: &str = "shephrd-tooltip-error";
-const PRESENTED: &str = "shephrd-tooltip-presented";
-const CLEARED: &str = "shephrd-tooltip-cleared";
+pub const UPDATE: &str = "bkpr-tooltip";
+pub const READY: &str = "bkpr-tooltip-ready";
+pub const POINTER: &str = "bkpr-tooltip-pointer";
+pub const POINTER_QUERY: &str = "bkpr-tooltip-pointer-query";
+pub const REFRESH: &str = "bkpr-tooltip-refresh";
+pub const ERROR: &str = "bkpr-tooltip-error";
+const PRESENTED: &str = "bkpr-tooltip-presented";
+const CLEARED: &str = "bkpr-tooltip-cleared";
 
-pub const GUIDE_UPDATE: &str = "shephrd-guide";
-pub const GUIDE_READY: &str = "shephrd-guide-ready";
+pub const GUIDE_UPDATE: &str = "bkpr-guide";
+pub const GUIDE_READY: &str = "bkpr-guide-ready";
 const MAX_GUIDE_PAYLOAD: usize = 128 * 1024;
 const MAX_GUIDE_ROWS: usize = 256;
 
@@ -311,7 +311,7 @@ impl Controller {
             message.new_plugin_args = Some(NewPluginArgs {
                 should_float: Some(true),
                 should_focus: Some(false),
-                pane_title: Some("shephrd details".to_owned()),
+                pane_title: Some("bkpr details".to_owned()),
                 ..NewPluginArgs::default()
             });
             message.floating_pane_coordinates = Some(tooltip.coordinates.clone());
@@ -491,7 +491,7 @@ impl GuideController {
             message.new_plugin_args = Some(NewPluginArgs {
                 should_float: Some(true),
                 should_focus: Some(false),
-                pane_title: Some("shephrd shortcuts".to_owned()),
+                pane_title: Some("bkpr shortcuts".to_owned()),
                 ..NewPluginArgs::default()
             });
             message.floating_pane_coordinates = Some(frame.coordinates.clone());
@@ -2734,8 +2734,8 @@ mod tests {
         ];
         header.link = Some("https://example.com/checks".to_owned());
         header.refresh = Some(CiRefreshTarget {
-            repository: shephrd::ci_contract::ForgeRepository {
-                provider: shephrd::ci_contract::ForgeProvider::Github,
+            repository: bkpr::ci_contract::ForgeRepository {
+                provider: bkpr::ci_contract::ForgeProvider::Github,
                 host: "forge.example.com".to_owned(),
                 path: "owner/repository".to_owned(),
                 web_url: "https://forge.example.com/owner/repository".to_owned(),
@@ -2864,7 +2864,7 @@ mod tests {
                 "CI · Unavailable · stale · {}",
                 "provider failure 日本語 e\u{301} ".repeat(40)
             ),
-            ui::PopupColor::Ci(shephrd::ci_contract::CiStatus::Unknown),
+            ui::PopupColor::Ci(bkpr::ci_contract::CiStatus::Unknown),
         )
         .spans;
         summary.truncate = true;
@@ -2889,7 +2889,7 @@ mod tests {
                 0,
                 ui::PopupSpan {
                     text: prefix.to_owned(),
-                    color: ui::PopupColor::Native(shephrd::Status::Idle),
+                    color: ui::PopupColor::Native(bkpr::Status::Idle),
                     bold: true,
                 },
             );
@@ -3006,7 +3006,7 @@ mod tests {
             spans: vec![
                 ui::PopupSpan {
                     text: "\u{f05e1} ".to_owned(),
-                    color: ui::PopupColor::Ci(shephrd::ci_contract::CiStatus::Passed),
+                    color: ui::PopupColor::Ci(bkpr::ci_contract::CiStatus::Passed),
                     bold: false,
                 },
                 ui::PopupSpan {
@@ -3228,14 +3228,14 @@ mod tests {
 
     #[test]
     fn pane_preview_links_keep_actual_pr_and_linear_targets_out_of_padding_and_chrome() {
-        use shephrd::ci_contract::{
+        use bkpr::ci_contract::{
             ChangeRequest, ChangeRequestState, CiFetchState, CiSnapshot, CiStatus, ForgeProvider,
             ForgeRepository, IssueTracker, LinkedIssue,
         };
         let pr = "https://github.com/owner/repo/pull/42";
         let ticket = "https://linear.app/team/issue/ENG-42/unicode-preview";
-        let snapshot = shephrd::Snapshot {
-            protocol: shephrd::PROTOCOL_VERSION,
+        let snapshot = bkpr::Snapshot {
+            protocol: bkpr::PROTOCOL_VERSION,
             instance_id: "preview:test".to_owned(),
             revision: 1,
             session: "test".to_owned(),
@@ -3243,7 +3243,7 @@ mod tests {
             error: None,
             focused_pane_id: None,
             workspaces: Vec::new(),
-            panes: vec![shephrd::Pane {
+            panes: vec![bkpr::Pane {
                 id: "pane".to_owned(),
                 terminal_id: "terminal_1".to_owned(),
                 workspace_id: "workspace".to_owned(),
@@ -3251,7 +3251,7 @@ mod tests {
                 name: "Editor".to_owned(),
                 description: String::new(),
                 harness: None,
-                status: shephrd::Status::Idle,
+                status: bkpr::Status::Idle,
                 attention: None,
                 cwd: None,
                 branch: None,
@@ -3433,7 +3433,7 @@ mod tests {
         let content = ui::PopupContent {
             key: "pane:1".to_owned(),
             title: row("Agent", ui::PopupColor::Text),
-            subtitle: row("working", ui::PopupColor::Native(shephrd::Status::Working)),
+            subtitle: row("working", ui::PopupColor::Native(bkpr::Status::Working)),
             intro: Vec::new(),
             sections: vec![ui::PopupSection {
                 heading: None,

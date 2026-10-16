@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
-use shephrd::agent_contract::{
+use bkpr::agent_contract::{
     AgentExecution, InspectRequest, InspectResponse, PaneProcess, ProgramStatus,
     ProgramStatusUpdate, harness_name,
 };
-use shephrd::ci_contract::{CiRefreshTarget, CiSnapshot};
-use shephrd::{
+use bkpr::ci_contract::{CiRefreshTarget, CiSnapshot};
+use bkpr::{
     Action, Attention, Effect, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Pane, ProjectIdentity, Request,
     Response, Snapshot, Status, Workspace,
 };
@@ -14,12 +14,12 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zellij_tile::prelude::*;
 
-pub const REQUEST: &str = "shephrd-native-request";
-pub const RESPONSE: &str = "shephrd-native-response";
-pub const STATE: &str = "shephrd-native-state";
-pub const QUERY: &str = "shephrd-native-query";
-pub const PROJECT: &str = "shephrd-native-project";
-pub const REFRESH_CI: &str = "shephrd-native-refresh-ci";
+pub const REQUEST: &str = "bkpr-native-request";
+pub const RESPONSE: &str = "bkpr-native-response";
+pub const STATE: &str = "bkpr-native-state";
+pub const QUERY: &str = "bkpr-native-query";
+pub const PROJECT: &str = "bkpr-native-project";
+pub const REFRESH_CI: &str = "bkpr-native-refresh-ci";
 #[derive(Serialize, Deserialize)]
 struct NativeCiRefresh {
     client_id: u16,
@@ -124,7 +124,7 @@ impl KeymapCacheRef {
             return None;
         }
         Some(Path::new(KEYMAP_CACHE_DIRECTORY).join(format!(
-            "shephrd-keymap-{}-{}.json",
+            "bkpr-keymap-{}-{}.json",
             self.source, self.generation
         )))
     }
@@ -255,7 +255,7 @@ impl Topology {
                     return Err("Native sidebar geometry exceeds the display".to_owned());
                 }
                 // Outer columns include the separator; content columns would shrink each tab.
-                return shephrd::native_sidebar_percent(
+                return bkpr::native_sidebar_percent(
                     pane.pane_columns,
                     tab.display_area_columns,
                 )
@@ -492,7 +492,7 @@ pub fn restart_owner(
         (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
     });
     let claim = format!(
-        "/cache/shephrd-owner-restart-{}-{hash:016x}-{closed_id}",
+        "/cache/bkpr-owner-restart-{}-{hash:016x}-{closed_id}",
         get_plugin_ids().zellij_pid,
     );
     match std::fs::OpenOptions::new()
@@ -610,7 +610,7 @@ struct Project {
     #[serde(default)]
     branch: Option<String>,
     #[serde(default)]
-    branch_changes: Option<shephrd::BranchChanges>,
+    branch_changes: Option<bkpr::BranchChanges>,
     #[serde(default)]
     repository_id: Option<String>,
     #[serde(default)]
@@ -1390,7 +1390,7 @@ impl Owner {
         let hash = identity.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
             (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
         });
-        self.storage = PathBuf::from(format!("/cache/shephrd-native-{pid}-{hash:016x}.json"));
+        self.storage = PathBuf::from(format!("/cache/bkpr-native-{pid}-{hash:016x}.json"));
         match std::fs::read(&self.storage) {
             Ok(bytes) => match Model::decode(&bytes) {
                 Ok(model) if model.configuration == configuration => {
@@ -2309,7 +2309,7 @@ impl Owner {
                 .map_err(|error| format!("Cannot encode sidebar bootstrap: {error}"))?,
         );
         // Preserve startup configuration/owner identity; geometry is inherited separately.
-        let layout = shephrd::native_layout(
+        let layout = bkpr::native_layout(
             &self.configuration["plugin_url"],
             &sidebar_configuration,
             &name,
@@ -3570,7 +3570,7 @@ mod tests {
             assert_eq!(active.ci.as_ref().unwrap().head_sha, "first");
             assert_eq!(
                 active.ci.as_ref().unwrap().status,
-                shephrd::ci_contract::CiStatus::Passed
+                bkpr::ci_contract::CiStatus::Passed
             );
 
             model
@@ -3589,7 +3589,7 @@ mod tests {
             assert_eq!(shell.branch_changes.as_ref().unwrap().total.deleted, 3);
             assert_eq!(
                 shell.ci.as_ref().unwrap().status,
-                shephrd::ci_contract::CiStatus::Passed
+                bkpr::ci_contract::CiStatus::Passed
             );
             assert_eq!(model.project_watch_sequence, sequence);
             assert!(model.project_watches["/repo"] == ticket);

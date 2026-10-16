@@ -6,7 +6,7 @@ mod overlay;
 mod pane_search;
 mod ui;
 
-use shephrd::{Action, Effect, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Request, Snapshot};
+use bkpr::{Action, Effect, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Request, Snapshot};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write;
@@ -23,7 +23,7 @@ const PERMISSIONS: &[PermissionType] = &[
     PermissionType::ReadCliPipes,
 ];
 
-const CONTROL_PIPE: &str = "shephrd-controls";
+const CONTROL_PIPE: &str = "bkpr-controls";
 
 #[derive(Clone)]
 struct DesiredSelection {
@@ -1322,7 +1322,7 @@ impl Frontend {
         &mut self,
         source: &PipeSource,
         request: &overlay::RefreshRequest,
-    ) -> Option<shephrd::ci_contract::CiRefreshTarget> {
+    ) -> Option<bkpr::ci_contract::CiRefreshTarget> {
         let PipeSource::Plugin(source) = source else {
             return None;
         };
@@ -1957,11 +1957,12 @@ impl Frontend {
                 .and_then(|state| item.workspace_id(state)),
             _ => None,
         });
+        // nf-md-beekeeper
         let heading = self
             .snapshot
             .as_ref()
-            .map(|state| format!("shephrd · {}", state.session))
-            .unwrap_or_else(|| "shephrd".to_owned());
+            .map(|state| format!("\u{f14e2} bkpr · {}", state.session))
+            .unwrap_or_else(|| "\u{f14e2} bkpr".to_owned());
         let status = if let Some(error) = &self.error {
             error.clone()
         } else if !self.granted {
@@ -2010,7 +2011,15 @@ impl Frontend {
                 )
             } else {
                 Cow::Owned(if row == 0 {
-                    format!("\u{1b}[1m{}{}", ui::fit(&heading, columns), ui::RESET)
+                    let label = ui::truncate(&heading, columns);
+                    let padding = columns.saturating_sub(ui::width(&label));
+                    let mut line = String::with_capacity(label.len() + padding + 12);
+                    line.push_str("\u{1b}[1m");
+                    line.extend(std::iter::repeat_n(' ', padding / 2));
+                    line.push_str(&label);
+                    line.extend(std::iter::repeat_n(' ', padding - padding / 2));
+                    line.push_str(ui::RESET);
+                    line
                 } else if row == 1 && status.is_empty() {
                     String::new()
                 } else if row == 1 {
@@ -2018,7 +2027,7 @@ impl Frontend {
                         && (self.error.is_some()
                             || self.snapshot.as_ref().is_some_and(|state| !state.connected))
                     {
-                        ui::status_color(shephrd::Status::Blocked)
+                        ui::status_color(bkpr::Status::Blocked)
                     } else {
                         ui::MUTED
                     };
@@ -2501,7 +2510,7 @@ impl ZellijPlugin for Frontend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shephrd::{Pane, Response, Status, Workspace};
+    use bkpr::{Pane, Response, Status, Workspace};
 
     fn snapshot(revision: u64, focused: &str) -> Snapshot {
         Snapshot {
@@ -3232,7 +3241,7 @@ mod tests {
     }
 
     fn ci_refresh_frontend() -> (Frontend, overlay::RefreshRequest) {
-        use shephrd::ci_contract::{
+        use bkpr::ci_contract::{
             CiFetchState, CiSnapshot, CiStatus, ForgeProvider, ForgeRepository,
         };
         let mut frontend = popup_frontend();
@@ -3307,7 +3316,7 @@ mod tests {
                         .ci
                         .as_mut()
                         .unwrap()
-                        .fetch_state = shephrd::ci_contract::CiFetchState::Loading
+                        .fetch_state = bkpr::ci_contract::CiFetchState::Loading
                 }
                 14 => frontend.granted = false,
                 15 => {
@@ -3442,7 +3451,7 @@ mod tests {
             .ci
             .as_mut()
             .unwrap()
-            .fetch_state = shephrd::ci_contract::CiFetchState::Loading;
+            .fetch_state = bkpr::ci_contract::CiFetchState::Loading;
         frontend.snapshot.as_mut().unwrap().revision += 1;
         frontend.refresh_tooltip();
         current.revision = frontend.tooltip.pending.as_ref().unwrap().revision;
@@ -3455,7 +3464,7 @@ mod tests {
             .ci
             .as_mut()
             .unwrap()
-            .fetch_state = shephrd::ci_contract::CiFetchState::Ready;
+            .fetch_state = bkpr::ci_contract::CiFetchState::Ready;
         frontend.snapshot.as_mut().unwrap().revision += 1;
         frontend.refresh_tooltip();
         current.revision = frontend.tooltip.pending.as_ref().unwrap().revision;
@@ -3786,6 +3795,25 @@ mod tests {
             }
         }
         cells
+    }
+
+    #[test]
+    fn sidebar_header_centers_the_branded_session_inside_the_content_width() {
+        let mut frontend = frontend();
+        let title = "\u{f14e2} bkpr · test";
+        for columns in [23, 40] {
+            let cells = sidebar_cells(&mut frontend, 8, columns);
+            let line: String = cells[0].iter().collect();
+            assert_eq!(line.trim(), title);
+            let left = line.chars().take_while(|character| *character == ' ').count();
+            let right = line.chars().rev().take_while(|character| *character == ' ').count();
+            assert_eq!(left, (columns - ui::width(title)) / 2);
+            assert!(right == left || right == left + 1);
+        }
+        for columns in 1..=8 {
+            let cells = sidebar_cells(&mut frontend, 8, columns);
+            assert_eq!(cells[0].len(), columns);
+        }
     }
 
     #[test]
@@ -4740,7 +4768,7 @@ mod tests {
         let mut state = snapshot(1, "terminal_1");
         state.panes[0].harness = Some("claude".to_owned());
         state.panes[0].status = Status::Blocked;
-        state.panes[0].attention = Some(shephrd::Attention::Error);
+        state.panes[0].attention = Some(bkpr::Attention::Error);
         state.panes[0].description = "Connection refused while reading source".to_owned();
         for branch in [
             "main",

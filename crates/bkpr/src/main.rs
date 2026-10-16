@@ -13,16 +13,16 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use shephrd::MAX_MESSAGE_BYTES;
+use bkpr::MAX_MESSAGE_BYTES;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "shephrd",
+    name = "bkpr",
     version,
     disable_help_subcommand = true,
-    override_usage = "shephrd [OPTIONS]",
+    override_usage = "bkpr [OPTIONS]",
     about = "Persistent local Zellij workspaces with an agent-aware sidebar",
-    after_help = "Examples:\n  shephrd                         Open or attach to the default local session\n  shephrd --session work          Open or attach to a named local session\n  shephrd --sidebar-width 44      Set the sidebar width\n\nSessions use native Zellij terminals.\nAutomatic Git branch, diff and CI reporting is available on Linux."
+    after_help = "Examples:\n  bkpr                         Open or attach to the default local session\n  bkpr --session work          Open or attach to a named local session\n  bkpr --sidebar-width 44      Set the sidebar width\n\nSessions use native Zellij terminals.\nAutomatic Git branch, diff and CI reporting is available on Linux."
 )]
 struct Cli {
     #[command(flatten)]
@@ -88,7 +88,7 @@ enum AgentCommands {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("shephrd: {error:#}");
+        eprintln!("bkpr: {error:#}");
         std::process::exit(1);
     }
 }

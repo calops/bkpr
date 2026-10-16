@@ -1,13 +1,13 @@
 use crate::{overlay, pane_search, ui};
 use serde::{Deserialize, Serialize};
-use shephrd::Snapshot;
+use bkpr::Snapshot;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
-pub const UPDATE: &str = "shephrd-finder-update";
-pub const READY: &str = "shephrd-finder-ready";
-pub const CANCEL: &str = "shephrd-finder-cancel";
-pub const SELECTED: &str = "shephrd-finder-selected";
+pub const UPDATE: &str = "bkpr-finder-update";
+pub const READY: &str = "bkpr-finder-ready";
+pub const CANCEL: &str = "bkpr-finder-cancel";
+pub const SELECTED: &str = "bkpr-finder-selected";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Input {
@@ -290,7 +290,7 @@ impl Controller {
             message.new_plugin_args = Some(NewPluginArgs {
                 should_float: Some(true),
                 should_focus: Some(false),
-                pane_title: Some("shephrd pane finder".to_owned()),
+                pane_title: Some("bkpr pane finder".to_owned()),
                 ..NewPluginArgs::default()
             });
             message.floating_pane_coordinates = Some(state.coordinates.clone());
@@ -646,7 +646,7 @@ impl Finder {
         let Some(payload) = message.payload else {
             return false;
         };
-        if payload.len() > shephrd::MAX_MESSAGE_BYTES * 2 {
+        if payload.len() > bkpr::MAX_MESSAGE_BYTES * 2 {
             return false;
         }
         let Ok(state) = serde_json::from_str::<State>(&payload) else {
@@ -1206,12 +1206,12 @@ fn paint(x: usize, y: usize, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shephrd::{Pane, Status, Workspace};
+    use bkpr::{Pane, Status, Workspace};
     use std::collections::BTreeSet;
 
     fn snapshot() -> Snapshot {
         Snapshot {
-            protocol: shephrd::PROTOCOL_VERSION,
+            protocol: bkpr::PROTOCOL_VERSION,
             instance_id: "native:test".to_owned(),
             revision: 1,
             session: "test".to_owned(),

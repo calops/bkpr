@@ -2,7 +2,7 @@
 use crate::project::ProjectName;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use shephrd::{
+use bkpr::{
     BranchChanges,
     ci_contract::{CiFetchState, CiSnapshot},
 };
@@ -60,7 +60,7 @@ impl Cache {
                     .map(|home| home.join(".local/state"))
             });
         Self {
-            root: state.map(|state| state.join("shephrd/projects")),
+            root: state.map(|state| state.join("bkpr/projects")),
         }
     }
 
@@ -223,7 +223,7 @@ mod tests {
             branch_changes: Some(BranchChanges {
                 base_ref: "refs/heads/main".into(),
                 merge_base: "base".into(),
-                total: shephrd::DiffStat {
+                total: bkpr::DiffStat {
                     added: 4,
                     deleted: 2,
                     binary_files: 0,
@@ -334,7 +334,7 @@ mod tests {
         let ci = unpublished.ci.as_mut().unwrap();
         ci.commit_missing = true;
         ci.fetch_state = CiFetchState::Unavailable;
-        ci.status = shephrd::ci_contract::CiStatus::Unknown;
+        ci.status = bkpr::ci_contract::CiStatus::Unknown;
         ci.checks.clear();
         ci.error = Some("Commit not available".into());
         cache.store(cwd.to_str().unwrap(), &unpublished).unwrap();

@@ -2,7 +2,7 @@
 use super::{BatchResponse, CiSource, FetchError, RetryPolicy, empty, same_commit};
 use scraper::{Html, Selector};
 use serde_json::{Value, json};
-use shephrd::ci_contract::{
+use bkpr::ci_contract::{
     ChangeRequest, ChangeRequestBase, ChangeRequestState, CiCheck, CiFetchState, CiSnapshot,
     CiStatus, ForgeProvider, ForgeRepository, IssueTracker, LinkedIssue,
 };

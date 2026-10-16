@@ -2,11 +2,11 @@
 
 ## Boundaries
 
-- `crates/shephrd` owns the native launcher, Git/CI, SSH forwarding and typed state contract. `crates/shephrd-zellij` owns WASI sidebar, finder and passive overlays. Zellij owns PTYs, input, native panes/tabs and session persistence; never mirror terminal output through the plugin.
+- `crates/bkpr` owns the native launcher, Git/CI, SSH forwarding and typed state contract. `crates/bkpr-zellij` owns WASI sidebar, finder and passive overlays. Zellij owns PTYs, input, native panes/tabs and session persistence; never mirror terminal output through the plugin.
 - Keep workspace-first grouping and stock Zellij controls. Application input starts Locked; Ctrl+Space focuses sidebar controls. Passive details and shortcut cards never take keyboard focus or move the application cursor. Finder alone is a focused modal. Native splits/tabs must remain discoverable; close terminates, not hides.
 - Recognized harness status comes only from OSC 7501. Process/CWD recognition and OSC 0/2 titles are separate. Generic programs do not get harness-status badges; Git/CI remains available to them. Do not infer semantic state from titles, progress, output or process presence.
 - Do not change a user's harness profiles, persistent third-party settings, credentials or GitHub account. Claude launch-local hooks supplement titles only; Antigravity is recognition-only.
-- Prefer Shephrd-owned APIs and push events. Add a Zellij patch only when its plugin/launcher API cannot provide the behavior; keep patches minimal.
+- Prefer Bkpr-owned APIs and push events. Add a Zellij patch only when its plugin/launcher API cannot provide the behavior; keep patches minimal.
 
 ## Git, provider and agent data
 
@@ -27,16 +27,16 @@
 
 ## Development
 
-Use `nix develop` and incremental debug Cargo artifacts in `target/`. Run coordinated checks once after edits: `cargo test --locked --workspace`, `cargo build --locked -p shephrd-zellij --target wasm32-wasip1`, host/WASI `cargo clippy --locked ... -- -D warnings`. Use `nix build .#shephrd` only for packaging validation, not the edit/run loop.
+Use `nix develop` and incremental debug Cargo artifacts in `target/`. Run coordinated checks once after edits: `cargo test --locked --workspace`, `cargo build --locked -p bkpr-zellij --target wasm32-wasip1`, host/WASI `cargo clippy --locked ... -- -D warnings`. Use `nix build .#bkpr` only for packaging validation, not the edit/run loop.
 
 ### Patched Zellij runtime
 
-The pinned host is Zellij 0.45.1. Stock Zellij lacks required OSC/plugin event contracts. `flake.nix` determines patch order; a local debug runtime lives in `target/zellij-dev`. For a fresh checkout, clone tag `v0.45.1`, apply the ordered `nix/zellij-*.patch` files **in flake order** with `patch --fuzz=0 --no-backup-if-mismatch -p1`, then build with `--no-default-features` and `$SHEPHRD_ZELLIJ_VENDOR` source replacement. Do not blindly reapply patches or stage generated `.orig` files. Existing native servers keep old code: start a fresh session after host changes.
+The pinned host is Zellij 0.45.1. Stock Zellij lacks required OSC/plugin event contracts. `flake.nix` determines patch order; a local debug runtime lives in `target/zellij-dev`. For a fresh checkout, clone tag `v0.45.1`, apply the ordered `nix/zellij-*.patch` files **in flake order** with `patch --fuzz=0 --no-backup-if-mismatch -p1`, then build with `--no-default-features` and `$BKPR_ZELLIJ_VENDOR` source replacement. Do not blindly reapply patches or stage generated `.orig` files. Existing native servers keep old code: start a fresh session after host changes.
 
 ```sh
 cargo build --locked --manifest-path target/zellij-dev/Cargo.toml --no-default-features \
   --config 'source.crates-io.replace-with="nix-vendor"' \
-  --config "source.nix-vendor.directory=\"$SHEPHRD_ZELLIJ_VENDOR/source-registry-0\""
+  --config "source.nix-vendor.directory=\"$BKPR_ZELLIJ_VENDOR/source-registry-0\""
 ```
 
 Test focus, cursor, physical mouse, resize and hyperlinks in an actual isolated terminal, not just unit tests or injected escapes. Smoke scripts go under `target/smoke/`, using devshell Python+pyte and `sys.executable`; isolate HOME/XDG, inherited multiplexer and credential variables, and private native sessions. Never touch live sessions or call real model/provider services for a fixture. Clean up owned processes/files, retain useful evidence, and keep README user-facing.

@@ -1,6 +1,6 @@
 //! Shared forge CI batching, scheduling, and cache; Git discovery is event-driven.
 //! Requests share commit checks while retaining each subscriber's branch metadata.
-use shephrd::ci_contract::{
+use bkpr::ci_contract::{
     CiFetchState, CiRefreshTarget, CiSnapshot, CiStatus, ForgeProvider, ForgeRepository,
 };
 use std::collections::BTreeMap;
@@ -204,8 +204,8 @@ mod linux {
                             .is_some_and(|request| {
                                 matches!(
                                     request.state,
-                                    shephrd::ci_contract::ChangeRequestState::Open
-                                        | shephrd::ci_contract::ChangeRequestState::Draft
+                                    bkpr::ci_contract::ChangeRequestState::Open
+                                        | bkpr::ci_contract::ChangeRequestState::Draft
                                 )
                             })
                 });
@@ -522,7 +522,7 @@ mod linux {
             .as_secs()
     }
     fn memory_file() -> std::io::Result<File> {
-        let fd = unsafe { libc::memfd_create(c"shephrd-ci".as_ptr(), libc::MFD_CLOEXEC) };
+        let fd = unsafe { libc::memfd_create(c"bkpr-ci".as_ptr(), libc::MFD_CLOEXEC) };
         if fd == -1 {
             return Err(std::io::Error::last_os_error());
         }
@@ -682,7 +682,7 @@ mod linux {
             snapshot.checks = statuses
                 .iter()
                 .enumerate()
-                .map(|(index, status)| shephrd::ci_contract::CiCheck {
+                .map(|(index, status)| bkpr::ci_contract::CiCheck {
                     name: format!("check-{index}"),
                     status: *status,
                     url: None,
@@ -1173,7 +1173,7 @@ mod linux {
                 let mut snapshot = empty(&source, 123);
                 snapshot.fetch_state = CiFetchState::Ready;
                 snapshot.status = status;
-                snapshot.checks.push(shephrd::ci_contract::CiCheck {
+                snapshot.checks.push(bkpr::ci_contract::CiCheck {
                     name: "test".into(),
                     status,
                     url: None,

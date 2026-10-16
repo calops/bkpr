@@ -1,5 +1,5 @@
 {
-  description = "shephrd — workspace-first native Zellij terminals and sidebar";
+  description = "bkpr — workspace-first native Zellij terminals and sidebar";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/b1b875982b17dabde9b4a37f3e229e74913e6db3";
@@ -86,62 +86,62 @@
             ];
           };
           native = rustPlatform.buildRustPackage {
-            pname = "shephrd-native";
+            pname = "bkpr-native";
             version = "0.1.0";
             inherit src;
             cargoLock.lockFileContents = builtins.readFile ./Cargo.lock;
             nativeCheckInputs = [ pkgs.git ];
             cargoBuildFlags = [
               "-p"
-              "shephrd"
+              "bkpr"
               "--bin"
-              "shephrd"
+              "bkpr"
             ];
             cargoTestFlags = [
               "-p"
-              "shephrd"
+              "bkpr"
             ];
             postInstall = ''
-              install -Dm444 LICENSE "$out/share/licenses/shephrd/LICENSE"
+              install -Dm444 LICENSE "$out/share/licenses/bkpr/LICENSE"
             '';
             meta.license = pkgs.lib.licenses.mit;
-            meta.mainProgram = "shephrd";
+            meta.mainProgram = "bkpr";
           };
           plugin = rustPlatform.buildRustPackage {
-            pname = "shephrd-zellij";
+            pname = "bkpr-zellij";
             version = "0.1.0";
             inherit src;
             cargoLock.lockFileContents = builtins.readFile ./Cargo.lock;
             buildPhase = ''
               runHook preBuild
-              cargo build --release --locked --offline -p shephrd-zellij --target wasm32-wasip1
+              cargo build --release --locked --offline -p bkpr-zellij --target wasm32-wasip1
               runHook postBuild
             '';
             doCheck = false;
             installPhase = ''
               runHook preInstall
-              install -Dm444 target/wasm32-wasip1/release/shephrd-zellij.wasm \
-                "$out/share/shephrd/shephrd-zellij.wasm"
-              install -Dm444 LICENSE "$out/share/licenses/shephrd/LICENSE"
+              install -Dm444 target/wasm32-wasip1/release/bkpr-zellij.wasm \
+                "$out/share/bkpr/bkpr-zellij.wasm"
+              install -Dm444 LICENSE "$out/share/licenses/bkpr/LICENSE"
               runHook postInstall
             '';
             meta.license = pkgs.lib.licenses.mit;
           };
           product =
-            pkgs.runCommand "shephrd-0.1.0"
+            pkgs.runCommand "bkpr-0.1.0"
               {
                 nativeBuildInputs = [ pkgs.makeWrapper ];
-                meta.mainProgram = "shephrd";
+                meta.mainProgram = "bkpr";
                 meta.license = pkgs.lib.licenses.mit;
               }
               ''
-                mkdir -p "$out/bin" "$out/share/shephrd"
-                ln -s ${plugin}/share/shephrd/shephrd-zellij.wasm "$out/share/shephrd/"
-                mkdir -p "$out/share/licenses/shephrd"
-                ln -s ${native}/share/licenses/shephrd/LICENSE "$out/share/licenses/shephrd/LICENSE"
-                makeWrapper ${native}/bin/shephrd "$out/bin/shephrd" \
-                  --set SHEPHRD_PLUGIN ${plugin}/share/shephrd/shephrd-zellij.wasm \
-                  --set SHEPHRD_ZELLIJ ${zellij}/bin/zellij \
+                mkdir -p "$out/bin" "$out/share/bkpr"
+                ln -s ${plugin}/share/bkpr/bkpr-zellij.wasm "$out/share/bkpr/"
+                mkdir -p "$out/share/licenses/bkpr"
+                ln -s ${native}/share/licenses/bkpr/LICENSE "$out/share/licenses/bkpr/LICENSE"
+                makeWrapper ${native}/bin/bkpr "$out/bin/bkpr" \
+                  --set BKPR_PLUGIN ${plugin}/share/bkpr/bkpr-zellij.wasm \
+                  --set BKPR_ZELLIJ ${zellij}/bin/zellij \
                   --prefix PATH : ${
                     pkgs.lib.makeBinPath [
                       pkgs.git
@@ -152,19 +152,19 @@
         in
         {
           default = product;
-          shephrd = product;
-          shephrd-native = native;
-          shephrd-zellij = plugin;
+          bkpr = product;
+          bkpr-native = native;
+          bkpr-zellij = plugin;
         }
       );
 
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.shephrd}/bin/shephrd";
-          meta.description = "Launch shephrd with native Zellij terminals and its bundled sidebar";
+          program = "${self.packages.${system}.bkpr}/bin/bkpr";
+          meta.description = "Launch bkpr with native Zellij terminals and its bundled sidebar";
         };
-        shephrd = self.apps.${system}.default;
+        bkpr = self.apps.${system}.default;
       });
 
       devShells = forAllSystems (
@@ -187,12 +187,12 @@
               pkgs.openssl
               pkgs.curl
             ];
-            SHEPHRD_ZELLIJ = "${zellij}/bin/zellij";
-            SHEPHRD_ZELLIJ_VENDOR = pkgs.zellij-unwrapped.cargoDeps;
+            BKPR_ZELLIJ = "${zellij}/bin/zellij";
+            BKPR_ZELLIJ_VENDOR = pkgs.zellij-unwrapped.cargoDeps;
             shellHook = ''
-              export SHEPHRD_PLUGIN="$PWD/target/wasm32-wasip1/debug/shephrd-zellij.wasm"
+              export BKPR_PLUGIN="$PWD/target/wasm32-wasip1/debug/bkpr-zellij.wasm"
               if [ -x "$PWD/target/zellij-dev/target/debug/zellij" ]; then
-                export SHEPHRD_ZELLIJ="$PWD/target/zellij-dev/target/debug/zellij"
+                export BKPR_ZELLIJ="$PWD/target/zellij-dev/target/debug/zellij"
               fi
             '';
           };
