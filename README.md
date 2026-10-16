@@ -22,10 +22,9 @@ bkpr --session project
 
 The package includes the native launcher, WASM plugin, patched Zellij 0.45.1, Git and GitHub CLI. A Nerd Font is recommended for the sidebar icons. `bkpr --help` lists launch options, including the session name and initial sidebar width.
 
-Tagged revisions are built for x86_64/aarch64 Linux and aarch64 macOS and uploaded to [bkpr.cachix.org](https://bkpr.cachix.org). The pinned Nixpkgs no longer supports x86_64 macOS. After the tag's **Cache tagged packages** workflow succeeds, run a version or moving label without building Bkpr locally:
+Tagged revisions are built for x86_64/aarch64 Linux and aarch64 macOS and uploaded to [bkpr.cachix.org](https://bkpr.cachix.org). The pinned Nixpkgs no longer supports x86_64 macOS. After the `unstable` tag's **Cache tagged packages** workflow succeeds, run it without building Bkpr locally:
 
 ```sh
-nix run github:calops/bkpr/v0.1.0
 nix run github:calops/bkpr/unstable
 ```
 
@@ -138,13 +137,21 @@ claude --settings '{"tui":"fullscreen"}'
 
 This research-preview renderer handles conversation scrollback and selection inside Claude. Activity describes current work, not necessarily the original task. Successful completion can emit `done` without a summary, so the activity description clears.
 
-Bkpr adds a launch-local title hook for supported interactive `claude` invocations. It supplies a first-prompt fallback label without replacing later native titles or explicit Bkpr renames. Resume/continue, noninteractive invocations and explicit settings files pass through unchanged. Aliases, shell functions and absolute executable paths can bypass it. `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` disables the supplementation too. The hook doesn't change global settings, credentials, permission policy or semantic status.
+Bkpr adds a launch-local title hook for supported interactive `claude` invocations. It supplies a first-prompt fallback label without replacing later native titles or explicit Bkpr renames. Resume/continue and noninteractive invocations do not receive this title hook. Aliases, shell functions and absolute executable paths can bypass the wrapper. `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` disables title supplementation. The hook doesn't change global settings, credentials, permission policy or semantic status.
 
 ### Other harnesses
 
-Run `omp` directly with version 18.8.7 or newer and native program status enabled. Bkpr doesn't inject an extension or configure an adapter for older versions.
+Run `omp` directly with version 18.8.7 or newer and native program status enabled. Semantic status still comes from omp's native reports, not Bkpr's communication adapter.
 
 Antigravity is recognition-only. Bkpr doesn't wrap `agy`/`antigravity`, install callbacks, edit settings or redirect its profile. Other recognition-only harnesses also need native semantic reports before their status can be shown.
+
+### Agent communication (experimental)
+
+Fresh Bkpr sessions supply launch-local wrappers for `claude`, `omp` and `codex`. Each supported interactive launch receives its own authenticated agent ID and a Bkpr MCP server without changing user-level harness settings. The MCP tools allow agents to inspect their identity, discover peers, send messages, read their durable inbox, acknowledge messages and change their short title. Discovery is scoped to the canonical Git worktree (or directory outside Git); agents can explicitly request wider discovery. Peer records include harness, title, Git project and branch, and available PR and ticket titles. Messages carry broker-authenticated sender identity; receiving a notification does not itself acknowledge or erase a message.
+
+Claude uses the experimental MCP Channel notification and requires the user's channel consent and an organization policy that permits it. Omp uses a launch-local extension to schedule a follow-up turn from an MCP notification. Codex uses its native remote queue after a trusted `SessionStart` hook has associated its session with the Bkpr agent. These mechanisms do not type into a user's input field; Codex's queue nevertheless presents a message pointer as an internal user-role input. Notifications contain a pointer, not the full peer message: agents use the MCP inbox to read and acknowledge the body. Delivery and wake-up are separate; pending messages survive a harness exit.
+
+Wrappers are found through the managed session's `PATH`, not through aliases or absolute executable paths. Already-running processes and sessions created before these wrappers are installed do not gain them retroactively. Interactive consent and trust requirements cannot be bypassed by Bkpr.
 
 ## Develop
 
