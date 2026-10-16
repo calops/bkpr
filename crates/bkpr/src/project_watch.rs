@@ -389,6 +389,7 @@ mod linux {
         if json.len() > bkpr::MAX_MESSAGE_BYTES {
             bail!("project update exceeds message limit");
         }
+        let socket_dir = launcher::zellij_socket_dir()?;
         let mut command =
             Command::new(std::env::var_os("BKPR_ZELLIJ").unwrap_or_else(|| "zellij".into()));
         command.args([
@@ -400,6 +401,7 @@ mod linux {
             "--",
             &json,
         ]);
+        command.env("ZELLIJ_SOCKET_DIR", socket_dir);
         let output = run_output(&mut command, None, Duration::from_secs(2))?;
         check_output(&output, "publish native Git metadata")
     }

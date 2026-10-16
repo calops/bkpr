@@ -1,0 +1,11 @@
+--- a/zellij-utils/src/cli.rs
++++ b/zellij-utils/src/cli.rs
+@@ -53,7 +53,7 @@
+ 
+ #[derive(Parser, Default, Debug, Clone, Serialize, Deserialize)]
+ #[clap(
+-    version,
++    version = "0.45.1-bkpr.1",
+     name = "zellij",
+     about = "A terminal workspace with batteries included",
+     styles = CLI_STYLES,
