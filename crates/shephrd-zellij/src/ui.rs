@@ -657,7 +657,7 @@ fn request_row(request: &shephrd::ci_contract::ChangeRequest) -> PopupRow {
     PopupRow {
         spans: vec![
             PopupSpan::new(
-                request_presentation(request.state).0,
+                format!("{} ", request_presentation(request.state).0),
                 PopupColor::ChangeRequest(request.state),
             ),
             PopupSpan::new(request.title.clone(), PopupColor::Text),
@@ -2588,18 +2588,6 @@ mod tests {
             );
             assert!(!rows.iter().any(|row| row.plain().contains("origin/main")));
         }
-    }
-
-    #[test]
-    fn request_title_directly_follows_the_status_glyph_without_added_spacing() {
-        let snapshot = ci(CiStatus::Passed);
-        let request = snapshot.change_request.as_ref().unwrap();
-        let row = request_row(request);
-        assert_eq!(row.spans[0].text, request_presentation(request.state).0);
-        assert_eq!(
-            row.plain(),
-            format!("{}{}", request_presentation(request.state).0, request.title)
-        );
     }
 
     #[test]
