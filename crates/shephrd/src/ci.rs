@@ -55,7 +55,18 @@ pub(crate) fn discover(cwd: &Path, branch: Option<&str>) -> Option<CiSource> {
         return None;
     }
     let branch = branch.filter(|branch| !branch.starts_with("detached @ "));
-    let remote = branch
+    let remote = push_remote(cwd, branch);
+    let url = crate::project::git_text(cwd, &["remote", "get-url", &remote])?;
+    let repository = github::repository(&url)?;
+    Some(CiSource {
+        repository,
+        sha,
+        branch: branch.map(str::to_owned),
+    })
+}
+
+pub(crate) fn push_remote(cwd: &Path, branch: Option<&str>) -> String {
+    branch
         .and_then(|branch| {
             crate::project::git_text(
                 cwd,
@@ -71,19 +82,13 @@ pub(crate) fn discover(cwd: &Path, branch: Option<&str>) -> Option<CiSource> {
                 )
             })
         })
-        .unwrap_or_else(|| "origin".to_owned());
-    let url = crate::project::git_text(cwd, &["remote", "get-url", &remote])?;
-    let repository = github::repository(&url)?;
-    Some(CiSource {
-        repository,
-        sha,
-        branch: branch.map(str::to_owned),
-    })
+        .unwrap_or_else(|| "origin".to_owned())
 }
 
 const BATCH: usize = 16;
+const MIN_REQUEST_SECONDS: u64 = 2;
 const ACTIVE_SECONDS: u64 = 60;
-const IDLE_SECONDS: u64 = 300;
+const ERROR_RETRY_SECONDS: u64 = 300;
 const DEADLINE_SECONDS: u64 = 20;
 
 fn empty(source: &CiSource, now: u64) -> CiSnapshot {
@@ -99,6 +104,7 @@ fn empty(source: &CiSource, now: u64) -> CiSnapshot {
         head_sha: source.sha.clone(),
         branch: source.branch.clone(),
         truncated: false,
+        commit_missing: false,
     }
 }
 
@@ -123,7 +129,7 @@ mod linux {
     struct Entry {
         snapshot: CiSnapshot,
         due: Option<Instant>,
-        manual: bool,
+        eager: bool,
     }
     struct Pending {
         child: Child,
@@ -179,15 +185,82 @@ mod linux {
                 // Retire removed identities, including A→B→A, but not unrelated new consumers.
                 self.pending = None;
             }
-            self.entries.retain(|source, _| wanted.contains(source));
-            for source in wanted {
-                self.entries.entry(source.clone()).or_insert_with(|| Entry {
-                    snapshot: empty(&source, 0),
-                    due: Some(Instant::now()),
-                    manual: false,
+            for source in &wanted {
+                if self.entries.contains_key(source) {
+                    continue;
+                }
+                let mut snapshot = empty(source, 0);
+                // Only a retired HEAD on the same named branch can lend its PR
+                // association. Commit checks and completed PRs never cross SHAs.
+                let mut previous = self.entries.iter().filter(|(old, entry)| {
+                    !wanted.contains(*old)
+                        && old.repository == source.repository
+                        && old.branch == source.branch
+                        && source.branch.is_some()
+                        && entry
+                            .snapshot
+                            .change_request
+                            .as_ref()
+                            .is_some_and(|request| {
+                                matches!(
+                                    request.state,
+                                    shephrd::ci_contract::ChangeRequestState::Open
+                                        | shephrd::ci_contract::ChangeRequestState::Draft
+                                )
+                            })
                 });
+                if let Some((_, entry)) = previous.next()
+                    && previous.next().is_none()
+                {
+                    snapshot.change_request = entry.snapshot.change_request.clone();
+                    snapshot.updated_at = entry.snapshot.updated_at;
+                    snapshot.stale = true;
+                    snapshot.error = Some("Refreshing branch metadata for the new commit".into());
+                }
+                self.entries.insert(
+                    source.clone(),
+                    Entry {
+                        snapshot,
+                        due: Some(Instant::now()),
+                        eager: true,
+                    },
+                );
+            }
+            self.entries.retain(|source, _| wanted.contains(source));
+        }
+        pub(crate) fn restore(&mut self, source: &CiSource, snapshot: CiSnapshot) {
+            if snapshot.repository != source.repository
+                || snapshot.head_sha != source.sha
+                || snapshot.branch != source.branch
+            {
+                return;
+            }
+            let Some(entry) = self.entries.get_mut(source) else {
+                return;
+            };
+            if entry.snapshot.updated_at != 0 || entry.snapshot.fetch_state != CiFetchState::Loading
+            {
+                return;
+            }
+            entry.due = if final_snapshot(&snapshot) {
+                None
+            } else {
+                Some(Instant::now())
+            };
+            entry.snapshot = snapshot;
+        }
+
+        pub(crate) fn published(&mut self, source: &CiSource) {
+            if let Some(entry) = self.entries.get_mut(source)
+                && entry.due.is_none()
+                && entry.snapshot.checks.is_empty()
+            {
+                entry.due = Some(Instant::now());
+                entry.eager = true;
+                refreshing(&mut entry.snapshot);
             }
         }
+
         pub(crate) fn invalidate(&mut self, source: &CiSource) {
             // Same-HEAD Git activity cannot revive a complete result. Source changes
             // are handled by sync, which also cancels requests for retired identities.
@@ -197,7 +270,8 @@ mod linux {
                 if entry.snapshot.fetch_state == CiFetchState::Unavailable {
                     return;
                 }
-                entry.due = Some(Instant::now());
+                // Git watcher activity on an unchanged HEAD does not shorten the
+                // CI polling interval. Cold loads, pushes and explicit refresh are separate.
                 refreshing(&mut entry.snapshot);
             }
         }
@@ -216,7 +290,7 @@ mod linux {
                 // session's minimum spacing or a hard provider rate-limit deadline.
                 if entry.snapshot.fetch_state != CiFetchState::Loading {
                     entry.due = Some(Instant::now());
-                    entry.manual = true;
+                    entry.eager = true;
                     refreshing(&mut entry.snapshot);
                 }
             }
@@ -240,7 +314,7 @@ mod linux {
                         .filter_map(|entry| {
                             entry.due.map(|due| {
                                 let due = due.max(self.next_request);
-                                if entry.manual {
+                                if entry.eager {
                                     due
                                 } else {
                                     due.max(self.retry_request)
@@ -271,24 +345,9 @@ mod linux {
                 };
                 self.finish(&pending.sources, result);
             }
-            if self.pending.is_some() || now < self.next_request {
-                return;
-            }
-            let sources = self.due_batch(now);
+            let sources = self.reserve_batch(now);
             if sources.is_empty() {
                 return;
-            }
-            self.next_request = now + Duration::from_secs(ACTIVE_SECONDS);
-            self.requests += 1;
-            eprintln!(
-                "CI batch {}: {} logical targets",
-                self.requests,
-                sources.len()
-            );
-            for source in &sources {
-                if let Some(entry) = self.entries.get_mut(source) {
-                    refreshing(&mut entry.snapshot);
-                }
             }
             match start(&sources) {
                 Ok(pending) => self.pending = Some(pending),
@@ -298,13 +357,34 @@ mod linux {
                 ),
             }
         }
+        fn reserve_batch(&mut self, now: Instant) -> Vec<CiSource> {
+            if self.pending.is_some() || now < self.next_request {
+                return Vec::new();
+            }
+            let sources = self.due_batch(now);
+            if !sources.is_empty() {
+                self.next_request = now + Duration::from_secs(MIN_REQUEST_SECONDS);
+                self.requests += 1;
+                eprintln!(
+                    "CI batch {}: {} logical targets",
+                    self.requests,
+                    sources.len()
+                );
+                for source in &sources {
+                    if let Some(entry) = self.entries.get_mut(source) {
+                        refreshing(&mut entry.snapshot);
+                    }
+                }
+            }
+            sources
+        }
         fn due_batch(&self, now: Instant) -> Vec<CiSource> {
             let mut due: Vec<_> = self
                 .entries
                 .iter()
                 .filter(|(_, entry)| {
                     entry.due.is_some_and(|due| due <= now)
-                        && (entry.manual || now >= self.retry_request)
+                        && (entry.eager || now >= self.retry_request)
                 })
                 .collect();
             due.sort_by_key(|(_, entry)| entry.due);
@@ -374,22 +454,13 @@ mod linux {
                         ))
                     }),
                 };
-                entry.manual = false;
+                entry.eager = false;
                 match result {
                     Ok(snapshot) => {
-                        let active = snapshot.checks.iter().any(|check| {
-                            matches!(check.status, CiStatus::Pending | CiStatus::Running)
-                        });
                         entry.due = if final_snapshot(&snapshot) {
                             None
                         } else {
-                            Some(
-                                now + Duration::from_secs(if active {
-                                    ACTIVE_SECONDS
-                                } else {
-                                    IDLE_SECONDS
-                                }),
-                            )
+                            Some(now + Duration::from_secs(ACTIVE_SECONDS))
                         };
                         entry.snapshot = snapshot;
                     }
@@ -401,7 +472,7 @@ mod linux {
                         let delay = match error.retry {
                             RetryPolicy::Authentication => 1800,
                             RetryPolicy::RateLimited => 3600,
-                            RetryPolicy::Normal => IDLE_SECONDS,
+                            RetryPolicy::Normal => ERROR_RETRY_SECONDS,
                         };
                         entry.due = Some(self.next_request.max(now + Duration::from_secs(delay)));
                     }
@@ -415,17 +486,18 @@ mod linux {
     }
 
     fn final_snapshot(snapshot: &CiSnapshot) -> bool {
-        snapshot.fetch_state == CiFetchState::Ready
-            && !snapshot.stale
-            && snapshot.error.is_none()
+        !snapshot.stale
             && !snapshot.truncated
-            && !snapshot.checks.is_empty()
-            && snapshot.checks.iter().all(|check| {
-                matches!(
-                    check.status,
-                    CiStatus::Passed | CiStatus::Failed | CiStatus::Cancelled | CiStatus::Skipped
-                )
-            })
+            && if snapshot.commit_missing {
+                snapshot.fetch_state == CiFetchState::Unavailable && snapshot.checks.is_empty()
+            } else {
+                snapshot.fetch_state == CiFetchState::Ready
+                    && snapshot.error.is_none()
+                    && snapshot
+                        .checks
+                        .iter()
+                        .all(|check| matches!(check.status, CiStatus::Passed | CiStatus::Skipped))
+            }
     }
 
     fn refreshing(snapshot: &mut CiSnapshot) {
@@ -653,11 +725,122 @@ mod linux {
         }
 
         #[test]
+        fn cold_sources_use_short_spacing_without_accelerating_existing_poll_timers() {
+            for status in [CiStatus::Running, CiStatus::Unknown, CiStatus::Passed] {
+                for new_repository in [false, true] {
+                    let mut monitor = Monitor::new();
+                    let old = source("existing");
+                    monitor.sync([old.clone()].into_iter());
+                    let first = Instant::now();
+                    assert_eq!(monitor.reserve_batch(first), vec![old.clone()]);
+                    finish_snapshot(&mut monitor, &old, complete_snapshot(&old, &[status]));
+                    let old_due = monitor.entries[&old].due;
+                    let spacing = first + Duration::from_secs(MIN_REQUEST_SECONDS);
+                    assert_eq!(monitor.next_request, spacing);
+
+                    let mut cold = source("cold");
+                    cold.branch = Some("new-worktree".into());
+                    if new_repository {
+                        cold.repository =
+                            github::repository("https://github.com/owner/another").unwrap();
+                    }
+                    monitor.sync([old.clone(), cold.clone()].into_iter());
+                    assert!(monitor.timeout() <= 2_000);
+                    assert!(monitor.reserve_batch(first).is_empty());
+                    assert_eq!(monitor.reserve_batch(spacing), vec![cold.clone()]);
+                    finish_snapshot(
+                        &mut monitor,
+                        &cold,
+                        complete_snapshot(&cold, &[CiStatus::Passed]),
+                    );
+                    for _ in 0..4 {
+                        monitor.invalidate(&old);
+                        monitor.sync([old.clone(), cold.clone()].into_iter());
+                        assert_eq!(monitor.entries[&old].due, old_due);
+                    }
+                    assert!(
+                        monitor
+                            .reserve_batch(spacing + Duration::from_secs(MIN_REQUEST_SECONDS))
+                            .is_empty()
+                    );
+                    assert_eq!(monitor.requests, 2);
+                    if let Some(due) = old_due {
+                        let interval = ACTIVE_SECONDS;
+                        assert!(due >= first + Duration::from_secs(interval));
+                        assert_eq!(monitor.due_batch(due), vec![old]);
+                    } else {
+                        assert_eq!(monitor.timeout(), -1);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn head_changes_carry_only_same_branch_open_pr_metadata_not_commit_results() {
+            for state in ["open", "draft", "closed", "merged"] {
+                for identity_change in 0..4 {
+                    let mut monitor = Monitor::new();
+                    let mut old = source("old");
+                    if identity_change == 3 {
+                        old.branch = None;
+                    }
+                    monitor.sync([old.clone()].into_iter());
+                    let mut previous = complete_snapshot(&old, &[CiStatus::Passed]);
+                    previous.change_request = Some(
+                        serde_json::from_value(json!({
+                            "number": 42,
+                            "title": "Existing request",
+                            "url": "https://github.com/owner/repo/pull/42",
+                            "state": state,
+                            "issues": [{
+                                "provider": "linear",
+                                "identifier": "ENG-42",
+                                "title": null,
+                                "url": "https://linear.app/team/issue/ENG-42"
+                            }]
+                        }))
+                        .unwrap(),
+                    );
+                    finish_snapshot(&mut monitor, &old, previous.clone());
+                    let mut new = old.clone();
+                    new.sha = "new".into();
+                    match identity_change {
+                        1 => new.branch = Some("another-branch".into()),
+                        2 => {
+                            new.repository =
+                                github::repository("https://github.com/owner/another").unwrap();
+                        }
+                        _ => {}
+                    }
+                    monitor.sync([new.clone()].into_iter());
+                    finish_snapshot(&mut monitor, &old, previous.clone());
+                    let current = monitor.snapshot(&new).unwrap();
+                    assert_eq!(current.head_sha, new.sha);
+                    assert_eq!(current.status, CiStatus::Unknown);
+                    assert!(current.checks.is_empty());
+                    assert_eq!(current.fetch_state, CiFetchState::Loading);
+                    assert_eq!(monitor.due_batch(Instant::now()), vec![new]);
+                    if identity_change == 0 && matches!(state, "open" | "draft") {
+                        assert_eq!(current.change_request, previous.change_request);
+                        assert_eq!(current.updated_at, previous.updated_at);
+                        assert!(current.stale);
+                        assert!(current.error.is_some());
+                    } else {
+                        assert!(current.change_request.is_none());
+                        assert_eq!(current.updated_at, 0);
+                        assert!(!current.stale);
+                    }
+                }
+            }
+        }
+
+        #[test]
         fn only_complete_known_terminal_check_sets_stop_the_clock() {
             let source = source("final");
             for statuses in [
                 vec![CiStatus::Passed],
-                vec![CiStatus::Failed, CiStatus::Cancelled, CiStatus::Skipped],
+                vec![CiStatus::Passed, CiStatus::Skipped],
+                vec![],
             ] {
                 let mut monitor = Monitor::new();
                 monitor.sync([source.clone()].into_iter());
@@ -674,11 +857,12 @@ mod linux {
                 assert!(!monitor.snapshot(&source).unwrap().stale);
             }
             for statuses in [
-                vec![],
+                vec![CiStatus::Failed],
                 vec![CiStatus::Unknown],
                 vec![CiStatus::NoChecks],
                 vec![CiStatus::Failed, CiStatus::Running],
                 vec![CiStatus::Failed, CiStatus::Pending],
+                vec![CiStatus::Cancelled],
             ] {
                 let mut monitor = Monitor::new();
                 monitor.sync([source.clone()].into_iter());
@@ -686,9 +870,7 @@ mod linux {
                 let due = monitor.entries[&source].due.unwrap();
                 assert!(due > Instant::now());
                 assert!(monitor.timeout() >= 0);
-                if statuses.contains(&CiStatus::Running) || statuses.contains(&CiStatus::Pending) {
-                    assert!(due <= Instant::now() + Duration::from_secs(ACTIVE_SECONDS));
-                }
+                assert!(due <= Instant::now() + Duration::from_secs(ACTIVE_SECONDS));
             }
             for variant in 0..4 {
                 let mut snapshot = complete_snapshot(&source, &[CiStatus::Passed]);
@@ -706,6 +888,146 @@ mod linux {
         }
 
         #[test]
+        fn restored_current_results_freeze_only_fresh_green_or_no_checks() {
+            let source = source("cached");
+            for statuses in [
+                vec![],
+                vec![CiStatus::Passed, CiStatus::Skipped],
+                vec![CiStatus::Failed],
+                vec![CiStatus::Cancelled],
+                vec![CiStatus::Running],
+            ] {
+                for variant in 0..5 {
+                    let mut monitor = Monitor::new();
+                    monitor.sync([source.clone()].into_iter());
+                    let mut snapshot = complete_snapshot(&source, &statuses);
+                    match variant {
+                        1 => snapshot.stale = true,
+                        2 => snapshot.error = Some("cached error".into()),
+                        3 => snapshot.truncated = true,
+                        4 => snapshot.fetch_state = CiFetchState::Unavailable,
+                        _ => {}
+                    }
+                    let frozen = variant == 0
+                        && statuses
+                            .iter()
+                            .all(|status| matches!(status, CiStatus::Passed | CiStatus::Skipped));
+                    monitor.restore(&source, snapshot.clone());
+                    assert_eq!(monitor.snapshot(&source), Some(snapshot));
+                    assert_eq!(monitor.entries[&source].due.is_none(), frozen);
+                    assert_eq!(monitor.due_batch(Instant::now()).is_empty(), frozen);
+                }
+            }
+            for mismatch in 0..3 {
+                let mut monitor = Monitor::new();
+                monitor.sync([source.clone()].into_iter());
+                let mut cached = complete_snapshot(&source, &[CiStatus::Passed]);
+                match mismatch {
+                    0 => cached.head_sha = "other".into(),
+                    1 => cached.branch = Some("other".into()),
+                    _ => {
+                        cached.repository =
+                            github::repository("https://github.com/owner/another").unwrap();
+                    }
+                }
+                monitor.restore(&source, cached);
+                assert_eq!(monitor.snapshot(&source), Some(empty(&source, 0)));
+            }
+        }
+
+        #[test]
+        fn confirmed_publication_requeues_only_no_check_results_and_respects_spacing() {
+            let source = source("published");
+            for statuses in [vec![], vec![CiStatus::Passed], vec![CiStatus::Running]] {
+                let mut monitor = Monitor::new();
+                monitor.sync([source.clone()].into_iter());
+                let now = Instant::now();
+                monitor.reserve_batch(now);
+                finish_snapshot(&mut monitor, &source, complete_snapshot(&source, &statuses));
+                let due = monitor.entries[&source].due;
+                monitor.invalidate(&source);
+                assert_eq!(monitor.entries[&source].due, due);
+                monitor.published(&source);
+                if statuses.is_empty() {
+                    assert!(monitor.entries[&source].due.is_some());
+                    assert!(monitor.reserve_batch(now).is_empty());
+                    assert_eq!(
+                        monitor.reserve_batch(now + Duration::from_secs(MIN_REQUEST_SECONDS)),
+                        vec![source.clone()]
+                    );
+                } else {
+                    assert_eq!(monitor.entries[&source].due, due);
+                }
+            }
+        }
+
+        #[test]
+        fn unpublished_commits_stay_idle_including_after_restore_until_confirmed_push() {
+            let source = source("unpublished");
+            let mut monitor = Monitor::new();
+            monitor.sync([source.clone()].into_iter());
+            monitor.finish_fixture(
+                std::slice::from_ref(&source),
+                Ok(json!({
+                    "data": {
+                        "r0": {
+                            "object": null,
+                            "b0": {"associatedPullRequests": {
+                                "nodes": [], "pageInfo": {"hasNextPage": false}
+                            }},
+                            "c0": {"nodes": []}
+                        },
+                        "rateLimit": {"remaining": 5000}
+                    }
+                })),
+            );
+            let unpublished = monitor.snapshot(&source).unwrap();
+            assert!(unpublished.commit_missing);
+            assert_eq!(unpublished.fetch_state, CiFetchState::Unavailable);
+            assert!(unpublished.checks.is_empty());
+            assert_eq!(monitor.timeout(), -1);
+            monitor.invalidate(&source);
+            assert_eq!(monitor.timeout(), -1);
+
+            let mut restored = Monitor::new();
+            restored.sync([source.clone()].into_iter());
+            restored.restore(&source, unpublished.clone());
+            assert_eq!(restored.snapshot(&source), Some(unpublished));
+            assert_eq!(restored.timeout(), -1);
+            restored.published(&source);
+            assert_eq!(restored.reserve_batch(Instant::now()), vec![source]);
+        }
+
+        #[test]
+        fn cold_loads_bypass_unrelated_soft_errors_but_never_hard_provider_limits() {
+            let mut monitor = Monitor::new();
+            let old = source("old");
+            let cold = source("cold");
+            monitor.sync([old.clone()].into_iter());
+            monitor.finish_fixture(
+                std::slice::from_ref(&old),
+                Err(FetchError {
+                    message: "Repository authentication unavailable".into(),
+                    retry: RetryPolicy::Authentication,
+                }),
+            );
+            monitor.sync([old.clone(), cold.clone()].into_iter());
+            let now = Instant::now();
+            assert_eq!(monitor.reserve_batch(now), vec![cold.clone()]);
+            assert!(monitor.entries[&old].due.unwrap() > now);
+            let mut next = source("next");
+            next.branch = Some("another".into());
+            monitor.sync([old, cold, next].into_iter());
+            monitor.next_request = now + Duration::from_secs(3600);
+            assert!(
+                monitor
+                    .reserve_batch(now + Duration::from_secs(2))
+                    .is_empty()
+            );
+            assert!(monitor.timeout() >= 3_599_000);
+        }
+
+        #[test]
         fn manual_refresh_shares_commit_coalesces_and_returns_to_frozen_after_rerun() {
             let mut monitor = Monitor::new();
             let source = source("same");
@@ -714,7 +1036,7 @@ mod linux {
             monitor.sync([source.clone(), linked.clone()].into_iter());
             let snapshot = complete_snapshot(&source, &[CiStatus::Passed]);
             finish_snapshot(&mut monitor, &source, snapshot.clone());
-            monitor.next_request = Instant::now() + Duration::from_secs(ACTIVE_SECONDS);
+            monitor.next_request = Instant::now() + Duration::from_secs(MIN_REQUEST_SECONDS);
             let budget = monitor.next_request;
             monitor.refresh(&target(&source));
             let due = monitor.entries[&source].due;
@@ -732,7 +1054,7 @@ mod linux {
                 assert_eq!(current.checks, snapshot.checks);
                 assert!(current.stale);
                 assert!(current.error.is_some());
-                assert!(monitor.entries[subscriber].manual);
+                assert!(monitor.entries[subscriber].eager);
             }
             finish_snapshot(
                 &mut monitor,
@@ -740,14 +1062,14 @@ mod linux {
                 complete_snapshot(&source, &[CiStatus::Running]),
             );
             assert!(monitor.entries[&source].due.is_some());
-            assert!(!monitor.entries[&source].manual);
+            assert!(!monitor.entries[&source].eager);
             finish_snapshot(&mut monitor, &source, snapshot);
             assert!(monitor.entries.values().all(|entry| entry.due.is_none()));
             assert_eq!(monitor.timeout(), -1);
         }
 
         #[test]
-        fn manual_refresh_bypasses_soft_retries_but_not_hard_provider_or_minute_budget() {
+        fn manual_refresh_bypasses_soft_retries_but_not_hard_provider_or_minimum_spacing() {
             for retry in [
                 RetryPolicy::Authentication,
                 RetryPolicy::Normal,
@@ -756,7 +1078,7 @@ mod linux {
                 let mut monitor = Monitor::new();
                 let source = source("retry");
                 monitor.sync([source.clone()].into_iter());
-                monitor.next_request = Instant::now() + Duration::from_secs(ACTIVE_SECONDS);
+                monitor.next_request = Instant::now() + Duration::from_secs(MIN_REQUEST_SECONDS);
                 monitor.finish(
                     std::slice::from_ref(&source),
                     Err(FetchError {
@@ -776,7 +1098,7 @@ mod linux {
                 if matches!(retry, RetryPolicy::RateLimited) {
                     assert!(monitor.timeout() >= 3_599_000);
                 } else {
-                    assert!(monitor.timeout() <= 60_000);
+                    assert!(monitor.timeout() <= 2_000);
                     assert_eq!(monitor.due_batch(hard), vec![source]);
                 }
             }
@@ -831,7 +1153,7 @@ mod linux {
         fn initial_metadata_is_loading_even_when_the_shared_budget_defers_io() {
             let mut monitor = Monitor::new();
             let source = source("abc");
-            monitor.next_request = Instant::now() + Duration::from_secs(ACTIVE_SECONDS);
+            monitor.next_request = Instant::now() + Duration::from_secs(MIN_REQUEST_SECONDS);
             monitor.sync([source.clone()].into_iter());
             monitor.advance();
             let snapshot = monitor.snapshot(&source).unwrap();
@@ -960,14 +1282,7 @@ mod linux {
                 assert_eq!(snapshot.branch, subscriber.branch);
                 assert_eq!(snapshot.change_request.unwrap().number, number);
             }
-            assert!(
-                monitor.entries[&new]
-                    .due
-                    .unwrap()
-                    .saturating_duration_since(Instant::now())
-                    .as_secs()
-                    >= 299
-            );
+            assert!(monitor.entries[&new].due.is_none());
         }
 
         #[test]
@@ -1058,7 +1373,7 @@ mod linux {
             // A subscriber's own later timer must not exclude its branch metadata
             // when another subscriber has already made their shared commit due.
             monitor.entries.get_mut(&linked).unwrap().due =
-                Some(Instant::now() + Duration::from_secs(IDLE_SECONDS));
+                Some(Instant::now() + Duration::from_secs(ACTIVE_SECONDS));
             let batch = monitor.due_batch(Instant::now());
             assert_eq!(batch.len(), BATCH + 1);
             let commits: BTreeSet<_> = batch
@@ -1077,9 +1392,8 @@ mod linux {
                     retry: RetryPolicy::Authentication,
                 }),
             );
-            for _ in 0..100 {
-                monitor.advance();
-            }
+            monitor.sync(batch.into_iter());
+            assert!(monitor.reserve_batch(Instant::now()).is_empty());
             assert_eq!(monitor.requests, 0);
             assert_eq!(monitor.fd(), -1);
         }

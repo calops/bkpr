@@ -1,11 +1,10 @@
 //! GitHub transport and response normalization; no provider protocol escapes this module.
 use super::{BatchResponse, CiSource, FetchError, RetryPolicy, empty, same_commit};
-use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use scraper::{Html, Selector};
 use serde_json::{Value, json};
 use shephrd::ci_contract::{
-    ChangeRequest, ChangeRequestState, CiCheck, CiFetchState, CiSnapshot, CiStatus, ForgeProvider,
-    ForgeRepository, IssueTracker, LinkedIssue,
+    ChangeRequest, ChangeRequestBase, ChangeRequestState, CiCheck, CiFetchState, CiSnapshot,
+    CiStatus, ForgeProvider, ForgeRepository, IssueTracker, LinkedIssue,
 };
 
 pub(super) fn repository(url: &str) -> Option<ForgeRepository> {
@@ -50,7 +49,7 @@ fn query(sources: &[CiSource]) -> String {
         query.push_str(&format!("r{index}:repository(owner:{owner},name:{name}) {{ object(expression:{sha}) {{ ... on Commit {{ ", owner=json!(owner), name=json!(name), sha=json!(source.sha)));
         query.push_str("oid statusCheckRollup { state contexts(first:100) { nodes { __typename ... on CheckRun { name status conclusion detailsUrl startedAt completedAt } ... on StatusContext { context state targetUrl } } pageInfo { hasNextPage } } }");
         query.push_str(" } } ");
-        const PR_FIELDS: &str = "number title url body bodyHTML comments(first:10) { nodes { bodyHTML } } isDraft state updatedAt headRefOid headRefName headRepository { nameWithOwner }";
+        const PR_FIELDS: &str = "number title url body comments(first:10) { nodes { bodyHTML } } isDraft state updatedAt headRefOid headRefName headRepository { nameWithOwner } baseRefName baseRefOid repository { nameWithOwner url }";
         for (branch_index, branch_source) in sources.iter().enumerate() {
             if !same_commit(source, branch_source) {
                 continue;
@@ -219,14 +218,15 @@ fn insert_issue(issues: &mut Vec<LinkedIssue>, url: &str, label: &str, title: &s
     }
 }
 
-fn linked_issues(body: &str, html: &str) -> Vec<LinkedIssue> {
+#[cfg(test)]
+fn linked_issues(html: &str) -> Vec<LinkedIssue> {
     let mut issues = Vec::new();
-    collect_linked_issues(&mut issues, body, html);
+    collect_linked_issues(&mut issues, html);
     issues
 }
 
-fn collect_linked_issues(issues: &mut Vec<LinkedIssue>, body: &str, html: &str) {
-    // Bound parser work without truncating the description used by full-text search.
+fn collect_linked_issues(issues: &mut Vec<LinkedIssue>, html: &str) {
+    // Provider-rendered comment anchors supply canonical URLs, not guessed ticket IDs.
     fn bounded(text: &str) -> &str {
         let mut end = text.len().min(1024 * 1024);
         while !text.is_char_boundary(end) {
@@ -234,44 +234,7 @@ fn collect_linked_issues(issues: &mut Vec<LinkedIssue>, body: &str, html: &str) 
         }
         &text[..end]
     }
-    let body = bounded(body);
-    let mut link = None;
-    for event in Parser::new(body) {
-        match event {
-            Event::Start(Tag::Link {
-                dest_url, title, ..
-            }) => {
-                link = Some((dest_url, title, String::new()));
-            }
-            Event::Text(text) => {
-                if let Some((_, _, label)) = &mut link {
-                    label.push_str(&text);
-                } else {
-                    // Never accept a canonical-looking substring in another URL.
-                    for token in text.split_whitespace() {
-                        let url = token
-                            .trim_start_matches(['(', '[', '<'])
-                            .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '>']);
-                        insert_issue(issues, url, "", "");
-                    }
-                }
-            }
-            Event::Code(text) => {
-                if let Some((_, _, label)) = &mut link {
-                    label.push_str(&text);
-                }
-            }
-            Event::End(TagEnd::Link) => {
-                if let Some((url, title, label)) = link.take() {
-                    insert_issue(issues, &url, &label, &title);
-                }
-            }
-            _ => {}
-        }
-    }
-    // GitHub autolinks can resolve a raw ticket ID into a verified URL in bodyHTML.
-    // Raw HTML links in Markdown remain usable if rendered HTML is absent.
-    let document = Html::parse_fragment(if html.is_empty() { body } else { bounded(html) });
+    let document = Html::parse_fragment(bounded(html));
     let selector = Selector::parse("a[href]").expect("static anchor selector");
     for anchor in document.select(&selector) {
         let url = anchor.value().attr("href").unwrap_or_default();
@@ -288,6 +251,29 @@ fn collect_linked_issues(issues: &mut Vec<LinkedIssue>, body: &str, html: &str) 
     }
 }
 
+fn change_request_base(node: &Value) -> Option<ChangeRequestBase> {
+    let branch = node["baseRefName"].as_str()?.to_owned();
+    let commit = node["baseRefOid"].as_str()?.to_owned();
+    if branch.is_empty()
+        || !matches!(commit.len(), 40 | 64)
+        || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let repository = repository(node["repository"]["url"].as_str()?)?;
+    if !repository
+        .path
+        .eq_ignore_ascii_case(node["repository"]["nameWithOwner"].as_str()?)
+    {
+        return None;
+    }
+    Some(ChangeRequestBase {
+        branch,
+        commit,
+        repository,
+    })
+}
+
 fn change_request(node: &Value) -> Option<ChangeRequest> {
     let state = match node["state"].as_str()? {
         "OPEN" => match node["isDraft"].as_bool()? {
@@ -298,10 +284,7 @@ fn change_request(node: &Value) -> Option<ChangeRequest> {
         "CLOSED" => ChangeRequestState::Closed,
         _ => return None,
     };
-    let mut issues = linked_issues(
-        node["body"].as_str().unwrap_or_default(),
-        node["bodyHTML"].as_str().unwrap_or_default(),
-    );
+    let mut issues = Vec::new();
     for comment in node["comments"]["nodes"]
         .as_array()
         .into_iter()
@@ -310,7 +293,6 @@ fn change_request(node: &Value) -> Option<ChangeRequest> {
     {
         collect_linked_issues(
             &mut issues,
-            "",
             comment["bodyHTML"].as_str().unwrap_or_default(),
         );
     }
@@ -321,6 +303,7 @@ fn change_request(node: &Value) -> Option<ChangeRequest> {
         state,
         description: node["body"].as_str().unwrap_or_default().to_owned(),
         issues,
+        base: change_request_base(node),
     })
 }
 
@@ -394,6 +377,7 @@ fn parse(
     snapshot.fetch_state = CiFetchState::Ready;
     if commit["oid"].as_str() != Some(source.sha.as_str()) {
         snapshot.fetch_state = CiFetchState::Unavailable;
+        snapshot.commit_missing = true;
         snapshot.error = Some(
             "Current commit is not available on GitHub (not pushed or repository inaccessible)"
                 .into(),
@@ -683,7 +667,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_description_and_markdown_linear_links_survive_provider_normalization() {
+    fn request_description_and_comment_linear_links_survive_provider_normalization() {
         let body = "Searchable full description\n\n\
             [ENG-42 Fix **unicode** rendering](https://linear.app/work/issue/ENG-42/fix-rendering)\n\
             [ENG-43][ticket]\n\n\
@@ -691,6 +675,11 @@ mod tests {
             https://linear.app/work/issue/ENG-44/plain-url.";
         let mut node = pr(7, "OPEN", false, "2026-10-13T12:00:00Z");
         node["body"] = json!(body);
+        node["comments"] = json!({"nodes":[{"bodyHTML":
+            "<p><a href=\"https://linear.app/work/issue/ENG-42/fix-rendering\">ENG-42 Fix <b>unicode</b> rendering</a>\
+             <a href=\"https://linear.app/work/issue/ENG-43\" title=\"Preserve link titles\">ENG-43</a>\
+             <a href=\"https://linear.app/work/issue/ENG-44/plain-url\">ENG-44</a></p>"
+        }]});
         let snapshot = parse(&source(), &repository_result(vec![node], vec![]), 42, 0).unwrap();
         let request = snapshot.change_request.unwrap();
         assert_eq!(request.description, body);
@@ -727,7 +716,6 @@ mod tests {
     #[test]
     fn rendered_autolinks_supply_verified_urls_titles_and_html_entities() {
         let issues = linked_issues(
-            "Fixes ENG-42 and OPS-9, whose workspace cannot be inferred from this text",
             r#"<p><a href="https://linear.app/real-workspace/issue/ENG-42"
                 title="Fix &amp; simplify &quot;rendering&quot;"><span>ENG-42</span></a>
                 <a href='https://linear.app/other/issue/OPS-9'><b>OPS-9</b> Review &amp; ship</a></p>"#,
@@ -744,7 +732,7 @@ mod tests {
         assert_eq!(issues[1].title.as_deref(), Some("Review & ship"));
         let raw_html =
             r#"<a href="https://linear.app/work/issue/ENG-7"><b>ENG-7</b> HTML-only body</a>"#;
-        let issues = linked_issues(raw_html, "");
+        let issues = linked_issues(raw_html);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].url, "https://linear.app/work/issue/ENG-7");
         assert_eq!(issues[0].title.as_deref(), Some("HTML-only body"));
@@ -767,18 +755,16 @@ mod tests {
             "javascript:https://linear.app/work/issue/ENG-42",
         ] {
             assert!(linear_issue(url).is_none(), "{url}");
-            let markdown = format!("[ENG-42]({url})\n\n{url}");
             let html = format!("<a href='{url}'>ENG-42</a>");
-            assert!(linked_issues(&markdown, &html).is_empty(), "{url}");
+            assert!(linked_issues(&html).is_empty(), "{url}");
         }
         assert!(
             linked_issues(
-                "",
                 r#"<a href="https://linear.app/work/issue/ENG-42&#x0a;">Unsafe entity</a>"#
             )
             .is_empty()
         );
-        assert!(linked_issues("ENG-42 #42 Linear ENG-42", "<p>ENG-42</p>").is_empty());
+        assert!(linked_issues("<p>ENG-42 #42 Linear ENG-42</p>").is_empty());
         let request = change_request(&pr(7, "OPEN", false, "2026-10-13T12:00:00Z")).unwrap();
         assert!(request.description.is_empty());
         assert!(request.issues.is_empty());
@@ -787,9 +773,9 @@ mod tests {
     #[test]
     fn duplicate_issue_urls_merge_titles_but_not_different_workspaces() {
         let issues = linked_issues(
-            "https://linear.app/work/issue/ENG-42\n\n\
-             [ENG-42](https://linear.app/work/issue/ENG-42/pretty-slug/)",
-            r#"<a href="https://linear.app/work/issue/ENG-42?source=github"
+            r#"<a href="https://linear.app/work/issue/ENG-42">ENG-42</a>
+                <a href="https://linear.app/work/issue/ENG-42/pretty-slug/">ENG-42</a>
+                <a href="https://linear.app/work/issue/ENG-42?source=github"
                 title="Useful title">ENG-42</a>
                 <a href="https://linear.app/other/issue/ENG-42">Other workspace issue</a>"#,
         );
@@ -804,10 +790,16 @@ mod tests {
         let body = (1..=40)
             .map(|number| format!("https://linear.app/work/issue/ENG-{number}\n\n"))
             .collect::<String>();
-        assert_eq!(linked_issues(&body, "").len(), 32);
+        let html = (1..=40)
+            .map(|number| {
+                format!("<a href=\"https://linear.app/work/issue/ENG-{number}\">ENG-{number}</a>")
+            })
+            .collect::<String>();
+        assert_eq!(linked_issues(&html).len(), 32);
         let body = format!("{body}{} searchable-tail", "界".repeat(400_000));
         let mut node = pr(7, "OPEN", false, "2026-10-13T12:00:00Z");
         node["body"] = json!(body);
+        node["comments"] = json!({"nodes":[{"bodyHTML": html}]});
         let request = change_request(&node).unwrap();
         assert_eq!(request.description, body);
         assert_eq!(request.issues.len(), 32);
@@ -1000,9 +992,8 @@ mod tests {
     }
 
     #[test]
-    fn comments_share_safe_issue_deduplication_titles_and_bounds_with_description() {
+    fn comments_enforce_safe_hosts_workspace_identity_and_read_bounds() {
         let mut node = pr(7, "OPEN", false, "2026-10-13T12:00:00Z");
-        node["body"] = json!("https://linear.app/work/issue/ENG-42");
         let mut comments = vec![json!({"bodyHTML":
             "<a href='https://linear.app/work/issue/ENG-42/pretty'>ENG-42 Useful title</a>\
              <a href='https://linear.app/other/issue/ENG-42'>Other workspace</a>\
@@ -1013,10 +1004,6 @@ mod tests {
         node["comments"] = json!({"nodes":comments});
         let request = change_request(&node).unwrap();
         assert_eq!(request.issues.len(), 2);
-        assert_eq!(
-            request.issues[0].url,
-            "https://linear.app/work/issue/ENG-42"
-        );
         assert_eq!(request.issues[0].title.as_deref(), Some("Useful title"));
         assert_eq!(
             request.issues[1].url,
@@ -1035,10 +1022,10 @@ mod tests {
         unqueried.branch = Some("arrived-later".into());
         let sources = [first.clone(), second.clone(), detached.clone()];
         let mut main_pr = pr(7, "OPEN", true, "2026-10-13T12:00:00Z");
-        main_pr["body"] = json!("https://linear.app/work/issue/ENG-7");
+        main_pr["comments"] = json!({"nodes":[{"bodyHTML":"<a href='https://linear.app/work/issue/ENG-7'>Ticket</a>"}]});
         let mut other_pr = pr(8, "OPEN", false, "2026-10-13T12:00:00Z");
         other_pr["headRefName"] = json!("other");
-        other_pr["body"] = json!("https://linear.app/work/issue/ENG-8");
+        other_pr["comments"] = json!({"nodes":[{"bodyHTML":"<a href='https://linear.app/work/issue/ENG-8'>Ticket</a>"}]});
         let mut push = check(Value::Null, Value::Null);
         push["detailsUrl"] = json!("https://github.com/owner/repo/actions/runs/1");
         let mut pull_request = push.clone();
@@ -1165,6 +1152,68 @@ mod tests {
         );
         assert_eq!(batch.retry_after, Some(7200));
         assert_eq!(batch.results.len(), 16);
+    }
+
+    #[test]
+    fn authoritative_target_metadata_stays_in_the_existing_bounded_query() {
+        let query = query(&[source()]);
+        assert_eq!(query.matches("object(expression:").count(), 1);
+        assert!(query.contains("contexts(first:100)"));
+        assert!(query.contains("associatedPullRequests(states:OPEN,first:2)"));
+        assert_eq!(query.matches("comments(first:10)").count(), 2);
+        assert_eq!(
+            query
+                .matches("baseRefName baseRefOid repository { nameWithOwner url }")
+                .count(),
+            2
+        );
+        assert!(!query.contains("body bodyHTML"));
+        let mut node = pr(7, "OPEN", false, "2026-10-13T12:00:00Z");
+        node["baseRefName"] = json!("stack/parent");
+        node["baseRefOid"] = json!("1234567890abcdef1234567890abcdef12345678");
+        node["repository"] = json!({
+            "nameWithOwner":"upstream/project", "url":"https://github.com/upstream/project"
+        });
+        let request = change_request(&node).unwrap();
+        let base = request.base.unwrap();
+        assert_eq!(base.branch, "stack/parent");
+        assert_eq!(base.commit, "1234567890abcdef1234567890abcdef12345678");
+        assert_eq!(base.repository.path, "upstream/project");
+        node["baseRefOid"] = json!("--not-a-commit");
+        assert!(change_request(&node).unwrap().base.is_none());
+    }
+
+    #[test]
+    fn issue_association_is_comment_only_and_not_workspace_or_bot_specific() {
+        let body_url = "https://linear.app/body-team/issue/ENG-42";
+        let comment_url = "https://linear.app/another-workspace/issue/ENG-42/real-ticket";
+        let mut node = pr(7, "OPEN", false, "2026-10-13T12:00:00Z");
+        node["body"] = json!(format!("Body references {body_url}"));
+        node["bodyHTML"] = json!(format!("<a href=\"{body_url}\">ENG-42 Body reference</a>"));
+        let request = change_request(&node).unwrap();
+        assert!(request.issues.is_empty());
+        assert!(request.description.contains(body_url));
+        node["comments"] = json!({"nodes":[{
+            "author":{"login":"generic-tracker-bot"},
+            "bodyHTML":format!("<details><summary><a href=\"{comment_url}\">ENG-42 Real ticket</a></summary></details>")
+        }]});
+        let request = change_request(&node).unwrap();
+        assert_eq!(request.issues.len(), 1);
+        assert_eq!(request.issues[0].url, comment_url);
+        assert_eq!(request.issues[0].title.as_deref(), Some("Real ticket"));
+    }
+
+    #[test]
+    fn commit_availability_is_explicit_not_inferred_from_error_messages() {
+        let value = repository_result(Vec::new(), Vec::new());
+        assert!(!parse(&source(), &value, 42, 0).unwrap().commit_missing);
+        for object in [Value::Null, json!({"oid":"other"})] {
+            let mut missing = value.clone();
+            missing["object"] = object;
+            let snapshot = parse(&source(), &missing, 42, 0).unwrap();
+            assert!(snapshot.commit_missing);
+            assert_eq!(snapshot.fetch_state, CiFetchState::Unavailable);
+        }
     }
 
     #[cfg(target_os = "linux")]

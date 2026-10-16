@@ -665,6 +665,7 @@ mod tests {
                         title: Some("Prevent worker lockout".into()),
                         url: "https://linear.app/acme/issue/LIN-42".into(),
                     }],
+                    base: None,
                 }),
                 fetch_state: CiFetchState::Ready,
                 updated_at: 1,
@@ -679,6 +680,7 @@ mod tests {
                 head_sha: "deadbeef".into(),
                 branch: Some("feature/queues".into()),
                 truncated: false,
+                commit_missing: false,
             }),
         };
         let other = Pane {

@@ -45,6 +45,14 @@ pub struct LinkedIssue {
     pub url: String,
 }
 
+/// The provider's authoritative target, independent of any local branch name or remote.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ChangeRequestBase {
+    pub branch: String,
+    pub commit: String,
+    pub repository: ForgeRepository,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ChangeRequest {
     pub number: u64,
@@ -55,6 +63,8 @@ pub struct ChangeRequest {
     pub description: String,
     #[serde(default)]
     pub issues: Vec<LinkedIssue>,
+    #[serde(default)]
+    pub base: Option<ChangeRequestBase>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -132,6 +142,9 @@ pub struct CiSnapshot {
     pub branch: Option<String>,
     /// The bounded provider connection had additional results; never claim full success.
     pub truncated: bool,
+    /// The provider explicitly reported that this committed HEAD is not available.
+    #[serde(default)]
+    pub commit_missing: bool,
 }
 
 #[cfg(test)]
@@ -149,6 +162,7 @@ mod tests {
         .unwrap();
         assert!(request.description.is_empty());
         assert!(request.issues.is_empty());
+        assert!(request.base.is_none());
         let mut updated = request;
         updated.description = "Full request body".into();
         updated.issues.push(LinkedIssue {
@@ -156,6 +170,16 @@ mod tests {
             identifier: "ENG-42".into(),
             title: Some("Keep linked metadata".into()),
             url: "https://linear.app/team/issue/ENG-42/keep-metadata".into(),
+        });
+        updated.base = Some(ChangeRequestBase {
+            branch: "stack/parent".into(),
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            repository: ForgeRepository {
+                provider: ForgeProvider::Github,
+                host: "github.com".into(),
+                path: "owner/repo".into(),
+                web_url: "https://github.com/owner/repo".into(),
+            },
         });
         let restored: ChangeRequest =
             serde_json::from_value(serde_json::to_value(&updated).unwrap()).unwrap();
