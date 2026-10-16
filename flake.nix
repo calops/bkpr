@@ -87,6 +87,7 @@
               ./Cargo.lock
               ./LICENSE
               ./crates
+              ./integration/omp
             ];
           };
           native = rustPlatform.buildRustPackage {
