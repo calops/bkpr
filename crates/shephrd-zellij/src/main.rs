@@ -58,6 +58,9 @@ struct CachedKeyGuide {
     lines: Vec<String>,
     space: Option<GuideSpace>,
     overlay_ready: bool,
+    expanded_x: usize,
+    expanded_columns: usize,
+    expanded_rows: usize,
     reserved_rows: usize,
 }
 
@@ -157,6 +160,12 @@ struct Frontend {
     tree_cache: Vec<ui::TreeRow>,
     items: Vec<Item>,
     hover: Option<Item>,
+    pointer_position: Option<(isize, usize)>,
+    pointer_item: Option<Item>,
+    pointer_highlight: bool,
+    popup_hover: bool,
+    popup_probe: bool,
+    popup_probe_revision: Option<u64>,
     popup_item: Option<Item>,
     popup_cache: VecDeque<CachedPopup>,
     last_click: Option<(Item, Instant)>,
@@ -244,6 +253,7 @@ impl Frontend {
             self.request_mode(context.mode);
         }
         self.reconcile_viewport(false);
+        self.refresh_tooltip();
     }
 
     fn finder_pipe(&mut self, message: &PipeMessage) -> bool {
@@ -409,7 +419,6 @@ impl Frontend {
         if !self.granted
             || !self.visible
             || self.guide_mode()? == InputMode::Locked
-            || self.popup_item.is_some()
             || self.finder.is_open()
         {
             return None;
@@ -424,7 +433,13 @@ impl Frontend {
             .tabs
             .iter()
             .find(|tab| tab.position == position && tab.active)?;
-        let x = sidebar.pane_content_x;
+        let x = sidebar.pane_content_x.saturating_add(
+            if matches!(self.keyguide_context(), keyguide::Context::Sidebar { .. }) {
+                self.columns
+            } else {
+                0
+            },
+        );
         let bottom = sidebar
             .pane_content_y
             .saturating_add(self.rows)
@@ -481,13 +496,22 @@ impl Frontend {
             );
             (guide.columns > self.columns && !guide.lines.is_empty()).then_some((space, guide))
         });
+        let expanded_columns = expanded.as_ref().map_or(0, |(_, guide)| guide.columns);
+        let expanded_x = expanded.as_ref().map_or(0, |(space, guide)| {
+            if matches!(context, keyguide::Context::Sidebar { .. }) {
+                space.x + space.max_columns.saturating_sub(guide.columns)
+            } else {
+                space.x
+            }
+        });
+        let expanded_rows = expanded.as_ref().map_or(0, |(_, guide)| guide.lines.len());
         let (lines, reserved_rows) = if let Some((space, guide)) = expanded {
             let height = guide.lines.len();
             let coordinates = FloatingPaneCoordinates {
                 pinned: Some(true),
                 borderless: Some(true),
                 ..FloatingPaneCoordinates::default()
-                    .with_x_fixed(space.x)
+                    .with_x_fixed(expanded_x)
                     .with_y_fixed(space.bottom - height)
                     .with_width_fixed(guide.columns)
                     .with_height_fixed(height)
@@ -497,12 +521,15 @@ impl Frontend {
                 &self.configuration,
                 Some((&guide.lines, coordinates)),
             );
-            if self.guide_popup.ready_for_display() {
+            if matches!(context, keyguide::Context::Sidebar { .. }) {
+                (Vec::new(), 0)
+            } else if self.guide_popup.ready_for_display() {
                 (Vec::new(), height)
             } else {
-                let lines = keyguide::render(mode, context, self.columns, max_rows);
-                let height = lines.len();
-                (lines, height)
+                (
+                    keyguide::render(mode, context, self.columns, height),
+                    height,
+                )
             }
         } else {
             self.guide_popup.update(self.id, &self.configuration, None);
@@ -518,6 +545,9 @@ impl Frontend {
             lines,
             space,
             overlay_ready: self.guide_popup.ready_for_display(),
+            expanded_x,
+            expanded_columns,
+            expanded_rows,
             reserved_rows,
         });
         self.keyguide_dirty = false;
@@ -546,12 +576,12 @@ impl Frontend {
         if (reveal || height_changed) && !self.bootstrap_view_pending {
             self.ensure_cursor_visible();
         }
+        let hover_changed = self.reconcile_pointer();
         if height_changed || self.scroll != old_scroll {
-            self.hover = None;
             self.last_click = None;
             return true;
         }
-        false
+        hover_changed
     }
 
     fn request_mode(&mut self, input_mode: InputMode) {
@@ -568,7 +598,7 @@ impl Frontend {
         self.keyboard_control = true;
         self.control_has_focus = false;
         self.local_selection = true;
-        self.hide_tooltip();
+        self.refresh_tooltip();
         set_selectable(true);
         self.request_mode(InputMode::Normal);
         focus_plugin_pane(self.id, false, false);
@@ -591,6 +621,13 @@ impl Frontend {
             focus_terminal_pane(terminal, false, false);
         }
         self.reconcile_cursor();
+        if self.hover.is_none() && self.popup_item.is_some() {
+            // A probe made while the sidebar owned focus cannot settle dismissal
+            // after that ownership ends. Recheck the physical pointer now.
+            self.popup_probe = true;
+            self.popup_probe_revision = None;
+        }
+        self.refresh_tooltip();
     }
 
     fn control_pipe(&mut self, message: &PipeMessage) -> bool {
@@ -1128,11 +1165,13 @@ impl Frontend {
             .panes
             .get(&active_tab.position)
             .and_then(|panes| {
-                // A tiled pane can remain is_focused behind the visible floating layer.
+                // A tiled pane can remain focused behind the floating layer; passive
+                // nonselectable previews are not keyboard focus even when marked focused.
                 panes
                     .iter()
                     .find(|pane| {
                         pane.is_focused
+                            && pane.is_selectable
                             && !pane.is_suppressed
                             && pane.is_floating
                             && active_tab.are_floating_panes_visible
@@ -1146,12 +1185,16 @@ impl Frontend {
         let sidebar_focused = focused.is_some_and(|pane| pane.is_plugin && pane.id == self.id);
         let focus_known = focused.is_some();
         let focused = focused.filter(|pane| !pane.is_plugin).map(|pane| pane.id);
-        if self.keyboard_control {
-            if sidebar_focused {
-                self.control_has_focus = true;
-            } else if focus_known && self.control_has_focus {
-                self.leave_control(false);
-            }
+        let had_focus = self.control_has_focus;
+        if self.keyboard_control && !sidebar_focused && focus_known && had_focus {
+            self.leave_control(false);
+        }
+        if focus_known {
+            self.control_has_focus = sidebar_focused;
+        }
+        if had_focus && !self.control_has_focus && self.hover.is_none() {
+            self.popup_probe = self.popup_item.is_some();
+            self.popup_probe_revision = None;
         }
         if self.local_selection
             && !self.keyboard_control
@@ -1185,20 +1228,94 @@ impl Frontend {
             || self.queue.iter().any(|queued| selects(&queued.request))
     }
 
+    fn control_active(&self) -> bool {
+        self.control_has_focus
+    }
+
+    fn pointer_columns(&self) -> usize {
+        self.manifest
+            .panes
+            .values()
+            .flatten()
+            .find(|pane| pane.is_plugin && pane.id == self.id)
+            .map_or(self.columns, |pane| {
+                self.columns.max(
+                    pane.pane_columns
+                        .saturating_sub(pane.pane_content_x.saturating_sub(pane.pane_x)),
+                )
+            })
+    }
+
+    fn pointer_item_at(&self, line: isize, column: usize) -> Option<Item> {
+        (line >= 2 && (line as usize) < self.tree_end() && column < self.pointer_columns())
+            .then(|| self.scroll + line as usize - 2)
+            .and_then(|index| ui::item_at(&self.tree_cache, index))
+    }
+
+    fn reconcile_pointer(&mut self) -> bool {
+        let previous = self.pointer_item.take();
+        self.pointer_item = self
+            .pointer_position
+            .and_then(|(line, column)| self.pointer_item_at(line, column));
+        let hover_changed = self.pointer_highlight && self.hover != self.pointer_item;
+        if hover_changed {
+            self.hover = self.pointer_item.clone();
+        }
+        if previous.is_some()
+            && self.pointer_item.is_none()
+            && !self.control_active()
+            && self.popup_item.is_some()
+        {
+            // Native hover reaches the new pane before its old-pane leave event,
+            // but plugin pipes are asynchronous. Ask the helper before hiding it.
+            self.popup_probe = true;
+            self.popup_probe_revision = None;
+        }
+        hover_changed
+    }
+
     fn hide_tooltip(&mut self) {
+        self.hover = None;
+        self.pointer_position = None;
+        self.pointer_item = None;
+        self.pointer_highlight = false;
+        self.popup_hover = false;
+        self.popup_probe = false;
+        self.popup_probe_revision = None;
         self.popup_item = None;
         self.tooltip.update(self.id, &self.configuration, None);
     }
 
-    fn accept_dismiss(&mut self, source: &PipeSource, notice: &overlay::DismissNotice) -> bool {
+    fn accept_pointer(&mut self, source: &PipeSource, notice: &overlay::PointerNotice) -> bool {
         let PipeSource::Plugin(source) = source else {
             return false;
         };
-        if !self.tooltip.accept_dismiss(*source, notice) {
+        if !self.tooltip.accept_pointer(*source, notice) {
             return false;
         }
-        self.hide_tooltip();
-        true
+        let before = (
+            self.popup_item.is_some(),
+            self.popup_hover,
+            self.hover.is_some(),
+        );
+        if notice.inside {
+            // The physical pointer cannot still hover a sidebar row once it is
+            // inside the popup. The host's old-pane leave may arrive later.
+            self.pointer_position = None;
+            self.pointer_item = None;
+            self.pointer_highlight = false;
+            self.hover = None;
+        }
+        self.popup_hover = notice.inside;
+        self.popup_probe = false;
+        self.popup_probe_revision = None;
+        self.refresh_tooltip();
+        before
+            != (
+                self.popup_item.is_some(),
+                self.popup_hover,
+                self.hover.is_some(),
+            )
     }
 
     fn accept_ci_refresh(
@@ -1225,11 +1342,59 @@ impl Frontend {
         Some(request.target.clone())
     }
 
+    fn constrain_tooltip_to_guide(
+        guide: Option<&CachedKeyGuide>,
+        mut placement: overlay::Placement,
+    ) -> Option<overlay::Placement> {
+        let Some(guide) = guide.filter(|guide| guide.expanded_columns > 0) else {
+            return Some(placement);
+        };
+        let space = guide.space?;
+        let x = placement.coordinates.x?.to_fixed(0);
+        let columns = placement.coordinates.width?.to_fixed(0);
+        if x >= guide.expanded_x.saturating_add(guide.expanded_columns)
+            || guide.expanded_x >= x.saturating_add(columns)
+        {
+            return Some(placement);
+        }
+        let bottom = space.bottom.saturating_sub(guide.expanded_rows);
+        let rows = placement.coordinates.height?.to_fixed(0).min(bottom);
+        if rows < 2 {
+            return None;
+        }
+        let y = placement.coordinates.y?.to_fixed(0).min(bottom - rows);
+        placement.coordinates = placement
+            .coordinates
+            .with_y_fixed(y)
+            .with_height_fixed(rows);
+        Some(placement)
+    }
+
     fn refresh_tooltip(&mut self) {
         if !self.granted || self.overlay_role {
             return;
         }
         self.reconcile_viewport(false);
+        if !self.visible || self.modal.is_some() || self.finder.is_open() {
+            self.hide_tooltip();
+            return;
+        }
+        let opening = self.popup_item.is_none();
+        if let Some(item) = self.hover.as_ref() {
+            if self.popup_item.as_ref() != Some(item) {
+                self.popup_item = Some(item.clone());
+            }
+        } else if self.control_active() {
+            if self.popup_item.is_none() {
+                self.popup_item = self.cursor.clone();
+            }
+        } else if !self.popup_hover && !self.popup_probe {
+            self.popup_item = None;
+        }
+        if opening && self.popup_item.is_some() {
+            let now = Self::popup_clock();
+            self.popup_cache.retain(|entry| entry.formatted_at == now);
+        }
         let cache_index =
             self.popup_item
                 .as_ref()
@@ -1256,7 +1421,7 @@ impl Frontend {
                     self.popup_cache.len() - 1
                 });
         let height = self.tree_height();
-        let tooltip = if self.visible && self.modal.is_none() {
+        let tooltip = if self.visible && self.modal.is_none() && !self.finder.is_open() {
             self.popup_item
                 .as_ref()
                 .zip(self.snapshot.as_ref())
@@ -1296,12 +1461,42 @@ impl Frontend {
                         + 2;
                     let placement =
                         overlay::geometry(sidebar, self.columns, tab, top..=bottom, content)?;
+                    let placement =
+                        Self::constrain_tooltip_to_guide(self.keyguide.as_ref(), placement)?;
                     Some((content, placement))
                 })
         } else {
             None
         };
+        let previous_revision = self.tooltip.pending.as_ref().map(|state| state.revision);
         self.tooltip.update(self.id, &self.configuration, tooltip);
+        let revision = self
+            .tooltip
+            .pending
+            .as_ref()
+            .filter(|state| state.visible)
+            .map(|state| state.revision);
+        if revision.is_none() {
+            self.popup_hover = false;
+            self.popup_probe = false;
+            self.popup_probe_revision = None;
+        } else if revision != previous_revision && self.popup_hover {
+            // Pointer state belongs to a frame, not to an item across reflow.
+            self.popup_hover = false;
+            self.popup_probe = true;
+            self.popup_probe_revision = None;
+        }
+        if self.popup_probe && self.popup_probe_revision != revision {
+            self.popup_probe_revision = revision;
+            if !self.tooltip.probe_pointer(self.id) {
+                self.popup_probe = false;
+                self.popup_probe_revision = None;
+                if !self.control_active() && self.hover.is_none() {
+                    self.popup_item = None;
+                    self.tooltip.update(self.id, &self.configuration, None);
+                }
+            }
+        }
     }
 
     fn navigate(&mut self, amount: isize) {
@@ -1318,7 +1513,6 @@ impl Frontend {
             .min(self.items.len() - 1);
         self.cursor = Some(self.items[next].clone());
         self.ensure_cursor_visible();
-        self.hide_tooltip();
     }
 
     fn ensure_cursor_visible(&mut self) {
@@ -1511,6 +1705,7 @@ impl Frontend {
         }
         if self.modal.is_some() {
             self.modal_key(key);
+            self.refresh_tooltip();
             return;
         }
         if key.key_modifiers.contains(&KeyModifier::Ctrl)
@@ -1526,6 +1721,23 @@ impl Frontend {
             }
             bare_key => bare_key,
         };
+        let keyboard_selection = matches!(
+            bare_key,
+            BareKey::Up
+                | BareKey::Down
+                | BareKey::PageUp
+                | BareKey::PageDown
+                | BareKey::Home
+                | BareKey::End
+                | BareKey::Enter
+                | BareKey::Left
+                | BareKey::Right
+                | BareKey::Char('k' | 'j' | 'g' | 'G' | ' ')
+        );
+        if keyboard_selection {
+            self.pointer_highlight = false;
+            self.hover = None;
+        }
         match bare_key {
             BareKey::Char('/') if self.keyboard_control => self.open_finder(),
             BareKey::Up | BareKey::Char('k') => self.navigate(-1),
@@ -1588,8 +1800,11 @@ impl Frontend {
                 self.error = None;
                 self.startup();
             }
-            BareKey::Esc => self.hide_tooltip(),
             _ => {}
+        }
+        if keyboard_selection {
+            self.popup_item = self.cursor.clone();
+            self.refresh_tooltip();
         }
     }
 
@@ -1600,17 +1815,16 @@ impl Frontend {
     }
 
     fn mouse(&mut self, mouse: Mouse) -> bool {
-        if self.modal.is_some() {
+        if self.modal.is_some() || self.finder.is_open() {
             return false;
         }
         let viewport_changed = self.reconcile_viewport(false);
         let (line, column) = match mouse {
-            Mouse::Hover(line, column)
-            | Mouse::LeftClick(line, column)
-            | Mouse::RightClick(line, column) => (line, column),
+            Mouse::Hover(line, column) | Mouse::LeftClick(line, column) => (line, column),
             Mouse::ScrollUp(lines) => {
                 let previous = self.scroll;
                 self.scroll = self.scroll.saturating_sub(lines);
+                self.reconcile_pointer();
                 if self.scroll != previous {
                     self.refresh_tooltip();
                 }
@@ -1622,6 +1836,7 @@ impl Frontend {
                     .scroll
                     .saturating_add(lines)
                     .min(self.tree_cache.len().saturating_sub(self.tree_height()));
+                self.reconcile_pointer();
                 if self.scroll != previous {
                     self.refresh_tooltip();
                 }
@@ -1629,29 +1844,20 @@ impl Frontend {
             }
             _ => return viewport_changed,
         };
-        let index = (line >= 2 && (line as usize) < self.tree_end() && column < self.columns)
-            .then(|| self.scroll + line as usize - 2);
-        let item = index.and_then(|index| ui::item_at(&self.tree_cache, index));
+        if matches!(mouse, Mouse::LeftClick(_, _)) && column >= self.columns {
+            return viewport_changed;
+        }
+        self.pointer_position =
+            (line >= 0 && (line as usize) < self.rows && column < self.pointer_columns())
+                .then_some((line, column));
+        self.pointer_highlight = true;
+        let hover_changed = self.reconcile_pointer();
+        self.refresh_tooltip();
+        let changed = viewport_changed || hover_changed;
         if matches!(mouse, Mouse::Hover(_, _)) {
-            let changed = self.hover != item;
-            self.hover = item;
-            return viewport_changed || changed;
+            return changed;
         }
-        let changed = viewport_changed || self.hover != item || self.popup_item.is_some();
-        self.hover = item.clone();
-        self.hide_tooltip();
-        if matches!(mouse, Mouse::RightClick(_, _)) {
-            self.last_click = None;
-            // Relative last-checked age is event-driven: quiet frozen results are
-            // reformatted on explicit reopening, never by hover or a polling timer.
-            let now = Self::popup_clock();
-            self.popup_cache.retain(|entry| entry.formatted_at == now);
-            self.tooltip.begin_open();
-            self.popup_item = item;
-            self.refresh_tooltip();
-            return true;
-        }
-        let Some(item) = item else {
+        let Some(item) = self.pointer_item.clone() else {
             self.last_click = None;
             return changed;
         };
@@ -1674,6 +1880,7 @@ impl Frontend {
             self.last_click = Some((item, now));
         }
         self.activate();
+        self.refresh_tooltip();
         true
     }
 
@@ -1739,22 +1946,10 @@ impl Frontend {
         let body_height = self.tree_height();
         let tree_end = self.tree_end();
         if (resized || viewport_changed) && self.popup_item.is_some() {
-            // Keep the shared outline in sync before emitting any rendering bytes.
+            // Host commands must precede the sidebar's rendering bytes.
             self.refresh_tooltip();
         }
         let tree = &self.tree_cache;
-        let popup_band = self
-            .popup_item
-            .as_ref()
-            .and_then(|item| ui::item_band(tree, item))
-            .filter(|band| *band.end() >= self.scroll && *band.start() < self.scroll + body_height);
-        let joined = self
-            .tooltip
-            .pending
-            .as_ref()
-            .filter(|state| state.visible && self.tooltip.id.is_some())
-            .and_then(|state| state.connection.as_ref())
-            .map(|connection| connection.side);
         let selected_group = self.cursor.as_ref().and_then(|item| match item {
             Item::Pane(_) => self
                 .snapshot
@@ -1883,56 +2078,6 @@ impl Frontend {
             )
             .expect("writing sidebar row");
         }
-        // Paint shared outlines above tree guides, never over the key guide.
-        for row in 1..tree_end {
-            if self.modal.is_none()
-                && columns > 0
-                && let Some(band) = &popup_band
-            {
-                let index = self.scroll as isize + row as isize - 2;
-                let first = *band.start() as isize - 1;
-                let last = *band.end() as isize + 1;
-                if index >= first && index <= last {
-                    let top = index == first;
-                    let bottom = index == last;
-                    let (left, right) = ui::sidebar_edges(top, bottom, joined);
-                    // Only neighboring rows carry horizontal edges; own captions stay intact.
-                    if (top || bottom) && columns > 2 {
-                        let middle = "─".repeat(columns - 2);
-                        write!(
-                            output,
-                            "\u{1b}[{};2H{}{}{middle}{}",
-                            row + 1,
-                            ui::BASE,
-                            ui::BRIGHT,
-                            ui::RESET
-                        )
-                        .expect("writing sidebar horizontal edge");
-                    }
-                    write!(
-                        output,
-                        "\u{1b}[{};1H{}{}{left}{}",
-                        row + 1,
-                        ui::BASE,
-                        ui::BRIGHT,
-                        ui::RESET
-                    )
-                    .expect("writing sidebar left edge");
-                    if columns > 1 {
-                        write!(
-                            output,
-                            "\u{1b}[{};{}H{}{}{right}{}",
-                            row + 1,
-                            columns,
-                            ui::BASE,
-                            ui::BRIGHT,
-                            ui::RESET
-                        )
-                        .expect("writing sidebar right edge");
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -1941,6 +2086,7 @@ impl ZellijPlugin for Frontend {
         let ids = get_plugin_ids();
         self.id = ids.plugin_id;
         self.client_id = ids.client_id;
+        self.tooltip.client_id = ids.client_id;
         self.visible = true;
         self.overlay_role = configuration
             .get("role")
@@ -1966,7 +2112,8 @@ impl ZellijPlugin for Frontend {
         );
         self.configuration = configuration;
         if self.overlay_role {
-            self.overlay.load(&self.configuration, self.id);
+            self.overlay
+                .load(&self.configuration, self.id, ids.client_id);
             return;
         }
         if self.guide_role {
@@ -2075,7 +2222,9 @@ impl ZellijPlugin for Frontend {
                     .map(|tab| tab.position)
                     != tabs.iter().find(|tab| tab.active).map(|tab| tab.position)
                 {
-                    self.hide_tooltip();
+                    self.popup_hover = false;
+                    self.popup_probe = false;
+                    self.popup_probe_revision = None;
                     self.close_finder(false);
                 }
                 self.tabs = tabs;
@@ -2147,11 +2296,13 @@ impl ZellijPlugin for Frontend {
                 if !visible {
                     self.close_finder(false);
                     self.leave_control(false);
+                    self.control_has_focus = false;
                     self.local_selection = false;
                     self.reconcile_cursor();
                     self.hide_tooltip();
                     self.guide_popup.update(self.id, &self.configuration, None);
                 } else {
+                    self.synchronize_focus();
                     self.reconcile_cursor();
                     self.ensure_cursor_visible();
                     self.refresh_tooltip();
@@ -2277,7 +2428,7 @@ impl ZellijPlugin for Frontend {
                 && self.guide_popup.ready_for_display() != was_ready
             {
                 self.keyguide_dirty = true;
-                self.reconcile_viewport(false);
+                self.refresh_tooltip();
                 return true;
             }
             return false;
@@ -2286,8 +2437,24 @@ impl ZellijPlugin for Frontend {
             if let (PipeSource::Plugin(source), Some(payload)) = (message.source, message.payload)
                 && let Ok(ready) = serde_json::from_str::<overlay::Ready>(&payload)
                 && ready.id == source
+                && ready.client_id == self.client_id
                 && self.tooltip.ready(&ready, self.id, &self.configuration)
             {
+                if self.popup_probe {
+                    self.popup_probe_revision = None;
+                    self.refresh_tooltip();
+                }
+                return false;
+            }
+            return false;
+        }
+        if message.name == overlay::ERROR {
+            if let (PipeSource::Plugin(source), Some(payload)) = (message.source, message.payload)
+                && payload.len() <= 4096
+                && let Ok(fault) = serde_json::from_str::<overlay::FaultNotice>(&payload)
+                && self.tooltip.accept_fault(source, &fault)
+            {
+                self.error = Some(format!("Popup helper: {}", fault.message));
                 return true;
             }
             return false;
@@ -2306,13 +2473,13 @@ impl ZellijPlugin for Frontend {
             }
             return false;
         }
-        if message.name == overlay::DISMISS {
+        if message.name == overlay::POINTER {
             return message
                 .payload
                 .as_deref()
                 .filter(|payload| payload.len() <= 4096)
-                .and_then(|payload| serde_json::from_str::<overlay::DismissNotice>(payload).ok())
-                .is_some_and(|notice| self.accept_dismiss(&message.source, &notice));
+                .and_then(|payload| serde_json::from_str::<overlay::PointerNotice>(payload).ok())
+                .is_some_and(|notice| self.accept_pointer(&message.source, &notice));
         }
         false
     }
@@ -2942,8 +3109,11 @@ mod tests {
     }
 
     #[test]
-    fn changing_guide_height_reveals_selection_and_reclips_an_open_card() {
+    fn changing_guide_height_keeps_keyboard_selection_visible() {
         let mut frontend = populated_frontend();
+        // Exercise the inline guide: this display has room for details, but
+        // not for a wider shortcut card beyond the sidebar.
+        frontend.tabs[0].display_area_columns = 48;
         frontend.update(mode_event(guide_mode(InputMode::Locked)));
         frontend.update(keybinds_event(&guide_mode(InputMode::Locked)));
         sidebar_cells(&mut frontend, 16, 24);
@@ -2953,26 +3123,6 @@ mod tests {
         assert!(frontend.update(mode_event(guide_mode(InputMode::Normal))));
         let sidebar_height = frontend.tree_height();
         assert!(sidebar_height < application_height);
-
-        frontend.keyboard_control = false;
-        frontend.control_has_focus = false;
-        frontend.update(mode_event(guide_mode(InputMode::Locked)));
-        frontend.cursor = frontend.items.first().cloned();
-        frontend.local_selection = true;
-        frontend.scroll = 0;
-        let item = frontend.tree_cache[sidebar_height..application_height]
-            .iter()
-            .find_map(|row| row.item.clone())
-            .expect("an entry covered by the taller guide");
-        frontend.popup_item = Some(item.clone());
-        frontend.refresh_tooltip();
-        assert!(frontend.tooltip.pending.as_ref().unwrap().visible);
-        frontend.keyboard_control = true;
-        frontend.control_has_focus = true;
-        assert!(frontend.update(mode_event(guide_mode(InputMode::Normal))));
-        assert_eq!(frontend.tree_height(), sidebar_height);
-        assert_eq!(frontend.popup_item, Some(item));
-        assert!(!frontend.tooltip.pending.as_ref().unwrap().visible);
 
         frontend.cursor = frontend.items.last().cloned();
         frontend.ensure_cursor_visible();
@@ -2996,6 +3146,7 @@ mod tests {
     #[test]
     fn guide_rows_never_activate_hidden_entries_and_page_scroll_uses_the_tree() {
         let mut frontend = populated_frontend();
+        frontend.tabs[0].display_area_columns = 48;
         frontend.keyboard_control = true;
         frontend.control_has_focus = true;
         frontend.update(mode_event(guide_mode(InputMode::Normal)));
@@ -3009,9 +3160,9 @@ mod tests {
         frontend.popup_item = Some(item);
         frontend.refresh_tooltip();
         assert!(frontend.tooltip.pending.as_ref().unwrap().visible);
-        let outlined = sidebar_cells(&mut frontend, 12, 24);
+        let with_details = sidebar_cells(&mut frontend, 12, 24);
         assert_eq!(
-            outlined[frontend.tree_end()..],
+            with_details[frontend.tree_end()..],
             baseline[frontend.tree_end()..]
         );
         frontend.hide_tooltip();
@@ -3104,12 +3255,12 @@ mod tests {
             truncated: false,
             commit_missing: false,
         });
-        frontend.tooltip.begin_open();
-        frontend.popup_item = Some(Item::Pane("terminal_1".to_owned()));
+        hover_item(&mut frontend, &Item::Pane("terminal_1".to_owned()));
         frontend.refresh_tooltip();
         frontend.tooltip.id = Some(100);
         let state = frontend.tooltip.pending.as_ref().unwrap();
         let request = overlay::RefreshRequest {
+            client_id: state.client_id,
             instance: state.instance.clone(),
             revision: state.revision,
             key: state.content.key.clone(),
@@ -3125,7 +3276,7 @@ mod tests {
 
     #[test]
     fn ci_refresh_validates_source_live_popup_revision_and_exact_current_head() {
-        for case in 0..16 {
+        for case in 0..17 {
             let (mut frontend, mut request) = ci_refresh_frontend();
             let mut source = PipeSource::Plugin(100);
             match case {
@@ -3165,6 +3316,7 @@ mod tests {
                         name: "Terminal".to_owned(),
                     })
                 }
+                16 => request.client_id = frontend.client_id + 1,
                 _ => unreachable!(),
             }
             assert!(
@@ -3190,6 +3342,61 @@ mod tests {
         assert_eq!(frontend.cursor, cursor);
         assert!(!frontend.keyboard_control);
         assert!(!frontend.control_has_focus);
+    }
+
+    #[test]
+    fn helper_readiness_cannot_bind_a_different_clients_replica() {
+        let mut frontend = popup_frontend();
+        hover_item(&mut frontend, &Item::Pane("terminal_1".to_owned()));
+        let identity = frontend.tooltip.pending.as_ref().unwrap().identity();
+        frontend.pipe(native_message(
+            overlay::READY,
+            overlay::Ready {
+                id: 100,
+                client_id: frontend.client_id + 1,
+                instance: identity.instance.clone(),
+                key: identity.key.clone(),
+                revision: identity.revision,
+            },
+        ));
+        assert!(frontend.tooltip.id.is_none());
+        frontend.pipe(native_message(
+            overlay::READY,
+            overlay::Ready {
+                id: 100,
+                client_id: frontend.client_id,
+                instance: identity.instance,
+                key: identity.key,
+                revision: identity.revision,
+            },
+        ));
+        assert_eq!(frontend.tooltip.id, Some(100));
+    }
+
+    #[test]
+    fn popup_faults_require_the_owning_helper_and_surface_outside_the_card() {
+        let mut frontend = popup_frontend();
+        hover_item(&mut frontend, &Item::Pane("terminal_1".to_owned()));
+        let instance = frontend.tooltip.pending.as_ref().unwrap().instance.clone();
+        let fault = overlay::FaultNotice {
+            id: 100,
+            client_id: frontend.client_id,
+            instance,
+            message: "Permission denied".to_owned(),
+        };
+        let mut foreign = fault.clone();
+        foreign.client_id += 1;
+        assert!(!frontend.pipe(native_message(overlay::ERROR, foreign)));
+        assert!(frontend.error.is_none());
+        let mut forged = native_message(overlay::ERROR, fault.clone());
+        forged.source = PipeSource::Plugin(101);
+        assert!(!frontend.pipe(forged));
+        assert!(frontend.error.is_none());
+        assert!(frontend.pipe(native_message(overlay::ERROR, fault)));
+        assert_eq!(
+            frontend.error.as_deref(),
+            Some("Popup helper: Permission denied")
+        );
     }
 
     #[test]
@@ -3260,138 +3467,164 @@ mod tests {
         assert!(frontend.tooltip.pending.as_ref().unwrap().visible);
     }
 
-    fn context_click(frontend: &mut Frontend, item: &Item) {
+    fn hover_item(frontend: &mut Frontend, item: &Item) {
         let row = frontend
             .tree_cache
             .iter()
             .position(|row| row.item.as_ref() == Some(item))
             .unwrap();
-        frontend.mouse(Mouse::RightClick((row + 2 - frontend.scroll) as isize, 5));
+        frontend.mouse(Mouse::Hover((row + 2 - frontend.scroll) as isize, 5));
+    }
+
+    fn pointer_notice(frontend: &Frontend, inside: bool) -> overlay::PointerNotice {
+        let state = frontend.tooltip.pending.as_ref().unwrap();
+        overlay::PointerNotice {
+            client_id: state.client_id,
+            instance: state.instance.clone(),
+            key: state.content.key.clone(),
+            revision: state.revision,
+            inside,
+        }
+    }
+
+    fn sidebar_focus(frontend: &mut Frontend, focused: bool) {
+        if focused {
+            frontend.keyboard_control = true;
+            frontend.local_selection = true;
+        }
+        let mut manifest = frontend.manifest.clone();
+        for pane in manifest.panes.get_mut(&0).unwrap() {
+            pane.is_focused = if pane.is_plugin { focused } else { !focused };
+        }
+        frontend.pane_update(manifest);
     }
 
     #[test]
-    fn hover_is_highlight_only_and_right_click_preserves_selection_and_open_target() {
+    fn hover_opens_without_focus_and_single_click_keeps_its_target() {
         let mut frontend = popup_frontend();
         let item = Item::Pane("terminal_2".to_owned());
         let row = frontend
             .tree_cache
             .iter()
             .position(|row| row.item.as_ref() == Some(&item))
-            .unwrap();
+            .unwrap()
+            + 2;
         let cursor = frontend.cursor.clone();
-        frontend.mouse(Mouse::Hover((row + 2) as isize, 5));
-        assert_eq!(frontend.hover, Some(item.clone()));
+        frontend.mouse(Mouse::RightClick(row as isize, 5));
         assert!(frontend.popup_item.is_none());
-        assert!(
-            frontend
-                .tooltip
-                .pending
-                .as_ref()
-                .is_none_or(|state| !state.visible)
-        );
-        context_click(&mut frontend, &item);
+        hover_item(&mut frontend, &item);
         assert_popup(&frontend, &item);
         assert_eq!(frontend.cursor, cursor);
         assert!(!frontend.local_selection);
-        assert!(!frontend.keyboard_control);
+        assert!(!frontend.control_active());
         assert!(frontend.queue.is_empty());
         assert!(frontend.in_flight.is_none());
-        frontend.mouse(Mouse::Hover(2, 5));
-        assert_ne!(frontend.hover, Some(item.clone()));
+        assert!(!frontend.mouse(Mouse::RightClick(2, 5)));
         assert_popup(&frontend, &item);
-        frontend.mouse(Mouse::Hover(0, u16::MAX as usize));
-        assert!(frontend.hover.is_none());
-        assert_popup(&frontend, &item);
-        let mut updated = frontend.snapshot.clone().unwrap();
-        updated.revision += 1;
-        updated.panes[1].description = "fresh metadata for original target".to_owned();
-        frontend.accept_snapshot(updated);
-        assert_popup(&frontend, &item);
-        assert!(
-            frontend
-                .tooltip
-                .pending
-                .as_ref()
-                .unwrap()
-                .content
-                .rows()
-                .iter()
-                .any(|row| row.plain().contains("fresh metadata for original target"))
-        );
-        frontend.granted = false; // Queue normal selection without invoking the host transport.
+        frontend.granted = false; // Queue selection without invoking the host transport.
         click_item(&mut frontend, item.clone());
-        assert!(frontend.popup_item.is_none());
+        assert_eq!(frontend.popup_item, Some(item.clone()));
         assert_eq!(frontend.cursor, Some(item));
         assert!(frontend.desired_selection.is_some());
     }
 
     #[test]
-    fn cached_context_reopens_then_async_snapshot_refreshes_only_the_open_item() {
+    fn focus_and_hover_follow_the_latest_pointer_or_keyboard_highlight() {
         let mut frontend = popup_frontend();
-        let first = Item::Pane("terminal_1".to_owned());
-        let second = Item::Pane("terminal_2".to_owned());
-        context_click(&mut frontend, &first);
-        let original = frontend.tooltip.pending.as_ref().unwrap().content.clone();
-        context_click(&mut frontend, &second);
-        context_click(&mut frontend, &first);
-        assert_eq!(frontend.tooltip.pending.as_ref().unwrap().content, original);
-        let before = frontend.tooltip.pending.as_ref().unwrap().revision;
-        for line in [2, 3, 4, 6, 8, -1] {
-            frontend.mouse(Mouse::Hover(line, 5));
-            assert_eq!(frontend.tooltip.pending.as_ref().unwrap().revision, before);
-            assert_eq!(frontend.tooltip.pending.as_ref().unwrap().content, original);
-        }
-        let mut snapshot = frontend.snapshot.clone().unwrap();
-        snapshot.revision += 1;
-        snapshot.panes[0].description = "async original target update 日本語".to_owned();
-        frontend.accept_snapshot(snapshot);
-        assert!(
-            frontend
-                .tooltip
-                .pending
-                .as_ref()
-                .unwrap()
-                .content
-                .rows()
-                .iter()
-                .any(|row| row.plain().contains("async original target update 日本語"))
-        );
-        context_click(&mut frontend, &second);
-        assert!(
-            !frontend
-                .tooltip
-                .pending
-                .as_ref()
-                .unwrap()
-                .content
-                .rows()
-                .iter()
-                .any(|row| row.plain().contains("async original target update 日本語"))
-        );
-        context_click(&mut frontend, &first);
-        assert!(
-            frontend
-                .tooltip
-                .pending
-                .as_ref()
-                .unwrap()
-                .content
-                .rows()
-                .iter()
-                .any(|row| row.plain().contains("async original target update 日本語"))
-        );
+        frontend.update(mode_event(guide_mode(InputMode::Normal)));
+        assert!(frontend.popup_item.is_none()); // Input mode alone is not sidebar focus.
+        sidebar_focus(&mut frontend, true);
+        let initial = frontend.cursor.clone().unwrap();
+        assert_popup(&frontend, &initial);
+        let pointer = Item::Pane("terminal_2".to_owned());
+        hover_item(&mut frontend, &pointer);
+        assert_popup(&frontend, &pointer);
+        frontend.key(KeyWithModifier::new(BareKey::Home));
+        let keyboard = frontend.cursor.clone().unwrap();
+        assert_ne!(keyboard, pointer);
+        assert!(frontend.hover.is_none());
+        assert_eq!(frontend.pointer_item, Some(pointer.clone()));
+        assert_popup(&frontend, &keyboard);
+        frontend.accept_snapshot(snapshot(2, "terminal_1"));
+        assert_popup(&frontend, &keyboard);
+        sidebar_focus(&mut frontend, false);
+        assert!(frontend.popup_item.is_none()); // Keyboard selection invalidates stale hover.
+        hover_item(&mut frontend, &pointer);
+        assert_popup(&frontend, &pointer);
+        frontend.mouse(Mouse::Hover(0, 5));
+        assert!(frontend.popup_item.is_none());
+        sidebar_focus(&mut frontend, true);
+        assert!(frontend.popup_item.is_some());
+        frontend.mouse(Mouse::Hover(0, 5));
+        assert!(frontend.popup_item.is_some());
+        sidebar_focus(&mut frontend, false);
+        assert!(frontend.popup_item.is_none());
     }
 
     #[test]
-    fn dismissal_rejects_stale_card_revisions_keys_instances_and_senders() {
-        for case in 0..5 {
+    fn sidebar_leave_probes_popup_and_true_leave_closes_without_a_timer() {
+        let mut frontend = popup_frontend();
+        let item = Item::Pane("terminal_1".to_owned());
+        hover_item(&mut frontend, &item);
+        frontend.tooltip.id = Some(100);
+        // The helper's new-target hover can arrive before the sidebar leave.
+        let entered = pointer_notice(&frontend, true);
+        assert!(frontend.accept_pointer(&PipeSource::Plugin(100), &entered));
+        assert!(frontend.hover.is_none());
+        assert!(frontend.pointer_item.is_none());
+        frontend.mouse(Mouse::Hover(0, u16::MAX as usize));
+        assert_popup(&frontend, &item);
+        let entered = pointer_notice(&frontend, true);
+        frontend.accept_pointer(&PipeSource::Plugin(100), &entered);
+        assert!(!frontend.popup_probe);
+        assert_popup(&frontend, &item);
+        let left = pointer_notice(&frontend, false);
+        assert!(frontend.accept_pointer(&PipeSource::Plugin(100), &left));
+        assert!(frontend.popup_item.is_none());
+        assert!(!frontend.tooltip.pending.as_ref().unwrap().visible);
+    }
+
+    #[test]
+    fn popup_exit_dismisses_even_if_native_sidebar_leave_is_missing() {
+        let mut frontend = popup_frontend();
+        let item = Item::Pane("terminal_1".to_owned());
+        hover_item(&mut frontend, &item);
+        frontend.tooltip.id = Some(100);
+        let entered = pointer_notice(&frontend, true);
+        frontend.accept_pointer(&PipeSource::Plugin(100), &entered);
+        assert!(frontend.hover.is_none());
+        let left = pointer_notice(&frontend, false);
+        frontend.accept_pointer(&PipeSource::Plugin(100), &left);
+        assert!(frontend.popup_item.is_none());
+        assert!(!frontend.tooltip.pending.as_ref().unwrap().visible);
+    }
+
+    #[test]
+    fn popup_leave_never_overrides_sidebar_focus_or_actual_item_hover() {
+        let mut frontend = popup_frontend();
+        let item = Item::Pane("terminal_1".to_owned());
+        hover_item(&mut frontend, &item);
+        frontend.tooltip.id = Some(100);
+        let left = pointer_notice(&frontend, false);
+        frontend.accept_pointer(&PipeSource::Plugin(100), &left);
+        assert_popup(&frontend, &item);
+        sidebar_focus(&mut frontend, true);
+        frontend.mouse(Mouse::Hover(0, u16::MAX as usize));
+        let left = pointer_notice(&frontend, false);
+        frontend.accept_pointer(&PipeSource::Plugin(100), &left);
+        assert_popup(&frontend, &item);
+        sidebar_focus(&mut frontend, false);
+        assert!(frontend.popup_probe);
+        let left = pointer_notice(&frontend, false);
+        frontend.accept_pointer(&PipeSource::Plugin(100), &left);
+        assert!(frontend.popup_item.is_none());
+    }
+
+    #[test]
+    fn pointer_replies_reject_stale_frames_and_reprobe_after_async_content_changes() {
+        for case in 0..7 {
             let (mut frontend, _) = ci_refresh_frontend();
-            let state = frontend.tooltip.pending.as_ref().unwrap();
-            let mut notice = overlay::DismissNotice {
-                instance: state.instance.clone(),
-                key: state.content.key.clone(),
-                revision: state.revision,
-            };
+            let mut notice = pointer_notice(&frontend, false);
             let mut source = PipeSource::Plugin(100);
             match case {
                 0 => source = PipeSource::Plugin(101),
@@ -3399,33 +3632,106 @@ mod tests {
                 2 => notice.key = "pane:terminal_2".to_owned(),
                 3 => notice.revision = notice.revision.saturating_sub(1),
                 4 => source = PipeSource::Cli("forged".to_owned()),
+                5 => notice.revision += 1,
+                6 => notice.client_id = frontend.client_id + 1,
                 _ => unreachable!(),
             }
-            assert!(!frontend.accept_dismiss(&source, &notice));
+            assert!(!frontend.accept_pointer(&source, &notice));
             assert!(frontend.popup_item.is_some());
         }
         let (mut frontend, _) = ci_refresh_frontend();
-        let state = frontend.tooltip.pending.as_ref().unwrap();
-        let old = overlay::DismissNotice {
-            instance: state.instance.clone(),
-            key: state.content.key.clone(),
-            revision: state.revision,
-        };
+        frontend.mouse(Mouse::Hover(0, u16::MAX as usize));
+        let old = pointer_notice(&frontend, false);
+        assert_eq!(frontend.popup_probe_revision, Some(old.revision));
         frontend.snapshot.as_mut().unwrap().panes[0].description = "metadata arrived".to_owned();
         frontend.snapshot.as_mut().unwrap().revision += 1;
         frontend.refresh_tooltip();
-        assert!(frontend.tooltip.accept_dismiss(100, &old));
-        context_click(&mut frontend, &Item::Pane("terminal_1".to_owned()));
-        assert!(!frontend.accept_dismiss(&PipeSource::Plugin(100), &old));
-        let state = frontend.tooltip.pending.as_ref().unwrap();
-        let current = overlay::DismissNotice {
-            instance: state.instance.clone(),
-            key: state.content.key.clone(),
-            revision: state.revision,
-        };
-        assert!(frontend.accept_dismiss(&PipeSource::Plugin(100), &current));
+        let current = pointer_notice(&frontend, true);
+        assert_ne!(current.revision, old.revision);
+        assert_eq!(frontend.popup_probe_revision, Some(current.revision));
+        assert!(!frontend.accept_pointer(&PipeSource::Plugin(100), &old));
+        frontend.accept_pointer(&PipeSource::Plugin(100), &current);
+        assert_popup(&frontend, &Item::Pane("terminal_1".to_owned()));
+        hover_item(&mut frontend, &Item::Pane("terminal_2".to_owned()));
+        assert!(!frontend.accept_pointer(&PipeSource::Plugin(100), &current));
+        assert_popup(&frontend, &Item::Pane("terminal_2".to_owned()));
+    }
+
+    #[test]
+    fn cached_hover_targets_refresh_only_after_their_async_snapshot_changes() {
+        let mut frontend = popup_frontend();
+        let first = Item::Pane("terminal_1".to_owned());
+        let second = Item::Pane("terminal_2".to_owned());
+        hover_item(&mut frontend, &first);
+        let original = frontend.tooltip.pending.as_ref().unwrap().content.clone();
+        hover_item(&mut frontend, &second);
+        hover_item(&mut frontend, &first);
+        assert_eq!(frontend.tooltip.pending.as_ref().unwrap().content, original);
+        let revision = frontend.tooltip.pending.as_ref().unwrap().revision;
+        hover_item(&mut frontend, &first);
+        assert_eq!(
+            frontend.tooltip.pending.as_ref().unwrap().revision,
+            revision
+        );
+        let mut snapshot = frontend.snapshot.clone().unwrap();
+        snapshot.revision += 1;
+        snapshot.panes[0].description = "async original target update 日本語".to_owned();
+        frontend.accept_snapshot(snapshot);
+        let updated = frontend.tooltip.pending.as_ref().unwrap().content.clone();
+        assert_ne!(updated, original);
+        hover_item(&mut frontend, &second);
+        assert_ne!(frontend.tooltip.pending.as_ref().unwrap().content, updated);
+        hover_item(&mut frontend, &first);
+        assert_eq!(frontend.tooltip.pending.as_ref().unwrap().content, updated);
+    }
+
+    #[test]
+    fn outer_sidebar_gutter_retains_hover_but_never_activates_an_item() {
+        let mut frontend = popup_frontend();
+        frontend.manifest.panes.get_mut(&0).unwrap()[0].pane_columns = frontend.columns + 1;
+        let item = Item::Pane("terminal_1".to_owned());
+        hover_item(&mut frontend, &item);
+        let (row, _) = frontend.pointer_position.unwrap();
+        frontend.mouse(Mouse::Hover(row, frontend.columns));
+        assert_eq!(frontend.hover, Some(item.clone()));
+        assert_popup(&frontend, &item);
+        let cursor = frontend.cursor.clone();
+        assert!(!frontend.mouse(Mouse::LeftClick(row, frontend.columns)));
+        assert_eq!(frontend.cursor, cursor);
+        assert!(frontend.queue.is_empty());
+        frontend.mouse(Mouse::Hover(row, frontend.columns + 1));
         assert!(frontend.popup_item.is_none());
-        assert!(!frontend.tooltip.pending.as_ref().unwrap().visible);
+    }
+
+    #[test]
+    fn automatic_popup_never_changes_sidebar_or_neighboring_row_glyphs() {
+        let mut frontend = popup_frontend();
+        let mut state = snapshot(2, "terminal_1");
+        state.panes[1].workspace_id = "workspace_1".to_owned();
+        state.panes[0].branch = Some("feature/main".to_owned());
+        frontend.accept_snapshot(state);
+        let baseline = sidebar_cells(&mut frontend, 20, 40);
+        hover_item(&mut frontend, &Item::Pane("terminal_1".to_owned()));
+        assert!(frontend.tooltip.pending.as_ref().unwrap().visible);
+        assert_eq!(sidebar_cells(&mut frontend, 20, 40), baseline);
+    }
+
+    #[test]
+    fn modal_suppresses_automatic_details_and_restores_only_real_focus() {
+        let mut frontend = popup_frontend();
+        sidebar_focus(&mut frontend, true);
+        hover_item(&mut frontend, &Item::Pane("terminal_2".to_owned()));
+        frontend.key(KeyWithModifier::new(BareKey::Char('n')));
+        assert!(frontend.modal.is_some());
+        assert!(frontend.popup_item.is_none());
+        frontend.mouse(Mouse::Hover(2, 5));
+        assert!(frontend.pointer_item.is_none());
+        assert!(frontend.control_active());
+        frontend.key(KeyWithModifier::new(BareKey::Esc));
+        assert!(frontend.modal.is_none());
+        assert_popup(&frontend, frontend.cursor.as_ref().unwrap());
+        sidebar_focus(&mut frontend, false);
+        assert!(frontend.popup_item.is_none());
     }
 
     fn assert_popup(frontend: &Frontend, item: &Item) {
@@ -3483,71 +3789,6 @@ mod tests {
     }
 
     #[test]
-    fn compact_outline_paints_above_guide_and_neighbor_but_preserves_own_caption() {
-        let mut frontend = frontend();
-        frontend.render_cursor = Some(None);
-        let mut state = snapshot(2, "terminal_1");
-        state.panes[1].workspace_id = "workspace_1".to_owned();
-        state.panes[0].branch = Some("feature/main".to_owned());
-        assert!(frontend.accept_snapshot(state));
-        let item = Item::Pane("terminal_1".to_owned());
-        let band = ui::item_band(&frontend.tree_cache, &item).unwrap();
-        let top = band.start() - 1 + 2;
-        let bottom = band.end() + 1 + 2;
-        let baseline = sidebar_cells(&mut frontend, 20, 40);
-        assert_eq!(baseline[top][1], '│');
-        assert!(
-            baseline[bottom]
-                .iter()
-                .collect::<String>()
-                .contains("Terminal 2")
-        );
-        frontend.popup_item = Some(item.clone());
-        let outlined = sidebar_cells(&mut frontend, 20, 40);
-        assert!(outlined[top][1..39].iter().all(|cell| *cell == '─'));
-        assert!(outlined[bottom][1..39].iter().all(|cell| *cell == '─'));
-        for index in band.clone() {
-            assert_eq!(&outlined[index + 2][1..39], &baseline[index + 2][1..39]);
-        }
-        assert!(
-            outlined[*band.start() + 2]
-                .iter()
-                .collect::<String>()
-                .contains("Terminal 1")
-        );
-        assert!(
-            outlined[*band.end() + 2]
-                .iter()
-                .collect::<String>()
-                .contains("feature/main")
-        );
-        // Adjacent row hit-testing remains its actual owner despite the painted overlap.
-        frontend.mouse(Mouse::Hover(bottom as isize, 5));
-        assert_eq!(frontend.hover, Some(Item::Pane("terminal_2".to_owned())));
-        frontend.hide_tooltip();
-        assert_eq!(sidebar_cells(&mut frontend, 20, 40), baseline);
-        // At the viewport edge, omit the clipped horizontal edge, never cover our caption.
-        frontend.popup_item = Some(item);
-        frontend.scroll = *band.start();
-        let clipped = sidebar_cells(&mut frontend, 8, 40);
-        assert!(clipped[2].iter().collect::<String>().contains("Terminal 1"));
-    }
-
-    #[test]
-    fn first_workspace_outline_has_a_top_edge_above_its_caption() {
-        let mut frontend = frontend();
-        frontend.render_cursor = Some(None);
-        let baseline = sidebar_cells(&mut frontend, 20, 40);
-        frontend.popup_item = Some(Item::Workspace("workspace_1".to_owned()));
-        let outlined = sidebar_cells(&mut frontend, 20, 40);
-        assert_eq!(outlined[1][0], '╭');
-        assert_eq!(outlined[1][39], '╮');
-        assert!(outlined[1][1..39].iter().all(|cell| *cell == '─'));
-        assert_eq!(&outlined[2][1..39], &baseline[2][1..39]);
-        assert_eq!(outlined[0], baseline[0]);
-    }
-
-    #[test]
     fn sidebar_render_dimensions_stay_inside_native_content_clip() {
         let mut frontend = frontend();
         frontend
@@ -3570,12 +3811,109 @@ mod tests {
     }
 
     #[test]
-    fn geometry_updates_repaint_and_rejoin_an_open_popup_without_moving_selection() {
+    fn expanded_sidebar_guide_uses_only_space_beyond_the_sidebar() {
+        let mut frontend = popup_frontend();
+        frontend.mode_intent = Some(InputMode::Normal);
+        assert_eq!(frontend.guide_space().unwrap().x, 0);
+        frontend.keyboard_control = true;
+        let space = frontend.guide_space().unwrap();
+        assert_eq!(space.x, 40);
+        assert_eq!(space.max_columns, 80);
+    }
+
+    #[test]
+    fn details_respect_anticipated_wide_guide_without_changing_the_tree_viewport() {
+        let mut frontend = popup_frontend();
+        frontend.keyguide = Some(CachedKeyGuide {
+            context: keyguide::Context::Application,
+            columns: 40,
+            max_rows: 16,
+            lines: Vec::new(),
+            space: Some(GuideSpace {
+                x: 0,
+                bottom: 20,
+                max_columns: 120,
+            }),
+            overlay_ready: true,
+            expanded_x: 0,
+            expanded_columns: 64,
+            expanded_rows: 4,
+            reserved_rows: 4,
+        });
+        let tree_height = frontend.tree_height();
+        let coordinates = FloatingPaneCoordinates::default()
+            .with_x_fixed(41)
+            .with_y_fixed(8)
+            .with_width_fixed(60)
+            .with_height_fixed(24);
+        let placement = Frontend::constrain_tooltip_to_guide(
+            frontend.keyguide.as_ref(),
+            overlay::Placement {
+                coordinates: coordinates.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            placement.coordinates,
+            coordinates.clone().with_y_fixed(0).with_height_fixed(16)
+        );
+        assert_eq!(frontend.tree_height(), tree_height);
+        let separate = coordinates.clone().with_x_fixed(70);
+        assert_eq!(
+            Frontend::constrain_tooltip_to_guide(
+                frontend.keyguide.as_ref(),
+                overlay::Placement {
+                    coordinates: separate.clone()
+                },
+            )
+            .unwrap()
+            .coordinates,
+            separate
+        );
+        frontend.keyguide.as_mut().unwrap().expanded_rows = 18;
+        assert_eq!(
+            Frontend::constrain_tooltip_to_guide(
+                frontend.keyguide.as_ref(),
+                overlay::Placement {
+                    coordinates: coordinates.clone()
+                },
+            )
+            .unwrap()
+            .coordinates,
+            coordinates.clone().with_y_fixed(0).with_height_fixed(2)
+        );
+        frontend.keyguide.as_mut().unwrap().overlay_ready = false;
+        assert_eq!(
+            Frontend::constrain_tooltip_to_guide(
+                frontend.keyguide.as_ref(),
+                overlay::Placement {
+                    coordinates: coordinates.clone()
+                },
+            )
+            .unwrap()
+            .coordinates,
+            coordinates.clone().with_y_fixed(0).with_height_fixed(2)
+        );
+        frontend.keyguide.as_mut().unwrap().expanded_x = 105;
+        assert_eq!(
+            Frontend::constrain_tooltip_to_guide(
+                frontend.keyguide.as_ref(),
+                overlay::Placement {
+                    coordinates: coordinates.clone()
+                },
+            )
+            .unwrap()
+            .coordinates,
+            coordinates
+        );
+    }
+
+    #[test]
+    fn geometry_updates_reposition_an_open_popup_without_moving_selection() {
         let mut frontend = popup_frontend();
         frontend.synchronize_focus();
         let item = Item::Workspace("workspace_1".to_owned());
-        frontend.popup_item = Some(item.clone());
-        frontend.refresh_tooltip();
+        hover_item(&mut frontend, &item);
         let focus = frontend.native_focus;
         let cursor = frontend.cursor.clone();
         // The host can render the new size before publishing its updated pane manifest.
@@ -3617,7 +3955,7 @@ mod tests {
         assert!(frontend.update(Event::Mouse(Mouse::Hover(row as isize, 4))));
         assert!(!frontend.update(Event::Mouse(Mouse::Hover(row as isize, 5))));
         assert!(!frontend.update(Event::Mouse(Mouse::ScrollUp(1))));
-        assert!(frontend.update(Event::Mouse(Mouse::RightClick(row as isize, 5))));
+        assert!(!frontend.update(Event::Mouse(Mouse::RightClick(row as isize, 5))));
         let revision = frontend.tooltip.pending.as_ref().unwrap().revision;
         assert!(!frontend.update(Event::Mouse(Mouse::Hover(row as isize, 6))));
         assert_eq!(
@@ -3626,6 +3964,39 @@ mod tests {
         );
         assert_popup(&frontend, &item);
         assert!(frontend.update(Event::Mouse(Mouse::Hover(0, 5))));
+    }
+
+    #[test]
+    fn scrolling_rehits_the_actual_pointer_row_and_clamped_scroll_keeps_its_frame() {
+        let mut frontend = populated_frontend();
+        sidebar_cells(&mut frontend, 12, 24);
+        let first = frontend.items.first().cloned().unwrap();
+        hover_item(&mut frontend, &first);
+        let (line, column) = frontend.pointer_position.unwrap();
+        assert!(frontend.mouse(Mouse::ScrollDown(usize::MAX)));
+        let actual = frontend.pointer_item_at(line, column);
+        assert_eq!(frontend.pointer_item, actual);
+        assert_eq!(frontend.hover, actual);
+        if let Some(item) = actual {
+            assert_ne!(item, first);
+            assert_popup(&frontend, &item);
+        }
+        let revision = frontend
+            .tooltip
+            .pending
+            .as_ref()
+            .map(|state| state.revision);
+        assert!(!frontend.mouse(Mouse::ScrollDown(1)));
+        assert_eq!(
+            frontend
+                .tooltip
+                .pending
+                .as_ref()
+                .map(|state| state.revision),
+            revision
+        );
+        frontend.mouse(Mouse::Hover(0, u16::MAX as usize));
+        assert!(frontend.popup_item.is_none());
     }
 
     #[test]
@@ -3673,6 +4044,23 @@ mod tests {
             frontend.mouse(Mouse::LeftClick(line as isize, 0));
             assert_eq!(frontend.cursor, cursor);
         }
+    }
+
+    #[test]
+    fn passive_floating_popup_does_not_mask_focused_terminal() {
+        let mut frontend = popup_frontend();
+        frontend.tabs[0].are_floating_panes_visible = true;
+        frontend.manifest.panes.get_mut(&0).unwrap().push(PaneInfo {
+            id: 200,
+            is_plugin: true,
+            is_floating: true,
+            is_focused: true,
+            is_selectable: false,
+            ..PaneInfo::default()
+        });
+        frontend.synchronize_focus();
+        assert_eq!(frontend.native_focus, Some(1));
+        assert!(!frontend.control_has_focus);
     }
 
     fn host_focus(frontend: &mut Frontend, pane_id: PaneId) {

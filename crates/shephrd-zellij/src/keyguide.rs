@@ -691,6 +691,7 @@ struct Body<'a> {
     entries: Vec<(Vec<&'a str>, &'a str)>,
     single_key_width: usize,
     two_row_key_width: usize,
+    full_key_width: usize,
     description_width: usize,
 }
 
@@ -700,6 +701,7 @@ impl<'a> Body<'a> {
             entries: Vec::with_capacity(hints.len()),
             single_key_width: 0,
             two_row_key_width: 0,
+            full_key_width: 0,
             description_width: 0,
         };
         for hint in hints {
@@ -713,7 +715,9 @@ impl<'a> Body<'a> {
                     .max()
                     .unwrap_or(0),
             );
-            body.two_row_key_width = body.two_row_key_width.max(alias_width(&keys).div_ceil(2));
+            let aliases = alias_width(&keys);
+            body.two_row_key_width = body.two_row_key_width.max(aliases.div_ceil(2));
+            body.full_key_width = body.full_key_width.max(aliases);
             body.description_width = body.description_width.max(ui::width(&hint.description));
             body.entries.push((keys, hint.description.as_str()));
         }
@@ -724,11 +728,20 @@ impl<'a> Body<'a> {
         self.single_key_width.max(self.two_row_key_width) + 2 + self.description_width
     }
 
+    fn full_columns(&self) -> usize {
+        self.full_key_width + 2 + self.description_width
+    }
+
     fn render(&self, columns: usize, max_rows: usize) -> Vec<String> {
         if columns < 4 || max_rows == 0 {
             return Vec::new();
         }
-        let minimum_key_width = self.single_key_width.max(self.two_row_key_width);
+        let full_fit = self.full_columns() <= columns;
+        let minimum_key_width = if full_fit {
+            self.full_key_width
+        } else {
+            self.single_key_width.max(self.two_row_key_width)
+        };
         let centered_key_width = (columns - 2) / 2;
         let key_width = if self.unwrapped_columns() <= columns {
             centered_key_width.clamp(minimum_key_width, columns - 2 - self.description_width)
@@ -838,11 +851,12 @@ pub(crate) fn render_expanded(
     let hints = available_hints(mode, context);
     let layout = Body::new(&hints);
     let title = title(mode, context);
-    let columns = (layout.unwrapped_columns() + 4)
-        .max(ui::width(&title) + 5)
-        .max(sidebar_columns)
-        .clamp(48, 72)
-        .min(max_columns);
+    let needed = (layout.full_columns() + 4).max(ui::width(&title) + 5);
+    let columns = if needed <= sidebar_columns || max_columns <= sidebar_columns {
+        sidebar_columns.min(max_columns)
+    } else {
+        needed.clamp(48, 72).min(max_columns)
+    };
     let lines = render_frame(
         &title,
         mode.is_none_or(|mode| mode.keybinds.is_none()),
@@ -1382,13 +1396,14 @@ mod tests {
         assert!(
             render(Some(view(&info)), Context::Application, 38, 12).len() > expanded.lines.len()
         );
-        assert_eq!(
-            render_expanded(view(&info), Context::Application, 64, 120, 12).columns,
-            64
-        );
+        assert!(render_expanded(view(&info), Context::Application, 64, 120, 12).columns >= 64);
         assert_eq!(
             render_expanded(view(&info), Context::Application, 100, 120, 12).columns,
-            72
+            100
+        );
+        assert_eq!(
+            render_expanded(view(&info), Context::Application, 120, 120, 12).columns,
+            120
         );
     }
 
@@ -1412,14 +1427,13 @@ mod tests {
                         columns,
                         rows,
                     );
-                    assert!(guide.columns <= columns.min(72));
+                    assert!(guide.columns <= columns);
                     assert!(guide.lines.len() <= rows);
                     if columns == 0 || rows == 0 {
                         assert_eq!(guide.columns, 0);
                         assert!(guide.lines.is_empty());
                     } else {
-                        assert!(guide.columns >= columns.min(48));
-                        assert!(guide.columns >= sidebar.min(columns).min(72));
+                        assert!(guide.columns >= sidebar.min(columns));
                         assert!(!guide.lines.is_empty());
                     }
                     for line in guide.lines {
