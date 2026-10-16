@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - '**'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,6 +15,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.ref_type == 'tag'
     strategy:
       fail-fast: false
       matrix:
@@ -40,3 +42,34 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build packages for ${{ matrix.system }}
         run: nix build --no-link .#bkpr .#bkpr-native .#bkpr-zellij
+      - name: Identify version tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: bash .github/scripts/classify-tag.sh "$TAG" >> "$GITHUB_OUTPUT"
+      - name: Export built package closure
+        if: steps.version.outputs.release == 'true'
+        env:
+          SYSTEM: ${{ matrix.system }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          package=$(nix eval --raw ".#packages.$SYSTEM.bkpr.outPath")
+          closure=()
+          while IFS= read -r path; do
+            closure+=("$path")
+          done < <(nix-store --query --requisites "$package")
+          nix-store --export "${closure[@]}" | gzip -1 > "bkpr-$TAG-$SYSTEM.nix-store.gz"
+      - uses: actions/upload-artifact@v4
+        if: steps.version.outputs.release == 'true'
+        with:
+          name: bkpr-${{ matrix.system }}
+          path: bkpr-${{ github.ref_name }}-${{ matrix.system }}.nix-store.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    needs: build
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
