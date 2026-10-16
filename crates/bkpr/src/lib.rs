@@ -112,6 +112,9 @@ pub struct Pane {
     pub description: String,
     /// Recognized harness identity, never an arbitrary OSC application id.
     pub harness: Option<String>,
+    /// Launch-local Bkpr messaging identity; absent for unwrapped harnesses.
+    #[serde(default)]
+    pub agent_id: Option<String>,
     pub status: Status,
     pub attention: Option<Attention>,
     pub cwd: Option<String>,

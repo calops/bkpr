@@ -2540,6 +2540,7 @@ mod tests {
                     name: format!("Terminal {id}"),
                     description: String::new(),
                     harness: None,
+                    agent_id: None,
                     status: Status::Idle,
                     attention: None,
                     cwd: None,

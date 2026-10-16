@@ -292,6 +292,7 @@ mod tests {
                 name: name.into(),
                 description: description.into(),
                 harness: None,
+                agent_id: None,
                 status: Status::Unknown,
                 attention: None,
                 cwd: Some("/repo".into()),
