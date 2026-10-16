@@ -1298,6 +1298,15 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                 if let Some(cwd) = pane.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
                     intro.push(PopupRow::text(format!("\u{f07b} {cwd}"), PopupColor::Muted));
                 }
+                if let Some(agent_id) = pane.agent_id.as_deref().filter(|_| harness.is_some()) {
+                    intro.push(PopupRow {
+                        spans: vec![
+                            PopupSpan::new("\u{f0efe} Agent ID: ", PopupColor::Muted), // nf-md-identifier
+                            PopupSpan::new(agent_id, PopupColor::Text),
+                        ],
+                        ..PopupRow::default()
+                    });
+                }
                 if !pane.description.trim().is_empty() {
                     intro.push(PopupRow {
                         spans: vec![
@@ -1646,6 +1655,7 @@ mod tests {
                 name: "日本語 agent".to_owned(),
                 description: "Native activity".to_owned(),
                 harness: Some("codex".to_owned()),
+                agent_id: None,
                 status: Status::Working,
                 attention: None,
                 cwd: Some("/repo".to_owned()),
@@ -1979,6 +1989,22 @@ mod tests {
                 .any(|row| row.plain().contains("GitHub rate limit; retry later"))
         );
         assert!(!rows.iter().any(|row| row.plain().contains("https://")));
+    }
+
+    #[test]
+    fn managed_agent_id_appears_only_on_its_harness_pane_popup() {
+        let mut state = snapshot();
+        let id = "0123456789abcdef0123456789abcdef";
+        state.panes[0].agent_id = Some(id.to_owned());
+        let pane = Item::Pane("1".to_owned());
+        let popup = tooltip(&pane, &state);
+        let identity = popup.intro.iter().find(|row| row.plain().contains("Agent ID")).unwrap();
+        assert_eq!(identity.plain(), format!("\u{f0efe} Agent ID: {id}"));
+        assert_eq!(identity.spans[1].color, PopupColor::Text);
+        assert!(!tooltip(&Item::Workspace("workspace".to_owned()), &state)
+            .rows().iter().any(|row| row.plain().contains(id)));
+        state.panes[0].harness = None;
+        assert!(!tooltip(&pane, &state).rows().iter().any(|row| row.plain().contains(id)));
     }
 
     #[test]

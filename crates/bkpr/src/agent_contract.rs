@@ -23,6 +23,9 @@ pub struct AgentExecution {
     pub identity: String,
     pub harness: String,
     pub cwd: Option<String>,
+    /// Bkpr relay launch ID, only when present in the foreground harness environment.
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 /// Display name only for a recognized harness, never an arbitrary OSC app id.

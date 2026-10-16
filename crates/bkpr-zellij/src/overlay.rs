@@ -3251,6 +3251,7 @@ mod tests {
                 name: "Editor".to_owned(),
                 description: String::new(),
                 harness: None,
+                agent_id: None,
                 status: bkpr::Status::Idle,
                 attention: None,
                 cwd: None,

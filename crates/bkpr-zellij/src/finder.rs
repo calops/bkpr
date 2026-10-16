@@ -1235,6 +1235,7 @@ mod tests {
                     name: format!("Terminal {index}"),
                     description: format!("Working on feature {index}"),
                     harness: None,
+                    agent_id: None,
                     status: Status::Idle,
                     attention: None,
                     cwd: Some(format!("/project/{index}")),

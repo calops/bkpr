@@ -763,6 +763,7 @@ impl Model {
                         )
                     },
                     harness: harness.map(str::to_owned),
+                    agent_id: agent.and_then(|agent| agent.agent_id.clone()),
                     // Generic raw status is retained only on non-harness panes; presentation
                     // and workspace summaries must gate program status on harness identity.
                     status: if let Some(record) = harness_record {
@@ -1291,6 +1292,8 @@ impl Model {
                 .get(id)
                 .filter(|agent| harness_name(&agent.harness).is_some());
             changed |= previous.map(|agent| &agent.harness) != current.map(|agent| &agent.harness);
+            changed |= previous.and_then(|agent| agent.agent_id.as_ref())
+                != current.and_then(|agent| agent.agent_id.as_ref());
         }
         for (id, agent) in &agents {
             if let Some(cwd) = &agent.cwd {
@@ -3445,6 +3448,7 @@ mod tests {
             identity: format!("birth-{id}"),
             harness: "claude".to_owned(),
             cwd: None,
+            agent_id: None,
         }
     }
 
@@ -3530,6 +3534,23 @@ mod tests {
         let decoded: NativeCiRefresh = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.client_id, 1);
         assert_eq!(decoded.target, envelope.target);
+    }
+
+    #[test]
+    fn new_launch_identity_refreshes_the_same_harness_popup() {
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
+        model.observe_roots(BTreeMap::from([(1, 101)]));
+        let mut agent = execution(1);
+        agent.agent_id = Some("0123456789abcdef0123456789abcdef".to_owned());
+        let ticket = model.agent_ticket(5, 1, 1_000).unwrap();
+        assert!(model.apply_agents(&ticket, InspectResponse { executions: vec![agent.clone()] }, 1_001).unwrap());
+        assert_eq!(model.snapshot(None, 1).panes[0].agent_id, agent.agent_id);
+
+        agent.agent_id = Some("fedcba9876543210fedcba9876543210".to_owned());
+        let ticket = model.agent_ticket(5, 1, 2_000).unwrap();
+        assert!(model.apply_agents(&ticket, InspectResponse { executions: vec![agent.clone()] }, 2_001).unwrap());
+        assert_eq!(model.snapshot(None, 1).panes[0].agent_id, agent.agent_id);
     }
 
     #[test]
