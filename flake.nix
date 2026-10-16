@@ -1,6 +1,11 @@
 {
   description = "bkpr — workspace-first native Zellij terminals and sidebar";
 
+  nixConfig = {
+    extra-substituters = [ "https://bkpr.cachix.org" ];
+    extra-trusted-public-keys = [ "bkpr.cachix.org-1:uAJ+wudjeXgYbimGGreY8LgWfk0j9JaxNBjDxQ0h18w=" ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/b1b875982b17dabde9b4a37f3e229e74913e6db3";
     rust-overlay = {
