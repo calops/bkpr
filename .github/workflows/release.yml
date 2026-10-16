@@ -1,0 +1,46 @@
+name: Publish cached release
+
+on:
+  workflow_call:
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.tag.outputs.release }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: bash .github/scripts/classify-tag.sh "$TAG" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: validate
+    if: needs.validate.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bkpr-*
+          path: dist
+          merge-multiple: true
+      - name: Prepare release assets and changelog
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum ./*.nix-store.gz > SHA256SUMS
+          cd ..
+          node .github/scripts/release-notes.mjs "$TAG" > release-notes.md
+      - uses: softprops/action-gh-release@v3
+        with:
+          body_path: release-notes.md
+          prerelease: ${{ needs.validate.outputs.prerelease == 'true' }}
+          files: dist/*
+          fail_on_unmatched_files: true

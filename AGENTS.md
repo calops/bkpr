@@ -25,6 +25,11 @@
 - Sidebar hover and popup hover cannot both own the physical pointer. Keyboard navigation invalidates an earlier mouse highlight; do not let stale native pointer coordinates pin a focus-only popup. Probe the helper at handoffs without polling, and let verified popup hover retain details after sidebar leave.
 - Locked shortcut hints stay inline. Wider cards are used only when keys/descriptions would wrap at sidebar width; a widened card sits at the far-right edge in sidebar context. Plan content height and geometry before display, not when READY arrives. Finder coordinates cover the whole display.
 
+## Releases and commits
+
+- Use Conventional Commits for new commits: `feat:` for user-visible features, `fix:` for fixes, and `type(scope):` when a scope helps. Mark breaking changes with `!` and a `BREAKING CHANGE:` footer. Maintenance-only commits use `chore:`, `docs:`, `test:`, or `refactor:`; do not label them as features or fixes to force a release. The manual release workflow derives SemVer and release notes from these messages; earlier nonconforming history is not rewritten.
+- `unstable` is a moving cache tag. Version tags are immutable `vMAJOR.MINOR.PATCH` SemVer releases (optional prerelease/build suffixes); publish release assets only after the tagged cache build succeeds.
+
 ## Development
 
 Use `nix develop` and incremental debug Cargo artifacts in `target/`. Run coordinated checks once after edits: `cargo test --locked --workspace`, `cargo build --locked -p bkpr-zellij --target wasm32-wasip1`, host/WASI `cargo clippy --locked ... -- -D warnings`. Use `nix build .#bkpr` only for packaging validation, not the edit/run loop.
