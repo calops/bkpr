@@ -71,6 +71,14 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
         let wrapper = bin.join("claude");
         private_file(&wrapper, crate::claude::wrapper(program, &bin)?.as_bytes())?;
         fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700))?;
+        for (name, wrapper) in [
+            ("omp", crate::omp::wrapper(program, &bin)?),
+            ("codex", crate::codex::wrapper(program, &bin)?),
+        ] {
+            let path = bin.join(name);
+            private_file(&path, wrapper.as_bytes())?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+        }
         let cwd = env::current_dir().context("locate native launch directory")?;
         let cwd = cwd
             .to_str()

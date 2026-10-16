@@ -1,4 +1,4 @@
-//! Launch-local title supplementation. Claude remains the sole semantic status producer.
+//! Launch-local titles and MCP channels. Claude remains the semantic status producer.
 use std::env;
 use std::ffi::{CStr, OsStr, OsString};
 use std::fs::{self, OpenOptions};
@@ -57,15 +57,23 @@ fn real_claude(directory: &Path) -> Result<PathBuf> {
 pub fn launch(directory: &Path, mut arguments: Vec<OsString>) -> Result<()> {
     let executable = real_claude(directory)?;
     let mut command = Command::new(executable);
-    if std::io::stdout().is_terminal() && supplement(&mut arguments)? {
-        command.env("BKPR_CLAUDE_TTY", terminal_path()?);
-        let titles = directory
-            .parent()
-            .context("locate session runtime")?
-            .join("claude-titles");
-        fs::create_dir_all(&titles)?;
-        fs::set_permissions(&titles, fs::Permissions::from_mode(0o700))?;
-        command.env("BKPR_CLAUDE_TITLE_DIR", titles);
+    if std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && argument_plan(&arguments).is_some()
+    {
+        if supplement(&mut arguments)? {
+            command.env("BKPR_CLAUDE_TTY", terminal_path()?);
+            let titles = directory
+                .parent()
+                .context("locate session runtime")?
+                .join("claude-titles");
+            fs::create_dir_all(&titles)?;
+            fs::set_permissions(&titles, fs::Permissions::from_mode(0o700))?;
+            command.env("BKPR_CLAUDE_TITLE_DIR", titles);
+        }
+        let relay = crate::relay::prepare("claude", &env::current_dir()?)?;
+        relay.apply(&mut command);
+        supplement_relay(&mut arguments, &env::current_exe()?)?;
     }
     Err(command.args(arguments).exec()).context("execute Claude")
 }
@@ -84,12 +92,16 @@ fn terminal_path() -> Result<OsString> {
 struct ArgumentPlan {
     settings: Option<(usize, bool)>,
     insert_at: usize,
+    mcp_insert: Option<usize>,
+    channel_insert: Option<usize>,
 }
 
 fn argument_plan(arguments: &[OsString]) -> Option<ArgumentPlan> {
     let mut plan = ArgumentPlan {
         settings: None,
         insert_at: arguments.len(),
+        mcp_insert: None,
+        channel_insert: None,
     };
     let mut index = 0;
     let mut first_positional = true;
@@ -104,6 +116,29 @@ fn argument_plan(arguments: &[OsString]) -> Option<ArgumentPlan> {
             .map_or((argument, None), |(option, value)| (option, Some(value)));
         match option {
             "--bare" | "--print" | "-p" | "--help" | "-h" | "--version" | "-v" => return None,
+            "--mcp-config" | "--dangerously-load-development-channels" | "--channels" => {
+                let mut end = index + 1;
+                while end < arguments.len() && !arguments[end].as_bytes().starts_with(b"-") {
+                    end += 1;
+                }
+                if value.is_none() && end == index + 1 {
+                    return None;
+                }
+                match option {
+                    "--mcp-config" => {
+                        if plan.mcp_insert.replace(end).is_some() {
+                            return None;
+                        }
+                    }
+                    "--dangerously-load-development-channels"
+                        if plan.channel_insert.replace(end).is_some() =>
+                    {
+                        return None;
+                    }
+                    _ => {}
+                }
+                index = end - 1;
+            }
             "--model" | "--name" | "-n" | "--settings" | "--setting-sources"
             | "--permission-mode" | "--session-id" | "--effort" => {
                 let value_index = if value.is_some() { index } else { index + 1 };
@@ -119,6 +154,7 @@ fn argument_plan(arguments: &[OsString]) -> Option<ArgumentPlan> {
             // which Claude does not include in the hook's session_title field.
             "--resume" | "-r" | "--continue" | "-c" => return None,
             "--fork-session"
+            | "--strict-mcp-config"
             | "--dangerously-skip-permissions"
             | "--allow-dangerously-skip-permissions"
                 if value.is_none() => {}
@@ -209,6 +245,47 @@ fn supplement(arguments: &mut Vec<OsString>) -> Result<bool> {
     Ok(true)
 }
 
+fn supplement_relay(arguments: &mut Vec<OsString>, program: &Path) -> Result<()> {
+    let plan = argument_plan(arguments).context("unsupported Claude relay arguments")?;
+    let config = serde_json::to_string(&json!({
+        "mcpServers": {
+            "bkpr": {
+                "type": "stdio",
+                "command": program,
+                "args": ["relay-mcp"]
+            }
+        }
+    }))?;
+    // Extend existing variadic flags rather than replacing the user's MCP
+    // servers or channel choices with a second occurrence of the same option.
+    let mut insertions: Vec<(usize, Vec<OsString>)> = Vec::new();
+    let mut options = Vec::new();
+    if let Some(index) = plan.mcp_insert {
+        insertions.push((index, vec![config.into()]));
+    } else {
+        options.extend([OsString::from("--mcp-config"), config.into()]);
+    }
+    if let Some(index) = plan.channel_insert {
+        insertions.push((index, vec![OsString::from("server:bkpr")]));
+    } else {
+        options.extend([
+            OsString::from("--dangerously-load-development-channels"),
+            OsString::from("server:bkpr"),
+        ]);
+    }
+    // Append after existing arguments, or before an existing literal separator:
+    // variadic config/channel options must never consume the user's prompt.
+    insertions.push((plan.insert_at, options));
+    // Equal-position splices run in reverse output order, so values extending
+    // an existing variadic option precede any newly introduced option.
+    insertions.reverse();
+    insertions.sort_by_key(|item| std::cmp::Reverse(item.0));
+    for (index, values) in insertions {
+        arguments.splice(index..index, values);
+    }
+    Ok(())
+}
+
 fn compose(settings: &mut Value, quoted_program: &str) -> Result<()> {
     let object = settings
         .as_object_mut()
@@ -218,12 +295,16 @@ fn compose(settings: &mut Value, quoted_program: &str) -> Result<()> {
         .or_insert_with(|| json!({}))
         .as_object_mut()
         .context("Claude hooks must be an object")?;
-    let prompt = hooks
-        .entry("UserPromptSubmit")
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
-        .context("Claude UserPromptSubmit hooks must be an array")?;
-    prompt.push(json!({"hooks": [{"type": "command", "command": format!("{quoted_program} claude-title")}]}));
+    for event in ["SessionStart", "UserPromptSubmit"] {
+        let callbacks = hooks
+            .entry(event)
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .with_context(|| format!("Claude {event} hooks must be an array"))?;
+        callbacks.push(json!({
+            "hooks": [{"type": "command", "command": format!("{quoted_program} claude-title")}]
+        }));
+    }
     Ok(())
 }
 
@@ -292,11 +373,17 @@ fn emit_title(text: &str) {
 pub fn prompt_title() -> Result<()> {
     if let Ok(input) = callback_input()
         && let Ok(value) = serde_json::from_slice::<Value>(&input)
-        && let Some(title) = prompt_label(&value)
-        && let Some(directory) = env::var_os("BKPR_CLAUDE_TITLE_DIR")
-        && claim_initial_title(Path::new(&directory), &value)
     {
-        emit_title(title);
+        if let Some(session_id) = value.get("session_id").and_then(Value::as_str) {
+            // Callback failures must never interfere with Claude's prompt.
+            let _ = crate::relay::bind_session(session_id);
+        }
+        if let Some(title) = prompt_label(&value)
+            && let Some(directory) = env::var_os("BKPR_CLAUDE_TITLE_DIR")
+            && claim_initial_title(Path::new(&directory), &value)
+        {
+            emit_title(title);
+        }
     }
     Ok(())
 }
@@ -340,6 +427,91 @@ mod tests {
     use super::*;
 
     #[test]
+    fn relay_preserves_file_settings_and_literal_prompt() {
+        let mut arguments: Vec<OsString> = [
+            "--settings",
+            "/unreadable/settings.json",
+            "--",
+            "--print this literal prompt",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        assert!(!supplement(&mut arguments).unwrap());
+        supplement_relay(&mut arguments, Path::new("/private/bkpr")).unwrap();
+        assert_eq!(arguments[0], "--settings");
+        assert_eq!(arguments[1], "/unreadable/settings.json");
+        assert_eq!(arguments[2], "--mcp-config");
+        let config: Value = serde_json::from_str(arguments[3].to_str().unwrap()).unwrap();
+        assert_eq!(config["mcpServers"]["bkpr"]["command"], "/private/bkpr");
+        assert_eq!(config["mcpServers"]["bkpr"]["args"], json!(["relay-mcp"]));
+        assert!(config["mcpServers"]["bkpr"].get("env").is_none());
+        assert_eq!(arguments[4], "--dangerously-load-development-channels");
+        assert_eq!(arguments[5], "server:bkpr");
+        assert_eq!(arguments[6], "--");
+        assert_eq!(arguments[7], "--print this literal prompt");
+    }
+
+    #[test]
+    fn relay_extends_existing_variadic_options_without_replacing_them() {
+        for mcp in ["--mcp-config", "--mcp-config=first.json"] {
+            let mut arguments: Vec<OsString> = [
+                mcp,
+                "second.json",
+                "--dangerously-load-development-channels",
+                "server:existing",
+                "--",
+                "prompt",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+            supplement_relay(&mut arguments, Path::new("/bkpr")).unwrap();
+            assert_eq!(arguments[0], mcp);
+            assert_eq!(arguments[1], "second.json");
+            assert!(arguments[2].to_str().unwrap().contains("\"bkpr\""));
+            assert_eq!(arguments[3], "--dangerously-load-development-channels");
+            assert_eq!(arguments[4], "server:existing");
+            assert_eq!(arguments[5], "server:bkpr");
+            assert_eq!(arguments[6], "--");
+            assert_eq!(arguments[7], "prompt");
+        }
+    }
+
+    #[test]
+    fn relay_shared_option_boundary_does_not_turn_config_into_channel() {
+        let mut arguments = vec![OsString::from("--mcp-config"), OsString::from("user.json")];
+        supplement_relay(&mut arguments, Path::new("/bkpr")).unwrap();
+        assert_eq!(arguments[0], "--mcp-config");
+        assert_eq!(arguments[1], "user.json");
+        assert!(arguments[2].to_str().unwrap().contains("\"mcpServers\""));
+        assert_eq!(arguments[3], "--dangerously-load-development-channels");
+        assert_eq!(arguments[4], "server:bkpr");
+    }
+
+    #[test]
+    fn relay_options_do_not_consume_an_initial_prompt() {
+        let mut arguments = vec![OsString::from("hello"), OsString::from("--model=haiku")];
+        supplement_relay(&mut arguments, Path::new("/bkpr")).unwrap();
+        assert_eq!(arguments[0], "hello");
+        assert_eq!(arguments[1], "--model=haiku");
+        assert_eq!(arguments[2], "--mcp-config");
+        assert_eq!(arguments[4], "--dangerously-load-development-channels");
+        assert_eq!(arguments[5], "server:bkpr");
+        for args in [
+            vec!["-p", "hello"],
+            vec!["--print=hello"],
+            vec!["--help"],
+            vec!["mcp", "list"],
+            vec!["--future-option", "value"],
+            vec!["--mcp-config"],
+        ] {
+            let args: Vec<OsString> = args.into_iter().map(OsString::from).collect();
+            assert!(argument_plan(&args).is_none());
+        }
+    }
+
+    #[test]
     fn composing_keeps_status_line_permissions_and_hook_policy() {
         let mut settings = json!({
             "statusLine": {"type": "command", "command": "original --flag", "padding": 3},
@@ -347,6 +519,7 @@ mod tests {
             "permissions": {"deny": ["Bash(rm:*)"]},
             "hooks": {
                 "UserPromptSubmit": [{"matcher": "*", "hooks": [{"type": "command", "command": "original hook"}]}],
+                "SessionStart": [{"matcher": "startup", "hooks": [{"type": "command", "command": "original start"}]}],
                 "Stop": [{"hooks": [{"type": "command", "command": "on stop"}]}]
             }
         });
@@ -360,6 +533,10 @@ mod tests {
         assert_eq!(hooks.len(), 2);
         assert_eq!(hooks[0], original["hooks"]["UserPromptSubmit"][0]);
         assert_eq!(hooks[1]["hooks"][0]["command"], "'callback' claude-title");
+        let start = settings["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(start.len(), 2);
+        assert_eq!(start[0], original["hooks"]["SessionStart"][0]);
+        assert_eq!(start[1]["hooks"][0]["command"], "'callback' claude-title");
     }
 
     #[test]

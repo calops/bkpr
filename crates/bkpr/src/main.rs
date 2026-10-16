@@ -2,18 +2,21 @@ mod agent;
 mod agent_relay;
 mod ci;
 mod claude;
+mod codex;
 mod launcher;
+mod omp;
 mod project;
 #[cfg(target_os = "linux")]
 mod project_cache;
 mod project_watch;
+mod relay;
 
 use std::io::{self, Write};
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand};
 use bkpr::MAX_MESSAGE_BYTES;
+use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -70,6 +73,38 @@ enum Commands {
     /// Receive a Claude UserPromptSubmit hook payload.
     #[command(hide = true)]
     ClaudeTitle,
+    /// Launch OMP with launch-local messaging.
+    #[command(hide = true)]
+    OmpLaunch {
+        #[arg(long)]
+        wrapper_dir: PathBuf,
+        #[arg(last = true)]
+        arguments: Vec<std::ffi::OsString>,
+    },
+    /// Launch Codex with launch-local messaging.
+    #[command(hide = true)]
+    CodexLaunch {
+        #[arg(long)]
+        wrapper_dir: PathBuf,
+        #[arg(last = true)]
+        arguments: Vec<std::ffi::OsString>,
+    },
+    #[command(hide = true)]
+    CodexHook,
+    #[command(hide = true)]
+    CodexStop {
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+    /// Serve the authenticated launch-local MCP connection over stdio.
+    #[command(hide = true)]
+    RelayMcp,
+    /// Own the private native durable message broker.
+    #[command(hide = true)]
+    RelayDaemon {
+        #[arg(long)]
+        socket: PathBuf,
+    },
     /// Own a managed session's SSH-agent relay until its last attachment ends.
     #[command(hide = true)]
     AgentRelayDaemon {
@@ -102,6 +137,18 @@ fn run() -> Result<()> {
             arguments,
         }) => claude::launch(&wrapper_dir, arguments),
         Some(Commands::ClaudeTitle) => claude::prompt_title(),
+        Some(Commands::OmpLaunch {
+            wrapper_dir,
+            arguments,
+        }) => omp::launch(&wrapper_dir, arguments),
+        Some(Commands::CodexLaunch {
+            wrapper_dir,
+            arguments,
+        }) => codex::launch(&wrapper_dir, arguments),
+        Some(Commands::CodexHook) => codex::hook(),
+        Some(Commands::CodexStop { manifest }) => codex::stop(&manifest),
+        Some(Commands::RelayMcp) => relay::mcp(),
+        Some(Commands::RelayDaemon { socket }) => relay::daemon(&socket),
         Some(Commands::AgentRelayDaemon { runtime }) => agent_relay::daemon(&runtime),
         Some(Commands::Agent { command }) => match command {
             AgentCommands::Inspect { json } => {
