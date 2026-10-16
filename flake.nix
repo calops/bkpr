@@ -92,7 +92,7 @@
           };
           native = rustPlatform.buildRustPackage {
             pname = "bkpr-native";
-            version = "0.1.0";
+            version = "0.1.1";
             inherit src;
             cargoLock.lockFileContents = builtins.readFile ./Cargo.lock;
             nativeCheckInputs = [ pkgs.git ];
@@ -114,7 +114,7 @@
           };
           plugin = rustPlatform.buildRustPackage {
             pname = "bkpr-zellij";
-            version = "0.1.0";
+            version = "0.1.1";
             inherit src;
             cargoLock.lockFileContents = builtins.readFile ./Cargo.lock;
             buildPhase = ''
@@ -133,7 +133,7 @@
             meta.license = pkgs.lib.licenses.mit;
           };
           product =
-            pkgs.runCommand "bkpr-0.1.0"
+            pkgs.runCommand "bkpr-0.1.1"
               {
                 nativeBuildInputs = [ pkgs.makeWrapper ];
                 meta.mainProgram = "bkpr";
