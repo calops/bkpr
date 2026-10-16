@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
-use shephrd::agent_contract::harness_name;
-use shephrd::ci_contract::{
+use bkpr::agent_contract::harness_name;
+use bkpr::ci_contract::{
     ChangeRequestState, CiFetchState, CiRefreshTarget, CiSnapshot, CiStatus, ForgeProvider,
     IssueTracker, LinkedIssue,
 };
-use shephrd::{Attention, ProjectIdentity, Snapshot, Status};
+use bkpr::{Attention, ProjectIdentity, Snapshot, Status};
 use unicode_width::UnicodeWidthStr;
 
 pub const RESET: &str = "\u{1b}[0m";
@@ -184,7 +184,7 @@ pub fn clean(text: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Borrowed(text)
 }
 
-fn branch_label(pane: &shephrd::Pane) -> Option<std::borrow::Cow<'_, str>> {
+fn branch_label(pane: &bkpr::Pane) -> Option<std::borrow::Cow<'_, str>> {
     pane.branch
         .as_deref()
         .map(clean)
@@ -303,7 +303,7 @@ fn ci_badge(columns: usize) -> String {
 
 /// Reserve the complete pair, or omit it; never truncate a line-count number.
 fn branch_counts(
-    changes: Option<&shephrd::BranchChanges>,
+    changes: Option<&bkpr::BranchChanges>,
     columns: usize,
 ) -> Option<(String, usize)> {
     let total = changes?.total;
@@ -614,7 +614,7 @@ fn forge_repository(ci: &CiSnapshot, project: Option<&ProjectIdentity>) -> Popup
     repository
 }
 
-fn request_row(request: &shephrd::ci_contract::ChangeRequest) -> PopupRow {
+fn request_row(request: &bkpr::ci_contract::ChangeRequest) -> PopupRow {
     PopupRow {
         spans: vec![
             PopupSpan::new(
@@ -849,7 +849,7 @@ fn status_icon(status: Status, attention: Option<Attention>) -> &'static str {
     }
 }
 
-fn pane_harness(pane: &shephrd::Pane) -> Option<&str> {
+fn pane_harness(pane: &bkpr::Pane) -> Option<&str> {
     pane.harness
         .as_deref()
         .filter(|harness| harness_name(harness).is_some())
@@ -1092,7 +1092,7 @@ fn repository_heading(project: &ProjectIdentity, ci: Option<&CiSnapshot>) -> Pop
 
 fn branch_rows(
     branch: Option<&str>,
-    changes: Option<&shephrd::BranchChanges>,
+    changes: Option<&bkpr::BranchChanges>,
     ci: Option<&CiSnapshot>,
 ) -> Vec<PopupRow> {
     let mut row = PopupRow::text(
@@ -1184,7 +1184,7 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                             rows.extend(request.issues.iter().map(issue_row));
                         }
                     }
-                    let mut contexts: Vec<&shephrd::Pane> = Vec::new();
+                    let mut contexts: Vec<&bkpr::Pane> = Vec::new();
                     for pane in &panes {
                         if pane
                             .project
@@ -1589,13 +1589,13 @@ mod tests {
     fn ci(status: CiStatus) -> CiSnapshot {
         CiSnapshot {
             status,
-            checks: vec![shephrd::ci_contract::CiCheck {
+            checks: vec![bkpr::ci_contract::CiCheck {
                 name: "unit tests".to_owned(),
                 status,
                 url: Some("https://github.com/owner/repo/actions/runs/12".to_owned()),
                 duration_seconds: Some(123),
             }],
-            change_request: Some(shephrd::ci_contract::ChangeRequest {
+            change_request: Some(bkpr::ci_contract::ChangeRequest {
                 number: 7,
                 title: "Improve project metadata".to_owned(),
                 url: "https://github.com/owner/repo/pull/7".to_owned(),
@@ -1608,7 +1608,7 @@ mod tests {
             updated_at: 1,
             stale: false,
             error: None,
-            repository: shephrd::ci_contract::ForgeRepository {
+            repository: bkpr::ci_contract::ForgeRepository {
                 provider: ForgeProvider::Github,
                 host: "github.com".to_owned(),
                 path: "owner/repo".to_owned(),
@@ -1624,14 +1624,14 @@ mod tests {
     fn snapshot() -> Snapshot {
         let project = identity("/repo/.git");
         Snapshot {
-            protocol: shephrd::PROTOCOL_VERSION,
+            protocol: bkpr::PROTOCOL_VERSION,
             instance_id: "native:test".to_owned(),
             revision: 1,
             session: "test".to_owned(),
             connected: true,
             error: None,
             focused_pane_id: Some("1".to_owned()),
-            workspaces: vec![shephrd::Workspace {
+            workspaces: vec![bkpr::Workspace {
                 id: "workspace".to_owned(),
                 name: "日本語 workspace".to_owned(),
                 active_tab_id: "tab".to_owned(),
@@ -1639,7 +1639,7 @@ mod tests {
                 status: Status::Working,
                 attention: None,
             }],
-            panes: vec![shephrd::Pane {
+            panes: vec![bkpr::Pane {
                 id: "1".to_owned(),
                 terminal_id: "1".to_owned(),
                 workspace_id: "workspace".to_owned(),
@@ -1985,11 +1985,11 @@ mod tests {
         assert!(content.rows().iter().all(|row| row.link.is_none()));
     }
 
-    fn changes() -> shephrd::BranchChanges {
-        shephrd::BranchChanges {
+    fn changes() -> bkpr::BranchChanges {
+        bkpr::BranchChanges {
             base_ref: "refs/remotes/origin/main".to_owned(),
             merge_base: "abcdef0123456789abcdef0123456789abcdef01".to_owned(),
-            total: shephrd::DiffStat {
+            total: bkpr::DiffStat {
                 added: 1234,
                 deleted: 567,
                 binary_files: 2,
@@ -2529,7 +2529,7 @@ mod tests {
     fn provider_target_labels_remain_visible_when_the_commit_stats_are_unavailable() {
         let mut state = snapshot();
         let ci = state.panes[0].ci.as_mut().unwrap();
-        ci.change_request.as_mut().unwrap().base = Some(shephrd::ci_contract::ChangeRequestBase {
+        ci.change_request.as_mut().unwrap().base = Some(bkpr::ci_contract::ChangeRequestBase {
             branch: "stack/parent".into(),
             commit: "f".repeat(40),
             repository: ci.repository.clone(),

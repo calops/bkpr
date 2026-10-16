@@ -33,7 +33,7 @@ mod linux {
     use crate::{ci, launcher, project};
     use anyhow::{Context, bail};
     use serde::{Deserialize, Serialize};
-    use shephrd::ci_contract::CiRefreshTarget;
+    use bkpr::ci_contract::CiRefreshTarget;
     use std::collections::{BTreeMap, BTreeSet};
     use std::ffi::CString;
     use std::fs::OpenOptions;
@@ -48,7 +48,7 @@ mod linux {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    const PIPE: &str = "shephrd-native-project";
+    const PIPE: &str = "bkpr-native-project";
     const LISTENER_FD: i32 = 198;
 
     #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -77,7 +77,7 @@ mod linux {
     }
 
     fn request(json: &str) -> Result<Request> {
-        if json.len() > shephrd::MAX_MESSAGE_BYTES {
+        if json.len() > bkpr::MAX_MESSAGE_BYTES {
             bail!("project watch request exceeds message limit");
         }
         let request: Request = serde_json::from_str(json)?;
@@ -106,7 +106,7 @@ mod linux {
             stream.shutdown(std::net::Shutdown::Write)?;
             let mut response = String::new();
             stream
-                .take(shephrd::MAX_MESSAGE_BYTES as u64)
+                .take(bkpr::MAX_MESSAGE_BYTES as u64)
                 .read_to_string(&mut response)?;
             if response != "ok" {
                 bail!("project watcher rejected update: {response}");
@@ -159,7 +159,7 @@ mod linux {
             stream.shutdown(std::net::Shutdown::Write)?;
             let mut response = String::new();
             stream
-                .take(shephrd::MAX_MESSAGE_BYTES as u64)
+                .take(bkpr::MAX_MESSAGE_BYTES as u64)
                 .read_to_string(&mut response)?;
             if response != "ok" {
                 bail!("project watcher startup failed: {response}");
@@ -370,7 +370,7 @@ mod linux {
         let hash = identity.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
         });
-        format!("shephrd-native-{hash:016x}")
+        format!("bkpr-native-{hash:016x}")
     }
 
     fn publish(
@@ -386,11 +386,11 @@ mod linux {
             error,
         };
         let json = serde_json::to_string(&update)?;
-        if json.len() > shephrd::MAX_MESSAGE_BYTES {
+        if json.len() > bkpr::MAX_MESSAGE_BYTES {
             bail!("project update exceeds message limit");
         }
         let mut command =
-            Command::new(std::env::var_os("SHEPHRD_ZELLIJ").unwrap_or_else(|| "zellij".into()));
+            Command::new(std::env::var_os("BKPR_ZELLIJ").unwrap_or_else(|| "zellij".into()));
         command.args([
             "--session",
             &zellij_session(&request.session),
@@ -500,7 +500,7 @@ mod linux {
                         match reader.read(&mut scratch) {
                             Ok(0) => break,
                             Ok(count) => {
-                                if bytes.len() + count > shephrd::MAX_MESSAGE_BYTES {
+                                if bytes.len() + count > bkpr::MAX_MESSAGE_BYTES {
                                     bail!("subprocess output exceeds message limit");
                                 }
                                 bytes.extend_from_slice(&scratch[..count]);
@@ -531,7 +531,7 @@ mod linux {
                             match reader.read(&mut scratch) {
                                 Ok(0) => break,
                                 Ok(count) => {
-                                    if bytes.len() + count > shephrd::MAX_MESSAGE_BYTES {
+                                    if bytes.len() + count > bkpr::MAX_MESSAGE_BYTES {
                                         bail!("subprocess output exceeds message limit");
                                     }
                                     bytes.extend_from_slice(&scratch[..count]);
@@ -810,7 +810,7 @@ mod linux {
                 stream.set_read_timeout(Some(Duration::from_secs(2)))?;
                 let mut bytes = String::new();
                 let incoming = Read::by_ref(&mut stream)
-                    .take(shephrd::MAX_MESSAGE_BYTES as u64 + 1)
+                    .take(bkpr::MAX_MESSAGE_BYTES as u64 + 1)
                     .read_to_string(&mut bytes)
                     .map_err(anyhow::Error::from)
                     .and_then(|_| request(&bytes));
@@ -931,7 +931,7 @@ mod linux {
             refresh_ci(&active, &incoming, &previous, &mut monitor);
             assert_eq!(
                 monitor.snapshot(&source).unwrap().fetch_state,
-                shephrd::ci_contract::CiFetchState::Loading
+                bkpr::ci_contract::CiFetchState::Loading
             );
             assert!(previous[&cwd].0 == active.watches[&cwd]);
             assert_eq!(active.sequence, 20);
@@ -1226,12 +1226,12 @@ mod linux {
                     .branch_changes
                     .unwrap()
                     .total,
-                shephrd::DiffStat::default(),
+                bkpr::DiffStat::default(),
             );
         }
         #[test]
         fn linked_worktree_refs_recompute_cached_provider_targets_without_main_fallback() {
-            use shephrd::ci_contract::ChangeRequestBase;
+            use bkpr::ci_contract::ChangeRequestBase;
             let repository = Repository::new();
             repository.git(&["init", "-b", "main"]);
             repository.git(&["remote", "add", "origin", "https://github.com/owner/repo"]);

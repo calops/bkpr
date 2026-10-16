@@ -35,7 +35,7 @@ const MAX_CONNECTIONS: usize = 128;
 const MAX_SOURCE: usize = 4096;
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 const FAILURE: &[u8] = &[0, 0, 0, 1, 5];
-const ROUTE_FILE: &str = ".shephrd-agent-route";
+const ROUTE_FILE: &str = ".bkpr-agent-route";
 const CONTROL: &str = "agent-control.sock";
 const SOCKET: &str = "agent.sock";
 const CONTROL_FD: i32 = 3;
@@ -302,7 +302,7 @@ impl Routing {
                 .and_then(|(_, path)| path.clone()),
         };
         if let Err(error) = write_route(&self.socket, target.path.clone()) {
-            eprintln!("shephrd: cannot publish SSH-agent route: {error}");
+            eprintln!("bkpr: cannot publish SSH-agent route: {error}");
             target.path = None;
         }
         self.target.send_replace(target);

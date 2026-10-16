@@ -146,6 +146,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
+name = "bkpr"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+ "parking_lot",
+ "scraper",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "bkpr-zellij"
+version = "0.1.0"
+dependencies = [
+ "bkpr",
+ "nucleo-matcher",
+ "serde",
+ "serde_json",
+ "unicode-segmentation",
+ "unicode-width 0.2.2",
+ "zellij-tile",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1920,34 +1948,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32824fab5e16e6c4d86dc1ba84489390419a39f97699852b66480bb87d297ed8"
 dependencies = [
  "dirs",
-]
-
-[[package]]
-name = "shephrd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "libc",
- "parking_lot",
- "scraper",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "shephrd-zellij"
-version = "0.1.0"
-dependencies = [
- "nucleo-matcher",
- "serde",
- "serde_json",
- "shephrd",
- "unicode-segmentation",
- "unicode-width 0.2.2",
- "zellij-tile",
 ]
 
 [[package]]

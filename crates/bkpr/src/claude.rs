@@ -58,14 +58,14 @@ pub fn launch(directory: &Path, mut arguments: Vec<OsString>) -> Result<()> {
     let executable = real_claude(directory)?;
     let mut command = Command::new(executable);
     if std::io::stdout().is_terminal() && supplement(&mut arguments)? {
-        command.env("SHEPHRD_CLAUDE_TTY", terminal_path()?);
+        command.env("BKPR_CLAUDE_TTY", terminal_path()?);
         let titles = directory
             .parent()
             .context("locate session runtime")?
             .join("claude-titles");
         fs::create_dir_all(&titles)?;
         fs::set_permissions(&titles, fs::Permissions::from_mode(0o700))?;
-        command.env("SHEPHRD_CLAUDE_TITLE_DIR", titles);
+        command.env("BKPR_CLAUDE_TITLE_DIR", titles);
     }
     Err(command.args(arguments).exec()).context("execute Claude")
 }
@@ -273,7 +273,7 @@ fn emit_title(text: &str) {
     }
     // Claude detaches hook subprocesses, so /dev/tty has no controlling terminal.
     // The launcher records its actual stdout terminal only for this Claude process.
-    let Some(path) = env::var_os("SHEPHRD_CLAUDE_TTY") else {
+    let Some(path) = env::var_os("BKPR_CLAUDE_TTY") else {
         return;
     };
     if let Ok(mut terminal) = OpenOptions::new()
@@ -293,7 +293,7 @@ pub fn prompt_title() -> Result<()> {
     if let Ok(input) = callback_input()
         && let Ok(value) = serde_json::from_slice::<Value>(&input)
         && let Some(title) = prompt_label(&value)
-        && let Some(directory) = env::var_os("SHEPHRD_CLAUDE_TITLE_DIR")
+        && let Some(directory) = env::var_os("BKPR_CLAUDE_TITLE_DIR")
         && claim_initial_title(Path::new(&directory), &value)
     {
         emit_title(title);
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn prompt_fallback_does_not_overwrite_later_generated_title() {
         let directory = env::temp_dir().join(format!(
-            "shephrd-title-{}-{}",
+            "bkpr-title-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

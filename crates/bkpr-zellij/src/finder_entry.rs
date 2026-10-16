@@ -1,6 +1,6 @@
 //! Width-fitted finder rows with field-aware, grapheme-aligned fuzzy emphasis.
 
-use shephrd::Snapshot;
+use bkpr::Snapshot;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::pane_search::{Annotations, Field, Index, Value};
@@ -265,11 +265,11 @@ impl Row {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shephrd::{Pane, ProjectIdentity, Status, Workspace};
+    use bkpr::{Pane, ProjectIdentity, Status, Workspace};
 
     fn snapshot(name: &str, description: &str) -> Snapshot {
         Snapshot {
-            protocol: shephrd::PROTOCOL_VERSION,
+            protocol: bkpr::PROTOCOL_VERSION,
             instance_id: "test".into(),
             revision: 1,
             session: "test".into(),

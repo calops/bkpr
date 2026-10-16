@@ -15,10 +15,10 @@ pub struct Options {
     /// Open or attach to a named session.
     #[arg(long, help_heading = "Session")]
     pub session: Option<String>,
-    #[arg(long, env = "SHEPHRD_ZELLIJ", default_value = "zellij", hide = true)]
+    #[arg(long, env = "BKPR_ZELLIJ", default_value = "zellij", hide = true)]
     pub zellij: PathBuf,
     /// Frontend WASM artifact; bundled automatically by the product package.
-    #[arg(long, env = "SHEPHRD_PLUGIN", hide = true)]
+    #[arg(long, env = "BKPR_PLUGIN", hide = true)]
     pub plugin: Option<PathBuf>,
     /// Initial sidebar target in columns (16–120); resizable, rounded to integer percent.
     #[arg(long, default_value_t = 38, value_parser = clap::value_parser!(u16).range(16..=120), help_heading = "Session")]
@@ -29,7 +29,7 @@ pub fn run(options: Options) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         bail!("launch requires an interactive terminal");
     }
-    let program = env::current_exe().context("locate native shephrd command")?;
+    let program = env::current_exe().context("locate native bkpr command")?;
     let zellij = executable(&options.zellij)?;
     let plugin = plugin_path(options.plugin.clone(), &program)?;
     check_zellij(&zellij)?;
@@ -40,7 +40,7 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
     // Capture the attaching terminal's source before setting the child-only
     // stable relay address. Unset/empty is intentional, never a server fallback.
     let agent_source = env::var_os("SSH_AUTH_SOCK");
-    let session = options.session.as_deref().unwrap_or("shephrd");
+    let session = options.session.as_deref().unwrap_or("bkpr");
     validate_session(session)?;
     let identity_hash = hash_identity(&format!("native-local\0{session}"));
     let runtime = runtime_root()?.join(format!("native-{identity_hash:016x}"));
@@ -48,12 +48,12 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
     let config_dir = runtime.join("zellij");
     private_directory(&config_dir)?;
     let lock = startup_lock(&runtime)?;
-    let zellij_session = format!("shephrd-native-{identity_hash:016x}");
+    let zellij_session = format!("bkpr-native-{identity_hash:016x}");
     let existing = session_exists(zellij, &config_dir, &zellij_session)?;
     let config_path = config_dir.join("config.kdl");
     let layout_path = runtime.join("layout.kdl");
     if !existing {
-        let sidebar_percent = shephrd::native_sidebar_percent(
+        let sidebar_percent = bkpr::native_sidebar_percent(
             usize::from(options.sidebar_width),
             terminal_columns()?,
         )
@@ -104,7 +104,7 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
         private_file(&config_path, config.as_bytes())?;
         private_file(
             &layout_path,
-            shephrd::native_layout(
+            bkpr::native_layout(
                 &plugin_url,
                 &configuration,
                 "Workspace",
@@ -120,11 +120,11 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
     client
         .arg("--config")
         .arg(&config_path)
-        .env("SHEPHRD_ZELLIJ", zellij);
+        .env("BKPR_ZELLIJ", zellij);
     client.env("SSH_AUTH_SOCK", agent_lease.socket());
     if !existing {
         let bin = runtime.join("bin");
-        let inherited_wrapper = env::var_os("SHEPHRD_HARNESS_WRAPPER_DIR").map(PathBuf::from);
+        let inherited_wrapper = env::var_os("BKPR_HARNESS_WRAPPER_DIR").map(PathBuf::from);
         let mut paths = vec![bin.clone()];
         paths.extend(
             env::split_paths(&env::var_os("PATH").unwrap_or_default())
@@ -135,7 +135,7 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
                 "PATH",
                 env::join_paths(paths).context("construct native session PATH")?,
             )
-            .env("SHEPHRD_HARNESS_WRAPPER_DIR", bin);
+            .env("BKPR_HARNESS_WRAPPER_DIR", bin);
     }
     if existing {
         client.args(["attach", &zellij_session]);
@@ -228,9 +228,9 @@ fn plugin_path(explicit: Option<PathBuf>, program: &Path) -> Result<PathBuf> {
             .parent()
             .and_then(Path::parent)
             .unwrap_or(Path::new("target"))
-            .join("wasm32-wasip1/release/shephrd-zellij.wasm")
+            .join("wasm32-wasip1/release/bkpr-zellij.wasm")
     });
-    fs::canonicalize(&path).with_context(|| format!("frontend not found at {}; build `cargo build -p shephrd-zellij --target wasm32-wasip1 --release` or use the bundled Nix package", path.display()))
+    fs::canonicalize(&path).with_context(|| format!("frontend not found at {}; build `cargo build -p bkpr-zellij --target wasm32-wasip1 --release` or use the bundled Nix package", path.display()))
 }
 
 fn check_zellij(program: &Path) -> Result<()> {
@@ -247,13 +247,13 @@ fn check_zellij(program: &Path) -> Result<()> {
 
 pub(crate) fn runtime_root() -> Result<PathBuf> {
     let base = if let Some(dir) = env::var_os("XDG_RUNTIME_DIR") {
-        PathBuf::from(dir).join("shephrd")
+        PathBuf::from(dir).join("bkpr")
     } else {
         let state = env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
             .context("HOME or XDG_STATE_HOME is required")?;
-        state.join("shephrd/run")
+        state.join("bkpr/run")
     };
     private_directory(&base)?;
     Ok(base)
@@ -323,9 +323,9 @@ mouse_click_through true
 session_serialization false
 show_startup_tips false
 show_release_notes false
-theme "shephrd"
+theme "bkpr"
 themes {
-    shephrd {
+    bkpr {
         frame_selected {
             base 108 112 134
             background 24 24 37
@@ -338,11 +338,11 @@ themes {
 }
 keybinds {
     locked {
-        bind "Ctrl Space" { MessagePlugin { name "shephrd-controls"; payload "toggle"; }; }
+        bind "Ctrl Space" { MessagePlugin { name "bkpr-controls"; payload "toggle"; }; }
     }
     normal {
-        bind "Ctrl Space" { MessagePlugin { name "shephrd-controls"; payload "toggle"; }; }
-        bind "Esc" { MessagePlugin { name "shephrd-controls"; payload "leave"; }; SwitchToMode "Locked"; }
+        bind "Ctrl Space" { MessagePlugin { name "bkpr-controls"; payload "toggle"; }; }
+        bind "Esc" { MessagePlugin { name "bkpr-controls"; payload "leave"; }; SwitchToMode "Locked"; }
         bind "Tab" { FocusNextPane; }
         bind "Shift Tab" { FocusPreviousPane; }
         bind "Ctrl d" { Detach; }

@@ -5,9 +5,9 @@ use std::ops::Range;
 
 use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
 use nucleo_matcher::{Matcher, Utf32Str};
-use shephrd::agent_contract::harness_name;
-use shephrd::ci_contract::{ChangeRequestState, CiFetchState, ForgeProvider, IssueTracker};
-use shephrd::{Pane, Snapshot};
+use bkpr::agent_contract::harness_name;
+use bkpr::ci_contract::{ChangeRequestState, CiFetchState, ForgeProvider, IssueTracker};
+use bkpr::{Pane, Snapshot};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -613,10 +613,10 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shephrd::ci_contract::{
+    use bkpr::ci_contract::{
         ChangeRequest, CiCheck, CiSnapshot, CiStatus, ForgeRepository, LinkedIssue,
     };
-    use shephrd::{Attention, BranchChanges, DiffStat, ProjectIdentity, Status, Workspace};
+    use bkpr::{Attention, BranchChanges, DiffStat, ProjectIdentity, Status, Workspace};
 
     fn snapshot() -> Snapshot {
         let pane = Pane {
@@ -700,7 +700,7 @@ mod tests {
             ..pane.clone()
         };
         Snapshot {
-            protocol: shephrd::PROTOCOL_VERSION,
+            protocol: bkpr::PROTOCOL_VERSION,
             instance_id: "test".into(),
             revision: 1,
             session: "test".into(),

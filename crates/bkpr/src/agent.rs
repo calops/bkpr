@@ -6,8 +6,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use shephrd::MAX_MESSAGE_BYTES;
-use shephrd::agent_contract::{AgentExecution, InspectRequest, InspectResponse};
+use bkpr::MAX_MESSAGE_BYTES;
+use bkpr::agent_contract::{AgentExecution, InspectRequest, InspectResponse};
 
 const MAX_PANES: usize = 1024;
 const MAX_PROCESSES: usize = 32768;

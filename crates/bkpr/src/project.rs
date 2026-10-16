@@ -3,7 +3,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
-use shephrd::ci_contract::{ChangeRequestBase, CiSnapshot};
+use bkpr::ci_contract::{ChangeRequestBase, CiSnapshot};
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct ProjectName {
@@ -11,8 +11,8 @@ pub(crate) struct ProjectName {
     pub repository: bool,
     pub branch: Option<String>,
     pub repository_id: Option<String>,
-    pub branch_changes: Option<shephrd::BranchChanges>,
-    pub ci: Option<shephrd::ci_contract::CiSnapshot>,
+    pub branch_changes: Option<bkpr::BranchChanges>,
+    pub ci: Option<bkpr::ci_contract::CiSnapshot>,
     #[serde(skip)]
     pub source: Option<crate::ci::CiSource>,
     #[serde(skip)]
@@ -200,7 +200,7 @@ fn target_changes(
     cwd: &Path,
     base: &ChangeRequestBase,
     head: &str,
-) -> Option<shephrd::BranchChanges> {
+) -> Option<bkpr::BranchChanges> {
     // Never interpret a provider value as a local revision expression, nor fetch.
     if !matches!(base.commit.len(), 40 | 64)
         || !base.commit.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -258,7 +258,7 @@ fn branch_changes(
     refs: &str,
     common: &Path,
     directories: &mut Vec<std::path::PathBuf>,
-) -> Option<shephrd::BranchChanges> {
+) -> Option<bkpr::BranchChanges> {
     let configured = branch.and_then(|branch| {
         git_text(
             cwd,
@@ -348,7 +348,7 @@ fn committed_changes(
     base_ref: String,
     base: &str,
     head: &str,
-) -> Option<shephrd::BranchChanges> {
+) -> Option<bkpr::BranchChanges> {
     let merge_base = git_text(cwd, &["merge-base", base, head])?;
     let output = git_command(cwd)
         .args([
@@ -369,15 +369,15 @@ fn committed_changes(
         return None;
     }
     let total = diff_stats(&output.stdout)?;
-    Some(shephrd::BranchChanges {
+    Some(bkpr::BranchChanges {
         base_ref,
         merge_base,
         total,
     })
 }
 
-fn diff_stats(output: &[u8]) -> Option<shephrd::DiffStat> {
-    let mut total = shephrd::DiffStat::default();
+fn diff_stats(output: &[u8]) -> Option<bkpr::DiffStat> {
+    let mut total = bkpr::DiffStat::default();
     let mut records = output.split(|byte| *byte == 0);
     while let Some(record) = records.next() {
         if record.is_empty() {
@@ -400,12 +400,12 @@ fn diff_stats(output: &[u8]) -> Option<shephrd::DiffStat> {
             }
         }
         let stat = if added == b"-" && deleted == b"-" {
-            shephrd::DiffStat {
+            bkpr::DiffStat {
                 binary_files: 1,
-                ..shephrd::DiffStat::default()
+                ..bkpr::DiffStat::default()
             }
         } else {
-            shephrd::DiffStat {
+            bkpr::DiffStat {
                 added: std::str::from_utf8(added).ok()?.parse().ok()?,
                 deleted: std::str::from_utf8(deleted).ok()?.parse().ok()?,
                 binary_files: 0,
@@ -487,7 +487,7 @@ pub(crate) mod tests {
         pub(crate) fn new() -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             let path = std::env::temp_dir().join(format!(
-                "shephrd-project-test-{}-{}",
+                "bkpr-project-test-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
@@ -507,7 +507,7 @@ pub(crate) mod tests {
                 .env_remove("GIT_CONFIG_PARAMETERS")
                 .args([
                     "-c",
-                    "user.name=Shephrd Test",
+                    "user.name=Bkpr Test",
                     "-c",
                     "user.email=test@example.invalid",
                     "-c",
@@ -544,7 +544,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn ci_snapshot(project: &ProjectName, base: ChangeRequestBase) -> CiSnapshot {
-        use shephrd::ci_contract::{ChangeRequest, ChangeRequestState, CiFetchState, CiStatus};
+        use bkpr::ci_contract::{ChangeRequest, ChangeRequestState, CiFetchState, CiStatus};
         let source = project.source.as_ref().unwrap();
         CiSnapshot {
             status: CiStatus::NoChecks,
@@ -618,7 +618,7 @@ pub(crate) mod tests {
             .unwrap()
             .0;
         assert_eq!(rediscovered.branch_changes, project.branch_changes);
-        snapshot.status = shephrd::ci_contract::CiStatus::Running;
+        snapshot.status = bkpr::ci_contract::CiStatus::Running;
         // An unrelated CI update needs no filesystem discovery or second diff.
         assert!(update_ci(
             Path::new("/not-a-worktree"),
@@ -811,7 +811,7 @@ pub(crate) mod tests {
         assert_eq!(changes.merge_base, initial);
         assert_eq!(
             changes.total,
-            shephrd::DiffStat {
+            bkpr::DiffStat {
                 added: 7,
                 deleted: 2,
                 binary_files: 2,
@@ -840,7 +840,7 @@ pub(crate) mod tests {
         repository.git(&["mv", "src/café old\nname.rs", "src/café new\nname.rs"]);
         repository.commit_all();
         let pure = discover(&repository.0).unwrap().branch_changes.unwrap();
-        assert_eq!(pure.total, shephrd::DiffStat::default());
+        assert_eq!(pure.total, bkpr::DiffStat::default());
         repository.git(&["mv", "docs/old\nnotes.txt", "src/new\nnotes.rs"]);
         repository.write(
             "src/new\nnotes.rs",
@@ -851,7 +851,7 @@ pub(crate) mod tests {
         let changed = discover(&repository.0).unwrap().branch_changes.unwrap();
         assert_eq!(
             changed.total,
-            shephrd::DiffStat {
+            bkpr::DiffStat {
                 added: 1,
                 deleted: 1,
                 binary_files: 1,
@@ -869,7 +869,7 @@ pub(crate) mod tests {
         assert!(discover(&repository.0).unwrap().branch_changes.is_none());
         repository.git(&["branch", "main"]);
         let changes = discover(&repository.0).unwrap().branch_changes.unwrap();
-        assert_eq!(changes.total, shephrd::DiffStat::default());
+        assert_eq!(changes.total, bkpr::DiffStat::default());
         repository.git(&[
             "config",
             "--",
@@ -958,7 +958,7 @@ pub(crate) mod tests {
         ]);
         repository.git(&["config", "branch.feature.remote", "upstream"]);
         let changes = discover(&repository.0).unwrap().branch_changes.unwrap();
-        assert_eq!(changes.total, shephrd::DiffStat::default());
+        assert_eq!(changes.total, bkpr::DiffStat::default());
     }
 
     #[test]
@@ -1010,7 +1010,7 @@ pub(crate) mod tests {
         let root = discover(&repository.0).unwrap().branch_changes.unwrap();
         let (linked, paths) = discover_watched(&worktree).unwrap();
         let changes = linked.branch_changes.unwrap();
-        assert_eq!(root.total, shephrd::DiffStat::default());
+        assert_eq!(root.total, bkpr::DiffStat::default());
         assert_eq!(changes.total.added, 1);
         assert_eq!(changes.base_ref, "refs/heads/stack/base");
         assert!(paths.contains(&repository.0.join(".git/refs/heads/stack")));
