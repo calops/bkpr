@@ -22,14 +22,14 @@ bkpr --session project
 
 The package includes the native launcher, WASM plugin, patched Zellij 0.45.1, Git and GitHub CLI. A Nerd Font is recommended for the sidebar icons. `bkpr --help` lists launch options, including the session name and initial sidebar width.
 
-Tagged revisions are built for Linux and macOS (x86_64 and aarch64) and uploaded to [bkpr.cachix.org](https://bkpr.cachix.org). After the tag's **Cache tagged packages** workflow succeeds, run a version or moving label without building Bkpr locally:
+Tagged revisions are built for x86_64/aarch64 Linux and aarch64 macOS and uploaded to [bkpr.cachix.org](https://bkpr.cachix.org). The pinned Nixpkgs no longer supports x86_64 macOS. After the tag's **Cache tagged packages** workflow succeeds, run a version or moving label without building Bkpr locally:
 
 ```sh
-nix run github:calops/bkpr/v.1.2.3
-nix run github:calops/bkpr/alpha
+nix run github:calops/bkpr/v0.1.0
+nix run github:calops/bkpr/unstable
 ```
 
-Nix may prompt once to trust this flake's cache settings; accept to use the substituter. Other dependencies can come from their usual public caches. Moving `alpha` to another commit triggers a new cache build when the updated tag is pushed. Maintainers must set the repository Actions secret `CACHIX_AUTH_TOKEN` to a Cachix auth token with write access to the `bkpr` cache; the public key in `flake.nix` is for downloading, not uploading. Untagged commits are not published to this cache.
+Nix may prompt once to trust this flake's cache settings; accept to use the substituter. Other dependencies can come from their usual public caches. Moving `unstable` to another commit triggers a new cache build when the updated tag is pushed. Maintainers must set the repository Actions secret `CACHIX_AUTH_TOKEN` to a Cachix auth token with write access to the `bkpr` cache; the public key in `flake.nix` is for downloading, not uploading. Untagged commits are not published to this cache.
 
 On first launch, click the sidebar and approve its Zellij permission request with `y`. Authorization is cached for the plugin artifact. Bkpr uses a private Zellij configuration; it doesn't replace your personal configuration or start a system service.
 

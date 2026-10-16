@@ -958,7 +958,11 @@ mod tests {
         assert_eq!(request(&mut downstream), FAILURE);
         b_cycle.release().unwrap();
         assert_eq!(request(&mut downstream), identity(1));
+        // macOS filesystems reject non-UTF-8 names before the relay sees them.
+        #[cfg(target_os = "linux")]
         let alias = a.runtime().join(OsString::from_vec(vec![b'a', 0xff]));
+        #[cfg(target_os = "macos")]
+        let alias = a.runtime().join("alias");
         std::os::unix::fs::symlink(a_origin.socket(), &alias).unwrap();
         let self_cycle = a.lease(Some(alias.into_os_string()));
         assert_eq!(request(&mut downstream), FAILURE);
@@ -1227,9 +1231,13 @@ mod pipeline_tests {
     }
 
     #[test]
-    fn agent_relay_control_preserves_non_utf8_source_bytes() {
+    fn agent_relay_control_preserves_source_path_bytes() {
         let directory = tempfile::tempdir().unwrap();
+        // macOS cannot bind a socket at a non-UTF-8 filesystem path.
+        #[cfg(target_os = "linux")]
         let path = directory.path().join(OsString::from_vec(vec![b'a', 0xff]));
+        #[cfg(target_os = "macos")]
+        let path = directory.path().join("agent");
         let listener = StdListener::bind(&path).unwrap();
         let worker = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
