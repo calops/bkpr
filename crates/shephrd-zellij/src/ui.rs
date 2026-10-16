@@ -150,48 +150,9 @@ pub fn item_band(rows: &[TreeRow], item: &Item) -> Option<std::ops::RangeInclusi
     Some(first..=last)
 }
 
-/// Hit testing follows the actual item, never an overlapping hover outline.
+/// Hit testing follows the rows occupied by the actual item.
 pub fn item_at(rows: &[TreeRow], index: usize) -> Option<Item> {
     rows.get(index)?.item.clone()
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum JoinSide {
-    Left,
-    Right,
-}
-
-pub fn sidebar_edges(
-    top: bool,
-    bottom: bool,
-    joined: Option<JoinSide>,
-) -> (&'static str, &'static str) {
-    if top && bottom {
-        return match joined {
-            Some(JoinSide::Left) => ("─", "│"),
-            Some(JoinSide::Right) => ("│", "─"),
-            None => ("│", "│"),
-        };
-    }
-    let left = if joined == Some(JoinSide::Left) {
-        if top || bottom { "─" } else { " " }
-    } else if top {
-        "╭"
-    } else if bottom {
-        "╰"
-    } else {
-        "│"
-    };
-    let right = if joined == Some(JoinSide::Right) {
-        if top || bottom { "─" } else { " " }
-    } else if top {
-        "╮"
-    } else if bottom {
-        "╯"
-    } else {
-        "│"
-    };
-    (left, right)
 }
 
 fn unsafe_label_character(character: char) -> bool {

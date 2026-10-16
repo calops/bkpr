@@ -1063,13 +1063,7 @@ impl Finder {
             if self.layout.border && row + 1 == rows {
                 format!("{}{}", ui::BRIGHT, self.layout.bottom_line(columns))
             } else if self.layout.border {
-                overlay::outlined_line(
-                    " ".repeat(columns.saturating_sub(2)),
-                    row,
-                    rows,
-                    columns,
-                    None,
-                )
+                overlay::outlined_line(" ".repeat(columns.saturating_sub(2)), row, rows, columns)
             } else {
                 String::new()
             }

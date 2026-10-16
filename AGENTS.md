@@ -1,80 +1,42 @@
-# Maintenance guide
+# Maintenance notes
 
-## Project contracts
+## Boundaries
 
-- `crates/shephrd` contains the native launcher/helper and shared typed snapshot/request contract. `crates/shephrd-zellij` contains the Rust/WASI plugin roles. Zellij owns PTYs, input/output, scrollback, native panes/tabs and detach persistence. Don't add a second PTY owner or replay terminal output through WASM.
-- Keep workspace-first grouping and stock Zellij controls. Application input defaults to Locked mode; Ctrl+Space explicitly focuses sidebar controls. Passive hover/context popups must not steal keyboard focus; the explicitly opened finder owns input. Sidebar-created terminals use separate full-application-area tabs; native splits and tab changes remain visible in the model. Close means confirmed termination, not hide/unhide.
-- Program status comes only from native OSC 7501. Process/CWD recognition and OSC 0/2 display titles are separate signals. Never infer lifecycle state from titles, progress, rendered text or process presence. Only recognized harnesses contribute status/attention to rows and workspace summaries; generic OSC app IDs don't create harness identities. Git/CI is independent.
-- Don't change persistent third-party settings, credentials, account selection or harness profiles implicitly. Claude's launch-local hook supplements titles only. Antigravity is recognition-only. Upstream Pi isn't omp.
-- Prefer pushed events and filesystem watches. Fetch cold forge metadata eagerly; only published non-green CI uses a 60-second loop. Green/no-check/unpublished results idle until relevant Git events or explicit refresh. Keep batching, short shared spacing and provider backoff; never add Git-discovery/UI polling or requests per keystroke.
-- Git identity follows foreground CWD and canonical common-directory identity, with independent worktree HEADs. Whole-repository totals use committed `HEAD` versus merge-base. An associated PR's immutable target commit overrides local base guesses; an unavailable target must not fall back to main. Never fetch to paint UI.
-- Per-CWD metadata persists in XDG state, not the runtime directory. Validate canonical CWD, repository, branch, HEAD and Git refs before restoring totals/forge data. Only fresh green/no-check/unpublished cache entries freeze; non-green/error states resume eager bounded refresh. Linear associations require canonical links in rendered PR comments, not prompt/branch guesses or personal workspace mappings.
-- Context popups and finder previews share typed content. Search uses collected metadata, not PTY scraping. PR/issue links require metadata-backed destinations, not guesses from arbitrary text.
-- Prefer straightforward Shephrd-owned implementations. Add a Zellij patch only where supported plugin/launcher APIs cannot implement required behavior; keep host changes minimal.
-- SSH forwarding is Shephrd-owned, not a native patch. Launcher-held control leases select the latest live managed attachment; unset/none fail closed. Preserve the stable pane socket across helper restart, raw Unix path bytes and generation-safe in-flight delivery. Keep bootstrap/final cleanup serialized by the session startup lock.
+- `crates/shephrd` owns the native launcher, Git/CI, SSH forwarding and typed state contract. `crates/shephrd-zellij` owns WASI sidebar, finder and passive overlays. Zellij owns PTYs, input, native panes/tabs and session persistence; never mirror terminal output through the plugin.
+- Keep workspace-first grouping and stock Zellij controls. Application input starts Locked; Ctrl+Space focuses sidebar controls. Passive details and shortcut cards never take keyboard focus or move the application cursor. Finder alone is a focused modal. Native splits/tabs must remain discoverable; close terminates, not hides.
+- Recognized harness status comes only from OSC 7501. Process/CWD recognition and OSC 0/2 titles are separate. Generic programs do not get harness-status badges; Git/CI remains available to them. Do not infer semantic state from titles, progress, output or process presence.
+- Do not change a user's harness profiles, persistent third-party settings, credentials or GitHub account. Claude launch-local hooks supplement titles only; Antigravity is recognition-only.
+- Prefer Shephrd-owned APIs and push events. Add a Zellij patch only when its plugin/launcher API cannot provide the behavior; keep patches minimal.
 
-## Development workflow
+## Git, provider and agent data
 
-Use `nix develop` and incremental debug Cargo builds. Keep `target/`; Nix release builds are for packaging validation, not normal iteration. The devshell supplies the toolchain, WASI target, Git/GitHub CLI and Python with `pyte`. It selects the debug WASM artifact and an existing local debug Zellij binary.
+- Associate repositories with foreground CWD and the canonical common Git directory; linked worktrees have independent HEADs. Committed whole-repository totals compare HEAD to a merge-base. A PR target commit overrides guessed local bases; a missing target does not fall back to main. Never fetch for UI.
+- Git watches invalidate cached state and trigger new-commit/push refresh. Cold forge data loads eagerly and is shared/batched. Only published, non-green checks use the 60-second refresh loop; complete green/skipped/no-check and unpublished results idle. Respect shared spacing, provider limits and backoff.
+- Persist per-canonical-CWD metadata in XDG state. Validate repository, branch, HEAD and refs on restore. Linear associations come from canonical links in rendered PR comments, not personal mappings or speculative parsing. Popups/finder share typed metadata and link only verified destinations.
+- SSH forwarding is launcher-owned: the latest live managed attachment selects the upstream agent, unset/no client fails closed. Keep the stable pane socket across helper restarts, preserve raw Unix path bytes, serialize startup/cleanup and guard in-flight requests by generation.
 
-```sh
-cargo build --locked -p shephrd
-cargo build --locked -p shephrd-zellij --target wasm32-wasip1
-cargo test --locked --workspace
-cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo clippy --locked -p shephrd-zellij --target wasm32-wasip1 -- -D warnings
-```
+## WASI and UI invariants
 
-Use `nix build .#shephrd` for the bundled package, or `.#shephrd-native` / `.#shephrd-zellij` for its components. Run checks once after coordinated edits, not against another worker's unfinished changes.
+- Render complete frames: Zellij clears the plugin grid each render. WASM stdout also transports host commands; emit commands before frame text and flush every render. Acknowledge every CLI-pipe input, including bootstrap/EOF. Cache cursor commands and avoid redundant redraws.
+- All plugin roles request the shared `PERMISSIONS` set; permission grants are cached per WASM path and role requests replace them. Sidebar startup applies creation-scoped snapshot/guide/view only after grant; live `STATE` remains authoritative. Keymap publications must be immutable, session/client-scoped and byte-validated.
+- `mode_info_format="json"` plus `ModeUpdate`/`InitialKeybinds` preserves native key identities. Cache the keymap separately from scalar mode updates. Strip the host flag before strict application-config validation.
+- Sidebar rendered columns exclude its resize gutter; outer pane geometry does not. Preserve outer width when creating tabs. The details card may cover exactly one separator cell, never painted item cells; the separator remains mouse-resizable.
+- Popup helpers are client/launch scoped. Ignore foreign/stale frames. Present a cleared or exact-size frame before acknowledging READY, accepting pointer actions or showing content; native show resets suppressed coordinates, so place after show. Genuine helper faults belong in the sidebar, not a transient red card.
+- Sidebar hover and popup hover cannot both own the physical pointer. Keyboard navigation invalidates an earlier mouse highlight; do not let stale native pointer coordinates pin a focus-only popup. Probe the helper at handoffs without polling, and let verified popup hover retain details after sidebar leave.
+- Locked shortcut hints stay inline. Wider cards are used only when keys/descriptions would wrap at sidebar width; a widened card sits at the far-right edge in sidebar context. Plan content height and geometry before display, not when READY arrives. Finder coordinates cover the whole display.
+
+## Development
+
+Use `nix develop` and incremental debug Cargo artifacts in `target/`. Run coordinated checks once after edits: `cargo test --locked --workspace`, `cargo build --locked -p shephrd-zellij --target wasm32-wasip1`, host/WASI `cargo clippy --locked ... -- -D warnings`. Use `nix build .#shephrd` only for packaging validation, not the edit/run loop.
 
 ### Patched Zellij runtime
 
-The runtime is pinned to Zellij 0.45.1. Stock Zellij lacks the required program-status and plugin-event contract. `flake.nix` is the source of truth for patch order. For a new local checkout, inside the devshell:
+The pinned host is Zellij 0.45.1. Stock Zellij lacks required OSC/plugin event contracts. `flake.nix` determines patch order; a local debug runtime lives in `target/zellij-dev`. For a fresh checkout, clone tag `v0.45.1`, apply the ordered `nix/zellij-*.patch` files **in flake order** with `patch --fuzz=0 --no-backup-if-mismatch -p1`, then build with `--no-default-features` and `$SHEPHRD_ZELLIJ_VENDOR` source replacement. Do not blindly reapply patches or stage generated `.orig` files. Existing native servers keep old code: start a fresh session after host changes.
 
 ```sh
-git clone --depth 1 --branch v0.45.1 https://github.com/zellij-org/zellij target/zellij-dev
-(
-  cd target/zellij-dev
-  for patch_file in \
-    zellij-cursor.patch \
-    zellij-program-status.patch \
-    zellij-program-status-events.patch \
-    zellij-host-replies.patch \
-    zellij-cli-session.patch \
-    zellij-popup-clicks.patch \
-    zellij-overlay-geometry.patch \
-    zellij-plugin-messages.patch
-  do
-    patch --fuzz=0 --no-backup-if-mismatch -p1 < "../../nix/$patch_file" || exit 1
-  done
-)
 cargo build --locked --manifest-path target/zellij-dev/Cargo.toml --no-default-features \
   --config 'source.crates-io.replace-with="nix-vendor"' \
   --config "source.nix-vendor.directory=\"$SHEPHRD_ZELLIJ_VENDOR/source-registry-0\""
-export SHEPHRD_ZELLIJ="$PWD/target/zellij-dev/target/debug/zellij"
 ```
 
-`--no-default-features` avoids rebuilding bundled plugin assets and the optional web stack. The patches optimize Wasmi dependencies in the development profile; workspace and guest code stay debug builds. Don't reapply patches blindly to an already patched checkout. Validate the full ordered chain against pristine pinned source with zero fuzz, and compare the patched files with the runtime used for testing. Never stage generated `.orig` backups.
-
-Existing native servers keep old host code. Use a fresh session after rebuilding native patches; plugin reload doesn't replace geometry, input routing or protocol code. Subsequent devshell entries select the local debug runtime automatically.
-
-## Non-obvious runtime constraints
-
-- WASM stdout carries both encoded host commands and ANSI frames. Emit host commands before render text and explicitly flush every frame. Memoize cursor updates. Acknowledge every CLI-pipe input message, including bootstrap/EOF, or publishers can stall.
-- Zellij resets the plugin grid for each render, so render complete frames rather than row diffs. Background-preserving empty rows use `EL0` from column one; `EL2` doesn't preserve the background in the pinned runtime.
-- Permission caching is keyed by the WASM path, and role requests replace cached grants. All roles share the full `PERMISSIONS` constant; a smaller overlay request can revoke permissions needed on the next tab or attach.
-- Native protobuf drops `KeybindPipe` identity. Sidebar and owner roles opt into `mode_info_format="json"` and subscribe to `ModeUpdate` and `InitialKeybinds`: `mode_info` carries scalar changes, while `keybinds_info` carries lossless keys on subscription/reconfiguration. Cache keys independently. Strip the host flag before strict app-config validation.
-- New sidebars receive creation-scoped snapshot/guide/view projections. Apply them only after permission grant, strip them before owner identity/configuration handling, and keep live `STATE` as the authority for acknowledgement effects.
-- Bootstrap keymaps reference immutable, session/client-scoped WASI `/cache` publications. Update them only on changed authoritative payload bytes; validate identity, bounds and full-payload integrity after permission grant.
-- Sidebar outer geometry includes the right resize gutter; plugin paintable columns exclude it. Preserve outer width when creating another tab. Frameless separators must remain visible and mouse-resizable without focusing the sidebar. Don't disable global hover delivery to remove separator highlights.
-- Passive context overlays must retain application focus/cursor ownership, and outside dismissal must preserve the application's original click. Host commands emitted during render and the matching frame have ordering requirements in the native plugin-message patch.
-- The unlocked shortcut guide has its own passive overlay/controller; it must not replace persistent context details. Keep Locked hints inline, retain inline hints until the wider frame is ready, and restore suppressed overlay coordinates after showing it.
-- Focused finder overlays use full-display coordinates, including reserved sidebar space. Passive-overlay input rules must not be broadened to make a focused modal fit.
-- Floating `is_focused` survives hiding the floating layer; combine it with active-tab visibility and arm dismissal only after real focus. Restoring a suppressed modal resets its geometry: reapply coordinates on every open, but cache unchanged host commands while visible.
-- Host terminal-query replies aren't application input. Preserve batch ownership and fragmented replies when changing startup, resize or keyboard routing.
-
-## Runtime evidence
-
-Use actual attached PTYs or an isolated GUI terminal for focus, cursor, mouse, keyboard negotiation, rendering and hyperlink behavior. Headless snapshots and injected escape bytes don't prove physical key encoding or click routing. Separate controlled protocol/provider fixtures from genuine harness turns and live provider queries in reports.
-
-Keep smoke scripts under `target/smoke/` and short-path socket fixtures under `target/`. Use devshell Python and `sys.executable`, not hardcoded store paths. Isolate inherited multiplexer/credential environment, HOME/XDG directories and native sessions; preserve only the launch context a test intentionally exercises. Don't touch live sessions or persistent user configuration. Don't make real model/provider calls without user intent. Remove owned temporary processes and fixtures after the run; retain useful evidence without turning the README into a test diary.
+Test focus, cursor, physical mouse, resize and hyperlinks in an actual isolated terminal, not just unit tests or injected escapes. Smoke scripts go under `target/smoke/`, using devshell Python+pyte and `sys.executable`; isolate HOME/XDG, inherited multiplexer and credential variables, and private native sessions. Never touch live sessions or call real model/provider services for a fixture. Clean up owned processes/files, retain useful evidence, and keep README user-facing.

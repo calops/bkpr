@@ -34,9 +34,9 @@ Attach with `shephrd --session project` to register the current agent. Direct `z
 
 ## Workspaces and navigation
 
-Application input starts in Zellij's **Locked** mode, so terminal shortcuts go to the application. Press **Ctrl+Space** to focus the sidebar, or **Ctrl+g** to unlock stock Zellij controls. The rounded guide follows the current mode and effective keybindings: Locked stays inside the sidebar; other modes can extend into the pane area without taking focus. Keys are right-aligned, descriptions left-aligned, with a centered gap when space permits; long binding groups wrap without dropping keys.
+Application input starts in Zellij's **Locked** mode, so terminal shortcuts go to the application. Press **Ctrl+Space** to focus the sidebar, or **Ctrl+g** to unlock stock Zellij controls. The rounded shortcut guide follows the current mode and effective keybindings: it stays inside the sidebar when all keys and descriptions fit without wrapping, and otherwise expands into the pane area. A wider guide moves to the far right while the sidebar is focused to leave room for item details.
 
-A left click activates a workspace or terminal without moving keyboard focus into the sidebar. Hover highlights rows but doesn't steal focus. Right click opens persistent details; clicking outside dismisses them without consuming the application's click. Details include available activity, CWD, repository, pull request and checks, with clickable links.
+A left click activates a workspace or terminal without moving keyboard focus into the sidebar. Hover highlights a row and opens its details; moving into the popup keeps it open, and leaving both closes it. Sidebar focus opens the selected row's details automatically, and keyboard navigation follows the selection. Right click has no special popup behavior. Details include available activity, CWD, repository, pull request and checks, with clickable links.
 
 Each sidebar-created terminal opens in its own native tab, grouped under its workspace. Stock splits remain available. Drag the separator to resize the sidebar, or use Zellij's resize mode. New sidebar-created tabs inherit the current width, folds and scroll position while their live state arrives.
 
