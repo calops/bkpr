@@ -79,21 +79,23 @@ cwd:"/home/me/projects"
 
 Supported filters are `pr:`, `branch:`, `project:`, `workspace:`, `harness:`, `status:`, `ci:`, `cwd:` and `ticket:`. Terms combine with AND; quote values that contain spaces. Use arrows or **Ctrl+n / Ctrl+p** to select a match, **Enter** to activate it and **Esc** to cancel. Search uses collected metadata, not terminal screen scraping or a remote request per keystroke.
 
-The preview links the PR number next to the repository path. Verified Linear issue links from PR metadata appear directly below it. Links are clickable; other actions, including CI refresh, remain in the context popup. Shephrd doesn't change Linear or harness profiles to provide these links.
+The preview links the PR number next to the repository path, followed by its title and any verified Linear ticket. Links are clickable; other actions, including CI refresh, remain in the context popup. Shephrd doesn't change Linear or harness profiles to provide these links.
 
 ## Repository and CI details
 
 Solid project dots identify repositories; project colors stay stable across branch changes and linked worktrees. The second line follows the foreground program's actual CWD and shows its branch, available whole-branch additions/deletions and an independent CI badge. Outside Git, it shows the program description instead. Collapsed workspaces summarize their harness and CI state.
 
-Branch totals compare committed `HEAD` with its merge-base, not uncommitted changes or the base branch's current tip. They cover the whole repository, including when the foreground CWD is nested. The base comes from local Git configuration and refs; Shephrd doesn't fetch automatically. Missing or unrelated bases are unavailable, not zero. Details show the comparison basis and binary changes separately.
+Branch totals compare committed `HEAD` with its merge-base, not uncommitted changes or the base branch's current tip. They cover the whole repository, including when the foreground CWD is nested. When a PR is associated, its target commit is authoritative, including stacked PRs. Otherwise, local Git configuration and refs choose the base. Shephrd never fetches automatically: a known target missing locally makes totals unavailable rather than falling back to main.
 
 GitHub CI monitoring uses `gh`'s active authentication context. Run `gh auth login` if needed. Shephrd doesn't switch accounts or edit credentials. Monitoring requires an explicit `github.com` HTTPS/SSH remote and a current commit; GitHub Enterprise and SSH aliases aren't supported.
 
-Requests are shared across panes and worktrees, batched, and limited to at most one request per minute per session. Pending checks refresh after a minute; unresolved results refresh less often. Complete terminal results stay cached until the commit/source changes or you click refresh in the details. Use refresh for same-commit reruns, newly added checks or PR-state changes. Refresh still respects request spacing and provider limits.
+First loads fetch eagerly, with requests shared across panes and worktrees, batched, and spaced at least two seconds apart per session. Published commits with non-green checks refresh every 60 seconds. Green or entirely skipped checks, no checks, and unpublished commits stay idle; Git metadata events detect new commits and pushes. Transport failures use bounded backoff, and provider rate limits remain authoritative. Use refresh for same-commit reruns, newly added checks or PR-state changes.
 
-Checks belong to the exact current commit. An unpushed or inaccessible commit is unknown, never passing. Missing, stale and incomplete data remain distinct from successful checks. Git metadata updates through filesystem events; CI uses the bounded refresh schedule above.
+Checks belong to the exact current commit. An unpushed or inaccessible commit is unknown, never passing. Missing, stale and incomplete data remain distinct from successful checks. A new local commit can retain its branch's last-known open PR metadata, but never the previous commit's check results.
 
-Open PR links follow the branch even while local commits are unpushed. Linear links come from the PR description and its first ten comments; no Linear credentials or configuration are required.
+Results persist per canonical CWD under `$XDG_STATE_HOME/shephrd/projects` (default `~/.local/state/shephrd/projects`). Repository, branch, commit and Git refs must still match before restoring them. Unchanged green results need no request after restart; non-green results appear immediately from cache and resume checking.
+
+Open PR links follow the branch even while local commits are unpushed. Linear associations come from canonical issue links in the PR's first ten rendered comments, without workspace-specific mappings, Linear credentials or configuration.
 
 ## Coding harnesses
 

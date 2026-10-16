@@ -3,6 +3,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use shephrd::ci_contract::{ChangeRequestBase, CiSnapshot};
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct ProjectName {
@@ -14,6 +15,10 @@ pub(crate) struct ProjectName {
     pub ci: Option<shephrd::ci_contract::CiSnapshot>,
     #[serde(skip)]
     pub source: Option<crate::ci::CiSource>,
+    #[serde(skip)]
+    pub published: bool,
+    #[serde(skip)]
+    pub git_refs: Option<String>,
 }
 
 pub(crate) fn discover(cwd: &Path) -> Result<ProjectName> {
@@ -22,6 +27,14 @@ pub(crate) fn discover(cwd: &Path) -> Result<ProjectName> {
 
 /// The git-dir owns HEAD, while the common directory owns refs in linked worktrees.
 pub(crate) fn discover_watched(cwd: &Path) -> Result<(ProjectName, Vec<std::path::PathBuf>)> {
+    discover_watched_with_ci(cwd, None)
+}
+
+/// Reuse provider metadata only for the exact repository, branch and committed HEAD.
+pub(crate) fn discover_watched_with_ci(
+    cwd: &Path,
+    cached: Option<&CiSnapshot>,
+) -> Result<(ProjectName, Vec<std::path::PathBuf>)> {
     if !cwd.is_absolute() || !cwd.is_dir() {
         bail!("project cwd must be an existing absolute directory");
     }
@@ -61,9 +74,9 @@ pub(crate) fn discover_watched(cwd: &Path) -> Result<(ProjectName, Vec<std::path
             directories.push(Path::new(common).join("refs"));
             directories.push(Path::new(common).join("refs/heads"));
             directories.push(Path::new(common).join("refs/remotes"));
-            let refs = git_text(cwd, &["for-each-ref", "--format=%(refname)"]);
+            let refs = git_text(cwd, &["for-each-ref", "--format=%(objectname) %(refname)"]);
             if let Some(refs) = &refs {
-                for reference in refs.lines() {
+                for reference in ref_names(refs) {
                     reference_directories(Path::new(common), reference, &mut directories);
                 }
             }
@@ -89,21 +102,39 @@ pub(crate) fn discover_watched(cwd: &Path) -> Result<(ProjectName, Vec<std::path
                 None => git_text(cwd, &["rev-parse", "--short=7", "HEAD"])
                     .map(|sha| format!("detached @ {sha}")),
             };
-            let branch_changes = branch_changes(
-                cwd,
-                symbolic
-                    .as_deref()
-                    .and_then(|name| name.strip_prefix("refs/heads/")),
-                refs.as_deref().unwrap_or_default(),
-                Path::new(common),
-                &mut directories,
-            );
+            let source = crate::ci::discover(cwd, branch.as_deref());
+            let published = source.as_ref().is_some_and(|source| {
+                let Some(branch) = source.branch.as_deref() else {
+                    return false;
+                };
+                let remote = crate::ci::push_remote(cwd, Some(branch));
+                let reference = format!("refs/remotes/{remote}/{branch}");
+                reference_directories(Path::new(common), &reference, &mut directories);
+                resolve_commit(cwd, &reference).as_deref() == Some(source.sha.as_str())
+            });
+            let ci = cached
+                .filter(|snapshot| snapshot_matches(source.as_ref(), snapshot))
+                .cloned();
+            let branch_changes = if let (Some(base), Some(source)) =
+                (change_request_base(ci.as_ref()), source.as_ref())
+            {
+                target_changes(cwd, base, &source.sha)
+            } else {
+                branch_changes(
+                    cwd,
+                    symbolic
+                        .as_deref()
+                        .and_then(|name| name.strip_prefix("refs/heads/")),
+                    refs.as_deref().unwrap_or_default(),
+                    Path::new(common),
+                    &mut directories,
+                )
+            };
             let repository_id = std::fs::canonicalize(common)
                 .ok()
                 .and_then(|path| path.to_str().map(str::to_owned));
             directories.sort_unstable();
             directories.dedup();
-            let source = crate::ci::discover(cwd, branch.as_deref());
             return Ok((
                 ProjectName {
                     name,
@@ -111,8 +142,10 @@ pub(crate) fn discover_watched(cwd: &Path) -> Result<(ProjectName, Vec<std::path
                     branch,
                     repository_id,
                     branch_changes,
-                    ci: None,
+                    ci,
                     source,
+                    published,
+                    git_refs: refs,
                 },
                 directories,
             ));
@@ -122,6 +155,60 @@ pub(crate) fn discover_watched(cwd: &Path) -> Result<(ProjectName, Vec<std::path
         directory_name(cwd).context("project directory name is not UTF-8")?,
         directories,
     ))
+}
+
+fn snapshot_matches(source: Option<&crate::ci::CiSource>, snapshot: &CiSnapshot) -> bool {
+    source.is_some_and(|source| {
+        source.repository == snapshot.repository
+            && source.sha == snapshot.head_sha
+            && source.branch == snapshot.branch
+    })
+}
+
+fn change_request_base(snapshot: Option<&CiSnapshot>) -> Option<&ChangeRequestBase> {
+    snapshot?.change_request.as_ref()?.base.as_ref()
+}
+
+/// CI progress alone never reruns git diff. A new target is resolved against the
+/// current worktree identity before its totals or metadata can be published.
+pub(crate) fn update_ci(
+    cwd: &Path,
+    project: &mut ProjectName,
+    snapshot: Option<CiSnapshot>,
+) -> bool {
+    if snapshot == project.ci
+        || snapshot
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot_matches(project.source.as_ref(), snapshot))
+    {
+        return false;
+    }
+    if change_request_base(project.ci.as_ref()) != change_request_base(snapshot.as_ref()) {
+        let Ok((current, _)) = discover_watched_with_ci(cwd, snapshot.as_ref()) else {
+            return false;
+        };
+        if current.source != project.source || current.branch != project.branch {
+            return false;
+        }
+        project.branch_changes = current.branch_changes;
+    }
+    project.ci = snapshot;
+    true
+}
+
+fn target_changes(
+    cwd: &Path,
+    base: &ChangeRequestBase,
+    head: &str,
+) -> Option<shephrd::BranchChanges> {
+    // Never interpret a provider value as a local revision expression, nor fetch.
+    if !matches!(base.commit.len(), 40 | 64)
+        || !base.commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let target = resolve_commit(cwd, &base.commit)?;
+    committed_changes(cwd, base.branch.clone(), &target, head)
 }
 
 fn reference_directories(
@@ -158,6 +245,11 @@ fn resolve_commit(cwd: &Path, revision: &str) -> Option<String> {
             &format!("{revision}^{{commit}}"),
         ],
     )
+}
+
+fn ref_names(refs: &str) -> impl Iterator<Item = &str> {
+    refs.lines()
+        .filter_map(|line| line.split_once(' ').map(|(_, name)| name))
 }
 
 fn branch_changes(
@@ -203,7 +295,7 @@ fn branch_changes(
             remotes.push("origin".to_owned());
         }
         let preferred = remotes.len();
-        for reference in refs.lines() {
+        for reference in ref_names(refs) {
             if let Some(remote) = reference
                 .strip_prefix("refs/remotes/")
                 .and_then(|reference| reference.split_once('/').map(|(remote, _)| remote))
@@ -225,7 +317,7 @@ fn branch_changes(
         candidates.extend(["refs/heads/main".to_owned(), "refs/heads/master".to_owned()]);
         candidates
             .into_iter()
-            .filter(|reference| refs.lines().any(|name| name == reference))
+            .filter(|reference| ref_names(refs).any(|name| name == reference))
             .find_map(|reference| {
                 resolve_commit(cwd, &reference).map(|commit| (reference, commit))
             })?
@@ -245,7 +337,19 @@ fn branch_changes(
     }
     // Resolve both endpoints to immutable commit IDs before merge-base and diff.
     let head = resolve_commit(cwd, "HEAD")?;
-    let merge_base = git_text(cwd, &["merge-base", &base, &head])?;
+    let base_ref = symbolic_base
+        .filter(|reference| !reference.is_empty())
+        .unwrap_or(base_ref);
+    committed_changes(cwd, base_ref, &base, &head)
+}
+
+fn committed_changes(
+    cwd: &Path,
+    base_ref: String,
+    base: &str,
+    head: &str,
+) -> Option<shephrd::BranchChanges> {
+    let merge_base = git_text(cwd, &["merge-base", base, head])?;
     let output = git_command(cwd)
         .args([
             "diff",
@@ -256,7 +360,7 @@ fn branch_changes(
             "--no-ext-diff",
             "--no-textconv",
             &merge_base,
-            &head,
+            head,
             "--",
         ])
         .output()
@@ -266,9 +370,7 @@ fn branch_changes(
     }
     let total = diff_stats(&output.stdout)?;
     Some(shephrd::BranchChanges {
-        base_ref: symbolic_base
-            .filter(|reference| !reference.is_empty())
-            .unwrap_or(base_ref),
+        base_ref,
         merge_base,
         total,
     })
@@ -352,6 +454,8 @@ pub(crate) fn directory_name(cwd: &Path) -> Option<ProjectName> {
         branch_changes: None,
         ci: None,
         source: None,
+        published: false,
+        git_refs: None,
     })
 }
 
@@ -437,6 +541,189 @@ pub(crate) mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    pub(crate) fn ci_snapshot(project: &ProjectName, base: ChangeRequestBase) -> CiSnapshot {
+        use shephrd::ci_contract::{ChangeRequest, ChangeRequestState, CiFetchState, CiStatus};
+        let source = project.source.as_ref().unwrap();
+        CiSnapshot {
+            status: CiStatus::NoChecks,
+            checks: Vec::new(),
+            change_request: Some(ChangeRequest {
+                number: 7,
+                title: "Child change".into(),
+                url: format!("{}/pull/7", source.repository.web_url),
+                state: ChangeRequestState::Open,
+                description: String::new(),
+                issues: Vec::new(),
+                base: Some(base),
+            }),
+            fetch_state: CiFetchState::Ready,
+            updated_at: 1,
+            stale: false,
+            error: None,
+            repository: source.repository.clone(),
+            head_sha: source.sha.clone(),
+            branch: source.branch.clone(),
+            truncated: false,
+            commit_missing: false,
+        }
+    }
+
+    #[test]
+    fn provider_stack_targets_use_the_commit_not_main_or_a_local_tracking_branch() {
+        let repository = Repository::new();
+        repository.git(&["init", "-b", "main"]);
+        repository.git(&["remote", "add", "origin", "https://github.com/owner/repo"]);
+        repository.git(&["commit", "--allow-empty", "-m", "initial"]);
+        let main = resolve_commit(&repository.0, "HEAD").unwrap();
+        repository.git(&["switch", "-c", "stack/parent"]);
+        repository.write("parent", "parent one\nparent two\n");
+        repository.commit_all();
+        let parent = resolve_commit(&repository.0, "HEAD").unwrap();
+        repository.git(&["switch", "-c", "stack/child"]);
+        repository.write("child", "child only\n");
+        repository.commit_all();
+        repository.git(&["config", "branch.stack/child.gh-merge-base", "main"]);
+        repository.git(&["update-ref", "refs/remotes/origin/stack/child", "HEAD"]);
+        repository.git(&["config", "branch.stack/child.remote", "origin"]);
+        repository.git(&[
+            "config",
+            "branch.stack/child.merge",
+            "refs/heads/stack/child",
+        ]);
+        let mut project = discover(&repository.0).unwrap();
+        assert_eq!(project.branch_changes.as_ref().unwrap().total.added, 3);
+        let base = ChangeRequestBase {
+            branch: "stack/parent".into(),
+            commit: parent.clone(),
+            repository: project.source.as_ref().unwrap().repository.clone(),
+        };
+        let mut snapshot = ci_snapshot(&project, base);
+        repository.write("child", "uncommitted\nextra lines\nare not counted\n");
+        assert!(update_ci(
+            &repository.0,
+            &mut project,
+            Some(snapshot.clone())
+        ));
+        let changes = project.branch_changes.as_ref().unwrap();
+        assert_eq!(changes.base_ref, "stack/parent");
+        assert_eq!(changes.merge_base, parent);
+        assert_eq!(changes.total.added, 1);
+        assert_eq!(changes.total.deleted, 0);
+
+        // Moving a same-named local target cannot override the provider commit.
+        repository.git(&["update-ref", "refs/heads/stack/parent", "HEAD"]);
+        let rediscovered = discover_watched_with_ci(&repository.0, Some(&snapshot))
+            .unwrap()
+            .0;
+        assert_eq!(rediscovered.branch_changes, project.branch_changes);
+        snapshot.status = shephrd::ci_contract::CiStatus::Running;
+        // An unrelated CI update needs no filesystem discovery or second diff.
+        assert!(update_ci(
+            Path::new("/not-a-worktree"),
+            &mut project,
+            Some(snapshot.clone())
+        ));
+        assert_eq!(project.branch_changes.as_ref().unwrap().total.added, 1);
+
+        // A retarget is authoritative even if the local branch still names child HEAD.
+        snapshot
+            .change_request
+            .as_mut()
+            .unwrap()
+            .base
+            .as_mut()
+            .unwrap()
+            .commit = main;
+        assert!(update_ci(
+            &repository.0,
+            &mut project,
+            Some(snapshot.clone())
+        ));
+        assert_eq!(project.branch_changes.as_ref().unwrap().total.added, 3);
+        snapshot
+            .change_request
+            .as_mut()
+            .unwrap()
+            .base
+            .as_mut()
+            .unwrap()
+            .commit = "f".repeat(40);
+        assert!(update_ci(
+            &repository.0,
+            &mut project,
+            Some(snapshot.clone())
+        ));
+        assert!(project.branch_changes.is_none());
+        assert_eq!(
+            change_request_base(project.ci.as_ref()).unwrap().branch,
+            "stack/parent"
+        );
+        assert!(
+            discover_watched_with_ci(&repository.0, Some(&snapshot))
+                .unwrap()
+                .0
+                .branch_changes
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn provider_targets_are_rejected_after_a_branch_head_or_repository_change() {
+        let repository = Repository::new();
+        repository.git(&["init", "-b", "main"]);
+        repository.git(&["remote", "add", "origin", "https://github.com/owner/repo"]);
+        repository.git(&["commit", "--allow-empty", "-m", "initial"]);
+        repository.git(&["switch", "-c", "child"]);
+        let mut project = discover(&repository.0).unwrap();
+        let base = ChangeRequestBase {
+            branch: "parent".into(),
+            commit: project.source.as_ref().unwrap().sha.clone(),
+            repository: project.source.as_ref().unwrap().repository.clone(),
+        };
+        let snapshot = ci_snapshot(&project, base);
+        for mismatch in 0..3 {
+            let mut stale = snapshot.clone();
+            match mismatch {
+                0 => stale.branch = Some("different".into()),
+                1 => stale.head_sha = "f".repeat(40),
+                _ => stale.repository.path = "other/repo".into(),
+            }
+            assert!(!update_ci(&repository.0, &mut project, Some(stale)));
+            assert!(project.ci.is_none());
+        }
+        repository.git(&["switch", "-c", "different"]);
+        assert!(!update_ci(
+            &repository.0,
+            &mut project,
+            Some(snapshot.clone())
+        ));
+        let current = discover_watched_with_ci(&repository.0, Some(&snapshot))
+            .unwrap()
+            .0;
+        assert!(current.ci.is_none());
+        repository.git(&["switch", "child"]);
+        repository.git(&["commit", "--allow-empty", "-m", "new head"]);
+        assert!(!update_ci(
+            &repository.0,
+            &mut project,
+            Some(snapshot.clone())
+        ));
+        assert!(
+            discover_watched_with_ci(&repository.0, Some(&snapshot))
+                .unwrap()
+                .0
+                .ci
+                .is_none()
+        );
+        repository.git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/other/repo",
+        ]);
+        assert!(!update_ci(&repository.0, &mut project, Some(snapshot)));
     }
 
     #[test]

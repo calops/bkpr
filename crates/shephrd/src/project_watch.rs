@@ -646,6 +646,8 @@ mod linux {
         let mut previous: BTreeMap<String, (Ticket, project::ProjectName)> = BTreeMap::new();
         let mut dirty: BTreeSet<_> = active.watches.keys().cloned().collect();
         let mut ci = ci::Monitor::new();
+        let cache = crate::project_cache::Cache::new();
+        let mut restored = Vec::new();
         let mut initialized = false;
         loop {
             if initialized && !dirty.is_empty() {
@@ -656,7 +658,10 @@ mod linux {
                     {
                         ci.invalidate(source);
                     }
-                    let paths = project::discover_watched(Path::new(cwd))
+                    let cached = previous
+                        .get(cwd)
+                        .and_then(|(_, project)| project.ci.as_ref());
+                    let paths = project::discover_watched_with_ci(Path::new(cwd), cached)
                         .map(|(_, paths)| paths)
                         .unwrap_or_else(|_| {
                             Path::new(cwd)
@@ -672,7 +677,10 @@ mod linux {
                 // leave a stale initial snapshot with no future event to repair it.
                 let mut resubscribe = BTreeSet::new();
                 for cwd in &dirty {
-                    match project::discover_watched(Path::new(cwd)) {
+                    let cached = previous
+                        .get(cwd)
+                        .and_then(|(_, project)| project.ci.as_ref());
+                    match project::discover_watched_with_ci(Path::new(cwd), cached) {
                         Ok((project, paths)) => {
                             if directories.get(cwd) != Some(&paths) {
                                 directories.insert(cwd.clone(), paths);
@@ -680,11 +688,36 @@ mod linux {
                                 continue;
                             }
                             let mut project = project;
-                            if let Some(source) = &project.source {
-                                project.ci = ci.snapshot(source);
+                            if let Some(snapshot) = project
+                                .source
+                                .as_ref()
+                                .and_then(|source| ci.snapshot(source))
+                            {
+                                project::update_ci(Path::new(cwd), &mut project, Some(snapshot));
+                            } else if !previous.contains_key(cwd)
+                                && let Some(cached) = cache.load(cwd, &project)
+                            {
+                                project.branch_changes = cached.branch_changes;
+                                if let (Some(source), Some(snapshot)) =
+                                    (&project.source, &cached.ci)
+                                {
+                                    restored.push((source.clone(), snapshot.clone()));
+                                }
+                                project.ci = cached.ci;
                             }
                             let current = (active.watches[cwd].clone(), project);
+                            if previous.get(cwd).is_some_and(|(_, prior)| {
+                                prior.source == current.1.source
+                                    && !prior.published
+                                    && current.1.published
+                            }) && let Some(source) = &current.1.source
+                            {
+                                ci.published(source);
+                            }
                             if previous.get(cwd) != Some(&current) {
+                                if let Err(error) = cache.store(cwd, &current.1) {
+                                    eprintln!("Project cache for {cwd}: {error:#}");
+                                }
                                 publish(&active, cwd, Some(&current.1), None)?;
                                 previous.insert(cwd.clone(), current);
                             }
@@ -706,13 +739,16 @@ mod linux {
                         .values()
                         .filter_map(|(_, project)| project.source.clone()),
                 );
+                for (source, snapshot) in restored.drain(..) {
+                    ci.restore(&source, snapshot);
+                }
                 // Publish repository identity while queued, before launching provider I/O.
                 for (cwd, (_, project)) in &mut previous {
                     if project.ci.is_none()
                         && let Some(source) = &project.source
                         && let Some(snapshot) = ci.snapshot(source)
                     {
-                        project.ci = Some(snapshot);
+                        project::update_ci(Path::new(cwd), project, Some(snapshot));
                         publish(&active, cwd, Some(project), None)?;
                     }
                 }
@@ -722,8 +758,10 @@ mod linux {
                         .source
                         .as_ref()
                         .and_then(|source| ci.snapshot(source));
-                    if current != project.ci {
-                        project.ci = current;
+                    if project::update_ci(Path::new(cwd), project, current) {
+                        if let Err(error) = cache.store(cwd, project) {
+                            eprintln!("Project cache for {cwd}: {error:#}");
+                        }
                         publish(&active, cwd, Some(project), None)?;
                     }
                 }
@@ -1190,6 +1228,96 @@ mod linux {
                     .total,
                 shephrd::DiffStat::default(),
             );
+        }
+        #[test]
+        fn linked_worktree_refs_recompute_cached_provider_targets_without_main_fallback() {
+            use shephrd::ci_contract::ChangeRequestBase;
+            let repository = Repository::new();
+            repository.git(&["init", "-b", "main"]);
+            repository.git(&["remote", "add", "origin", "https://github.com/owner/repo"]);
+            repository.git(&["commit", "--allow-empty", "-m", "initial"]);
+            repository.git(&["switch", "-c", "stack/parent"]);
+            repository.write("parent", "parent one\nparent two\n");
+            repository.commit_all();
+            let parent = project::git_text(&repository.0, &["rev-parse", "HEAD"]).unwrap();
+            repository.git(&["switch", "main"]);
+            let linked = repository.0.join("linked");
+            repository.git(&[
+                "worktree",
+                "add",
+                "-b",
+                "stack/child",
+                linked.to_str().unwrap(),
+                "stack/parent",
+            ]);
+            std::fs::write(linked.join("child"), "child only\n").unwrap();
+            repository.git_at(&linked, &["add", "--all"]);
+            repository.git_at(&linked, &["commit", "-m", "child"]);
+            let mut project = project::discover(&linked).unwrap();
+            let snapshot = project::tests::ci_snapshot(
+                &project,
+                ChangeRequestBase {
+                    branch: "stack/parent".into(),
+                    commit: parent.clone(),
+                    repository: project.source.as_ref().unwrap().repository.clone(),
+                },
+            );
+            assert!(project::update_ci(
+                &linked,
+                &mut project,
+                Some(snapshot.clone())
+            ));
+            let cwd = linked.to_str().unwrap().to_owned();
+            let mut watcher = Watcher::new().unwrap();
+            let (_, paths) = project::discover_watched_with_ci(&linked, Some(&snapshot)).unwrap();
+            watcher
+                .install(&BTreeMap::from([(cwd.clone(), paths)]))
+                .unwrap();
+            assert_eq!(project.branch_changes.as_ref().unwrap().total.added, 1);
+            assert!(!project.published);
+            std::fs::write(linked.join("child"), "uncommitted\nnot counted\n").unwrap();
+            assert!(watcher.changed().unwrap().is_empty());
+
+            // Simulate a target absent from the local object store, then arriving
+            // with a fetched/pushed ref, without any network or Git fetch command.
+            let object = repository
+                .0
+                .join(".git/objects")
+                .join(&parent[..2])
+                .join(&parent[2..]);
+            let held = repository.0.join("held-parent-object");
+            std::fs::rename(&object, &held).unwrap();
+            let unavailable = project::discover_watched_with_ci(&linked, Some(&snapshot))
+                .unwrap()
+                .0;
+            assert!(unavailable.branch_changes.is_none());
+            assert_eq!(unavailable.ci, Some(snapshot.clone()));
+            std::fs::rename(held, object).unwrap();
+            repository.git(&["update-ref", "refs/remotes/origin/stack/parent", &parent]);
+            assert!(watcher.changed().unwrap().contains(&cwd));
+            let (restored, paths) =
+                project::discover_watched_with_ci(&linked, Some(&snapshot)).unwrap();
+            assert_eq!(restored.branch_changes.as_ref().unwrap().total.added, 1);
+            watcher
+                .install(&BTreeMap::from([(cwd.clone(), paths)]))
+                .unwrap();
+            let head = restored.source.as_ref().unwrap().sha.clone();
+            repository.git(&["update-ref", "refs/heads/stack/parent", &head]);
+            assert!(watcher.changed().unwrap().contains(&cwd));
+            let current = project::discover_watched_with_ci(&linked, Some(&snapshot))
+                .unwrap()
+                .0;
+            assert_eq!(current.branch_changes, restored.branch_changes);
+            assert!(!current.published);
+            repository.git(&["update-ref", "refs/remotes/origin/stack/child", &head]);
+            assert!(watcher.changed().unwrap().contains(&cwd));
+            let pushed = project::discover_watched_with_ci(&linked, Some(&snapshot))
+                .unwrap()
+                .0;
+            assert_eq!(pushed.source, restored.source);
+            assert!(pushed.published);
+            assert_ne!(pushed.git_refs, restored.git_refs);
+            assert_eq!(pushed.branch_changes, restored.branch_changes);
         }
     }
 }

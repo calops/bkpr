@@ -2260,6 +2260,7 @@ mod tests {
                             title: Some("日本語 linked ticket with wrapping context".to_owned()),
                             url: ticket.to_owned(),
                         }],
+                        base: None,
                     }),
                     fetch_state: CiFetchState::Ready,
                     updated_at: 0,
@@ -2274,6 +2275,7 @@ mod tests {
                     head_sha: "abc123".to_owned(),
                     branch: None,
                     truncated: false,
+                    commit_missing: false,
                 }),
             }],
         };

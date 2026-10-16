@@ -4,6 +4,8 @@ mod ci;
 mod claude;
 mod launcher;
 mod project;
+#[cfg(target_os = "linux")]
+mod project_cache;
 mod project_watch;
 
 use std::io::{self, Write};

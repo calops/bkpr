@@ -657,7 +657,7 @@ fn request_row(request: &shephrd::ci_contract::ChangeRequest) -> PopupRow {
     PopupRow {
         spans: vec![
             PopupSpan::new(
-                format!("{}  ", request_presentation(request.state).0),
+                request_presentation(request.state).0,
                 PopupColor::ChangeRequest(request.state),
             ),
             PopupSpan::new(request.title.clone(), PopupColor::Text),
@@ -694,12 +694,10 @@ fn forge_context(
 ) -> Vec<PopupRow> {
     let mut rows = vec![forge_repository(ci, project)];
     if let Some(request) = &ci.change_request {
+        rows.push(request_row(request));
         rows.extend(request.issues.iter().map(issue_row));
     }
     rows.extend(branches);
-    if let Some(request) = &ci.change_request {
-        rows.push(request_row(request));
-    }
     rows
 }
 
@@ -1131,7 +1129,11 @@ fn repository_heading(project: &ProjectIdentity, ci: Option<&CiSnapshot>) -> Pop
         })
 }
 
-fn branch_rows(branch: Option<&str>, changes: Option<&shephrd::BranchChanges>) -> Vec<PopupRow> {
+fn branch_rows(
+    branch: Option<&str>,
+    changes: Option<&shephrd::BranchChanges>,
+    ci: Option<&CiSnapshot>,
+) -> Vec<PopupRow> {
     let mut row = PopupRow::text(
         format!(
             "\u{f062c} {}",
@@ -1142,6 +1144,21 @@ fn branch_rows(branch: Option<&str>, changes: Option<&shephrd::BranchChanges>) -
         PopupColor::Text,
     );
     row.truncate = true;
+    let base = ci
+        .and_then(|ci| ci.change_request.as_ref())
+        .and_then(|request| request.base.as_ref())
+        .map(|base| base.branch.as_str())
+        .or_else(|| changes.map(|changes| changes.base_ref.as_str()));
+    if let Some(base) = base {
+        let base = base
+            .strip_prefix("refs/heads/")
+            .or_else(|| base.strip_prefix("refs/remotes/"))
+            .unwrap_or(base);
+        row.right = vec![PopupSpan::new(
+            format!("\u{f419} {base}"),
+            PopupColor::Muted,
+        )];
+    }
     let Some(changes) = changes else {
         return vec![
             row,
@@ -1154,15 +1171,6 @@ fn branch_rows(branch: Option<&str>, changes: Option<&shephrd::BranchChanges>) -
         PopupSpan::new(" ", PopupColor::Muted),
         PopupSpan::new(format!("-{}", changes.total.deleted), PopupColor::Deleted),
     ];
-    let base = changes
-        .base_ref
-        .strip_prefix("refs/heads/")
-        .or_else(|| changes.base_ref.strip_prefix("refs/remotes/"))
-        .unwrap_or(&changes.base_ref);
-    row.right = vec![PopupSpan::new(
-        format!("\u{f419} {base}"),
-        PopupColor::Muted,
-    )];
     let mut rows = vec![row];
     if changes.total.binary_files != 0 {
         rows.push(PopupRow::text(
@@ -1211,8 +1219,8 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                             if index != 0 {
                                 rows.push(forge_repository(ci, Some(project)));
                             }
-                            rows.extend(request.issues.iter().map(issue_row));
                             rows.push(request_row(request));
+                            rows.extend(request.issues.iter().map(issue_row));
                         }
                     }
                     let mut contexts: Vec<&shephrd::Pane> = Vec::new();
@@ -1235,11 +1243,12 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                                     pane.ci.as_ref().and_then(|ci| ci.branch.as_deref())
                                 }),
                                 pane.branch_changes.as_ref(),
+                                pane.ci.as_ref(),
                             ));
                         }
                     }
                     if project.repository && contexts.is_empty() {
-                        rows.extend(branch_rows(None, None));
+                        rows.extend(branch_rows(None, None, None));
                     }
                     rows.push(PopupRow::default());
                     rows.push(PopupRow::heading("Checks"));
@@ -1351,6 +1360,7 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                             .as_deref()
                             .or_else(|| pane.ci.as_ref().and_then(|ci| ci.branch.as_deref())),
                         pane.branch_changes.as_ref(),
+                        pane.ci.as_ref(),
                     )
                 } else {
                     Vec::new()
@@ -1631,6 +1641,7 @@ mod tests {
                 state: ChangeRequestState::Open,
                 description: String::new(),
                 issues: Vec::new(),
+                base: None,
             }),
             fetch_state: CiFetchState::Ready,
             updated_at: 1,
@@ -1645,6 +1656,7 @@ mod tests {
             head_sha: "0123456789abcdef".to_owned(),
             branch: Some("feature/日本語".to_owned()),
             truncated: false,
+            commit_missing: false,
         }
     }
 
@@ -2461,20 +2473,29 @@ mod tests {
                 rows[heading].link.as_deref(),
                 Some("https://github.com/owner/repo/pull/7")
             );
+            assert!(
+                rows[heading + 1]
+                    .plain()
+                    .contains("Improve project metadata")
+            );
             assert_eq!(
                 rows[heading + 1].link.as_deref(),
+                Some("https://github.com/owner/repo/pull/7")
+            );
+            assert_eq!(
+                rows[heading + 2].link.as_deref(),
                 Some("https://linear.app/real-team/issue/ENG-42/repair-rendering")
             );
             assert!(
-                rows[heading + 1]
+                rows[heading + 2]
                     .plain()
                     .contains("ENG-42 · Repair rendering")
             );
             assert_eq!(
-                rows[heading + 2].link.as_deref(),
+                rows[heading + 3].link.as_deref(),
                 Some("https://linear.app/other-team/issue/OPS-9")
             );
-            assert!(rows[heading + 2].plain().ends_with("OPS-9"));
+            assert!(rows[heading + 3].plain().ends_with("OPS-9"));
             assert_eq!(
                 rows.iter().filter(|row| row.plain().contains("#7")).count(),
                 1
@@ -2541,6 +2562,44 @@ mod tests {
                 .all(|row| row.right.is_empty() && row.suffix.is_empty())
         );
         assert!(popup.rows().iter().all(|row| row.link.is_none()));
+    }
+
+    #[test]
+    fn provider_target_labels_remain_visible_when_the_commit_stats_are_unavailable() {
+        let mut state = snapshot();
+        let ci = state.panes[0].ci.as_mut().unwrap();
+        ci.change_request.as_mut().unwrap().base = Some(shephrd::ci_contract::ChangeRequestBase {
+            branch: "stack/parent".into(),
+            commit: "f".repeat(40),
+            repository: ci.repository.clone(),
+        });
+        state.panes[0].branch_changes = None;
+        for item in [Item::Pane("1".into()), Item::Workspace("workspace".into())] {
+            let rows = tooltip(&item, &state).rows();
+            let branch = rows
+                .iter()
+                .find(|row| !row.right.is_empty() && row.right[0].text.contains("stack/parent"))
+                .unwrap();
+            assert_eq!(branch.right[0].text, "\u{f419} stack/parent");
+            assert!(branch.suffix.is_empty());
+            assert!(
+                rows.iter()
+                    .any(|row| row.plain() == "Branch changes unavailable")
+            );
+            assert!(!rows.iter().any(|row| row.plain().contains("origin/main")));
+        }
+    }
+
+    #[test]
+    fn request_title_directly_follows_the_status_glyph_without_added_spacing() {
+        let snapshot = ci(CiStatus::Passed);
+        let request = snapshot.change_request.as_ref().unwrap();
+        let row = request_row(request);
+        assert_eq!(row.spans[0].text, request_presentation(request.state).0);
+        assert_eq!(
+            row.plain(),
+            format!("{}{}", request_presentation(request.state).0, request.title)
+        );
     }
 
     #[test]

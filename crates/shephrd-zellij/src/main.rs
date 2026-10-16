@@ -3102,6 +3102,7 @@ mod tests {
             stale: false,
             error: None,
             truncated: false,
+            commit_missing: false,
         });
         frontend.tooltip.begin_open();
         frontend.popup_item = Some(Item::Pane("terminal_1".to_owned()));
