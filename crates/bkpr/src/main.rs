@@ -73,6 +73,9 @@ enum Commands {
     /// Receive a Claude UserPromptSubmit hook payload.
     #[command(hide = true)]
     ClaudeTitle,
+    /// Wait for a broker message from a launch-local Claude hook.
+    #[command(hide = true)]
+    ClaudeWait,
     /// Launch OMP with launch-local messaging.
     #[command(hide = true)]
     OmpLaunch {
@@ -137,6 +140,7 @@ fn run() -> Result<()> {
             arguments,
         }) => claude::launch(&wrapper_dir, arguments),
         Some(Commands::ClaudeTitle) => claude::prompt_title(),
+        Some(Commands::ClaudeWait) => claude::wait_message(),
         Some(Commands::OmpLaunch {
             wrapper_dir,
             arguments,
