@@ -896,14 +896,13 @@ pub fn render_row(
     hovered: bool,
     selected_pane_group: bool,
 ) -> String {
-    // Permanent outer gutters keep the hover outline clear of text and status glyphs.
+    // Keep a left gutter for the hover outline; the rightmost cell belongs to the item.
     let left = if columns > 0 { " " } else { "" };
-    let right = if columns > 1 { " " } else { "" };
     let content = render_content_row(
         row,
         state,
         theme,
-        columns.saturating_sub(2),
+        columns.saturating_sub(1),
         selected,
         hovered,
         selected_pane_group,
@@ -918,7 +917,7 @@ pub fn render_row(
     } else {
         ""
     };
-    format!("{RESET}{BASE}{background}{left}{content}{BASE}{background}{right}{RESET}")
+    format!("{RESET}{BASE}{background}{left}{content}{RESET}")
 }
 
 fn render_content_row(
@@ -1667,6 +1666,27 @@ mod tests {
                     .unwrap_or(part)
             })
             .collect()
+    }
+
+    #[test]
+    fn sidebar_item_uses_last_column_without_a_right_gutter() {
+        let mut state = snapshot();
+        state.panes[0].harness = None;
+        state.panes[0].ci = None;
+        let collapsed = std::collections::BTreeSet::from(["workspace".to_owned()]);
+        let rows = tree(&state, &collapsed);
+        let rendered = visible(&render_row(
+            &rows[0],
+            &state,
+            &Theme::default(),
+            32,
+            false,
+            false,
+            false,
+        ));
+        assert_eq!(width(&rendered), 32);
+        assert!(rendered.starts_with(" ● "));
+        assert!(rendered.ends_with('·'));
     }
 
     #[test]
