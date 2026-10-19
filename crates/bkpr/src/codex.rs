@@ -731,7 +731,10 @@ mod tests {
                 writeln!(stream, "{response}").unwrap();
             });
             let result = stop(&manifest);
-            broker.join().unwrap();
+            assert!(
+                broker.join().is_ok(),
+                "broker thread failed after shutdown returned: {result:?}"
+            );
             if pending {
                 assert!(result.is_err());
                 assert!(
