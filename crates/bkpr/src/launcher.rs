@@ -259,9 +259,9 @@ fn plugin_path(explicit: Option<PathBuf>, program: &Path) -> Result<PathBuf> {
 fn check_zellij(program: &Path) -> Result<()> {
     let result = Command::new(program).arg("--version").output()?;
     let version = String::from_utf8(result.stdout)?;
-    if !result.status.success() || version.trim() != "zellij 0.45.1-bkpr.1" {
+    if !result.status.success() || version.trim() != "zellij 0.45.1-bkpr.2" {
         bail!(
-            "this frontend requires Zellij 0.45.1-bkpr.1; detected {}",
+            "this frontend requires Zellij 0.45.1-bkpr.2; detected {}",
             version.trim()
         );
     }
@@ -346,6 +346,7 @@ pub(crate) fn validate_session(session: &str) -> Result<()> {
 // The sidebar accepts keyboard focus only through the explicit control binding.
 const ZELLIJ_CONFIG: &str = r#"default_mode "normal"
 pane_frames false
+dangerously_enable_paste_buffer_read true
 mouse_hover_effects true
 focus_follows_mouse false
 mouse_click_through true

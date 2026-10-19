@@ -39,7 +39,7 @@ Use `nix develop` and incremental debug Cargo artifacts in `target/`. Run coordi
 
 The pinned host is [calops/bkpr-zellij](https://github.com/calops/bkpr-zellij), based on Zellij 0.45.1. Stock Zellij lacks required OSC/plugin event contracts. The fork's `main` tracks upstream unchanged; retained `feature/*` branches hold individual changes and merge into `bkpr` without PRs. Bkpr pins the fork flake in `flake.lock`; do not restore a local patch queue or override the fork's locked dependencies with `follows`. Only Bkpr's release CI builds and uploads the shared cache; the fork has no Bkpr CI/cache workflow.
 
-Normal Bkpr development is `nix develop`, build the debug WASM with Cargo, then `cargo run --locked -p bkpr`. The shell supplies the pinned native runtime automatically. Use incremental Cargo artifacts for tests and iteration, not `nix build`; reserve Nix builds for explicit packaging validation.
+Normal Bkpr development is `nix develop`, build the debug WASM with Cargo, then `cargo run --locked -p bkpr`. The shell supplies the pinned native runtime automatically. Use `--zellij ../bkpr-zellij/target/debug/zellij` to select an incremental native build explicitly; the argument is an executable path, not a checkout directory. Use incremental Cargo artifacts for tests and iteration, not `nix build`; reserve Nix builds for explicit packaging validation.
 
 For native changes, clone the fork beside Bkpr and work on a retained feature branch. In that checkout:
 

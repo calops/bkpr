@@ -255,11 +255,8 @@ impl Topology {
                     return Err("Native sidebar geometry exceeds the display".to_owned());
                 }
                 // Outer columns include the separator; content columns would shrink each tab.
-                return bkpr::native_sidebar_percent(
-                    pane.pane_columns,
-                    tab.display_area_columns,
-                )
-                .ok_or_else(|| "Native sidebar geometry is unavailable".to_owned());
+                return bkpr::native_sidebar_percent(pane.pane_columns, tab.display_area_columns)
+                    .ok_or_else(|| "Native sidebar geometry is unavailable".to_owned());
             }
         }
         Err("The requesting sidebar is no longer open".to_owned())
