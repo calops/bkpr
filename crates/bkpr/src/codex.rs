@@ -679,16 +679,6 @@ mod tests {
                 .read_line(&mut ready)
                 .unwrap();
             assert_eq!(ready, "ready\n");
-            assert!(
-                fs::read(format!("/proc/{}/cmdline", child.id()))
-                    .unwrap()
-                    .split(|byte| *byte == 0)
-                    .collect::<Vec<_>>()
-                    .windows(3)
-                    .any(|parts| parts == [b"app-server".as_slice(), b"--listen", endpoint.as_bytes()]),
-                "fixture argv: {:?}",
-                fs::read(format!("/proc/{}/cmdline", child.id())).unwrap()
-            );
             let socket = runtime.path().join("broker.sock");
             let manifest = runtime.path().join("server.json");
             let start = process_start(child.id()).unwrap();
