@@ -6,8 +6,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::pane_search::{Annotations, Field, Index, Value};
 use crate::ui;
 
-const TEXT: &str = "\u{1b}[22;38;2;205;214;244m";
-const MATCH: &str = "\u{1b}[4;38;2;137;180;250m";
+const TEXT: &str = ui::TEXT;
+const MATCH: &str = "\u{1b}[4m";
 const UNDERLINE_OFF: &str = "\u{1b}[24m";
 
 /// Complete entry content, exactly `columns` terminal cells. No background SGRs
@@ -18,6 +18,7 @@ pub fn render(
     match_index: usize,
     selected: bool,
     columns: usize,
+    theme: &ui::Theme,
 ) -> String {
     let Some(result) = index.results().get(match_index) else {
         return " ".repeat(columns);
@@ -47,9 +48,9 @@ pub fn render(
     let visible = &visible[..count];
     let annotations = index.annotate(pane_index, visible);
     let has_context = annotations.contexts(visible).next().is_some();
-    let mut row = Row::new(columns);
+    let mut row = Row::new(columns, theme);
     row.text(if selected { "› " } else { "  " }, TEXT);
-    row.text("● ", ui::project_color(pane.project.as_ref()));
+    row.text("● ", ui::project_color(pane.project.as_ref(), theme));
     if let Some(name) = name {
         let budget = if has_context {
             row.remaining().div_ceil(2)
@@ -64,28 +65,29 @@ pub fn render(
         if row.remaining() <= 5 {
             break;
         }
-        row.text(" · ", ui::MUTED);
-        row.text(value.field.label(), ui::MUTED);
-        row.text(": ", ui::MUTED);
-        row.value(&annotations, value, row.remaining(), ui::BRIGHT);
+        row.text(" · ", &theme.muted);
+        row.text(value.field.label(), &theme.muted);
+        row.text(": ", &theme.muted);
+        row.value(&annotations, value, row.remaining(), &theme.bright);
     }
     for value in [workspace, branch].into_iter().flatten() {
         if row.remaining() <= 3 {
             break;
         }
-        row.text(" · ", ui::MUTED);
-        row.value(&annotations, value, row.remaining(), ui::BRIGHT);
+        row.text(" · ", &theme.muted);
+        row.value(&annotations, value, row.remaining(), &theme.bright);
     }
     row.finish()
 }
 
-struct Row {
+struct Row<'a> {
     output: String,
     columns: usize,
     cells: usize,
     last: Option<(usize, usize)>,
     matched: bool,
-    color: &'static str,
+    color: &'a str,
+    match_color: &'a str,
     clipped: bool,
 }
 
@@ -98,8 +100,8 @@ fn clean_glyph(glyph: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-impl Row {
-    fn new(columns: usize) -> Self {
+impl<'a> Row<'a> {
+    fn new(columns: usize, theme: &'a ui::Theme) -> Self {
         Self {
             output: String::with_capacity(columns.saturating_add(128)),
             columns,
@@ -107,6 +109,7 @@ impl Row {
             last: None,
             matched: false,
             color: "",
+            match_color: &theme.accents[4],
             clipped: false,
         }
     }
@@ -115,10 +118,11 @@ impl Row {
         self.columns.saturating_sub(self.cells)
     }
 
-    fn style(&mut self, matched: bool, color: &'static str) {
+    fn style(&mut self, matched: bool, color: &'a str) {
         if matched != self.matched || (!matched && color != self.color) {
             if matched {
                 self.output.push_str(MATCH);
+                self.output.push_str(self.match_color);
             } else {
                 self.output.push_str(UNDERLINE_OFF);
                 self.output.push_str(color);
@@ -128,7 +132,7 @@ impl Row {
         self.color = color;
     }
 
-    fn glyph(&mut self, glyph: &str, matched: bool, color: &'static str) -> bool {
+    fn glyph(&mut self, glyph: &str, matched: bool, color: &'a str) -> bool {
         let clean = clean_glyph(glyph);
         let width = ui::width(&clean);
         self.push_clean(&clean, width, matched, color)
@@ -139,7 +143,7 @@ impl Row {
         clean: &str,
         width: usize,
         matched: bool,
-        color: &'static str,
+        color: &'a str,
     ) -> bool {
         if self.clipped {
             return false;
@@ -160,7 +164,7 @@ impl Row {
         true
     }
 
-    fn text(&mut self, text: &str, color: &'static str) {
+    fn text(&mut self, text: &str, color: &'a str) {
         for glyph in text.graphemes(true) {
             if !self.glyph(glyph, false, color) {
                 break;
@@ -193,7 +197,7 @@ impl Row {
         annotations: &Annotations<'_>,
         value: Value,
         budget: usize,
-        color: &'static str,
+        color: &'a str,
     ) {
         let mut budget = budget.min(self.remaining());
         if budget == 0 || self.clipped {
@@ -312,7 +316,7 @@ mod tests {
         let mut index = Index::default();
         index.rebuild(snapshot);
         assert_eq!(index.search(query).len(), 1);
-        render(&mut index, snapshot, 0, true, columns)
+        render(&mut index, snapshot, 0, true, columns, &ui::Theme::default())
     }
 
     // Decode the rendered behavior, not the implementation's escape spelling.
@@ -439,7 +443,7 @@ mod tests {
             assert!(plain(&row).starts_with("› ● compiler · Engine room · feature/queues"));
             assert!(row.contains(&format!(
                 "{}●",
-                ui::project_color(state.panes[0].project.as_ref())
+                ui::project_color(state.panes[0].project.as_ref(), &ui::Theme::default())
             )));
         }
         let mut local = state;
@@ -447,7 +451,7 @@ mod tests {
         let row = render_query(&local, "", 60);
         assert!(row.contains(&format!(
             "{}●",
-            ui::project_color(local.panes[0].project.as_ref())
+            ui::project_color(local.panes[0].project.as_ref(), &ui::Theme::default())
         )));
     }
 

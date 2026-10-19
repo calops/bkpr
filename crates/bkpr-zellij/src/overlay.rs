@@ -848,10 +848,10 @@ pub(crate) const OSC8_CLOSE: &str = "\u{1b}]8;;\u{1b}\\";
 
 #[cfg(test)]
 fn render_line(row: &ui::PopupRow, columns: usize) -> String {
-    render_action_line(row, columns, false)
+    render_action_line(row, columns, false, &ui::Theme::default())
 }
 
-pub(crate) fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bool) -> String {
+pub(crate) fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bool, theme: &ui::Theme) -> String {
     let right: usize = row
         .right
         .iter()
@@ -897,7 +897,7 @@ pub(crate) fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bo
         let text = ui::truncate(&span.text, body_columns.saturating_sub(suffix_width + used));
         used += ui::width(&text);
         rendered.push_str("\u{1b}[22m");
-        rendered.push_str(span.color.ansi());
+        rendered.push_str(span.color.ansi(theme));
         if span.bold {
             rendered.push_str("\u{1b}[1m");
         }
@@ -907,22 +907,22 @@ pub(crate) fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bo
         let text = ui::clean(&span.text);
         used += ui::width(&text);
         rendered.push_str("\u{1b}[22m");
-        rendered.push_str(span.color.ansi());
+        rendered.push_str(span.color.ansi(theme));
         rendered.push_str(&text);
     }
     rendered.push_str(OSC8_CLOSE);
-    rendered.push_str(ui::MUTED);
+    rendered.push_str(&theme.muted);
     rendered.push_str(&" ".repeat(columns.saturating_sub(used + right_columns)));
     let mut used_right = 0;
     for span in &row.right {
         if hovered && row.refresh.is_some() {
-            rendered.push_str("\u{1b}[1;38;2;30;30;46;48;2;137;180;250m");
+            rendered.push_str("\u{1b}[39;49;7m");
         }
         let text = ui::truncate(&span.text, right_columns.saturating_sub(used_right));
         used_right += ui::width(&text);
         rendered.push_str("\u{1b}[22m");
         if !(hovered && row.refresh.is_some()) {
-            rendered.push_str(span.color.ansi());
+            rendered.push_str(span.color.ansi(theme));
         }
         if span.bold || (hovered && row.refresh.is_some()) {
             rendered.push_str("\u{1b}[1m");
@@ -944,21 +944,21 @@ fn outline_edges(row: usize, rows: usize) -> (&'static str, &'static str) {
     }
 }
 
-pub(crate) fn outlined_line(text: String, row: usize, rows: usize, columns: usize) -> String {
+pub(crate) fn outlined_line(text: String, row: usize, rows: usize, columns: usize, theme: &ui::Theme) -> String {
     let (left, right) = outline_edges(row, rows);
     let center = if row == 0 || row + 1 == rows {
-        format!("{}{}", ui::BRIGHT, "─".repeat(columns.saturating_sub(2)))
+        format!("{}{}", theme.bright, "─".repeat(columns.saturating_sub(2)))
     } else {
         text
     };
     if columns >= 2 {
         format!(
             "{OSC8_CLOSE}{}{left}{center}{OSC8_CLOSE}{}{right}{OSC8_CLOSE}",
-            ui::BRIGHT,
-            ui::BRIGHT
+            theme.bright,
+            theme.bright
         )
     } else if columns == 1 {
-        format!("{OSC8_CLOSE}{}{left}{OSC8_CLOSE}", ui::BRIGHT)
+        format!("{OSC8_CLOSE}{}{left}{OSC8_CLOSE}", theme.bright)
     } else {
         OSC8_CLOSE.to_owned()
     }
@@ -986,6 +986,7 @@ fn fixed_rectangle(coordinates: &FloatingPaneCoordinates) -> Option<(usize, usiz
 
 #[derive(Default)]
 pub struct Overlay {
+    theme: ui::Theme,
     pub owner: Option<u32>,
     pub id: u32,
     client_id: ClientId,
@@ -1013,6 +1014,10 @@ pub struct Overlay {
 }
 
 impl Overlay {
+    pub fn set_terminal_colors(&mut self, colors: &crate::palette::TerminalColors) -> bool {
+        self.theme.update(colors)
+    }
+
     pub fn load(&mut self, configuration: &BTreeMap<String, String>, id: u32, client_id: ClientId) {
         self.id = id;
         self.owner = configuration
@@ -1034,6 +1039,7 @@ impl Overlay {
         set_selectable(false);
         subscribe(&[
             EventType::PermissionRequestResult,
+            EventType::CustomMessage,
             EventType::PaneUpdate,
             EventType::PaneClosed,
             EventType::BeforeClose,
@@ -1652,7 +1658,7 @@ impl Overlay {
         print!("{OSC8_CLOSE}");
         for row in 0..rows {
             let text = if row > 0 && row + 2 == rows {
-                format!("{}{}", ui::MUTED, ui::fit(&footer, content_columns))
+                format!("{}{}", self.theme.muted, ui::fit(&footer, content_columns))
             } else {
                 row.checked_sub(1)
                     .and_then(|i| layout.lines.get(i + layout.scroll))
@@ -1664,11 +1670,12 @@ impl Overlay {
                                 self.refresh_hover.as_ref() == Some(target)
                                     && !self.refresh_requested.contains(target)
                             }),
+                            &self.theme,
                         )
                     })
                     .unwrap_or_else(|| " ".repeat(content_columns))
             };
-            let line = outlined_line(text, row, rows, columns);
+            let line = outlined_line(text, row, rows, columns, &self.theme);
             print!(
                 "\u{1b}[{};1H{}{}{line}{}",
                 row + 1,
@@ -1683,6 +1690,7 @@ impl Overlay {
 
 #[derive(Default)]
 pub struct GuideOverlay {
+    theme: ui::Theme,
     owner: Option<u32>,
     id: u32,
     instance: String,
@@ -1696,6 +1704,10 @@ pub struct GuideOverlay {
 }
 
 impl GuideOverlay {
+    pub fn set_terminal_colors(&mut self, colors: &crate::palette::TerminalColors) -> bool {
+        self.theme.update(colors)
+    }
+
     pub fn load(&mut self, configuration: &BTreeMap<String, String>, id: u32) {
         self.id = id;
         self.owner = configuration
@@ -1712,6 +1724,7 @@ impl GuideOverlay {
         set_selectable(false);
         subscribe(&[
             EventType::PermissionRequestResult,
+            EventType::CustomMessage,
             EventType::PaneUpdate,
             EventType::PaneClosed,
             EventType::BeforeClose,
@@ -2932,8 +2945,8 @@ mod tests {
                 }
                 let lines = wrapped_rows(&[source], columns);
                 assert_eq!(lines.len(), 1);
-                let normal = render_action_line(&lines[0].row, columns, false);
-                let hover = render_action_line(&lines[0].row, columns, true);
+                let normal = render_action_line(&lines[0].row, columns, false, &ui::Theme::default());
+                let hover = render_action_line(&lines[0].row, columns, true, &ui::Theme::default());
                 let mut terminal = TerminalConsumer::default();
                 terminal.consume(&hover);
                 assert_eq!(ui::width(&terminal.text()), columns);
@@ -3125,7 +3138,7 @@ mod tests {
                 let rendered = render_line(&line.row, columns);
                 assert_eq!(ui::width(&visible(&rendered)), columns);
                 for span in &line.row.spans {
-                    assert!(rendered.contains(span.color.ansi()));
+                    assert!(rendered.contains(span.color.ansi(&ui::Theme::default())));
                     assert!(!span.text.chars().any(char::is_control));
                 }
             }
@@ -3302,12 +3315,7 @@ mod tests {
             let lines = wrapped_rows(&[linked.clone()], columns);
             for line in lines {
                 let mut terminal = TerminalConsumer::default();
-                terminal.consume(&outlined_line(
-                    render_line(&line.row, columns),
-                    1,
-                    5,
-                    columns + 2,
-                ));
+                terminal.consume(&outlined_line(render_line(&line.row, columns), 1, 5, columns + 2, &ui::Theme::default()));
                 let cells = terminal.cell_links();
                 let text_width = ui::width(&line.row.plain());
                 assert_eq!(cells.len(), columns + 2);
@@ -3405,12 +3413,7 @@ mod tests {
             let mut destinations = std::collections::BTreeSet::new();
             for line in wrapped_rows(&rows, columns) {
                 let mut terminal = TerminalConsumer::default();
-                terminal.consume(&outlined_line(
-                    render_line(&line.row, columns),
-                    1,
-                    3,
-                    columns + 2,
-                ));
+                terminal.consume(&outlined_line(render_line(&line.row, columns), 1, 3, columns + 2, &ui::Theme::default()));
                 let cells = terminal.cell_links();
                 assert_eq!(cells.len(), columns + 2);
                 assert!(cells[0].is_none() && cells[columns + 1].is_none());
@@ -3469,7 +3472,7 @@ mod tests {
         .enumerate()
         {
             terminal.glyphs.clear();
-            terminal.consume(&outlined_line(text, index, 5, 18));
+            terminal.consume(&outlined_line(text, index, 5, 18, &ui::Theme::default()));
             let links = terminal.cell_links();
             if index == 1 {
                 assert!(links[1..=5].iter().all(|link| *link == Some(target)));
@@ -3480,7 +3483,7 @@ mod tests {
             assert!(terminal.link.is_none());
         }
         terminal.link = Some(target.to_owned());
-        terminal.consume(&outlined_line(String::new(), 0, 0, 0));
+        terminal.consume(&outlined_line(String::new(), 0, 0, 0, &ui::Theme::default()));
         assert!(terminal.link.is_none());
     }
 
@@ -3511,12 +3514,7 @@ mod tests {
             let layout = overlay.layout.borrow();
             let line = &layout.lines[layout.scroll + offset];
             let mut terminal = TerminalConsumer::default();
-            terminal.consume(&outlined_line(
-                render_line(&line.row, 16),
-                offset + 1,
-                6,
-                18,
-            ));
+            terminal.consume(&outlined_line(render_line(&line.row, 16), offset + 1, 6, 18, &ui::Theme::default()));
             let expected = checks[7 + offset].link.as_deref();
             let links = terminal.cell_links();
             let text_width = ui::width(&line.row.plain());
@@ -3719,12 +3717,7 @@ mod tests {
                     let mut body = row_with_link("日本語 +1234 -567");
                     body.spans[0].text = ui::fit(&body.spans[0].text, columns.saturating_sub(2));
                     let mut terminal = TerminalConsumer::default();
-                    terminal.consume(&outlined_line(
-                        render_line(&body, columns.saturating_sub(2)),
-                        row,
-                        rows,
-                        columns,
-                    ));
+                    terminal.consume(&outlined_line(render_line(&body, columns.saturating_sub(2)), row, rows, columns, &ui::Theme::default()));
                     let text = terminal.text();
                     assert_eq!(ui::width(&text), columns);
                     assert!(!text.contains(['├', '┤']));
