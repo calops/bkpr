@@ -20,7 +20,7 @@ pub struct Options {
     /// Frontend WASM artifact; bundled automatically by the product package.
     #[arg(long, env = "BKPR_PLUGIN", hide = true)]
     pub plugin: Option<PathBuf>,
-    /// Initial sidebar target in columns (16–120); resizable, rounded to integer percent.
+    /// Initial shared sidebar outer width in columns (16–120); resizable across tabs.
     #[arg(long, default_value_t = 38, value_parser = clap::value_parser!(u16).range(16..=120), help_heading = "Session")]
     pub sidebar_width: u16,
 }
