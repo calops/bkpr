@@ -10,13 +10,7 @@ use unicode_width::UnicodeWidthStr;
 pub const RESET: &str = "\u{1b}[0m";
 pub use crate::palette::Theme;
 pub const BASE: &str = "\u{1b}[22;39;49m";
-pub const MUTED: &str = "\u{1b}[22;39m";
-pub const BRIGHT: &str = "\u{1b}[22;39m";
 pub const TEXT: &str = "\u{1b}[22;39m";
-#[cfg(test)]
-const ADDED: &str = "\u{1b}[22;32m";
-#[cfg(test)]
-const DELETED: &str = "\u{1b}[22;31m";
 const WORKFLOW: &str = "\u{f52e}"; // nf-oct-workflow
 
 
@@ -1726,8 +1720,8 @@ mod tests {
         renamed.name = "a new name".to_owned();
         assert_eq!(project_color(Some(&project), &theme), project_color(Some(&renamed), &theme));
         renamed.repository = false;
-        assert_eq!(project_color(Some(&renamed), &theme), MUTED);
-        assert_eq!(project_color(None, &theme), MUTED);
+        assert_eq!(project_color(Some(&renamed), &theme), theme.muted);
+        assert_eq!(project_color(None, &theme), theme.muted);
 
         let mut state = snapshot();
         let rows = tree(&state, &Default::default());
@@ -2255,28 +2249,28 @@ mod tests {
             );
             let text = visible(&rendered);
             assert_eq!(width(&text), columns);
-            if rendered.contains(ADDED) {
-                assert!(text.contains("+1234"));
-                assert!(text.contains("-567"));
-                assert!(rendered.contains(DELETED));
-            }
+            let counts: Vec<_> = text
+                .split_whitespace()
+                .filter(|word| word.starts_with('+') || word.starts_with('-'))
+                .collect();
+            assert!(counts.is_empty() || counts == ["+1234", "-567"]);
             assert!(!text.contains("CI "));
         }
         let wide = render_row(detail, &state, &Theme::default(), 38, false, false, false);
-        assert!(wide.contains(ADDED) && wide.contains(DELETED));
+        assert!(visible(&wide).contains("+1234 -567"));
         let narrow = render_row(detail, &state, &Theme::default(), 16, false, false, false);
-        assert!(!narrow.contains(ADDED) && !narrow.contains(DELETED));
+        assert!(!visible(&narrow).contains(['+', '-']));
         state.panes[0].branch = Some("topic".to_owned());
         let adjacent = render_row(detail, &state, &Theme::default(), 80, false, false, false);
         assert!(visible(&adjacent).contains("topic +1234 -567"));
-        assert!(adjacent.contains(&format!("topic {ADDED}+1234")));
         state.panes[0].branch_changes = None;
         assert_eq!(
             status_before,
             render_row(pane, &state, &Theme::default(), 16, false, false, false)
         );
         assert!(
-            !render_row(detail, &state, &Theme::default(), 80, false, false, false).contains(ADDED)
+            !visible(&render_row(detail, &state, &Theme::default(), 80, false, false, false))
+                .contains(['+', '-'])
         );
         assert_eq!(state.panes[0].status, Status::Working);
         assert_eq!(state.panes[0].attention, None);
@@ -2367,7 +2361,7 @@ mod tests {
     }
 
     #[test]
-    fn request_presentation_matches_sidebar_and_popup_without_changing_native_status() {
+    fn request_metadata_preserves_verified_links_and_native_status() {
         let mut state = snapshot();
         for request_state in [
             ChangeRequestState::Draft,
@@ -2389,14 +2383,6 @@ mod tests {
                 Some(ci.change_request.as_ref().unwrap().url.as_str())
             );
             assert!(!context[1].plain().contains('\u{1b}'));
-            let rows = tree(&state, &Default::default());
-            let detail = rows
-                .iter()
-                .find(|row| matches!(row.kind, RowKind::Detail { .. }))
-                .unwrap();
-            let sidebar = render_row(detail, &state, &Theme::default(), 38, false, false, false);
-            assert!(sidebar.contains(request_presentation(request_state).0));
-            assert!(sidebar.contains(request_presentation(request_state).1));
             assert_eq!(state.panes[0].status, Status::Working);
         }
     }

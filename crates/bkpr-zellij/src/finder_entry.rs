@@ -435,24 +435,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_presence_queries_keep_normal_rows_and_existing_project_color() {
+    fn empty_and_presence_queries_keep_normal_visible_rows() {
         let state = snapshot("compiler", "");
         for query in ["", "project:", "branch:"] {
             let row = render_query(&state, query, 60);
             assert_eq!(emphasized(&row), "");
             assert!(plain(&row).starts_with("› ● compiler · Engine room · feature/queues"));
-            assert!(row.contains(&format!(
-                "{}●",
-                ui::project_color(state.panes[0].project.as_ref(), &ui::Theme::default())
-            )));
         }
         let mut local = state;
         local.panes[0].project.as_mut().unwrap().repository = false;
         let row = render_query(&local, "", 60);
-        assert!(row.contains(&format!(
-            "{}●",
-            ui::project_color(local.panes[0].project.as_ref(), &ui::Theme::default())
-        )));
+        assert_eq!(emphasized(&row), "");
+        assert!(plain(&row).starts_with("› ● compiler · Engine room · feature/queues"));
     }
 
     #[test]

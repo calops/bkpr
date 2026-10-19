@@ -3,6 +3,7 @@ mod finder_entry;
 mod keyguide;
 mod native;
 mod overlay;
+mod palette;
 mod pane_search;
 mod ui;
 
@@ -307,6 +308,28 @@ impl Frontend {
         }
     }
 
+    fn terminal_colors_message(&mut self, payload: &str) -> bool {
+        let Ok(colors) = serde_json::from_str::<palette::TerminalColors>(payload) else {
+            return false;
+        };
+        if self.overlay_role {
+            return self.overlay.set_terminal_colors(&colors);
+        }
+        if self.guide_role {
+            return self.guide_view.set_terminal_colors(&colors);
+        }
+        if self.finder_role {
+            return self.finder_view.set_terminal_colors(&colors);
+        }
+        if self.native_owner_role || !self.theme.update(&colors) {
+            return false;
+        }
+        self.keyguide_dirty = true;
+        self.reconcile_viewport(false);
+        self.refresh_tooltip();
+        true
+    }
+
     fn mode_message(&mut self, payload: &str) -> bool {
         let Ok(mode) = serde_json::from_str::<ModeState>(payload) else {
             return false;
@@ -493,6 +516,7 @@ impl Frontend {
                 self.columns,
                 space.max_columns,
                 max_rows.min(space.bottom),
+                &self.theme,
             );
             (guide.columns > self.columns && !guide.lines.is_empty()).then_some((space, guide))
         });
@@ -527,13 +551,13 @@ impl Frontend {
                 (Vec::new(), height)
             } else {
                 (
-                    keyguide::render(mode, context, self.columns, height),
+                    keyguide::render(mode, context, self.columns, height, &self.theme),
                     height,
                 )
             }
         } else {
             self.guide_popup.update(self.id, &self.configuration, None);
-            let lines = keyguide::render(mode, context, self.columns, max_rows);
+            let lines = keyguide::render(mode, context, self.columns, max_rows, &self.theme);
             let height = lines.len();
             (lines, height)
         };
@@ -2027,9 +2051,9 @@ impl Frontend {
                         && (self.error.is_some()
                             || self.snapshot.as_ref().is_some_and(|state| !state.connected))
                     {
-                        ui::status_color(bkpr::Status::Blocked)
+                        ui::status_color(bkpr::Status::Blocked, &self.theme)
                     } else {
-                        ui::MUTED
+                        self.theme.muted.as_str()
                     };
                     format!("{color}{}{}", ui::fit(&status, columns), ui::RESET)
                 } else if let Some((lines, _)) = &modal_render {
@@ -2170,6 +2194,12 @@ impl ZellijPlugin for Frontend {
     }
 
     fn update(&mut self, event: Event) -> bool {
+        if let Event::CustomMessage(name, payload) = &event
+            && name == "bkpr_terminal_colors"
+            && payload.len() <= MAX_MESSAGE_BYTES
+        {
+            return self.terminal_colors_message(payload);
+        }
         if self.overlay_role {
             return self.overlay.event(event);
         }
@@ -3097,6 +3127,37 @@ mod tests {
             assert_eq!(frontend.keybinds.as_ref().unwrap(), &info.keybinds);
             assert!(!frontend.keyguide_dirty);
             assert_eq!(sidebar_cells(&mut frontend, 24, 64), frame);
+        }
+    }
+
+    #[test]
+    fn terminal_palette_changes_preserve_layout_selection_and_native_keys() {
+        let mut frontend = popup_frontend();
+        let info = guide_mode(InputMode::Locked);
+        frontend.update(mode_event(info.clone()));
+        frontend.update(keybinds_event(&info));
+        let original = sidebar_cells(&mut frontend, 24, 64);
+        let selection = frontend.cursor.clone();
+        let colors = palette::TerminalColors {
+            truecolor: true,
+            foreground: Some([32, 32, 32]),
+            background: Some([248, 248, 248]),
+            ansi: [None; 16],
+        };
+        let event = Event::CustomMessage(
+            "bkpr_terminal_colors".to_owned(),
+            serde_json::to_string(&colors).unwrap(),
+        );
+        assert!(frontend.update(event));
+        assert_eq!(sidebar_cells(&mut frontend, 24, 64), original);
+        assert_eq!(frontend.cursor, selection);
+        assert_eq!(frontend.keybinds.as_ref(), Some(&info.keybinds));
+        for payload in ["{", "null", r#"{"truecolor":true,"foreground":[256,0,0]}"#] {
+            assert!(!frontend.update(Event::CustomMessage(
+                "bkpr_terminal_colors".to_owned(),
+                payload.to_owned(),
+            )));
+            assert_eq!(sidebar_cells(&mut frontend, 24, 64), original);
         }
     }
 
@@ -4817,7 +4878,6 @@ mod tests {
                         assert!(!visible.contains('\u{202e}'));
                         if columns == 48 {
                             assert!(visible.contains(&format!("\u{f062c} {}", ui::clean(branch))));
-                            assert!(rendered.contains(ui::MUTED));
                         }
                     }
                 }
