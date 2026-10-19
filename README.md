@@ -127,6 +127,8 @@ Open PR links follow the branch even while local commits are unpushed. Linear as
 
 Bkpr forwards terminal clipboard requests over the terminal connection, including MIME/image access through Kitty's OSC 5522 protocol. Over SSH, this accesses the client terminal's clipboard; X11 forwarding is not needed. Images require support from both the terminal and the application.
 
+In Kitty, use its terminal paste shortcut (`Ctrl+Shift+V`) to send images to an application that supports enhanced paste. This differs from an application's own clipboard shortcut: Omp 18.12.2's `Ctrl+V` reads the clipboard on the machine running Omp, which is normally unavailable over headless SSH.
+
 Bkpr enables clipboard-query forwarding in its private Zellij session, so programs in that session can request clipboard contents. The host terminal's clipboard permissions still apply; Bkpr doesn't change your terminal settings or personal Zellij configuration. MIME paste notifications retain their originating pane and client, and their permission tokens are scoped to one clipboard selection and one use.
 
 Use a fresh session after upgrading the native runtime; already-running servers keep their old code.
