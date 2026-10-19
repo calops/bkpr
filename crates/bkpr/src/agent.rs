@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
+#[cfg(target_os = "linux")]
 use std::fs::{self, File};
+#[cfg(target_os = "linux")]
 use std::io::Read;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -24,6 +27,7 @@ struct Process {
     identity: String,
 }
 
+#[cfg(target_os = "linux")]
 fn bounded_read(mut reader: impl Read, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader
@@ -224,6 +228,7 @@ fn live_ancestry(
     Ok(false)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn relay_id_from_environment(bytes: &[u8], harness: &str) -> Option<String> {
     let mut variables = bytes.split(|byte| *byte == 0);
     let id = variables

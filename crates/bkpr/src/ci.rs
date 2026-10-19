@@ -1,8 +1,11 @@
 //! Shared forge CI batching, scheduling, and cache; Git discovery is event-driven.
 //! Requests share remote targets within one canonical CWD and retain local identity.
-use bkpr::ci_contract::{
-    CiFetchState, CiRefreshTarget, CiSnapshot, CiStatus, ForgeProvider, ForgeRepository,
-};
+use bkpr::ci_contract::{CiFetchState, CiSnapshot, ForgeRepository};
+#[cfg(target_os = "linux")]
+use bkpr::ci_contract::{CiRefreshTarget, ForgeProvider};
+#[cfg(any(test, target_os = "linux"))]
+use bkpr::ci_contract::CiStatus;
+#[cfg(any(test, target_os = "linux"))]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -27,6 +30,7 @@ pub(crate) struct RemoteBranch {
 }
 
 impl CiSource {
+    #[cfg(any(test, target_os = "linux"))]
     pub(crate) fn checked_ref(&self) -> Option<String> {
         self.remote_branch
             .as_ref()
@@ -51,6 +55,7 @@ impl CiSource {
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Clone, Copy, Debug)]
 enum RetryPolicy {
     Normal,
@@ -58,11 +63,13 @@ enum RetryPolicy {
     RateLimited,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Clone, Debug)]
 struct FetchError {
     message: String,
     retry: RetryPolicy,
 }
+#[cfg(any(test, target_os = "linux"))]
 impl FetchError {
     fn normal(message: impl Into<String>) -> Self {
         Self {
@@ -70,6 +77,7 @@ impl FetchError {
             retry: RetryPolicy::Normal,
         }
     }
+    #[cfg(target_os = "linux")]
     fn delay(&self, failures: u32) -> u64 {
         match self.retry {
             RetryPolicy::Normal => (60u64 << failures.min(5)).min(1800),
@@ -79,6 +87,7 @@ impl FetchError {
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 struct BatchResponse {
     results: BTreeMap<CiSource, Result<CiSnapshot, FetchError>>,
     global_error: Option<FetchError>,
@@ -188,12 +197,18 @@ fn remote_branch_name(cwd: &Path, remote: &str, branch: &str) -> String {
     branch.to_owned()
 }
 
+#[cfg(target_os = "linux")]
 const BATCH: usize = 16;
+#[cfg(target_os = "linux")]
 const MIN_REQUEST_SECONDS: u64 = 2;
+#[cfg(target_os = "linux")]
 const ACTIVE_SECONDS: u64 = 60;
+#[cfg(target_os = "linux")]
 const ERROR_RETRY_SECONDS: u64 = 300;
+#[cfg(target_os = "linux")]
 const DEADLINE_SECONDS: u64 = 20;
 
+#[cfg(any(test, target_os = "linux"))]
 fn empty(source: &CiSource, now: u64) -> CiSnapshot {
     CiSnapshot {
         status: CiStatus::Unknown,
@@ -217,6 +232,7 @@ fn empty(source: &CiSource, now: u64) -> CiSnapshot {
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn same_target(left: &CiSource, right: &CiSource) -> bool {
     left.cwd == right.cwd
         && left.repository == right.repository
