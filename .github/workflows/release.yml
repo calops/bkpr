@@ -10,7 +10,7 @@ jobs:
       release: ${{ steps.tag.outputs.release }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: tag
         env:
           TAG: ${{ github.ref_name }}
@@ -23,7 +23,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prepare release notes
         env:
           TAG: ${{ github.ref_name }}
