@@ -357,12 +357,11 @@ theme "bkpr"
 themes {
     bkpr {
         frame_selected {
-            base 108 112 134
-            background 24 24 37
-            emphasis_0 250 179 135
-            emphasis_1 166 227 161
-            emphasis_2 203 166 247
-            emphasis_3 137 180 250
+            base 8
+            emphasis_0 3
+            emphasis_1 2
+            emphasis_2 5
+            emphasis_3 4
         }
     }
 }
