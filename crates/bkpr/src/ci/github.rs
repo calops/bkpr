@@ -1,10 +1,15 @@
 //! GitHub transport and response normalization; no provider protocol escapes this module.
+#[cfg(any(test, target_os = "linux"))]
 use super::{BatchResponse, CiSource, FetchError, RetryPolicy, empty, same_target};
+#[cfg(any(test, target_os = "linux"))]
 use scraper::{Html, Selector};
+#[cfg(any(test, target_os = "linux"))]
 use serde_json::{Value, json};
+use bkpr::ci_contract::{ForgeProvider, ForgeRepository};
+#[cfg(any(test, target_os = "linux"))]
 use bkpr::ci_contract::{
     ChangeRequest, ChangeRequestBase, ChangeRequestState, CiCheck, CiFetchState, CiSnapshot,
-    CiStatus, ForgeProvider, ForgeRepository, IssueTracker, LinkedIssue,
+    CiStatus, IssueTracker, LinkedIssue,
 };
 
 pub(super) fn repository(url: &str) -> Option<ForgeRepository> {
@@ -32,6 +37,7 @@ pub(super) fn repository(url: &str) -> Option<ForgeRepository> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn query(sources: &[CiSource]) -> String {
     let mut query = String::from("query { rateLimit { cost remaining resetAt } ");
     for (index, source) in sources.iter().enumerate() {
@@ -112,6 +118,7 @@ pub(super) fn request(sources: &[CiSource]) -> std::io::Result<(std::process::Co
     ))
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn text(value: &Value, key: &str) -> Option<String> {
     value
         .get(key)?
@@ -119,6 +126,7 @@ fn text(value: &Value, key: &str) -> Option<String> {
         .map(|value| value.chars().take(512).collect())
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn status(node: &Value) -> CiStatus {
     if node["__typename"] == "StatusContext" {
         return match node["state"].as_str() {
@@ -144,6 +152,7 @@ fn status(node: &Value) -> CiStatus {
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 /// Only explicit canonical Linear issue URLs are evidence of an issue association.
 /// In particular, a bare ticket identifier never supplies a workspace or URL.
 fn linear_issue(url: &str) -> Option<LinkedIssue> {
@@ -193,6 +202,7 @@ fn linear_issue(url: &str) -> Option<LinkedIssue> {
     })
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn issue_title(label: &str, issue: &LinkedIssue) -> Option<String> {
     let mut normalized = String::new();
     let mut remaining = 512;
@@ -221,6 +231,7 @@ fn issue_title(label: &str, issue: &LinkedIssue) -> Option<String> {
     (!label.is_empty()).then(|| label.to_owned())
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn insert_issue(issues: &mut Vec<LinkedIssue>, url: &str, label: &str, title: &str) {
     let Some(mut issue) = linear_issue(url) else {
         return;
@@ -250,6 +261,7 @@ fn linked_issues(html: &str) -> Vec<LinkedIssue> {
     issues
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn collect_linked_issues(issues: &mut Vec<LinkedIssue>, html: &str) {
     // Provider-rendered comment anchors supply canonical URLs, not guessed ticket IDs.
     fn bounded(text: &str) -> &str {
@@ -276,6 +288,7 @@ fn collect_linked_issues(issues: &mut Vec<LinkedIssue>, html: &str) {
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn change_request_base(node: &Value) -> Option<ChangeRequestBase> {
     let branch = node["baseRefName"].as_str()?.to_owned();
     let commit = node["baseRefOid"].as_str()?.to_owned();
@@ -299,6 +312,7 @@ fn change_request_base(node: &Value) -> Option<ChangeRequestBase> {
     })
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn change_request(node: &Value) -> Option<ChangeRequest> {
     let state = match node["state"].as_str()? {
         "OPEN" => match node["isDraft"].as_bool()? {
@@ -332,6 +346,7 @@ fn change_request(node: &Value) -> Option<ChangeRequest> {
     })
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn matching_request(source: &CiSource, nodes: &[Value], checked_sha: &str) -> Option<ChangeRequest> {
     // Every PR association is verified against the actual provider-checked head.
     let branch = source.remote_branch.as_ref()
@@ -377,6 +392,7 @@ fn matching_request(source: &CiSource, nodes: &[Value], checked_sha: &str) -> Op
     (!tied).then(|| change_request(latest.0)).flatten()
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn parse(
     source: &CiSource,
     repository: &Value,
@@ -465,6 +481,7 @@ fn parse(
     Ok(snapshot)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn alias_index(alias: &str, count: usize) -> Option<usize> {
     let digits = alias.strip_prefix('r')?;
     if digits.len() > 1 && digits.starts_with('0') {
@@ -476,6 +493,7 @@ fn alias_index(alias: &str, count: usize) -> Option<usize> {
     digits.parse::<usize>().ok().filter(|index| *index < count)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn graphql_retry(error: &Value) -> RetryPolicy {
     match error["type"].as_str() {
         Some("RATE_LIMITED") => RetryPolicy::RateLimited,
@@ -484,6 +502,7 @@ fn graphql_retry(error: &Value) -> RetryPolicy {
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn graphql_error(error: &Value) -> FetchError {
     let retry = graphql_retry(error);
     let message = match retry {
@@ -499,6 +518,7 @@ fn graphql_error(error: &Value) -> FetchError {
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(super) fn normalize<'a>(
     value: Value,
     sources: &[CiSource],
@@ -567,7 +587,7 @@ pub(super) fn normalize<'a>(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 pub(super) fn response<'a>(
     success: bool,
     bytes: &[u8],
@@ -624,6 +644,7 @@ pub(super) fn response<'a>(
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn split_http(bytes: &[u8]) -> (&[u8], &[u8]) {
     if bytes.starts_with(b"HTTP/") {
         if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
@@ -635,6 +656,7 @@ fn split_http(bytes: &[u8]) -> (&[u8], &[u8]) {
     }
     (&[], bytes)
 }
+#[cfg(any(test, target_os = "linux"))]
 fn retry_after(headers: &[u8]) -> Option<u64> {
     std::str::from_utf8(headers).ok()?.lines().find_map(|line| {
         let (key, value) = line.split_once(':')?;
@@ -644,6 +666,7 @@ fn retry_after(headers: &[u8]) -> Option<u64> {
     })
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn epoch(value: &str) -> Option<u64> {
     let bytes = value.as_bytes();
     if bytes.len() != 20
@@ -1349,7 +1372,6 @@ printf '{"data":{"r0":{"object":{"oid":"abc","statusCheckRollup":{"contexts":{"n
         }
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn http_failures_retain_hard_retry_after_even_for_auth_or_invalid_bodies() {
         let source = source();
@@ -1383,5 +1405,6 @@ printf '{"data":{"r0":{"object":{"oid":"abc","statusCheckRollup":{"contexts":{"n
         .err()
         .unwrap();
         assert!(matches!(rate.retry, RetryPolicy::RateLimited));
+        assert_eq!(rate.message, "GitHub rate limit exceeded");
     }
 }

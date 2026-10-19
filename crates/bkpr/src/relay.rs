@@ -225,6 +225,7 @@ fn call(socket: &Path, id: &str, token: &str, method: &str, params: Value) -> Re
     Ok(response.get("result").cloned().unwrap_or(Value::Null))
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn request_as(
     socket: &Path,
     agent_id: &str,

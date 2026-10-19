@@ -169,6 +169,7 @@ fn change_request_base(snapshot: Option<&CiSnapshot>) -> Option<&ChangeRequestBa
     snapshot?.change_request.as_ref()?.base.as_ref()
 }
 
+#[cfg(any(test, target_os = "linux"))]
 /// CI progress alone never reruns git diff. A new target is resolved against the
 /// current worktree identity before its totals or metadata can be published.
 pub(crate) fn update_ci(
