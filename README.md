@@ -34,6 +34,8 @@ SemVer `vMAJOR.MINOR.PATCH` tags (including prerelease tags) use the same Nix ca
 
 Maintainers use GitHub Actions **Tag next release** → **Run workflow** on `main`. It defaults to **dry run**, showing the proposed version and changelog without writing a tag or building anything; uncheck **dry run** to publish. Conventional `feat:` commits cause a minor bump, `fix:` a patch, and `BREAKING CHANGE:` a major bump; commits without a release-worthy type do not force a new tag. Publishing updates package versions and `CHANGELOG.md`, then dispatches the tagged cache and native artifact builds. GitHub publishes the release only after all platform builds and uploads succeed.
 
+For maintenance-only changes that need a new release, select **release_type: patch**. This requests at least a patch bump without relabeling commits; release-worthy changes still select a larger version when needed. With no commits since the last tag, it does not create a release. Version tags remain immutable even when a build fails: publish a new version instead of moving the failed tag.
+
 On first launch, click the sidebar and approve its Zellij permission request with `y`. Authorization is cached for the plugin artifact. Bkpr uses a private Zellij configuration; it doesn't replace your personal configuration or start a system service.
 
 Launching the same session attaches to its running terminals and preserves workspace labels. Detaching leaves them running. Closing a terminal terminates it; closing a workspace asks for confirmation before terminating its terminals. Processes need not survive termination of the Zellij server.

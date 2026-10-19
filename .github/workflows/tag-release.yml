@@ -8,6 +8,13 @@ on:
         description: Preview the next version and changelog without tagging or building
         type: boolean
         default: true
+      release_type:
+        description: Automatic version, or at least a patch for maintenance-only changes
+        type: choice
+        options:
+          - auto
+          - patch
+        default: auto
 permissions:
   contents: write
   actions: write
@@ -19,6 +26,8 @@ concurrency:
 jobs:
   tag:
     runs-on: ubuntu-24.04
+    env:
+      RELEASE_TYPE: ${{ inputs.release_type }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,9 +38,10 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - run: node --test .github/scripts/release-analyzer.test.cjs
       - name: Preview version and changelog
         if: inputs.dry_run
-        run: npx semantic-release --dry-run
+        run: npm run release -- --dry-run
       - name: Create conventional release tag and start cache build
         if: ${{ !inputs.dry_run }}
         run: npm run release

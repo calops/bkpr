@@ -2,7 +2,11 @@ module.exports = {
   branches: ['main'],
   tagFormat: 'v${version}',
   plugins: [
-    ['@semantic-release/commit-analyzer', { preset: 'conventionalcommits', presetConfig: {} }],
+    ['./.github/scripts/release-analyzer.cjs', {
+      preset: 'conventionalcommits',
+      presetConfig: {},
+      forcePatch: process.env.RELEASE_TYPE === 'patch',
+    }],
     ['@semantic-release/release-notes-generator', { preset: 'conventionalcommits', presetConfig: {} }],
     '@semantic-release/changelog',
     ['./.github/scripts/version-plugin.cjs'],
