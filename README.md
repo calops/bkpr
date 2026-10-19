@@ -20,7 +20,7 @@ nix profile install .
 bkpr --session project
 ```
 
-The Nix package includes the native launcher, WASM plugin and Bkpr-patched Zellij 0.45.1 (`zellij 0.45.1-bkpr.1`). Git and GitHub CLI are discovered on the host when available. A Nerd Font is recommended for the sidebar icons. `bkpr --help` lists launch options, including the session name and initial sidebar width.
+The Nix package includes the native launcher, WASM plugin and Bkpr's Zellij 0.45.1 fork (`zellij 0.45.1-bkpr.2`). Git and GitHub CLI are discovered on the host when available. A Nerd Font is recommended for the sidebar icons. `bkpr --help` lists launch options, including the session name and initial sidebar width.
 
 Tagged revisions are built for x86_64/aarch64 Linux and aarch64 macOS and uploaded to [bkpr.cachix.org](https://bkpr.cachix.org). The pinned Nixpkgs no longer supports x86_64 macOS. After the `unstable` tag's **Cache tagged packages** workflow succeeds, run it without building Bkpr locally:
 
@@ -37,6 +37,8 @@ Maintainers use GitHub Actions **Tag next release** → **Run workflow** on `mai
 On first launch, click the sidebar and approve its Zellij permission request with `y`. Authorization is cached for the plugin artifact. Bkpr uses a private Zellij configuration; it doesn't replace your personal configuration or start a system service.
 
 Launching the same session attaches to its running terminals and preserves workspace labels. Detaching leaves them running. Closing a terminal terminates it; closing a workspace asks for confirmation before terminating its terminals. Processes need not survive termination of the Zellij server.
+
+Sidebar width is shared across tabs, including tabs created through stock Zellij controls. Resizing it in one tab updates the others. Narrow windows temporarily clamp the width; growing the window restores the intended size.
 
 ### SSH agent forwarding
 
@@ -114,6 +116,14 @@ Refreshing cached results is a loading/stale state, not an error. Real provider 
 Results persist per canonical CWD under `$XDG_STATE_HOME/bkpr/projects` (default `~/.local/state/bkpr/projects`). Repository, local branch, local commit, selected remote target and Git refs must still match before restoring them. The checked commit is retained independently of local `HEAD`. Unchanged green results need no request after restart; non-green results appear immediately from cache and resume checking.
 
 Open PR links follow the branch even while local commits are unpushed. Linear associations come from canonical issue links in the PR's first ten rendered comments, without workspace-specific mappings, Linear credentials or configuration.
+
+## Clipboard
+
+Bkpr forwards terminal clipboard requests over the terminal connection, including MIME/image access through Kitty's OSC 5522 protocol. Over SSH, this accesses the client terminal's clipboard; X11 forwarding is not needed. Images require support from both the terminal and the application.
+
+Bkpr enables clipboard-query forwarding in its private Zellij session, so programs in that session can request clipboard contents. The host terminal's clipboard permissions still apply; Bkpr doesn't change your terminal settings or personal Zellij configuration. MIME paste notifications retain their originating pane and client, and their permission tokens are scoped to one clipboard selection and one use.
+
+Use a fresh session after upgrading the native runtime; already-running servers keep their old code.
 
 ## Coding harnesses
 
