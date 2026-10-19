@@ -171,6 +171,16 @@ pub fn native_layout(
         "   pane size=\"{sidebar_percent}%\" borderless=true {{\n    plugin location={} {{\n     mode_info_format \"json\"\n",
         quote(plugin_url)?
     );
+    // The native host owns cell-width intent across all tabs and client replicas.
+    // Keep the startup percentage only as layout bootstrap; stock-created tabs
+    // inherit this same opt-in and are corrected before geometry is published.
+    if let (Some(session), Some(width)) = (
+        configuration.get("session"),
+        configuration.get("sidebar_width"),
+    ) {
+        writeln!(sidebar, "     shared_tiled_width_group {}", quote(session)?).unwrap();
+        writeln!(sidebar, "     shared_tiled_width_initial {}", quote(width)?).unwrap();
+    }
     for (key, value) in configuration {
         writeln!(sidebar, "     {key} {}", quote(value)?).unwrap();
     }

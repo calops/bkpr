@@ -2291,6 +2291,9 @@ impl Owner {
         return_mode: Option<InputMode>,
         view: Option<&SidebarView>,
     ) -> Result<Option<u32>, String> {
+        // This percentage bootstraps the layout only. The native shared-width group
+        // restores remembered outer cells before publishing the new tab, including
+        // when the requesting tab is temporarily clamped by a smaller terminal.
         let sidebar_percent = self.topology.sidebar_percent(source)?;
         let model = self
             .model

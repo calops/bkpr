@@ -2108,6 +2108,8 @@ impl ZellijPlugin for Frontend {
             self.extract_sidebar_bootstrap(&mut configuration);
             // Host event routing is not part of the sidebar's application configuration.
             configuration.remove("mode_info_format");
+            configuration.remove("shared_tiled_width_group");
+            configuration.remove("shared_tiled_width_initial");
         } else {
             configuration.remove("sidebar_bootstrap");
         }
