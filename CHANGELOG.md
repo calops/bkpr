@@ -1,11 +1,17 @@
 ## Unreleased
 
+### Features
+
+* Forward MIME/image clipboard reads, writes and paste notifications through the native fork, retaining the host terminal's permission policy.
+
 ### Bug Fixes
 
 * Limit passive details-popup damage repair to exposed cells instead of repainting the entire window.
 * Avoid redundant popup frames for unchanged pointer hover, owner updates and scroll limits.
 * Keep normal provider refresh progress out of red error messages while retaining real failures during retries.
 * Show CI for the corresponding remote branch head even when local commits are unpushed, with explicit checked-ref and commit labels.
+* Keep sidebar width shared across native tabs and restore the intended width after temporary terminal-size clamping.
+* Keep the sidebar separator mouse-resizable when a passive details-card outline overlaps it.
 
 ### Maintenance
 
