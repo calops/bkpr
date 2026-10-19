@@ -8,28 +8,17 @@ use bkpr::{Attention, ProjectIdentity, Snapshot, Status};
 use unicode_width::UnicodeWidthStr;
 
 pub const RESET: &str = "\u{1b}[0m";
-// Keep the sidebar palette independent of Zellij's UI theme.
-pub const BASE: &str = "\u{1b}[22;38;2;205;214;244;48;2;24;24;37m";
-pub const MUTED: &str = "\u{1b}[22;38;2;108;112;134m";
-pub const BRIGHT: &str = "\u{1b}[22;38;2;166;173;200m";
-const TEXT: &str = "\u{1b}[22;38;2;205;214;244m";
-const ADDED: &str = "\u{1b}[22;2;38;2;128;158;126m";
-const DELETED: &str = "\u{1b}[22;2;38;2;174;119;134m";
+pub use crate::palette::Theme;
+pub const BASE: &str = "\u{1b}[22;39;49m";
+pub const MUTED: &str = "\u{1b}[22;39m";
+pub const BRIGHT: &str = "\u{1b}[22;39m";
+pub const TEXT: &str = "\u{1b}[22;39m";
+#[cfg(test)]
+const ADDED: &str = "\u{1b}[22;32m";
+#[cfg(test)]
+const DELETED: &str = "\u{1b}[22;31m";
 const WORKFLOW: &str = "\u{f52e}"; // nf-oct-workflow
 
-pub struct Theme {
-    pub selected: &'static str,
-    pub hovered: &'static str,
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self {
-            selected: "\u{1b}[48;2;49;50;68m",
-            hovered: "\u{1b}[48;2;69;71;90m",
-        }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Item {
@@ -230,36 +219,29 @@ pub fn fit(text: &str, columns: usize) -> String {
     text
 }
 
-pub fn status_color(status: Status) -> &'static str {
+pub fn status_color(status: Status, theme: &Theme) -> &str {
     match status {
-        Status::Idle => "\u{1b}[38;2;166;227;161m",
-        Status::Working => "\u{1b}[38;2;247;227;166m",
-        Status::Blocked => "\u{1b}[38;2;243;139;168m",
-        Status::Done => "\u{1b}[38;2;122;213;213m",
-        Status::Unknown => "\u{1b}[38;2;108;112;134m",
+        Status::Idle => &theme.accents[2],
+        Status::Working => &theme.accents[3],
+        Status::Blocked => &theme.accents[1],
+        Status::Done => &theme.accents[6],
+        Status::Unknown => &theme.muted,
     }
 }
 
 /// Fixed FNV-1a, rather than a randomized/default hasher, survives owner recovery.
-pub fn project_color(project: Option<&ProjectIdentity>) -> &'static str {
+pub fn project_color<'a>(project: Option<&ProjectIdentity>, theme: &'a Theme) -> &'a str {
     let Some(project) = project.filter(|project| project.repository) else {
-        return MUTED;
+        return &theme.muted;
     };
-    const PALETTE: [&str; 6] = [
-        "\u{1b}[38;2;137;180;250m",
-        "\u{1b}[38;2;203;166;247m",
-        "\u{1b}[38;2;148;226;213m",
-        "\u{1b}[38;2;250;179;135m",
-        "\u{1b}[38;2;245;194;231m",
-        "\u{1b}[38;2;180;190;254m",
-    ];
+    const PALETTE: [usize; 6] = [4, 5, 6, 3, 13, 12];
     let hash = project
         .id
         .bytes()
         .fold(0xcbf29ce484222325_u64, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
         });
-    PALETTE[(hash % PALETTE.len() as u64) as usize]
+    &theme.accents[PALETTE[(hash % PALETTE.len() as u64) as usize]]
 }
 
 fn ci_state(ci: &CiSnapshot) -> CiStatus {
@@ -283,12 +265,12 @@ fn ci_glyph(status: CiStatus) -> &'static str {
     }
 }
 
-fn ci_color(status: CiStatus) -> &'static str {
+fn ci_color(status: CiStatus, theme: &Theme) -> &str {
     match status {
-        CiStatus::Failed => status_color(Status::Blocked),
-        CiStatus::Passed => status_color(Status::Idle),
-        CiStatus::Pending | CiStatus::Running => status_color(Status::Working),
-        _ => MUTED,
+        CiStatus::Failed => status_color(Status::Blocked, theme),
+        CiStatus::Passed => status_color(Status::Idle, theme),
+        CiStatus::Pending | CiStatus::Running => status_color(Status::Working, theme),
+        _ => &theme.muted,
     }
 }
 
@@ -305,6 +287,7 @@ fn ci_badge(columns: usize) -> String {
 fn branch_counts(
     changes: Option<&bkpr::BranchChanges>,
     columns: usize,
+    theme: &Theme,
 ) -> Option<(String, usize)> {
     let total = changes?.total;
     let digits = |number: u64| {
@@ -316,8 +299,9 @@ fn branch_counts(
     (needed <= columns).then(|| {
         (
             format!(
-                "{ADDED}+{}{MUTED} {DELETED}-{}{MUTED}",
-                total.added, total.deleted
+                "{added}+{}{muted} {deleted}-{}{muted}",
+                total.added, total.deleted,
+                added = theme.added, deleted = theme.deleted, muted = theme.muted,
             ),
             needed,
         )
@@ -356,7 +340,7 @@ fn workspace_ci<'a>(
     groups.into_values().collect()
 }
 
-fn project_labels(projects: &[ProjectIdentity], columns: usize) -> String {
+fn project_labels(projects: &[ProjectIdentity], columns: usize, theme: &Theme) -> String {
     let mut result = String::new();
     let mut used = 0;
     for (index, project) in projects.iter().enumerate() {
@@ -366,12 +350,12 @@ fn project_labels(projects: &[ProjectIdentity], columns: usize) -> String {
         if index > 0 {
             let separator = truncate(", ", columns - used);
             used += width(&separator);
-            result.push_str(MUTED);
+            result.push_str(&theme.muted);
             result.push_str(&separator);
         }
         let name = truncate(&project.name, columns.saturating_sub(used));
         used += width(&name);
-        result.push_str(project_color(Some(project)));
+        result.push_str(project_color(Some(project), theme));
         result.push_str(&name);
         if name.as_str() != clean(&project.name).as_ref() {
             break;
@@ -406,17 +390,18 @@ pub enum PopupColor {
 }
 
 impl PopupColor {
-    pub fn ansi(&self) -> &'static str {
+    pub fn ansi<'a>(&self, theme: &'a Theme) -> &'a str {
         match self {
             Self::Text => TEXT,
-            Self::Muted => MUTED,
-            Self::Added => "\u{1b}[22;38;2;166;227;161m",
-            Self::Deleted => "\u{1b}[22;38;2;243;139;168m",
-            Self::Native(status) => status_color(*status),
-            Self::Ci(status) => ci_color(*status),
-            Self::Project(project) => project_color(Some(project)),
-            Self::Harness(harness) => harness_color(harness),
-            Self::ChangeRequest(state) => request_presentation(*state).1,
+            Self::Muted => &theme.muted,
+            Self::Added => &theme.added,
+            Self::Deleted => &theme.deleted,
+            Self::Native(status) => status_color(*status, theme),
+            Self::Ci(status) => ci_color(*status, theme),
+            Self::Project(project) => project_color(Some(project), theme),
+            Self::Harness(harness) => harness_color(harness, theme),
+            Self::ChangeRequest(state) => request_presentation(*state).1
+                .map_or(theme.muted.as_str(), |index| theme.accents[index].as_str()),
         }
     }
 }
@@ -576,12 +561,12 @@ fn provider_icon(provider: ForgeProvider) -> &'static str {
     }
 }
 
-fn request_presentation(state: ChangeRequestState) -> (&'static str, &'static str) {
+fn request_presentation(state: ChangeRequestState) -> (&'static str, Option<usize>) {
     match state {
-        ChangeRequestState::Draft => ("\u{f4dd}", MUTED), // nf-oct-git_pull_request_draft
-        ChangeRequestState::Open => ("\u{f407}", status_color(Status::Idle)),
-        ChangeRequestState::Merged => ("\u{f419}", "\u{1b}[22;38;2;203;166;247m"),
-        ChangeRequestState::Closed => ("\u{f4dc}", status_color(Status::Blocked)),
+        ChangeRequestState::Draft => ("\u{f4dd}", None), // nf-oct-git_pull_request_draft
+        ChangeRequestState::Open => ("\u{f407}", Some(2)),
+        ChangeRequestState::Merged => ("\u{f419}", Some(5)),
+        ChangeRequestState::Closed => ("\u{f4dc}", Some(1)),
     }
 }
 
@@ -897,18 +882,18 @@ fn harness_icon(harness: &str) -> &'static str {
     }
 }
 
-fn harness_color(harness: &str) -> &'static str {
+fn harness_color<'a>(harness: &str, theme: &'a Theme) -> &'a str {
     match harness {
-        "claude" | "claude-code" => "\u{1b}[38;2;250;179;135m",
-        "omp" => "\u{1b}[38;2;203;166;247m",
-        "codex" => "\u{1b}[38;2;166;227;161m",
-        "opencode" => "\u{1b}[38;2;137;180;250m",
-        "agy" | "antigravity" => "\u{1b}[38;2;148;226;213m",
+        "claude" | "claude-code" => &theme.accents[3],
+        "omp" => &theme.accents[5],
+        "codex" => &theme.accents[2],
+        "opencode" => &theme.accents[4],
+        "agy" | "antigravity" => &theme.accents[6],
         "cursor" | "cursor-agent" => TEXT,
-        "copilot" | "copilot-cli" | "github-copilot" => "\u{1b}[38;2;180;190;254m",
-        "aider" => "\u{1b}[38;2;166;227;161m",
-        "cline" => "\u{1b}[38;2;137;220;235m",
-        "goose" => "\u{1b}[38;2;249;226;175m",
+        "copilot" | "copilot-cli" | "github-copilot" => &theme.accents[12],
+        "aider" => &theme.accents[2],
+        "cline" => &theme.accents[14],
+        "goose" => &theme.accents[3],
         _ => TEXT,
     }
 }
@@ -937,9 +922,9 @@ pub fn render_row(
         return content;
     }
     let background = if selected {
-        theme.selected
+        theme.selected.as_str()
     } else if hovered {
-        theme.hovered
+        theme.hovered.as_str()
     } else {
         ""
     };
@@ -955,17 +940,18 @@ fn render_content_row(
     hovered: bool,
     selected_pane_group: bool,
 ) -> String {
+    let muted = theme.muted.as_str();
     let background = if selected {
-        theme.selected
+        theme.selected.as_str()
     } else if hovered {
-        theme.hovered
+        theme.hovered.as_str()
     } else {
         ""
     };
     let guides = if selected || selected_pane_group {
-        BRIGHT
+        theme.bright.as_str()
     } else {
-        MUTED
+        theme.muted.as_str()
     };
     let body = match &row.kind {
         RowKind::Spacer => return String::new(),
@@ -1005,13 +991,13 @@ fn render_content_row(
                 " ".repeat(fill)
             };
             format!(
-                "{TEXT}{dot}{TEXT}\u{1b}[1m{name}\u{1b}[22m{MUTED}{tail}{}{}{badge}{}{icon}",
+                "{TEXT}{dot}{TEXT}\u{1b}[1m{name}\u{1b}[22m{muted}{tail}{}{}{badge}{}{icon}",
                 if badge.is_empty() { "" } else { " " },
-                ci_status.map(ci_color).unwrap_or(MUTED),
+                ci_status.map(|status| ci_color(status, theme)).unwrap_or(muted),
                 if icon.is_empty() {
-                    MUTED
+                    muted
                 } else {
-                    status_color(workspace.status)
+                    status_color(workspace.status, theme)
                 },
             )
         }
@@ -1022,8 +1008,8 @@ fn render_content_row(
             let projects = &state.workspaces[*index].projects;
             let lead = truncate(if *has_children { "│ " } else { "  " }, columns);
             format!(
-                "{guides}{lead}{MUTED}{}",
-                project_labels(projects, columns.saturating_sub(width(&lead)))
+                "{guides}{lead}{muted}{}",
+                project_labels(projects, columns.saturating_sub(width(&lead)), theme)
             )
         }
         RowKind::Pane { index, last } => {
@@ -1043,7 +1029,7 @@ fn render_content_row(
                 columns.saturating_sub(width(&lead) + width(&indicator) + width(&status));
             // Keep the harness beside its status, with a trailing cell for wide glyphs.
             let icon = harness.map(harness_icon).unwrap_or("");
-            let logo_color = harness.map(harness_color).unwrap_or(TEXT);
+            let logo_color = harness.map(|harness| harness_color(harness, theme)).unwrap_or(TEXT);
             let icon_columns = width(icon) + usize::from(!icon.is_empty());
             let (icon, icon_columns) = if available >= icon_columns {
                 (icon, icon_columns)
@@ -1053,12 +1039,12 @@ fn render_content_row(
             let name = fit(&pane.name, available.saturating_sub(icon_columns));
             format!(
                 "{guides}{lead}{}{indicator}{logo_color}{icon}{}{TEXT}{name}{}{status}",
-                project_color(pane.project.as_ref()),
+                project_color(pane.project.as_ref(), theme),
                 if icon.is_empty() { "" } else { " " },
                 if status.is_empty() {
-                    MUTED
+                    muted
                 } else {
-                    status_color(pane.status)
+                    status_color(pane.status, theme)
                 },
             )
         }
@@ -1068,14 +1054,17 @@ fn render_content_row(
             let available = columns.saturating_sub(width(&lead));
             let Some(branch) = branch_label(pane) else {
                 return format!(
-                    "{RESET}{BASE}{background}{guides}{lead}{MUTED}{}{RESET}",
+                    "{RESET}{BASE}{background}{guides}{lead}{muted}{}{RESET}",
                     fit(&pane.description, available)
                 );
             };
             let request = pane.ci.as_ref().and_then(|ci| ci.change_request.as_ref());
             let (glyph, glyph_color) = request
-                .map(|request| request_presentation(request.state))
-                .unwrap_or(("\u{f062c}", MUTED));
+                .map(|request| {
+                    let (glyph, color) = request_presentation(request.state);
+                    (glyph, color.map_or(muted, |index| theme.accents[index].as_str()))
+                })
+                .unwrap_or(("\u{f062c}", muted));
             let symbol_columns = width(glyph) + 1;
             let (symbol, symbol_space, symbol_columns) = if available >= symbol_columns {
                 (glyph, " ", symbol_columns)
@@ -1091,17 +1080,18 @@ fn render_content_row(
             let counts = branch_counts(
                 pane.branch_changes.as_ref(),
                 content_columns.saturating_sub(3),
+                theme,
             );
             let counts_columns = counts.as_ref().map_or(0, |(_, columns)| columns + 1);
             let branch = truncate(&branch, content_columns.saturating_sub(counts_columns));
             let fill = content_columns.saturating_sub(width(&branch) + counts_columns);
             format!(
-                "{guides}{lead}{glyph_color}{symbol}{symbol_space}{MUTED}{branch}{}{}{}{}{}{badge}",
+                "{guides}{lead}{glyph_color}{symbol}{symbol_space}{muted}{branch}{}{}{}{}{}{badge}",
                 if counts.is_some() { " " } else { "" },
                 counts.map(|(text, _)| text).unwrap_or_default(),
                 " ".repeat(fill),
                 if badge.is_empty() { "" } else { " " },
-                ci_status.map(ci_color).unwrap_or(MUTED),
+                ci_status.map(|status| ci_color(status, theme)).unwrap_or(muted),
             )
         }
     };
@@ -1730,13 +1720,14 @@ mod tests {
 
     #[test]
     fn project_colors_follow_identity_not_name_branch_or_lifecycle() {
+        let theme = Theme::default();
         let project = identity("/repo/.git");
         let mut renamed = project.clone();
         renamed.name = "a new name".to_owned();
-        assert_eq!(project_color(Some(&project)), project_color(Some(&renamed)));
+        assert_eq!(project_color(Some(&project), &theme), project_color(Some(&renamed), &theme));
         renamed.repository = false;
-        assert_eq!(project_color(Some(&renamed)), MUTED);
-        assert_eq!(project_color(None), MUTED);
+        assert_eq!(project_color(Some(&renamed), &theme), MUTED);
+        assert_eq!(project_color(None, &theme), MUTED);
 
         let mut state = snapshot();
         let rows = tree(&state, &Default::default());
@@ -1752,7 +1743,7 @@ mod tests {
             .iter()
             .find(|row| matches!(row.kind, RowKind::Workspace { .. }))
             .unwrap();
-        let color = project_color(state.panes[0].project.as_ref());
+        let color = project_color(state.panes[0].project.as_ref(), &theme);
         assert!(
             render_row(projects, &state, &Theme::default(), 40, false, false, false)
                 .contains(color)
@@ -2113,12 +2104,12 @@ mod tests {
             changes.total.deleted = number;
             let expected = format!("+{number} -{number}");
             let columns = width(&expected);
-            assert!(branch_counts(Some(&changes), columns - 1).is_none());
-            let (text, reserved) = branch_counts(Some(&changes), columns).unwrap();
+            assert!(branch_counts(Some(&changes), columns - 1, &Theme::default()).is_none());
+            let (text, reserved) = branch_counts(Some(&changes), columns, &Theme::default()).unwrap();
             assert_eq!(visible(&text), expected);
             assert_eq!(reserved, columns);
         }
-        assert!(branch_counts(None, 80).is_none());
+        assert!(branch_counts(None, 80, &Theme::default()).is_none());
     }
 
     #[test]
@@ -2449,8 +2440,8 @@ mod tests {
                 Some("https://github.com/owner/repo/pull/7")
             );
             assert_eq!(
-                names[0].spans[0].color.ansi(),
-                project_color(state.panes[0].project.as_ref())
+                names[0].spans[0].color.ansi(&Theme::default()),
+                project_color(state.panes[0].project.as_ref(), &Theme::default())
             );
         }
         state.panes[0].ci = None;
@@ -2858,7 +2849,7 @@ mod tests {
                     render_row(pane_row, &state, &Theme::default(), 40, false, false, false);
                 assert!(visible(&rendered).contains(status_icon(status, attention)));
                 assert!(visible(&rendered).contains(harness_icon(harness)));
-                assert!(rendered.contains(harness_color(harness)));
+                assert!(rendered.contains(harness_color(harness, &Theme::default())));
                 let popup = tooltip(&Item::Pane("1".to_owned()), &state);
                 assert!(
                     popup

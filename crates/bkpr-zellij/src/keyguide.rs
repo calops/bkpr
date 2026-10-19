@@ -3,8 +3,6 @@ use std::fmt::Write;
 use zellij_tile::prelude::actions::{Action, SearchDirection, SearchOption};
 use zellij_tile::prelude::{BareKey, Direction, InputMode, KeyWithModifier, KeybindsVec, Resize};
 
-const TITLE: &str = "\x1b[22;38;2;203;166;247m";
-const KEY: &str = "\x1b[22;38;2;137;180;250m";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Context {
@@ -664,10 +662,10 @@ impl Line {
         self.cells += ui::width(text);
     }
 
-    fn push_group(&mut self, text: &str, color: &str) {
+    fn push_group(&mut self, text: &str, color: &str, theme: &ui::Theme) {
         for (index, key) in text.split('/').enumerate() {
             if index > 0 {
-                self.push("/", ui::MUTED);
+                self.push("/", &theme.muted);
             }
             self.push(key, color);
         }
@@ -732,7 +730,7 @@ impl<'a> Body<'a> {
         self.full_key_width + 2 + self.description_width
     }
 
-    fn render(&self, columns: usize, max_rows: usize) -> Vec<String> {
+    fn render(&self, columns: usize, max_rows: usize, theme: &ui::Theme) -> Vec<String> {
         if columns < 4 || max_rows == 0 {
             return Vec::new();
         }
@@ -754,7 +752,7 @@ impl<'a> Body<'a> {
             let mut line = Line::default();
             if let Some(keys) = keys {
                 line.pad_to(key_width - ui::width(&keys));
-                line.push_group(&keys, KEY);
+                line.push_group(&keys, &theme.accents[4], theme);
             }
             line.pad_to(description_start);
             line
@@ -781,10 +779,10 @@ impl<'a> Body<'a> {
                     }
                     line = key_line(key_rows.next());
                 } else if space > 0 {
-                    line.push(" ", ui::MUTED);
+                    line.push(" ", &theme.muted);
                 }
                 let word = ui::truncate(word, columns.saturating_sub(line.cells));
-                line.push(&word, ui::MUTED);
+                line.push(&word, &theme.muted);
             }
             rows.push(line.finish(columns));
             for keys in key_rows {
@@ -801,7 +799,7 @@ impl<'a> Body<'a> {
 
 #[cfg(test)]
 fn body(hints: &[Hint], columns: usize, max_rows: usize) -> Vec<String> {
-    Body::new(hints).render(columns, max_rows)
+    Body::new(hints).render(columns, max_rows, &ui::Theme::default())
 }
 
 /// A footer only: callers reserve its returned height and anchor it within the sidebar viewport.
@@ -811,6 +809,7 @@ pub fn render(
     context: Context,
     columns: usize,
     max_rows: usize,
+    theme: &ui::Theme,
 ) -> Vec<String> {
     if columns == 0 || max_rows == 0 {
         return Vec::new();
@@ -824,6 +823,7 @@ pub fn render(
         &layout,
         columns,
         max_rows,
+        theme,
     )
 }
 
@@ -840,6 +840,7 @@ pub(crate) fn render_expanded(
     sidebar_columns: usize,
     max_columns: usize,
     max_rows: usize,
+    theme: &ui::Theme,
 ) -> ExpandedGuide {
     if max_columns == 0 || max_rows == 0 {
         return ExpandedGuide {
@@ -864,6 +865,7 @@ pub(crate) fn render_expanded(
         &layout,
         columns,
         max_rows,
+        theme,
     );
     ExpandedGuide { columns, lines }
 }
@@ -881,6 +883,7 @@ fn render_frame(
     layout: &Body<'_>,
     columns: usize,
     max_rows: usize,
+    theme: &ui::Theme,
 ) -> Vec<String> {
     if columns == 0 || max_rows == 0 {
         return Vec::new();
@@ -898,7 +901,7 @@ fn render_frame(
         }
         let mut title_line = Line::default();
         title_line.ansi.push_str(ui::BASE);
-        title_line.push_group(&ui::fit(&compact_title, columns), TITLE);
+        title_line.push_group(&ui::fit(&compact_title, columns), &theme.accents[5], theme);
         let mut rows = vec![title_line.finish(columns)];
         if max_rows > 1 {
             if hints.is_empty() {
@@ -911,17 +914,17 @@ fn render_frame(
                     "{}{MUTED}{}{base}",
                     ui::BASE,
                     ui::fit(message, columns),
-                    MUTED = ui::MUTED,
+                    MUTED = theme.muted,
                     base = ui::BASE
                 ));
             } else {
-                rows.extend(layout.render(columns, max_rows - 1));
+                rows.extend(layout.render(columns, max_rows - 1, theme));
             }
         }
         return rows;
     }
     let inner = columns - 4;
-    let mut content = layout.render(inner, max_rows - 2);
+    let mut content = layout.render(inner, max_rows - 2, theme);
     if content.is_empty() {
         let message = if waiting {
             "Waiting for native keymap"
@@ -930,17 +933,18 @@ fn render_frame(
         } else {
             "No configured shortcuts"
         };
-        content.push(format!("{}{}", ui::MUTED, ui::fit(message, inner)));
+        content.push(format!("{}{}", theme.muted, ui::fit(message, inner)));
     }
     let heading = ui::truncate(title, columns - 5);
     let trailing = columns - 5 - ui::width(&heading);
     let mut rows = Vec::with_capacity(content.len() + 2);
     rows.push(format!(
-        "{}{muted}╭─ {TITLE}{heading}{muted} {}╮{}",
+        "{}{muted}╭─ {title_color}{heading}{muted} {}╮{}",
         ui::BASE,
         "─".repeat(trailing),
         ui::BASE,
-        muted = ui::MUTED
+        muted = theme.muted,
+        title_color = theme.accents[5],
     ));
     for line in content {
         rows.push(format!(
@@ -949,7 +953,7 @@ fn render_frame(
             line,
             ui::BASE,
             ui::BASE,
-            muted = ui::MUTED
+            muted = theme.muted
         ));
     }
     rows.push(format!(
@@ -957,7 +961,7 @@ fn render_frame(
         ui::BASE,
         "─".repeat(columns - 2),
         ui::BASE,
-        muted = ui::MUTED
+        muted = theme.muted
     ));
     rows
 }
@@ -1257,7 +1261,7 @@ mod tests {
                 ("F12", vec![switch(InputMode::Normal)]),
             ],
         );
-        let rendered = render(Some(view(&info)), Context::Application, 20, 3);
+        let rendered = render(Some(view(&info)), Context::Application, 20, 3, &ui::Theme::default());
         assert_eq!(rendered.len(), 3);
         let content = plain(&rendered[1]);
         assert!(content.contains("F12"));
@@ -1390,19 +1394,19 @@ mod tests {
                 ],
             )],
         );
-        let expanded = render_expanded(view(&info), Context::Application, 38, 120, 12);
+        let expanded = render_expanded(view(&info), Context::Application, 38, 120, 12, &ui::Theme::default());
         assert!(expanded.columns > 48 && expanded.columns <= 72);
         assert_eq!(expanded.lines.len(), 3);
         assert!(
-            render(Some(view(&info)), Context::Application, 38, 12).len() > expanded.lines.len()
+            render(Some(view(&info)), Context::Application, 38, 12, &ui::Theme::default()).len() > expanded.lines.len()
         );
-        assert!(render_expanded(view(&info), Context::Application, 64, 120, 12).columns >= 64);
+        assert!(render_expanded(view(&info), Context::Application, 64, 120, 12, &ui::Theme::default()).columns >= 64);
         assert_eq!(
-            render_expanded(view(&info), Context::Application, 100, 120, 12).columns,
+            render_expanded(view(&info), Context::Application, 100, 120, 12, &ui::Theme::default()).columns,
             100
         );
         assert_eq!(
-            render_expanded(view(&info), Context::Application, 120, 120, 12).columns,
+            render_expanded(view(&info), Context::Application, 120, 120, 12, &ui::Theme::default()).columns,
             120
         );
     }
@@ -1420,13 +1424,7 @@ mod tests {
         for columns in [0, 1, 3, 7, 8, 38, 47, 48, 60, 71, 72, 96] {
             for rows in [0, 1, 2, 3, 4, 12] {
                 for sidebar in [0, 38, 64, 100] {
-                    let guide = render_expanded(
-                        view(&info),
-                        Context::Sidebar { selected: true },
-                        sidebar,
-                        columns,
-                        rows,
-                    );
+                    let guide = render_expanded(view(&info), Context::Sidebar { selected: true }, sidebar, columns, rows, &ui::Theme::default());
                     assert!(guide.columns <= columns);
                     assert!(guide.lines.len() <= rows);
                     if columns == 0 || rows == 0 {
@@ -1468,7 +1466,7 @@ mod tests {
                     Context::Finder,
                 ] {
                     for mode in [None, Some(view(&info))] {
-                        let rendered = render(mode, context, columns, rows);
+                        let rendered = render(mode, context, columns, rows, &ui::Theme::default());
                         assert!(rendered.len() <= rows);
                         if columns == 0 || rows == 0 {
                             assert!(rendered.is_empty());

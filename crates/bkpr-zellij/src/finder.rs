@@ -497,6 +497,7 @@ impl Layout {
 
 #[derive(Default)]
 pub struct Finder {
+    theme: ui::Theme,
     owner: Option<u32>,
     id: u32,
     instance: String,
@@ -530,6 +531,10 @@ pub struct Finder {
 }
 
 impl Finder {
+    pub fn set_terminal_colors(&mut self, colors: &crate::palette::TerminalColors) -> bool {
+        self.theme.update(colors)
+    }
+
     pub fn load(&mut self, configuration: &BTreeMap<String, String>, id: u32) {
         self.id = id;
         self.owner = configuration
@@ -542,6 +547,7 @@ impl Finder {
         set_selectable(false);
         subscribe(&[
             EventType::PermissionRequestResult,
+            EventType::CustomMessage,
             EventType::PaneUpdate,
             EventType::PaneClosed,
             EventType::TabUpdate,
@@ -1061,9 +1067,9 @@ impl Finder {
         };
         let frame = [0, 1, rows.saturating_sub(1)].map(|row| {
             if self.layout.border && row + 1 == rows {
-                format!("{}{}", ui::BRIGHT, self.layout.bottom_line(columns))
+                format!("{}{}", self.theme.bright, self.layout.bottom_line(columns))
             } else if self.layout.border {
-                overlay::outlined_line(" ".repeat(columns.saturating_sub(2)), row, rows, columns)
+                overlay::outlined_line(" ".repeat(columns.saturating_sub(2)), row, rows, columns, &self.theme)
             } else {
                 String::new()
             }
@@ -1100,23 +1106,23 @@ impl Finder {
                 0,
                 &format!(
                     "{}{}",
-                    ui::BRIGHT,
+                    self.theme.bright,
                     ui::truncate(&title, columns.saturating_sub(4))
                 ),
             );
         }
         if input.height > 0 {
-            paint(input.x, input.y, &format!("{}{prefix}{query}", ui::BRIGHT));
+            paint(input.x, input.y, &format!("{}{prefix}{query}", self.theme.bright));
         }
         if let Some(separator) = self.layout.search {
             paint(
                 separator.x,
                 separator.y,
-                &format!("{}{}", ui::BRIGHT, self.layout.rule_line(separator)),
+                &format!("{}{}", self.theme.bright, self.layout.rule_line(separator)),
             );
         }
         if let Some(separator) = self.layout.vertical {
-            let line = format!("{}│", ui::BRIGHT);
+            let line = format!("{}│", self.theme.bright);
             for row in separator.y..separator.y + separator.height {
                 paint(separator.x, row, &line);
             }
@@ -1125,7 +1131,7 @@ impl Finder {
             paint(
                 separator.x,
                 separator.y,
-                &format!("{}{}", ui::BRIGHT, self.layout.rule_line(separator)),
+                &format!("{}{}", self.theme.bright, self.layout.rule_line(separator)),
             );
         }
         let list = self.layout.list;
@@ -1133,7 +1139,7 @@ impl Finder {
             let index = self.scroll + row;
             let text = self.result_line(index, list.width);
             let background = if index == self.selection && !self.index.results().is_empty() {
-                ui::Theme::default().selected
+                self.theme.selected.as_str()
             } else {
                 ""
             };
@@ -1143,7 +1149,7 @@ impl Finder {
             let text = self
                 .preview_lines
                 .get(row + self.preview_scroll)
-                .map(|line| overlay::render_action_line(&line.row, preview.width, false))
+                .map(|line| overlay::render_action_line(&line.row, preview.width, false, &self.theme))
                 .unwrap_or_else(|| {
                     ui::fit(
                         if row == 0 && self.selected.is_none() {
@@ -1179,6 +1185,7 @@ impl Finder {
             index,
             index == self.selection,
             columns,
+            &self.theme,
         )
     }
 }
@@ -1479,6 +1486,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn palette_changes_preserve_finder_selection_input_and_viewport() {
+        let mut finder = finder();
+        finder.layout = Layout::new(96, 30, Compact::List);
+        finder.pointer_preview = true;
+        let selected = finder.selected.clone();
+        let input = finder.input.visible(40);
+        let layout = finder.layout;
+        let preview = finder.preview.clone();
+        let colors = crate::palette::TerminalColors {
+            truecolor: true,
+            foreground: Some([24, 24, 24]),
+            background: Some([248, 248, 248]),
+            ..crate::palette::TerminalColors::default()
+        };
+        assert!(finder.set_terminal_colors(&colors));
+        assert!(!finder.set_terminal_colors(&colors));
+        assert!(finder.set_terminal_colors(&crate::palette::TerminalColors::default()));
+        assert_eq!(finder.selected, selected);
+        assert_eq!(finder.input.visible(40), input);
+        assert_eq!(finder.layout, layout);
+        assert_eq!(finder.preview, preview);
+        assert!(finder.pointer_preview);
     }
 
     #[test]
