@@ -50,6 +50,8 @@ Application input starts in Zellij's **Locked** mode, so terminal shortcuts go t
 
 A left click activates a workspace or terminal without moving keyboard focus into the sidebar. Hover highlights a row and opens its details; moving into the popup keeps it open, and leaving both closes it. Sidebar focus opens the selected row's details automatically, and keyboard navigation follows the selection. Right click has no special popup behavior. Details include available activity, CWD, repository, pull request and checks, with clickable links.
 
+Moving or closing details repaints only the exposed terminal cells. Moving the pointer within an unchanged popup does not redraw it; refresh-button hover styling still updates.
+
 The first sidebar line centers the beekeeper icon and project name. Workspaces and terminals use dot markers; recognized harnesses keep their separate identity icons beside their names. Item rows keep a left gutter for the hover outline and use the rightmost sidebar column.
 
 Each sidebar-created terminal opens in its own native tab, grouped under its workspace. Stock splits remain available. Drag the separator to resize the sidebar, or use Zellij's resize mode. New sidebar-created tabs inherit the current width, folds and scroll position while their live state arrives.
@@ -103,11 +105,13 @@ Branch totals compare committed `HEAD` with its merge-base, not uncommitted chan
 
 GitHub CI monitoring uses `gh`'s active authentication context. Run `gh auth login` if needed. Bkpr doesn't switch accounts or edit credentials. Monitoring requires an explicit `github.com` HTTPS/SSH remote and a current commit; GitHub Enterprise and SSH aliases aren't supported.
 
-First loads fetch eagerly, with requests shared across panes and worktrees, batched, and spaced at least two seconds apart per session. Published commits with non-green checks refresh every 60 seconds. Green or entirely skipped checks, no checks, and unpublished commits stay idle; Git metadata events detect new commits and pushes. Transport failures use bounded backoff, and provider rate limits remain authoritative. Use refresh for same-commit reruns, newly added checks or PR-state changes.
+First loads query GitHub eagerly, with requests shared across panes and worktrees, batched, and spaced at least two seconds apart per session. Non-green remote checks refresh every 60 seconds. Green or entirely skipped checks, no checks, and missing remote branches stay idle; Git metadata events invalidate results after local commits, ref changes and pushes. Transport failures use bounded backoff, and provider rate limits remain authoritative. Use refresh for remote changes without a local ref event, same-commit reruns, newly added checks or PR-state changes.
 
-Checks belong to the exact current commit. An unpushed or inaccessible commit is unknown, never passing. Missing, stale and incomplete data remain distinct from successful checks. A new local commit can retain its branch's last-known open PR metadata, but never the previous commit's check results.
+For named branches, checks belong to the latest commit of the corresponding remote branch, selected from the configured push/upstream relationship. GitHub resolves that tip without a Git fetch. The popup labels the checked remote ref and commit and notes when local `HEAD` differs; passing remote checks never imply that unpushed local work was tested. A missing remote branch is unavailable, not a reason to substitute main. Detached HEADs use exact-commit lookup.
 
-Results persist per canonical CWD under `$XDG_STATE_HOME/bkpr/projects` (default `~/.local/state/bkpr/projects`). Repository, branch, commit and Git refs must still match before restoring them. Unchanged green results need no request after restart; non-green results appear immediately from cache and resume checking.
+Refreshing cached results is a loading/stale state, not an error. Real provider failures remain visible until a successful response replaces them.
+
+Results persist per canonical CWD under `$XDG_STATE_HOME/bkpr/projects` (default `~/.local/state/bkpr/projects`). Repository, local branch, local commit, selected remote target and Git refs must still match before restoring them. The checked commit is retained independently of local `HEAD`. Unchanged green results need no request after restart; non-green results appear immediately from cache and resume checking.
 
 Open PR links follow the branch even while local commits are unpushed. Linear associations come from canonical issue links in the PR's first ten rendered comments, without workspace-specific mappings, Linear credentials or configuration.
 

@@ -342,6 +342,8 @@ fn workspace_ci<'a>(
             &project.id,
             &ci.repository,
             &ci.head_sha,
+            &ci.checked_ref,
+            &ci.local_head_sha,
             ci.change_request.as_ref().map(|request| request.number),
         );
         let entry = groups.entry(key).or_insert((project, ci));
@@ -765,9 +767,33 @@ fn ci_summary(ci: &CiSnapshot) -> PopupRow {
     summary
 }
 
+fn ci_target_rows(ci: &CiSnapshot) -> Vec<PopupRow> {
+    let target = match (ci.checked_ref.as_deref(), ci.head_sha.is_empty()) {
+        (Some(reference), false) => format!("Checks for {reference} @ {:.7}", ci.head_sha),
+        (Some(reference), true) => format!("Remote target {reference} · commit unavailable"),
+        (None, false) => format!("Checks for commit @ {:.7}", ci.head_sha),
+        (None, true) => "Checked commit unavailable".to_owned(),
+    };
+    let mut rows = vec![PopupRow::text(target, PopupColor::Muted)];
+    if !ci.head_sha.is_empty()
+        && !ci.local_head_sha.is_empty()
+        && ci.head_sha != ci.local_head_sha
+    {
+        rows.push(PopupRow::text(
+            format!(
+                "Local HEAD @ {:.7} · differs from checked commit",
+                ci.local_head_sha
+            ),
+            PopupColor::Muted,
+        ));
+    }
+    rows
+}
+
 fn ci_rows(ci: &CiSnapshot) -> Vec<PopupRow> {
     let status = ci_state(ci);
     let mut rows = vec![ci_summary(ci)];
+    rows.extend(ci_target_rows(ci));
     if let Some(error) = &ci.error {
         let detail = error
             .split_whitespace()
@@ -1233,6 +1259,7 @@ pub fn tooltip(item: &Item, state: &Snapshot) -> PopupContent {
                                 );
                             }
                             rows.push(summary);
+                            rows.extend(ci_target_rows(ci));
                         }
                     }
                     sections.push(PopupSection {
@@ -1624,6 +1651,8 @@ mod tests {
             },
             head_sha: "0123456789abcdef".to_owned(),
             branch: Some("feature/日本語".to_owned()),
+            local_head_sha: "0123456789abcdef".to_owned(),
+            checked_ref: Some("origin/feature/日本語".to_owned()),
             truncated: false,
             commit_missing: false,
         }
@@ -1852,6 +1881,39 @@ mod tests {
                 .iter()
                 .all(|row| row.refresh.is_none())
         );
+    }
+
+    #[test]
+    fn remote_checks_identify_checked_ref_and_distinct_local_head() {
+        let mut state = snapshot();
+        let local_branch = state.panes[0].branch.clone();
+        let local_changes = state.panes[0].branch_changes.clone();
+        let ci = state.panes[0].ci.as_mut().unwrap();
+        ci.head_sha = "abcdef0123456789".to_owned();
+        ci.local_head_sha = "76543210fedcba98".to_owned();
+        ci.checked_ref = Some("origin/feature/日本語".to_owned());
+        for item in [
+            Item::Pane("1".to_owned()),
+            Item::Workspace("workspace".to_owned()),
+        ] {
+            let rows = tooltip(&item, &state).rows();
+            assert!(rows.iter().any(|row| {
+                row.plain() == "Checks for origin/feature/日本語 @ abcdef0"
+            }));
+            assert!(rows.iter().any(|row| {
+                row.plain() == "Local HEAD @ 7654321 · differs from checked commit"
+            }));
+            let target = rows.iter().find_map(|row| row.refresh.as_ref()).unwrap();
+            assert_eq!(target.head_sha, "abcdef0123456789");
+            assert_ne!(target.head_sha, state.panes[0].ci.as_ref().unwrap().local_head_sha);
+        }
+        assert_eq!(state.panes[0].branch, local_branch);
+        assert_eq!(state.panes[0].branch_changes, local_changes);
+        state.panes[0].ci.as_mut().unwrap().local_head_sha = "abcdef0123456789".to_owned();
+        assert!(tooltip(&Item::Pane("1".to_owned()), &state)
+            .rows()
+            .iter()
+            .all(|row| !row.plain().contains("differs from checked commit")));
     }
 
     #[test]

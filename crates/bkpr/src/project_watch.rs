@@ -614,8 +614,13 @@ mod linux {
             let current = previous.iter().any(|(cwd, (ticket, project))| {
                 active.watches.get(cwd) == Some(ticket)
                     && incoming.watches.get(cwd) == Some(ticket)
-                    && project.source.as_ref().is_some_and(|source| {
-                        source.repository == target.repository && source.sha == target.head_sha
+                    && project.ci.as_ref().is_some_and(|snapshot| {
+                        snapshot.repository == target.repository
+                            && !snapshot.head_sha.is_empty()
+                            && snapshot.head_sha == target.head_sha
+                            && project.source.as_ref().is_some_and(|source| {
+                                source.matches_snapshot(snapshot)
+                            })
                     })
             });
             if current {
@@ -710,8 +715,8 @@ mod linux {
                             let current = (active.watches[cwd].clone(), project);
                             if previous.get(cwd).is_some_and(|(_, prior)| {
                                 prior.source == current.1.source
-                                    && !prior.published
-                                    && current.1.published
+                                    && ((!prior.published && current.1.published)
+                                        || prior.git_refs != current.1.git_refs)
                             }) && let Some(source) = &current.1.source
                             {
                                 ci.published(source);
@@ -898,7 +903,7 @@ mod linux {
                 generation: 7,
                 owner: 5,
             };
-            let previous = BTreeMap::from([(cwd.clone(), (ticket.clone(), project))]);
+            let mut previous = BTreeMap::from([(cwd.clone(), (ticket.clone(), project))]);
             let active = Request {
                 server: 1,
                 owner: 5,
@@ -911,7 +916,7 @@ mod linux {
                 &serde_json::json!({
                     "server": 1, "owner": 5, "session": "test", "sequence": 1,
                     "watches": active.watches,
-                    "refresh": [{"repository": source.repository, "head_sha": source.sha}],
+                    "refresh": [{"repository": source.repository, "head_sha": "remote-checked-head"}],
                 })
                 .to_string(),
             )
@@ -919,14 +924,15 @@ mod linux {
             let mut monitor = ci::Monitor::new();
             monitor.sync([source.clone()].into_iter());
             let final_response = serde_json::json!({"data": {
-                "r0": {"object": {"oid": source.sha,
+                "r0": {"object": {"target": {"oid": "remote-checked-head",
                     "statusCheckRollup": {"contexts": {"nodes": [{
                         "__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"
                     }], "pageInfo": {"hasNextPage": false}}}
-                }, "b0": {"associatedPullRequests": {"nodes": [], "pageInfo": {"hasNextPage": false}}},
+                }}, "b0": {"associatedPullRequests": {"nodes": [], "pageInfo": {"hasNextPage": false}}},
                     "c0": {"nodes": []}}, "rateLimit": {"remaining": 5000}
             }});
             monitor.finish_json_fixture(std::slice::from_ref(&source), final_response.clone());
+            previous.get_mut(&cwd).unwrap().1.ci = monitor.snapshot(&source);
             assert_eq!(monitor.timeout(), -1);
             // The accepted control operation uses cached source identity, not a Git probe.
             repository.git(&["commit", "--allow-empty", "-m", "unprocessed event"]);
@@ -946,7 +952,7 @@ mod linux {
             incoming.refresh[0].head_sha = "obsolete".into();
             refresh_ci(&active, &incoming, &previous, &mut monitor);
             assert_eq!(monitor.timeout(), -1);
-            incoming.refresh[0].head_sha = source.sha.clone();
+            incoming.refresh[0].head_sha = "remote-checked-head".into();
             incoming.owner = 6;
             refresh_ci(&active, &incoming, &previous, &mut monitor);
             assert_eq!(monitor.timeout(), -1);
@@ -1316,10 +1322,24 @@ mod linux {
             let pushed = project::discover_watched_with_ci(&linked, Some(&snapshot))
                 .unwrap()
                 .0;
-            assert_eq!(pushed.source, restored.source);
+            let pushed_source = pushed.source.as_ref().unwrap();
+            let prior_source = restored.source.as_ref().unwrap();
+            assert_ne!(pushed_source, prior_source);
+            assert_eq!(pushed_source.sha, head);
+            assert_eq!(pushed.head_sha.as_deref(), Some(head.as_str()));
+            assert_eq!(pushed_source.repository, prior_source.repository);
+            assert_eq!(pushed_source.branch.as_deref(), Some("stack/child"));
+            assert_eq!(pushed_source.checked_ref().as_deref(), Some("origin/stack/child"));
+            assert!(prior_source.remote_branch.as_ref().unwrap().tracking_sha.is_none());
+            assert_eq!(
+                pushed_source.remote_branch.as_ref().unwrap().tracking_sha.as_deref(),
+                Some(head.as_str())
+            );
             assert!(pushed.published);
             assert_ne!(pushed.git_refs, restored.git_refs);
             assert_eq!(pushed.branch_changes, restored.branch_changes);
+            assert_eq!(pushed.branch_changes.as_ref().unwrap().base_ref, "stack/parent");
+            assert_eq!(pushed.branch_changes.as_ref().unwrap().merge_base, parent);
         }
     }
 }

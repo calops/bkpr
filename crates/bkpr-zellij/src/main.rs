@@ -3255,6 +3255,8 @@ mod tests {
             },
             head_sha: "0123456789abcdef".to_owned(),
             branch: Some("main".to_owned()),
+            local_head_sha: "fedcba9876543210".to_owned(),
+            checked_ref: Some("origin/main".to_owned()),
             status: CiStatus::Passed,
             fetch_state: CiFetchState::Ready,
             checks: Vec::new(),
@@ -3335,6 +3337,11 @@ mod tests {
             );
         }
         let (mut frontend, request) = ci_refresh_frontend();
+        assert_ne!(
+            request.target.head_sha,
+            frontend.snapshot.as_ref().unwrap().panes[0]
+                .ci.as_ref().unwrap().local_head_sha
+        );
         let mut unsupported = serde_json::to_value(&request).unwrap();
         unsupported["target"]["repository"]["provider"] = serde_json::json!("unsupported-provider");
         assert!(serde_json::from_value::<overlay::RefreshRequest>(unsupported).is_err());

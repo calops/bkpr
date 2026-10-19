@@ -1,5 +1,5 @@
 //! GitHub transport and response normalization; no provider protocol escapes this module.
-use super::{BatchResponse, CiSource, FetchError, RetryPolicy, empty, same_commit};
+use super::{BatchResponse, CiSource, FetchError, RetryPolicy, empty, same_target};
 use scraper::{Html, Selector};
 use serde_json::{Value, json};
 use bkpr::ci_contract::{
@@ -37,7 +37,7 @@ fn query(sources: &[CiSource]) -> String {
     for (index, source) in sources.iter().enumerate() {
         if sources[..index]
             .iter()
-            .any(|prior| same_commit(prior, source))
+            .any(|prior| same_target(prior, source))
         {
             continue;
         }
@@ -46,15 +46,38 @@ fn query(sources: &[CiSource]) -> String {
             .path
             .split_once('/')
             .expect("validated GitHub repository");
-        query.push_str(&format!("r{index}:repository(owner:{owner},name:{name}) {{ object(expression:{sha}) {{ ... on Commit {{ ", owner=json!(owner), name=json!(name), sha=json!(source.sha)));
+        query.push_str(&format!(
+            "r{index}:repository(owner:{owner},name:{name}) {{ ",
+            owner = json!(owner),
+            name = json!(name),
+        ));
+        if let Some(branch) = &source.remote_branch {
+            query.push_str(&format!(
+                "object:ref(qualifiedName:{qualified}) {{ target {{ ... on Commit {{ ",
+                qualified = json!(format!("refs/heads/{}", branch.name)),
+            ));
+        } else {
+            query.push_str(&format!(
+                "object(expression:{sha}) {{ ... on Commit {{ ",
+                sha = json!(source.sha),
+            ));
+        }
         query.push_str("oid statusCheckRollup { state contexts(first:100) { nodes { __typename ... on CheckRun { name status conclusion detailsUrl startedAt completedAt } ... on StatusContext { context state targetUrl } } pageInfo { hasNextPage } } }");
         query.push_str(" } } ");
+        if source.remote_branch.is_some() {
+            query.push_str(" } ");
+        }
         const PR_FIELDS: &str = "number title url body comments(first:10) { nodes { bodyHTML } } isDraft state updatedAt headRefOid headRefName headRepository { nameWithOwner } baseRefName baseRefOid repository { nameWithOwner url }";
         for (branch_index, branch_source) in sources.iter().enumerate() {
-            if !same_commit(source, branch_source) {
+            if !same_target(source, branch_source) {
                 continue;
             }
-            let Some(branch) = &branch_source.branch else {
+            let Some(branch) = branch_source
+                .remote_branch
+                .as_ref()
+                .map(|branch| branch.name.as_str())
+                .or(branch_source.branch.as_deref())
+            else {
                 continue;
             };
             query.push_str(&format!(
@@ -307,14 +330,16 @@ fn change_request(node: &Value) -> Option<ChangeRequest> {
     })
 }
 
-fn matching_request(source: &CiSource, nodes: &[Value]) -> Option<ChangeRequest> {
-    // Open PRs follow their remote branch; completed PRs must match this local head.
-    let branch = source.branch.as_deref()?;
+fn matching_request(source: &CiSource, nodes: &[Value], checked_sha: &str) -> Option<ChangeRequest> {
+    // Every PR association is verified against the actual provider-checked head.
+    let branch = source.remote_branch.as_ref()
+        .map(|branch| branch.name.as_str())
+        .or(source.branch.as_deref())?;
     let matching = || {
         nodes.iter().filter(|node| {
             node["headRefOid"]
                 .as_str()
-                .is_some_and(|sha| node["state"] == "OPEN" || sha == source.sha)
+                .is_some_and(|sha| sha == checked_sha)
                 && node["headRefName"].as_str() == Some(branch)
                 && node["headRepository"]["nameWithOwner"]
                     .as_str()
@@ -356,34 +381,46 @@ fn parse(
     now: u64,
     index: usize,
 ) -> Result<CiSnapshot, FetchError> {
-    let commit = &repository["object"];
+    if !repository.is_object() {
+        return Err(FetchError::normal("GitHub repository is inaccessible"));
+    }
+    let commit = if source.remote_branch.is_some() {
+        &repository["object"]["target"]
+    } else {
+        &repository["object"]
+    };
     let mut snapshot = empty(source, now);
+    let checked_sha = commit["oid"].as_str().filter(|sha| !sha.is_empty());
+    if checked_sha.is_none()
+        || (source.remote_branch.is_none() && checked_sha != Some(source.sha.as_str()))
+    {
+        snapshot.fetch_state = CiFetchState::Unavailable;
+        snapshot.commit_missing = true;
+        snapshot.error = Some(if let Some(branch) = source.checked_ref() {
+            format!("Remote branch {branch} is not available on GitHub")
+        } else {
+            "Current commit is not available on GitHub (not pushed or repository inaccessible)".into()
+        });
+        return Ok(snapshot);
+    }
+    snapshot.head_sha = checked_sha.unwrap().to_owned();
     if source.branch.is_some() {
         let branch_ref = &repository[format!("b{index}")];
         let active = &branch_ref["associatedPullRequests"];
         if let Some(nodes) = active["nodes"].as_array() {
             // A capped active connection is ambiguous, not evidence of a closed PR.
             if active["pageInfo"]["hasNextPage"] != true {
-                snapshot.change_request = matching_request(source, nodes);
+                snapshot.change_request = matching_request(source, nodes, &snapshot.head_sha);
             }
         }
         // Only fall back when the branch has no active PR, including a deleted ref.
         if (branch_ref.is_null() || active["nodes"].as_array().is_some_and(Vec::is_empty))
             && let Some(nodes) = repository[format!("c{index}")]["nodes"].as_array()
         {
-            snapshot.change_request = matching_request(source, nodes);
+            snapshot.change_request = matching_request(source, nodes, &snapshot.head_sha);
         }
     }
     snapshot.fetch_state = CiFetchState::Ready;
-    if commit["oid"].as_str() != Some(source.sha.as_str()) {
-        snapshot.fetch_state = CiFetchState::Unavailable;
-        snapshot.commit_missing = true;
-        snapshot.error = Some(
-            "Current commit is not available on GitHub (not pushed or repository inaccessible)"
-                .into(),
-        );
-        return Ok(snapshot);
-    }
     let contexts = &commit["statusCheckRollup"]["contexts"];
     if !commit["statusCheckRollup"].is_null() && !contexts["nodes"].is_array() {
         return Err(FetchError::normal(
@@ -505,7 +542,7 @@ pub(super) fn normalize<'a>(
             let branch_index = sources.iter().position(|queried| queried == source)?;
             let index = sources
                 .iter()
-                .position(|queried| same_commit(queried, source))?;
+                .position(|queried| same_target(queried, source))?;
             let alias = format!("r{index}");
             let result = if let Some(error) = &global_error {
                 Err(error.clone())
@@ -666,6 +703,10 @@ fn epoch(value: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
+    fn matching_request(source: &CiSource, nodes: &[Value]) -> Option<ChangeRequest> {
+        super::matching_request(source, nodes, &source.sha)
+    }
+
     #[test]
     fn request_description_and_comment_linear_links_survive_provider_normalization() {
         let body = "Searchable full description\n\n\
@@ -810,6 +851,7 @@ mod tests {
             repository: repository("https://github.com/owner/repo").unwrap(),
             sha: "abc".into(),
             branch: Some("main".into()),
+            remote_branch: None,
         }
     }
     fn pr(number: u64, state: &str, draft: bool, updated: &str) -> Value {
@@ -916,20 +958,85 @@ mod tests {
     }
 
     #[test]
-    fn branch_request_survives_unpushed_local_commits_without_borrowing_checks() {
+    fn remote_branch_reports_published_checks_for_unpushed_local_head() {
         let mut source = source();
         source.sha = "unpushed-local-head".into();
+        source.branch = Some("local-work".into());
+        source.remote_branch = Some(super::super::RemoteBranch {
+            remote: "upstream".into(),
+            name: "main".into(),
+            tracking_sha: Some("stale-tracking-head".into()),
+        });
         let mut value = repository_result(
             vec![pr(7, "OPEN", false, "2026-10-13T12:00:00Z")],
             vec![check(Value::Null, Value::Null)],
         );
-        value["object"] = Value::Null;
+        let commit = value["object"].take();
+        value["object"] = json!({"target": commit});
         let snapshot = parse(&source, &value, 42, 0).unwrap();
         assert_eq!(snapshot.change_request.as_ref().unwrap().number, 7);
-        assert_eq!(snapshot.status, CiStatus::Unknown);
-        assert_eq!(snapshot.fetch_state, CiFetchState::Unavailable);
-        assert!(snapshot.checks.is_empty());
-        assert!(snapshot.error.is_some());
+        assert_eq!(snapshot.head_sha, "abc");
+        assert_eq!(snapshot.local_head_sha, "unpushed-local-head");
+        assert_eq!(snapshot.branch.as_deref(), Some("local-work"));
+        assert_eq!(snapshot.checked_ref.as_deref(), Some("upstream/main"));
+        assert_eq!(snapshot.status, CiStatus::Passed);
+        assert_eq!(snapshot.fetch_state, CiFetchState::Ready);
+        assert_eq!(snapshot.checks.len(), 1);
+        assert!(snapshot.error.is_none());
+        for state in ["MERGED", "CLOSED"] {
+            let completed = pr(8, state, false, "2026-10-14T12:00:00Z");
+            value["b0"]["associatedPullRequests"]["nodes"] = json!([]);
+            value["c0"]["nodes"] = json!([completed]);
+            assert_eq!(parse(&source, &value, 42, 0).unwrap().change_request.unwrap().number, 8);
+            value["c0"]["nodes"][0]["headRefOid"] = json!("not-the-remote-tip");
+            assert!(parse(&source, &value, 42, 0).unwrap().change_request.is_none());
+        }
+        value["b0"]["associatedPullRequests"]["nodes"] =
+            json!([pr(7, "OPEN", false, "2026-10-13T12:00:00Z")]);
+
+        value["b0"]["associatedPullRequests"]["nodes"][0]["headRefOid"] = json!("different");
+        assert!(parse(&source, &value, 42, 0).unwrap().change_request.is_none());
+        value["object"] = Value::Null;
+        let missing = parse(&source, &value, 42, 0).unwrap();
+        assert!(missing.commit_missing);
+        assert!(missing.head_sha.is_empty());
+        assert!(missing.change_request.is_none());
+        assert_eq!(missing.fetch_state, CiFetchState::Unavailable);
+        assert!(missing.error.as_deref().unwrap().contains("upstream/main"));
+    }
+
+    #[test]
+    fn shared_remote_ref_publishes_provider_tip_with_each_local_identity() {
+        let mut first = source();
+        first.sha = "local-one".into();
+        first.branch = Some("local-one".into());
+        first.remote_branch = Some(super::super::RemoteBranch {
+            remote: "origin".into(),
+            name: "main".into(),
+            tracking_sha: None,
+        });
+        let mut second = first.clone();
+        second.sha = "local-two".into();
+        second.branch = Some("local-two".into());
+        let mut value = repository_result(
+            vec![pr(7, "OPEN", false, "2026-10-13T12:00:00Z")],
+            vec![check(Value::Null, Value::Null)],
+        );
+        let commit = value["object"].take();
+        value["object"] = json!({"target": commit});
+        value["b1"] = value["b0"].clone();
+        value["c1"] = value["c0"].clone();
+        let sources = [first, second];
+        let batch = normalize(json!({"data":{"r0":value}}), &sources, &sources, 42);
+        assert_eq!(batch.results.len(), 2);
+        for source in &sources {
+            let snapshot = batch.results[source].as_ref().unwrap();
+            assert_eq!(snapshot.head_sha, "abc");
+            assert_eq!(snapshot.local_head_sha, source.sha);
+            assert_eq!(snapshot.branch, source.branch);
+            assert_eq!(snapshot.checks.len(), 1);
+            assert_eq!(snapshot.change_request.as_ref().unwrap().number, 7);
+        }
     }
 
     #[test]
@@ -1155,19 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_target_metadata_stays_in_the_existing_bounded_query() {
-        let query = query(&[source()]);
-        assert_eq!(query.matches("object(expression:").count(), 1);
-        assert!(query.contains("contexts(first:100)"));
-        assert!(query.contains("associatedPullRequests(states:OPEN,first:2)"));
-        assert_eq!(query.matches("comments(first:10)").count(), 2);
-        assert_eq!(
-            query
-                .matches("baseRefName baseRefOid repository { nameWithOwner url }")
-                .count(),
-            2
-        );
-        assert!(!query.contains("body bodyHTML"));
+    fn authoritative_pr_base_metadata_requires_a_valid_provider_commit() {
         let mut node = pr(7, "OPEN", false, "2026-10-13T12:00:00Z");
         node["baseRefName"] = json!("stack/parent");
         node["baseRefOid"] = json!("1234567890abcdef1234567890abcdef12345678");
