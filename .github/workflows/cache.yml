@@ -37,13 +37,10 @@ jobs:
         include:
           - system: x86_64-linux
             runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
           - system: aarch64-linux
             runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
           - system: aarch64-darwin
             runner: macos-15
-            target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -60,33 +57,6 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build packages for ${{ matrix.system }}
         run: nix build --no-link .#bkpr .#bkpr-native .#bkpr-zellij
-      - name: Identify version tag
-        id: version
-        env:
-          TAG: ${{ github.ref_name }}
-        run: bash .github/scripts/classify-tag.sh "$TAG" >> "$GITHUB_OUTPUT"
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        if: steps.version.outputs.release == 'true'
-        with:
-          toolchain: '1.96.1'
-          target: wasm32-wasip1,${{ matrix.target }}
-          cache: false
-      - name: Install static Linux build tools
-        if: steps.version.outputs.release == 'true' && runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake pkg-config perl
-      - name: Build portable release
-        if: steps.version.outputs.release == 'true'
-        env:
-          SYSTEM: ${{ matrix.system }}
-          TAG: ${{ github.ref_name }}
-        run: bash .github/scripts/build-portable.sh "$SYSTEM" "$TAG"
-      - uses: actions/upload-artifact@v4
-        if: steps.version.outputs.release == 'true'
-        with:
-          name: bkpr-${{ matrix.system }}
-          path: bkpr-${{ github.ref_name }}-${{ matrix.system }}.tar.gz
-          if-no-files-found: error
-          compression-level: 0
 
   promote-unstable:
     if: github.ref_type == 'tag' && github.ref_name != 'unstable'
