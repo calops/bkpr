@@ -38,7 +38,7 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
-      - run: node --test .github/scripts/release-analyzer.test.cjs
+      - run: node --test .github/scripts/*.test.cjs .github/scripts/*.test.mjs
       - name: Preview version and changelog
         if: inputs.dry_run
         run: npm run release -- --dry-run

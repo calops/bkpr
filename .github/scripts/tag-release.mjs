@@ -1,12 +1,12 @@
 import semanticRelease from 'semantic-release';
-import { execFileSync } from 'node:child_process';
+import { publishRelease } from './publish-release.mjs';
 
 const dryRun = process.argv.includes('--dry-run');
-const result = await semanticRelease(dryRun ? { dryRun: true } : {});
+// Use the public planning API only. Core publication pushes channel notes after
+// the immutable tag, so a notes rejection can strand a tagged release unbuilt.
+const result = await semanticRelease({ dryRun: true });
 if (result && !dryRun) {
-  const tag = result.nextRelease.gitTag;
-  // GITHUB_TOKEN tag pushes do not trigger push workflows; workflow_dispatch does.
-  execFileSync('gh', ['workflow', 'run', 'cache.yml', '--ref', tag], { stdio: 'inherit' });
+  await publishRelease(result);
 } else if (!result) {
   console.log('No releasable conventional commits since the last version tag.');
 }
