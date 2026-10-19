@@ -95,6 +95,8 @@ fn query(sources: &[CiSource]) -> String {
 #[cfg(target_os = "linux")]
 pub(super) fn request(sources: &[CiSource]) -> std::io::Result<(std::process::Command, Vec<u8>)> {
     let mut command = std::process::Command::new("gh");
+    // The scheduler batches only sources with the same canonical item CWD.
+    command.current_dir(&sources[0].cwd);
     command.args([
         "api",
         "graphql",
@@ -848,6 +850,7 @@ mod tests {
 
     fn source() -> CiSource {
         CiSource {
+            cwd: "/project".into(),
             repository: repository("https://github.com/owner/repo").unwrap(),
             sha: "abc".into(),
             branch: Some("main".into()),
@@ -864,6 +867,41 @@ mod tests {
     }
     fn check(start: Value, end: Value) -> Value {
         json!({"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS","startedAt":start,"completedAt":end})
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gh_uses_each_item_cwd_without_overriding_auth_configuration() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let wrapper = bin.join("gh");
+        std::fs::write(
+            &wrapper,
+            r#"#!/bin/sh
+case "$PWD" in */one) conclusion=SUCCESS;; *) conclusion=FAILURE;; esac
+printf '{"data":{"r0":{"object":{"oid":"abc","statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"%s","status":"COMPLETED","conclusion":"%s"}],"pageInfo":{"hasNextPage":false}}}},"b0":{"associatedPullRequests":{"nodes":[],"pageInfo":{"hasNextPage":false}}},"c0":{"nodes":[]}},"rateLimit":{"remaining":5000}}}' "$PWD" "$conclusion"
+"#,
+        ).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for (directory, expected) in [("one", CiStatus::Passed), ("two", CiStatus::Failed)] {
+            let mut source = source();
+            source.cwd = root.path().join(directory);
+            std::fs::create_dir(&source.cwd).unwrap();
+            source.cwd = std::fs::canonicalize(&source.cwd).unwrap();
+            let sources = [source.clone()];
+            let (mut command, _) = request(&sources).unwrap();
+            assert_eq!(command.get_current_dir(), Some(source.cwd.as_path()));
+            assert_eq!(command.get_envs().count(), 0);
+            // Override PATH only on this child; never mutate the test process's auth/env.
+            let output = command.env("PATH", &bin).output().unwrap();
+            assert!(output.status.success());
+            let mut batch = response(true, &output.stdout, "", &sources, sources.iter(), 42).unwrap();
+            let snapshot = batch.results.remove(&source).unwrap().unwrap();
+            assert_eq!(snapshot.status, expected);
+            assert_eq!(snapshot.checks[0].name, source.cwd.to_str().unwrap());
+        }
     }
 
     #[test]

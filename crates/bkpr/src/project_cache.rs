@@ -12,7 +12,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-const VERSION: u32 = 1;
+// Earlier records may contain provider results shared across gh CWD/auth contexts.
+const VERSION: u32 = 2;
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 pub(crate) struct Cache {
@@ -128,6 +129,7 @@ impl Cache {
         let path = directory.join("state.json");
         if let Some(previous) = read(&path)
             && previous.cwd == cwd
+            && previous.version == VERSION
             && previous.repository_id == *repository_id
             && previous.head == head
             && previous.branch == project.branch
@@ -229,6 +231,7 @@ mod tests {
                 },
             }),
             source: Some(CiSource {
+                cwd: "/repository".into(),
                 repository: ci.repository.clone(),
                 sha: ci.local_head_sha.clone(),
                 branch: ci.branch.clone(),
@@ -293,6 +296,24 @@ mod tests {
             fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
             assert!(cache.load(cwd.to_str().unwrap(), &original).is_none());
         }
+    }
+
+    #[test]
+    fn records_from_before_cwd_scoped_provider_execution_are_reloaded() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("repo");
+        fs::create_dir(&cwd).unwrap();
+        let cache = Cache { root: Some(root.path().join("state")) };
+        let original = project();
+        cache.store(cwd.to_str().unwrap(), &original).unwrap();
+        let path = cache.directory(&fs::canonicalize(&cwd).unwrap()).unwrap().join("state.json");
+        let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        record["version"] = json!(1);
+        record["ci"]["updated_at"] = json!(u64::MAX);
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(cache.load(cwd.to_str().unwrap(), &original).is_none());
+        cache.store(cwd.to_str().unwrap(), &original).unwrap();
+        assert_eq!(cache.load(cwd.to_str().unwrap(), &original).unwrap().ci, original.ci);
     }
 
     #[test]

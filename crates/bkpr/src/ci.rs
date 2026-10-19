@@ -1,15 +1,17 @@
 //! Shared forge CI batching, scheduling, and cache; Git discovery is event-driven.
-//! Requests share remote targets while retaining each subscriber's local identity.
+//! Requests share remote targets within one canonical CWD and retain local identity.
 use bkpr::ci_contract::{
     CiFetchState, CiRefreshTarget, CiSnapshot, CiStatus, ForgeProvider, ForgeRepository,
 };
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 mod github;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct CiSource {
+    /// Exact item directory, not its worktree root: gh wrappers may select auth by CWD.
+    pub cwd: PathBuf,
     pub repository: ForgeRepository,
     pub sha: String,
     pub branch: Option<String>,
@@ -84,6 +86,7 @@ struct BatchResponse {
 }
 
 pub(crate) fn discover(cwd: &Path, branch: Option<&str>) -> Option<CiSource> {
+    let canonical_cwd = std::fs::canonicalize(cwd).ok()?;
     let sha = crate::project::git_text(cwd, &["rev-parse", "--verify", "HEAD"])?;
     if sha.len() != 40 && sha.len() != 64 {
         return None;
@@ -105,6 +108,7 @@ pub(crate) fn discover(cwd: &Path, branch: Option<&str>) -> Option<CiSource> {
         }
     });
     Some(CiSource {
+        cwd: canonical_cwd,
         repository,
         sha,
         branch: branch.map(str::to_owned),
@@ -214,7 +218,8 @@ fn empty(source: &CiSource, now: u64) -> CiSnapshot {
 }
 
 fn same_target(left: &CiSource, right: &CiSource) -> bool {
-    left.repository == right.repository
+    left.cwd == right.cwd
+        && left.repository == right.repository
         && match (&left.remote_branch, &right.remote_branch) {
             (Some(left), Some(right)) => left.name == right.name,
             (None, None) => left.sha == right.sha,
@@ -304,6 +309,7 @@ mod linux {
                 // association. Commit checks and completed PRs never cross SHAs.
                 let mut previous = self.entries.iter().filter(|(old, entry)| {
                     !wanted.contains(*old)
+                        && old.cwd == source.cwd
                         && old.repository == source.repository
                         && old.branch == source.branch
                         && old.remote_branch.as_ref().map(|branch| (&branch.remote, &branch.name))
@@ -497,6 +503,7 @@ mod linux {
                 if targets.first().is_some_and(|first| {
                     first.repository.provider != source.repository.provider
                         || first.repository.host != source.repository.host
+                        || first.cwd != source.cwd
                 }) {
                     continue;
                 }
@@ -731,6 +738,7 @@ mod linux {
         }
         fn source(sha: &str) -> CiSource {
             CiSource {
+                cwd: "/project".into(),
                 repository: github::repository("https://github.com/owner/repo").unwrap(),
                 sha: sha.into(),
                 branch: Some("main".into()),
@@ -746,6 +754,23 @@ mod linux {
                 tracking_sha: None,
             });
             source
+        }
+
+        #[test]
+        fn discovery_keeps_the_canonical_item_directory_not_the_repository_root() {
+            let repository = crate::project::tests::Repository::new();
+            repository.git(&["init", "-b", "main"]);
+            repository.git(&["commit", "--allow-empty", "-m", "initial"]);
+            repository.git(&["remote", "add", "origin", "https://github.com/owner/repo"]);
+            let nested = repository.0.join("nested");
+            std::fs::create_dir(&nested).unwrap();
+            let alias = repository.0.join("alias");
+            std::os::unix::fs::symlink(&nested, &alias).unwrap();
+            let direct = discover(&nested, Some("main")).unwrap();
+            let linked = discover(&alias, Some("main")).unwrap();
+            assert_eq!(direct, linked);
+            assert_eq!(direct.cwd, std::fs::canonicalize(&nested).unwrap());
+            assert_ne!(direct.cwd, std::fs::canonicalize(&repository.0).unwrap());
         }
 
         #[test]
@@ -820,6 +845,58 @@ mod linux {
             assert!(monitor.entries[&first].due.is_some());
             assert!(monitor.entries[&linked].due.is_some());
             assert!(monitor.entries[&other].due.is_none());
+        }
+
+        #[test]
+        fn cwd_contexts_split_batches_and_results_but_keep_shared_request_spacing() {
+            let first = source("same-head");
+            let another = source("another-head");
+            let mut other_cwd = first.clone();
+            other_cwd.cwd = "/second-project".into();
+            assert!(!same_target(&first, &other_cwd));
+            let mut monitor = Monitor::new();
+            monitor.sync([first.clone(), another.clone(), other_cwd.clone()].into_iter());
+            let now = Instant::now();
+            let batch = monitor.reserve_batch(now);
+            assert_eq!(batch.len(), 2);
+            assert!(batch.contains(&first));
+            assert!(batch.contains(&another));
+            assert!(!batch.contains(&other_cwd));
+            finish_snapshot(&mut monitor, &first, complete_snapshot(&first, &[CiStatus::Passed]));
+            finish_snapshot(&mut monitor, &another, complete_snapshot(&another, &[CiStatus::Passed]));
+            assert_eq!(monitor.snapshot(&other_cwd), Some(empty(&other_cwd, 0)));
+            assert!(monitor.reserve_batch(now).is_empty());
+            assert_eq!(
+                monitor.reserve_batch(now + Duration::from_secs(MIN_REQUEST_SECONDS)),
+                vec![other_cwd.clone()]
+            );
+            finish_snapshot(
+                &mut monitor,
+                &other_cwd,
+                complete_snapshot(&other_cwd, &[CiStatus::Failed]),
+            );
+            assert_eq!(monitor.snapshot(&first).unwrap().status, CiStatus::Passed);
+            assert_eq!(monitor.snapshot(&other_cwd).unwrap().status, CiStatus::Failed);
+        }
+
+        #[test]
+        fn a_new_cwd_cannot_reuse_an_existing_request_or_its_cached_result() {
+            let first = source("same-head");
+            let mut second = first.clone();
+            second.cwd = "/second-project".into();
+            let mut monitor = Monitor::new();
+            monitor.sync([first.clone()].into_iter());
+            monitor.pending = Some(pending_fixture(std::slice::from_ref(&first)));
+            let fd = monitor.fd();
+            monitor.sync([first.clone(), second.clone()].into_iter());
+            assert_eq!(monitor.fd(), fd);
+            assert!(!same_target(&monitor.pending.as_ref().unwrap().sources[0], &second));
+            finish_snapshot(&mut monitor, &first, complete_snapshot(&first, &[CiStatus::Passed]));
+            assert_eq!(monitor.snapshot(&second), Some(empty(&second, 0)));
+            monitor.pending = None;
+            assert_eq!(monitor.due_batch(Instant::now()), vec![second.clone()]);
+            monitor.sync([second.clone()].into_iter());
+            assert_eq!(monitor.snapshot(&second), Some(empty(&second, 0)));
         }
 
         #[test]
@@ -994,7 +1071,7 @@ mod linux {
         #[test]
         fn head_changes_carry_only_same_branch_open_pr_metadata_not_commit_results() {
             for state in ["open", "draft", "closed", "merged"] {
-                for identity_change in 0..4 {
+                for identity_change in 0..5 {
                     let mut monitor = Monitor::new();
                     let mut old = source("old");
                     if identity_change == 3 {
@@ -1026,6 +1103,7 @@ mod linux {
                             new.repository =
                                 github::repository("https://github.com/owner/another").unwrap();
                         }
+                        4 => new.cwd = "/other-project".into(),
                         _ => {}
                     }
                     monitor.sync([new.clone()].into_iter());
