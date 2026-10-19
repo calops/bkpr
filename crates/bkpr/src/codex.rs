@@ -661,12 +661,34 @@ mod tests {
             // A blocked shell represents the server without starting Codex or a model turn.
             // Closing its owned stdin also cleans it up if an assertion panics.
             let mut child = Command::new("/bin/sh")
-                .args(["-c", "read ignored", "app-server", "--listen", &endpoint])
+                .args([
+                    "-c",
+                    "printf 'ready\\n'; read ignored",
+                    "app-server",
+                    "--listen",
+                    &endpoint,
+                ])
                 .stdin(Stdio::piped())
-                .stdout(Stdio::null())
+                .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
                 .unwrap();
+            // Synchronize fixture startup before recording process identity.
+            let mut ready = String::new();
+            BufReader::new(child.stdout.take().unwrap())
+                .read_line(&mut ready)
+                .unwrap();
+            assert_eq!(ready, "ready\n");
+            assert!(
+                fs::read(format!("/proc/{}/cmdline", child.id()))
+                    .unwrap()
+                    .split(|byte| *byte == 0)
+                    .collect::<Vec<_>>()
+                    .windows(3)
+                    .any(|parts| parts == [b"app-server".as_slice(), b"--listen", endpoint.as_bytes()]),
+                "fixture argv: {:?}",
+                fs::read(format!("/proc/{}/cmdline", child.id())).unwrap()
+            );
             let socket = runtime.path().join("broker.sock");
             let manifest = runtime.path().join("server.json");
             let start = process_start(child.id()).unwrap();
