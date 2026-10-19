@@ -610,6 +610,8 @@ struct Project {
     #[serde(default)]
     branch: Option<String>,
     #[serde(default)]
+    head_sha: Option<String>,
+    #[serde(default)]
     branch_changes: Option<bkpr::BranchChanges>,
     #[serde(default)]
     repository_id: Option<String>,
@@ -618,6 +620,11 @@ struct Project {
 }
 
 impl Project {
+    fn ci_identity_current(&self, ci: &CiSnapshot) -> bool {
+        !ci.local_head_sha.is_empty()
+            && self.head_sha.as_deref() == Some(ci.local_head_sha.as_str())
+    }
+
     fn identity(&self, cwd: &str) -> ProjectIdentity {
         ProjectIdentity {
             id: self
@@ -632,8 +639,11 @@ impl Project {
 
 impl Model {
     fn decode(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        match serde_json::from_slice(bytes) {
-            Ok(model) => Ok(model),
+        match serde_json::from_slice::<Self>(bytes) {
+            Ok(mut model) => {
+                model.invalidate_unidentified_ci();
+                Ok(model)
+            }
             Err(original_error) => {
                 // One-time persisted-cache migration, not a legacy public wire format.
                 // Only obsolete CI payloads are invalidated; user labels and Git metadata survive.
@@ -658,7 +668,20 @@ impl Model {
                     model.pending_projects.remove(&cwd);
                 }
                 model.revision += 1;
+                model.invalidate_unidentified_ci();
                 Ok(model)
+            }
+        }
+    }
+
+    fn invalidate_unidentified_ci(&mut self) {
+        for (cwd, project) in &mut self.projects {
+            if project.ci.as_ref().is_some_and(|ci| !project.ci_identity_current(ci)) {
+                project.ci = None;
+                *self.project_generations.entry(cwd.clone()).or_default() += 1;
+                self.project_watches.remove(cwd);
+                self.pending_projects.remove(cwd);
+                self.revision += 1;
             }
         }
     }
@@ -1091,7 +1114,10 @@ impl Model {
                     .get(cwd)
                     .is_some_and(|ticket| self.project_result_current(cwd, ticket))
                     && project.ci.as_ref().is_some_and(|ci| {
-                        ci.repository == target.repository && ci.head_sha == target.head_sha
+                        !target.head_sha.is_empty()
+                            && project.ci_identity_current(ci)
+                            && ci.repository == target.repository
+                            && ci.head_sha == target.head_sha
                     })
             })
     }
@@ -1117,7 +1143,10 @@ impl Model {
         if !self.project_result_current(&update.cwd, &update.ticket) {
             return false;
         }
-        if let Some(project) = update.project {
+        if let Some(mut project) = update.project {
+            if project.ci.as_ref().is_some_and(|ci| !project.ci_identity_current(ci)) {
+                project.ci = None;
+            }
             let changed =
                 self.projects.get(&update.cwd) != Some(&project) || self.project_error.is_some();
             self.projects.insert(update.cwd.clone(), project);
@@ -2803,6 +2832,7 @@ mod tests {
         );
         let wire = serde_json::json!({
             "name": "repo", "repository": true, "repository_id": "/repo/.git", "branch": "main",
+            "head_sha": "local-current",
             "branch_changes": {
                 "base_ref": "refs/remotes/origin/main", "merge_base": "base",
                 "total": {"added": 120, "deleted": 45, "binary_files": 1}
@@ -2813,7 +2843,8 @@ mod tests {
                 "change_request": {"number": 12, "title": "Native CI", "url": "https://github.com/owner/repo/pull/12", "state": "open"},
                 "updated_at": 123, "stale": false, "error": null,
                 "repository": {"provider": "github", "host": "github.com", "path": "owner/repo", "web_url": "https://github.com/owner/repo"}, "head_sha": "current",
-                "branch": "main", "truncated": false
+                "branch": "main", "local_head_sha": "local-current",
+                "checked_ref": "origin/main", "truncated": false
             }
         });
         for (id, cwd, repository_id) in [
@@ -3462,6 +3493,7 @@ mod tests {
     fn passing_project(sha: &str) -> Project {
         serde_json::from_value(serde_json::json!({
             "name": "repo", "repository": true, "repository_id": "/repo/.git", "branch": "feature",
+            "head_sha": sha,
             "branch_changes": {
                 "base_ref": "refs/remotes/origin/main", "merge_base": "base",
                 "total": {"added": 12, "deleted": 3, "binary_files": 0}
@@ -3472,7 +3504,8 @@ mod tests {
                 "change_request": {"number": 12, "title": "Native CI", "url": "https://github.com/owner/repo/pull/12", "state": "open"},
                 "updated_at": 123, "stale": false, "error": null,
                 "repository": {"provider": "github", "host": "github.com", "path": "owner/repo", "web_url": "https://github.com/owner/repo"}, "head_sha": sha,
-                "branch": "feature", "truncated": false
+                "branch": "feature", "local_head_sha": sha,
+                "checked_ref": "origin/feature", "truncated": false
             }
         }))
         .unwrap()
@@ -3488,12 +3521,55 @@ mod tests {
     }
 
     #[test]
+    fn remote_ci_validates_local_identity_in_results_and_recovered_cache() {
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
+        model.observe_cwd(1, "/repo".into());
+        model.sync_project_watches(5);
+        let mut project = passing_project("local-head");
+        project.ci.as_mut().unwrap().head_sha = "remote-head".into();
+        assert!(model.apply_project(project_update(&model, "/repo", project.clone())));
+        let recovered = Model::decode(&serde_json::to_vec(&model).unwrap()).unwrap();
+        assert_eq!(recovered.snapshot(None, 1), model.snapshot(None, 1));
+        let ci = recovered.projects["/repo"].ci.as_ref().unwrap();
+        assert_eq!(ci.head_sha, "remote-head");
+        assert_eq!(ci.local_head_sha, "local-head");
+        assert_eq!(recovered.projects["/repo"].head_sha.as_deref(), Some("local-head"));
+
+        for case in 0..3 {
+            let mut value = serde_json::to_value(&model).unwrap();
+            let metadata = &mut value["projects"]["/repo"];
+            match case {
+                0 => {
+                    metadata["ci"].as_object_mut().unwrap().remove("local_head_sha");
+                }
+                1 => metadata["ci"]["local_head_sha"] = serde_json::json!("wrong-local-head"),
+                2 => {
+                    metadata.as_object_mut().unwrap().remove("head_sha");
+                }
+                _ => unreachable!(),
+            }
+            let invalid_project: Project = serde_json::from_value(metadata.clone()).unwrap();
+            let recovered = Model::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(recovered.projects["/repo"].ci.is_none(), "case {case}");
+            assert_eq!(recovered.projects["/repo"].branch, project.branch);
+            assert_eq!(recovered.projects["/repo"].branch_changes, project.branch_changes);
+            assert!(!recovered.project_result_current("/repo", &model.project_watches["/repo"]));
+            model.apply_project(project_update(&model, "/repo", invalid_project));
+            assert!(model.projects["/repo"].ci.is_none(), "case {case}");
+            model.apply_project(project_update(&model, "/repo", project.clone()));
+        }
+    }
+
+    #[test]
     fn ci_refresh_requires_registered_client_and_current_watched_commit_without_reticketing() {
         let mut model = model();
         model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
         model.observe_cwd(1, "/repo".into());
         model.sync_project_watches(5);
-        model.apply_project(project_update(&model, "/repo", passing_project("old")));
+        let mut project = passing_project("local-head");
+        project.ci.as_mut().unwrap().head_sha = "old".into();
+        model.apply_project(project_update(&model, "/repo", project));
         let ci = model.projects["/repo"].ci.as_ref().unwrap();
         let target = CiRefreshTarget {
             repository: ci.repository.clone(),
@@ -3507,6 +3583,9 @@ mod tests {
         assert!(model.ci_refresh_current(7, 1, &target));
         assert!(!model.ci_refresh_current(7, 2, &target));
         assert!(!model.ci_refresh_current(8, 1, &target));
+        let mut local_target = target.clone();
+        local_target.head_sha = "local-head".into();
+        assert!(!model.ci_refresh_current(7, 1, &local_target));
         let mut forged = target.clone();
         forged.repository.host = "other.example".into();
         assert!(!model.ci_refresh_current(7, 1, &forged));

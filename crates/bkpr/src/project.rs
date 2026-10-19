@@ -10,6 +10,8 @@ pub(crate) struct ProjectName {
     pub name: String,
     pub repository: bool,
     pub branch: Option<String>,
+    /// Local committed HEAD, independent of the remote commit checked by CI.
+    pub head_sha: Option<String>,
     pub repository_id: Option<String>,
     pub branch_changes: Option<bkpr::BranchChanges>,
     pub ci: Option<bkpr::ci_contract::CiSnapshot>,
@@ -30,7 +32,7 @@ pub(crate) fn discover_watched(cwd: &Path) -> Result<(ProjectName, Vec<std::path
     discover_watched_with_ci(cwd, None)
 }
 
-/// Reuse provider metadata only for the exact repository, branch and committed HEAD.
+/// Reuse provider metadata only for the exact local identity and remote target.
 pub(crate) fn discover_watched_with_ci(
     cwd: &Path,
     cached: Option<&CiSnapshot>,
@@ -103,14 +105,15 @@ pub(crate) fn discover_watched_with_ci(
                     .map(|sha| format!("detached @ {sha}")),
             };
             let source = crate::ci::discover(cwd, branch.as_deref());
+            let head_sha = source.as_ref().map(|source| source.sha.clone())
+                .or_else(|| resolve_commit(cwd, "HEAD"));
             let published = source.as_ref().is_some_and(|source| {
-                let Some(branch) = source.branch.as_deref() else {
+                let Some(branch) = &source.remote_branch else {
                     return false;
                 };
-                let remote = crate::ci::push_remote(cwd, Some(branch));
-                let reference = format!("refs/remotes/{remote}/{branch}");
+                let reference = format!("refs/remotes/{}/{}", branch.remote, branch.name);
                 reference_directories(Path::new(common), &reference, &mut directories);
-                resolve_commit(cwd, &reference).as_deref() == Some(source.sha.as_str())
+                branch.tracking_sha.is_some()
             });
             let ci = cached
                 .filter(|snapshot| snapshot_matches(source.as_ref(), snapshot))
@@ -140,6 +143,7 @@ pub(crate) fn discover_watched_with_ci(
                     name,
                     repository: true,
                     branch,
+                    head_sha,
                     repository_id,
                     branch_changes,
                     ci,
@@ -158,11 +162,7 @@ pub(crate) fn discover_watched_with_ci(
 }
 
 fn snapshot_matches(source: Option<&crate::ci::CiSource>, snapshot: &CiSnapshot) -> bool {
-    source.is_some_and(|source| {
-        source.repository == snapshot.repository
-            && source.sha == snapshot.head_sha
-            && source.branch == snapshot.branch
-    })
+    source.is_some_and(|source| source.matches_snapshot(snapshot))
 }
 
 fn change_request_base(snapshot: Option<&CiSnapshot>) -> Option<&ChangeRequestBase> {
@@ -450,6 +450,7 @@ pub(crate) fn directory_name(cwd: &Path) -> Option<ProjectName> {
             .to_owned(),
         repository: false,
         branch: None,
+        head_sha: None,
         repository_id: None,
         branch_changes: None,
         ci: None,
@@ -564,6 +565,8 @@ pub(crate) mod tests {
             error: None,
             repository: source.repository.clone(),
             head_sha: source.sha.clone(),
+            local_head_sha: source.sha.clone(),
+            checked_ref: source.checked_ref(),
             branch: source.branch.clone(),
             truncated: false,
             commit_missing: false,
@@ -600,6 +603,10 @@ pub(crate) mod tests {
             repository: project.source.as_ref().unwrap().repository.clone(),
         };
         let mut snapshot = ci_snapshot(&project, base);
+        // CI may describe the remote tip while local committed changes remain ahead.
+        snapshot.head_sha.clone_from(&parent);
+        assert_ne!(snapshot.head_sha, snapshot.local_head_sha);
+        assert_eq!(project.head_sha.as_deref(), Some(snapshot.local_head_sha.as_str()));
         repository.write("child", "uncommitted\nextra lines\nare not counted\n");
         assert!(update_ci(
             &repository.0,
@@ -687,7 +694,7 @@ pub(crate) mod tests {
             let mut stale = snapshot.clone();
             match mismatch {
                 0 => stale.branch = Some("different".into()),
-                1 => stale.head_sha = "f".repeat(40),
+                1 => stale.local_head_sha = "f".repeat(40),
                 _ => stale.repository.path = "other/repo".into(),
             }
             assert!(!update_ci(&repository.0, &mut project, Some(stale)));
@@ -731,6 +738,7 @@ pub(crate) mod tests {
         let repository = Repository::new();
         assert_eq!(discover(&repository.0).unwrap().branch, None);
         repository.git(&["init", "-b", "initial"]);
+        assert!(discover(&repository.0).unwrap().head_sha.is_none());
         assert_eq!(
             discover(&repository.0).unwrap().branch.as_deref(),
             Some("initial")
@@ -747,6 +755,7 @@ pub(crate) mod tests {
             discover(&repository.0).unwrap().branch,
             Some(format!("detached @ {sha}"))
         );
+        assert_eq!(discover(&repository.0).unwrap().head_sha, resolve_commit(&repository.0, "HEAD"));
     }
 
     #[test]

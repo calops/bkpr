@@ -1079,40 +1079,66 @@ impl Overlay {
                 } else if self.owner_seen {
                     close_self();
                 }
+                return false;
             }
             Event::Mouse(Mouse::Hover(line, column)) if self.granted => {
                 if let Some(notice) = self.pointer_hover(line, column) {
                     self.notify_pointer(&notice);
                 }
-                self.refresh_hover = self.refresh_at(line, column).map(|request| request.target);
+                let hover = self.refresh_at(line, column).map(|request| request.target);
+                let previous = self
+                    .refresh_hover
+                    .as_ref()
+                    .filter(|target| !self.refresh_requested.contains(target));
+                let changed = previous != hover.as_ref();
+                self.refresh_hover = hover;
+                return changed;
             }
             Event::Mouse(Mouse::LeftClick(line, column)) if self.granted => {
                 if let (Some(owner), Some(request)) = (self.owner, self.refresh_at(line, column))
                     && let Ok(payload) = serde_json::to_string(&request)
                 {
+                    let changed = self.refresh_hover.as_ref() == Some(&request.target);
                     self.refresh_requested.push(request.target);
                     pipe_message_to_plugin(
                         MessageToPlugin::new(REFRESH)
                             .with_destination_plugin_id(owner)
                             .with_payload(payload),
                     );
+                    return changed;
                 }
+                return false;
             }
             Event::Mouse(Mouse::ScrollUp(lines)) if self.granted => {
-                self.refresh_hover = None;
+                let hover_changed = self
+                    .refresh_hover
+                    .take()
+                    .is_some_and(|target| !self.refresh_requested.contains(&target));
                 let mut layout = self.layout.borrow_mut();
-                layout.scroll = layout.scroll.saturating_sub(lines);
+                let scroll = layout.scroll.saturating_sub(lines);
+                let changed = hover_changed || scroll != layout.scroll;
+                layout.scroll = scroll;
+                return changed && self.state.as_ref().is_some_and(|state| state.visible);
             }
             Event::Mouse(Mouse::ScrollDown(lines)) if self.granted => {
-                self.refresh_hover = None;
+                let hover_changed = self
+                    .refresh_hover
+                    .take()
+                    .is_some_and(|target| !self.refresh_requested.contains(&target));
                 let mut layout = self.layout.borrow_mut();
-                layout.scroll = layout
+                let scroll = layout
                     .scroll
                     .saturating_add(lines)
                     .min(layout.lines.len().saturating_sub(self.viewport.get()));
+                let changed = hover_changed || scroll != layout.scroll;
+                layout.scroll = scroll;
+                return changed && self.state.as_ref().is_some_and(|state| state.visible);
             }
-            Event::PaneClosed(PaneId::Plugin(id)) if Some(id) == self.owner => close_self(),
-            _ => {}
+            Event::PaneClosed(PaneId::Plugin(id)) if Some(id) == self.owner => {
+                close_self();
+                return false;
+            }
+            _ => return false,
         }
         true
     }
@@ -2013,6 +2039,77 @@ mod tests {
         if overlay.presented_revision != Some(identity.revision) {
             assert!(overlay.accept_presented(overlay.id, &identity));
         }
+    }
+
+    #[test]
+    fn popup_hover_handoff_does_not_require_a_frame_without_style_changes() {
+        let mut overlay = popup_overlay();
+        assert!(!overlay.event(Event::Mouse(Mouse::Hover(0, 0))));
+        assert!(overlay.pointer_inside.get());
+        assert!(!overlay.event(Event::Mouse(Mouse::Hover(4, 20))));
+        assert_eq!(overlay.pointer_position.get(), Some((4, 20)));
+        assert!(!overlay.event(Event::Mouse(Mouse::Hover(-1, u16::MAX as usize))));
+        assert!(!overlay.pointer_inside.get());
+        assert!(!overlay.event(Event::Mouse(Mouse::Hover(-1, u16::MAX as usize))));
+    }
+
+    #[test]
+    fn popup_refresh_hover_only_repaints_styling_transitions() {
+        let mut overlay = popup_overlay();
+        let mut header = refresh_header();
+        header.spans = row("CI", ui::PopupColor::Text).spans;
+        let target = header.refresh.clone().unwrap();
+        let mut frame = popup_frame(2);
+        frame.content.title = header;
+        assert!(overlay.accept(3, frame));
+        present_popup(&mut overlay);
+
+        assert!(overlay.event(Event::Mouse(Mouse::Hover(1, 46))));
+        assert!(!overlay.event(Event::Mouse(Mouse::Hover(1, 46))));
+        assert!(overlay.event(Event::Mouse(Mouse::Hover(1, 1))));
+        assert!(!overlay.event(Event::Mouse(Mouse::Hover(1, 2))));
+        assert!(overlay.event(Event::Mouse(Mouse::Hover(1, 46))));
+        assert!(overlay.event(Event::Mouse(Mouse::LeftClick(1, 46))));
+        assert_eq!(overlay.refresh_requested, vec![target]);
+        assert!(!overlay.event(Event::Mouse(Mouse::LeftClick(1, 46))));
+        assert!(!overlay.event(Event::Mouse(Mouse::Hover(1, 46))));
+        assert!(!overlay.event(Event::Mouse(Mouse::Hover(1, 1))));
+        assert!(!overlay.event(Event::Mouse(Mouse::Hover(1, 46))));
+        assert!(!overlay.event(Event::Mouse(Mouse::Hover(-1, u16::MAX as usize))));
+        assert!(!overlay.pointer_inside.get());
+    }
+
+    #[test]
+    fn popup_noop_events_and_scroll_limits_do_not_request_frames() {
+        let mut overlay = popup_overlay();
+        let manifest = PaneManifest {
+            panes: std::collections::HashMap::from([(
+                0,
+                vec![PaneInfo {
+                    id: 3,
+                    is_plugin: true,
+                    ..PaneInfo::default()
+                }],
+            )]),
+        };
+        assert!(!overlay.event(Event::PaneUpdate(manifest.clone())));
+        assert!(overlay.owner_seen);
+        assert!(!overlay.event(Event::PaneUpdate(manifest)));
+        assert!(!overlay.event(Event::Mouse(Mouse::RightClick(1, 1))));
+        assert!(!overlay.event(Event::Mouse(Mouse::LeftClick(1, 1))));
+        assert!(!overlay.event(Event::Mouse(Mouse::ScrollUp(1))));
+        assert!(!overlay.event(Event::Mouse(Mouse::ScrollDown(1))));
+
+        let mut frame = popup_frame(2);
+        frame.content.intro = (0..8)
+            .map(|index| row(&format!("Row {index}"), ui::PopupColor::Text))
+            .collect();
+        assert!(overlay.accept(3, frame));
+        present_popup(&mut overlay);
+        assert!(overlay.event(Event::Mouse(Mouse::ScrollDown(usize::MAX))));
+        assert!(!overlay.event(Event::Mouse(Mouse::ScrollDown(1))));
+        assert!(overlay.event(Event::Mouse(Mouse::ScrollUp(usize::MAX))));
+        assert!(!overlay.event(Event::Mouse(Mouse::ScrollUp(1))));
     }
 
     fn ready_for(frame: &Tooltip, id: u32) -> Ready {
@@ -3287,6 +3384,8 @@ mod tests {
                     },
                     head_sha: "abc123".to_owned(),
                     branch: None,
+                    local_head_sha: "abc123".to_owned(),
+                    checked_ref: None,
                     truncated: false,
                     commit_missing: false,
                 }),
@@ -3695,23 +3794,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn popup_wheel_reaches_all_checks_without_focus_commands() {
-        let mut overlay = Overlay {
-            granted: true,
-            ..Overlay::default()
-        };
-        overlay.viewport.set(4);
-        overlay.layout.get_mut().lines = (0..20)
-            .map(|index| PopupLine {
-                row: row(&format!("check {index}"), ui::PopupColor::Text),
-            })
-            .collect();
-        assert!(overlay.event(Event::Mouse(Mouse::ScrollDown(100))));
-        assert_eq!(overlay.layout.borrow().scroll, 16);
-        assert!(overlay.event(Event::Mouse(Mouse::ScrollUp(3))));
-        assert_eq!(overlay.layout.borrow().scroll, 13);
-        assert!(overlay.event(Event::Mouse(Mouse::ScrollUp(100))));
-        assert_eq!(overlay.layout.borrow().scroll, 0);
-    }
 }

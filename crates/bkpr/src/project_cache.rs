@@ -131,7 +131,9 @@ impl Cache {
             && previous.repository_id == *repository_id
             && previous.head == head
             && previous.branch == project.branch
+            && previous.git_refs == project.git_refs
             && let (Some(previous), Some(ci)) = (previous.ci.as_ref(), ci)
+            && matches_source(Some(previous), project)
             && previous.updated_at > ci.updated_at
         {
             return Ok(());
@@ -141,7 +143,7 @@ impl Cache {
             cwd: &cwd,
             repository_id,
             branch: &project.branch,
-            head: &head,
+            head,
             git_refs: &project.git_refs,
             ci,
             branch_changes: &project.branch_changes,
@@ -156,12 +158,8 @@ impl Cache {
     }
 }
 
-fn committed_head<'a>(cwd: &Path, project: &'a ProjectName) -> Option<std::borrow::Cow<'a, str>> {
-    match &project.source {
-        Some(source) => Some(std::borrow::Cow::Borrowed(&source.sha)),
-        None => crate::project::git_text(cwd, &["rev-parse", "--verify", "HEAD"])
-            .map(std::borrow::Cow::Owned),
-    }
+fn committed_head<'a>(_cwd: &Path, project: &'a ProjectName) -> Option<&'a str> {
+    project.head_sha.as_deref()
 }
 
 fn matches_source(ci: Option<&CiSnapshot>, project: &ProjectName) -> bool {
@@ -169,9 +167,8 @@ fn matches_source(ci: Option<&CiSnapshot>, project: &ProjectName) -> bool {
         (Some(ci), Some(source)) => {
             ci.fetch_state != CiFetchState::Loading
                 && !(ci.commit_missing && project.published)
-                && ci.repository == source.repository
-                && ci.head_sha == source.sha
-                && ci.branch == source.branch
+                && project.head_sha.as_deref() == Some(source.sha.as_str())
+                && source.matches_snapshot(ci)
         }
         (None, None) => true,
         _ => false,
@@ -211,13 +208,15 @@ mod tests {
     fn project() -> ProjectName {
         let ci: CiSnapshot = serde_json::from_value(json!({
             "repository":{"provider":"github","host":"github.com","path":"team/repo","web_url":"https://github.com/team/repo"},
-            "head_sha":"head", "branch":"feature", "status":"passed", "fetch_state":"ready",
+            "head_sha":"remote-head", "local_head_sha":"head", "checked_ref":"origin/feature",
+            "branch":"feature", "status":"passed", "fetch_state":"ready",
             "checks":[{"name":"test","status":"passed","url":null}],
             "change_request":null,"updated_at":123,"stale":false,"error":null,"truncated":false
         })).unwrap();
         ProjectName {
             name: "repo".into(),
             repository: true,
+            head_sha: Some(ci.local_head_sha.clone()),
             branch: ci.branch.clone(),
             repository_id: Some("/repository/.git".into()),
             branch_changes: Some(BranchChanges {
@@ -231,8 +230,13 @@ mod tests {
             }),
             source: Some(CiSource {
                 repository: ci.repository.clone(),
-                sha: ci.head_sha.clone(),
+                sha: ci.local_head_sha.clone(),
                 branch: ci.branch.clone(),
+                remote_branch: Some(crate::ci::RemoteBranch {
+                    remote: "origin".into(),
+                    name: "feature".into(),
+                    tracking_sha: Some(ci.head_sha.clone()),
+                }),
             }),
             ci: Some(ci),
             git_refs: Some("base refs/heads/main\nhead refs/heads/feature".into()),
@@ -254,16 +258,40 @@ mod tests {
         let restored = cache.load(cwd, &original).unwrap();
         assert_eq!(restored.ci, original.ci);
         assert_eq!(restored.branch_changes, original.branch_changes);
-        for change in 0..5 {
+        for change in 0..8 {
             let mut changed = original.clone();
             match change {
                 0 => changed.source.as_mut().unwrap().sha = "new-head".into(),
                 1 => changed.source.as_mut().unwrap().branch = Some("other".into()),
                 2 => changed.repository_id = Some("/other/.git".into()),
                 3 => changed.git_refs = Some("advanced refs/heads/main".into()),
-                _ => changed.branch_changes.as_mut().unwrap().merge_base = "new-base".into(),
+                4 => changed.branch_changes.as_mut().unwrap().merge_base = "new-base".into(),
+                5 => changed.head_sha = Some("new-head".into()),
+                6 => changed.source.as_mut().unwrap().remote_branch.as_mut().unwrap().name = "renamed".into(),
+                _ => changed.source.as_mut().unwrap().remote_branch.as_mut().unwrap().remote = "upstream".into(),
             }
             assert!(cache.load(cwd, &changed).is_none(), "case {change}");
+        }
+    }
+
+    #[test]
+    fn old_or_wrong_local_identity_cannot_restore_remote_checks() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("repo");
+        fs::create_dir(&cwd).unwrap();
+        let cache = Cache { root: Some(root.path().join("state")) };
+        let original = project();
+        cache.store(cwd.to_str().unwrap(), &original).unwrap();
+        let path = cache.directory(&fs::canonicalize(&cwd).unwrap()).unwrap().join("state.json");
+        let bytes = fs::read(&path).unwrap();
+        for identity in [None, Some("different-local-head")] {
+            let mut record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            match identity {
+                None => { record["ci"].as_object_mut().unwrap().remove("local_head_sha"); }
+                Some(identity) => record["ci"]["local_head_sha"] = json!(identity),
+            }
+            fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+            assert!(cache.load(cwd.to_str().unwrap(), &original).is_none());
         }
     }
 

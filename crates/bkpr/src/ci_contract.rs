@@ -138,11 +138,18 @@ pub struct CiSnapshot {
     pub stale: bool,
     pub error: Option<String>,
     pub repository: ForgeRepository,
+    /// The commit whose checks were returned by the provider.
     pub head_sha: String,
     pub branch: Option<String>,
+    /// Local worktree identity used to validate cached provider metadata.
+    #[serde(default)]
+    pub local_head_sha: String,
+    /// Remote tracking label for the branch whose tip was checked.
+    #[serde(default)]
+    pub checked_ref: Option<String>,
     /// The bounded provider connection had additional results; never claim full success.
     pub truncated: bool,
-    /// The provider explicitly reported that this committed HEAD is not available.
+    /// The requested remote branch or detached commit is not available on the provider.
     #[serde(default)]
     pub commit_missing: bool,
 }

@@ -275,6 +275,13 @@ impl Document {
                 CiFetchState::Unavailable => "unavailable",
             });
             field.add(&ci.head_sha);
+            if let Some(reference) = &ci.checked_ref {
+                field.add(reference);
+            }
+            if !ci.local_head_sha.is_empty() && ci.local_head_sha != ci.head_sha {
+                field.add("local HEAD differs from checked commit");
+                field.add(&ci.local_head_sha);
+            }
             if ci.stale {
                 field.add("stale cached results; current check state is not confirmed");
             }
@@ -680,6 +687,8 @@ mod tests {
                 },
                 head_sha: "deadbeef".into(),
                 branch: Some("feature/queues".into()),
+                local_head_sha: "feedface".into(),
+                checked_ref: Some("origin/feature/queues".into()),
                 truncated: false,
                 commit_missing: false,
             }),
@@ -814,6 +823,9 @@ mod tests {
             "status:question",
             "ci:Integration",
             "ci:failed",
+            "ci:origin/feature/queues",
+            "ci:deadbeef",
+            "ci:feedface",
             "cwd:engine:cache",
             "ticket:LIN-42",
             "ticket:lockout",

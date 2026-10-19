@@ -30,7 +30,7 @@
  pub struct FloatingPanes {
      panes: BTreeMap<PaneId, Box<dyn Pane>>,
      display_area: Rc<RefCell<Size>>,
-@@ -119,6 +142,22 @@
+@@ -119,6 +142,51 @@
          }
          self.set_force_render();
      }
@@ -49,11 +49,40 @@
 +            }
 +        }
 +    }
++    pub fn is_passive_ui_overlay(&self, pane_id: PaneId) -> bool {
++        self.fullscreen_pane_id.is_none()
++            && !self.active_panes.pane_id_is_focused(&pane_id)
++            && self.panes.get(&pane_id).is_some_and(|pane| {
++                is_passive_plugin(pane.as_ref()) && pane.position_and_size().is_pinned
++            })
++    }
++    pub fn render_region(&mut self, region: Viewport, output: &mut Output) -> Result<()> {
++        let visible = self.panes_are_visible();
++        let mut z_index = 0;
++        for pane_id in &self.z_indices {
++            let pane = match self.panes.get_mut(pane_id) {
++                Some(pane) => pane,
++                None => continue,
++            };
++            if self
++                .fullscreen_pane_id
++                .is_some_and(|fullscreen| fullscreen != *pane_id)
++                || (self.fullscreen_pane_id.is_none()
++                    && !visible
++                    && !pane.position_and_size().is_pinned)
++            {
++                continue;
++            }
++            z_index += 1;
++            pane.render_region(region, output, Some(z_index))?;
++        }
++        Ok(())
++    }
 +
      pub fn stack(&self) -> Option<FloatingPanesStack> {
          if *self.fullscreen_covers_ui.borrow() {
              return None;
-@@ -1110,8 +1149,8 @@
+@@ -1110,8 +1178,8 @@
  
          {
              let viewport = { self.viewport.borrow().clone() };
@@ -63,7 +92,7 @@
              if let Some(pinned) = new_coordinates.pinned.as_ref() {
                  pane.set_pinned(*pinned);
              }
-@@ -1122,6 +1161,9 @@
+@@ -1122,6 +1190,9 @@
                      pane.set_borderless(false);
                  };
              }
@@ -73,6 +102,24 @@
              pane_geom.adjust_coordinates(new_coordinates, viewport);
              pane.set_geom(pane_geom);
              pane.set_should_render(true);
+@@ -1137,7 +1208,16 @@
+ 
+             self.desired_pane_positions.insert(pane_id, pane_geom);
+         }
+-        let _ = self.set_pane_frames();
++        if self.is_passive_ui_overlay(pane_id) {
++            // Coordinates only change this borderless pane. Reapplying every
++            // float's frame would reflow unrelated terminal grids in full.
++            if let Some(pane) = self.panes.get_mut(&pane_id) {
++                resize_pty!(pane, os_api, self.senders, self.character_cell_size)
++                    .with_context(err_context)?;
++            }
++        } else {
++            let _ = self.set_pane_frames();
++        }
+         Ok(())
+     }
+     pub fn move_clients_out_of_pane(&mut self, pane_id: PaneId) {
 --- a/zellij-server/src/panes/floating_panes/floating_pane_grid.rs
 +++ b/zellij-server/src/panes/floating_panes/floating_pane_grid.rs
 @@ -116,6 +116,12 @@
@@ -96,21 +143,48 @@
      should_clear_display_before_rendering: bool,
 +    previous_ui_overlay_geometries: Vec<(PaneId, PaneGeom)>,
 +    ui_overlay_geometries: Vec<(PaneId, PaneGeom)>,
-+    ui_overlay_damage: String,
++    ui_overlay_damage: Vec<Viewport>,
      mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
      default_mode_info: ModeInfo,
      pub style: Style,
-@@ -988,6 +991,9 @@
+@@ -564,6 +567,26 @@
+         None
+     }
+     fn render_full_viewport(&mut self) {}
++    fn render_region(
++        &mut self,
++        _region: Viewport,
++        _output: &mut Output,
++        _z_index: Option<usize>,
++    ) -> Result<()> {
++        Ok(())
++    }
++    fn content_region(&self, region: Viewport) -> Option<Viewport> {
++        let x = region.x.max(self.get_content_x());
++        let y = region.y.max(self.get_content_y());
++        let right = (region.x + region.cols).min(self.get_content_x() + self.get_content_columns());
++        let bottom = (region.y + region.rows).min(self.get_content_y() + self.get_content_rows());
++        (x < right && y < bottom).then(|| Viewport {
++            x: x - self.get_content_x(),
++            y: y - self.get_content_y(),
++            cols: right - x,
++            rows: bottom - y,
++        })
++    }
+     fn relative_position(&self, position_on_screen: &Position) -> Position {
+         position_on_screen.relative_to(self.get_content_y(), self.get_content_x())
+     }
+@@ -988,6 +1011,9 @@
              os_api,
              senders,
              should_clear_display_before_rendering: false,
 +            previous_ui_overlay_geometries: Vec::new(),
 +            ui_overlay_geometries: Vec::new(),
-+            ui_overlay_damage: String::new(),
++            ui_overlay_damage: Vec::new(),
              style,
              mode_info,
              default_mode_info,
-@@ -1735,7 +1741,6 @@
+@@ -1735,7 +1761,6 @@
          self.swap_layouts
              .set_base_layout((layout.clone(), floating_panes_layout.clone()));
          match LayoutApplier::new(
@@ -118,7 +192,7 @@
              &self.senders,
              &self.sixel_image_store,
              &self.kitty_image_store,
-@@ -1824,7 +1829,6 @@
+@@ -1824,7 +1849,6 @@
          self.swap_layouts
              .set_base_layout((layout.clone(), floating_panes_layout.clone()));
          match LayoutApplier::new(
@@ -126,7 +200,7 @@
              &self.senders,
              &self.sixel_image_store,
              &self.kitty_image_store,
-@@ -1879,12 +1883,7 @@
+@@ -1879,12 +1903,7 @@
                  self.tiled_panes.reapply_pane_frames();
                  self.is_pending = false;
  
@@ -140,7 +214,7 @@
  
                  self.apply_buffered_instructions().non_fatal();
              },
-@@ -1918,7 +1917,6 @@
+@@ -1918,7 +1937,6 @@
              .swap_floating_panes(&self.floating_panes, search_backwards)
          {
              LayoutApplier::new(
@@ -148,7 +222,7 @@
                  &self.senders,
                  &self.sixel_image_store,
                  &self.kitty_image_store,
-@@ -1960,7 +1958,6 @@
+@@ -1960,7 +1978,6 @@
              .swap_tiled_panes(&self.tiled_panes, search_backwards)
          {
              let application_res = LayoutApplier::new(
@@ -156,7 +230,7 @@
                  &self.senders,
                  &self.sixel_image_store,
                  &self.kitty_image_store,
-@@ -2289,6 +2286,7 @@
+@@ -2289,6 +2306,7 @@
          Ok(())
      }
      pub fn remove_client(&mut self, client_id: ClientId) {
@@ -164,13 +238,15 @@
          self.focus_pane_id = None;
          self.mode_info
              .borrow_mut()
-@@ -4866,6 +4864,54 @@
+@@ -4866,6 +4884,82 @@
          Ok(())
      }
  
-+    fn clear_vacated_ui_overlay_surface(&mut self) {
-+        use std::fmt::Write as _;
-+
++    fn render_vacated_ui_overlay_surface(
++        &mut self,
++        output: &mut Output,
++        connected_clients: &HashSet<ClientId>,
++    ) -> Result<()> {
 +        self.ui_overlay_damage.clear();
 +        self.ui_overlay_geometries.clear();
 +        if !self.tiled_panes.fullscreen_covers_ui() {
@@ -179,73 +255,84 @@
 +        }
 +        let display = *self.display_area.borrow();
 +        for (id, old) in &self.previous_ui_overlay_geometries {
-+            let vacated = match self.ui_overlay_geometries.binary_search_by_key(id, |(id, _)| *id) {
-+                Ok(index) => {
-+                    let current = &self.ui_overlay_geometries[index].1;
-+                    current.x > old.x
-+                        || current.y > old.y
-+                        || current.x + current.cols.as_usize() < old.x + old.cols.as_usize()
-+                        || current.y + current.rows.as_usize() < old.y + old.rows.as_usize()
-+                }
-+                Err(_) => true,
-+            };
-+            if !vacated {
-+                continue;
-+            }
 +            let right = (old.x + old.cols.as_usize()).min(display.cols);
 +            let bottom = (old.y + old.rows.as_usize()).min(display.rows);
-+            if old.x < right {
-+                for row in old.y..bottom {
-+                    write!(
-+                        self.ui_overlay_damage,
-+                        "\u{1b}[{};{}H\u{1b}[{}X",
-+                        row + 1,
-+                        old.x + 1,
-+                        right - old.x
-+                    ).unwrap();
++            let mut add_damage = |x: usize, y: usize, right: usize, bottom: usize| {
++                if x < right && y < bottom {
++                    self.ui_overlay_damage.push(Viewport {
++                        x,
++                        y,
++                        cols: right - x,
++                        rows: bottom - y,
++                    });
++                }
++            };
++            let current = self
++                .ui_overlay_geometries
++                .binary_search_by_key(id, |(id, _)| *id)
++                .ok()
++                .map(|index| &self.ui_overlay_geometries[index].1);
++            if let Some(current) = current {
++                let left = old.x.max(current.x);
++                let top = old.y.max(current.y);
++                let shared_right = right.min(current.x + current.cols.as_usize());
++                let shared_bottom = bottom.min(current.y + current.rows.as_usize());
++                if left < shared_right && top < shared_bottom {
++                    // Only the old-minus-new strips are exposed by a move or shrink.
++                    add_damage(old.x, old.y, right, top);
++                    add_damage(old.x, shared_bottom, right, bottom);
++                    add_damage(old.x, top, left, shared_bottom);
++                    add_damage(shared_right, top, right, shared_bottom);
++                    continue;
 +                }
 +            }
++            add_damage(old.x, old.y, right, bottom);
 +        }
 +        std::mem::swap(
 +            &mut self.previous_ui_overlay_geometries,
 +            &mut self.ui_overlay_geometries,
 +        );
-+        if !self.ui_overlay_damage.is_empty() {
-+            // Repaint only after clearing the old overlay, including unowned chrome cells.
-+            self.set_force_render();
++        for region in &self.ui_overlay_damage {
++            // Clear unowned cells through the normal occlusion pipeline, not raw ECH:
++            // a surviving overlay must never be erased by another overlay's repair.
++            let blanks = (region.y..region.y + region.rows)
++                .map(|y| CharacterChunk::new(vec![EMPTY_TERMINAL_CHARACTER; region.cols], region.x, y))
++                .collect();
++            output.add_character_chunks_to_multiple_clients(
++                blanks,
++                connected_clients.iter().copied(),
++                None,
++            )?;
++            self.tiled_panes.render_region(*region, output)?;
++            if !self.tiled_panes.fullscreen_covers_ui() {
++                self.floating_panes.render_region(*region, output)?;
++            }
++            if !self.tiled_panes.fullscreen_is_active() {
++                for member in self.stack_list_of_member.keys() {
++                    if let Some((_is_scrollback_editor, pane)) = self.suppressed_panes.get_mut(member) {
++                        pane.render_region(*region, output, None)?;
++                    }
++                }
++            }
 +        }
++        Ok(())
 +    }
 +
      pub fn render(
          &mut self,
          output: &mut Output,
-@@ -4887,6 +4933,9 @@
-         if self.stacked_pane_list_is_active() {
-             self.groupify_all();
-         }
+@@ -4896,6 +4990,10 @@
+             self.link_handler.clone(),
+             floating_panes_stack,
+         );
 +        if client_id_override.is_none() {
-+            self.clear_vacated_ui_overlay_surface();
++            self.render_vacated_ui_overlay_surface(output, &connected_clients)
++                .with_context(err_context)?;
 +        }
-         self.update_active_panes_in_pty_thread()
-             .with_context(err_context)?;
  
-@@ -4959,6 +5008,15 @@
-             );
-             output.mark_host_display_cleared_for_clients(connected_clients.iter().copied());
-             self.should_clear_display_before_rendering = false;
-+        } else if !self.ui_overlay_damage.is_empty() {
-+            output.add_pre_vte_instruction_to_multiple_clients(
-+                connected_clients.iter().copied(),
-+                "\u{1b}[m",
-+            );
-+            output.add_pre_vte_instruction_to_multiple_clients(
-+                connected_clients.iter().copied(),
-+                &self.ui_overlay_damage,
-+            );
-         }
-     }
-     fn render_cursor(&mut self, output: &mut Output) {
-@@ -5157,12 +5215,7 @@
+         let current_pane_group: HashMap<ClientId, Vec<PaneId>> =
+             { self.current_pane_group.borrow().clone_inner() };
+@@ -5157,12 +5255,7 @@
          self.senders
              .send_to_pty_writer(PtyWriteInstruction::ApplyCachedResizes)
              .with_context(|| format!("failed to update plugins with mode info"))?;
@@ -259,7 +346,7 @@
          if let Some(pane_id) = fullscreen_pane_to_restore {
              if self.tiled_panes.panes_contain(&pane_id) {
                  if fullscreen_covered_ui {
-@@ -5672,12 +5725,7 @@
+@@ -5672,12 +5765,7 @@
          }
          // we do this here because if there is a non-selectable pane on the edge, we consider it
          // outside the viewport (a ui-pane, eg. the status-bar and tab-bar) and need to adjust for it
@@ -273,7 +360,42 @@
      }
      pub fn set_mouse_selection_support(&mut self, pane_id: PaneId, selection_support: bool) {
          MouseHandler::set_mouse_selection_support(self, pane_id, selection_support);
-@@ -6572,6 +6620,27 @@
+@@ -5720,7 +5808,9 @@
+                 },
+             };
+         }
+-        let closed_pane = if self.floating_panes.panes_contain(&id) {
++        let closed_pane = if self.floating_panes.is_passive_ui_overlay(id) {
++            self.extract_pane(id, true)
++        } else if self.floating_panes.panes_contain(&id) {
+             if self.floating_panes.fullscreen_pane_id() == Some(id) {
+                 self.floating_panes.unset_fullscreen();
+             }
+@@ -5809,6 +5899,23 @@
+                 },
+             };
+         }
++        if self.floating_panes.is_passive_ui_overlay(id) {
++            // Passive pinned UI never took focus or participated in auto-layout.
++            // Its previous geometry is repaired by the next normal render.
++            let mut pane = self.floating_panes.remove_pane(id);
++            if !self.floating_panes.has_panes() {
++                self.swap_layouts.reset_floating_damage();
++                let were_shown = self.floating_panes.panes_are_shown();
++                self.floating_panes.toggle_show_panes(false);
++                if were_shown {
++                    self.notify_floating_plugins_of_visibility(false);
++                }
++            }
++            if let Some(pane) = pane.as_mut() {
++                pane.reset_logical_position();
++            }
++            return pane;
++        }
+         if self.floating_panes.panes_contain(&id) {
+             if self.floating_panes.fullscreen_pane_id() == Some(id) {
+                 self.floating_panes.unset_fullscreen();
+@@ -6572,6 +6679,27 @@
          MouseHandler::handle_mouse_event(self, event, client_id, passthrough_pane_id)
      }
  
@@ -301,7 +423,7 @@
      pub fn copy_selection(&self, client_id: ClientId) -> Result<()> {
          let selected_text = self
              .get_active_pane(client_id)
-@@ -6672,8 +6741,7 @@
+@@ -6672,8 +6800,7 @@
              .send_to_plugin(PluginInstruction::Update(plugin_updates))
              .with_context(|| format!("failed to set visibility of tab to {visible}"))?;
          if !visible {
@@ -311,7 +433,46 @@
          }
          Ok(())
      }
-@@ -7673,10 +7741,15 @@
+@@ -7319,6 +7446,11 @@
+         client_id: Option<ClientId>,
+     ) -> Result<()> {
+         let err_context = || format!("failed to add floating pane");
++        let pane_is_selectable = pane.selectable();
++        let is_passive_ui_overlay = !pane_is_selectable
++            && pane.borderless()
++            && pane.position_and_size().is_pinned
++            && matches!(pane_id, PaneId::Plugin(_));
+         if self.floating_panes.fullscreen_is_active() {
+             self.floating_panes.unset_fullscreen();
+         }
+@@ -7335,7 +7467,7 @@
+             pane.set_geom(new_pane_geom);
+             let is_borderless = floating_pane_coordinates
+                 .and_then(|c| c.borderless)
+-                .unwrap_or(false);
++                .unwrap_or(is_passive_ui_overlay);
+             if is_borderless {
+                 pane.set_content_offset(Offset::frame(0));
+                 pane.set_borderless(true);
+@@ -7346,7 +7478,7 @@
+             resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                 .with_context(err_context)?;
+             self.floating_panes.add_pane(pane_id, pane);
+-            if should_focus_new_pane {
++            if should_focus_new_pane && pane_is_selectable {
+                 if let Some(client_id) = client_id {
+                     self.floating_panes.focus_pane(pane_id, client_id);
+                 } else {
+@@ -7354,7 +7486,7 @@
+                 }
+             }
+         }
+-        if self.auto_layout && !self.swap_layouts.is_floating_damaged() {
++        if !is_passive_ui_overlay && self.auto_layout && !self.swap_layouts.is_floating_damaged() {
+             // only do this if we're already in this layout, otherwise it might be
+             // confusing and not what the user intends
+             self.swap_layouts.set_is_floating_damaged(); // we do this so that we won't skip to the
+@@ -7673,10 +7805,15 @@
          self.word_separators = word_separators;
      }
      pub fn clear_mouse_hover_state(&mut self) {
@@ -329,9 +490,23 @@
      }
      pub fn update_web_sharing(&mut self, web_sharing: WebSharing) {
          let old_value = self.web_sharing;
+@@ -7789,9 +7926,12 @@
+                 }
+             }
+         }
++        let was_passive_overlay = self.floating_panes.is_passive_ui_overlay(*pane_id);
+         self.floating_panes
+             .change_pane_coordinates(*pane_id, floating_pane_coordinates)?;
+-        self.set_force_render();
++        if !was_passive_overlay || !self.floating_panes.is_passive_ui_overlay(*pane_id) {
++            self.set_force_render();
++        }
+         self.swap_layouts.set_is_floating_damaged();
+         Ok(())
+     }
 --- a/zellij-server/src/tab/unit/tab_integration_tests.rs
 +++ b/zellij-server/src/tab/unit/tab_integration_tests.rs
-@@ -1412,6 +1412,474 @@
+@@ -1412,6 +1412,666 @@
  }
  
  #[test]
@@ -785,6 +960,7 @@
 +        tape.push_str(&output.serialize().unwrap().remove(&1).unwrap());
 +        take_snapshot(tape, size.rows, size.cols, Palette::default())
 +    };
++    let baseline = snapshot(&mut tab, &mut tape);
 +    tab.change_floating_pane_coordinates(&PaneId::Plugin(2), coordinates(0, 18))
 +        .unwrap();
 +    tab.handle_plugin_bytes(2, 1, paint(18)).unwrap();
@@ -797,9 +973,200 @@
 +        .unwrap();
 +    assert_eq!(snapshot(&mut tab, &mut tape).matches('X').count(), 3);
 +    tab.suppress_pane(PaneId::Plugin(2), Some(1));
-+    tab.set_force_render();
-+    assert_eq!(snapshot(&mut tab, &mut tape).matches('X').count(), 0);
++    assert_eq!(snapshot(&mut tab, &mut tape), baseline);
 +    assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(1)));
++}
++
++fn passive_popup_render(tab: &mut Tab) -> HashMap<ClientId, String> {
++    let mut output = Output::default();
++    tab.render(&mut output, None).unwrap();
++    output.serialize().unwrap()
++}
++
++fn passive_popup_coordinates(x: usize, y: usize, cols: usize, rows: usize) -> FloatingPaneCoordinates {
++    FloatingPaneCoordinates {
++        pinned: Some(true),
++        borderless: Some(true),
++        ..FloatingPaneCoordinates::default()
++            .with_x_fixed(x)
++            .with_y_fixed(y)
++            .with_width_fixed(cols)
++            .with_height_fixed(rows)
++    }
++}
++
++#[test]
++fn passive_popup_move_shrink_and_hide_restore_content_with_bounded_output() {
++    let mut hide_sizes = vec![];
++    for size in [Size { cols: 120, rows: 40 }, Size { cols: 300, rows: 90 }] {
++        let (mut tab, _receiver) = create_new_tab_with_plugin_receiver(size, ModeInfo::default());
++        tab.set_pane_frames(PaneFrameStyle::None);
++        let mut app_bytes = String::from("\x1b[48;5;25m");
++        for row in 1..size.rows {
++            app_bytes.push_str(&format!("\x1b[{row};1H{}", "a界bc".repeat(size.cols / 5)));
++        }
++        app_bytes.push_str("\x1b[3;4H\x1b[?25h");
++        tab.handle_pty_bytes(1, app_bytes.into_bytes()).unwrap();
++        let mut tape = passive_popup_render(&mut tab).remove(&1).unwrap();
++        tab.new_floating_pane(PaneId::Plugin(2), None, None, false, false, None, None)
++            .unwrap();
++        tab.set_pane_selectable(PaneId::Plugin(2), false);
++        // The left edge cuts through a wide character in the underlying terminal.
++        for coordinates in [
++            passive_popup_coordinates(12, 6, 24, 6),
++            passive_popup_coordinates(17, 9, 24, 6),
++            passive_popup_coordinates(17, 9, 11, 3),
++        ] {
++            tab.change_floating_pane_coordinates(&PaneId::Plugin(2), coordinates).unwrap();
++            tab.handle_plugin_bytes(2, 1, b"\x1b[2JPOPUP".to_vec()).unwrap();
++            tape.push_str(&passive_popup_render(&mut tab).remove(&1).unwrap());
++            let repaired = take_snapshot(&tape, size.rows, size.cols, Palette::default());
++            tab.set_force_render();
++            let reference = passive_popup_render(&mut tab).remove(&1).unwrap();
++            assert_eq!(repaired, take_snapshot(&reference, size.rows, size.cols, Palette::default()));
++        }
++        // Ordinary pending PTY updates outside the damage must not be consumed or clipped.
++        tab.handle_pty_bytes(1, b"\x1b[30;50HPENDING\x1b[3;4H".to_vec()).unwrap();
++        tab.suppress_pane(PaneId::Plugin(2), Some(1));
++        tape.push_str(&passive_popup_render(&mut tab).remove(&1).unwrap());
++        let repaired = take_snapshot(&tape, size.rows, size.cols, Palette::default());
++        assert!(repaired.contains("PENDING"));
++        tab.set_force_render();
++        let reference = passive_popup_render(&mut tab).remove(&1).unwrap();
++        assert_eq!(repaired, take_snapshot(&reference, size.rows, size.cols, Palette::default()));
++        let (_, cursor) = take_snapshot_and_cursor_position(
++            &tape, size.rows, size.cols, Palette::default());
++        assert_eq!(cursor, Some((3, 2)));
++        assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(1)));
++
++        // Exercise the warm show/hide route, including the last floating pane.
++        tab.unsuppress_or_expand_pane(PaneId::Plugin(2), true);
++        tab.change_floating_pane_coordinates(
++            &PaneId::Plugin(2), passive_popup_coordinates(12, 6, 24, 6)).unwrap();
++        tab.handle_plugin_bytes(2, 1, b"\x1b[2JWARM".to_vec()).unwrap();
++        tape.push_str(&passive_popup_render(&mut tab).remove(&1).unwrap());
++        tab.suppress_pane(PaneId::Plugin(2), Some(1));
++        let hidden = passive_popup_render(&mut tab).remove(&1).unwrap();
++        assert!(!hidden.contains("\x1b[2J"), "a passive hide must not clear the display");
++        assert!(hidden.len() < 4000, "{} bytes for {}x{}", hidden.len(), size.cols, size.rows);
++        hide_sizes.push(hidden.len());
++        tape.push_str(&hidden);
++        assert_eq!(repaired, take_snapshot(&tape, size.rows, size.cols, Palette::default()));
++    }
++    assert!(
++        hide_sizes[1] <= hide_sizes[0] + 128,
++        "fixed popup damage must not grow with the window: {hide_sizes:?}"
++    );
++}
++
++#[test]
++fn passive_popup_repairs_overlapping_cards_native_frames_and_client_plugin_grids() {
++    let size = Size { cols: 160, rows: 50 };
++    let (mut tab, _receiver) = create_new_tab_with_plugin_receiver(size, ModeInfo::default());
++    tab.set_pane_frames(PaneFrameStyle::None);
++    tab.new_pane(
++        PaneId::Plugin(5), None, None, false, true, NewPanePlacement::default(), Some(1), None,
++    ).unwrap();
++    tab.add_client(2, None).unwrap();
++    for (client, text) in [(1, "CLIENT-ONE"), (2, "CLIENT-TWO")] {
++        tab.handle_plugin_bytes(5, client, format!("\x1b[2J{text}\x1b[8;1H{text}").into_bytes()).unwrap();
++    }
++    let plugin = tab.get_pane_info(PaneId::Plugin(5)).unwrap();
++    let native_x = plugin.pane_x.saturating_sub(5);
++    tab.new_floating_pane(
++        PaneId::Terminal(8), None, None, false, false,
++        Some(FloatingPaneCoordinates {
++            pinned: Some(true),
++            borderless: Some(false),
++            ..FloatingPaneCoordinates::default()
++                .with_x_fixed(native_x)
++                .with_y_fixed(8)
++                .with_width_fixed(45)
++                .with_height_fixed(14)
++        }),
++        None,
++    ).unwrap();
++    tab.handle_pty_bytes(8, b"NATIVE FLOAT\x1b[4;3Hpreserved".to_vec()).unwrap();
++    let active = tab.get_active_pane_id(1);
++    let mut tapes = passive_popup_render(&mut tab);
++    for (id, coordinates, text) in [
++        (6, passive_popup_coordinates(native_x.saturating_sub(2), 7, 28, 10), "LOWER"),
++        (7, passive_popup_coordinates(native_x + 8, 10, 20, 6), "UPPER"),
++    ] {
++        tab.new_floating_pane(
++            PaneId::Plugin(id), None, None, false, false, Some(coordinates.clone()), None,
++        ).unwrap();
++        tab.set_pane_selectable(PaneId::Plugin(id), false);
++        tab.change_floating_pane_coordinates(&PaneId::Plugin(id), coordinates).unwrap();
++        for client in [1, 2] {
++            tab.handle_plugin_bytes(id, client, format!("\x1b[2J{text}").into_bytes()).unwrap();
++        }
++        for (client, bytes) in passive_popup_render(&mut tab) {
++            tapes.entry(client).or_default().push_str(&bytes);
++        }
++    }
++    for id in [6, 7] {
++        if id == 6 {
++            tab.suppress_pane(PaneId::Plugin(id), Some(1));
++        } else {
++            tab.close_pane(PaneId::Plugin(id), false, None);
++        }
++        let repaired = passive_popup_render(&mut tab);
++        for (client, bytes) in repaired {
++            assert!(bytes.len() < 6000, "bounded overlap repair produced {} bytes", bytes.len());
++            tapes.entry(client).or_default().push_str(&bytes);
++        }
++        tab.set_force_render();
++        let reference = passive_popup_render(&mut tab);
++        for client in [1, 2] {
++            let actual = take_snapshot(&tapes[&client], size.rows, size.cols, Palette::default());
++            assert_eq!(actual,
++                take_snapshot(&reference[&client], size.rows, size.cols, Palette::default()));
++            assert!(actual.contains(if client == 1 { "CLIENT-ONE" } else { "CLIENT-TWO" }));
++            if id == 6 {
++                assert!(actual.contains("UPPER"), "removing a lower card must preserve the top card");
++            }
++        }
++        assert_eq!(tab.get_active_pane_id(1), active);
++        assert!(tab.has_pane_with_pid(&PaneId::Terminal(8)));
++    }
++}
++
++
++#[test]
++fn passive_popup_warm_unsuppress_preserves_native_float_focus_and_cursor() {
++    let size = Size { cols: 160, rows: 50 };
++    let (mut tab, _receiver) = create_new_tab_with_plugin_receiver(size, ModeInfo::default());
++    tab.new_floating_pane(
++        PaneId::Terminal(8), None, None, false, true,
++        Some(FloatingPaneCoordinates::default()
++            .with_x_fixed(30).with_y_fixed(6)
++            .with_width_fixed(45).with_height_fixed(14)),
++        None,
++    ).unwrap();
++    tab.handle_pty_bytes(8, b"\x1b[4;3HNATIVE\x1b[4;3H\x1b[?25h".to_vec()).unwrap();
++    passive_popup_render(&mut tab);
++    assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(8)));
++    let cursor = tab.get_active_terminal_cursor_position(1);
++    tab.new_floating_pane(PaneId::Plugin(2), None, None, false, false, None, None).unwrap();
++    tab.set_pane_selectable(PaneId::Plugin(2), false);
++    let coordinates = passive_popup_coordinates(35, 8, 20, 5);
++    tab.change_floating_pane_coordinates(&PaneId::Plugin(2), coordinates.clone()).unwrap();
++    tab.handle_plugin_bytes(2, 1, b"\x1b[2JCARD".to_vec()).unwrap();
++    passive_popup_render(&mut tab);
++    for _ in 0..2 {
++        tab.suppress_pane(PaneId::Plugin(2), Some(1));
++        passive_popup_render(&mut tab);
++        assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(8)));
++        assert_eq!(tab.get_active_terminal_cursor_position(1), cursor);
++        tab.unsuppress_or_expand_pane(PaneId::Plugin(2), true);
++        tab.change_floating_pane_coordinates(&PaneId::Plugin(2), coordinates.clone()).unwrap();
++        tab.handle_plugin_bytes(2, 1, b"\x1b[2JCARD".to_vec()).unwrap();
++        passive_popup_render(&mut tab);
++        assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(8)));
++        assert_eq!(tab.get_active_terminal_cursor_position(1), cursor);
++        assert_eq!(tab.tiled_panes.get_active_pane_id(1), Some(PaneId::Terminal(1)));
++    }
 +}
 +
 +#[test]
@@ -1459,6 +1826,53 @@
  #[test]
  fn open_new_tab() {
      let size = Size {
+@@ -3404,9 +3696,9 @@
+ }
+ 
+ #[test]
+-pub fn send_cli_toggle_pane_frames_action() {
++pub fn cli_frame_toggle_keeps_contents_and_tiled_separator_geometry() {
+     let size = Size { cols: 80, rows: 10 };
+-    let client_id = 10; // fake client id should not appear in the screen's state
++    let client_id = 10; // CLI clients need not be attached to the screen.
+     let mut initial_layout = TiledPaneLayout::default();
+     initial_layout.children_split_direction = SplitDirection::Vertical;
+     initial_layout.children = vec![TiledPaneLayout::default(), TiledPaneLayout::default()];
+@@ -3420,19 +3712,28 @@
+         ServerInstruction::KillSession,
+         server_receiver
+     );
+-    let toggle_pane_frames_action = CliAction::TogglePaneFrames;
+-    send_cli_action_to_server(&session_metadata, toggle_pane_frames_action, client_id);
++    for (pane, contents) in [(0, "LEFT CONTENT"), (1, "RIGHT CONTENT")] {
++        mock_screen.to_screen.send(ScreenInstruction::PtyBytes(pane, contents.as_bytes().to_vec()))
++            .unwrap();
++    }
++    send_cli_action_to_server(&session_metadata, CliAction::TogglePaneFrames, client_id);
+     std::thread::sleep(std::time::Duration::from_millis(100));
+     mock_screen.teardown(vec![server_instruction, screen_thread]);
+     let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
+         received_server_instructions.lock().unwrap().iter(),
+         size,
+     );
+-    let snapshot_count = snapshots.len();
+-    for (_cursor_coordinates, snapshot) in snapshots {
+-        assert_snapshot!(format!("{}", snapshot));
++    let (_, final_snapshot) = snapshots.last().expect("the CLI frame change must render");
++    assert!(final_snapshot.contains("LEFT CONTENT"));
++    assert!(final_snapshot.contains("RIGHT CONTENT"));
++    for row in final_snapshot.lines() {
++        let (_, contents) = row.split_once(": ").unwrap();
++        let separators: Vec<_> = contents.chars().enumerate()
++            .filter_map(|(x, character)| (character == '│').then_some(x))
++            .collect();
++        assert_eq!(separators, vec![size.cols / 2 - 1]);
++        assert!(!contents.chars().any(|character| matches!(character, '┌' | '┐' | '└' | '┘' | '─')));
+     }
+-    assert_snapshot!(format!("{}", snapshot_count));
+ }
+ 
+ #[test]
 --- a/zellij-server/src/panes/tiled_panes/mod.rs
 +++ b/zellij-server/src/panes/tiled_panes/mod.rs
 @@ -50,13 +50,16 @@
@@ -1577,7 +1991,25 @@
              } else {
                  let mut position_and_size = pane.current_geom();
                  let is_stacked = position_and_size.is_stacked();
-@@ -1968,11 +2002,7 @@
+@@ -1131,6 +1165,17 @@
+         }
+         self.reset_boundaries();
+     }
++    pub fn render_region(&mut self, region: Viewport, output: &mut Output) -> Result<()> {
++        for (pane_id, pane) in &mut self.panes {
++            if !self.panes_to_hide.contains(pane_id) {
++                pane.render_region(region, output, None)?;
++            }
++        }
++        for boundaries in self.client_id_to_boundaries.values_mut() {
++            boundaries.invalidate_region(region);
++        }
++        Ok(())
++    }
+     pub fn has_active_panes(&self) -> bool {
+         !self.active_panes.is_empty()
+     }
+@@ -1968,11 +2013,7 @@
              },
          }
  
@@ -1590,7 +2022,7 @@
          Ok(pane_size_changed)
      }
  
-@@ -1997,10 +2027,7 @@
+@@ -1997,10 +2038,7 @@
                  .with_context(err_context);
          }
  
@@ -1602,7 +2034,7 @@
          Ok(())
      }
  
-@@ -3172,10 +3199,7 @@
+@@ -3172,10 +3210,7 @@
  
  #[allow(clippy::borrowed_box)]
  pub fn is_inside_viewport(viewport: &Viewport, pane: &Box<dyn Pane>) -> bool {
@@ -1614,7 +2046,7 @@
  }
  
  pub fn pane_geom_is_inside_viewport(viewport: &Viewport, geom: &PaneGeom) -> bool {
-@@ -3184,3 +3208,43 @@
+@@ -3184,3 +3219,43 @@
          && geom.x >= viewport.x
          && geom.x + geom.cols.as_usize() <= viewport.x + viewport.cols
  }
@@ -1660,7 +2092,22 @@
 +}
 --- a/zellij-server/src/ui/boundaries.rs
 +++ b/zellij-server/src/ui/boundaries.rs
-@@ -469,8 +469,8 @@
+@@ -454,6 +454,14 @@
+             boundary_characters: HashMap::new(),
+         }
+     }
++    pub fn invalidate_region(&mut self, region: Viewport) {
++        self.boundary_characters.retain(|coordinates, _| {
++            coordinates.x < region.x
++                || coordinates.x >= region.x + region.cols
++                || coordinates.y < region.y
++                || coordinates.y >= region.y + region.rows
++        });
++    }
+     pub fn add_rect(
+         &mut self,
+         rect: &dyn Pane,
+@@ -469,8 +477,8 @@
          if !self.is_fully_inside_screen(rect) {
              return;
          }
@@ -1671,7 +2118,7 @@
              let boundary_x_coords = rect.x() - 1;
              let first_row_coordinates =
                  self.rect_right_boundary_row_start(rect, pane_is_stacked_under, content_offset);
-@@ -510,7 +510,9 @@
+@@ -510,7 +518,9 @@
                  let coordinates = Coordinates::new(col, boundary_y_coords);
                  let symbol_to_add = if col == first_col_coordinates && col != self.viewport.x {
                      BoundarySymbol::new(boundary_type::TOP_LEFT).color(color)
@@ -1682,7 +2129,7 @@
                      BoundarySymbol::new(boundary_type::TOP_RIGHT).color(color)
                  } else {
                      BoundarySymbol::new(boundary_type::HORIZONTAL).color(color)
-@@ -564,7 +566,9 @@
+@@ -564,7 +574,9 @@
                  let coordinates = Coordinates::new(col, boundary_y_coords);
                  let symbol_to_add = if col == first_col_coordinates && col != self.viewport.x {
                      BoundarySymbol::new(boundary_type::BOTTOM_LEFT).color(color)
@@ -1693,7 +2140,7 @@
                      BoundarySymbol::new(boundary_type::BOTTOM_RIGHT).color(color)
                  } else {
                      BoundarySymbol::new(boundary_type::HORIZONTAL).color(color)
-@@ -602,7 +606,7 @@
+@@ -602,7 +614,7 @@
          Ok(character_chunks)
      }
      fn rect_right_boundary_is_before_screen_edge(&self, rect: &dyn Pane) -> bool {
@@ -1702,7 +2149,7 @@
      }
      fn rect_bottom_boundary_is_before_screen_edge(&self, rect: &dyn Pane) -> bool {
          rect.y() + rect.rows() < self.viewport.y + self.viewport.rows
-@@ -637,8 +641,8 @@
+@@ -637,8 +649,8 @@
          rect.y() + rect.rows()
      }
      fn rect_bottom_boundary_col_start(&self, rect: &dyn Pane) -> usize {
@@ -2392,3 +2839,512 @@
          &senders,
          &sixel_image_store,
          &Rc::new(RefCell::new(KittyImageStore::default())),
+--- a/zellij-server/src/output/mod.rs
++++ b/zellij-server/src/output/mod.rs
+@@ -20,7 +20,7 @@
+ use zellij_utils::data::{HighlightLayer, PaneContents, PaneRenderReport};
+ use zellij_utils::errors::prelude::*;
+ use zellij_utils::pane_size::SizeInPixels;
+-use zellij_utils::pane_size::{PaneGeom, Size};
++use zellij_utils::pane_size::{PaneGeom, Size, Viewport};
+ 
+ fn vte_goto_instruction(x_coords: usize, y_coords: usize, vte_output: &mut String) -> Result<()> {
+     write!(
+@@ -339,7 +339,7 @@
+         current_x += t_character.width();
+         if current_x >= middle_start && absolute_middle_start_index.is_none() {
+             if current_x > middle_start {
+-                pad_left_end_by = current_x - middle_start;
++                pad_left_end_by = middle_start - (current_x - t_character.width());
+                 absolute_middle_start_index = Some(absolute_index);
+             } else {
+                 absolute_middle_start_index = Some(absolute_index + 1);
+@@ -1677,6 +1677,33 @@
+         }
+         width
+     }
++    pub fn retain_columns(&mut self, left: usize, right: usize) {
++        let mut x = self.x;
++        let mut first = None;
++        let mut end = 0;
++        let mut first_x = x;
++        for (index, character) in self.terminal_characters.iter().enumerate() {
++            let width = character.width();
++            if width > 0 && x >= right {
++                break;
++            }
++            if x + width > left || (width == 0 && first.is_some()) {
++                if first.is_none() {
++                    first = Some(index);
++                    first_x = x;
++                }
++                end = index + 1;
++            }
++            x += width;
++        }
++        if let Some(first) = first {
++            self.terminal_characters.truncate(end);
++            self.terminal_characters.drain(..first);
++            self.x = first_x;
++        } else {
++            self.terminal_characters.clear();
++        }
++    }
+     pub fn drain_by_width(&mut self, x: usize) -> impl Iterator<Item = TerminalCharacter> {
+         let mut drained_part: VecDeque<TerminalCharacter> = VecDeque::new();
+         let mut drained_part_len = 0;
+@@ -1692,9 +1719,17 @@
+                 if drained_part_len == x {
+                     self.terminal_characters.insert(0, next_character); // put it back
+                 } else if next_character.width() > 1 {
+-                    for _ in 1..next_character.width() {
+-                        self.terminal_characters.insert(0, EMPTY_TERMINAL_CHARACTER);
+-                        drained_part.push_back(EMPTY_TERMINAL_CHARACTER);
++                    let left_width = x - drained_part_len;
++                    let right_width = next_character.width() - left_width;
++                    let padding = TerminalCharacter::new_singlewidth_styled(
++                        ' ',
++                        next_character.styles,
++                    );
++                    for _ in 0..left_width {
++                        drained_part.push_back(padding.clone());
++                    }
++                    for _ in 0..right_width {
++                        self.terminal_characters.insert(0, padding.clone());
+                     }
+                 }
+                 break;
+@@ -1733,11 +1768,19 @@
+             .drain(..absolute_middle_start_index)
+             .collect();
+         if pad_left_end_by > 0 {
+-            characters_on_the_left.resize(pad_left_end_by, EMPTY_TERMINAL_CHARACTER);
++            let padding = terminal_characters
++                .first()
++                .map(|character| TerminalCharacter::new_singlewidth_styled(' ', character.styles.clone()))
++                .unwrap_or(EMPTY_TERMINAL_CHARACTER);
++            characters_on_the_left.resize(characters_on_the_left.len() + pad_left_end_by, padding);
+         }
+         if pad_right_start_by > 0 {
++            let padding = terminal_characters
++                .last()
++                .map(|character| TerminalCharacter::new_singlewidth_styled(' ', character.styles.clone()))
++                .unwrap_or(EMPTY_TERMINAL_CHARACTER);
+             for _ in 0..pad_right_start_by {
+-                characters_on_the_right.insert(0, EMPTY_TERMINAL_CHARACTER);
++                characters_on_the_right.insert(0, padding.clone());
+             }
+         }
+         Ok((characters_on_the_left, characters_on_the_right))
+@@ -1748,6 +1791,7 @@
+ pub struct OutputBuffer {
+     pub changed_lines: HashSet<usize>, // line index
+     pub should_update_all_lines: bool,
++    damaged_regions: Vec<Viewport>,
+     styled_underlines: bool,
+ }
+ 
+@@ -1756,6 +1800,7 @@
+         OutputBuffer {
+             changed_lines: HashSet::new(),
+             should_update_all_lines: true, // first time we should do a full render
++            damaged_regions: Vec::new(),
+             styled_underlines: true,
+         }
+     }
+@@ -1776,12 +1821,18 @@
+             }
+         }
+     }
++    pub fn update_region(&mut self, region: Viewport) {
++        if !self.should_update_all_lines && region.cols > 0 && region.rows > 0 {
++            self.damaged_regions.push(region);
++        }
++    }
+     pub fn update_all_lines(&mut self) {
+         self.clear();
+         self.should_update_all_lines = true;
+     }
+     pub fn clear(&mut self) {
+         self.changed_lines.clear();
++        self.damaged_regions.clear();
+         self.should_update_all_lines = false;
+     }
+     pub fn serialize(
+@@ -1843,6 +1894,44 @@
+                 let y = line_index + y_offset;
+                 changed_chunks.push(CharacterChunk::new(terminal_characters, x, y));
+             }
++            for region in &self.damaged_regions {
++                let right = (region.x + region.cols).min(viewport_width);
++                for line_index in region.y..(region.y + region.rows).min(viewport_height) {
++                    if self.changed_lines.contains(&line_index) || region.x >= right {
++                        continue;
++                    }
++                    let mut characters = Vec::with_capacity(right - region.x + 2);
++                    let mut x = 0;
++                    let mut chunk_x = region.x;
++                    let mut padding = EMPTY_TERMINAL_CHARACTER;
++                    if let Some(row) = viewport.get(line_index) {
++                        if let Some(bg_color) = row.bg_color {
++                            padding.styles.update(|styles| styles.background = Some(bg_color));
++                        }
++                        for character in &row.columns {
++                            let width = character.width();
++                            if width > 0 && x >= right {
++                                break;
++                            }
++                            if x + width > region.x || (width == 0 && !characters.is_empty()) {
++                                if characters.is_empty() {
++                                    chunk_x = x;
++                                }
++                                characters.push(character.clone());
++                            }
++                            x += width;
++                        }
++                    }
++                    // Keep complete wide glyphs at either edge, and preserve the row's
++                    // erased-cell background without allocating the rest of the row.
++                    characters.resize(characters.len() + right.saturating_sub(x.max(region.x)), padding);
++                    changed_chunks.push(CharacterChunk::new(
++                        characters,
++                        chunk_x + x_offset,
++                        line_index + y_offset,
++                    ));
++                }
++            }
+             changed_chunks
+         }
+     }
+@@ -1914,10 +2003,20 @@
+             for line_index in 0..viewport_height {
+                 add_changed_line(line_index);
+             }
+-        } else {
++        } else if self.damaged_regions.is_empty() {
+             for line_index in self.changed_lines.iter().copied() {
+                 add_changed_line(line_index);
+             }
++        } else {
++            let mut lines: Vec<_> = self.changed_lines.iter().copied().collect();
++            for region in &self.damaged_regions {
++                lines.extend(region.y..(region.y + region.rows).min(viewport_height));
++            }
++            lines.sort_unstable();
++            lines.dedup();
++            for line_index in lines {
++                add_changed_line(line_index);
++            }
+         }
+         if let Some(changed_line_index) = last_changed_line_index {
+             changed_rects.insert(changed_line_index, changed_line_count);
+--- a/zellij-server/src/output/unit/output_tests.rs
++++ b/zellij-server/src/output/unit/output_tests.rs
+@@ -1047,6 +1047,83 @@
+ }
+ 
+ #[test]
++fn passive_popup_damage_preserves_wide_combining_cells_background_and_pending_rows() {
++    use zellij_utils::pane_size::Viewport;
++    let mut row = Row::from_columns(
++        "a界\u{301}bc".chars().map(TerminalCharacter::new).collect());
++    row.bg_color = Some(AnsiCode::ColorIndex(25));
++    row.columns[1].styles.update(|styles| styles.foreground = Some(AnsiCode::ColorIndex(196)));
++    let expected_wide = vec![row.columns[1].clone(), row.columns[2].clone()];
++    let viewport = vec![row, Row::from_columns(
++        "PENDING".chars().map(TerminalCharacter::new).collect())];
++    let mut buffer = OutputBuffer::default();
++    buffer.clear();
++    buffer.update_region(Viewport { x: 2, y: 0, cols: 1, rows: 1 });
++    buffer.update_region(Viewport { x: 7, y: 0, cols: 2, rows: 1 });
++    buffer.update_region(Viewport { x: 2, y: 1, cols: 1, rows: 1 });
++    buffer.update_line(1);
++    let chunks = buffer.changed_chunks_in_viewport(&viewport, 300, 90, 4, 6);
++    assert_eq!(chunks.len(), 3, "ordinary dirty rows supersede overlapping damage spans");
++    assert_eq!((chunks[0].x, chunks[0].y, chunks[0].width()), (4, 7, 300));
++    assert_eq!((chunks[1].x, chunks[1].y, chunks[1].width()), (5, 6, 2));
++    assert_eq!(chunks[1].terminal_characters, expected_wide);
++    assert_eq!((chunks[2].x, chunks[2].y, chunks[2].width()), (11, 6, 2));
++    for character in &chunks[2].terminal_characters {
++        assert_eq!(character.character, ' ');
++        assert_eq!(character.styles.background, Some(AnsiCode::ColorIndex(25)));
++    }
++    assert_eq!(buffer.changed_rects_in_viewport(90), HashMap::from([(0, 2)]));
++    buffer.clear();
++    assert!(buffer.changed_chunks_in_viewport(&viewport, 300, 90, 4, 6).is_empty());
++}
++
++#[test]
++fn passive_popup_frame_span_keeps_complete_wide_glyphs() {
++    let mut chunk = create_character_chunk_from_str("a界\u{301}bc", 10, 4);
++    chunk.retain_columns(12, 13);
++    assert_eq!(chunk.x, 11);
++    assert_eq!(chunk.width(), 2);
++    assert_eq!(
++        chunk.terminal_characters.iter().map(|character| character.character).collect::<String>(),
++        "界\u{301}"
++    );
++}
++
++#[test]
++fn passive_popup_occlusion_preserves_wide_prefix_and_split_cell_background() {
++    let background = Some(AnsiCode::ColorIndex(25));
++    let mut chunk = create_character_chunk_from_str(&"a界bc".repeat(24), 0, 5);
++    for character in &mut chunk.terminal_characters {
++        character.styles.update(|styles| styles.background = background);
++    }
++    let stack = FloatingPanesStack { layers: vec![create_pane_geom(12, 5, 24, 1)] };
++    let visible = stack.visible_character_chunks(vec![chunk], None).unwrap();
++    let left = visible.iter().find(|chunk| chunk.x == 0).unwrap();
++    assert_eq!(left.width(), 12);
++    assert_eq!(
++        left.terminal_characters.iter().map(|character| character.character).collect::<String>(),
++        "a界bca界bca "
++    );
++    assert_eq!(left.terminal_characters.last().unwrap().styles.background, background);
++    let right = visible.iter().find(|chunk| chunk.x == 36).unwrap();
++    assert_eq!(right.width(), 84);
++    assert_eq!(right.terminal_characters[0].character, '界');
++    for width in [1, 2] {
++        let mut chunk = create_character_chunk_from_str("界bc", 0, 5);
++        chunk.terminal_characters[0].styles.update(|styles| styles.background = background);
++        let drained: Vec<_> = chunk.drain_by_width(width).collect();
++        assert_eq!(drained.iter().map(TerminalCharacter::width).sum::<usize>(), width);
++        assert_eq!(chunk.width(), 4 - width);
++        if width == 1 {
++            assert_eq!(drained[0].styles.background, background);
++            assert_eq!(chunk.terminal_characters[0].styles.background, background);
++        }
++    }
++}
++
++
++
++#[test]
+ fn test_pane_defaults_preserved_when_middle_covered() {
+     let pane_geom = create_pane_geom(5, 5, 3, 1);
+     let stack = FloatingPanesStack {
+--- a/zellij-server/src/panes/terminal_pane.rs
++++ b/zellij-server/src/panes/terminal_pane.rs
+@@ -21,7 +21,7 @@
+ use zellij_utils::data::PaneContents;
+ use zellij_utils::input::command::RunCommand;
+ use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
+-use zellij_utils::pane_size::Offset;
++use zellij_utils::pane_size::{Offset, Viewport};
+ use zellij_utils::{
+     data::{
+         BareKey, InputMode, KeyWithModifier, Palette, PaletteColor, PaneId as ZellijUtilsPaneId,
+@@ -465,6 +465,27 @@
+         self.frame.clear();
+         self.grid.render_full_viewport();
+     }
++    fn render_region(
++        &mut self,
++        region: Viewport,
++        output: &mut crate::output::Output,
++        z_index: Option<usize>,
++    ) -> Result<()> {
++        if let Some(content) = self.content_region(region) {
++            self.grid.output_buffer.update_region(content);
++            self.grid.mark_for_rerender();
++        }
++        if !self.borderless {
++            for (client_id, frame) in &self.frame {
++                output.add_character_chunks_to_client(
++                    *client_id,
++                    frame.render_region(region)?,
++                    z_index,
++                )?;
++            }
++        }
++        Ok(())
++    }
+     fn selectable(&self) -> bool {
+         self.selectable
+     }
+--- a/zellij-server/src/panes/plugin_pane.rs
++++ b/zellij-server/src/panes/plugin_pane.rs
+@@ -24,7 +24,7 @@
+ use zellij_utils::data::{
+     BareKey, KeyWithModifier, PermissionStatus, PermissionType, PluginPermission,
+ };
+-use zellij_utils::pane_size::{Offset, SizeInPixels};
++use zellij_utils::pane_size::{Offset, SizeInPixels, Viewport};
+ use zellij_utils::position::Position;
+ use zellij_utils::{
+     channels::SenderWithContext,
+@@ -378,6 +378,29 @@
+             grid.render_full_viewport();
+         }
+     }
++    fn render_region(
++        &mut self,
++        region: Viewport,
++        output: &mut crate::output::Output,
++        z_index: Option<usize>,
++    ) -> Result<()> {
++        if let Some(content) = self.content_region(region) {
++            for (client_id, grid) in &mut self.grids {
++                grid.output_buffer.update_region(content);
++                self.should_render.insert(*client_id, true);
++            }
++        }
++        if !self.borderless {
++            for (client_id, frame) in &self.frame {
++                output.add_character_chunks_to_client(
++                    *client_id,
++                    frame.render_region(region)?,
++                    z_index,
++                )?;
++            }
++        }
++        Ok(())
++    }
+     fn selectable(&self) -> bool {
+         self.selectable
+     }
+--- a/zellij-server/src/ui/pane_boundaries_frame.rs
++++ b/zellij-server/src/ui/pane_boundaries_frame.rs
+@@ -1272,12 +1272,31 @@
+         false
+     }
+     pub fn render(&self) -> Result<(Vec<CharacterChunk>, Option<String>)> {
++        self.render_inner(None)
++    }
++    pub fn render_region(&self, region: Viewport) -> Result<Vec<CharacterChunk>> {
++        let (mut chunks, _) = self.render_inner(Some(region))?;
++        chunks.retain_mut(|chunk| {
++            if chunk.y < region.y || chunk.y >= region.y + region.rows {
++                return false;
++            }
++            chunk.retain_columns(region.x, region.x + region.cols);
++            !chunk.terminal_characters.is_empty()
++        });
++        Ok(chunks)
++    }
++    fn render_inner(&self, region: Option<Viewport>) -> Result<(Vec<CharacterChunk>, Option<String>)> {
+         let err_context = || "failed to render pane frame";
+         let mut character_chunks = vec![];
+         if self.omit_title {
+             return Ok((character_chunks, None));
+         }
+         if let Some(entry) = &self.stack_list_entry {
++            if region.is_some_and(|region| {
++                self.geom.y < region.y || self.geom.y >= region.y + region.rows
++            }) {
++                return Ok((character_chunks, None));
++            }
+             character_chunks.push(CharacterChunk::new(
+                 self.render_stack_list_entry(entry),
+                 self.geom.x,
+@@ -1290,6 +1309,14 @@
+             // if this is a stacked pane with pane frames off (and it doesn't necessarily have only
+             // 1 row because it could also be a flexible stacked pane)
+             // in this case we should always draw the pane title line, and only the title line
++            let title_y = if self.pane_is_stacked_under && !self.should_draw_pane_frames {
++                self.geom.y.saturating_sub(self.content_offset.bottom)
++            } else {
++                self.geom.y
++            };
++            if region.is_some_and(|region| title_y < region.y || title_y >= region.y + region.rows) {
++                return Ok((character_chunks, None));
++            }
+             let mut one_line_title = self.render_one_line_title().with_context(err_context)?;
+ 
+             if self.content_offset.right != 0 && !self.should_draw_pane_frames {
+@@ -1312,7 +1339,15 @@
+                 y_coords_of_title,
+             ));
+         } else {
+-            for row in 0..self.geom.rows {
++            let first_row = region
++                .map(|region| region.y.saturating_sub(self.geom.y))
++                .unwrap_or(0)
++                .min(self.geom.rows);
++            let last_row = region
++                .map(|region| (region.y + region.rows).saturating_sub(self.geom.y))
++                .unwrap_or(self.geom.rows)
++                .min(self.geom.rows);
++            for row in first_row..last_row {
+                 if row == 0 {
+                     // top row
+                     let title = self.render_title().with_context(err_context)?;
+@@ -1361,7 +1396,15 @@
+                         ));
+                     } else {
+                         let mut bottom_row = vec![];
+-                        for col in 0..self.geom.cols {
++                        let first_col = region
++                            .map(|region| region.x.saturating_sub(self.geom.x))
++                            .unwrap_or(0)
++                            .min(self.geom.cols);
++                        let last_col = region
++                            .map(|region| (region.x + region.cols).saturating_sub(self.geom.x))
++                            .unwrap_or(self.geom.cols)
++                            .min(self.geom.cols);
++                        for col in first_col..last_col {
+                             let boundary = if col == 0 {
+                                 // bottom left corner
+                                 self.get_corner(boundary_type::BOTTOM_LEFT)
+@@ -1375,7 +1418,7 @@
+                             let mut boundary_character = foreground_color(boundary, self.color);
+                             bottom_row.append(&mut boundary_character);
+                         }
+-                        let x = self.geom.x;
++                        let x = self.geom.x + first_col;
+                         let y = self.geom.y + row;
+                         character_chunks.push(CharacterChunk::new(bottom_row, x, y));
+                     }
+--- a/zellij-server/src/unit/snapshots/zellij_server__screen__screen_tests__send_cli_toggle_pane_frames_action.snap
++++ /dev/null
+@@ -1,14 +0,0 @@
+----
+-source: zellij-server/src/./unit/screen_tests.rs
+-expression: "format!(\"{}\", snapshot)"
+----
+-00 (C): ┌ Pane #1 ─────────────────────────────┐┌ Pane #2 ─────────────────────────────┐
+-01 (C): │                                      ││                                      │
+-02 (C): │                                      ││                                      │
+-03 (C): │                                      ││                                      │
+-04 (C): │                                      ││                                      │
+-05 (C): │                                      ││                                      │
+-06 (C): │                                      ││                                      │
+-07 (C): │                                      ││                                      │
+-08 (C): │                                      ││                                      │
+-09 (C): └──────────────────────────────────────┘└──────────────────────────────────────┘
+--- a/zellij-server/src/unit/snapshots/zellij_server__screen__screen_tests__send_cli_toggle_pane_frames_action-2.snap
++++ /dev/null
+@@ -1,14 +0,0 @@
+----
+-source: zellij-server/src/./unit/screen_tests.rs
+-expression: "format!(\"{}\", snapshot)"
+----
+-00 (C):                  Pane #1               │                 Pane #2                
+-01 (C):                                        │                                        
+-02 (C):                                        │                                        
+-03 (C):                                        │                                        
+-04 (C):                                        │                                        
+-05 (C):                                        │                                        
+-06 (C):                                        │                                        
+-07 (C):                                        │                                        
+-08 (C):                                        │                                        
+-09 (C):                                        │
+--- a/zellij-server/src/unit/snapshots/zellij_server__screen__screen_tests__send_cli_toggle_pane_frames_action-3.snap
++++ /dev/null
+@@ -1,6 +0,0 @@
+----
+-source: zellij-server/src/./unit/screen_tests.rs
+-assertion_line: 1778
+-expression: "format!(\"{}\", snapshot_count)"
+----
+-2
+--- a/zellij-server/src/unit/snapshots/zellij_server__screen__screen_tests__send_cli_toggle_pane_frames_action-4.snap
++++ /dev/null
+@@ -1,6 +0,0 @@
+----
+-source: zellij-server/src/./unit/screen_tests.rs
+-assertion_line: 1498
+-expression: "format!(\"{}\", snapshot_count)"
+----
+-3

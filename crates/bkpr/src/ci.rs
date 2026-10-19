@@ -1,5 +1,5 @@
 //! Shared forge CI batching, scheduling, and cache; Git discovery is event-driven.
-//! Requests share commit checks while retaining each subscriber's branch metadata.
+//! Requests share remote targets while retaining each subscriber's local identity.
 use bkpr::ci_contract::{
     CiFetchState, CiRefreshTarget, CiSnapshot, CiStatus, ForgeProvider, ForgeRepository,
 };
@@ -13,6 +13,40 @@ pub(crate) struct CiSource {
     pub repository: ForgeRepository,
     pub sha: String,
     pub branch: Option<String>,
+    pub remote_branch: Option<RemoteBranch>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct RemoteBranch {
+    pub remote: String,
+    pub name: String,
+    // Local tracking refs only invalidate generations; the provider resolves the tip.
+    pub tracking_sha: Option<String>,
+}
+
+impl CiSource {
+    pub(crate) fn checked_ref(&self) -> Option<String> {
+        self.remote_branch
+            .as_ref()
+            .map(|branch| format!("{}/{}", branch.remote, branch.name))
+    }
+
+    pub(crate) fn matches_snapshot(&self, snapshot: &CiSnapshot) -> bool {
+        self.repository == snapshot.repository
+            && !snapshot.local_head_sha.is_empty()
+            && self.sha == snapshot.local_head_sha
+            && self.branch == snapshot.branch
+            && (snapshot.fetch_state != CiFetchState::Ready || !snapshot.head_sha.is_empty())
+            && match (&self.remote_branch, snapshot.checked_ref.as_deref()) {
+                (Some(branch), Some(reference)) => reference
+                    .strip_prefix(branch.remote.as_str())
+                    .and_then(|reference| reference.strip_prefix('/'))
+                    == Some(branch.name.as_str()),
+                (None, None) => true,
+                _ => false,
+            }
+            && (self.remote_branch.is_some() || self.sha == snapshot.head_sha)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -58,10 +92,23 @@ pub(crate) fn discover(cwd: &Path, branch: Option<&str>) -> Option<CiSource> {
     let remote = push_remote(cwd, branch);
     let url = crate::project::git_text(cwd, &["remote", "get-url", &remote])?;
     let repository = github::repository(&url)?;
+    let remote_branch = branch.map(|branch| {
+        let name = remote_branch_name(cwd, &remote, branch);
+        let tracking_sha = crate::project::git_text(
+            cwd,
+            &["rev-parse", "--verify", &format!("refs/remotes/{remote}/{name}")],
+        );
+        RemoteBranch {
+            remote,
+            name,
+            tracking_sha,
+        }
+    });
     Some(CiSource {
         repository,
         sha,
         branch: branch.map(str::to_owned),
+        remote_branch,
     })
 }
 
@@ -85,6 +132,58 @@ pub(crate) fn push_remote(cwd: &Path, branch: Option<&str>) -> String {
         .unwrap_or_else(|| "origin".to_owned())
 }
 
+fn remote_branch_name(cwd: &Path, remote: &str, branch: &str) -> String {
+    let local_ref = format!("refs/heads/{branch}");
+    if let Some(specs) = crate::project::git_text(
+        cwd,
+        &["config", "--get-all", &format!("remote.{remote}.push")],
+    ) {
+        for spec in specs.lines() {
+            let spec = spec.strip_prefix('+').unwrap_or(spec);
+            if spec == ":" {
+                return branch.to_owned();
+            }
+            if spec == "HEAD" {
+                return branch.to_owned();
+            }
+            let (from, to) = spec.split_once(':').unwrap_or((spec, spec));
+            if from == local_ref || from == branch || from == "HEAD" {
+                return to.strip_prefix("refs/heads/").unwrap_or(to).to_owned();
+            }
+            if let Some((prefix, suffix)) = from.split_once('*')
+                && let Some(middle) = local_ref
+                    .strip_prefix(prefix)
+                    .and_then(|value| value.strip_suffix(suffix))
+                && to.contains('*')
+            {
+                let target = to.replacen('*', middle, 1);
+                return target.strip_prefix("refs/heads/").unwrap_or(&target).to_owned();
+            }
+        }
+    }
+    if matches!(
+        crate::project::git_text(cwd, &["config", "--get", "push.default"]).as_deref(),
+        Some("current" | "matching")
+    )
+    {
+        return branch.to_owned();
+    }
+    let upstream_remote = crate::project::git_text(
+        cwd,
+        &["config", "--get", &format!("branch.{branch}.remote")],
+    );
+    if upstream_remote.as_deref() == Some(remote)
+        && let Some(merge) = crate::project::git_text(
+            cwd,
+            &["config", "--get", &format!("branch.{branch}.merge")],
+        )
+        && let Some(name) = merge.strip_prefix("refs/heads/")
+    {
+        return name.to_owned();
+    }
+    branch.to_owned()
+}
+
 const BATCH: usize = 16;
 const MIN_REQUEST_SECONDS: u64 = 2;
 const ACTIVE_SECONDS: u64 = 60;
@@ -101,15 +200,26 @@ fn empty(source: &CiSource, now: u64) -> CiSnapshot {
         stale: false,
         error: None,
         repository: source.repository.clone(),
-        head_sha: source.sha.clone(),
+        head_sha: if source.remote_branch.is_some() {
+            String::new()
+        } else {
+            source.sha.clone()
+        },
+        local_head_sha: source.sha.clone(),
+        checked_ref: source.checked_ref(),
         branch: source.branch.clone(),
         truncated: false,
         commit_missing: false,
     }
 }
 
-fn same_commit(left: &CiSource, right: &CiSource) -> bool {
-    left.repository == right.repository && left.sha == right.sha
+fn same_target(left: &CiSource, right: &CiSource) -> bool {
+    left.repository == right.repository
+        && match (&left.remote_branch, &right.remote_branch) {
+            (Some(left), Some(right)) => left.name == right.name,
+            (None, None) => left.sha == right.sha,
+            _ => false,
+        }
 }
 
 #[cfg(target_os = "linux")]
@@ -196,6 +306,8 @@ mod linux {
                     !wanted.contains(*old)
                         && old.repository == source.repository
                         && old.branch == source.branch
+                        && old.remote_branch.as_ref().map(|branch| (&branch.remote, &branch.name))
+                            == source.remote_branch.as_ref().map(|branch| (&branch.remote, &branch.name))
                         && source.branch.is_some()
                         && entry
                             .snapshot
@@ -215,7 +327,6 @@ mod linux {
                     snapshot.change_request = entry.snapshot.change_request.clone();
                     snapshot.updated_at = entry.snapshot.updated_at;
                     snapshot.stale = true;
-                    snapshot.error = Some("Refreshing branch metadata for the new commit".into());
                 }
                 self.entries.insert(
                     source.clone(),
@@ -229,10 +340,7 @@ mod linux {
             self.entries.retain(|source, _| wanted.contains(source));
         }
         pub(crate) fn restore(&mut self, source: &CiSource, snapshot: CiSnapshot) {
-            if snapshot.repository != source.repository
-                || snapshot.head_sha != source.sha
-                || snapshot.branch != source.branch
-            {
+            if !source.matches_snapshot(&snapshot) {
                 return;
             }
             let Some(entry) = self.entries.get_mut(source) else {
@@ -253,7 +361,6 @@ mod linux {
         pub(crate) fn published(&mut self, source: &CiSource) {
             if let Some(entry) = self.entries.get_mut(source)
                 && entry.due.is_none()
-                && entry.snapshot.checks.is_empty()
             {
                 entry.due = Some(Instant::now());
                 entry.eager = true;
@@ -276,14 +383,11 @@ mod linux {
             }
         }
         pub(crate) fn refresh(&mut self, target: &CiRefreshTarget) {
-            let in_flight = self.pending.as_ref().is_some_and(|pending| {
-                pending
-                    .sources
-                    .iter()
-                    .any(|source| matches_target(source, target))
-            });
             for (source, entry) in &mut self.entries {
-                if !matches_target(source, target) || in_flight {
+                let in_flight = self.pending.as_ref().is_some_and(|pending| {
+                    pending.sources.iter().any(|queried| same_target(queried, source))
+                });
+                if !matches_target(&entry.snapshot, target) || in_flight {
                     continue;
                 }
                 // Explicit refresh bypasses soft auth/network backoff, never the
@@ -388,25 +492,25 @@ mod linux {
                 })
                 .collect();
             due.sort_by_key(|(_, entry)| entry.due);
-            let mut commits: Vec<&CiSource> = Vec::new();
+            let mut targets: Vec<&CiSource> = Vec::new();
             for (source, _) in due {
-                if commits.first().is_some_and(|first| {
+                if targets.first().is_some_and(|first| {
                     first.repository.provider != source.repository.provider
                         || first.repository.host != source.repository.host
                 }) {
                     continue;
                 }
-                if !commits.iter().any(|other| same_commit(other, source)) {
-                    commits.push(source);
+                if !targets.iter().any(|other| same_target(other, source)) {
+                    targets.push(source);
                 }
-                if commits.len() == BATCH {
+                if targets.len() == BATCH {
                     break;
                 }
             }
-            // The budget counts commits, not their independently queried branches.
+            // The budget counts remote refs or detached commits, not local subscribers.
             self.entries
                 .keys()
-                .filter(|source| commits.iter().any(|commit| same_commit(commit, source)))
+                .filter(|source| targets.iter().any(|commit| same_target(commit, source)))
                 .cloned()
                 .collect()
         }
@@ -481,8 +585,10 @@ mod linux {
         }
     }
 
-    fn matches_target(source: &CiSource, target: &CiRefreshTarget) -> bool {
-        source.repository == target.repository && source.sha == target.head_sha
+    fn matches_target(snapshot: &CiSnapshot, target: &CiRefreshTarget) -> bool {
+        snapshot.repository == target.repository
+            && !snapshot.head_sha.is_empty()
+            && snapshot.head_sha == target.head_sha
     }
 
     fn final_snapshot(snapshot: &CiSnapshot) -> bool {
@@ -510,10 +616,6 @@ mod linux {
         }
         // Job status remains last-known; fetch status must never be inferred from Pending/Running.
         snapshot.stale = true;
-        if snapshot.error.is_none() {
-            snapshot.error =
-                Some("Refreshing provider metadata; showing last known results".into());
-        }
     }
     fn timestamp() -> u64 {
         SystemTime::now()
@@ -632,7 +734,119 @@ mod linux {
                 repository: github::repository("https://github.com/owner/repo").unwrap(),
                 sha: sha.into(),
                 branch: Some("main".into()),
+                remote_branch: None,
             }
+        }
+
+        fn branch_source(local_sha: &str, branch: &str) -> CiSource {
+            let mut source = source(local_sha);
+            source.remote_branch = Some(RemoteBranch {
+                remote: "origin".into(),
+                name: branch.into(),
+                tracking_sha: None,
+            });
+            source
+        }
+
+        #[test]
+        fn discovery_resolves_upstream_push_remote_and_explicit_branch_mappings() {
+            let repository = crate::project::tests::Repository::new();
+            repository.git(&["init", "-b", "local-work"]);
+            repository.git(&["commit", "--allow-empty", "-m", "published"]);
+            repository.git(&["remote", "add", "origin", "https://github.com/owner/repo"]);
+            repository.git(&["remote", "add", "fork", "https://github.com/fork/repo"]);
+            repository.git(&["config", "branch.local-work.remote", "origin"]);
+            repository.git(&["config", "branch.local-work.merge", "refs/heads/remote-work"]);
+            repository.git(&["update-ref", "refs/remotes/origin/remote-work", "HEAD"]);
+            let published = discover(&repository.0, Some("local-work")).unwrap();
+            assert_eq!(published.checked_ref().as_deref(), Some("origin/remote-work"));
+            assert_eq!(published.remote_branch.as_ref().unwrap().tracking_sha.as_ref(), Some(&published.sha));
+            repository.git(&["commit", "--allow-empty", "-m", "unpushed"]);
+            let local = discover(&repository.0, Some("local-work")).unwrap();
+            assert_ne!(local.sha, published.sha);
+            assert_eq!(local.remote_branch, published.remote_branch);
+
+            repository.git(&["config", "remote.pushDefault", "fork"]);
+            let fork = discover(&repository.0, Some("local-work")).unwrap();
+            assert_eq!(fork.repository.path, "fork/repo");
+            assert_eq!(fork.checked_ref().as_deref(), Some("fork/local-work"));
+            repository.git(&["config", "branch.local-work.pushRemote", "origin"]);
+            assert_eq!(discover(&repository.0, Some("local-work")).unwrap().repository.path, "owner/repo");
+            repository.git(&["config", "remote.origin.push", "+refs/heads/local-work:refs/heads/published-work"]);
+            assert_eq!(discover(&repository.0, Some("local-work")).unwrap().checked_ref().as_deref(), Some("origin/published-work"));
+            repository.git(&["config", "remote.origin.push", "refs/heads/*:refs/heads/review/*"]);
+            assert_eq!(discover(&repository.0, Some("local-work")).unwrap().checked_ref().as_deref(), Some("origin/review/local-work"));
+            repository.git(&["config", "--unset", "remote.origin.push"]);
+            repository.git(&["config", "push.default", "current"]);
+            assert_eq!(discover(&repository.0, Some("local-work")).unwrap().checked_ref().as_deref(), Some("origin/local-work"));
+            repository.git(&["checkout", "--detach"]);
+            let detached = discover(&repository.0, Some("detached @ abc")).unwrap();
+            assert!(detached.remote_branch.is_none());
+            assert!(detached.branch.is_none());
+            assert_eq!(detached.sha, local.sha);
+        }
+
+        #[test]
+        fn batches_share_remote_targets_not_local_commits() {
+            let first = branch_source("local-a", "published");
+            let mut linked = branch_source("local-b", "published");
+            linked.branch = Some("linked-local".into());
+            let other = branch_source("local-a", "other");
+            assert!(same_target(&first, &linked));
+            assert!(!same_target(&first, &other));
+            let mut monitor = Monitor::new();
+            monitor.sync([first.clone(), linked.clone(), other.clone()].into_iter());
+            monitor.entries.get_mut(&other).unwrap().due = None;
+            let batch = monitor.due_batch(Instant::now());
+            assert_eq!(batch.len(), 2);
+            assert!(batch.contains(&first));
+            assert!(batch.contains(&linked));
+            let mut snapshot = complete_snapshot(&first, &[CiStatus::Passed]);
+            snapshot.head_sha = "remote-tip".into();
+            finish_snapshot(&mut monitor, &first, snapshot);
+            for source in [&first, &linked] {
+                let snapshot = monitor.snapshot(source).unwrap();
+                assert_eq!(snapshot.head_sha, "remote-tip");
+                assert_eq!(snapshot.local_head_sha, source.sha);
+                assert_eq!(snapshot.checked_ref.as_deref(), Some("origin/published"));
+            }
+            assert!(monitor.entries[&first].due.is_none());
+            monitor.refresh(&target(&first));
+            assert!(monitor.entries[&first].due.is_none());
+            monitor.refresh(&CiRefreshTarget {
+                repository: first.repository.clone(),
+                head_sha: "remote-tip".into(),
+            });
+            assert!(monitor.entries[&first].due.is_some());
+            assert!(monitor.entries[&linked].due.is_some());
+            assert!(monitor.entries[&other].due.is_none());
+        }
+
+        #[test]
+        fn remote_tracking_changes_retire_pending_generations_and_wrong_cache_targets() {
+            let old = branch_source("local", "published");
+            let mut monitor = Monitor::new();
+            monitor.sync([old.clone()].into_iter());
+            monitor.pending = Some(pending_fixture(std::slice::from_ref(&old)));
+            let mut current = old.clone();
+            current.remote_branch.as_mut().unwrap().tracking_sha = Some("pushed".into());
+            monitor.sync([current.clone()].into_iter());
+            assert_eq!(monitor.fd(), -1);
+            let mut snapshot = complete_snapshot(&current, &[CiStatus::Passed]);
+            snapshot.head_sha = "provider-newer-than-tracking".into();
+            for mismatch in 0..3 {
+                let mut wrong = snapshot.clone();
+                match mismatch {
+                    0 => wrong.local_head_sha = "other-local".into(),
+                    1 => wrong.checked_ref = Some("origin/other".into()),
+                    _ => wrong.local_head_sha.clear(),
+                }
+                monitor.restore(&current, wrong);
+                assert!(monitor.snapshot(&current).unwrap().head_sha.is_empty());
+            }
+            monitor.restore(&current, snapshot.clone());
+            assert_eq!(monitor.snapshot(&current), Some(snapshot));
+            assert_eq!(monitor.timeout(), -1);
         }
 
         fn pull_request(source: &CiSource, number: u64) -> Value {
@@ -696,7 +910,7 @@ mod linux {
             let sources: Vec<_> = monitor
                 .entries
                 .keys()
-                .filter(|candidate| same_commit(candidate, source))
+                .filter(|candidate| same_target(candidate, source))
                 .cloned()
                 .collect();
             let results = sources
@@ -704,6 +918,8 @@ mod linux {
                 .map(|candidate| {
                     let mut snapshot = snapshot.clone();
                     snapshot.branch = candidate.branch.clone();
+                    snapshot.local_head_sha.clone_from(&candidate.sha);
+                    snapshot.checked_ref = candidate.checked_ref();
                     (candidate.clone(), Ok(snapshot))
                 })
                 .collect();
@@ -824,7 +1040,7 @@ mod linux {
                         assert_eq!(current.change_request, previous.change_request);
                         assert_eq!(current.updated_at, previous.updated_at);
                         assert!(current.stale);
-                        assert!(current.error.is_some());
+                        assert!(current.error.is_none());
                     } else {
                         assert!(current.change_request.is_none());
                         assert_eq!(current.updated_at, 0);
@@ -936,7 +1152,7 @@ mod linux {
         }
 
         #[test]
-        fn confirmed_publication_requeues_only_no_check_results_and_respects_spacing() {
+        fn confirmed_publication_requeues_idle_results_and_respects_spacing() {
             let source = source("published");
             for statuses in [vec![], vec![CiStatus::Passed], vec![CiStatus::Running]] {
                 let mut monitor = Monitor::new();
@@ -948,7 +1164,7 @@ mod linux {
                 monitor.invalidate(&source);
                 assert_eq!(monitor.entries[&source].due, due);
                 monitor.published(&source);
-                if statuses.is_empty() {
+                if statuses.is_empty() || statuses == [CiStatus::Passed] {
                     assert!(monitor.entries[&source].due.is_some());
                     assert!(monitor.reserve_batch(now).is_empty());
                     assert_eq!(
@@ -1028,6 +1244,38 @@ mod linux {
         }
 
         #[test]
+        fn manual_refresh_reports_progress_without_inventing_a_provider_error() {
+            let mut monitor = Monitor::new();
+            let source = source("refresh");
+            monitor.sync([source.clone()].into_iter());
+            let snapshot = complete_snapshot(&source, &[]);
+            finish_snapshot(&mut monitor, &source, snapshot.clone());
+
+            monitor.refresh(&target(&source));
+            let loading = monitor.snapshot(&source).unwrap();
+            assert_eq!(loading.fetch_state, CiFetchState::Loading);
+            assert_eq!(loading.status, CiStatus::NoChecks);
+            assert!(loading.stale);
+            assert_eq!(loading.updated_at, snapshot.updated_at);
+            assert!(loading.error.is_none());
+
+            monitor.finish(
+                std::slice::from_ref(&source),
+                Err(FetchError::normal("offline")),
+            );
+            monitor.refresh(&target(&source));
+            let retrying = monitor.snapshot(&source).unwrap();
+            assert_eq!(retrying.fetch_state, CiFetchState::Loading);
+            assert_eq!(retrying.error.as_deref(), Some("offline"));
+
+            finish_snapshot(&mut monitor, &source, snapshot);
+            let ready = monitor.snapshot(&source).unwrap();
+            assert_eq!(ready.fetch_state, CiFetchState::Ready);
+            assert!(!ready.stale);
+            assert!(ready.error.is_none());
+        }
+
+        #[test]
         fn manual_refresh_shares_commit_coalesces_and_returns_to_frozen_after_rerun() {
             let mut monitor = Monitor::new();
             let source = source("same");
@@ -1053,7 +1301,6 @@ mod linux {
                 assert_eq!(current.fetch_state, CiFetchState::Loading);
                 assert_eq!(current.checks, snapshot.checks);
                 assert!(current.stale);
-                assert!(current.error.is_some());
                 assert!(monitor.entries[subscriber].eager);
             }
             finish_snapshot(
@@ -1185,7 +1432,6 @@ mod linux {
                 assert_eq!(refreshing.fetch_state, CiFetchState::Loading);
                 assert_eq!(refreshing.status, status);
                 assert!(refreshing.stale);
-                assert!(refreshing.error.is_some());
                 monitor.finish(
                     std::slice::from_ref(&source),
                     Err(FetchError::normal("offline")),
@@ -1245,7 +1491,7 @@ mod linux {
             assert!(monitor.snapshot(&old).is_none());
             let mut linked = new.clone();
             linked.branch = Some("next".into());
-            assert!(same_commit(&new, &linked));
+            assert!(same_target(&new, &linked));
             let value = json!({
                 "data": {
                     "r0": {
