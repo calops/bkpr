@@ -73,7 +73,7 @@ else
     done < <(otool -L "$bundle/$program" | awk 'NR > 1 { print $1 }')
   done
 fi
-"$bundle/zellij" --version | { read -r version; test "$version" = 'zellij 0.45.1-bkpr.1'; }
+"$bundle/zellij" --version | { read -r version; test "$version" = 'zellij 0.45.1-bkpr.2'; }
 "$bundle/bkpr" --version
 python3 .github/scripts/smoke-portable.py "$bundle"
 # Exactly three runtime files; the archive is the single per-platform download.
