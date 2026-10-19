@@ -63,6 +63,9 @@
             version = "0.2.1";
             inherit src;
             cargoLock.lockFileContents = builtins.readFile ./Cargo.lock;
+            # Rust's standard-library source locations must not retain the toolchain.
+            RUSTFLAGS = "--remap-path-prefix=${toolchain}=/rust-toolchain";
+            disallowedReferences = [ toolchain ];
             nativeCheckInputs = [ pkgs.git ];
             cargoBuildFlags = [
               "-p"
@@ -85,6 +88,8 @@
             version = "0.2.1";
             inherit src;
             cargoLock.lockFileContents = builtins.readFile ./Cargo.lock;
+            RUSTFLAGS = "--remap-path-prefix=${toolchain}=/rust-toolchain";
+            disallowedReferences = [ toolchain ];
             buildPhase = ''
               runHook preBuild
               cargo build --release --locked --offline -p bkpr-zellij --target wasm32-wasip1
