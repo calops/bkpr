@@ -1,6 +1,42 @@
 {
   "nodes": {
+    "bkpr-zellij": {
+      "inputs": {
+        "nixpkgs": "nixpkgs",
+        "rust-overlay": "rust-overlay"
+      },
+      "locked": {
+        "lastModified": 1792405073,
+        "narHash": "sha256-r0J2yuG5SjqL8UJMJq9MkQDu4+T7+SC03uVQJ+56T3Y=",
+        "owner": "calops",
+        "repo": "bkpr-zellij",
+        "rev": "e9ab8e3b1b80357792025d11e09b4027650d7238",
+        "type": "github"
+      },
+      "original": {
+        "owner": "calops",
+        "ref": "bkpr",
+        "repo": "bkpr-zellij",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
+      "locked": {
+        "lastModified": 1789546076,
+        "narHash": "sha256-zVxLZiSnmaaPLwnhj7pwmqe3axBg/C6nG5JZsJMh2g4=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "b1b875982b17dabde9b4a37f3e229e74913e6db3",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "b1b875982b17dabde9b4a37f3e229e74913e6db3",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
       "locked": {
         "lastModified": 1789546076,
         "narHash": "sha256-zVxLZiSnmaaPLwnhj7pwmqe3axBg/C6nG5JZsJMh2g4=",
@@ -18,11 +54,34 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs",
-        "rust-overlay": "rust-overlay"
+        "bkpr-zellij": "bkpr-zellij",
+        "nixpkgs": "nixpkgs_2",
+        "rust-overlay": "rust-overlay_2"
       }
     },
     "rust-overlay": {
+      "inputs": {
+        "nixpkgs": [
+          "bkpr-zellij",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1791448976,
+        "narHash": "sha256-HJ4TEF3j7HmLYeEP/PtqjeiBX/6TppXB2qY53HcrWbs=",
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "rev": "f91010a5c1b6125b715eb78a84fb5dd8fb74a2b0",
+        "type": "github"
+      },
+      "original": {
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "rev": "f91010a5c1b6125b715eb78a84fb5dd8fb74a2b0",
+        "type": "github"
+      }
+    },
+    "rust-overlay_2": {
       "inputs": {
         "nixpkgs": [
           "nixpkgs"

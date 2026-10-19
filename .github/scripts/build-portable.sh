@@ -18,10 +18,22 @@ if [[ $(rustc --print sysroot) == /nix/store/* ]]; then
 fi
 rustup target add "$target" wasm32-wasip1
 
-git clone --depth 1 --branch v0.45.1 https://github.com/zellij-org/zellij.git "$host"
-while IFS= read -r name; do
-  patch --fuzz=0 --no-backup-if-mismatch -d "$host" -p1 -i "$GITHUB_WORKSPACE/nix/$name"
-done < <(nix eval --json .#zellijPatchNames | jq -r '.[]')
+zellij_rev=$(jq -er '
+  . as $lock
+  | $lock.nodes[$lock.root].inputs["bkpr-zellij"] as $input
+  | if ($input | type) != "string" then
+      error("bkpr-zellij must be a direct locked input")
+    else
+      $lock.nodes[$input].locked
+    end
+  | select(.type == "github" and .owner == "calops" and .repo == "bkpr-zellij")
+  | .rev
+  | select(type == "string" and test("^[0-9a-f]{40}$"))
+' "$GITHUB_WORKSPACE/flake.lock")
+git init "$host"
+git -C "$host" remote add origin https://github.com/calops/bkpr-zellij.git
+git -C "$host" fetch --depth 1 origin "$zellij_rev"
+git -C "$host" checkout --detach "$zellij_rev"
 
 if [[ $system == *-linux ]]; then
   target_key=${target^^}

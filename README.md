@@ -175,7 +175,7 @@ Wrappers are found through the managed session's `PATH`, not through aliases or 
 
 The Rust workspace contains the native launcher/metadata helper in `crates/bkpr` and the WASI sidebar/plugin in `crates/bkpr-zellij`. Zellij owns application PTYs; a session-wide plugin owns workspace metadata, with one native helper for Git and shared CI requests.
 
-Use the devshell and Cargo for iteration. Prepare the patched local Zellij runtime using the steps in [AGENTS.md](AGENTS.md#patched-zellij-runtime) before launching a development session; stock Zellij doesn't provide the required native events.
+Use the devshell and incremental Cargo builds for iteration. The shell supplies the pinned [Bkpr Zellij fork](https://github.com/calops/bkpr-zellij/tree/bkpr); no local patch application or native runtime build is needed for ordinary Bkpr development.
 
 ```sh
 nix develop
@@ -184,7 +184,7 @@ cargo build --locked -p bkpr-zellij --target wasm32-wasip1
 cargo run --locked -p bkpr -- --session dev
 ```
 
-The devshell selects the debug WASM artifact and an existing `target/zellij-dev/target/debug/zellij`. Use a fresh session for native runtime changes; an existing server keeps its original code and configuration. Retain `target/` for incremental builds.
+The devshell selects the debug WASM artifact and the pinned fork runtime. `cargo run` remains the normal launch path. Retain `target/` for incremental builds; do not use `nix build` for the edit/run loop. When changing Zellij itself, use the fork's devshell and Cargo, then select its debug executable with `--zellij ../bkpr-zellij/target/debug/zellij`. Start a fresh session after native changes: existing servers keep their original code.
 
 ```sh
 # In the devshell:
@@ -196,7 +196,7 @@ cargo clippy --locked -p bkpr-zellij --target wasm32-wasip1 -- -D warnings
 nix build .#bkpr
 ```
 
-`bkpr-native` and `bkpr-zellij` are also exposed as separate Nix package outputs. Development overrides are `BKPR_ZELLIJ` / `--zellij` and `BKPR_PLUGIN` / `--plugin`. Stable maintenance contracts and native patch workflow are in [AGENTS.md](AGENTS.md).
+`bkpr-native` and `bkpr-zellij` are also exposed as separate Nix package outputs. Development overrides are `BKPR_ZELLIJ` / `--zellij` and `BKPR_PLUGIN` / `--plugin`. The fork exposes its own native package and devshell; Bkpr's release CI builds and caches the pinned dependency. Stable maintenance contracts and the native feature-branch workflow are in [AGENTS.md](AGENTS.md).
 
 ## Limitations
 

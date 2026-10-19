@@ -8,6 +8,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/b1b875982b17dabde9b4a37f3e229e74913e6db3";
+    bkpr-zellij.url = "github:calops/bkpr-zellij/bkpr";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -18,6 +19,7 @@
     {
       self,
       nixpkgs,
+      bkpr-zellij,
       rust-overlay,
     }:
     let
@@ -34,51 +36,14 @@
           overlays = [ rust-overlay.overlays.default ];
         };
       toolchainFor = pkgs: pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-      zellijPatchNames = [
-        "zellij-cursor.patch"
-        "zellij-program-status.patch"
-        "zellij-program-status-events.patch"
-        "zellij-host-replies.patch"
-        "zellij-cli-session.patch"
-        "zellij-popup-clicks.patch"
-        "zellij-overlay-geometry.patch"
-        "zellij-plugin-messages.patch"
-        "zellij-version.patch"
-      ];
-      zellijFor =
-        pkgs:
-        pkgs.zellij.override {
-          zellij-unwrapped = pkgs.zellij-unwrapped.overrideAttrs (old: {
-            patches = (old.patches or [ ]) ++ map (name: ./nix + "/${name}") zellijPatchNames;
-            doCheck = true;
-            cargoTestFlags = [
-              "--package"
-              "zellij-server"
-              "--lib"
-              "program_status"
-            ];
-            postCheck = (old.postCheck or "") + ''
-              cargo test --offline --package zellij-client --lib stdin_ansi_parser
-              cargo test --offline --package zellij-client --lib stdin_handler
-              cargo test --offline --package zellij-server --lib pinned_
-              cargo test --offline --package zellij-server --lib passive_popup
-              cargo test --offline --package zellij-server --lib viewport_geometry_regressions
-              cargo test --offline --package zellij-server --lib test_ctrl_drag_resizes
-              cargo test --offline --package zellij-server --lib render_messages_tests -- --test-threads=1
-              cargo test --offline --package zellij-server --lib screen_tab_switch_
-              cargo test --offline --package zellij-server --lib screen_plugin_
-            '';
-          });
-        };
     in
     {
-      inherit zellijPatchNames;
       packages = forAllSystems (
         system:
         let
           pkgs = pkgsFor system;
           toolchain = toolchainFor pkgs;
-          zellij = zellijFor pkgs;
+          zellij = bkpr-zellij.packages.${system}.zellij;
           rustPlatform = pkgs.makeRustPlatform {
             cargo = toolchain;
             rustc = toolchain;
@@ -173,7 +138,7 @@
         system:
         let
           pkgs = pkgsFor system;
-          zellij = pkgs.zellij;
+          zellij = bkpr-zellij.packages.${system}.zellij;
         in
         {
           default = pkgs.mkShell {
@@ -190,12 +155,9 @@
               pkgs.curl
             ];
             BKPR_ZELLIJ = "${zellij}/bin/zellij";
-            BKPR_ZELLIJ_VENDOR = pkgs.zellij-unwrapped.cargoDeps;
+            BKPR_ZELLIJ_VENDOR = bkpr-zellij.packages.${system}.cargo-vendor;
             shellHook = ''
               export BKPR_PLUGIN="$PWD/target/wasm32-wasip1/debug/bkpr-zellij.wasm"
-              if [ -x "$PWD/target/zellij-dev/target/debug/zellij" ]; then
-                export BKPR_ZELLIJ="$PWD/target/zellij-dev/target/debug/zellij"
-              fi
             '';
           };
         }

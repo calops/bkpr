@@ -34,14 +34,19 @@
 
 Use `nix develop` and incremental debug Cargo artifacts in `target/`. Run coordinated checks once after edits: `cargo test --locked --workspace`, `cargo build --locked -p bkpr-zellij --target wasm32-wasip1`, host/WASI `cargo clippy --locked ... -- -D warnings`. Use `nix build .#bkpr` only for packaging validation, not the edit/run loop.
 
-### Patched Zellij runtime
+### Forked Zellij runtime
 
-The pinned host is Zellij 0.45.1. Stock Zellij lacks required OSC/plugin event contracts. `flake.nix` determines patch order; a local debug runtime lives in `target/zellij-dev`. For a fresh checkout, clone tag `v0.45.1`, apply the ordered `nix/zellij-*.patch` files **in flake order** with `patch --fuzz=0 --no-backup-if-mismatch -p1`, then build with `--no-default-features` and `$BKPR_ZELLIJ_VENDOR` source replacement. Do not blindly reapply patches or stage generated `.orig` files. Existing native servers keep old code: start a fresh session after host changes.
+The pinned host is [calops/bkpr-zellij](https://github.com/calops/bkpr-zellij), based on Zellij 0.45.1. Stock Zellij lacks required OSC/plugin event contracts. The fork's `main` tracks upstream unchanged; retained `feature/*` branches hold individual changes and merge into `bkpr` without PRs. Bkpr pins the fork flake in `flake.lock`; do not restore a local patch queue or override the fork's locked dependencies with `follows`. Only Bkpr's release CI builds and uploads the shared cache; the fork has no Bkpr CI/cache workflow.
+
+Normal Bkpr development is `nix develop`, build the debug WASM with Cargo, then `cargo run --locked -p bkpr`. The shell supplies the pinned native runtime automatically. Use incremental Cargo artifacts for tests and iteration, not `nix build`; reserve Nix builds for explicit packaging validation.
+
+For native changes, clone the fork beside Bkpr and work on a retained feature branch. In that checkout:
 
 ```sh
-cargo build --locked --manifest-path target/zellij-dev/Cargo.toml --no-default-features \
-  --config 'source.crates-io.replace-with="nix-vendor"' \
-  --config "source.nix-vendor.directory=\"$BKPR_ZELLIJ_VENDOR/source-registry-0\""
+nix develop --accept-flake-config
+cargo build --locked --offline --no-default-features
 ```
+
+Run Bkpr from its own devshell with `cargo run --locked -p bkpr -- --zellij ../bkpr-zellij/target/debug/zellij --session native-dev`. Start a fresh session after host changes; existing servers retain old code. After verification, merge the feature into the fork's `bkpr` branch, push, and update Bkpr's input with `nix flake update bkpr-zellij`. The fork's [Nix notes](https://github.com/calops/bkpr-zellij/blob/bkpr/docs/NIX.md) document package outputs and offline vendoring.
 
 Test focus, cursor, physical mouse, resize and hyperlinks in an actual isolated terminal, not just unit tests or injected escapes. Smoke scripts go under `target/smoke/`, using devshell Python+pyte and `sys.executable`; isolate HOME/XDG, inherited multiplexer and credential variables, and private native sessions. Never touch live sessions or call real model/provider services for a fixture. Clean up owned processes/files, retain useful evidence, and keep README user-facing.
