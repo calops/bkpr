@@ -8,7 +8,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/b1b875982b17dabde9b4a37f3e229e74913e6db3";
-    bkpr-zellij.url = "github:calops/bkpr-zellij/bkpr";
+    bkpr-zellij.url = "github:calops/bkpr-zellij/main";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";

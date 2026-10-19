@@ -216,6 +216,10 @@ nix build .#bkpr
 
 `bkpr-native` and `bkpr-zellij` are also exposed as separate Nix package outputs. Development overrides are `BKPR_ZELLIJ` / `--zellij` and `BKPR_PLUGIN` / `--plugin`. The fork exposes its own native package and devshell; Bkpr's release CI builds and caches the pinned dependency. Stable maintenance contracts and the native feature-branch workflow are in [AGENTS.md](AGENTS.md).
 
+The native fork's default [`main`](https://github.com/calops/bkpr-zellij/tree/main) contains the Bkpr integration history. Retained `feature/*` branches submit PRs into `main`; there is no separate `bkpr` or permanent upstream branch. Bkpr consumes `github:calops/bkpr-zellij/main`, locks its revision, and preserves the fork's own dependency pins without `follows` overrides.
+
+The fork checks stable Zellij releases daily and opens `update/zellij-vX.Y.Z` PRs from release tags, not upstream's moving `main`. Upstream ancestry is preserved through merge commits. All PRs require human validation and explicit manual merging, even when conflict-free and CI-green. Protected `main` requires PRs and Rust release verification, but no mandatory approval count; auto-merge, squash merging and rebase merging are disabled.
+
 ## Limitations
 
 - No built-in remote connection manager or saved-machine profiles. Run Bkpr on a remote host through SSH as usual.
