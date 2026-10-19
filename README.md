@@ -123,6 +123,14 @@ Results persist per canonical CWD under `$XDG_STATE_HOME/bkpr/projects` (default
 
 Open PR links follow the branch even while local commits are unpushed. Linear associations come from canonical issue links in the PR's first ten rendered comments, without workspace-specific mappings, Linear credentials or configuration.
 
+## Colors
+
+The sidebar, finder, shortcut cards and details popups use the terminal's default foreground/background and standard ANSI palette, not a bundled RGB theme. Selection and hover also remain usable when only standard colors are available.
+
+When the native host confirms truecolor support and reports the terminal's actual colors, Bkpr derives muted text, softened accents and selection shades from that palette. This follows both light and dark backgrounds. Unknown colors or capabilities retain native ANSI styles rather than guessed RGB values. Older native hosts without palette metadata use that fallback; derived shading requires a host publishing `bkpr_terminal_colors`.
+
+There are no Bkpr-specific color configuration options yet; configure your terminal palette normally.
+
 ## Clipboard
 
 Bkpr forwards terminal clipboard requests over the terminal connection, including MIME/image access through Kitty's OSC 5522 protocol. Over SSH, this accesses the client terminal's clipboard; X11 forwarding is not needed. Images require support from both the terminal and the application.
