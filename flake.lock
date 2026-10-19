@@ -6,16 +6,16 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1792411351,
-        "narHash": "sha256-UQTMTuCroO6kNcxlZGqkq3U2mbIw04u6miQOl36L+R8=",
+        "lastModified": 1792421300,
+        "narHash": "sha256-3M0ua4a9q/LvWUNbhR/d2RjxPY7mbInecb+M7jGmVRk=",
         "owner": "calops",
         "repo": "bkpr-zellij",
-        "rev": "f89bdb4655d9d57e30595e096474f6f8c5529c25",
+        "rev": "75ea0f92e6896d0ed8cd409451c317aa785640ed",
         "type": "github"
       },
       "original": {
         "owner": "calops",
-        "ref": "bkpr",
+        "ref": "main",
         "repo": "bkpr-zellij",
         "type": "github"
       }
