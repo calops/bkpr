@@ -24,23 +24,12 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: bkpr-*
-          path: dist
-          merge-multiple: true
-      - name: Prepare release assets and changelog
+      - name: Prepare release notes
         env:
           TAG: ${{ github.ref_name }}
           GH_TOKEN: ${{ github.token }}
-        run: |
-          cd dist
-          sha256sum ./*.tar.gz > SHA256SUMS
-          cd ..
-          node .github/scripts/release-notes.mjs "$TAG" > release-notes.md
+        run: node .github/scripts/release-notes.mjs "$TAG" > release-notes.md
       - uses: softprops/action-gh-release@v3
         with:
           body_path: release-notes.md
           prerelease: ${{ needs.validate.outputs.prerelease == 'true' }}
-          files: dist/*
-          fail_on_unmatched_files: true
