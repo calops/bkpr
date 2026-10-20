@@ -491,16 +491,27 @@ fn validate_endpoint(endpoint: &str) -> Result<()> {
     if !socket.is_absolute() {
         bail!("Codex queue socket path must be absolute");
     }
-    let parent = fs::symlink_metadata(socket.parent().context("locate Codex queue runtime")?)?;
-    let metadata = fs::symlink_metadata(socket)?;
     let uid = unsafe { libc::geteuid() };
-    if !parent.is_dir()
-        || parent.uid() != uid
-        || parent.mode() & 0o077 != 0
-        || !metadata.file_type().is_socket()
-        || metadata.uid() != uid
-    {
-        bail!("Codex queue endpoint is not in a private, user-owned socket directory");
+    let validate_parent = |socket: &Path| -> Result<()> {
+        let parent = fs::symlink_metadata(socket.parent().context("locate Codex queue runtime")?)?;
+        if !parent.is_dir() || parent.uid() != uid || parent.mode() & 0o077 != 0 {
+            bail!("Codex queue endpoint must be in a private, user-owned directory");
+        }
+        Ok(())
+    };
+    validate_parent(socket)?;
+    let mut metadata = fs::symlink_metadata(socket)?;
+    if metadata.uid() != uid {
+        bail!("Codex queue endpoint must be user-owned");
+    }
+    if metadata.file_type().is_symlink() {
+        // Codex redirects launch-local endpoints into its private daemon socket directory.
+        let target = fs::canonicalize(socket).context("resolve Codex queue socket")?;
+        validate_parent(&target)?;
+        metadata = fs::symlink_metadata(target)?;
+    }
+    if !metadata.file_type().is_socket() || metadata.uid() != uid {
+        bail!("Codex queue endpoint must resolve to a user-owned Unix socket");
     }
     Ok(())
 }
@@ -775,6 +786,57 @@ mod tests {
         );
         assert!(hook_session(&json!({"hook_event_name":"Stop","session_id":"thread"})).is_err());
         assert!(hook_session(&json!({"session_id":" "})).is_err());
+    }
+
+    #[test]
+    fn queue_endpoint_accepts_native_socket_indirection() {
+        let launch = tempfile::tempdir().unwrap();
+        let daemon = tempfile::tempdir().unwrap();
+        for directory in [&launch, &daemon] {
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let target = daemon.path().join("socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&target).unwrap();
+        let endpoint = launch.path().join("server.sock");
+        std::os::unix::fs::symlink(&target, &endpoint).unwrap();
+        validate_endpoint(&format!("unix://{}", target.display())).unwrap();
+        validate_endpoint(&format!("unix://{}", endpoint.display())).unwrap();
+    }
+
+    #[test]
+    fn queue_indirection_keeps_both_directory_boundaries_private() {
+        let launch = tempfile::tempdir().unwrap();
+        let daemon = tempfile::tempdir().unwrap();
+        for directory in [&launch, &daemon] {
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let target = daemon.path().join("socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&target).unwrap();
+        let endpoint = launch.path().join("server.sock");
+        std::os::unix::fs::symlink(&target, &endpoint).unwrap();
+        let endpoint = format!("unix://{}", endpoint.display());
+        fs::set_permissions(daemon.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(validate_endpoint(&endpoint).is_err());
+        fs::set_permissions(daemon.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(launch.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(validate_endpoint(&endpoint).is_err());
+    }
+
+    #[test]
+    fn queue_indirection_rejects_non_sockets_and_unresolvable_links() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let target = directory.path().join("not-a-socket");
+        fs::write(&target, "").unwrap();
+        let endpoint = directory.path().join("server.sock");
+        std::os::unix::fs::symlink(&target, &endpoint).unwrap();
+        let address = format!("unix://{}", endpoint.display());
+        assert!(validate_endpoint(&address).is_err());
+        fs::remove_file(target).unwrap();
+        assert!(validate_endpoint(&address).is_err());
+        fs::remove_file(&endpoint).unwrap();
+        std::os::unix::fs::symlink(&endpoint, &endpoint).unwrap();
+        assert!(validate_endpoint(&address).is_err());
     }
 
     #[test]
