@@ -9,7 +9,6 @@ use unicode_width::UnicodeWidthStr;
 
 pub const RESET: &str = "\u{1b}[0m";
 pub use crate::palette::Theme;
-pub const BASE: &str = "\u{1b}[22;39;49m";
 pub const TEXT: &str = "\u{1b}[22;39m";
 const WORKFLOW: &str = "\u{f52e}"; // nf-oct-workflow
 
@@ -922,7 +921,7 @@ pub fn render_row(
     } else {
         ""
     };
-    format!("{RESET}{BASE}{background}{left}{content}{RESET}")
+    format!("{RESET}{}{background}{left}{content}{RESET}", theme.base)
 }
 
 fn render_content_row(
@@ -1048,7 +1047,8 @@ fn render_content_row(
             let available = columns.saturating_sub(width(&lead));
             let Some(branch) = branch_label(pane) else {
                 return format!(
-                    "{RESET}{BASE}{background}{guides}{lead}{muted}{}{RESET}",
+                    "{RESET}{}{background}{guides}{lead}{muted}{}{RESET}",
+                    theme.base,
                     fit(&pane.description, available)
                 );
             };
@@ -1089,7 +1089,7 @@ fn render_content_row(
             )
         }
     };
-    format!("{RESET}{BASE}{background}{body}{RESET}")
+    format!("{RESET}{}{background}{body}{RESET}", theme.base)
 }
 
 fn repository_heading(project: &ProjectIdentity, ci: Option<&CiSnapshot>) -> PopupRow {

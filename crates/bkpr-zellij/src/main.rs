@@ -2106,7 +2106,7 @@ impl Frontend {
                 "\u{1b}[{};1H{}{}{line}{}",
                 row + 1,
                 ui::RESET,
-                ui::BASE,
+                self.theme.base,
                 ui::RESET
             )
             .expect("writing sidebar row");

@@ -887,6 +887,7 @@ pub(crate) fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bo
         .map(|span| ui::width(&ui::clean(&span.text)))
         .sum();
     let mut rendered = String::from(OSC8_CLOSE);
+    rendered.push_str(&theme.base);
     if let Some(link) = row.link.as_deref().and_then(ui::safe_link) {
         rendered.push_str("\u{1b}]8;;");
         rendered.push_str(link);
@@ -916,7 +917,8 @@ pub(crate) fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bo
     let mut used_right = 0;
     for span in &row.right {
         if hovered && row.refresh.is_some() {
-            rendered.push_str("\u{1b}[39;49;7m");
+            rendered.push_str(&theme.base);
+            rendered.push_str(&theme.hovered);
         }
         let text = ui::truncate(&span.text, right_columns.saturating_sub(used_right));
         used_right += ui::width(&text);
@@ -930,7 +932,7 @@ pub(crate) fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bo
         rendered.push_str(&text);
     }
     rendered.push_str(ui::RESET);
-    rendered.push_str(ui::BASE);
+    rendered.push_str(&theme.base);
     rendered
 }
 
@@ -953,12 +955,14 @@ pub(crate) fn outlined_line(text: String, row: usize, rows: usize, columns: usiz
     };
     if columns >= 2 {
         format!(
-            "{OSC8_CLOSE}{}{left}{center}{OSC8_CLOSE}{}{right}{OSC8_CLOSE}",
+            "{OSC8_CLOSE}{}{}{left}{center}{OSC8_CLOSE}{}{}{right}{OSC8_CLOSE}",
+            theme.base,
             theme.bright,
+            theme.base,
             theme.bright
         )
     } else if columns == 1 {
-        format!("{OSC8_CLOSE}{}{left}{OSC8_CLOSE}", theme.bright)
+        format!("{OSC8_CLOSE}{}{}{left}{OSC8_CLOSE}", theme.base, theme.bright)
     } else {
         OSC8_CLOSE.to_owned()
     }
@@ -1680,7 +1684,7 @@ impl Overlay {
                 "\u{1b}[{};1H{}{}{line}{}",
                 row + 1,
                 ui::RESET,
-                ui::BASE,
+                self.theme.base,
                 ui::RESET
             );
         }
@@ -1912,11 +1916,12 @@ impl GuideOverlay {
                 .map(|line| guide_line_prefix(line, columns))
                 .unwrap_or(("", 0));
             print!(
-                "\u{1b}[{};1H{OSC8_CLOSE}{}{line}{OSC8_CLOSE}{}{}{:padding$}{}",
+                "\u{1b}[{};1H{OSC8_CLOSE}{}{}{line}{OSC8_CLOSE}{}{}{:padding$}{}",
                 row + 1,
                 ui::RESET,
+                self.theme.base,
                 ui::RESET,
-                ui::BASE,
+                self.theme.base,
                 "",
                 ui::RESET,
                 padding = columns.saturating_sub(cells),

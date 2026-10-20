@@ -1090,7 +1090,7 @@ impl Finder {
                 "\u{1b}[{};1H{}{}{line}{}",
                 row + 1,
                 ui::RESET,
-                ui::BASE,
+                self.theme.base,
                 ui::RESET
             );
         }
@@ -1109,22 +1109,24 @@ impl Finder {
                     self.theme.bright,
                     ui::truncate(&title, columns.saturating_sub(4))
                 ),
+                &self.theme,
             );
         }
         if input.height > 0 {
-            paint(input.x, input.y, &format!("{}{prefix}{query}", self.theme.bright));
+            paint(input.x, input.y, &format!("{}{prefix}{query}", self.theme.bright), &self.theme);
         }
         if let Some(separator) = self.layout.search {
             paint(
                 separator.x,
                 separator.y,
                 &format!("{}{}", self.theme.bright, self.layout.rule_line(separator)),
+                &self.theme,
             );
         }
         if let Some(separator) = self.layout.vertical {
             let line = format!("{}│", self.theme.bright);
             for row in separator.y..separator.y + separator.height {
-                paint(separator.x, row, &line);
+                paint(separator.x, row, &line, &self.theme);
             }
         }
         if let Some(separator) = self.layout.horizontal {
@@ -1132,6 +1134,7 @@ impl Finder {
                 separator.x,
                 separator.y,
                 &format!("{}{}", self.theme.bright, self.layout.rule_line(separator)),
+                &self.theme,
             );
         }
         let list = self.layout.list;
@@ -1143,7 +1146,7 @@ impl Finder {
             } else {
                 ""
             };
-            paint(list.x, list.y + row, &format!("{background}{text}"));
+            paint(list.x, list.y + row, &format!("{background}{text}"), &self.theme);
         }
         for row in 0..preview.height {
             let text = self
@@ -1160,7 +1163,7 @@ impl Finder {
                         preview.width,
                     )
                 });
-            paint(preview.x, preview.y + row, &text);
+            paint(preview.x, preview.y + row, &text, &self.theme);
         }
         print!("{}{}", overlay::OSC8_CLOSE, ui::RESET);
     }
@@ -1197,14 +1200,14 @@ enum KeyAction {
     Select,
 }
 
-fn paint(x: usize, y: usize, text: &str) {
+fn paint(x: usize, y: usize, text: &str, theme: &ui::Theme) {
     print!(
         "{}\u{1b}[{};{}H{}{}{text}{}{}",
         overlay::OSC8_CLOSE,
         y + 1,
         x + 1,
         ui::RESET,
-        ui::BASE,
+        theme.base,
         overlay::OSC8_CLOSE,
         ui::RESET
     );
