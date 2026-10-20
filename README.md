@@ -247,6 +247,52 @@ The native fork's default [`main`](https://github.com/calops/bkpr-zellij/tree/ma
 
 The fork checks stable Zellij releases daily and opens `update/zellij-vX.Y.Z` PRs from release tags, not upstream's moving `main`. Upstream ancestry is preserved through merge commits. All PRs require human validation and explicit manual merging, even when conflict-free and CI-green. Protected `main` requires PRs and Rust release verification, but no mandatory approval count; auto-merge, squash merging and rebase merging are disabled.
 
+### Live agent communication check
+
+`tests/live_bridge.py` launches real interactive Codex (`gpt-6-luna`) and Claude (`haiku`) panes in one fresh Bkpr workspace under a headless PTY. It uses your existing harness login/configuration and creates ordinary new conversations. Bkpr, Zellij sockets and broker state are isolated; the runner does not edit provider settings or credentials, bypass trust, or attach to existing sessions. The current runner requires Linux pidfds and Python 3.11 or newer.
+
+From the devshell, with the native launcher and WASM built:
+
+```sh
+# Check paths, versions and requested models without making model requests.
+python3 tests/live_bridge.py
+
+# Real provider requests and normal billing apply.
+python3 tests/live_bridge.py --run
+
+# Handle normal login, workspace, hook or MCP consent yourself if needed.
+python3 tests/live_bridge.py --run --interactive --timeout 600
+```
+
+`--workspace` selects an existing trusted checkout (default: the current directory). `--harness-home` selects the normal provider configuration home; explicit provider configuration environment variables remain authoritative. `--bkpr`, `--zellij` and `--plugin` select built artifacts; for fork development, use `--zellij ../bkpr-zellij/target/debug/zellij`. Each run prints an attachment command for its private native session. A pending sidebar permission request does not grant anything automatically or prevent native harness panes from running.
+
+Each harness bootstraps its own discoverable identity, then the driver supplies one ordinary future-turn Codex kickoff. The harnesses perform every peer send themselves:
+
+```mermaid
+sequenceDiagram
+    participant C as Codex (Luna)
+    participant H as Claude (Haiku)
+    C->>H: Challenge N1, a, b
+    H->>C: Answer N1, a+b
+    C->>H: Confirm N1, a+b+1
+    H->>C: Challenge N2, x, y
+    C->>H: Answer N2, x+y
+    H->>C: Confirm N2, x+y+1
+```
+
+Only the originating harness's initial prompt contains each nonce. Incoming messages must be retrieved through `read_inbox` and acknowledged after processing. Claude gets a launch-local Bkpr tool permission allowlist and built-in tool denials. Codex uses its normal read-only sandbox and approval policy; its prohibition on other tools is prompt-enforced, not a technical MCP-only allowlist.
+
+A run passes only when the private broker's durable receipts prove all six exact payload/key hashes, the correct sender/recipient identities, increasing causal sequence, a predecessor read before its dependent response, and processed acknowledgements for every message, with no extra sends. Queue acceptance or terminal text alone cannot pass it. The runner does not inject peer messages, steer active turns, or wait for a provider success string.
+
+`--run` exits zero only on success, including cleanup. Failures are not skipped: hook errors and missing readiness fail the check. Protected evidence is retained under `target/smoke/live-bridge/<run>/`: `result.json`, `readiness.json`, progress receipts when available, terminal output, and available Codex server/hook logs. The scenario deadline includes startup and model turns; owned-process cleanup uses separate bounded waits. No raw broker state or bearer-token manifest is copied into evidence.
+
+The deterministic verifier can be checked without providers:
+
+```sh
+python3 -m unittest discover -s tests -p 'test_live_bridge.py'
+```
+
+
 ## Limitations
 
 - No built-in remote connection manager or saved-machine profiles. Run Bkpr on a remote host through SSH as usual.
