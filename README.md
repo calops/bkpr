@@ -125,9 +125,9 @@ Open PR links follow the branch even while local commits are unpushed. Linear as
 
 ## Colors
 
-The sidebar, finder, shortcut cards and details popups use the terminal's default foreground/background and standard ANSI palette, not a bundled RGB theme. Selection and hover also remain usable when only standard colors are available.
+The sidebar, finder, shortcut cards and details popups use the terminal's foreground/background and standard ANSI palette, not a bundled RGB theme. Selection and hover also remain usable when only standard colors are available.
 
-When the native host confirms truecolor support and reports the terminal's actual colors, Bkpr derives muted text, softened accents and selection shades from that palette. This follows both light and dark backgrounds. Unknown colors or capabilities retain native ANSI styles rather than guessed RGB values. Older native hosts without palette metadata use that fallback; derived shading requires a host publishing `bkpr_terminal_colors`.
+When the native host confirms truecolor support and reports the terminal's actual colors, Bkpr derives muted text, softened accents and selection shades from that palette. Surface backgrounds shift away from the foreground's luminance: darker on dark themes and lighter on light themes, using the same calculation. The application's background is unchanged. Unknown colors or capabilities retain native ANSI styles rather than guessed RGB values. Older native hosts without palette metadata use that fallback; derived shading requires a host publishing `bkpr_terminal_colors`.
 
 There are no Bkpr-specific color configuration options yet; configure your terminal palette normally.
 

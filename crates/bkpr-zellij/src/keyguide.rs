@@ -677,8 +677,8 @@ impl Line {
         self.cells = self.cells.max(cells);
     }
 
-    fn finish(mut self, columns: usize) -> String {
-        self.ansi.push_str(ui::BASE);
+    fn finish(mut self, columns: usize, theme: &ui::Theme) -> String {
+        self.ansi.push_str(&theme.base);
         self.ansi
             .extend(std::iter::repeat_n(' ', columns.saturating_sub(self.cells)));
         self.ansi
@@ -750,6 +750,7 @@ impl<'a> Body<'a> {
         let description_start = key_width + 2;
         let key_line = |keys: Option<String>| {
             let mut line = Line::default();
+            line.ansi.push_str(&theme.base);
             if let Some(keys) = keys {
                 line.pad_to(key_width - ui::width(&keys));
                 line.push_group(&keys, &theme.accents[4], theme);
@@ -772,7 +773,7 @@ impl<'a> Body<'a> {
             for word in description.split_whitespace() {
                 let space = usize::from(line.cells > description_start);
                 if line.cells + space + ui::width(word) > columns && space > 0 {
-                    rows.push(line.finish(columns));
+                    rows.push(line.finish(columns, theme));
                     if rows.len() == max_rows {
                         rows.truncate(hint_start);
                         continue 'hints;
@@ -784,13 +785,13 @@ impl<'a> Body<'a> {
                 let word = ui::truncate(word, columns.saturating_sub(line.cells));
                 line.push(&word, &theme.muted);
             }
-            rows.push(line.finish(columns));
+            rows.push(line.finish(columns, theme));
             for keys in key_rows {
                 if rows.len() == max_rows {
                     rows.truncate(hint_start);
                     continue 'hints;
                 }
-                rows.push(key_line(Some(keys)).finish(columns));
+                rows.push(key_line(Some(keys)).finish(columns, theme));
             }
         }
         rows
@@ -900,9 +901,9 @@ fn render_frame(
             compact_title.push_str(&hint.description);
         }
         let mut title_line = Line::default();
-        title_line.ansi.push_str(ui::BASE);
+        title_line.ansi.push_str(&theme.base);
         title_line.push_group(&ui::fit(&compact_title, columns), &theme.accents[5], theme);
-        let mut rows = vec![title_line.finish(columns)];
+        let mut rows = vec![title_line.finish(columns, theme)];
         if max_rows > 1 {
             if hints.is_empty() {
                 let message = if waiting {
@@ -912,10 +913,10 @@ fn render_frame(
                 };
                 rows.push(format!(
                     "{}{MUTED}{}{base}",
-                    ui::BASE,
+                    theme.base,
                     ui::fit(message, columns),
                     MUTED = theme.muted,
-                    base = ui::BASE
+                    base = theme.base
                 ));
             } else {
                 rows.extend(layout.render(columns, max_rows - 1, theme));
@@ -940,27 +941,27 @@ fn render_frame(
     let mut rows = Vec::with_capacity(content.len() + 2);
     rows.push(format!(
         "{}{muted}╭─ {title_color}{heading}{muted} {}╮{}",
-        ui::BASE,
+        theme.base,
         "─".repeat(trailing),
-        ui::BASE,
+        theme.base,
         muted = theme.muted,
         title_color = theme.accents[5],
     ));
     for line in content {
         rows.push(format!(
             "{}{muted}│ {}{} {muted}│{}",
-            ui::BASE,
+            theme.base,
             line,
-            ui::BASE,
-            ui::BASE,
+            theme.base,
+            theme.base,
             muted = theme.muted
         ));
     }
     rows.push(format!(
         "{}{muted}╰{}╯{}",
-        ui::BASE,
+        theme.base,
         "─".repeat(columns - 2),
-        ui::BASE,
+        theme.base,
         muted = theme.muted
     ));
     rows
