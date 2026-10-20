@@ -1,8 +1,9 @@
-use crate::ui;
+use crate::{animation::WorkingClock, ui};
 use serde::{Deserialize, Serialize};
 use bkpr::ci_contract::CiRefreshTarget;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::time::Instant;
 use zellij_tile::prelude::*;
 
 pub const UPDATE: &str = "bkpr-tooltip";
@@ -765,6 +766,7 @@ fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
                         text: std::mem::take(&mut part),
                         color: span.color.clone(),
                         bold: span.bold,
+                        working_clock: span.working_clock,
                     });
                 }
                 trim_line_end(&mut line);
@@ -804,6 +806,7 @@ fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
                             text: std::mem::take(&mut part),
                             color: span.color.clone(),
                             bold: span.bold,
+                            working_clock: span.working_clock,
                         });
                     }
                     if row.truncate {
@@ -828,6 +831,7 @@ fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
                 text: part,
                 color: span.color.clone(),
                 bold: span.bold,
+                working_clock: span.working_clock,
             });
         }
     }
@@ -839,6 +843,7 @@ fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
             text: "…".to_owned(),
             color: ui::PopupColor::Muted,
             bold: false,
+            working_clock: false,
         });
     }
     output.push(PopupLine { row: line });
@@ -846,12 +851,41 @@ fn wrap_row(row: &ui::PopupRow, columns: usize, output: &mut Vec<PopupLine>) {
 
 pub(crate) const OSC8_CLOSE: &str = "\u{1b}]8;;\u{1b}\\";
 
-#[cfg(test)]
-fn render_line(row: &ui::PopupRow, columns: usize) -> String {
-    render_action_line(row, columns, false, &ui::Theme::default())
+pub(crate) fn working_clock_visible(row: &ui::PopupRow, columns: usize) -> bool {
+    let right: usize = row.right.iter().map(|span| ui::width(&span.text)).sum();
+    let right_columns = if right > columns
+        && row.right.iter().any(|span| span.text == ui::refresh_button_text())
+    {
+        0
+    } else {
+        right.min(if row.suffix.is_empty() { columns } else { columns / 2 })
+    };
+    let body = columns
+        .saturating_sub(right_columns + usize::from(right_columns != 0 && right_columns < columns));
+    let suffix: usize = row.suffix.iter().map(|span| ui::width(&span.text)).sum();
+    let mut remaining = body.saturating_sub(if suffix < body { suffix } else { 0 });
+    for span in &row.spans {
+        let width = ui::width(&span.text).min(remaining);
+        if span.working_clock && width > 0 {
+            return true;
+        }
+        remaining = remaining.saturating_sub(width);
+    }
+    false
 }
 
-pub(crate) fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bool, theme: &ui::Theme) -> String {
+#[cfg(test)]
+fn render_line(row: &ui::PopupRow, columns: usize) -> String {
+    render_action_line(row, columns, false, &ui::Theme::default(), 0)
+}
+
+pub(crate) fn render_action_line(
+    row: &ui::PopupRow,
+    columns: usize,
+    hovered: bool,
+    theme: &ui::Theme,
+    clock_frame: usize,
+) -> String {
     let right: usize = row
         .right
         .iter()
@@ -895,7 +929,15 @@ pub(crate) fn render_action_line(row: &ui::PopupRow, columns: usize, hovered: bo
     }
     let mut used = 0;
     for span in &row.spans {
-        let text = ui::truncate(&span.text, body_columns.saturating_sub(suffix_width + used));
+        let available = body_columns.saturating_sub(suffix_width + used);
+        let text = if span.working_clock {
+            ui::truncate(
+                ui::working_clock_icon(clock_frame),
+                available.min(ui::width(&span.text)),
+            )
+        } else {
+            ui::truncate(&span.text, available)
+        };
         used += ui::width(&text);
         rendered.push_str("\u{1b}[22m");
         rendered.push_str(span.color.ansi(theme));
@@ -991,6 +1033,7 @@ fn fixed_rectangle(coordinates: &FloatingPaneCoordinates) -> Option<(usize, usiz
 #[derive(Default)]
 pub struct Overlay {
     theme: ui::Theme,
+    working_clock: RefCell<WorkingClock>,
     pub owner: Option<u32>,
     pub id: u32,
     client_id: ClientId,
@@ -1048,6 +1091,7 @@ impl Overlay {
             EventType::PaneClosed,
             EventType::BeforeClose,
             EventType::Mouse,
+            EventType::Timer,
         ]);
         request_permission(super::PERMISSIONS);
     }
@@ -1057,6 +1101,12 @@ impl Overlay {
             return false;
         }
         match event {
+            Event::Timer(_) => {
+                return self
+                    .working_clock
+                    .borrow_mut()
+                    .tick(Instant::now(), self.working_clock_active());
+            }
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 self.granted = true;
                 set_selectable(false);
@@ -1072,6 +1122,7 @@ impl Overlay {
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
                 self.granted = false;
+                self.working_clock.borrow_mut().schedule(Instant::now(), false);
                 self.presented_revision = None;
                 self.rendered_revision.set(None);
                 self.pointer_inside.set(false);
@@ -1310,6 +1361,9 @@ impl Overlay {
         self.rendered_revision.set(None);
         self.presented_revision = None;
         self.state = Some(tooltip);
+        if !self.working_clock_active() {
+            self.working_clock.borrow_mut().schedule(Instant::now(), false);
+        }
         true
     }
 
@@ -1604,6 +1658,19 @@ impl Overlay {
         }
     }
 
+    fn working_clock_active(&self) -> bool {
+        if !self.complete_dimensions(self.rows.get(), self.columns.get()) {
+            return false;
+        }
+        let layout = self.layout.borrow();
+        layout
+            .lines
+            .iter()
+            .skip(layout.scroll)
+            .take(self.viewport.get())
+            .any(|line| working_clock_visible(&line.row, self.columns.get().saturating_sub(2)))
+    }
+
     pub fn render(&self, rows: usize, columns: usize) {
         if self.foreign_client || !self.granted {
             return;
@@ -1654,6 +1721,11 @@ impl Overlay {
         layout.scroll = layout
             .scroll
             .min(layout.lines.len().saturating_sub(self.viewport.get()));
+        drop(layout);
+        let active = self.working_clock_active();
+        self.working_clock.borrow_mut().schedule(Instant::now(), active);
+        let clock_frame = self.working_clock.borrow().frame();
+        let layout = self.layout.borrow();
         let footer = if layout.lines.len() > self.viewport.get() {
             format!("↕ Scroll {}/{}", layout.scroll + 1, layout.lines.len())
         } else {
@@ -1675,6 +1747,7 @@ impl Overlay {
                                     && !self.refresh_requested.contains(target)
                             }),
                             &self.theme,
+                            clock_frame,
                         )
                     })
                     .unwrap_or_else(|| " ".repeat(content_columns))
@@ -1996,6 +2069,7 @@ mod tests {
                 text: text.to_owned(),
                 color,
                 bold: false,
+                working_clock: false,
             }],
             ..ui::PopupRow::default()
         }
@@ -2057,6 +2131,65 @@ mod tests {
         if overlay.presented_revision != Some(identity.revision) {
             assert!(overlay.accept_presented(overlay.id, &identity));
         }
+    }
+
+    #[test]
+    fn working_clock_runs_only_for_painted_authorized_popup_rows() {
+        let mut overlay = popup_overlay();
+        let mut working = row(ui::working_clock_icon(0), ui::PopupColor::Native(bkpr::Status::Working));
+        working.spans[0].working_clock = true;
+        working.spans.extend(row(" Working · Codex", ui::PopupColor::Text).spans);
+        overlay.layout.get_mut().lines = wrapped_rows(&[working], 46);
+        assert!(overlay.working_clock_active());
+        overlay.layout.get_mut().scroll = 1;
+        assert!(!overlay.working_clock_active());
+        overlay.layout.get_mut().scroll = 0;
+        overlay.viewport.set(0);
+        assert!(!overlay.working_clock_active());
+        overlay.viewport.set(5);
+        overlay.clear_required = true;
+        assert!(!overlay.working_clock_active());
+        overlay.clear_required = false;
+        overlay.granted = false;
+        assert!(!overlay.working_clock_active());
+        overlay.granted = true;
+        overlay.state.as_mut().unwrap().visible = false;
+        assert!(!overlay.working_clock_active());
+        assert!(!overlay.event(Event::Timer(0.0)));
+    }
+
+    #[test]
+    fn animated_popup_glyph_preserves_labels_links_and_truncated_widths() {
+        let mut source = row(ui::working_clock_icon(0), ui::PopupColor::Native(bkpr::Status::Working));
+        source.spans[0].working_clock = true;
+        source.spans.extend(row(" Working · Codex 日本語", ui::PopupColor::Text).spans);
+        source.link = Some("https://forge.test/owner/project".to_owned());
+        for columns in 0..=40 {
+            let lines = wrapped_rows(&[source.clone()], columns);
+            for line in lines {
+                for frame in 0..12 {
+                    let mut terminal = TerminalConsumer::default();
+                    terminal.consume(&render_action_line(
+                        &line.row, columns, false, &ui::Theme::default(), frame,
+                    ));
+                    let mut baseline = TerminalConsumer::default();
+                    baseline.consume(&render_line(&line.row, columns));
+                    assert_eq!(
+                        terminal.text().replace(ui::working_clock_icon(frame).trim_end(), ui::working_clock_icon(0).trim_end()),
+                        baseline.text(),
+                    );
+                    assert_eq!(ui::width(&terminal.text()), columns);
+                    assert_eq!(terminal.cell_links(), baseline.cell_links());
+                }
+            }
+        }
+        let mut unflagged = source.clone();
+        unflagged.spans[0].working_clock = false;
+        assert!(!working_clock_visible(&unflagged, 40));
+        assert_eq!(
+            render_action_line(&unflagged, 40, false, &ui::Theme::default(), 0),
+            render_action_line(&unflagged, 40, false, &ui::Theme::default(), 6),
+        );
     }
 
     #[test]
@@ -2950,8 +3083,8 @@ mod tests {
                 }
                 let lines = wrapped_rows(&[source], columns);
                 assert_eq!(lines.len(), 1);
-                let normal = render_action_line(&lines[0].row, columns, false, &ui::Theme::default());
-                let hover = render_action_line(&lines[0].row, columns, true, &ui::Theme::default());
+                let normal = render_action_line(&lines[0].row, columns, false, &ui::Theme::default(), 0);
+                let hover = render_action_line(&lines[0].row, columns, true, &ui::Theme::default(), 0);
                 let mut terminal = TerminalConsumer::default();
                 terminal.consume(&hover);
                 assert_eq!(ui::width(&terminal.text()), columns);
@@ -3006,6 +3139,7 @@ mod tests {
                     text: prefix.to_owned(),
                     color: ui::PopupColor::Native(bkpr::Status::Idle),
                     bold: true,
+                    working_clock: false,
                 },
             );
             source.link = Some("https://forge.example.com/repository/pull/7".to_owned());
@@ -3123,11 +3257,13 @@ mod tests {
                     text: "\u{f05e1} ".to_owned(),
                     color: ui::PopupColor::Ci(bkpr::ci_contract::CiStatus::Passed),
                     bold: false,
+                    working_clock: false,
                 },
                 ui::PopupSpan {
                     text: "日本語\u{1b}\n checks".to_owned(),
                     color: ui::PopupColor::Text,
                     bold: true,
+                    working_clock: false,
                 },
             ],
             ..ui::PopupRow::default()
@@ -3161,6 +3297,7 @@ mod tests {
             text: "2:03".to_owned(),
             color: ui::PopupColor::Muted,
             bold: false,
+            working_clock: false,
         }];
         check.link = Some("https://forge.test/owner/project/checks/12".to_owned());
         for columns in 0..=80 {
@@ -3199,17 +3336,20 @@ mod tests {
                 text: " +1234".to_owned(),
                 color: ui::PopupColor::Added,
                 bold: false,
+                working_clock: false,
             },
             ui::PopupSpan {
                 text: " -567".to_owned(),
                 color: ui::PopupColor::Deleted,
                 bold: false,
+                working_clock: false,
             },
         ];
         branch.right = vec![ui::PopupSpan {
             text: "\u{f419} origin/日本語/a-long-comparison-base".to_owned(),
             color: ui::PopupColor::Muted,
             bold: false,
+            working_clock: false,
         }];
         branch.link = Some("https://forge.test/owner/project".to_owned());
         let mut check = row("unit tests", ui::PopupColor::Text);
@@ -3218,6 +3358,7 @@ mod tests {
             text: "2:03".to_owned(),
             color: ui::PopupColor::Muted,
             bold: false,
+            working_clock: false,
         }];
         for columns in 0..=100 {
             let lines = wrapped_rows(&[branch.clone(), check.clone()], columns);
@@ -3264,6 +3405,7 @@ mod tests {
             text: "日本語 improve Unicode names and paths".to_owned(),
             color: ui::PopupColor::Text,
             bold: false,
+            working_clock: false,
         });
         request.link = Some(target.to_owned());
         for columns in 8..=48 {
@@ -3290,6 +3432,7 @@ mod tests {
             text: "9\u{1b}]8;;https://attacker.test\u{7}s".to_owned(),
             color: ui::PopupColor::Muted,
             bold: false,
+            working_clock: false,
         }];
         for columns in 0..=48 {
             let lines = wrapped_rows(&[check.clone()], columns);
@@ -3315,6 +3458,7 @@ mod tests {
             text: " · checks".to_owned(),
             color: ui::PopupColor::Muted,
             bold: true,
+            working_clock: false,
         });
         for columns in 4..=32 {
             let lines = wrapped_rows(&[linked.clone()], columns);

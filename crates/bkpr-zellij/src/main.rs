@@ -1,3 +1,4 @@
+mod animation;
 mod finder;
 mod finder_entry;
 mod keyguide;
@@ -154,6 +155,7 @@ struct Frontend {
     cursor: Option<Item>,
     desired_selection: Option<DesiredSelection>,
     pending_user_action: Option<PendingUserAction>,
+    working_clock: animation::WorkingClock,
     relayed_selection: Option<native::UiSelection>,
     relay_revision: u64,
     relay_epoch: String,
@@ -798,6 +800,13 @@ impl Frontend {
             return true;
         }
         false
+    }
+
+    fn timer(&mut self, now: Instant) -> bool {
+        let active = self.working_clock_visible();
+        let animated = self.working_clock.tick(now, active);
+        let expired = self.expire_user_action(now);
+        animated || expired
     }
 
     fn finish_selection(&mut self, request_id: u64, failed: bool) {
@@ -1950,6 +1959,56 @@ impl Frontend {
             })
     }
 
+    fn working_clock_visible(&self) -> bool {
+        if !self.granted || !self.visible || self.modal.is_some() || self.finder.is_open() {
+            return false;
+        }
+        if let Some(tab) = self.tabs.iter().find(|tab| tab.active)
+            && !self.manifest.panes.get(&tab.position).is_some_and(|panes| {
+                panes.iter().any(|pane| {
+                    pane.is_plugin
+                        && pane.id == self.id
+                        && !pane.is_suppressed
+                        && (!pane.is_floating || tab.are_floating_panes_visible)
+                })
+            })
+        {
+            return false;
+        }
+        let Some(state) = self.snapshot.as_ref() else {
+            return false;
+        };
+        let recognized = |pane: &bkpr::Pane| {
+            pane.harness
+                .as_deref()
+                .is_some_and(|harness| bkpr::agent_contract::harness_name(harness).is_some())
+        };
+        self.tree_cache
+            .iter()
+            .skip(self.scroll)
+            .take(self.tree_height())
+            .any(|row| match row.kind {
+                ui::RowKind::Workspace {
+                    index,
+                    collapsed: true,
+                } => {
+                    let workspace = &state.workspaces[index];
+                    // Left gutter, workspace dot and the complete two-cell status badge.
+                    self.columns >= 5
+                        && workspace.status == bkpr::Status::Working
+                        && state.panes.iter().any(|pane| {
+                            pane.workspace_id == workspace.id && recognized(pane)
+                        })
+                }
+                ui::RowKind::Pane { index, .. } => {
+                    let pane = &state.panes[index];
+                    // Left gutter, tree lead, project dot and the complete status badge.
+                    self.columns >= 8 && pane.status == bkpr::Status::Working && recognized(pane)
+                }
+                _ => false,
+            })
+    }
+
     fn render_sidebar(&mut self, rows: usize, columns: usize) {
         self.render_sidebar_to(rows, columns, &mut std::io::stdout());
     }
@@ -1973,6 +2032,9 @@ impl Frontend {
             // Host commands must precede the sidebar's rendering bytes.
             self.refresh_tooltip();
         }
+        let working_clock_visible = self.working_clock_visible();
+        self.working_clock
+            .schedule(Instant::now(), working_clock_visible);
         let tree = &self.tree_cache;
         let selected_group = self.cursor.as_ref().and_then(|item| match item {
             Item::Pane(_) => self
@@ -2076,12 +2138,15 @@ impl Frontend {
                         state,
                         &self.theme,
                         columns,
-                        tree_row.item.is_some() && tree_row.item == self.cursor,
-                        tree_row.item.is_some() && tree_row.item == self.hover,
-                        tree_row
-                            .workspace_id
-                            .as_deref()
-                            .is_some_and(|id| selected_group == Some(id)),
+                        ui::RowStyle {
+                            selected: tree_row.item.is_some() && tree_row.item == self.cursor,
+                            hovered: tree_row.item.is_some() && tree_row.item == self.hover,
+                            selected_group: tree_row
+                                .workspace_id
+                                .as_deref()
+                                .is_some_and(|id| selected_group == Some(id)),
+                            clock_frame: self.working_clock.frame(),
+                        },
                     )
                 } else if row == 2
                     && self
@@ -2318,7 +2383,7 @@ impl ZellijPlugin for Frontend {
             Event::Mouse(mouse) if self.granted => return self.mouse(mouse),
             Event::Timer(_) if self.granted => {
                 let now = Instant::now();
-                return self.expire_user_action(now);
+                return self.timer(now);
             }
             Event::PastedText(text) if self.granted => {
                 if self.finder.is_open() {
@@ -2335,6 +2400,7 @@ impl ZellijPlugin for Frontend {
                 self.visible = visible;
                 self.keyguide_dirty = true;
                 if !visible {
+                    self.working_clock.schedule(Instant::now(), false);
                     self.close_finder(false);
                     self.leave_control(false);
                     self.control_has_focus = false;
@@ -2350,6 +2416,7 @@ impl ZellijPlugin for Frontend {
                 }
             }
             Event::BeforeClose if self.granted => {
+                self.working_clock.schedule(Instant::now(), false);
                 self.close_finder(false);
                 self.leave_control(false);
                 self.tooltip.close(self.id, &self.configuration);
@@ -2625,6 +2692,137 @@ mod tests {
             ],
         );
         frontend
+    }
+
+    fn working_frontend() -> Frontend {
+        let mut frontend = popup_frontend();
+        let pane = &mut frontend.snapshot.as_mut().unwrap().panes[0];
+        pane.harness = Some("omp".to_owned());
+        pane.status = Status::Working;
+        frontend
+    }
+
+    #[test]
+    fn sidebar_clock_requires_a_recognized_working_badge() {
+        let mut frontend = working_frontend();
+        assert!(frontend.working_clock_visible());
+        for harness in [None, Some("shell"), Some("unrecognized")] {
+            frontend.snapshot.as_mut().unwrap().panes[0].harness = harness.map(str::to_owned);
+            assert!(!frontend.working_clock_visible());
+            assert!(!frontend.timer(Instant::now()));
+        }
+        frontend.snapshot.as_mut().unwrap().panes[0].harness = Some("omp".to_owned());
+        for status in [Status::Idle, Status::Blocked, Status::Done, Status::Unknown] {
+            frontend.snapshot.as_mut().unwrap().panes[0].status = status;
+            assert!(!frontend.working_clock_visible());
+            assert!(!frontend.timer(Instant::now()));
+        }
+        frontend.snapshot.as_mut().unwrap().panes[0].status = Status::Working;
+        assert!(frontend.working_clock_visible());
+    }
+
+    #[test]
+    fn sidebar_clock_tracks_viewport_badges_and_collapsed_workspace_aggregate() {
+        let mut frontend = working_frontend();
+        frontend.keyguide = None;
+        frontend.rows = 4;
+        assert!(!frontend.working_clock_visible());
+        frontend.rows = 5;
+        assert!(frontend.working_clock_visible());
+        frontend.columns = 7;
+        assert!(!frontend.working_clock_visible());
+        frontend.columns = 8;
+        assert!(frontend.working_clock_visible());
+        frontend.rows = 3;
+        frontend.scroll = 2;
+        assert!(frontend.working_clock_visible());
+        frontend.scroll = 3;
+        assert!(!frontend.working_clock_visible());
+
+        frontend.rows = 20;
+        frontend.columns = 40;
+        frontend.scroll = 0;
+        frontend.snapshot.as_mut().unwrap().workspaces[0].status = Status::Working;
+        frontend.fold("workspace_1".to_owned(), Some(true));
+        assert!(frontend.working_clock_visible());
+        frontend.columns = 4;
+        assert!(!frontend.working_clock_visible());
+        frontend.columns = 5;
+        assert!(frontend.working_clock_visible());
+        // A hidden child's state must not replace the native aggregate badge.
+        frontend.snapshot.as_mut().unwrap().workspaces[0].status = Status::Idle;
+        assert!(!frontend.working_clock_visible());
+        frontend.snapshot.as_mut().unwrap().workspaces[0].status = Status::Working;
+        frontend.snapshot.as_mut().unwrap().panes[0].harness = None;
+        assert!(!frontend.working_clock_visible());
+        frontend.snapshot.as_mut().unwrap().panes[0].harness = Some("omp".to_owned());
+        frontend.snapshot.as_mut().unwrap().panes[0].status = Status::Idle;
+        frontend.fold("workspace_1".to_owned(), Some(false));
+        frontend.columns = 40;
+        assert!(!frontend.working_clock_visible());
+    }
+
+    #[test]
+    fn sidebar_clock_stops_when_hidden_ungranted_modal_or_on_another_tab() {
+        let mut frontend = working_frontend();
+        assert!(frontend.working_clock_visible());
+        frontend.visible = false;
+        assert!(!frontend.working_clock_visible());
+        frontend.visible = true;
+        frontend.granted = false;
+        assert!(!frontend.working_clock_visible());
+        frontend.granted = true;
+        frontend.modal = Some(Modal::Close {
+            item: Item::Pane("terminal_1".to_owned()),
+            name: "Terminal 1".to_owned(),
+        });
+        assert!(!frontend.working_clock_visible());
+        frontend.modal = None;
+        frontend.tabs[0].position = 1;
+        assert!(!frontend.working_clock_visible());
+        frontend.tabs[0].position = 0;
+        frontend.manifest.panes.get_mut(&0).unwrap()[0].is_suppressed = true;
+        assert!(!frontend.working_clock_visible());
+        frontend.manifest.panes.get_mut(&0).unwrap()[0].is_suppressed = false;
+        assert!(frontend.working_clock_visible());
+    }
+
+    #[test]
+    fn sidebar_animation_and_user_action_timers_share_deadlines_without_consuming_each_other() {
+        let start = Instant::now();
+        let mut frontend = working_frontend();
+        frontend.in_flight = Some(Request::new(
+            1,
+            Action::RenamePane {
+                pane_id: "terminal_1".to_owned(),
+                label: "Renamed".to_owned(),
+            },
+        ));
+        frontend.pending_user_action = Some(PendingUserAction {
+            started: start,
+            shown: false,
+        });
+        frontend.working_clock.schedule(start, true);
+        assert!(!frontend.timer(start + Duration::from_millis(199)));
+        assert!(frontend.timer(start + Duration::from_millis(200)));
+        assert_eq!(frontend.working_clock.frame(), 1);
+        assert!(!frontend.timer(start + Duration::from_millis(200)));
+        assert!(!frontend.pending_user_action.as_ref().unwrap().shown);
+        assert!(frontend.timer(start + Duration::from_secs(2)));
+        assert!(frontend.pending_user_action.as_ref().unwrap().shown);
+        assert_eq!(frontend.working_clock.frame(), 2);
+        assert!(!frontend.timer(start + Duration::from_secs(2)));
+
+        frontend.visible = false;
+        assert!(!frontend.timer(start + Duration::from_millis(2200)));
+        frontend.visible = true;
+        assert!(!frontend.timer(start + Duration::from_millis(2400)));
+        frontend
+            .working_clock
+            .schedule(start + Duration::from_millis(2400), true);
+        assert!(!frontend.timer(start + Duration::from_millis(2500)));
+        assert!(frontend.timer(start + Duration::from_millis(2600)));
+        assert_eq!(frontend.working_clock.frame(), 3);
     }
 
     fn guide_mode(mode: InputMode) -> ModeInfo {
@@ -4812,15 +5010,7 @@ mod tests {
         ] {
             state.panes[0].harness = Some(harness.to_owned());
             for columns in 0..=24 {
-                let rendered = ui::render_row(
-                    &row,
-                    &state,
-                    &ui::Theme::default(),
-                    columns,
-                    true,
-                    false,
-                    true,
-                );
+                let rendered = ui::render_row(&row, &state, &ui::Theme::default(), columns, ui::RowStyle { selected: true, hovered: false, selected_group: true, clock_frame: 0 });
                 let visible: String = rendered
                     .split('\u{1b}')
                     .map(|part| {
@@ -4856,15 +5046,7 @@ mod tests {
                 };
                 for columns in 0..=48 {
                     for (selected, hovered) in [(false, false), (true, false), (false, true)] {
-                        let rendered = ui::render_row(
-                            &row,
-                            &state,
-                            &ui::Theme::default(),
-                            columns,
-                            selected,
-                            hovered,
-                            selected,
-                        );
+                        let rendered = ui::render_row(&row, &state, &ui::Theme::default(), columns, ui::RowStyle { selected, hovered, selected_group: selected, clock_frame: 0 });
                         let visible: String = rendered
                             .split('\u{1b}')
                             .map(|part| {
