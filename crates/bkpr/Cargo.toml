@@ -16,6 +16,7 @@ clap = { version = "4", features = ["derive", "env"] }
 libc = "0.2"
 scraper = { version = "0.24", default-features = false }
 parking_lot = "0.12"
+sha2 = { version = "0.11", default-features = false }
 tempfile = "3"
 tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "macros", "sync", "time"] }
 
