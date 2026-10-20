@@ -284,6 +284,15 @@ pub fn launch(directory: &Path, arguments: Vec<OsString>) -> Result<()> {
             }
             thread::sleep(Duration::from_millis(50));
         }
+        // The server, not this launcher, owns the route after the TUI exits.
+        relay::request_as(
+            &identity.socket,
+            &identity.agent_id,
+            &identity.token,
+            "lease",
+            json!({"pid": server.id()}),
+        )
+        .context("lease the broker route to the Codex server")?;
         #[cfg(target_os = "linux")]
         let process_start = Some(process_start(server.id())?);
         #[cfg(not(target_os = "linux"))]
@@ -472,13 +481,7 @@ struct ServerManifest {
 }
 
 #[cfg(target_os = "linux")]
-fn process_start(pid: u32) -> Result<String> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
-    stat.rsplit_once(')')
-        .and_then(|(_, fields)| fields.split_whitespace().nth(19))
-        .map(str::to_owned)
-        .context("read Codex server process start time")
-}
+use relay::process_start;
 
 #[cfg(target_os = "linux")]
 fn server_pidfd(state: &ServerManifest) -> Result<Option<std::os::fd::OwnedFd>> {
@@ -554,14 +557,20 @@ fn stop_linux(manifest: &Path) -> Result<()> {
     }
     // Acquire and validate the stable process handle before deactivating anything.
     let pidfd = server_pidfd(&state)?;
-    relay::request_as(
+    let retired = relay::request_as(
         &state.relay_socket,
         &state.agent_id,
         &state.token,
         "deactivate",
         json!({}),
-    )
-    .context("retire Codex broker route; acknowledge all pending messages before stopping")?;
+    );
+    // A server that already exited leased the route, so the broker prunes it
+    // and cannot deactivate it any more; only the runtime remains to remove.
+    if pidfd.is_some() {
+        retired.context(
+            "retire Codex broker route; acknowledge all pending messages before stopping",
+        )?;
+    }
     if let Some(pidfd) = pidfd {
         let result = unsafe {
             libc::syscall(

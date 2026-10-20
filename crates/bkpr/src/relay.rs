@@ -46,6 +46,9 @@ struct Agent {
     cwd: PathBuf,
     title: String,
     pid: u32,
+    /// Kernel start time of `pid`; a recycled PID has a different value.
+    #[serde(default)]
+    process_start: Option<String>,
     created_at: u64,
     session_id: Option<String>,
     queue_endpoint: Option<String>,
@@ -96,6 +99,39 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Kernel start time of a process, which distinguishes it from a later process
+/// that reuses the same PID.
+#[cfg(target_os = "linux")]
+pub(crate) fn process_start(pid: u32) -> Result<String> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    stat.rsplit_once(')')
+        .and_then(|(_, fields)| fields.split_whitespace().nth(19))
+        .map(str::to_owned)
+        .context("read process start time")
+}
+
+/// Identify a running process for liveness checks. Without procfs, fall back to
+/// PID presence alone.
+fn process_identity(pid: u32) -> Result<Option<String>> {
+    if pid == 0 || pid > i32::MAX as u32 || unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+        bail!("process {pid} is not running");
+    }
+    #[cfg(target_os = "linux")]
+    return process_start(pid).map(Some);
+    #[cfg(not(target_os = "linux"))]
+    Ok(None)
+}
+
+/// An agent lives exactly as long as the process it registered or leased.
+/// Entries without a recorded start time predate it and rely on PID presence.
+fn alive(agent: &Agent) -> bool {
+    match (process_identity(agent.pid), &agent.process_start) {
+        (Ok(current), Some(start)) => current.as_ref() == Some(start),
+        (Ok(_), None) => true,
+        (Err(_), _) => false,
+    }
 }
 
 fn state_directory() -> Result<PathBuf> {
@@ -225,7 +261,6 @@ fn call(socket: &Path, id: &str, token: &str, method: &str, params: Value) -> Re
     Ok(response.get("result").cloned().unwrap_or(Value::Null))
 }
 
-#[cfg(target_os = "linux")]
 pub(crate) fn request_as(
     socket: &Path,
     agent_id: &str,
@@ -269,6 +304,31 @@ impl Broker {
         Ok(())
     }
 
+    /// Delete agents whose process has exited, with their unread inboxes. No
+    /// launch can resume an old identity, so keeping them would only report
+    /// undeliverable messages as durable and grow the store without bound.
+    fn prune(&mut self) -> Result<()> {
+        let exited: Vec<_> = self
+            .store
+            .agents
+            .values()
+            .filter(|agent| !alive(agent))
+            .map(|agent| agent.id.clone())
+            .collect();
+        if exited.is_empty() {
+            return Ok(());
+        }
+        for id in &exited {
+            self.store.agents.remove(id);
+            self.subscribers.remove(id);
+        }
+        self.store
+            .messages
+            .retain(|_, message| !exited.contains(&message.to));
+        // Exited entries are re-pruned after a reload, so a failed save loses nothing.
+        self.save()
+    }
+
     fn authenticate(&self, request: &Request) -> Result<Agent> {
         let agent = self
             .store
@@ -306,6 +366,12 @@ impl Broker {
                 bail!("unsupported harness");
             }
             let cwd = fs::canonicalize(string(&request.params, "cwd")?)?;
+            let pid: u32 = request.params["pid"]
+                .as_u64()
+                .context("missing pid")?
+                .try_into()?;
+            let process_start = process_identity(pid)?;
+            self.prune()?;
             let agent = Agent {
                 id: request.agent_id.clone(),
                 token: request.token.clone(),
@@ -313,10 +379,8 @@ impl Broker {
                 workspace: string(&request.params, "workspace")?.to_owned(),
                 cwd,
                 title: format!("{harness} agent"),
-                pid: request.params["pid"]
-                    .as_u64()
-                    .context("missing pid")?
-                    .try_into()?,
+                pid,
+                process_start,
                 created_at: now(),
                 session_id: None,
                 queue_endpoint: None,
@@ -335,6 +399,7 @@ impl Broker {
         match request.method.as_str() {
             "whoami" => Ok((metadata(&agent), Vec::new())),
             "discover" => {
+                self.prune()?;
                 let all = all_scope(params)?;
                 let agents: Vec<_> = self
                     .store
@@ -385,6 +450,12 @@ impl Broker {
                 let all = all_scope(params)?;
                 let to = string(params, "to")?;
                 let recipient = self.store.agents.get(to).context("unknown recipient id")?;
+                if !alive(recipient) {
+                    self.prune()?;
+                    bail!(
+                        "recipient exited; discover its native session_id to find a resumed launch"
+                    );
+                }
                 if !recipient.accepting {
                     bail!("recipient has been stopped and no longer accepts messages");
                 }
@@ -463,6 +534,20 @@ impl Broker {
                 }
                 let mut updated = agent.clone();
                 updated.accepting = false;
+                self.store.agents.insert(agent.id.clone(), updated.clone());
+                if let Err(error) = self.save() {
+                    self.store.agents.insert(agent.id.clone(), agent);
+                    return Err(error);
+                }
+                Ok((public_agent(&updated), Vec::new()))
+            }
+            "lease" => {
+                // A launch whose route outlives its launcher (the Codex queue
+                // server) anchors its lifetime to that owned process instead.
+                let pid: u32 = params["pid"].as_u64().context("missing pid")?.try_into()?;
+                let mut updated = agent.clone();
+                updated.process_start = process_identity(pid)?;
+                updated.pid = pid;
                 self.store.agents.insert(agent.id.clone(), updated.clone());
                 if let Err(error) = self.save() {
                     self.store.agents.insert(agent.id.clone(), agent);
@@ -577,7 +662,7 @@ fn validate_endpoint(endpoint: &str) -> Result<()> {
 }
 
 fn public_agent(agent: &Agent) -> Value {
-    let active = agent.pid != 0 && unsafe { libc::kill(agent.pid as libc::pid_t, 0) } == 0;
+    let active = alive(agent);
     json!({"id":agent.id,"harness":agent.harness,"workspace":agent.workspace,"cwd":agent.cwd,
         "title":agent.title,"session_id":agent.session_id,"created_at":agent.created_at,"active":active,"accepting":agent.accepting})
 }
@@ -1123,6 +1208,138 @@ mod tests {
                     "send",
                     json!({"to":bob.agent_id,"text":"too late"})
                 ))
+                .is_err()
+        );
+    }
+
+    /// A short-lived process stands in for a launch that later exits.
+    fn sleeper() -> std::process::Child {
+        Command::new("sleep").arg("30").spawn().unwrap()
+    }
+
+    fn register_pid(broker: &mut Broker, workspace: &str, pid: u32) -> Request {
+        let request = Request {
+            agent_id: random_hex(16).unwrap(),
+            token: random_hex(32).unwrap(),
+            method: "register".into(),
+            params: json!({"cwd":broker.directory,"workspace":workspace,"harness":"codex","pid":pid}),
+        };
+        broker.perform(&request).unwrap();
+        request
+    }
+
+    fn discovered(broker: &mut Broker, agent: &Request) -> Vec<String> {
+        broker
+            .perform(&as_request(agent, "discover", json!({})))
+            .unwrap()
+            .0["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|agent| agent["id"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn exited_agents_and_their_inboxes_are_pruned() {
+        let (directory, mut broker) = broker();
+        let alice = register(&mut broker, "one");
+        let mut process = sleeper();
+        let bob = register_pid(&mut broker, "one", process.id());
+        broker
+            .perform(&as_request(
+                &alice,
+                "send",
+                json!({"to":bob.agent_id,"text":"unread"}),
+            ))
+            .unwrap();
+        process.kill().unwrap();
+        process.wait().unwrap();
+        assert_eq!(
+            discovered(&mut broker, &alice),
+            std::slice::from_ref(&alice.agent_id)
+        );
+        assert!(broker.store.messages.is_empty());
+        let saved: Store =
+            serde_json::from_reader(File::open(directory.path().join("state.json")).unwrap())
+                .unwrap();
+        assert!(!saved.agents.contains_key(&bob.agent_id));
+        // A later registration also sweeps, so an idle broker cannot accumulate entries.
+        let mut process = sleeper();
+        let carol = register_pid(&mut broker, "one", process.id());
+        process.kill().unwrap();
+        process.wait().unwrap();
+        register(&mut broker, "two");
+        assert!(!broker.store.agents.contains_key(&carol.agent_id));
+    }
+
+    #[test]
+    fn send_to_an_exited_recipient_fails_instead_of_queueing() {
+        let (_directory, mut broker) = broker();
+        let alice = register(&mut broker, "one");
+        let mut process = sleeper();
+        let bob = register_pid(&mut broker, "one", process.id());
+        process.kill().unwrap();
+        process.wait().unwrap();
+        let error = broker
+            .perform(&as_request(
+                &alice,
+                "send",
+                json!({"to":bob.agent_id,"text":"lost"}),
+            ))
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("exited"), "{error}");
+        assert!(broker.store.messages.is_empty());
+        assert!(!broker.store.agents.contains_key(&bob.agent_id));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_recycled_pid_does_not_keep_an_agent_alive() {
+        let (_directory, mut broker) = broker();
+        let alice = register(&mut broker, "one");
+        let bob = register(&mut broker, "one");
+        // Same live PID, different start time: the original process is gone.
+        broker
+            .store
+            .agents
+            .get_mut(&bob.agent_id)
+            .unwrap()
+            .process_start = Some("0".into());
+        assert_eq!(
+            discovered(&mut broker, &alice),
+            std::slice::from_ref(&alice.agent_id)
+        );
+    }
+
+    #[test]
+    fn lease_moves_the_lifetime_to_an_owned_process() {
+        let (_directory, mut broker) = broker();
+        let alice = register(&mut broker, "one");
+        let mut launcher = sleeper();
+        let bob = register_pid(&mut broker, "one", launcher.id());
+        broker
+            .perform(&as_request(
+                &bob,
+                "lease",
+                json!({"pid":std::process::id()}),
+            ))
+            .unwrap();
+        launcher.kill().unwrap();
+        launcher.wait().unwrap();
+        let mut ids = discovered(&mut broker, &alice);
+        ids.sort();
+        let mut expected = [alice.agent_id.clone(), bob.agent_id.clone()];
+        expected.sort();
+        assert_eq!(ids, expected);
+        let mut exited = sleeper();
+        let pid = exited.id();
+        exited.kill().unwrap();
+        exited.wait().unwrap();
+        assert!(
+            broker
+                .perform(&as_request(&bob, "lease", json!({"pid":pid})))
                 .is_err()
         );
     }
