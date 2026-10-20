@@ -3,3 +3,4 @@
 /result-*
 /.direnv/
 /node_modules/
+__pycache__/
