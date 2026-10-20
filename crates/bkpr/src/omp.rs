@@ -137,6 +137,7 @@ pub fn launch(directory: &Path, arguments: Vec<OsString>) -> Result<()> {
     relay.apply(&mut command);
     command
         .env("BKPR_OMP_SERVER", format!("bkpr-{}", relay.agent_id))
+        .env("BKPR_OMP_PROGRAM", &program)
         .arg("-e")
         .arg(package.path())
         .args(arguments);

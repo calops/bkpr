@@ -358,6 +358,57 @@ pub fn wait_message() -> Result<()> {
     if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("invalid Claude agent id");
     }
+    let metadata = fs::symlink_metadata(&directory)?;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+    {
+        bail!("Claude hook directory is not private and user-owned");
+    }
+    let path = directory.join(format!("claude-hook-{id}.log"));
+    let result = wait_message_inner(&directory, &id, &path);
+    if let Err(error) = &result {
+        let recorded = (|| -> Result<()> {
+            let mut log = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&path)?;
+            let metadata = log.metadata()?;
+            if !metadata.is_file()
+                || metadata.uid() != unsafe { libc::geteuid() }
+                || metadata.mode() & 0o077 != 0
+                || metadata.nlink() != 1
+            {
+                bail!("unsafe Claude hook diagnostic file");
+            }
+            if metadata.len() >= 64 * 1024 {
+                log.set_len(0)?;
+            }
+            let mut detail = format!("{error:#}");
+            if let Ok(token) = env::var("BKPR_RELAY_TOKEN")
+                && !token.is_empty()
+            {
+                detail = detail.replace(&token, "[redacted]");
+            }
+            detail.truncate(detail.floor_char_boundary(2048));
+            let at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_millis();
+            writeln!(log, "{at_ms} {detail}")?;
+            log.sync_data()?;
+            Ok(())
+        })();
+        if let Err(record_error) = recorded {
+            eprintln!("bkpr: cannot save Claude hook diagnostic: {record_error:#}");
+        }
+    }
+    result
+}
+
+fn wait_message_inner(directory: &Path, id: &str, log_path: &Path) -> Result<()> {
     let lock = OpenOptions::new()
         .create(true)
         .read(true)
@@ -375,6 +426,17 @@ pub fn wait_message() -> Result<()> {
     let mut lock = lock;
     let mut woken = String::new();
     (&lock).take(1024 * 1024).read_to_string(&mut woken)?;
+    crate::relay::request(
+        "receiver",
+        json!({
+            "kind": "claude_hook",
+            "pid": std::process::id(),
+            "activity": "idle",
+            "diagnostic": null,
+            "diagnostic_log": log_path,
+        }),
+    )
+    .context("register Claude's future-turn notification receiver")?;
     let mut subscription = crate::relay::subscribe()?;
     let mut line = String::new();
     loop {

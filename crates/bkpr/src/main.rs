@@ -23,7 +23,7 @@ use clap::{Parser, Subcommand};
     name = "bkpr",
     version,
     disable_help_subcommand = true,
-    override_usage = "bkpr [OPTIONS]",
+    override_usage = "bkpr [OPTIONS] [COMMAND]",
     about = "Persistent local Zellij workspaces with an agent-aware sidebar",
     after_help = "Examples:\n  bkpr                         Open or attach to the default local session\n  bkpr --session work          Open or attach to a named local session\n  bkpr --sidebar-width 44      Set the sidebar width\n\nSessions use native Zellij terminals.\nAutomatic Git branch, diff and CI reporting is available on Linux."
 )]
@@ -36,6 +36,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Inspect communication bridge readiness and retained messages.
+    Bridge {
+        #[command(subcommand)]
+        command: BridgeCommands,
+    },
     /// Inspect currently live foreground agent processes.
     #[command(hide = true)]
     Agent {
@@ -102,6 +107,14 @@ enum Commands {
     /// Serve the authenticated launch-local MCP connection over stdio.
     #[command(hide = true)]
     RelayMcp,
+    /// Register the launch-local OMP extension's future-turn receiver.
+    #[command(hide = true)]
+    RelayReceiver {
+        #[arg(long)]
+        pid: u32,
+        #[arg(long)]
+        disable: bool,
+    },
     /// Own the private native durable message broker.
     #[command(hide = true)]
     RelayDaemon {
@@ -114,6 +127,18 @@ enum Commands {
         #[arg(long)]
         runtime: PathBuf,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum BridgeCommands {
+    /// Report bridge readiness without starting or changing agent sessions.
+    Status {
+        /// Emit compact JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read a retained message explicitly as the local operator.
+    Show { message_id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -135,6 +160,23 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         None => launcher::run(cli.launch),
+        Some(Commands::Bridge { command }) => {
+            let (value, compact) = match command {
+                BridgeCommands::Status { json } => (relay::status()?, json),
+                BridgeCommands::Show { message_id } => {
+                    (relay::inspect_message(&message_id)?, false)
+                }
+            };
+            let mut stdout = io::stdout().lock();
+            if compact {
+                serde_json::to_writer(&mut stdout, &value)?;
+            } else {
+                serde_json::to_writer_pretty(&mut stdout, &value)?;
+            }
+            writeln!(stdout)?;
+            stdout.flush()?;
+            Ok(())
+        }
         Some(Commands::ClaudeLaunch {
             wrapper_dir,
             arguments,
@@ -152,6 +194,19 @@ fn run() -> Result<()> {
         Some(Commands::CodexHook) => codex::hook(),
         Some(Commands::CodexStop { manifest }) => codex::stop(&manifest),
         Some(Commands::RelayMcp) => relay::mcp(),
+        Some(Commands::RelayReceiver { pid, disable }) => {
+            relay::request(
+                "receiver",
+                serde_json::json!({
+                    "kind": "omp_mcp",
+                    "pid": pid,
+                    "activity": "unknown",
+                    "enabled": !disable,
+                    "diagnostic": null,
+                }),
+            )?;
+            Ok(())
+        }
         Some(Commands::RelayDaemon { socket }) => relay::daemon(&socket),
         Some(Commands::AgentRelayDaemon { runtime }) => agent_relay::daemon(&runtime),
         Some(Commands::Agent { command }) => match command {
