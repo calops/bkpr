@@ -1,6 +1,6 @@
 use crate::{animation::WorkingClock, ui};
-use serde::{Deserialize, Serialize};
 use bkpr::ci_contract::CiRefreshTarget;
+use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -854,11 +854,18 @@ pub(crate) const OSC8_CLOSE: &str = "\u{1b}]8;;\u{1b}\\";
 pub(crate) fn working_clock_visible(row: &ui::PopupRow, columns: usize) -> bool {
     let right: usize = row.right.iter().map(|span| ui::width(&span.text)).sum();
     let right_columns = if right > columns
-        && row.right.iter().any(|span| span.text == ui::refresh_button_text())
+        && row
+            .right
+            .iter()
+            .any(|span| span.text == ui::refresh_button_text())
     {
         0
     } else {
-        right.min(if row.suffix.is_empty() { columns } else { columns / 2 })
+        right.min(if row.suffix.is_empty() {
+            columns
+        } else {
+            columns / 2
+        })
     };
     let body = columns
         .saturating_sub(right_columns + usize::from(right_columns != 0 && right_columns < columns));
@@ -988,7 +995,13 @@ fn outline_edges(row: usize, rows: usize) -> (&'static str, &'static str) {
     }
 }
 
-pub(crate) fn outlined_line(text: String, row: usize, rows: usize, columns: usize, theme: &ui::Theme) -> String {
+pub(crate) fn outlined_line(
+    text: String,
+    row: usize,
+    rows: usize,
+    columns: usize,
+    theme: &ui::Theme,
+) -> String {
     let (left, right) = outline_edges(row, rows);
     let center = if row == 0 || row + 1 == rows {
         format!("{}{}", theme.bright, "─".repeat(columns.saturating_sub(2)))
@@ -998,13 +1011,13 @@ pub(crate) fn outlined_line(text: String, row: usize, rows: usize, columns: usiz
     if columns >= 2 {
         format!(
             "{OSC8_CLOSE}{}{}{left}{center}{OSC8_CLOSE}{}{}{right}{OSC8_CLOSE}",
-            theme.base,
-            theme.bright,
-            theme.base,
-            theme.bright
+            theme.base, theme.bright, theme.base, theme.bright
         )
     } else if columns == 1 {
-        format!("{OSC8_CLOSE}{}{}{left}{OSC8_CLOSE}", theme.base, theme.bright)
+        format!(
+            "{OSC8_CLOSE}{}{}{left}{OSC8_CLOSE}",
+            theme.base, theme.bright
+        )
     } else {
         OSC8_CLOSE.to_owned()
     }
@@ -1122,7 +1135,9 @@ impl Overlay {
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
                 self.granted = false;
-                self.working_clock.borrow_mut().schedule(Instant::now(), false);
+                self.working_clock
+                    .borrow_mut()
+                    .schedule(Instant::now(), false);
                 self.presented_revision = None;
                 self.rendered_revision.set(None);
                 self.pointer_inside.set(false);
@@ -1362,7 +1377,9 @@ impl Overlay {
         self.presented_revision = None;
         self.state = Some(tooltip);
         if !self.working_clock_active() {
-            self.working_clock.borrow_mut().schedule(Instant::now(), false);
+            self.working_clock
+                .borrow_mut()
+                .schedule(Instant::now(), false);
         }
         true
     }
@@ -1723,7 +1740,9 @@ impl Overlay {
             .min(layout.lines.len().saturating_sub(self.viewport.get()));
         drop(layout);
         let active = self.working_clock_active();
-        self.working_clock.borrow_mut().schedule(Instant::now(), active);
+        self.working_clock
+            .borrow_mut()
+            .schedule(Instant::now(), active);
         let clock_frame = self.working_clock.borrow().frame();
         let layout = self.layout.borrow();
         let footer = if layout.lines.len() > self.viewport.get() {
@@ -2136,9 +2155,14 @@ mod tests {
     #[test]
     fn working_clock_runs_only_for_painted_authorized_popup_rows() {
         let mut overlay = popup_overlay();
-        let mut working = row(ui::working_clock_icon(0), ui::PopupColor::Native(bkpr::Status::Working));
+        let mut working = row(
+            ui::working_clock_icon(0),
+            ui::PopupColor::Native(bkpr::Status::Working),
+        );
         working.spans[0].working_clock = true;
-        working.spans.extend(row(" Working · Codex", ui::PopupColor::Text).spans);
+        working
+            .spans
+            .extend(row(" Working · Codex", ui::PopupColor::Text).spans);
         overlay.layout.get_mut().lines = wrapped_rows(&[working], 46);
         assert!(overlay.working_clock_active());
         overlay.layout.get_mut().scroll = 1;
@@ -2160,9 +2184,14 @@ mod tests {
 
     #[test]
     fn animated_popup_glyph_preserves_labels_links_and_truncated_widths() {
-        let mut source = row(ui::working_clock_icon(0), ui::PopupColor::Native(bkpr::Status::Working));
+        let mut source = row(
+            ui::working_clock_icon(0),
+            ui::PopupColor::Native(bkpr::Status::Working),
+        );
         source.spans[0].working_clock = true;
-        source.spans.extend(row(" Working · Codex 日本語", ui::PopupColor::Text).spans);
+        source
+            .spans
+            .extend(row(" Working · Codex 日本語", ui::PopupColor::Text).spans);
         source.link = Some("https://forge.test/owner/project".to_owned());
         for columns in 0..=40 {
             let lines = wrapped_rows(&[source.clone()], columns);
@@ -2170,12 +2199,19 @@ mod tests {
                 for frame in 0..12 {
                     let mut terminal = TerminalConsumer::default();
                     terminal.consume(&render_action_line(
-                        &line.row, columns, false, &ui::Theme::default(), frame,
+                        &line.row,
+                        columns,
+                        false,
+                        &ui::Theme::default(),
+                        frame,
                     ));
                     let mut baseline = TerminalConsumer::default();
                     baseline.consume(&render_line(&line.row, columns));
                     assert_eq!(
-                        terminal.text().replace(ui::working_clock_icon(frame).trim_end(), ui::working_clock_icon(0).trim_end()),
+                        terminal.text().replace(
+                            ui::working_clock_icon(frame).trim_end(),
+                            ui::working_clock_icon(0).trim_end()
+                        ),
                         baseline.text(),
                     );
                     assert_eq!(ui::width(&terminal.text()), columns);
@@ -3083,8 +3119,10 @@ mod tests {
                 }
                 let lines = wrapped_rows(&[source], columns);
                 assert_eq!(lines.len(), 1);
-                let normal = render_action_line(&lines[0].row, columns, false, &ui::Theme::default(), 0);
-                let hover = render_action_line(&lines[0].row, columns, true, &ui::Theme::default(), 0);
+                let normal =
+                    render_action_line(&lines[0].row, columns, false, &ui::Theme::default(), 0);
+                let hover =
+                    render_action_line(&lines[0].row, columns, true, &ui::Theme::default(), 0);
                 let mut terminal = TerminalConsumer::default();
                 terminal.consume(&hover);
                 assert_eq!(ui::width(&terminal.text()), columns);
@@ -3464,7 +3502,13 @@ mod tests {
             let lines = wrapped_rows(&[linked.clone()], columns);
             for line in lines {
                 let mut terminal = TerminalConsumer::default();
-                terminal.consume(&outlined_line(render_line(&line.row, columns), 1, 5, columns + 2, &ui::Theme::default()));
+                terminal.consume(&outlined_line(
+                    render_line(&line.row, columns),
+                    1,
+                    5,
+                    columns + 2,
+                    &ui::Theme::default(),
+                ));
                 let cells = terminal.cell_links();
                 let text_width = ui::width(&line.row.plain());
                 assert_eq!(cells.len(), columns + 2);
@@ -3562,7 +3606,13 @@ mod tests {
             let mut destinations = std::collections::BTreeSet::new();
             for line in wrapped_rows(&rows, columns) {
                 let mut terminal = TerminalConsumer::default();
-                terminal.consume(&outlined_line(render_line(&line.row, columns), 1, 3, columns + 2, &ui::Theme::default()));
+                terminal.consume(&outlined_line(
+                    render_line(&line.row, columns),
+                    1,
+                    3,
+                    columns + 2,
+                    &ui::Theme::default(),
+                ));
                 let cells = terminal.cell_links();
                 assert_eq!(cells.len(), columns + 2);
                 assert!(cells[0].is_none() && cells[columns + 1].is_none());
@@ -3632,7 +3682,13 @@ mod tests {
             assert!(terminal.link.is_none());
         }
         terminal.link = Some(target.to_owned());
-        terminal.consume(&outlined_line(String::new(), 0, 0, 0, &ui::Theme::default()));
+        terminal.consume(&outlined_line(
+            String::new(),
+            0,
+            0,
+            0,
+            &ui::Theme::default(),
+        ));
         assert!(terminal.link.is_none());
     }
 
@@ -3663,7 +3719,13 @@ mod tests {
             let layout = overlay.layout.borrow();
             let line = &layout.lines[layout.scroll + offset];
             let mut terminal = TerminalConsumer::default();
-            terminal.consume(&outlined_line(render_line(&line.row, 16), offset + 1, 6, 18, &ui::Theme::default()));
+            terminal.consume(&outlined_line(
+                render_line(&line.row, 16),
+                offset + 1,
+                6,
+                18,
+                &ui::Theme::default(),
+            ));
             let expected = checks[7 + offset].link.as_deref();
             let links = terminal.cell_links();
             let text_width = ui::width(&line.row.plain());
@@ -3866,7 +3928,13 @@ mod tests {
                     let mut body = row_with_link("日本語 +1234 -567");
                     body.spans[0].text = ui::fit(&body.spans[0].text, columns.saturating_sub(2));
                     let mut terminal = TerminalConsumer::default();
-                    terminal.consume(&outlined_line(render_line(&body, columns.saturating_sub(2)), row, rows, columns, &ui::Theme::default()));
+                    terminal.consume(&outlined_line(
+                        render_line(&body, columns.saturating_sub(2)),
+                        row,
+                        rows,
+                        columns,
+                        &ui::Theme::default(),
+                    ));
                     let text = terminal.text();
                     assert_eq!(ui::width(&text), columns);
                     assert!(!text.contains(['├', '┤']));
@@ -3935,5 +4003,4 @@ mod tests {
             assert!(geometry(&sidebar, 14, &tab, empty, &content).is_none());
         }
     }
-
 }

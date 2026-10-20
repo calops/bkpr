@@ -3,11 +3,11 @@
 use std::fmt::{self, Write};
 use std::ops::Range;
 
-use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
-use nucleo_matcher::{Matcher, Utf32Str};
 use bkpr::agent_contract::harness_name;
 use bkpr::ci_contract::{ChangeRequestState, CiFetchState, ForgeProvider, IssueTracker};
 use bkpr::{Pane, Snapshot};
+use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
+use nucleo_matcher::{Matcher, Utf32Str};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

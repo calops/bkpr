@@ -1,11 +1,11 @@
 //! Last-known committed Git/forge metadata, isolated by canonical working directory.
 use crate::project::ProjectName;
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use bkpr::{
     BranchChanges,
     ci_contract::{CiFetchState, CiSnapshot},
 };
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -270,8 +270,26 @@ mod tests {
                 3 => changed.git_refs = Some("advanced refs/heads/main".into()),
                 4 => changed.branch_changes.as_mut().unwrap().merge_base = "new-base".into(),
                 5 => changed.head_sha = Some("new-head".into()),
-                6 => changed.source.as_mut().unwrap().remote_branch.as_mut().unwrap().name = "renamed".into(),
-                _ => changed.source.as_mut().unwrap().remote_branch.as_mut().unwrap().remote = "upstream".into(),
+                6 => {
+                    changed
+                        .source
+                        .as_mut()
+                        .unwrap()
+                        .remote_branch
+                        .as_mut()
+                        .unwrap()
+                        .name = "renamed".into()
+                }
+                _ => {
+                    changed
+                        .source
+                        .as_mut()
+                        .unwrap()
+                        .remote_branch
+                        .as_mut()
+                        .unwrap()
+                        .remote = "upstream".into()
+                }
             }
             assert!(cache.load(cwd, &changed).is_none(), "case {change}");
         }
@@ -282,15 +300,25 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let cwd = root.path().join("repo");
         fs::create_dir(&cwd).unwrap();
-        let cache = Cache { root: Some(root.path().join("state")) };
+        let cache = Cache {
+            root: Some(root.path().join("state")),
+        };
         let original = project();
         cache.store(cwd.to_str().unwrap(), &original).unwrap();
-        let path = cache.directory(&fs::canonicalize(&cwd).unwrap()).unwrap().join("state.json");
+        let path = cache
+            .directory(&fs::canonicalize(&cwd).unwrap())
+            .unwrap()
+            .join("state.json");
         let bytes = fs::read(&path).unwrap();
         for identity in [None, Some("different-local-head")] {
             let mut record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             match identity {
-                None => { record["ci"].as_object_mut().unwrap().remove("local_head_sha"); }
+                None => {
+                    record["ci"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("local_head_sha");
+                }
                 Some(identity) => record["ci"]["local_head_sha"] = json!(identity),
             }
             fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
@@ -303,17 +331,26 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let cwd = root.path().join("repo");
         fs::create_dir(&cwd).unwrap();
-        let cache = Cache { root: Some(root.path().join("state")) };
+        let cache = Cache {
+            root: Some(root.path().join("state")),
+        };
         let original = project();
         cache.store(cwd.to_str().unwrap(), &original).unwrap();
-        let path = cache.directory(&fs::canonicalize(&cwd).unwrap()).unwrap().join("state.json");
-        let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let path = cache
+            .directory(&fs::canonicalize(&cwd).unwrap())
+            .unwrap()
+            .join("state.json");
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         record["version"] = json!(1);
         record["ci"]["updated_at"] = json!(u64::MAX);
         fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
         assert!(cache.load(cwd.to_str().unwrap(), &original).is_none());
         cache.store(cwd.to_str().unwrap(), &original).unwrap();
-        assert_eq!(cache.load(cwd.to_str().unwrap(), &original).unwrap().ci, original.ci);
+        assert_eq!(
+            cache.load(cwd.to_str().unwrap(), &original).unwrap().ci,
+            original.ci
+        );
     }
 
     #[test]

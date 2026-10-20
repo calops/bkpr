@@ -36,7 +36,11 @@ impl Default for Theme {
             added: "\x1b[22;32m".into(),
             deleted: "\x1b[22;31m".into(),
             accents: std::array::from_fn(|index| {
-                let code = if index < 8 { 30 + index } else { 90 + index - 8 };
+                let code = if index < 8 {
+                    30 + index
+                } else {
+                    90 + index - 8
+                };
                 format!("\x1b[22;{code}m")
             }),
         }
@@ -132,22 +136,40 @@ mod tests {
 
     #[test]
     fn unknown_or_limited_colors_never_emit_rgb() {
-        for colors in [TerminalColors::default(), TerminalColors {
-            foreground: Some([240, 240, 240]),
-            background: Some([12, 12, 12]),
-            ansi: [Some([100, 100, 100]); 16],
-            ..TerminalColors::default()
-        }, TerminalColors { truecolor: true, ..TerminalColors::default() }, TerminalColors {
-            truecolor: true,
-            foreground: Some([240, 240, 240]),
-            ansi: [Some([100, 100, 100]); 16],
-            ..TerminalColors::default()
-        }] {
+        for colors in [
+            TerminalColors::default(),
+            TerminalColors {
+                foreground: Some([240, 240, 240]),
+                background: Some([12, 12, 12]),
+                ansi: [Some([100, 100, 100]); 16],
+                ..TerminalColors::default()
+            },
+            TerminalColors {
+                truecolor: true,
+                ..TerminalColors::default()
+            },
+            TerminalColors {
+                truecolor: true,
+                foreground: Some([240, 240, 240]),
+                ansi: [Some([100, 100, 100]); 16],
+                ..TerminalColors::default()
+            },
+        ] {
             let mut theme = Theme::default();
             theme.update(&colors);
             assert_eq!(theme.base, "\x1b[22;39;49m");
-            for style in [&theme.base, &theme.selected, &theme.hovered, &theme.muted,
-                &theme.bright, &theme.added, &theme.deleted].into_iter().chain(theme.accents.iter()) {
+            for style in [
+                &theme.base,
+                &theme.selected,
+                &theme.hovered,
+                &theme.muted,
+                &theme.bright,
+                &theme.added,
+                &theme.deleted,
+            ]
+            .into_iter()
+            .chain(theme.accents.iter())
+            {
                 assert!(!style.contains(";2;"));
             }
         }
@@ -160,7 +182,10 @@ mod tests {
     }
 
     fn distance(left: [u8; 3], right: [u8; 3]) -> u16 {
-        left.into_iter().zip(right).map(|(l, r)| u16::from(l.abs_diff(r))).sum()
+        left.into_iter()
+            .zip(right)
+            .map(|(l, r)| u16::from(l.abs_diff(r)))
+            .sum()
     }
 
     fn contrast_ratio(left: [u8; 3], right: [u8; 3]) -> f64 {
@@ -172,7 +197,10 @@ mod tests {
     #[test]
     fn surfaces_move_symmetrically_away_from_the_foreground() {
         let mut previous_offset: Option<i16> = None;
-        for (fg, bg) in [([230, 220, 210], [20, 30, 40]), ([20, 30, 40], [230, 220, 210])] {
+        for (fg, bg) in [
+            ([230, 220, 210], [20, 30, 40]),
+            ([20, 30, 40], [230, 220, 210]),
+        ] {
             let mut theme = Theme::default();
             assert!(theme.update(&TerminalColors {
                 truecolor: true,
@@ -219,10 +247,17 @@ mod tests {
 
     #[test]
     fn muted_and_shades_follow_both_light_and_dark_terminals() {
-        for (fg, bg) in [([230, 220, 210], [20, 30, 40]), ([20, 30, 40], [230, 220, 210])] {
+        for (fg, bg) in [
+            ([230, 220, 210], [20, 30, 40]),
+            ([20, 30, 40], [230, 220, 210]),
+        ] {
             let mut theme = Theme::default();
-            let colors = TerminalColors { truecolor: true, foreground: Some(fg),
-                background: Some(bg), ..TerminalColors::default() };
+            let colors = TerminalColors {
+                truecolor: true,
+                foreground: Some(fg),
+                background: Some(bg),
+                ..TerminalColors::default()
+            };
             assert!(theme.update(&colors));
             let surface = rgb(&theme.base);
             let muted = rgb(&theme.muted);
@@ -231,16 +266,19 @@ mod tests {
             let hovered = rgb(&theme.hovered);
             for color in [muted, bright, selected, hovered] {
                 for channel in 0..3 {
-                    assert!((fg[channel].min(surface[channel])..=fg[channel].max(surface[channel]))
-                        .contains(&color[channel]));
+                    assert!(
+                        (fg[channel].min(surface[channel])..=fg[channel].max(surface[channel]))
+                            .contains(&color[channel])
+                    );
                 }
             }
             assert!(distance(hovered, surface) < distance(selected, surface));
             assert!(distance(selected, surface) < distance(muted, surface));
             assert!(distance(muted, surface) < distance(bright, surface));
             assert!(distance(bright, surface) < distance(fg, surface));
-            assert!(u32::from(distance(muted, surface)) * 100
-                < u32::from(distance(fg, surface)) * 75);
+            assert!(
+                u32::from(distance(muted, surface)) * 100 < u32::from(distance(fg, surface)) * 75
+            );
             assert!(contrast_ratio(muted, surface) >= 4.5);
             assert!(contrast_ratio(bright, selected) >= 4.5);
             assert!(!theme.update(&colors));
@@ -255,8 +293,11 @@ mod tests {
     #[test]
     fn partial_and_limited_metadata_does_not_invalidate_native_styles() {
         let mut theme = Theme::default();
-        let mut colors = TerminalColors { foreground: Some([240, 240, 240]),
-            background: Some([20, 20, 20]), ..TerminalColors::default() };
+        let mut colors = TerminalColors {
+            foreground: Some([240, 240, 240]),
+            background: Some([20, 20, 20]),
+            ..TerminalColors::default()
+        };
         assert!(!theme.update(&colors));
         assert_eq!(theme.base, "\x1b[22;39;49m");
         colors.background = None;
@@ -284,8 +325,12 @@ mod tests {
             (Some([230, 220, 210]), [20, 30, 40]),
             (Some([20, 30, 40]), [230, 220, 210]),
         ] {
-            let mut colors = TerminalColors { truecolor: true, foreground: fg, background: Some(bg),
-                ..TerminalColors::default() };
+            let mut colors = TerminalColors {
+                truecolor: true,
+                foreground: fg,
+                background: Some(bg),
+                ..TerminalColors::default()
+            };
             let mut theme = Theme::default();
             assert_eq!(theme.update(&colors), fg.is_some());
             let surface = if fg.is_some() {
@@ -305,11 +350,16 @@ mod tests {
                     assert_eq!(theme.muted, "\x1b[22;39m");
                 }
                 let accent = rgb(&theme.accents[index]);
-                assert!(u32::from(distance(accent, surface)) * 100
-                    < u32::from(distance(actual, surface)) * 85);
+                assert!(
+                    u32::from(distance(accent, surface)) * 100
+                        < u32::from(distance(actual, surface)) * 85
+                );
                 for channel in 0..3 {
-                    assert!((actual[channel].min(surface[channel])..=actual[channel].max(surface[channel]))
-                        .contains(&accent[channel]));
+                    assert!(
+                        (actual[channel].min(surface[channel])
+                            ..=actual[channel].max(surface[channel]))
+                            .contains(&accent[channel])
+                    );
                 }
             }
             assert_eq!(theme.accents[2], theme.added);

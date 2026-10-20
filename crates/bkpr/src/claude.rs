@@ -247,7 +247,11 @@ fn relay_config(directory: &Path, program: &Path) -> Result<PathBuf> {
             "bkpr": {"type": "stdio", "command": program, "args": ["relay-mcp"]}
         }
     });
-    match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path) {
+    match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+    {
         Ok(file) => {
             let metadata = file.metadata()?;
             if !metadata.is_file()
@@ -284,7 +288,10 @@ fn supplement_relay(arguments: &mut Vec<OsString>, config_file: &Path) -> Result
         // Insert before a literal --, so a prompt cannot become a flag value.
         arguments.splice(
             plan.insert_at..plan.insert_at,
-            [OsString::from("--mcp-config"), config_file.as_os_str().to_os_string()],
+            [
+                OsString::from("--mcp-config"),
+                config_file.as_os_str().to_os_string(),
+            ],
         );
     }
     Ok(())
@@ -365,7 +372,9 @@ pub fn wait_message() -> Result<()> {
             bail!("Claude broker subscription failed: {error}");
         }
         if event["event"] == "message" {
-            let id = event["message"]["id"].as_str().context("missing message id")?;
+            let id = event["message"]["id"]
+                .as_str()
+                .context("missing message id")?;
             if woken.lines().any(|previous| previous == id) {
                 continue;
             }
@@ -380,7 +389,6 @@ pub fn wait_message() -> Result<()> {
         }
     }
 }
-
 
 fn callback_input() -> Result<Vec<u8>> {
     let mut input = Vec::new();
@@ -506,15 +514,27 @@ mod tests {
         let wrapper = runtime.path().join("bin");
         fs::create_dir(&wrapper).unwrap();
         let path = relay_config(&wrapper, Path::new("/opt/bkpr")).unwrap();
-        assert_eq!(fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
-        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         let config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(config["mcpServers"]["bkpr"]["command"], "/opt/bkpr");
         assert!(config["mcpServers"]["bkpr"].get("env").is_none());
-        assert_eq!(relay_config(&wrapper, Path::new("/opt/bkpr")).unwrap(), path);
+        assert_eq!(
+            relay_config(&wrapper, Path::new("/opt/bkpr")).unwrap(),
+            path
+        );
         assert!(relay_config(&wrapper, Path::new("/other/bkpr")).is_err());
     }
-
 
     #[test]
     fn composing_keeps_status_line_permissions_and_hook_policy() {

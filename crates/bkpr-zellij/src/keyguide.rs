@@ -3,7 +3,6 @@ use std::fmt::Write;
 use zellij_tile::prelude::actions::{Action, SearchDirection, SearchOption};
 use zellij_tile::prelude::{BareKey, Direction, InputMode, KeyWithModifier, KeybindsVec, Resize};
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Context {
     Application,
@@ -1262,7 +1261,13 @@ mod tests {
                 ("F12", vec![switch(InputMode::Normal)]),
             ],
         );
-        let rendered = render(Some(view(&info)), Context::Application, 20, 3, &ui::Theme::default());
+        let rendered = render(
+            Some(view(&info)),
+            Context::Application,
+            20,
+            3,
+            &ui::Theme::default(),
+        );
         assert_eq!(rendered.len(), 3);
         let content = plain(&rendered[1]);
         assert!(content.contains("F12"));
@@ -1395,19 +1400,61 @@ mod tests {
                 ],
             )],
         );
-        let expanded = render_expanded(view(&info), Context::Application, 38, 120, 12, &ui::Theme::default());
+        let expanded = render_expanded(
+            view(&info),
+            Context::Application,
+            38,
+            120,
+            12,
+            &ui::Theme::default(),
+        );
         assert!(expanded.columns > 48 && expanded.columns <= 72);
         assert_eq!(expanded.lines.len(), 3);
         assert!(
-            render(Some(view(&info)), Context::Application, 38, 12, &ui::Theme::default()).len() > expanded.lines.len()
+            render(
+                Some(view(&info)),
+                Context::Application,
+                38,
+                12,
+                &ui::Theme::default()
+            )
+            .len()
+                > expanded.lines.len()
         );
-        assert!(render_expanded(view(&info), Context::Application, 64, 120, 12, &ui::Theme::default()).columns >= 64);
+        assert!(
+            render_expanded(
+                view(&info),
+                Context::Application,
+                64,
+                120,
+                12,
+                &ui::Theme::default()
+            )
+            .columns
+                >= 64
+        );
         assert_eq!(
-            render_expanded(view(&info), Context::Application, 100, 120, 12, &ui::Theme::default()).columns,
+            render_expanded(
+                view(&info),
+                Context::Application,
+                100,
+                120,
+                12,
+                &ui::Theme::default()
+            )
+            .columns,
             100
         );
         assert_eq!(
-            render_expanded(view(&info), Context::Application, 120, 120, 12, &ui::Theme::default()).columns,
+            render_expanded(
+                view(&info),
+                Context::Application,
+                120,
+                120,
+                12,
+                &ui::Theme::default()
+            )
+            .columns,
             120
         );
     }
@@ -1425,7 +1472,14 @@ mod tests {
         for columns in [0, 1, 3, 7, 8, 38, 47, 48, 60, 71, 72, 96] {
             for rows in [0, 1, 2, 3, 4, 12] {
                 for sidebar in [0, 38, 64, 100] {
-                    let guide = render_expanded(view(&info), Context::Sidebar { selected: true }, sidebar, columns, rows, &ui::Theme::default());
+                    let guide = render_expanded(
+                        view(&info),
+                        Context::Sidebar { selected: true },
+                        sidebar,
+                        columns,
+                        rows,
+                        &ui::Theme::default(),
+                    );
                     assert!(guide.columns <= columns);
                     assert!(guide.lines.len() <= rows);
                     if columns == 0 || rows == 0 {

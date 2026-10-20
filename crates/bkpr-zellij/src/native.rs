@@ -1,4 +1,3 @@
-use serde::{Deserialize, Serialize};
 use bkpr::agent_contract::{
     AgentExecution, InspectRequest, InspectResponse, PaneProcess, ProgramStatus,
     ProgramStatusUpdate, harness_name,
@@ -8,6 +7,7 @@ use bkpr::{
     Action, Attention, Effect, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Pane, ProjectIdentity, Request,
     Response, Snapshot, Status, Workspace,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -673,7 +673,11 @@ impl Model {
 
     fn invalidate_unidentified_ci(&mut self) {
         for (cwd, project) in &mut self.projects {
-            if project.ci.as_ref().is_some_and(|ci| !project.ci_identity_current(ci)) {
+            if project
+                .ci
+                .as_ref()
+                .is_some_and(|ci| !project.ci_identity_current(ci))
+            {
                 project.ci = None;
                 *self.project_generations.entry(cwd.clone()).or_default() += 1;
                 self.project_watches.remove(cwd);
@@ -1141,7 +1145,11 @@ impl Model {
             return false;
         }
         if let Some(mut project) = update.project {
-            if project.ci.as_ref().is_some_and(|ci| !project.ci_identity_current(ci)) {
+            if project
+                .ci
+                .as_ref()
+                .is_some_and(|ci| !project.ci_identity_current(ci))
+            {
                 project.ci = None;
             }
             let changed =
@@ -3534,14 +3542,20 @@ mod tests {
         let ci = recovered.projects["/repo"].ci.as_ref().unwrap();
         assert_eq!(ci.head_sha, "remote-head");
         assert_eq!(ci.local_head_sha, "local-head");
-        assert_eq!(recovered.projects["/repo"].head_sha.as_deref(), Some("local-head"));
+        assert_eq!(
+            recovered.projects["/repo"].head_sha.as_deref(),
+            Some("local-head")
+        );
 
         for case in 0..3 {
             let mut value = serde_json::to_value(&model).unwrap();
             let metadata = &mut value["projects"]["/repo"];
             match case {
                 0 => {
-                    metadata["ci"].as_object_mut().unwrap().remove("local_head_sha");
+                    metadata["ci"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("local_head_sha");
                 }
                 1 => metadata["ci"]["local_head_sha"] = serde_json::json!("wrong-local-head"),
                 2 => {
@@ -3553,7 +3567,10 @@ mod tests {
             let recovered = Model::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
             assert!(recovered.projects["/repo"].ci.is_none(), "case {case}");
             assert_eq!(recovered.projects["/repo"].branch, project.branch);
-            assert_eq!(recovered.projects["/repo"].branch_changes, project.branch_changes);
+            assert_eq!(
+                recovered.projects["/repo"].branch_changes,
+                project.branch_changes
+            );
             assert!(!recovered.project_result_current("/repo", &model.project_watches["/repo"]));
             model.apply_project(project_update(&model, "/repo", invalid_project));
             assert!(model.projects["/repo"].ci.is_none(), "case {case}");
@@ -3623,12 +3640,32 @@ mod tests {
         let mut agent = execution(1);
         agent.agent_id = Some("0123456789abcdef0123456789abcdef".to_owned());
         let ticket = model.agent_ticket(5, 1, 1_000).unwrap();
-        assert!(model.apply_agents(&ticket, InspectResponse { executions: vec![agent.clone()] }, 1_001).unwrap());
+        assert!(
+            model
+                .apply_agents(
+                    &ticket,
+                    InspectResponse {
+                        executions: vec![agent.clone()]
+                    },
+                    1_001
+                )
+                .unwrap()
+        );
         assert_eq!(model.snapshot(None, 1).panes[0].agent_id, agent.agent_id);
 
         agent.agent_id = Some("fedcba9876543210fedcba9876543210".to_owned());
         let ticket = model.agent_ticket(5, 1, 2_000).unwrap();
-        assert!(model.apply_agents(&ticket, InspectResponse { executions: vec![agent.clone()] }, 2_001).unwrap());
+        assert!(
+            model
+                .apply_agents(
+                    &ticket,
+                    InspectResponse {
+                        executions: vec![agent.clone()]
+                    },
+                    2_001
+                )
+                .unwrap()
+        );
         assert_eq!(model.snapshot(None, 1).panes[0].agent_id, agent.agent_id);
     }
 

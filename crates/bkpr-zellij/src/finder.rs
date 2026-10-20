@@ -1,6 +1,6 @@
 use crate::{animation::WorkingClock, overlay, pane_search, ui};
-use serde::{Deserialize, Serialize};
 use bkpr::Snapshot;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::Instant;
 use zellij_tile::prelude::*;
@@ -1102,7 +1102,13 @@ impl Finder {
             if self.layout.border && row + 1 == rows {
                 format!("{}{}", self.theme.bright, self.layout.bottom_line(columns))
             } else if self.layout.border {
-                overlay::outlined_line(" ".repeat(columns.saturating_sub(2)), row, rows, columns, &self.theme)
+                overlay::outlined_line(
+                    " ".repeat(columns.saturating_sub(2)),
+                    row,
+                    rows,
+                    columns,
+                    &self.theme,
+                )
             } else {
                 String::new()
             }
@@ -1146,7 +1152,12 @@ impl Finder {
             );
         }
         if input.height > 0 {
-            paint(input.x, input.y, &format!("{}{prefix}{query}", self.theme.bright), &self.theme);
+            paint(
+                input.x,
+                input.y,
+                &format!("{}{prefix}{query}", self.theme.bright),
+                &self.theme,
+            );
         }
         if let Some(separator) = self.layout.search {
             paint(
@@ -1179,7 +1190,12 @@ impl Finder {
             } else {
                 ""
             };
-            paint(list.x, list.y + row, &format!("{background}{text}"), &self.theme);
+            paint(
+                list.x,
+                list.y + row,
+                &format!("{background}{text}"),
+                &self.theme,
+            );
         }
         for row in 0..preview.height {
             let text = self
@@ -1329,14 +1345,21 @@ mod tests {
         finder.shown = Some(true);
         let mut update = state(1, 2);
         let selected = finder.selected.clone().unwrap();
-        let pane = update.snapshot.panes.iter_mut().find(|pane| pane.id == selected).unwrap();
+        let pane = update
+            .snapshot
+            .panes
+            .iter_mut()
+            .find(|pane| pane.id == selected)
+            .unwrap();
         pane.harness = Some("codex".to_owned());
         pane.status = Status::Working;
         assert!(finder.receive(update));
         finder.prepare_preview();
         assert!(finder.working_clock_active());
 
-        let clock_row = finder.preview_lines.iter()
+        let clock_row = finder
+            .preview_lines
+            .iter()
             .position(|line| overlay::working_clock_visible(&line.row, finder.layout.preview.width))
             .unwrap();
         finder.preview_scroll = clock_row + 1;

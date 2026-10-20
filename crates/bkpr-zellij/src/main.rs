@@ -1996,9 +1996,10 @@ impl Frontend {
                     // Left gutter, workspace dot and the complete two-cell status badge.
                     self.columns >= 5
                         && workspace.status == bkpr::Status::Working
-                        && state.panes.iter().any(|pane| {
-                            pane.workspace_id == workspace.id && recognized(pane)
-                        })
+                        && state
+                            .panes
+                            .iter()
+                            .any(|pane| pane.workspace_id == workspace.id && recognized(pane))
                 }
                 ui::RowKind::Pane { index, .. } => {
                     let pane = &state.panes[index];
@@ -3601,7 +3602,10 @@ mod tests {
         assert_ne!(
             request.target.head_sha,
             frontend.snapshot.as_ref().unwrap().panes[0]
-                .ci.as_ref().unwrap().local_head_sha
+                .ci
+                .as_ref()
+                .unwrap()
+                .local_head_sha
         );
         let mut unsupported = serde_json::to_value(&request).unwrap();
         unsupported["target"]["repository"]["provider"] = serde_json::json!("unsupported-provider");
@@ -4074,8 +4078,15 @@ mod tests {
             let cells = sidebar_cells(&mut frontend, 8, columns);
             let line: String = cells[0].iter().collect();
             assert_eq!(line.trim(), title);
-            let left = line.chars().take_while(|character| *character == ' ').count();
-            let right = line.chars().rev().take_while(|character| *character == ' ').count();
+            let left = line
+                .chars()
+                .take_while(|character| *character == ' ')
+                .count();
+            let right = line
+                .chars()
+                .rev()
+                .take_while(|character| *character == ' ')
+                .count();
             assert_eq!(left, (columns - ui::width(title)) / 2);
             assert!(right == left || right == left + 1);
         }
@@ -5010,7 +5021,18 @@ mod tests {
         ] {
             state.panes[0].harness = Some(harness.to_owned());
             for columns in 0..=24 {
-                let rendered = ui::render_row(&row, &state, &ui::Theme::default(), columns, ui::RowStyle { selected: true, hovered: false, selected_group: true, clock_frame: 0 });
+                let rendered = ui::render_row(
+                    &row,
+                    &state,
+                    &ui::Theme::default(),
+                    columns,
+                    ui::RowStyle {
+                        selected: true,
+                        hovered: false,
+                        selected_group: true,
+                        clock_frame: 0,
+                    },
+                );
                 let visible: String = rendered
                     .split('\u{1b}')
                     .map(|part| {
@@ -5046,7 +5068,18 @@ mod tests {
                 };
                 for columns in 0..=48 {
                     for (selected, hovered) in [(false, false), (true, false), (false, true)] {
-                        let rendered = ui::render_row(&row, &state, &ui::Theme::default(), columns, ui::RowStyle { selected, hovered, selected_group: selected, clock_frame: 0 });
+                        let rendered = ui::render_row(
+                            &row,
+                            &state,
+                            &ui::Theme::default(),
+                            columns,
+                            ui::RowStyle {
+                                selected,
+                                hovered,
+                                selected_group: selected,
+                                clock_frame: 0,
+                            },
+                        );
                         let visible: String = rendered
                             .split('\u{1b}')
                             .map(|part| {
