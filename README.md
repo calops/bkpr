@@ -147,6 +147,8 @@ Recognition and semantic status are separate. Bkpr recognizes Claude Code, Codex
 
 Harness status comes from native **OSC 7501** reports. Titles, progress bars, notifications and rendered terminal text aren't substitutes. Non-reporting harnesses remain **unknown**. Ordinary programs have no harness-status badge, even if they emit generic program-status reports; their Git and CI details still work.
 
+Reported **working** status uses a twelve-position clockwise clock animation in the sidebar, details popups and finder previews. Animation runs only for visible working badges and stops when the status changes or the surface is hidden.
+
 The upstream capabilities below were checked on **2026-10-14**:
 
 | Harness | Semantic reporting |

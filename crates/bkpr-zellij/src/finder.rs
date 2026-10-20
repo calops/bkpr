@@ -1,7 +1,8 @@
-use crate::{overlay, pane_search, ui};
+use crate::{animation::WorkingClock, overlay, pane_search, ui};
 use serde::{Deserialize, Serialize};
 use bkpr::Snapshot;
 use std::collections::BTreeMap;
+use std::time::Instant;
 use zellij_tile::prelude::*;
 
 pub const UPDATE: &str = "bkpr-finder-update";
@@ -498,6 +499,7 @@ impl Layout {
 #[derive(Default)]
 pub struct Finder {
     theme: ui::Theme,
+    working_clock: WorkingClock,
     owner: Option<u32>,
     id: u32,
     instance: String,
@@ -555,6 +557,7 @@ impl Finder {
             EventType::PastedText,
             EventType::Mouse,
             EventType::BeforeClose,
+            EventType::Timer,
         ]);
         request_permission(super::PERMISSIONS);
     }
@@ -578,6 +581,10 @@ impl Finder {
 
     pub fn event(&mut self, event: Event) -> bool {
         match event {
+            Event::Timer(_) => {
+                let active = self.working_clock_active();
+                return self.working_clock.tick(Instant::now(), active);
+            }
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 self.granted = true;
                 if self
@@ -590,7 +597,11 @@ impl Finder {
                     close_self();
                 }
             }
-            Event::PermissionRequestResult(PermissionStatus::Denied) => close_self(),
+            Event::PermissionRequestResult(PermissionStatus::Denied) => {
+                self.granted = false;
+                self.working_clock.schedule(Instant::now(), false);
+                close_self();
+            }
             Event::PaneUpdate(manifest) => {
                 let owner_tab = manifest.panes.iter().find_map(|(tab, panes)| {
                     panes
@@ -623,6 +634,7 @@ impl Finder {
             }
             Event::BeforeClose if self.granted && self.visible() => {
                 self.callback(CANCEL, None, false);
+                self.working_clock.schedule(Instant::now(), false);
                 self.dismissed = true;
             }
             Event::Key(key) if self.granted && self.visible() => {
@@ -723,6 +735,9 @@ impl Finder {
                 }
             }
         }
+        if !self.working_clock_active() {
+            self.working_clock.schedule(Instant::now(), false);
+        }
         true
     }
 
@@ -735,6 +750,7 @@ impl Finder {
             return;
         }
         if !self.visible() {
+            self.working_clock.schedule(Instant::now(), false);
             if self.shown != Some(false) {
                 set_selectable(false);
                 self.set_cursor(None);
@@ -797,6 +813,7 @@ impl Finder {
         }
         self.callback(name, pane_id, restore);
         self.dismissed = true;
+        self.working_clock.schedule(Instant::now(), false);
         self.had_focus = false;
         set_selectable(false);
         self.set_cursor(None);
@@ -1043,6 +1060,19 @@ impl Finder {
         }
     }
 
+    fn working_clock_active(&self) -> bool {
+        self.granted
+            && self.visible()
+            && self.shown == Some(true)
+            && self.layout.preview.width > 0
+            && self
+                .preview_lines
+                .iter()
+                .skip(self.preview_scroll)
+                .take(self.layout.preview.height)
+                .any(|line| overlay::working_clock_visible(&line.row, self.layout.preview.width))
+    }
+
     pub fn render(&mut self, rows: usize, columns: usize) {
         if !self.granted || !self.visible() {
             return;
@@ -1051,6 +1081,9 @@ impl Finder {
         self.ensure_selection_visible();
         let preview = self.layout.preview;
         self.prepare_preview();
+        let active = self.working_clock_active();
+        self.working_clock.schedule(Instant::now(), active);
+        let clock_frame = self.working_clock.frame();
         let input = self.layout.input;
         let prefix = if input.width >= 3 { "> " } else { "" };
         let input_width = input.width.saturating_sub(ui::width(prefix));
@@ -1152,7 +1185,15 @@ impl Finder {
             let text = self
                 .preview_lines
                 .get(row + self.preview_scroll)
-                .map(|line| overlay::render_action_line(&line.row, preview.width, false, &self.theme))
+                .map(|line| {
+                    overlay::render_action_line(
+                        &line.row,
+                        preview.width,
+                        false,
+                        &self.theme,
+                        clock_frame,
+                    )
+                })
                 .unwrap_or_else(|| {
                     ui::fit(
                         if row == 0 && self.selected.is_none() {
@@ -1279,6 +1320,45 @@ mod tests {
         };
         assert!(finder.receive(state(1, 1)));
         finder
+    }
+
+    #[test]
+    fn working_preview_clock_tracks_selection_viewport_and_visibility() {
+        let mut finder = finder();
+        finder.granted = true;
+        finder.shown = Some(true);
+        let mut update = state(1, 2);
+        let selected = finder.selected.clone().unwrap();
+        let pane = update.snapshot.panes.iter_mut().find(|pane| pane.id == selected).unwrap();
+        pane.harness = Some("codex".to_owned());
+        pane.status = Status::Working;
+        assert!(finder.receive(update));
+        finder.prepare_preview();
+        assert!(finder.working_clock_active());
+
+        let clock_row = finder.preview_lines.iter()
+            .position(|line| overlay::working_clock_visible(&line.row, finder.layout.preview.width))
+            .unwrap();
+        finder.preview_scroll = clock_row + 1;
+        assert!(!finder.working_clock_active());
+        finder.preview_scroll = 0;
+        finder.layout.preview.height = 0;
+        assert!(!finder.working_clock_active());
+        finder.layout = Layout::new(100, 28, Compact::Input);
+        assert!(finder.working_clock_active());
+
+        finder.navigate(1);
+        finder.prepare_preview();
+        assert!(!finder.working_clock_active());
+        finder.navigate(-1);
+        finder.prepare_preview();
+        assert!(finder.working_clock_active());
+        finder.granted = false;
+        assert!(!finder.working_clock_active());
+        finder.granted = true;
+        finder.dismissed = true;
+        assert!(!finder.working_clock_active());
+        assert!(!finder.event(Event::Timer(0.0)));
     }
 
     #[test]
