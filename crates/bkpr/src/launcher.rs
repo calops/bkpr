@@ -62,11 +62,9 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
     let config_path = config_dir.join("config.kdl");
     let layout_path = runtime.join("layout.kdl");
     if !existing {
-        let sidebar_percent = bkpr::native_sidebar_percent(
-            usize::from(options.sidebar_width),
-            terminal_columns()?,
-        )
-        .context("terminal needs at least two columns for a sidebar and terminal pane")?;
+        let sidebar_percent =
+            bkpr::native_sidebar_percent(usize::from(options.sidebar_width), terminal_columns()?)
+                .context("terminal needs at least two columns for a sidebar and terminal pane")?;
         let bin = runtime.join("bin");
         private_directory(&bin)?;
         // Retired launchers can survive a previous session in this owned directory.
@@ -207,7 +205,12 @@ fn zellij_command(program: &Path, config_dir: &Path, socket_dir: &Path) -> Comma
     command
 }
 
-fn session_exists(program: &Path, config_dir: &Path, socket_dir: &Path, name: &str) -> Result<bool> {
+fn session_exists(
+    program: &Path,
+    config_dir: &Path,
+    socket_dir: &Path,
+    name: &str,
+) -> Result<bool> {
     let result = zellij_command(program, config_dir, socket_dir)
         .args(["list-sessions", "--no-formatting"])
         .output()?;

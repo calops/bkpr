@@ -32,8 +32,8 @@ mod linux {
     use super::*;
     use crate::{ci, launcher, project};
     use anyhow::{Context, bail};
-    use serde::{Deserialize, Serialize};
     use bkpr::ci_contract::CiRefreshTarget;
+    use serde::{Deserialize, Serialize};
     use std::collections::{BTreeMap, BTreeSet};
     use std::ffi::CString;
     use std::fs::OpenOptions;
@@ -618,9 +618,10 @@ mod linux {
                         snapshot.repository == target.repository
                             && !snapshot.head_sha.is_empty()
                             && snapshot.head_sha == target.head_sha
-                            && project.source.as_ref().is_some_and(|source| {
-                                source.matches_snapshot(snapshot)
-                            })
+                            && project
+                                .source
+                                .as_ref()
+                                .is_some_and(|source| source.matches_snapshot(snapshot))
                     })
             });
             if current {
@@ -1329,16 +1330,34 @@ mod linux {
             assert_eq!(pushed.head_sha.as_deref(), Some(head.as_str()));
             assert_eq!(pushed_source.repository, prior_source.repository);
             assert_eq!(pushed_source.branch.as_deref(), Some("stack/child"));
-            assert_eq!(pushed_source.checked_ref().as_deref(), Some("origin/stack/child"));
-            assert!(prior_source.remote_branch.as_ref().unwrap().tracking_sha.is_none());
             assert_eq!(
-                pushed_source.remote_branch.as_ref().unwrap().tracking_sha.as_deref(),
+                pushed_source.checked_ref().as_deref(),
+                Some("origin/stack/child")
+            );
+            assert!(
+                prior_source
+                    .remote_branch
+                    .as_ref()
+                    .unwrap()
+                    .tracking_sha
+                    .is_none()
+            );
+            assert_eq!(
+                pushed_source
+                    .remote_branch
+                    .as_ref()
+                    .unwrap()
+                    .tracking_sha
+                    .as_deref(),
                 Some(head.as_str())
             );
             assert!(pushed.published);
             assert_ne!(pushed.git_refs, restored.git_refs);
             assert_eq!(pushed.branch_changes, restored.branch_changes);
-            assert_eq!(pushed.branch_changes.as_ref().unwrap().base_ref, "stack/parent");
+            assert_eq!(
+                pushed.branch_changes.as_ref().unwrap().base_ref,
+                "stack/parent"
+            );
             assert_eq!(pushed.branch_changes.as_ref().unwrap().merge_base, parent);
         }
     }

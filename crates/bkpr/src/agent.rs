@@ -235,10 +235,7 @@ fn relay_id_from_environment(bytes: &[u8], harness: &str) -> Option<String> {
         .clone()
         .find_map(|entry| entry.strip_prefix(b"BKPR_RELAY_AGENT_ID="))?;
     let declared = variables.find_map(|entry| entry.strip_prefix(b"BKPR_RELAY_HARNESS="))?;
-    if declared != harness.as_bytes()
-        || id.len() != 32
-        || !id.iter().all(u8::is_ascii_hexdigit)
-    {
+    if declared != harness.as_bytes() || id.len() != 32 || !id.iter().all(u8::is_ascii_hexdigit) {
         return None;
     }
     Some(std::str::from_utf8(id).ok()?.to_owned())
@@ -714,11 +711,16 @@ mod tests {
     #[test]
     fn only_matching_managed_harness_identity_is_exposed() {
         let id = "0123456789abcdef0123456789abcdef";
-        let environment = format!(
-            "UNRELATED=secret\0BKPR_RELAY_AGENT_ID={id}\0BKPR_RELAY_HARNESS=omp\0"
+        let environment =
+            format!("UNRELATED=secret\0BKPR_RELAY_AGENT_ID={id}\0BKPR_RELAY_HARNESS=omp\0");
+        assert_eq!(
+            relay_id_from_environment(environment.as_bytes(), "omp").as_deref(),
+            Some(id)
         );
-        assert_eq!(relay_id_from_environment(environment.as_bytes(), "omp").as_deref(), Some(id));
-        assert_eq!(relay_id_from_environment(environment.as_bytes(), "claude"), None);
+        assert_eq!(
+            relay_id_from_environment(environment.as_bytes(), "claude"),
+            None
+        );
         let malformed = b"BKPR_RELAY_AGENT_ID=not-an-id\0BKPR_RELAY_HARNESS=omp\0";
         assert_eq!(relay_id_from_environment(malformed, "omp"), None);
     }

@@ -1,17 +1,16 @@
-use serde::{Deserialize, Serialize};
 use bkpr::agent_contract::harness_name;
 use bkpr::ci_contract::{
     ChangeRequestState, CiFetchState, CiRefreshTarget, CiSnapshot, CiStatus, ForgeProvider,
     IssueTracker, LinkedIssue,
 };
 use bkpr::{Attention, ProjectIdentity, Snapshot, Status};
+use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthStr;
 
 pub const RESET: &str = "\u{1b}[0m";
 pub use crate::palette::Theme;
 pub const TEXT: &str = "\u{1b}[22;39m";
 const WORKFLOW: &str = "\u{f52e}"; // nf-oct-workflow
-
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Item {
@@ -293,8 +292,11 @@ fn branch_counts(
         (
             format!(
                 "{added}+{}{muted} {deleted}-{}{muted}",
-                total.added, total.deleted,
-                added = theme.added, deleted = theme.deleted, muted = theme.muted,
+                total.added,
+                total.deleted,
+                added = theme.added,
+                deleted = theme.deleted,
+                muted = theme.muted,
             ),
             needed,
         )
@@ -393,7 +395,8 @@ impl PopupColor {
             Self::Ci(status) => ci_color(*status, theme),
             Self::Project(project) => project_color(Some(project), theme),
             Self::Harness(harness) => harness_color(harness, theme),
-            Self::ChangeRequest(state) => request_presentation(*state).1
+            Self::ChangeRequest(state) => request_presentation(*state)
+                .1
                 .map_or(theme.muted.as_str(), |index| theme.accents[index].as_str()),
         }
     }
@@ -761,9 +764,7 @@ fn ci_target_rows(ci: &CiSnapshot) -> Vec<PopupRow> {
         (None, true) => "Checked commit unavailable".to_owned(),
     };
     let mut rows = vec![PopupRow::text(target, PopupColor::Muted)];
-    if !ci.head_sha.is_empty()
-        && !ci.local_head_sha.is_empty()
-        && ci.head_sha != ci.local_head_sha
+    if !ci.head_sha.is_empty() && !ci.local_head_sha.is_empty() && ci.head_sha != ci.local_head_sha
     {
         rows.push(PopupRow::text(
             format!(
@@ -865,7 +866,7 @@ pub fn working_clock_icon(frame: usize) -> &'static str {
 fn status_icon(status: Status, attention: Option<Attention>) -> &'static str {
     // Reserve a trailing cell for Nerd Font glyphs that paint double-width.
     match status {
-        Status::Idle => "\u{f03e6} ",    // nf-md-pause_circle_outline
+        Status::Idle => "\u{f03e6} ", // nf-md-pause_circle_outline
         Status::Working => working_clock_icon(0),
         Status::Blocked => match attention {
             Some(Attention::Permission) => "\u{f0bc5} ", // nf-md-shield_key_outline
@@ -934,13 +935,7 @@ pub fn render_row(
 ) -> String {
     // Keep a left gutter for the hover outline; the rightmost cell belongs to the item.
     let left = if columns > 0 { " " } else { "" };
-    let content = render_content_row(
-        row,
-        state,
-        theme,
-        columns.saturating_sub(1),
-        style,
-    );
+    let content = render_content_row(row, state, theme, columns.saturating_sub(1), style);
     if content.is_empty() {
         return content;
     }
@@ -961,7 +956,12 @@ fn render_content_row(
     columns: usize,
     style: RowStyle,
 ) -> String {
-    let RowStyle { selected, hovered, selected_group: selected_pane_group, clock_frame } = style;
+    let RowStyle {
+        selected,
+        hovered,
+        selected_group: selected_pane_group,
+        clock_frame,
+    } = style;
     let muted = theme.muted.as_str();
     let background = if selected {
         theme.selected.as_str()
@@ -1019,7 +1019,9 @@ fn render_content_row(
             format!(
                 "{TEXT}{dot}{TEXT}\u{1b}[1m{name}\u{1b}[22m{muted}{tail}{}{}{badge}{}{icon}",
                 if badge.is_empty() { "" } else { " " },
-                ci_status.map(|status| ci_color(status, theme)).unwrap_or(muted),
+                ci_status
+                    .map(|status| ci_color(status, theme))
+                    .unwrap_or(muted),
                 if icon.is_empty() {
                     muted
                 } else {
@@ -1059,7 +1061,9 @@ fn render_content_row(
                 columns.saturating_sub(width(&lead) + width(&indicator) + width(&status));
             // Keep the harness beside its status, with a trailing cell for wide glyphs.
             let icon = harness.map(harness_icon).unwrap_or("");
-            let logo_color = harness.map(|harness| harness_color(harness, theme)).unwrap_or(TEXT);
+            let logo_color = harness
+                .map(|harness| harness_color(harness, theme))
+                .unwrap_or(TEXT);
             let icon_columns = width(icon) + usize::from(!icon.is_empty());
             let (icon, icon_columns) = if available >= icon_columns {
                 (icon, icon_columns)
@@ -1093,7 +1097,10 @@ fn render_content_row(
             let (glyph, glyph_color) = request
                 .map(|request| {
                     let (glyph, color) = request_presentation(request.state);
-                    (glyph, color.map_or(muted, |index| theme.accents[index].as_str()))
+                    (
+                        glyph,
+                        color.map_or(muted, |index| theme.accents[index].as_str()),
+                    )
                 })
                 .unwrap_or(("\u{f062c}", muted));
             let symbol_columns = width(glyph) + 1;
@@ -1122,7 +1129,9 @@ fn render_content_row(
                 counts.map(|(text, _)| text).unwrap_or_default(),
                 " ".repeat(fill),
                 if badge.is_empty() { "" } else { " " },
-                ci_status.map(|status| ci_color(status, theme)).unwrap_or(muted),
+                ci_status
+                    .map(|status| ci_color(status, theme))
+                    .unwrap_or(muted),
             )
         }
     };
@@ -1731,20 +1740,54 @@ mod tests {
     #[test]
     fn working_clock_frames_rotate_clockwise_without_changing_row_geometry() {
         let frames = [
-            '\u{f1456}', '\u{f144b}', '\u{f144c}', '\u{f144d}',
-            '\u{f144e}', '\u{f144f}', '\u{f1450}', '\u{f1451}',
-            '\u{f1452}', '\u{f1453}', '\u{f1454}', '\u{f1455}',
+            '\u{f1456}',
+            '\u{f144b}',
+            '\u{f144c}',
+            '\u{f144d}',
+            '\u{f144e}',
+            '\u{f144f}',
+            '\u{f1450}',
+            '\u{f1451}',
+            '\u{f1452}',
+            '\u{f1453}',
+            '\u{f1454}',
+            '\u{f1455}',
         ];
         let mut state = snapshot();
         let rows = tree(&state, &Default::default());
-        let pane = rows.iter().find(|row| matches!(row.kind, RowKind::Pane { .. })).unwrap();
+        let pane = rows
+            .iter()
+            .find(|row| matches!(row.kind, RowKind::Pane { .. }))
+            .unwrap();
         let theme = Theme::default();
         for (frame, glyph) in frames.into_iter().enumerate() {
             assert_eq!(working_clock_icon(frame), format!("{glyph} "));
             assert_eq!(working_clock_icon(frame + 12), working_clock_icon(frame));
             for columns in 0..=40 {
-                let rendered = visible(&render_row(pane, &state, &theme, columns, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: frame }));
-                let baseline = visible(&render_row(pane, &state, &theme, columns, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 }));
+                let rendered = visible(&render_row(
+                    pane,
+                    &state,
+                    &theme,
+                    columns,
+                    RowStyle {
+                        selected: false,
+                        hovered: false,
+                        selected_group: false,
+                        clock_frame: frame,
+                    },
+                ));
+                let baseline = visible(&render_row(
+                    pane,
+                    &state,
+                    &theme,
+                    columns,
+                    RowStyle {
+                        selected: false,
+                        hovered: false,
+                        selected_group: false,
+                        clock_frame: 0,
+                    },
+                ));
                 assert_eq!(rendered.replace(glyph, "\u{f1456}"), baseline);
                 assert_eq!(width(&rendered), columns);
             }
@@ -1753,14 +1796,32 @@ mod tests {
             state.panes[0].harness = harness.map(str::to_owned);
             assert_eq!(
                 render_row(pane, &state, &theme, 40, RowStyle::default()),
-                render_row(pane, &state, &theme, 40, RowStyle { clock_frame: 6, ..RowStyle::default() }),
+                render_row(
+                    pane,
+                    &state,
+                    &theme,
+                    40,
+                    RowStyle {
+                        clock_frame: 6,
+                        ..RowStyle::default()
+                    }
+                ),
             );
         }
         state.panes[0].harness = Some("codex".to_owned());
         state.panes[0].status = Status::Done;
         assert_eq!(
             render_row(pane, &state, &theme, 40, RowStyle::default()),
-            render_row(pane, &state, &theme, 40, RowStyle { clock_frame: 6, ..RowStyle::default() }),
+            render_row(
+                pane,
+                &state,
+                &theme,
+                40,
+                RowStyle {
+                    clock_frame: 6,
+                    ..RowStyle::default()
+                }
+            ),
         );
     }
 
@@ -1774,7 +1835,9 @@ mod tests {
             for status in [Status::Idle, Status::Working, Status::Blocked, Status::Done] {
                 state.panes[0].status = status;
                 let popup = tooltip(&Item::Pane("1".to_owned()), &state);
-                let marked: Vec<_> = popup.rows().into_iter()
+                let marked: Vec<_> = popup
+                    .rows()
+                    .into_iter()
                     .flat_map(|row| row.spans)
                     .filter(|span| span.working_clock)
                     .collect();
@@ -1802,7 +1865,18 @@ mod tests {
         state.panes[0].ci = None;
         let collapsed = std::collections::BTreeSet::from(["workspace".to_owned()]);
         let rows = tree(&state, &collapsed);
-        let rendered = visible(&render_row(&rows[0], &state, &Theme::default(), 32, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 }));
+        let rendered = visible(&render_row(
+            &rows[0],
+            &state,
+            &Theme::default(),
+            32,
+            RowStyle {
+                selected: false,
+                hovered: false,
+                selected_group: false,
+                clock_frame: 0,
+            },
+        ));
         assert_eq!(width(&rendered), 32);
         assert!(rendered.starts_with(" ● "));
         assert!(rendered.ends_with('·'));
@@ -1814,7 +1888,10 @@ mod tests {
         let project = identity("/repo/.git");
         let mut renamed = project.clone();
         renamed.name = "a new name".to_owned();
-        assert_eq!(project_color(Some(&project), &theme), project_color(Some(&renamed), &theme));
+        assert_eq!(
+            project_color(Some(&project), &theme),
+            project_color(Some(&renamed), &theme)
+        );
         renamed.repository = false;
         assert_eq!(project_color(Some(&renamed), &theme), theme.muted);
         assert_eq!(project_color(None, &theme), theme.muted);
@@ -1848,10 +1925,32 @@ mod tests {
             state.panes[0].status = status;
             state.workspaces[0].status = status;
             state.panes[0].branch = Some("changed".to_owned());
-            let rendered = render_row(pane, &state, &Theme::default(), 40, RowStyle { selected: true, hovered: false, selected_group: true, clock_frame: 0 });
+            let rendered = render_row(
+                pane,
+                &state,
+                &Theme::default(),
+                40,
+                RowStyle {
+                    selected: true,
+                    hovered: false,
+                    selected_group: true,
+                    clock_frame: 0,
+                },
+            );
             assert!(rendered.contains(&format!("{color}● ")));
             assert!(!visible(&rendered).contains("○"));
-            let parent = render_row(workspace, &state, &Theme::default(), 40, RowStyle { selected: false, hovered: true, selected_group: false, clock_frame: 0 });
+            let parent = render_row(
+                workspace,
+                &state,
+                &Theme::default(),
+                40,
+                RowStyle {
+                    selected: false,
+                    hovered: true,
+                    selected_group: false,
+                    clock_frame: 0,
+                },
+            );
             assert!(parent.contains(&format!("{TEXT}● ")));
         }
     }
@@ -1864,8 +1963,18 @@ mod tests {
             state.panes[0].ci.as_mut().unwrap().stale = stale;
             for row in &rows {
                 for columns in 0..=80 {
-                    let rendered =
-                        render_row(row, &state, &Theme::default(), columns, RowStyle { selected: true, hovered: false, selected_group: true, clock_frame: 0 });
+                    let rendered = render_row(
+                        row,
+                        &state,
+                        &Theme::default(),
+                        columns,
+                        RowStyle {
+                            selected: true,
+                            hovered: false,
+                            selected_group: true,
+                            clock_frame: 0,
+                        },
+                    );
                     assert_eq!(
                         width(&visible(&rendered)),
                         columns,
@@ -1877,7 +1986,18 @@ mod tests {
                 .iter()
                 .find(|row| matches!(row.kind, RowKind::Detail { .. }))
                 .unwrap();
-            let rendered = visible(&render_row(detail, &state, &Theme::default(), 40, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 }));
+            let rendered = visible(&render_row(
+                detail,
+                &state,
+                &Theme::default(),
+                40,
+                RowStyle {
+                    selected: false,
+                    hovered: false,
+                    selected_group: false,
+                    clock_frame: 0,
+                },
+            ));
             assert!(
                 rendered.ends_with(' '),
                 "Reserve the last cell for wide CI artwork"
@@ -1970,23 +2090,29 @@ mod tests {
             Item::Workspace("workspace".to_owned()),
         ] {
             let rows = tooltip(&item, &state).rows();
-            assert!(rows.iter().any(|row| {
-                row.plain() == "Checks for origin/feature/日本語 @ abcdef0"
-            }));
+            assert!(
+                rows.iter()
+                    .any(|row| { row.plain() == "Checks for origin/feature/日本語 @ abcdef0" })
+            );
             assert!(rows.iter().any(|row| {
                 row.plain() == "Local HEAD @ 7654321 · differs from checked commit"
             }));
             let target = rows.iter().find_map(|row| row.refresh.as_ref()).unwrap();
             assert_eq!(target.head_sha, "abcdef0123456789");
-            assert_ne!(target.head_sha, state.panes[0].ci.as_ref().unwrap().local_head_sha);
+            assert_ne!(
+                target.head_sha,
+                state.panes[0].ci.as_ref().unwrap().local_head_sha
+            );
         }
         assert_eq!(state.panes[0].branch, local_branch);
         assert_eq!(state.panes[0].branch_changes, local_changes);
         state.panes[0].ci.as_mut().unwrap().local_head_sha = "abcdef0123456789".to_owned();
-        assert!(tooltip(&Item::Pane("1".to_owned()), &state)
-            .rows()
-            .iter()
-            .all(|row| !row.plain().contains("differs from checked commit")));
+        assert!(
+            tooltip(&Item::Pane("1".to_owned()), &state)
+                .rows()
+                .iter()
+                .all(|row| !row.plain().contains("differs from checked commit"))
+        );
     }
 
     #[test]
@@ -2133,13 +2259,26 @@ mod tests {
         state.panes[0].agent_id = Some(id.to_owned());
         let pane = Item::Pane("1".to_owned());
         let popup = tooltip(&pane, &state);
-        let identity = popup.intro.iter().find(|row| row.plain().contains("Agent ID")).unwrap();
+        let identity = popup
+            .intro
+            .iter()
+            .find(|row| row.plain().contains("Agent ID"))
+            .unwrap();
         assert_eq!(identity.plain(), format!("\u{f0efe} Agent ID: {id}"));
         assert_eq!(identity.spans[1].color, PopupColor::Text);
-        assert!(!tooltip(&Item::Workspace("workspace".to_owned()), &state)
-            .rows().iter().any(|row| row.plain().contains(id)));
+        assert!(
+            !tooltip(&Item::Workspace("workspace".to_owned()), &state)
+                .rows()
+                .iter()
+                .any(|row| row.plain().contains(id))
+        );
         state.panes[0].harness = None;
-        assert!(!tooltip(&pane, &state).rows().iter().any(|row| row.plain().contains(id)));
+        assert!(
+            !tooltip(&pane, &state)
+                .rows()
+                .iter()
+                .any(|row| row.plain().contains(id))
+        );
     }
 
     #[test]
@@ -2187,7 +2326,8 @@ mod tests {
             let expected = format!("+{number} -{number}");
             let columns = width(&expected);
             assert!(branch_counts(Some(&changes), columns - 1, &Theme::default()).is_none());
-            let (text, reserved) = branch_counts(Some(&changes), columns, &Theme::default()).unwrap();
+            let (text, reserved) =
+                branch_counts(Some(&changes), columns, &Theme::default()).unwrap();
             assert_eq!(visible(&text), expected);
             assert_eq!(reserved, columns);
         }
@@ -2280,7 +2420,18 @@ mod tests {
             .iter()
             .find(|row| matches!(row.kind, RowKind::Detail { .. }))
             .unwrap();
-        let expected = render_row(detail, &state, &Theme::default(), 40, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+        let expected = render_row(
+            detail,
+            &state,
+            &Theme::default(),
+            40,
+            RowStyle {
+                selected: false,
+                hovered: false,
+                selected_group: false,
+                clock_frame: 0,
+            },
+        );
         for harness in [None, Some("codex"), Some("claude"), Some("omp")] {
             state.panes[0].harness = harness.map(str::to_owned);
             for status in [
@@ -2298,7 +2449,18 @@ mod tests {
             }
         }
         state.panes[0].branch = None;
-        let fallback = render_row(detail, &state, &Theme::default(), 40, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+        let fallback = render_row(
+            detail,
+            &state,
+            &Theme::default(),
+            40,
+            RowStyle {
+                selected: false,
+                hovered: false,
+                selected_group: false,
+                clock_frame: 0,
+            },
+        );
         assert!(visible(&fallback).contains("Native activity"));
         assert!(!fallback.contains(WORKFLOW));
         state.panes[0].harness = None;
@@ -2322,9 +2484,31 @@ mod tests {
             .iter()
             .find(|row| matches!(row.kind, RowKind::Pane { .. }))
             .unwrap();
-        let status_before = render_row(pane, &state, &Theme::default(), 16, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+        let status_before = render_row(
+            pane,
+            &state,
+            &Theme::default(),
+            16,
+            RowStyle {
+                selected: false,
+                hovered: false,
+                selected_group: false,
+                clock_frame: 0,
+            },
+        );
         for columns in 0..=80 {
-            let rendered = render_row(detail, &state, &Theme::default(), columns, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+            let rendered = render_row(
+                detail,
+                &state,
+                &Theme::default(),
+                columns,
+                RowStyle {
+                    selected: false,
+                    hovered: false,
+                    selected_group: false,
+                    clock_frame: 0,
+                },
+            );
             let text = visible(&rendered);
             assert_eq!(width(&text), columns);
             let counts: Vec<_> = text
@@ -2334,12 +2518,45 @@ mod tests {
             assert!(counts.is_empty() || counts == ["+1234", "-567"]);
             assert!(!text.contains("CI "));
         }
-        let wide = render_row(detail, &state, &Theme::default(), 38, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+        let wide = render_row(
+            detail,
+            &state,
+            &Theme::default(),
+            38,
+            RowStyle {
+                selected: false,
+                hovered: false,
+                selected_group: false,
+                clock_frame: 0,
+            },
+        );
         assert!(visible(&wide).contains("+1234 -567"));
-        let narrow = render_row(detail, &state, &Theme::default(), 16, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+        let narrow = render_row(
+            detail,
+            &state,
+            &Theme::default(),
+            16,
+            RowStyle {
+                selected: false,
+                hovered: false,
+                selected_group: false,
+                clock_frame: 0,
+            },
+        );
         assert!(!visible(&narrow).contains(['+', '-']));
         state.panes[0].branch = Some("topic".to_owned());
-        let adjacent = render_row(detail, &state, &Theme::default(), 80, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+        let adjacent = render_row(
+            detail,
+            &state,
+            &Theme::default(),
+            80,
+            RowStyle {
+                selected: false,
+                hovered: false,
+                selected_group: false,
+                clock_frame: 0,
+            },
+        );
         assert!(visible(&adjacent).contains("topic +1234 -567"));
         state.panes[0].branch_changes = None;
         assert_eq!(
@@ -2347,8 +2564,14 @@ mod tests {
             render_row(pane, &state, &Theme::default(), 16, RowStyle::default())
         );
         assert!(
-            !visible(&render_row(detail, &state, &Theme::default(), 80, RowStyle::default()))
-                .contains(['+', '-'])
+            !visible(&render_row(
+                detail,
+                &state,
+                &Theme::default(),
+                80,
+                RowStyle::default()
+            ))
+            .contains(['+', '-'])
         );
         assert_eq!(state.panes[0].status, Status::Working);
         assert_eq!(state.panes[0].attention, None);
@@ -2811,7 +3034,18 @@ mod tests {
             .find(|row| matches!(row.kind, RowKind::Detail { .. }))
             .unwrap();
         let harness_popup = tooltip(&Item::Pane("1".to_owned()), &state);
-        let detail = render_row(detail_row, &state, &Theme::default(), 80, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+        let detail = render_row(
+            detail_row,
+            &state,
+            &Theme::default(),
+            80,
+            RowStyle {
+                selected: false,
+                hovered: false,
+                selected_group: false,
+                clock_frame: 0,
+            },
+        );
         assert!(visible(&detail).contains("+1234 -567"));
         assert!(visible(&detail).contains(WORKFLOW));
         for harness in [None, Some("cargo"), Some("shell"), Some("unknown-app")] {
@@ -2829,8 +3063,18 @@ mod tests {
             ] {
                 state.panes[0].status = status;
                 state.panes[0].attention = attention;
-                let rendered =
-                    render_row(pane_row, &state, &Theme::default(), 22, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+                let rendered = render_row(
+                    pane_row,
+                    &state,
+                    &Theme::default(),
+                    22,
+                    RowStyle {
+                        selected: false,
+                        hovered: false,
+                        selected_group: false,
+                        clock_frame: 0,
+                    },
+                );
                 let text = visible(&rendered);
                 assert_eq!(width(&text), 22);
                 assert!(text.contains(&state.panes[0].name));
@@ -2865,7 +3109,10 @@ mod tests {
                                 &state,
                                 &Theme::default(),
                                 columns,
-                                RowStyle { hovered: true, ..RowStyle::default() },
+                                RowStyle {
+                                    hovered: true,
+                                    ..RowStyle::default()
+                                },
                             ))),
                             columns
                         );
@@ -2897,8 +3144,18 @@ mod tests {
             ] {
                 state.panes[0].status = status;
                 state.panes[0].attention = attention;
-                let rendered =
-                    render_row(pane_row, &state, &Theme::default(), 40, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+                let rendered = render_row(
+                    pane_row,
+                    &state,
+                    &Theme::default(),
+                    40,
+                    RowStyle {
+                        selected: false,
+                        hovered: false,
+                        selected_group: false,
+                        clock_frame: 0,
+                    },
+                );
                 assert!(visible(&rendered).contains(status_icon(status, attention)));
                 assert!(visible(&rendered).contains(harness_icon(harness)));
                 assert!(rendered.contains(harness_color(harness, &Theme::default())));
@@ -2959,7 +3216,18 @@ mod tests {
                     .iter()
                     .all(|span| span.color == PopupColor::Muted)
             );
-            let rendered = render_row(&collapsed[0], &state, &Theme::default(), 50, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+            let rendered = render_row(
+                &collapsed[0],
+                &state,
+                &Theme::default(),
+                50,
+                RowStyle {
+                    selected: false,
+                    hovered: false,
+                    selected_group: false,
+                    clock_frame: 0,
+                },
+            );
             assert!(visible(&rendered).contains(WORKFLOW));
             assert!(!visible(&rendered).contains(status_icon(status, Some(Attention::Permission))));
             if let Some(baseline) = &baseline {
@@ -2980,14 +3248,36 @@ mod tests {
                 );
             }
         }
-        let expanded_before = render_row(&expanded[0], &state, &Theme::default(), 50, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+        let expanded_before = render_row(
+            &expanded[0],
+            &state,
+            &Theme::default(),
+            50,
+            RowStyle {
+                selected: false,
+                hovered: false,
+                selected_group: false,
+                clock_frame: 0,
+            },
+        );
         state.panes[1].harness = Some("codex".to_owned());
         let popup = tooltip(&item, &state);
         assert_eq!(
             popup.subtitle.spans[0].color,
             PopupColor::Native(Status::Done)
         );
-        let rendered = render_row(&collapsed[0], &state, &Theme::default(), 50, RowStyle { selected: false, hovered: false, selected_group: false, clock_frame: 0 });
+        let rendered = render_row(
+            &collapsed[0],
+            &state,
+            &Theme::default(),
+            50,
+            RowStyle {
+                selected: false,
+                hovered: false,
+                selected_group: false,
+                clock_frame: 0,
+            },
+        );
         assert!(visible(&rendered).contains(status_icon(Status::Done, None)));
         assert!(visible(&rendered).contains(WORKFLOW));
         assert_eq!(

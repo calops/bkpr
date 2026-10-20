@@ -2,8 +2,8 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
 use bkpr::ci_contract::{ChangeRequestBase, CiSnapshot};
+use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct ProjectName {
@@ -105,7 +105,9 @@ pub(crate) fn discover_watched_with_ci(
                     .map(|sha| format!("detached @ {sha}")),
             };
             let source = crate::ci::discover(cwd, branch.as_deref());
-            let head_sha = source.as_ref().map(|source| source.sha.clone())
+            let head_sha = source
+                .as_ref()
+                .map(|source| source.sha.clone())
                 .or_else(|| resolve_commit(cwd, "HEAD"));
             let published = source.as_ref().is_some_and(|source| {
                 let Some(branch) = &source.remote_branch else {
@@ -197,11 +199,7 @@ pub(crate) fn update_ci(
     true
 }
 
-fn target_changes(
-    cwd: &Path,
-    base: &ChangeRequestBase,
-    head: &str,
-) -> Option<bkpr::BranchChanges> {
+fn target_changes(cwd: &Path, base: &ChangeRequestBase, head: &str) -> Option<bkpr::BranchChanges> {
     // Never interpret a provider value as a local revision expression, nor fetch.
     if !matches!(base.commit.len(), 40 | 64)
         || !base.commit.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -607,7 +605,10 @@ pub(crate) mod tests {
         // CI may describe the remote tip while local committed changes remain ahead.
         snapshot.head_sha.clone_from(&parent);
         assert_ne!(snapshot.head_sha, snapshot.local_head_sha);
-        assert_eq!(project.head_sha.as_deref(), Some(snapshot.local_head_sha.as_str()));
+        assert_eq!(
+            project.head_sha.as_deref(),
+            Some(snapshot.local_head_sha.as_str())
+        );
         repository.write("child", "uncommitted\nextra lines\nare not counted\n");
         assert!(update_ci(
             &repository.0,
@@ -756,7 +757,10 @@ pub(crate) mod tests {
             discover(&repository.0).unwrap().branch,
             Some(format!("detached @ {sha}"))
         );
-        assert_eq!(discover(&repository.0).unwrap().head_sha, resolve_commit(&repository.0, "HEAD"));
+        assert_eq!(
+            discover(&repository.0).unwrap().head_sha,
+            resolve_commit(&repository.0, "HEAD")
+        );
     }
 
     #[test]

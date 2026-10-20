@@ -138,13 +138,7 @@ impl<'a> Row<'a> {
         self.push_clean(&clean, width, matched, color)
     }
 
-    fn push_clean(
-        &mut self,
-        clean: &str,
-        width: usize,
-        matched: bool,
-        color: &'a str,
-    ) -> bool {
+    fn push_clean(&mut self, clean: &str, width: usize, matched: bool, color: &'a str) -> bool {
         if self.clipped {
             return false;
         }
@@ -316,7 +310,14 @@ mod tests {
         let mut index = Index::default();
         index.rebuild(snapshot);
         assert_eq!(index.search(query).len(), 1);
-        render(&mut index, snapshot, 0, true, columns, &ui::Theme::default())
+        render(
+            &mut index,
+            snapshot,
+            0,
+            true,
+            columns,
+            &ui::Theme::default(),
+        )
     }
 
     // Decode the rendered behavior, not the implementation's escape spelling.

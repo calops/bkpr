@@ -1,10 +1,10 @@
 //! Shared forge CI batching, scheduling, and cache; Git discovery is event-driven.
 //! Requests share remote targets within one canonical CWD and retain local identity.
+#[cfg(any(test, target_os = "linux"))]
+use bkpr::ci_contract::CiStatus;
 use bkpr::ci_contract::{CiFetchState, CiSnapshot, ForgeRepository};
 #[cfg(target_os = "linux")]
 use bkpr::ci_contract::{CiRefreshTarget, ForgeProvider};
-#[cfg(any(test, target_os = "linux"))]
-use bkpr::ci_contract::CiStatus;
 #[cfg(any(test, target_os = "linux"))]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -44,10 +44,12 @@ impl CiSource {
             && self.branch == snapshot.branch
             && (snapshot.fetch_state != CiFetchState::Ready || !snapshot.head_sha.is_empty())
             && match (&self.remote_branch, snapshot.checked_ref.as_deref()) {
-                (Some(branch), Some(reference)) => reference
-                    .strip_prefix(branch.remote.as_str())
-                    .and_then(|reference| reference.strip_prefix('/'))
-                    == Some(branch.name.as_str()),
+                (Some(branch), Some(reference)) => {
+                    reference
+                        .strip_prefix(branch.remote.as_str())
+                        .and_then(|reference| reference.strip_prefix('/'))
+                        == Some(branch.name.as_str())
+                }
                 (None, None) => true,
                 _ => false,
             }
@@ -108,7 +110,11 @@ pub(crate) fn discover(cwd: &Path, branch: Option<&str>) -> Option<CiSource> {
         let name = remote_branch_name(cwd, &remote, branch);
         let tracking_sha = crate::project::git_text(
             cwd,
-            &["rev-parse", "--verify", &format!("refs/remotes/{remote}/{name}")],
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("refs/remotes/{remote}/{name}"),
+            ],
         );
         RemoteBranch {
             remote,
@@ -170,15 +176,17 @@ fn remote_branch_name(cwd: &Path, remote: &str, branch: &str) -> String {
                 && to.contains('*')
             {
                 let target = to.replacen('*', middle, 1);
-                return target.strip_prefix("refs/heads/").unwrap_or(&target).to_owned();
+                return target
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(&target)
+                    .to_owned();
             }
         }
     }
     if matches!(
         crate::project::git_text(cwd, &["config", "--get", "push.default"]).as_deref(),
         Some("current" | "matching")
-    )
-    {
+    ) {
         return branch.to_owned();
     }
     let upstream_remote = crate::project::git_text(
@@ -186,10 +194,8 @@ fn remote_branch_name(cwd: &Path, remote: &str, branch: &str) -> String {
         &["config", "--get", &format!("branch.{branch}.remote")],
     );
     if upstream_remote.as_deref() == Some(remote)
-        && let Some(merge) = crate::project::git_text(
-            cwd,
-            &["config", "--get", &format!("branch.{branch}.merge")],
-        )
+        && let Some(merge) =
+            crate::project::git_text(cwd, &["config", "--get", &format!("branch.{branch}.merge")])
         && let Some(name) = merge.strip_prefix("refs/heads/")
     {
         return name.to_owned();
@@ -328,8 +334,14 @@ mod linux {
                         && old.cwd == source.cwd
                         && old.repository == source.repository
                         && old.branch == source.branch
-                        && old.remote_branch.as_ref().map(|branch| (&branch.remote, &branch.name))
-                            == source.remote_branch.as_ref().map(|branch| (&branch.remote, &branch.name))
+                        && old
+                            .remote_branch
+                            .as_ref()
+                            .map(|branch| (&branch.remote, &branch.name))
+                            == source
+                                .remote_branch
+                                .as_ref()
+                                .map(|branch| (&branch.remote, &branch.name))
                         && source.branch.is_some()
                         && entry
                             .snapshot
@@ -407,7 +419,10 @@ mod linux {
         pub(crate) fn refresh(&mut self, target: &CiRefreshTarget) {
             for (source, entry) in &mut self.entries {
                 let in_flight = self.pending.as_ref().is_some_and(|pending| {
-                    pending.sources.iter().any(|queried| same_target(queried, source))
+                    pending
+                        .sources
+                        .iter()
+                        .any(|queried| same_target(queried, source))
                 });
                 if !matches_target(&entry.snapshot, target) || in_flight {
                     continue;
@@ -797,11 +812,26 @@ mod linux {
             repository.git(&["remote", "add", "origin", "https://github.com/owner/repo"]);
             repository.git(&["remote", "add", "fork", "https://github.com/fork/repo"]);
             repository.git(&["config", "branch.local-work.remote", "origin"]);
-            repository.git(&["config", "branch.local-work.merge", "refs/heads/remote-work"]);
+            repository.git(&[
+                "config",
+                "branch.local-work.merge",
+                "refs/heads/remote-work",
+            ]);
             repository.git(&["update-ref", "refs/remotes/origin/remote-work", "HEAD"]);
             let published = discover(&repository.0, Some("local-work")).unwrap();
-            assert_eq!(published.checked_ref().as_deref(), Some("origin/remote-work"));
-            assert_eq!(published.remote_branch.as_ref().unwrap().tracking_sha.as_ref(), Some(&published.sha));
+            assert_eq!(
+                published.checked_ref().as_deref(),
+                Some("origin/remote-work")
+            );
+            assert_eq!(
+                published
+                    .remote_branch
+                    .as_ref()
+                    .unwrap()
+                    .tracking_sha
+                    .as_ref(),
+                Some(&published.sha)
+            );
             repository.git(&["commit", "--allow-empty", "-m", "unpushed"]);
             let local = discover(&repository.0, Some("local-work")).unwrap();
             assert_ne!(local.sha, published.sha);
@@ -812,14 +842,46 @@ mod linux {
             assert_eq!(fork.repository.path, "fork/repo");
             assert_eq!(fork.checked_ref().as_deref(), Some("fork/local-work"));
             repository.git(&["config", "branch.local-work.pushRemote", "origin"]);
-            assert_eq!(discover(&repository.0, Some("local-work")).unwrap().repository.path, "owner/repo");
-            repository.git(&["config", "remote.origin.push", "+refs/heads/local-work:refs/heads/published-work"]);
-            assert_eq!(discover(&repository.0, Some("local-work")).unwrap().checked_ref().as_deref(), Some("origin/published-work"));
-            repository.git(&["config", "remote.origin.push", "refs/heads/*:refs/heads/review/*"]);
-            assert_eq!(discover(&repository.0, Some("local-work")).unwrap().checked_ref().as_deref(), Some("origin/review/local-work"));
+            assert_eq!(
+                discover(&repository.0, Some("local-work"))
+                    .unwrap()
+                    .repository
+                    .path,
+                "owner/repo"
+            );
+            repository.git(&[
+                "config",
+                "remote.origin.push",
+                "+refs/heads/local-work:refs/heads/published-work",
+            ]);
+            assert_eq!(
+                discover(&repository.0, Some("local-work"))
+                    .unwrap()
+                    .checked_ref()
+                    .as_deref(),
+                Some("origin/published-work")
+            );
+            repository.git(&[
+                "config",
+                "remote.origin.push",
+                "refs/heads/*:refs/heads/review/*",
+            ]);
+            assert_eq!(
+                discover(&repository.0, Some("local-work"))
+                    .unwrap()
+                    .checked_ref()
+                    .as_deref(),
+                Some("origin/review/local-work")
+            );
             repository.git(&["config", "--unset", "remote.origin.push"]);
             repository.git(&["config", "push.default", "current"]);
-            assert_eq!(discover(&repository.0, Some("local-work")).unwrap().checked_ref().as_deref(), Some("origin/local-work"));
+            assert_eq!(
+                discover(&repository.0, Some("local-work"))
+                    .unwrap()
+                    .checked_ref()
+                    .as_deref(),
+                Some("origin/local-work")
+            );
             repository.git(&["checkout", "--detach"]);
             let detached = discover(&repository.0, Some("detached @ abc")).unwrap();
             assert!(detached.remote_branch.is_none());
@@ -878,8 +940,16 @@ mod linux {
             assert!(batch.contains(&first));
             assert!(batch.contains(&another));
             assert!(!batch.contains(&other_cwd));
-            finish_snapshot(&mut monitor, &first, complete_snapshot(&first, &[CiStatus::Passed]));
-            finish_snapshot(&mut monitor, &another, complete_snapshot(&another, &[CiStatus::Passed]));
+            finish_snapshot(
+                &mut monitor,
+                &first,
+                complete_snapshot(&first, &[CiStatus::Passed]),
+            );
+            finish_snapshot(
+                &mut monitor,
+                &another,
+                complete_snapshot(&another, &[CiStatus::Passed]),
+            );
             assert_eq!(monitor.snapshot(&other_cwd), Some(empty(&other_cwd, 0)));
             assert!(monitor.reserve_batch(now).is_empty());
             assert_eq!(
@@ -892,7 +962,10 @@ mod linux {
                 complete_snapshot(&other_cwd, &[CiStatus::Failed]),
             );
             assert_eq!(monitor.snapshot(&first).unwrap().status, CiStatus::Passed);
-            assert_eq!(monitor.snapshot(&other_cwd).unwrap().status, CiStatus::Failed);
+            assert_eq!(
+                monitor.snapshot(&other_cwd).unwrap().status,
+                CiStatus::Failed
+            );
         }
 
         #[test]
@@ -906,8 +979,15 @@ mod linux {
             let fd = monitor.fd();
             monitor.sync([first.clone(), second.clone()].into_iter());
             assert_eq!(monitor.fd(), fd);
-            assert!(!same_target(&monitor.pending.as_ref().unwrap().sources[0], &second));
-            finish_snapshot(&mut monitor, &first, complete_snapshot(&first, &[CiStatus::Passed]));
+            assert!(!same_target(
+                &monitor.pending.as_ref().unwrap().sources[0],
+                &second
+            ));
+            finish_snapshot(
+                &mut monitor,
+                &first,
+                complete_snapshot(&first, &[CiStatus::Passed]),
+            );
             assert_eq!(monitor.snapshot(&second), Some(empty(&second, 0)));
             monitor.pending = None;
             assert_eq!(monitor.due_batch(Instant::now()), vec![second.clone()]);

@@ -2,15 +2,15 @@
 #[cfg(any(test, target_os = "linux"))]
 use super::{BatchResponse, CiSource, FetchError, RetryPolicy, empty, same_target};
 #[cfg(any(test, target_os = "linux"))]
-use scraper::{Html, Selector};
-#[cfg(any(test, target_os = "linux"))]
-use serde_json::{Value, json};
-use bkpr::ci_contract::{ForgeProvider, ForgeRepository};
-#[cfg(any(test, target_os = "linux"))]
 use bkpr::ci_contract::{
     ChangeRequest, ChangeRequestBase, ChangeRequestState, CiCheck, CiFetchState, CiSnapshot,
     CiStatus, IssueTracker, LinkedIssue,
 };
+use bkpr::ci_contract::{ForgeProvider, ForgeRepository};
+#[cfg(any(test, target_os = "linux"))]
+use scraper::{Html, Selector};
+#[cfg(any(test, target_os = "linux"))]
+use serde_json::{Value, json};
 
 pub(super) fn repository(url: &str) -> Option<ForgeRepository> {
     let path = url
@@ -347,9 +347,15 @@ fn change_request(node: &Value) -> Option<ChangeRequest> {
 }
 
 #[cfg(any(test, target_os = "linux"))]
-fn matching_request(source: &CiSource, nodes: &[Value], checked_sha: &str) -> Option<ChangeRequest> {
+fn matching_request(
+    source: &CiSource,
+    nodes: &[Value],
+    checked_sha: &str,
+) -> Option<ChangeRequest> {
     // Every PR association is verified against the actual provider-checked head.
-    let branch = source.remote_branch.as_ref()
+    let branch = source
+        .remote_branch
+        .as_ref()
         .map(|branch| branch.name.as_str())
         .or(source.branch.as_deref())?;
     let matching = || {
@@ -417,7 +423,8 @@ fn parse(
         snapshot.error = Some(if let Some(branch) = source.checked_ref() {
             format!("Remote branch {branch} is not available on GitHub")
         } else {
-            "Current commit is not available on GitHub (not pushed or repository inaccessible)".into()
+            "Current commit is not available on GitHub (not pushed or repository inaccessible)"
+                .into()
         });
         return Ok(snapshot);
     }
@@ -920,7 +927,8 @@ printf '{"data":{"r0":{"object":{"oid":"abc","statusCheckRollup":{"contexts":{"n
             // Override PATH only on this child; never mutate the test process's auth/env.
             let output = command.env("PATH", &bin).output().unwrap();
             assert!(output.status.success());
-            let mut batch = response(true, &output.stdout, "", &sources, sources.iter(), 42).unwrap();
+            let mut batch =
+                response(true, &output.stdout, "", &sources, sources.iter(), 42).unwrap();
             let snapshot = batch.results.remove(&source).unwrap().unwrap();
             assert_eq!(snapshot.status, expected);
             assert_eq!(snapshot.checks[0].name, source.cwd.to_str().unwrap());
@@ -1048,15 +1056,32 @@ printf '{"data":{"r0":{"object":{"oid":"abc","statusCheckRollup":{"contexts":{"n
             let completed = pr(8, state, false, "2026-10-14T12:00:00Z");
             value["b0"]["associatedPullRequests"]["nodes"] = json!([]);
             value["c0"]["nodes"] = json!([completed]);
-            assert_eq!(parse(&source, &value, 42, 0).unwrap().change_request.unwrap().number, 8);
+            assert_eq!(
+                parse(&source, &value, 42, 0)
+                    .unwrap()
+                    .change_request
+                    .unwrap()
+                    .number,
+                8
+            );
             value["c0"]["nodes"][0]["headRefOid"] = json!("not-the-remote-tip");
-            assert!(parse(&source, &value, 42, 0).unwrap().change_request.is_none());
+            assert!(
+                parse(&source, &value, 42, 0)
+                    .unwrap()
+                    .change_request
+                    .is_none()
+            );
         }
         value["b0"]["associatedPullRequests"]["nodes"] =
             json!([pr(7, "OPEN", false, "2026-10-13T12:00:00Z")]);
 
         value["b0"]["associatedPullRequests"]["nodes"][0]["headRefOid"] = json!("different");
-        assert!(parse(&source, &value, 42, 0).unwrap().change_request.is_none());
+        assert!(
+            parse(&source, &value, 42, 0)
+                .unwrap()
+                .change_request
+                .is_none()
+        );
         value["object"] = Value::Null;
         let missing = parse(&source, &value, 42, 0).unwrap();
         assert!(missing.commit_missing);
