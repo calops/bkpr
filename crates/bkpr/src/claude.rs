@@ -59,7 +59,7 @@ pub fn launch(directory: &Path, mut arguments: Vec<OsString>) -> Result<()> {
     let mut command = Command::new(executable);
     if std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
-        && argument_plan(&arguments).is_some()
+        && let Some(plan) = argument_plan(&arguments)
     {
         if supplement(&mut arguments)? {
             command.env("BKPR_CLAUDE_TTY", terminal_path()?);
@@ -69,7 +69,11 @@ pub fn launch(directory: &Path, mut arguments: Vec<OsString>) -> Result<()> {
                 .join("claude-titles");
             fs::create_dir_all(&titles)?;
             fs::set_permissions(&titles, fs::Permissions::from_mode(0o700))?;
-            command.env("BKPR_CLAUDE_TITLE_DIR", &titles);
+            // Resumed conversations may already have an AI-generated title,
+            // which Claude does not include in the hook's session_title field.
+            if !plan.resumed {
+                command.env("BKPR_CLAUDE_TITLE_DIR", &titles);
+            }
             command.env("BKPR_CLAUDE_WAIT_DIR", titles);
         }
         let relay = crate::relay::prepare("claude", &env::current_dir()?)?;
@@ -95,6 +99,7 @@ struct ArgumentPlan {
     settings: Option<(usize, bool)>,
     insert_at: usize,
     mcp_insert: Option<usize>,
+    resumed: bool,
 }
 
 fn argument_plan(arguments: &[OsString]) -> Option<ArgumentPlan> {
@@ -102,6 +107,7 @@ fn argument_plan(arguments: &[OsString]) -> Option<ArgumentPlan> {
         settings: None,
         insert_at: arguments.len(),
         mcp_insert: None,
+        resumed: false,
     };
     let mut index = 0;
     let mut first_positional = true;
@@ -140,9 +146,18 @@ fn argument_plan(arguments: &[OsString]) -> Option<ArgumentPlan> {
                     index += 1;
                 }
             }
-            // Resumed conversations may already have an AI-generated title,
-            // which Claude does not include in the hook's session_title field.
-            "--resume" | "-r" | "--continue" | "-c" => return None,
+            // `--resume [value]` takes an optional session ID or search term.
+            "--resume" | "-r" => {
+                plan.resumed = true;
+                if value.is_none()
+                    && arguments
+                        .get(index + 1)
+                        .is_some_and(|next| !next.as_bytes().starts_with(b"-"))
+                {
+                    index += 1;
+                }
+            }
+            "--continue" | "-c" if value.is_none() => plan.resumed = true,
             "--fork-session"
             | "--strict-mcp-config"
             | "--dangerously-skip-permissions"
@@ -637,8 +652,30 @@ mod tests {
         assert!(argument_plan(&[OsString::from("mcp"), OsString::from("list")]).is_none());
         assert!(argument_plan(&[OsString::from("auth")]).is_none());
         assert!(argument_plan(&[OsString::from("update")]).is_none());
-        assert!(argument_plan(&[OsString::from("--resume"), OsString::from("auth")]).is_none());
-        assert!(argument_plan(&[OsString::from("--continue")]).is_none());
+    }
+
+    #[test]
+    fn resumed_sessions_keep_messaging_but_not_initial_titles() {
+        // `--resume [value]` consumes an optional search term, so it is not a subcommand.
+        let plan = argument_plan(&[OsString::from("--resume"), OsString::from("auth")]).unwrap();
+        assert!(plan.resumed);
+        assert_eq!(plan.insert_at, 2);
+        let plan = argument_plan(&[
+            OsString::from("-r"),
+            OsString::from("--model"),
+            OsString::from("opus"),
+        ])
+        .unwrap();
+        assert!(plan.resumed);
+        let plan =
+            argument_plan(&[OsString::from("--continue"), OsString::from("fix it")]).unwrap();
+        assert!(plan.resumed);
+        assert!(!argument_plan(&[OsString::from("fix it")]).unwrap().resumed);
+        let mut arguments = vec![OsString::from("-c")];
+        assert!(supplement(&mut arguments).unwrap());
+        supplement_relay(&mut arguments, Path::new("/run/bkpr/config.json")).unwrap();
+        assert_eq!(arguments[0], "-c");
+        assert!(arguments.contains(&OsString::from("--mcp-config")));
     }
 
     #[test]
