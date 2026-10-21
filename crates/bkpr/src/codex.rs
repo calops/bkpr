@@ -236,9 +236,8 @@ pub fn launch(directory: &Path, arguments: Vec<OsString>) -> Result<()> {
         .write(true)
         .mode(0o600)
         .open(&log_path)?;
-    let server_name = format!("bkpr_{}", identity.agent_id.replace('-', "_"));
     let mcp = format!(
-        "mcp_servers.{server_name}={{command={},args=[\"relay-mcp\"],env_vars={},enabled=true}}",
+        "mcp_servers.bkpr={{command={},args=[\"relay-mcp\"],env_vars={},enabled=true}}",
         serde_json::to_string(program_string)?,
         serde_json::to_string(&IDENTITY_ENV)?,
     );
