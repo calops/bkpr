@@ -1248,7 +1248,7 @@ impl Broker {
                 let pid = params["pid"].as_u64().context("missing pid")?.try_into()?;
                 let start = process_identity(pid)?;
                 let mut logs = BTreeMap::new();
-                for field in ["codex_log", "hook_log"] {
+                for field in ["codex_log", "hook_log", "binding_log"] {
                     if let Some(path) = params.get(field) {
                         logs.insert(
                             field.to_owned(),
@@ -1270,6 +1270,10 @@ impl Broker {
                 Ok((public_agent(&self.store.agents[&agent.id]), Vec::new()))
             }
             "hook_diagnostic" => {
+                let kind = params.get("kind").and_then(Value::as_str).unwrap_or("hook");
+                if !matches!(kind, "hook" | "binding") {
+                    bail!("unsupported startup diagnostic kind");
+                }
                 let state = string(params, "state")?;
                 if !matches!(state, "ready" | "failed") {
                     bail!("hook diagnostic state must be ready or failed");
@@ -1285,7 +1289,7 @@ impl Broker {
                     .get_mut(&agent.id)
                     .context("unknown agent")?
                     .diagnostics
-                    .entry("hook".to_owned())
+                    .entry(kind.to_owned())
                     .or_insert_with(|| json!({}));
                 let event =
                     json!({"state":state,"detail":detail,"log_path":log,"updated_at":now()});

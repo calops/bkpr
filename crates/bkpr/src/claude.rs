@@ -33,40 +33,23 @@ pub fn wrapper(program: &Path, directory: &Path) -> Result<String> {
     ))
 }
 
-fn real_claude(directory: &Path) -> Result<PathBuf> {
-    let wrapper = fs::canonicalize(directory.join("claude"))?;
-    for entry in env::split_paths(&env::var_os("PATH").unwrap_or_default()) {
-        let candidate = entry.join("claude");
-        if fs::metadata(&candidate)
-            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-            && let Ok(resolved) = fs::canonicalize(&candidate)
-            && resolved != wrapper
-        {
-            // An empty PATH component produces bare `claude`; pass an absolute
-            // path to exec so it cannot search PATH and select our wrapper again.
-            return if candidate.is_absolute() {
-                Ok(candidate)
-            } else {
-                Ok(env::current_dir()?.join(candidate))
-            };
-        }
-    }
-    bail!("Claude is not installed on PATH outside the session wrapper")
-}
-
-pub fn launch(directory: &Path, mut arguments: Vec<OsString>) -> Result<()> {
-    let executable = real_claude(directory)?;
+pub fn launch(directory: Option<&Path>, mut arguments: Vec<OsString>) -> Result<()> {
+    let executable = crate::harness::resolve("claude", directory)?;
     let mut command = Command::new(executable);
     if std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
         && let Some(plan) = argument_plan(&arguments)
     {
-        if supplement(&mut arguments)? {
-            command.env("BKPR_CLAUDE_TTY", terminal_path()?);
-            let titles = directory
+        let runtime = match directory {
+            Some(directory) => directory
                 .parent()
                 .context("locate session runtime")?
-                .join("claude-titles");
+                .to_path_buf(),
+            None => crate::launcher::runtime_root()?,
+        };
+        if supplement(&mut arguments)? {
+            command.env("BKPR_CLAUDE_TTY", terminal_path()?);
+            let titles = runtime.join("claude-titles");
             fs::create_dir_all(&titles)?;
             fs::set_permissions(&titles, fs::Permissions::from_mode(0o700))?;
             // Resumed conversations may already have an AI-generated title,
@@ -77,7 +60,7 @@ pub fn launch(directory: &Path, mut arguments: Vec<OsString>) -> Result<()> {
             command.env("BKPR_CLAUDE_WAIT_DIR", titles);
         }
         let relay = crate::relay::prepare("claude", &env::current_dir()?)?;
-        let config = relay_config(directory, &env::current_exe()?)?;
+        let config = relay_config(&runtime, &env::current_exe()?)?;
         relay.apply(&mut command);
         supplement_relay(&mut arguments, &config)?;
     }
@@ -250,11 +233,8 @@ fn supplement(arguments: &mut Vec<OsString>) -> Result<bool> {
     Ok(true)
 }
 
-fn relay_config(directory: &Path, program: &Path) -> Result<PathBuf> {
-    let runtime = directory
-        .parent()
-        .context("locate Claude session runtime")?
-        .join("claude-mcp");
+fn relay_config(runtime_root: &Path, program: &Path) -> Result<PathBuf> {
+    let runtime = runtime_root.join("claude-mcp");
     crate::launcher::private_directory(&runtime)?;
     let path = runtime.join("config.json");
     let expected = json!({
@@ -285,7 +265,7 @@ fn relay_config(directory: &Path, program: &Path) -> Result<PathBuf> {
             match temporary.persist_noclobber(&path) {
                 Ok(_) => {}
                 Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    return relay_config(directory, program);
+                    return relay_config(runtime_root, program);
                 }
                 Err(error) => return Err(error.error.into()),
             }
@@ -588,9 +568,7 @@ mod tests {
     #[test]
     fn private_mcp_config_detects_tampering() {
         let runtime = tempfile::tempdir().unwrap();
-        let wrapper = runtime.path().join("bin");
-        fs::create_dir(&wrapper).unwrap();
-        let path = relay_config(&wrapper, Path::new("/opt/bkpr")).unwrap();
+        let path = relay_config(runtime.path(), Path::new("/opt/bkpr")).unwrap();
         assert_eq!(
             fs::metadata(path.parent().unwrap())
                 .unwrap()
@@ -607,10 +585,10 @@ mod tests {
         assert_eq!(config["mcpServers"]["bkpr"]["command"], "/opt/bkpr");
         assert!(config["mcpServers"]["bkpr"].get("env").is_none());
         assert_eq!(
-            relay_config(&wrapper, Path::new("/opt/bkpr")).unwrap(),
+            relay_config(runtime.path(), Path::new("/opt/bkpr")).unwrap(),
             path
         );
-        assert!(relay_config(&wrapper, Path::new("/other/bkpr")).is_err());
+        assert!(relay_config(runtime.path(), Path::new("/other/bkpr")).is_err());
     }
 
     #[test]

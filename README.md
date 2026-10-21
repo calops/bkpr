@@ -181,6 +181,21 @@ The upstream capabilities below were checked on **2026-10-14**:
 
 An alpha release isn't stable availability, and an open PR isn't a release commitment. Upstream Pi isn't omp.
 
+### Explicit harness launch
+
+Use `bkpr run` to select Bkpr's launch integration explicitly, without relying on its session-local `PATH` wrappers:
+
+```sh
+bkpr run claude
+bkpr run codex --model gpt-6-luna
+bkpr run omp
+bkpr run opencode
+```
+
+Supported names are `claude`, `codex`, `omp`, `opencode`, `agy`, `cursor`, `copilot`, `aider`, `cline` and `goose`. Aliases include `claude-code`, `antigravity`, `cursor-agent`, `copilot-cli`, `github-copilot` and `.cline`. Unknown names are rejected. Claude, Codex and omp use the same launch-local integrations as their wrappers; the others execute their installed CLI directly without acquiring a parent agent's messaging identity.
+
+Arguments after the harness name belong to that harness. An initial `--` separates Bkpr's arguments; later `--` arguments are preserved. Executables are resolved from `PATH` while skipping Bkpr-managed wrappers and their aliases. The command works outside Bkpr too, but workspace/session-scoped messaging still requires a managed pane's live context. Automatic session-local wrappers remain enabled.
+
 ### Claude Code
 
 Run an up-to-date `claude` directly in a Bkpr terminal. Native reports supply lifecycle state, attention and available activity messages.
@@ -226,11 +241,13 @@ bkpr bridge status --json
 bkpr bridge show MESSAGE_ID
 ```
 
-Status reports readiness, message/wake metadata and available private diagnostic-log paths without message bodies or bearer tokens. `show` retrieves a retained body only when explicitly requested and never returns an expired body, even from an offline snapshot. Codex's private hook log records failure stages directly, so a transient “hook failed” is no longer the only evidence. Claude waiter errors also have a private per-agent log.
+Status reports readiness, message/wake metadata and available private diagnostic-log paths without message bodies or bearer tokens. `show` retrieves a retained body only when explicitly requested and never returns an expired body, even from an offline snapshot. Codex records native startup-binding failures in its private `binding.jsonl`; older running launches retain their hook diagnostics. Claude waiter errors also have a private per-agent log.
 
 Claude uses launch-local [`asyncRewake` hooks](https://code.claude.com/docs/en/hooks#run-hooks-in-the-background) to wait for broker messages and wake its own session at a turn boundary. A `SessionStart` waiter covers idle sessions; a `Stop` waiter rearms after a turn. The waiter is bound by Claude's hook timeout (one day), and hook-disabled or unsupported explicit file-settings launches can still use MCP tools but cannot wake automatically. Claude's existing title hook captures its native session ID when enabled. Omp uses a launch-local extension to schedule a follow-up turn from an MCP notification; readiness requires the extension's own handshake, not just an MCP connection. The extension runs inside omp's own runtime; Bkpr adds no Node dependency.
 
-Codex uses its native remote queue after a trusted `SessionStart` hook has associated its native thread with the Bkpr agent. The managed app-server remains necessary with the tested Codex 0.163.0: launch-local MCP `-c` overrides force embedded mode, where a stock queue can exit successfully without waking the active TUI. These mechanisms do not type into a user's input field or steer an active turn; Codex's queue nevertheless presents a broker inbox pointer as internal user-role input.
+Codex binds its native thread before the first prompt by observing response-correlated thread selections on its TUI's private app-server connection. Fresh sessions, explicit resume/fork and picker selections bind the conversation Codex actually selected, not a guessed latest thread or an auxiliary title-generation thread. No synthetic startup turn is sent, and no Bkpr `SessionStart` hook approval is needed for new launches. Native user hooks, trust and tool approvals remain unchanged.
+
+Codex uses its native remote queue after binding. The managed app-server remains necessary with the tested Codex 0.163.0: launch-local MCP `-c` overrides force embedded mode, where a stock queue can exit successfully without waking the active TUI. These mechanisms do not type into a user's input field or steer an active turn; Codex's queue nevertheless presents a broker inbox pointer as internal user-role input.
 
 Codex sees a stable MCP server named `bkpr`; agent IDs and bearer tokens still change for each launch. Bkpr leaves normal tool approvals in place and does not modify persistent Codex configuration. With tested Codex 0.163.0, “Always allow” for a launch-only MCP server is remembered only within that session: durable approval requires the same server to be defined in a persistent user/project config. The stable name removes identity churn, but prompts can still recur on fresh launches.
 
@@ -240,7 +257,9 @@ Bkpr uses one private MCP JSON file per managed session (`0700` directory, `0600
 
 Codex's dedicated native app-server outlives its terminal so its queue remains available. It prints a private manifest location and an exact `bkpr codex-stop --manifest <path>` command. Acknowledge all pending messages before stopping it; Bkpr refuses to stop a server with unread messages. Omp's temporary extension package is removed on normal exit, but forced termination can leave its private package in the managed session runtime.
 
-Wrappers are found through the managed session's `PATH`, not through aliases or absolute executable paths. Already-running processes and sessions created before these wrappers are installed do not gain them retroactively. Interactive consent and trust requirements cannot be bypassed by Bkpr. Codex noninteractive `exec` and `review` do not support this native remote queue and fail clearly instead of silently claiming message delivery.
+Codex keeps a single writable owner for a conversation. If a new launch's resume reports that the conversation is open in another app, finish pending work and explicitly stop its previous queue server with the printed command before retrying. Bkpr does not steal the conversation or terminate the previous owner automatically.
+
+Session-local wrappers are found through `PATH`; `bkpr run` provides the explicit alternative. Already-running processes and sessions created before these wrappers are installed do not gain them retroactively. Interactive consent and trust requirements cannot be bypassed by Bkpr. Codex noninteractive `exec` and `review` do not support this native remote queue and fail clearly instead of silently claiming message delivery.
 
 The broker wire protocol is version 3. New clients fail clearly against older brokers rather than applying the old repository-based meaning of “workspace.” Running brokers are never replaced automatically; inspect their pending work before explicitly restarting them and relaunching managed harnesses. Retained messages and idempotency receipts preserve their original scope during migration.
 

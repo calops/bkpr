@@ -543,15 +543,12 @@ class LiveRun:
         (self.artifact / "readiness.json").write_text(json.dumps(status, indent=2))
         found = {}
         for agent in status["agents"]:
-            hook = agent["readiness"].get("hook_diagnostics", {}).get("hook", {})
-            if agent["harness"] == "codex" and hook.get("state") == "failed":
-                for runtime in self.runtime_dirs:
-                    log = runtime / "hook.jsonl"
-                    if log.exists() and log.stat().st_size:
-                        diagnostic = json.loads(log.read_text().splitlines()[-1])
-                        raise CheckFailure(f"Codex SessionStart failed at {diagnostic['stage']}: "
-                                           f"{diagnostic.get('error', 'unknown error')}. See codex-hook.jsonl.")
-                raise CheckFailure(f"Codex SessionStart failed: {hook.get('detail')}")
+            diagnostics = agent["readiness"].get("hook_diagnostics", {})
+            binding = diagnostics.get("binding", diagnostics.get("hook", {}))
+            if agent["harness"] == "codex" and binding.get("state") == "failed":
+                raise CheckFailure(
+                    f"Codex native binding failed: {binding.get('detail')}. "
+                    f"See {binding.get('log_path')}.")
             for role in ("codex", "claude"):
                 if agent["title"] == self.scenario.title(role) and agent["harness"] == role:
                     if role in found:
@@ -588,7 +585,7 @@ class LiveRun:
 
         attempt(self.capture_servers)
         for runtime in self.runtime_dirs:
-            for name in ("server.log", "hook.jsonl"):
+            for name in ("server.log", "hook.jsonl", "binding.jsonl"):
                 source = runtime / name
                 if source.is_file():
                     attempt(lambda source=source, name=name: shutil.copyfile(source, self.artifact / f"codex-{name}"))
@@ -618,7 +615,7 @@ class LiveRun:
                 self.daemon.wait()
         attempt(self.reap_orphans)
         for runtime in self.runtime_dirs:
-            for name in ("server.log", "hook.jsonl"):
+            for name in ("server.log", "hook.jsonl", "binding.jsonl"):
                 source = runtime / name
                 if source.is_file():
                     attempt(lambda source=source, name=name: shutil.copyfile(source, self.artifact / f"codex-{name}"))
