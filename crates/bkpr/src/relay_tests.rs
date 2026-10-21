@@ -1523,3 +1523,118 @@ fn each_selected_scope_survives_ack_reload_and_rejects_scope_reuse() {
         assert_eq!(broker.store.messages.len(), 1);
     }
 }
+
+fn discovered(broker: &mut Broker, caller: &Request, target: &Request) -> Value {
+    let (value, _) = broker
+        .perform(&as_request(caller, "discover", json!({})))
+        .unwrap();
+    value["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["id"] == target.agent_id.as_str())
+        .unwrap()
+        .clone()
+}
+
+#[test]
+fn explicit_titles_and_live_pane_names_are_reported_separately() {
+    let (_directory, mut broker) = broker();
+    let alice = register(&mut broker, "one");
+    let bob = register(&mut broker, "one");
+    let record = discovered(&mut broker, &alice, &bob);
+    assert!(record["title"].is_null());
+    assert_eq!(
+        record["context"]["pane_name"],
+        format!("{} pane", bob.agent_id)
+    );
+
+    broker
+        .perform(&as_request(&bob, "set_title", json!({"title":"reviewer"})))
+        .unwrap();
+    let context = fixture(&broker);
+    context
+        .panes
+        .borrow_mut()
+        .get_mut(&bob.agent_id)
+        .unwrap()
+        .pane_name = "Fix flaky lease test".into();
+    context.publish();
+    let record = discovered(&mut broker, &alice, &bob);
+    assert_eq!(record["title"], "reviewer");
+    assert_eq!(record["context"]["pane_name"], "Fix flaky lease test");
+}
+
+#[test]
+fn default_discovery_view_is_compact_and_detail_keeps_full_records() {
+    let (_directory, mut broker) = broker();
+    let alice = register(&mut broker, "one");
+    let bob = register(&mut broker, "one");
+    broker
+        .perform(&as_request(&bob, "set_title", json!({"title":"reviewer"})))
+        .unwrap();
+    let (full, _) = broker
+        .perform(&as_request(&alice, "discover", json!({})))
+        .unwrap();
+
+    let compact = discovery_view(full.clone(), false);
+    assert_eq!(compact["scope"], "workspace");
+    let summary = &compact["agents"][0];
+    let keys: Vec<_> = summary.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        keys,
+        [
+            "attached",
+            "can_notify",
+            "harness",
+            "id",
+            "pane_id",
+            "pane_name",
+            "project",
+            "session",
+            "title",
+            "workspace"
+        ]
+    );
+    assert_eq!(summary["id"], bob.agent_id.as_str());
+    assert_eq!(summary["title"], "reviewer");
+    assert_eq!(summary["pane_name"], format!("{} pane", bob.agent_id));
+    assert_eq!(summary["attached"], true);
+    assert_eq!(summary["can_notify"], false);
+    assert_eq!(discovery_view(full.clone(), true), full);
+}
+
+#[test]
+fn discovery_detail_is_mcp_only_and_strictly_boolean() {
+    let mut params = json!({"scope":"session","detail":true});
+    assert_eq!(
+        discovery_detail("discover", &mut params).unwrap(),
+        Some(true)
+    );
+    assert_eq!(params, json!({"scope":"session"}));
+    assert_eq!(
+        discovery_detail("discover", &mut json!({})).unwrap(),
+        Some(false)
+    );
+    assert!(discovery_detail("discover", &mut json!({"detail":"yes"})).is_err());
+    let mut other = json!({"detail":true});
+    assert_eq!(discovery_detail("whoami", &mut other).unwrap(), None);
+    assert_eq!(other, json!({"detail":true}));
+}
+
+// LEGACY_COMPAT(next-major): stores and live brokers from earlier releases
+// report the shared `"{harness} agent"` default title.
+#[test]
+fn legacy_default_titles_are_reported_as_unset() {
+    let (_directory, mut broker) = broker();
+    let alice = register(&mut broker, "one");
+    let bob = register(&mut broker, "one");
+    broker.store.agents.get_mut(&bob.agent_id).unwrap().title = Some("omp agent".into());
+    assert!(discovered(&mut broker, &alice, &bob)["title"].is_null());
+
+    let old_broker = json!({"agents":[{"id":"old","harness":"codex","title":"codex agent"}]});
+    assert_eq!(
+        discovery_view(old_broker, false)["agents"][0],
+        json!({"id":"old","harness":"codex"})
+    );
+}
