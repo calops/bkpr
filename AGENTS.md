@@ -42,7 +42,7 @@
 
 ## Development
 
-Use `nix develop` and incremental debug Cargo artifacts in `target/`. Run coordinated checks once after edits: `cargo test --locked --workspace`, `cargo build --locked -p bkpr-zellij --target wasm32-wasip1`, host/WASI `cargo clippy --locked ... -- -D warnings`. Use `nix build .#bkpr` only for packaging validation, not the edit/run loop.
+Use `nix develop` and incremental debug Cargo artifacts in `target/`. Use `just build` to build the launcher and WASI plugin together, and `just run [args…]` to build both before launching with the matching plugin. Run coordinated checks once after edits: `cargo test --locked --workspace`, `cargo build --locked -p bkpr-zellij --target wasm32-wasip1`, host/WASI `cargo clippy --locked ... -- -D warnings`. Use `nix build .#bkpr` only for packaging validation, not the edit/run loop.
 
 ### Forked Zellij runtime
 
@@ -50,7 +50,7 @@ The pinned host is [calops/bkpr-zellij](https://github.com/calops/bkpr-zellij), 
 
 The fork polls stable Zellij releases daily and opens `update/zellij-vX.Y.Z` PRs from release tags, never upstream's moving `main`. Updates preserve upstream ancestry with merge commits. Every PR requires human validation and explicit manual merging, even when conflict-free and CI-green. Protected `main` requires PRs, with no mandatory approval count or global CI status. Only release-update PRs run the fork's Nix/package verification and publish `Upstream verification`. Auto-merge, squash merging and rebase merging are disabled; preserve merge commits.
 
-Normal Bkpr development is `nix develop`, build the debug WASM with Cargo, then `cargo run --locked -p bkpr`. The shell supplies the pinned native runtime automatically. Use `--zellij ../bkpr-zellij/target/debug/zellij` to select an incremental native build explicitly; the argument is an executable path, not a checkout directory. Use incremental Cargo artifacts for tests and iteration, not `nix build`; reserve Nix builds for explicit packaging validation.
+Normal Bkpr development is `nix develop`, then `just run --session dev`. The shell supplies `just` and the pinned native runtime; the recipe builds both debug components and selects the matching WASM, including with `CARGO_TARGET_DIR`. Plain `cargo run --locked -p bkpr` builds only the launcher, so the WASI plugin must be built separately. Use `--zellij ../bkpr-zellij/target/debug/zellij` to select an incremental native build explicitly; the argument is an executable path, not a checkout directory. Use incremental Cargo artifacts for tests and iteration, not `nix build`; reserve Nix builds for explicit packaging validation.
 
 For native changes, clone the fork beside Bkpr and work on a retained feature branch. In that checkout:
 
@@ -59,6 +59,6 @@ nix develop --accept-flake-config
 cargo build --locked --offline --no-default-features
 ```
 
-Run Bkpr from its own devshell with `cargo run --locked -p bkpr -- --zellij ../bkpr-zellij/target/debug/zellij --session native-dev`. Start a fresh session after host changes; existing servers retain old code. After local/integration verification, push the retained feature branch and open a PR into the fork's `main`. Human-validate it and merge explicitly with a merge commit; never enable auto-merge, squash or rebase merging. Do not dispatch release-update CI for an ordinary feature PR. After the PR lands, update Bkpr's input with `nix flake update bkpr-zellij`, preserving the fork's dependency pins. The fork's [Nix notes](https://github.com/calops/bkpr-zellij/blob/main/docs/NIX.md) document package outputs and offline vendoring.
+Run Bkpr from its own devshell with `just run --zellij ../bkpr-zellij/target/debug/zellij --session native-dev`. Start a fresh session to use new host features; existing servers retain old code and must remain attachable where reasonably avoidable. After local/integration verification, push the retained feature branch and open a PR into the fork's `main`. Human-validate it and merge explicitly with a merge commit; never enable auto-merge, squash or rebase merging. Do not dispatch release-update CI for an ordinary feature PR. After the PR lands, update Bkpr's input with `nix flake update bkpr-zellij`, preserving the fork's dependency pins. The fork's [Nix notes](https://github.com/calops/bkpr-zellij/blob/main/docs/NIX.md) document package outputs and offline vendoring.
 
 Test focus, cursor, physical mouse, resize and hyperlinks in an actual isolated terminal, not just unit tests or injected escapes. Smoke scripts go under `target/smoke/`, using devshell Python+pyte and `sys.executable`; isolate HOME/XDG, inherited multiplexer and credential variables, and private native sessions. Never touch live sessions or call real model/provider services for a fixture. Clean up owned processes/files, retain useful evidence, and keep README user-facing.

@@ -150,6 +150,7 @@
             packages = [
               (toolchainFor pkgs)
               zellij
+              pkgs.just
               pkgs.git
               pkgs.gh
               pkgs.pkg-config
