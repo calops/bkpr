@@ -15,6 +15,9 @@ pub struct Options {
     /// Open or attach to a named session.
     #[arg(long, help_heading = "Session")]
     pub session: Option<String>,
+    /// Detach other clients after attaching; keep their panes and programs running.
+    #[arg(short = 'd', long, help_heading = "Session")]
+    pub detach_others: bool,
     #[arg(long, env = "BKPR_ZELLIJ", default_value = "zellij", hide = true)]
     pub zellij: PathBuf,
     /// Frontend WASM artifact; bundled automatically by the product package.
@@ -59,6 +62,8 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
     let lock = startup_lock(&runtime)?;
     let zellij_session = format!("bkpr-native-{identity_hash:016x}");
     let existing = session_exists(zellij, &config_dir, &socket_dir, &zellij_session)?;
+    let session_context = crate::context::SessionBootstrap::prepare(&runtime, session, existing)
+        .context("initialize Bkpr session context; sessions from older builds need a fresh native session")?;
     let config_path = config_dir.join("config.kdl");
     let layout_path = runtime.join("layout.kdl");
     if !existing {
@@ -98,6 +103,7 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
         let configuration = BTreeMap::from([
             ("role".into(), "sidebar".into()),
             ("session".into(), session.into()),
+            ("session_id".into(), session_context.session_id.clone()),
             ("program".into(), program.into()),
             ("plugin_url".into(), plugin_url.clone()),
             ("initial_cwd".into(), cwd.into()),
@@ -106,6 +112,7 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
         let mut config = ZELLIJ_CONFIG.to_owned();
         let mut owner_configuration = configuration.clone();
         owner_configuration.insert("role".into(), "native-owner".into());
+        owner_configuration.insert("context_owner".into(), session_context.owner_token.clone());
         owner_configuration.insert("caller_cwd".into(), cwd.into());
         owner_configuration.insert("mode_info_format".into(), "json".into());
         config.push_str(&format!(
@@ -125,17 +132,32 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
                 "Workspace",
                 cwd,
                 sidebar_percent,
+                None,
             )?
             .as_bytes(),
         )?;
     }
     let agent_lease = crate::agent_relay::acquire_locked(program, &runtime, agent_source)?;
-    drop(lock);
     let mut client = zellij_command(zellij, &config_dir, &socket_dir);
     client
         .arg("--config")
         .arg(&config_path)
         .env("BKPR_ZELLIJ", zellij);
+    for name in [
+        "BKPR_SESSION_ID",
+        "BKPR_SESSION_NAME",
+        "BKPR_WORKSPACE_ID",
+        "BKPR_WORKSPACE_NAME",
+        "BKPR_PANE_ID",
+        "BKPR_CONTEXT_OWNER",
+        "BKPR_NATIVE_CONTEXT",
+    ] {
+        client.env_remove(name);
+    }
+    client
+        .env("BKPR_SESSION_ID", &session_context.session_id)
+        .env("BKPR_SESSION_NAME", &session_context.session_name)
+        .env("BKPR_NATIVE_CONTEXT", "1");
     client.env("SSH_AUTH_SOCK", agent_lease.socket());
     if !existing {
         let bin = runtime.join("bin");
@@ -154,16 +176,40 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
     }
     if existing {
         client.args(["attach", &zellij_session]);
+        if options.detach_others {
+            client.arg("--detach-others");
+        }
     } else {
         client
             .args(["--session", &zellij_session, "--new-session-with-layout"])
             .arg(&layout_path);
     }
-    let status = client.status().context("launch native Zellij client")?;
+    let mut child = client.spawn().context("launch native Zellij client")?;
+    if !existing {
+        // Keep the bootstrap and startup configuration paired until this server
+        // is observable. A concurrent first attachment must reuse this identity.
+        let ready = (|| -> Result<()> {
+            while child.try_wait()?.is_none() {
+                if session_exists(zellij, &config_dir, &socket_dir, &zellij_session)? {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Ok(())
+        })();
+        if let Err(error) = ready {
+            // This is our unreaped child: its PID cannot have been reused.
+            unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+            let _ = child.wait();
+            return Err(error).context("wait for native session startup");
+        }
+    }
+    drop(lock);
+    let status = child.wait().context("wait for native Zellij client")?;
     agent_lease
         .release()
         .context("release SSH-agent attachment lease")?;
-    if !status.success() && !session_exists(zellij, &config_dir, &socket_dir, &zellij_session)? {
+    if !status.success() {
         bail!("Zellij exited with {status}");
     }
     Ok(())
@@ -262,9 +308,9 @@ fn plugin_path(explicit: Option<PathBuf>, program: &Path) -> Result<PathBuf> {
 fn check_zellij(program: &Path) -> Result<()> {
     let result = Command::new(program).arg("--version").output()?;
     let version = String::from_utf8(result.stdout)?;
-    if !result.status.success() || version.trim() != "zellij 0.45.1-bkpr.2" {
+    if !result.status.success() || version.trim() != "zellij 0.45.1-bkpr.3" {
         bail!(
-            "this frontend requires Zellij 0.45.1-bkpr.2; detected {}",
+            "this frontend requires Zellij 0.45.1-bkpr.3; detected {}",
             version.trim()
         );
     }
@@ -384,6 +430,22 @@ keybinds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detach_others_is_opt_in_and_has_a_short_option() {
+        use clap::Parser;
+
+        assert!(
+            !crate::Cli::try_parse_from(["bkpr"])
+                .unwrap()
+                .launch
+                .detach_others
+        );
+        for flag in ["-d", "--detach-others"] {
+            let cli = crate::Cli::try_parse_from(["bkpr", flag]).unwrap();
+            assert!(cli.launch.detach_others);
+        }
+    }
 
     #[test]
     fn session_names_have_no_remote_backend_character_or_length_limits() {

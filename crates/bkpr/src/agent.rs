@@ -228,7 +228,57 @@ fn live_ancestry(
     Ok(false)
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "macos"))]
+struct DarwinProcessArguments<'a> {
+    argc: usize,
+    arguments: &'a [u8],
+    environment: &'a [u8],
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn darwin_process_arguments(bytes: &[u8]) -> Option<DarwinProcessArguments<'_>> {
+    if bytes.len() >= MAX_ARGUMENT_BYTES {
+        return None;
+    }
+    let argc = i32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?);
+    if !(1..=4096).contains(&argc) {
+        return None;
+    }
+    // KERN_PROCARGS2 starts with argc, the executable path and NUL padding.
+    let executable = bytes.get(4..)?;
+    let executable_end = executable.iter().position(|byte| *byte == 0)?;
+    if executable_end == 0 {
+        return None;
+    }
+    let mut offset = 4 + executable_end + 1;
+    while bytes.get(offset) == Some(&0) {
+        offset += 1;
+    }
+    let arguments_start = offset;
+    // Only the padding before argv[0] is skipped; empty later arguments count.
+    for _ in 0..argc {
+        let end = bytes.get(offset..)?.iter().position(|byte| *byte == 0)?;
+        offset += end + 1;
+    }
+    let environment_start = offset;
+    while offset < bytes.len() && bytes[offset] != 0 {
+        let entry = bytes.get(offset..)?;
+        let end = entry.iter().position(|byte| *byte == 0)?;
+        if entry[..end].iter().position(|byte| *byte == b'=')? == 0 {
+            return None;
+        }
+        offset += end + 1;
+    }
+    // Do not scan through the environment's NUL padding into Darwin's apple
+    // strings. An unterminated environment entry is never usable authority.
+    Some(DarwinProcessArguments {
+        argc: argc as usize,
+        arguments: &bytes[arguments_start..environment_start],
+        environment: &bytes[environment_start..offset],
+    })
+}
+
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn relay_id_from_environment(bytes: &[u8], harness: &str) -> Option<String> {
     let mut variables = bytes.split(|byte| *byte == 0);
     let id = variables
@@ -248,7 +298,14 @@ fn relay_id(pid: i32, harness: &str) -> Option<String> {
     relay_id_from_environment(&bytes, harness)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn relay_id(pid: i32, harness: &str) -> Option<String> {
+    let bytes = platform::process_arguments(pid).ok()?;
+    let arguments = darwin_process_arguments(&bytes)?;
+    relay_id_from_environment(arguments.environment, harness)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn relay_id(_pid: i32, _harness: &str) -> Option<String> {
     None
 }
@@ -309,6 +366,10 @@ pub fn inspect(json: &str) -> Result<InspectResponse> {
         {
             continue;
         }
+        // Both process reads enforce same-UID ownership. Keep metadata reads
+        // inside the birth/ancestry checks so a reused PID cannot lend its ID.
+        let cwd = platform::cwd(current.pid)?;
+        let agent_id = relay_id(current.pid, harness);
         if !live_ancestry(process, root, &processes)? {
             continue;
         }
@@ -318,8 +379,8 @@ pub fn inspect(json: &str) -> Result<InspectResponse> {
             pid: current.pid,
             identity: current.identity,
             harness: harness.to_owned(),
-            cwd: platform::cwd(current.pid)?,
-            agent_id: relay_id(current.pid, harness),
+            cwd,
+            agent_id,
         });
     }
     Ok(InspectResponse { executions })
@@ -616,8 +677,8 @@ mod platform {
         Ok(PathBuf::from(OsString::from_vec(bytes[..end].to_vec())))
     }
 
-    pub fn arguments(pid: i32) -> Result<Vec<OsString>> {
-        // Darwin KERN_PROCARGS2 (49) gives argc, executable path, argv and env.
+    pub fn process_arguments(pid: i32) -> Result<Vec<u8>> {
+        // A full buffer may be a successful but truncated KERN_PROCARGS2 read.
         let mut mib = [libc::CTL_KERN, 49, pid];
         let mut bytes = vec![0_u8; MAX_ARGUMENT_BYTES];
         let mut size = bytes.len();
@@ -641,35 +702,26 @@ mod platform {
             }
             return Err(error).context("read Darwin process arguments");
         }
+        if size >= bytes.len() {
+            bail!("Darwin process arguments exceed inspection bound");
+        }
         bytes.truncate(size);
-        if bytes.len() < 4 {
-            bail!("incomplete Darwin process arguments");
+        Ok(bytes)
+    }
+
+    pub fn arguments(pid: i32) -> Result<Vec<OsString>> {
+        let bytes = process_arguments(pid)?;
+        if bytes.is_empty() {
+            return Ok(Vec::new());
         }
-        let argc = i32::from_ne_bytes(bytes[..4].try_into().unwrap());
-        if !(0..=4096).contains(&argc) {
-            bail!("invalid Darwin process argument count");
-        }
-        let mut offset = 4;
-        while offset < bytes.len() && bytes[offset] != 0 {
-            offset += 1;
-        }
-        while offset < bytes.len() && bytes[offset] == 0 {
-            offset += 1;
-        }
-        let mut arguments = Vec::with_capacity(argc as usize);
-        for _ in 0..argc {
-            let end = bytes[offset..]
-                .iter()
-                .position(|byte| *byte == 0)
-                .map(|end| offset + end)
-                .context("unterminated Darwin process argument")?;
-            arguments.push(OsString::from_vec(bytes[offset..end].to_vec()));
-            offset = end + 1;
-            if offset > bytes.len() {
-                bail!("truncated Darwin process argument list");
-            }
-        }
-        Ok(arguments)
+        let arguments =
+            darwin_process_arguments(&bytes).context("invalid Darwin process arguments")?;
+        Ok(arguments
+            .arguments
+            .split(|byte| *byte == 0)
+            .take(arguments.argc)
+            .map(|argument| OsString::from_vec(argument.to_vec()))
+            .collect())
     }
 
     pub fn cwd(pid: i32) -> Result<Option<String>> {
@@ -707,6 +759,117 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn darwin_fixture(argc: i32, body: &[u8]) -> Vec<u8> {
+        let mut bytes = argc.to_ne_bytes().to_vec();
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    #[test]
+    fn darwin_layout_separates_padding_empty_arguments_and_environment() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let argv = b"node\0--require\0\0/opt/omp/cli.js\0BKPR_RELAY_AGENT_ID=decoy\0";
+        let mut bytes = darwin_fixture(5, b"/opt/homebrew/bin/node\0\0\0");
+        bytes.extend_from_slice(argv);
+        bytes.extend_from_slice(b"NON_UTF8=\xff\0TOKEN=a=b\0");
+        bytes.extend_from_slice(
+            format!("BKPR_RELAY_AGENT_ID={id}\0BKPR_RELAY_HARNESS=omp\0").as_bytes(),
+        );
+        bytes.extend_from_slice(b"\0executable_path=/opt/homebrew/bin/node\0");
+
+        let parsed = darwin_process_arguments(&bytes).expect("valid Darwin layout");
+        assert_eq!(parsed.argc, 5);
+        assert_eq!(parsed.arguments, argv);
+        assert_eq!(
+            relay_id_from_environment(parsed.environment, "omp").as_deref(),
+            Some(id)
+        );
+        assert_eq!(
+            relay_id_from_environment(parsed.environment, "claude"),
+            None
+        );
+        assert!(
+            !parsed
+                .environment
+                .windows(15)
+                .any(|part| part == b"executable_path")
+        );
+    }
+
+    #[test]
+    fn darwin_environment_does_not_adopt_unmanaged_or_mismatched_harnesses() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let mismatch = format!("BKPR_RELAY_AGENT_ID={id}\0BKPR_RELAY_HARNESS=claude\0");
+        let invalid = b"BKPR_RELAY_AGENT_ID=invalid\0BKPR_RELAY_HARNESS=omp\0";
+        let after_environment = format!("\0BKPR_RELAY_AGENT_ID={id}\0BKPR_RELAY_HARNESS=omp\0");
+        for environment in [
+            b"".as_slice(),
+            b"PATH=/usr/bin\0".as_slice(),
+            mismatch.as_bytes(),
+            invalid.as_slice(),
+            after_environment.as_bytes(),
+        ] {
+            let mut bytes = darwin_fixture(
+                3,
+                b"/opt/homebrew/bin/omp\0\0omp\0BKPR_RELAY_AGENT_ID=decoy\0BKPR_RELAY_HARNESS=omp\0",
+            );
+            bytes.extend_from_slice(environment);
+            let parsed = darwin_process_arguments(&bytes).expect("valid Darwin layout");
+            assert_eq!(relay_id_from_environment(parsed.environment, "omp"), None);
+        }
+    }
+
+    #[test]
+    fn darwin_parser_rejects_malformed_counts_strings_and_bounds() {
+        for length in 0..4 {
+            assert!(darwin_process_arguments(&[0; 4][..length]).is_none());
+        }
+        let malformed: &[(i32, &[u8])] = &[
+            (-1, b"/usr/bin/omp\0omp\0"),
+            (0, b"/usr/bin/omp\0omp\0"),
+            (4097, b"/usr/bin/omp\0omp\0"),
+            (1, b""),
+            (1, b"/usr/bin/omp"),
+            (1, b"/usr/bin/omp\0\0"),
+            (1, b"\0omp\0PATH=/usr/bin\0"),
+            (2, b"/usr/bin/omp\0omp\0"),
+            (2, b"/usr/bin/omp\0omp\0unterminated"),
+            (1, b"/usr/bin/omp\0omp\0BROKEN\0"),
+            (1, b"/usr/bin/omp\0omp\0=empty-key\0"),
+            (1, b"/usr/bin/omp\0omp\0PATH=unterminated"),
+        ];
+        for &(argc, body) in malformed {
+            assert!(
+                darwin_process_arguments(&darwin_fixture(argc, body)).is_none(),
+                "argc={argc}, body={body:?}"
+            );
+        }
+        let mut oversized = darwin_fixture(1, b"/usr/bin/omp\0omp\0PATH=/usr/bin\0");
+        oversized.resize(MAX_ARGUMENT_BYTES, 0);
+        assert!(darwin_process_arguments(&oversized).is_none());
+        oversized.push(0);
+        assert!(darwin_process_arguments(&oversized).is_none());
+    }
+
+    #[test]
+    fn truncated_darwin_environment_never_exposes_launch_identity() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let mut bytes = darwin_fixture(1, b"/usr/bin/omp\0\0omp\0");
+        bytes.extend_from_slice(
+            format!("BKPR_RELAY_AGENT_ID={id}\0BKPR_RELAY_HARNESS=omp\0").as_bytes(),
+        );
+        for end in 0..bytes.len() {
+            let identity = darwin_process_arguments(&bytes[..end])
+                .and_then(|parsed| relay_id_from_environment(parsed.environment, "omp"));
+            assert_eq!(identity, None, "truncated at byte {end}");
+        }
+        let parsed = darwin_process_arguments(&bytes).expect("complete Darwin layout");
+        assert_eq!(
+            relay_id_from_environment(parsed.environment, "omp").as_deref(),
+            Some(id)
+        );
+    }
 
     #[test]
     fn only_matching_managed_harness_identity_is_exposed() {

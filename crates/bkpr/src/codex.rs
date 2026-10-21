@@ -987,7 +987,7 @@ mod tests {
                         .unwrap();
                     let request: Value = serde_json::from_str(&line).unwrap();
                     if request["method"] == "protocol" {
-                        writeln!(stream, "{}", json!({"result":{"protocol":2}})).unwrap();
+                        writeln!(stream, "{}", json!({"result":{"protocol":3}})).unwrap();
                         continue;
                     }
                     let response = if pending {
