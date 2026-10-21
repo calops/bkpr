@@ -44,6 +44,8 @@ On first launch, click the sidebar and approve its Zellij permission request wit
 
 Launching the same session attaches to its running terminals and preserves workspace labels. Detaching leaves them running. Closing a terminal terminates it; closing a workspace asks for confirmation before terminating its terminals. Processes need not survive termination of the Zellij server.
 
+Sessions created before native pane context was introduced remain attachable after upgrading. Bkpr reports the limitation and preserves their startup configuration, plugins and harness wrappers without fabricating context metadata. A fresh session is needed only for the new context features. Invalid or inconsistent existing context metadata remains an error, not a legacy fallback.
+
 Use `bkpr -d --session project` (or `--detach-others`) to attach while disconnecting the session's other clients. This is opt-in: ordinary attachments retain Zellij's shared canvas, which is capped by the smallest attached terminal. Takeover releases a lingering SSH client's size cap without closing panes or restarting programs, even if that client cannot acknowledge its disconnection. It applies only to that attachment, not later tabs or sidebar reloads. Older running servers reject it before detaching anyone; start a fresh session with the updated runtime.
 
 Sidebar width is shared across tabs, including tabs created through stock Zellij controls. Resizing it in one tab updates the others. Narrow windows temporarily clamp the width; growing the window restores the intended size.
@@ -68,7 +70,7 @@ Every native terminal pane receives context before its program starts, including
 
 These are process-launch snapshots, not mutable shell variables. After moving a pane or renaming its workspace, use `bkpr context --json` for the current session, workspace and pane labels. Grouped tabs share a workspace ID; unrelated tabs do not share one merely because they use the same checkout. A replacement session gets a new ID even when its name is reused. Unmanaged nested Zellij sessions do not inherit the outer session's context.
 
-Existing servers and processes cannot acquire this launch contract retroactively; start a fresh Bkpr session after upgrading. Live lookup requires the normal Bkpr plugin permission grant and fails closed when its native owner is unavailable.
+Existing servers and processes cannot acquire this launch contract retroactively. They remain attachable, but the new context features require a fresh Bkpr session. Live lookup requires the normal Bkpr plugin permission grant and fails closed when its native owner is unavailable.
 
 ## Workspaces and navigation
 

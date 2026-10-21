@@ -31,11 +31,19 @@ struct Snapshot {
 impl SessionBootstrap {
     /// Call while holding the launcher's session startup lock. A fresh native
     /// server always gets a fresh identity, including after a same-name exit.
-    pub(crate) fn prepare(runtime: &Path, session_name: &str, existing: bool) -> Result<Self> {
+    // LEGACY_COMPAT(next-major): allow pre-context servers to attach without
+    // inventing an identity; remove the optional result at the next major release.
+    pub(crate) fn prepare(
+        runtime: &Path,
+        session_name: &str,
+        existing: bool,
+    ) -> Result<Option<Self>> {
         let runtime = Directory::open(runtime, false)?;
         let root = context_root()?;
         if existing {
-            let bootstrap: Self = runtime.read("context.json")?;
+            let Some(bootstrap) = runtime.read_optional::<Self>("context.json")? else {
+                return Ok(None);
+            };
             bootstrap.validate()?;
             if bootstrap.session_name != session_name {
                 bail!("session context name does not match the running session");
@@ -45,7 +53,7 @@ impl SessionBootstrap {
             if bootstrap != registered {
                 bail!("session context bootstrap does not match its private registry");
             }
-            return Ok(bootstrap);
+            return Ok(Some(bootstrap));
         }
         let bootstrap = Self {
             session_id: random_hex::<24>()?,
@@ -57,7 +65,7 @@ impl SessionBootstrap {
         let directory = Directory::open(&root.join(&bootstrap.session_id), true)?;
         directory.replace("bootstrap.json", &bootstrap)?;
         runtime.replace("context.json", &bootstrap)?;
-        Ok(bootstrap)
+        Ok(Some(bootstrap))
     }
 
     fn validate(&self) -> Result<()> {
@@ -628,7 +636,8 @@ pub(crate) mod test_support {
             std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700))?;
             let previous = ROOT.with(|current| current.replace(Some(root.clone())));
             let guard = Guard(previous);
-            let bootstrap = SessionBootstrap::prepare(runtime.path(), name, false)?;
+            let bootstrap = SessionBootstrap::prepare(runtime.path(), name, false)?
+                .context("fresh session has no context bootstrap")?;
             drop(guard);
             let mut session = Self {
                 owner_lease: None,
@@ -993,13 +1002,38 @@ mod tests {
         let session = Session::new("Work")?;
         let _guard = session.guard();
         let runtime = session._runtime.path();
-        let existing = SessionBootstrap::prepare(runtime, "Work", true)?;
+        let existing = SessionBootstrap::prepare(runtime, "Work", true)?.unwrap();
         assert_eq!(existing.session_id, session.session_id());
         assert_eq!(existing.owner_token, session.bootstrap.owner_token);
         assert!(SessionBootstrap::prepare(runtime, "Foreign", true).is_err());
-        let fresh = SessionBootstrap::prepare(runtime, "Work", false)?;
+        let fresh = SessionBootstrap::prepare(runtime, "Work", false)?.unwrap();
         assert_ne!(existing.session_id, fresh.session_id);
         assert_ne!(existing.owner_token, fresh.owner_token);
+        Ok(())
+    }
+
+    // LEGACY_COMPAT(next-major): remove with the pre-context attachment path.
+    #[test]
+    fn legacy_attachment_skips_only_absent_bootstrap_not_invalid_authority() -> Result<()> {
+        let session = Session::new("Work")?;
+        let _guard = session.guard();
+        let runtime = session._runtime.path();
+        std::fs::remove_file(runtime.join("context.json"))?;
+        assert!(SessionBootstrap::prepare(runtime, "Work", true)?.is_none());
+        assert!(!runtime.join("context.json").exists());
+
+        let directory = Directory::open(runtime, false)?;
+        directory.replace("context.json", &serde_json::json!({"incomplete": true}))?;
+        assert!(SessionBootstrap::prepare(runtime, "Work", true).is_err());
+
+        directory.replace("context.json", &session.bootstrap)?;
+        std::fs::remove_file(
+            session
+                .root()
+                .join(session.session_id())
+                .join("bootstrap.json"),
+        )?;
+        assert!(SessionBootstrap::prepare(runtime, "Work", true).is_err());
         Ok(())
     }
 }
