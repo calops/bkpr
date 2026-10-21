@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod agent_contract;
 pub mod ci_contract;
+pub mod context_contract;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -162,6 +163,7 @@ pub fn native_layout(
     tab_name: &str,
     cwd: &str,
     sidebar_percent: u8,
+    workspace: Option<(&str, &str)>,
 ) -> Result<String, serde_json::Error> {
     use std::fmt::Write;
 
@@ -185,11 +187,26 @@ pub fn native_layout(
         writeln!(sidebar, "     {key} {}", quote(value)?).unwrap();
     }
     sidebar.push_str("    }\n   }\n");
-    Ok(format!(
-        "layout {{\n default_tab_template split_direction=\"vertical\" {{\n{sidebar}   children\n }}\n tab name={} focus=true {{\n  pane cwd={} focus=true\n }}\n}}\n",
+    let mut layout = format!(
+        "layout {{\n default_tab_template split_direction=\"vertical\" {{\n{sidebar}   children\n }}\n tab name={}",
         quote(tab_name)?,
+    );
+    if let Some((id, name)) = workspace {
+        write!(
+            layout,
+            " bkpr_workspace_id={} bkpr_workspace_name={}",
+            quote(id)?,
+            quote(name)?,
+        )
+        .unwrap();
+    }
+    write!(
+        layout,
+        " focus=true {{\n  pane cwd={} focus=true\n }}\n}}\n",
         quote(cwd)?,
-    ))
+    )
+    .unwrap();
+    Ok(layout)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

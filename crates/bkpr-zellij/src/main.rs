@@ -523,13 +523,7 @@ impl Frontend {
             (guide.columns > self.columns && !guide.lines.is_empty()).then_some((space, guide))
         });
         let expanded_columns = expanded.as_ref().map_or(0, |(_, guide)| guide.columns);
-        let expanded_x = expanded.as_ref().map_or(0, |(space, guide)| {
-            if matches!(context, keyguide::Context::Sidebar { .. }) {
-                space.x + space.max_columns.saturating_sub(guide.columns)
-            } else {
-                space.x
-            }
-        });
+        let expanded_x = expanded.as_ref().map_or(0, |(space, _)| space.x);
         let expanded_rows = expanded.as_ref().map_or(0, |(_, guide)| guide.lines.len());
         let (lines, reserved_rows) = if let Some((space, guide)) = expanded {
             let height = guide.lines.len();
@@ -4127,6 +4121,25 @@ mod tests {
         let space = frontend.guide_space().unwrap();
         assert_eq!(space.x, 40);
         assert_eq!(space.max_columns, 80);
+    }
+
+    #[test]
+    fn overflowing_sidebar_guide_stays_adjacent_when_display_grows() {
+        let mut frontend = popup_frontend();
+        frontend.columns = 16;
+        frontend.keyboard_control = true;
+        frontend.mode_intent = Some(InputMode::Normal);
+        frontend.keybinds = Some(Vec::new());
+        frontend.keyguide_dirty = true;
+        frontend.refresh_keyguide();
+        let guide = frontend.keyguide.as_ref().unwrap();
+        assert!(guide.expanded_columns > frontend.columns);
+        let anchor = frontend.guide_space().unwrap().x;
+        assert_eq!(guide.expanded_x, anchor);
+        frontend.tabs[0].display_area_columns *= 2;
+        frontend.keyguide_dirty = true;
+        frontend.refresh_keyguide();
+        assert_eq!(frontend.keyguide.as_ref().unwrap().expanded_x, anchor);
     }
 
     #[test]

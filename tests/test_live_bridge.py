@@ -18,6 +18,7 @@ class ReceiptProofTests(unittest.TestCase):
                 "payload_digest": payload_digest(recipient, step.text), "sequence": sequence,
                 "text": None, "created_at": sequence * 10 - 2, "read_at": sequence * 10,
                 "acknowledged_at": sequence * 10 + 1, "expired_at": None,
+                "scope": "workspace",
                 "delivery": {"outcome": "accepted"},
             }
 
@@ -35,12 +36,19 @@ class ReceiptProofTests(unittest.TestCase):
     def test_wrong_actor_response_or_scope_cannot_pass(self):
         for field, value in (("from", "third-agent"), ("to", "third-agent"),
                              ("payload_digest", payload_digest("claude-id", "guessed answer")),
-                             ("all_scope", True)):
+                             ("scope", "session")):
             with self.subTest(field=field):
                 broken = copy.deepcopy(self.store)
                 broken["messages"]["answer-1"][field] = value
                 with self.assertRaises(CheckFailure):
                     check_receipts(broken, self.agents, self.scenario)
+
+    def test_legacy_repository_receipts_do_not_prove_a_native_workspace_exchange(self):
+        for message in self.store["messages"].values():
+            del message["scope"]
+            message["all_scope"] = False
+        with self.assertRaises(CheckFailure):
+            check_receipts(self.store, self.agents, self.scenario)
 
     def test_out_of_order_or_missing_predecessor_is_rejected(self):
         broken = copy.deepcopy(self.store)

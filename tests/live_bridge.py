@@ -136,7 +136,7 @@ def check_receipts(store: dict, agents: dict[str, str], scenario: Scenario) -> l
             raise CheckFailure(f"Wrong sender or recipient for {step.name}")
         if message["payload_digest"] != payload_digest(agents[step.recipient], step.text):
             raise CheckFailure(f"Wrong nonce, arithmetic result or message format for {step.name}")
-        if message.get("all_scope"):
+        if message.get("scope") != "workspace":
             raise CheckFailure(f"Cross-workspace delivery for {step.name}")
         observed[step.name] = message
     rows = []
@@ -313,7 +313,9 @@ class LiveRun:
         self.args, self.scenario, self.artifact, self.private = args, scenario, artifact, private
         self.env = {key: value for key, value in os.environ.items()
                     if key not in {"CLAUDECODE", "CODEX_THREAD_ID"}
-                    and not key.startswith(("ZELLIJ", "BKPR_RELAY_", "BKPR_CODEX_", "BKPR_CLAUDE_"))}
+                    and not key.startswith(("ZELLIJ", "BKPR_RELAY_", "BKPR_CODEX_", "BKPR_CLAUDE_",
+                                            "BKPR_SESSION_", "BKPR_WORKSPACE_", "BKPR_PANE_ID",
+                                            "BKPR_NATIVE_CONTEXT", "BKPR_CONTEXT_OWNER"))}
         for key, child in (("HOME", "home"), ("XDG_CONFIG_HOME", "config"),
                            ("XDG_STATE_HOME", "state"), ("XDG_RUNTIME_DIR", "r"),
                            ("XDG_CACHE_HOME", "cache"), ("XDG_DATA_HOME", "data")):
@@ -348,8 +350,31 @@ class LiveRun:
         return remaining
 
     def command(self, command: list[str], env: dict[str, str] | None = None) -> str:
-        result = execute(command, self.env if env is None else env,
-                         self.args.workspace, timeout=min(20, self.remaining()))
+        environment = self.env if env is None else env
+        timeout = min(20, self.remaining())
+        if self.terminal is None or self.terminal.process.poll() is not None:
+            result = execute(command, environment, self.args.workspace, timeout=timeout)
+        else:
+            process = subprocess.Popen(command, env=environment, cwd=self.args.workspace,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            deadline = time.monotonic() + timeout
+            try:
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise CheckFailure(f"{Path(command[0]).name} exceeded its command deadline")
+                    try:
+                        result, stderr = process.communicate(timeout=min(.1, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        # Native startup/CLI requests can await terminal replies.
+                        self.terminal.pump(self.args.interactive)
+                if process.returncode:
+                    raise CheckFailure(f"{Path(command[0]).name} failed: {stderr[-2000:]}")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
         self.remaining()
         return result
 
@@ -460,10 +485,14 @@ class LiveRun:
             if not (self.config / "config.kdl").exists():
                 return False
             try:
-                return self.zellij("action", "list-panes", "--all", "--json")
+                output = self.zellij("action", "list-panes", "--all", "--json")
+                if not output.strip():
+                    return False
+                panes = json.loads(output)
+                return next((pane for pane in panes if not pane["is_plugin"]), None)
             except CheckFailure:
                 return False
-        self.wait(session_ready, "the isolated native workspace")
+        initial_pane = self.wait(session_ready, "the isolated native workspace")
         for candidate in Path(self.env["ZELLIJ_SOCKET_DIR"]).rglob(self.native):
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.connect(str(candidate))
@@ -474,6 +503,19 @@ class LiveRun:
                 break
         if self.native_handle is None:
             raise CheckFailure("Could not acquire the owned native server handle")
+        bootstrap = json.loads((self.config.parent / "context.json").read_text())
+        context_env = {**self.env, "BKPR_SESSION_ID": bootstrap["session_id"],
+                       "ZELLIJ_PANE_ID": str(initial_pane["id"])}
+        def context_ready():
+            try:
+                context = json.loads(self.command(
+                    [str(self.args.bkpr), "context", "--json"], context_env))
+            except CheckFailure:
+                return False
+            (self.artifact / "context.json").write_text(json.dumps(context, indent=2))
+            return context
+        self.wait(context_ready, "approved Bkpr plugin context before paid harness launches "
+                  "(use --interactive or the printed attachment command)")
         tools = ("whoami", "discover_agents", "send_message", "read_inbox",
                  "ack_message", "inspect_outbox", "set_title")
         settings = json.dumps({"permissions": {

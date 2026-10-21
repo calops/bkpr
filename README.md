@@ -20,7 +20,7 @@ nix profile install .
 bkpr --session project
 ```
 
-The Nix package includes the native launcher, WASM plugin and Bkpr's Zellij 0.45.1 fork (`zellij 0.45.1-bkpr.2`). Git and GitHub CLI are discovered on the host when available. A Nerd Font is recommended for the sidebar icons. `bkpr --help` lists launch options, including the session name and initial sidebar width.
+The Nix package includes the native launcher, WASM plugin and Bkpr's Zellij 0.45.1 fork (`zellij 0.45.1-bkpr.3`). Git and GitHub CLI are discovered on the host when available. A Nerd Font is recommended for the sidebar icons. `bkpr --help` lists launch options, including the session name and initial sidebar width.
 
 Cached runtime packages do not require Rust or Cargo. The compiler belongs in the development shell and source builds, not the runtime closure.
 
@@ -44,6 +44,8 @@ On first launch, click the sidebar and approve its Zellij permission request wit
 
 Launching the same session attaches to its running terminals and preserves workspace labels. Detaching leaves them running. Closing a terminal terminates it; closing a workspace asks for confirmation before terminating its terminals. Processes need not survive termination of the Zellij server.
 
+Use `bkpr -d --session project` (or `--detach-others`) to attach while disconnecting the session's other clients. This is opt-in: ordinary attachments retain Zellij's shared canvas, which is capped by the smallest attached terminal. Takeover releases a lingering SSH client's size cap without closing panes or restarting programs, even if that client cannot acknowledge its disconnection. It applies only to that attachment, not later tabs or sidebar reloads. Older running servers reject it before detaching anyone; start a fresh session with the updated runtime.
+
 Sidebar width is shared across tabs, including tabs created through stock Zellij controls. Resizing it in one tab updates the others. Narrow windows temporarily clamp the width; growing the window restores the intended size.
 
 ### SSH agent forwarding
@@ -52,9 +54,25 @@ Panes receive a stable, session-local `SSH_AUTH_SOCK`. Bkpr forwards it to the i
 
 Attach with `bkpr --session project` to register the current agent. Direct `zellij attach` doesn't update it. Sessions created before this forwarding support need a fresh session so their processes inherit the stable socket.
 
+### Pane context
+
+Every native terminal pane receives context before its program starts, including ordinary shells, stock splits/tabs and direct commands. A harness is not required.
+
+| Variable | Meaning |
+| --- | --- |
+| `BKPR_SESSION_ID` | Opaque identity of this native session incarnation |
+| `BKPR_SESSION_NAME` | Bkpr's user-facing session name |
+| `BKPR_WORKSPACE_ID` | Opaque identity of the pane's logical Bkpr workspace |
+| `BKPR_WORKSPACE_NAME` | Workspace label when the pane's process started |
+| `BKPR_PANE_ID` | Native pane identity, such as `terminal_0` |
+
+These are process-launch snapshots, not mutable shell variables. After moving a pane or renaming its workspace, use `bkpr context --json` for the current session, workspace and pane labels. Grouped tabs share a workspace ID; unrelated tabs do not share one merely because they use the same checkout. A replacement session gets a new ID even when its name is reused. Unmanaged nested Zellij sessions do not inherit the outer session's context.
+
+Existing servers and processes cannot acquire this launch contract retroactively; start a fresh Bkpr session after upgrading. Live lookup requires the normal Bkpr plugin permission grant and fails closed when its native owner is unavailable.
+
 ## Workspaces and navigation
 
-Application input starts in Zellij's **Locked** mode, so terminal shortcuts go to the application. Press **Ctrl+Space** to focus the sidebar, or **Ctrl+g** to unlock stock Zellij controls. The rounded shortcut guide follows the current mode and effective keybindings: it stays inside the sidebar when all keys and descriptions fit without wrapping, and otherwise expands into the pane area. A wider guide moves to the far right while the sidebar is focused to leave room for item details.
+Application input starts in Zellij's **Locked** mode, so terminal shortcuts go to the application. Press **Ctrl+Space** to focus the sidebar, or **Ctrl+g** to unlock stock Zellij controls. The rounded shortcut guide follows the current mode and effective keybindings: it stays inside the sidebar when all keys and descriptions fit without wrapping, and otherwise expands into the pane area. A widened sidebar guide stays adjacent to the sidebar instead of moving to the far-right edge.
 
 A left click activates a workspace or terminal without moving keyboard focus into the sidebar. Hover highlights a row and opens its details; moving into the popup keeps it open, and leaving both closes it. Sidebar focus opens the selected row's details automatically, and keyboard navigation follows the selection. Right click has no special popup behavior. Details include available activity, CWD, repository, pull request and checks, with clickable links.
 
@@ -183,7 +201,11 @@ Antigravity is recognition-only. Bkpr doesn't wrap `agy`/`antigravity`, install 
 
 ### Agent communication (experimental)
 
-Fresh Bkpr sessions supply launch-local wrappers for `claude`, `omp` and `codex`. Each supported interactive launch receives its own authenticated agent ID and a Bkpr MCP server without changing user-level harness settings. Tools: `whoami`, `discover_agents`, `send_message`, `read_inbox`, `ack_message`, `inspect_outbox` and `set_title`. Discovery defaults to the canonical Git worktree (or canonical working directory outside Git); `scope: "all"` explicitly opts into cross-workspace discovery or delivery. `BKPR_RELAY_WORKSPACE` can override the grouping for a launch. Peer records include harness, title, Git project and branch, and available cached PR and ticket titles.
+Fresh Bkpr sessions supply launch-local wrappers for `claude`, `omp` and `codex`. Each supported interactive launch receives its own authenticated agent ID and a Bkpr MCP server without changing user-level harness settings. Tools: `whoami`, `discover_agents`, `send_message`, `read_inbox`, `ack_message`, `inspect_outbox` and `set_title`.
+
+Discovery returns peers only, excluding the caller. Its default `scope: "workspace"` uses current native Bkpr workspace membership, not CWD or Git grouping. `scope: "session"` includes other workspaces in the same Bkpr session; `"repository"` explicitly uses the canonical Git worktree or canonical launch directory outside Git; `"all"` includes other active launches. Unknown workspace/session context is an error, never a fallback to repository scope.
+
+`whoami` and peer records include live `context` with session/workspace/pane IDs and labels, plus `attached`. Native harness `session_id` remains separate from Bkpr's `context.session_id`. Membership is independent of notification readiness: a foreground agent remains discoverable while its receiver is not ready. Detached launches, including orphaned Codex app-servers, appear only in repository/all scope with `context: null`. Records retain harness/title, Git project and branch, and available cached PR and ticket titles.
 
 `send_message` requires an `idempotency_key`: choose one per logical message and reuse it when retrying that same recipient, text and scope. Retries return the original message ID, including after acknowledgement or expiry; changing the payload under the same sender's key is an error. `inspect_outbox` exposes only the caller's sent-message metadata, not bodies. Durable storage, notification acceptance, inbox reading and processed acknowledgement are separate states. A successful native queue command means accepted, not read or processed; failed or ambiguous wake attempts are not replayed automatically.
 
@@ -191,7 +213,7 @@ Notifications contain only an opaque inbox pointer. Multiple arrivals coalesce b
 
 Agent IDs are random 128-bit per-launch identifiers, independent of each harness's native session ID; bearer tokens are separate and never shown in discovery. IDs are not reused automatically on resume. Discovery excludes exited launches. Registration, native-thread binding, a live receiver helper or extension, and a connected notification subscriber are reported separately where applicable; registration alone is not delivery readiness.
 
-On Linux, a managed harness pane's details popup shows its agent ID with the Nerd Font identifier icon. Generic programs and unwrapped harnesses without a relay identity do not show one; the sidebar receives only the ID from native foreground inspection, never the broker token.
+A managed harness pane's details popup shows its agent ID with the Nerd Font identifier icon. Generic programs and unwrapped harnesses without a relay identity do not show one; the sidebar receives only the ID from native foreground inspection, never the broker token.
 
 Unacknowledged message bodies survive recipient exit for **seven days from the broker's first persisted observation of that exit**, not from message creation. Exit observations happen at broker startup or authenticated requests; read-only operator inspection does not start the clock. Known expiry deadlines are enforced even while the broker is otherwise idle. Expiry removes bodies but retains receipt, idempotency and failure metadata. A new launch cannot adopt the exited launch's inbox automatically.
 
@@ -218,13 +240,13 @@ Codex's dedicated native app-server outlives its terminal so its queue remains a
 
 Wrappers are found through the managed session's `PATH`, not through aliases or absolute executable paths. Already-running processes and sessions created before these wrappers are installed do not gain them retroactively. Interactive consent and trust requirements cannot be bypassed by Bkpr. Codex noninteractive `exec` and `review` do not support this native remote queue and fail clearly instead of silently claiming message delivery.
 
-The broker wire protocol is version 2. New clients fail clearly against older brokers instead of silently losing the new delivery guarantees. Running brokers are never replaced automatically; complete or inspect their pending work before explicitly restarting them and relaunching managed harnesses.
+The broker wire protocol is version 3. New clients fail clearly against older brokers rather than applying the old repository-based meaning of “workspace.” Running brokers are never replaced automatically; inspect their pending work before explicitly restarting them and relaunching managed harnesses. Retained messages and idempotency receipts preserve their original scope during migration.
 
 ## Develop
 
 The Rust workspace contains the native launcher/metadata helper in `crates/bkpr` and the WASI sidebar/plugin in `crates/bkpr-zellij`. Zellij owns application PTYs; a session-wide plugin owns workspace metadata, with one native helper for Git and shared CI requests.
 
-Use the devshell and incremental Cargo builds for iteration. The shell supplies the pinned [Bkpr Zellij fork](https://github.com/calops/bkpr-zellij/tree/bkpr); no local patch application or native runtime build is needed for ordinary Bkpr development.
+Use the devshell and incremental Cargo builds for iteration. The shell supplies the pinned [Bkpr Zellij fork](https://github.com/calops/bkpr-zellij/tree/main); no local patch application or native runtime build is needed for ordinary Bkpr development.
 
 ```sh
 nix develop
@@ -249,7 +271,7 @@ nix build .#bkpr
 
 The native fork's default [`main`](https://github.com/calops/bkpr-zellij/tree/main) contains the Bkpr integration history. Retained `feature/*` branches submit PRs into `main`; there is no separate `bkpr` or permanent upstream branch. Bkpr consumes `github:calops/bkpr-zellij/main`, locks its revision, and preserves the fork's own dependency pins without `follows` overrides.
 
-The fork checks stable Zellij releases daily and opens `update/zellij-vX.Y.Z` PRs from release tags, not upstream's moving `main`. Upstream ancestry is preserved through merge commits. All PRs require human validation and explicit manual merging, even when conflict-free and CI-green. Protected `main` requires PRs and Rust release verification, but no mandatory approval count; auto-merge, squash merging and rebase merging are disabled.
+The fork checks stable Zellij releases daily and opens `update/zellij-vX.Y.Z` PRs from release tags, not upstream's moving `main`. Upstream ancestry is preserved through merge commits. All PRs require human validation and explicit manual merging. Ordinary feature PRs use local/integration verification; only release-update PRs run the fork's Nix/package checks. Protected `main` requires PRs but no global CI status or mandatory approval count; auto-merge, squash merging and rebase merging are disabled.
 
 ### Live agent communication check
 
@@ -268,7 +290,7 @@ python3 tests/live_bridge.py --run
 python3 tests/live_bridge.py --run --interactive --timeout 600
 ```
 
-`--workspace` selects an existing trusted checkout (default: the current directory). `--harness-home` selects the normal provider configuration home; explicit provider configuration environment variables remain authoritative. `--bkpr`, `--zellij` and `--plugin` select built artifacts; for fork development, use `--zellij ../bkpr-zellij/target/debug/zellij`. Each run prints an attachment command for its private native session. A pending sidebar permission request does not grant anything automatically or prevent native harness panes from running.
+`--workspace` selects an existing trusted checkout (default: the current directory). `--harness-home` selects the normal provider configuration home; explicit provider configuration environment variables remain authoritative. `--bkpr`, `--zellij` and `--plugin` select built artifacts; for fork development, use `--zellij ../bkpr-zellij/target/debug/zellij`. Each run prints an attachment command for its private native session. The runner waits for the ordinary Bkpr plugin permission grant and verified live context before starting paid harness launches. Use `--interactive` or the printed attachment command to approve it; the runner does not fabricate or copy permission grants.
 
 Each harness bootstraps its own discoverable identity, then the driver supplies one ordinary future-turn Codex kickoff. The harnesses perform every peer send themselves:
 

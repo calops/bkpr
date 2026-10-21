@@ -1,10 +1,99 @@
 use super::*;
+use crate::context::test_support::{Guard, Session};
+use bkpr::context_contract::{ContextPane, ContextWorkspace};
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
 
-fn broker() -> (tempfile::TempDir, Broker) {
+struct ContextFixture {
+    session: Session,
+    sequence: Cell<u64>,
+    panes: RefCell<BTreeMap<String, ContextPane>>,
+}
+
+impl ContextFixture {
+    fn publish(&self) {
+        let panes: Vec<_> = self.panes.borrow().values().cloned().collect();
+        let workspaces: BTreeMap<_, _> = panes
+            .iter()
+            .map(|pane| {
+                (
+                    pane.workspace_id.clone(),
+                    ContextWorkspace {
+                        id: pane.workspace_id.clone(),
+                        name: pane.workspace_id.clone(),
+                    },
+                )
+            })
+            .collect();
+        self.publish_as(workspaces.into_values().collect(), panes);
+    }
+
+    fn publish_as(&self, workspaces: Vec<ContextWorkspace>, panes: Vec<ContextPane>) {
+        let sequence = self.sequence.get() + 1;
+        self.session.publish(sequence, workspaces, panes).unwrap();
+        self.sequence.set(sequence);
+    }
+}
+
+thread_local! {
+    static CONTEXT_FIXTURES: RefCell<BTreeMap<PathBuf, Weak<ContextFixture>>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+struct FixtureDirectory {
+    // Drop the lookup override before removing the underlying session files.
+    _guard: Guard,
+    context: Rc<ContextFixture>,
+    directory: tempfile::TempDir,
+}
+
+impl std::ops::Deref for FixtureDirectory {
+    type Target = tempfile::TempDir;
+    fn deref(&self) -> &Self::Target {
+        &self.directory
+    }
+}
+
+impl Drop for FixtureDirectory {
+    fn drop(&mut self) {
+        CONTEXT_FIXTURES.with(|fixtures| {
+            fixtures.borrow_mut().remove(self.directory.path());
+        });
+    }
+}
+
+fn fixture(broker: &Broker) -> Rc<ContextFixture> {
+    CONTEXT_FIXTURES.with(|fixtures| {
+        fixtures
+            .borrow()
+            .get(&broker.directory)
+            .and_then(Weak::upgrade)
+            .unwrap()
+    })
+}
+
+fn broker() -> (FixtureDirectory, Broker) {
     let directory = tempfile::tempdir().unwrap();
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let context = Rc::new(ContextFixture {
+        session: Session::new("relay test").unwrap(),
+        sequence: Cell::new(0),
+        panes: RefCell::new(BTreeMap::new()),
+    });
+    let guard = context.session.guard();
+    CONTEXT_FIXTURES.with(|fixtures| {
+        fixtures
+            .borrow_mut()
+            .insert(directory.path().to_owned(), Rc::downgrade(&context));
+    });
     let broker = Broker::new(Store::default(), directory.path().to_owned());
-    (directory, broker)
+    (
+        FixtureDirectory {
+            _guard: guard,
+            context,
+            directory,
+        },
+        broker,
+    )
 }
 
 fn register(broker: &mut Broker, workspace: &str) -> Request {
@@ -15,9 +104,21 @@ fn register(broker: &mut Broker, workspace: &str) -> Request {
         agent_id: random_hex(16).unwrap(),
         token: random_hex(32).unwrap(),
         method: "register".into(),
-        params: json!({"cwd":workspace,"workspace":workspace,"harness":"omp","pid":std::process::id()}),
+        params: json!({"cwd":workspace,"repository":workspace,"harness":"omp","pid":std::process::id()}),
     };
     broker.perform(&request).unwrap();
+    let context = fixture(broker);
+    let pane_id = format!("terminal_{}", context.panes.borrow().len() + 1);
+    context.panes.borrow_mut().insert(
+        request.agent_id.clone(),
+        ContextPane {
+            pane_id,
+            workspace_id: workspace.to_string_lossy().into_owned(),
+            pane_name: format!("{} pane", request.agent_id),
+            agent_id: Some(request.agent_id.clone()),
+        },
+    );
+    context.publish();
     request
 }
 
@@ -85,7 +186,7 @@ fn credentials_scope_and_actor_boundaries_survive_retained_receipts() {
         .perform(&as_request(&alice, "discover", json!({})))
         .unwrap()
         .0;
-    assert_eq!(local["agents"].as_array().unwrap().len(), 1);
+    assert!(local["agents"].as_array().unwrap().is_empty());
     assert!(
         broker
             .perform(&as_request(
@@ -173,6 +274,8 @@ fn idempotency_is_sender_scoped_payload_exact_and_survives_ack_and_reload() {
         json!({"to":bob.agent_id,"text":"different","idempotency_key":"stable"}),
         json!({"to":carol.agent_id,"text":"stable","idempotency_key":"stable"}),
         json!({"to":bob.agent_id,"text":"stable","idempotency_key":"stable","scope":"all"}),
+        json!({"to":bob.agent_id,"text":"stable","idempotency_key":"stable","scope":"session"}),
+        json!({"to":bob.agent_id,"text":"stable","idempotency_key":"stable","scope":"repository"}),
     ] {
         assert!(
             broker
@@ -197,7 +300,7 @@ fn concurrent_retries_commit_only_one_message() {
             let request = as_request(
                 &alice,
                 "send",
-                json!({"to":bob.agent_id,"text":"once","idempotency_key":"once"}),
+                json!({"to":bob.agent_id,"text":"once","idempotency_key":"once","scope":"repository"}),
             );
             std::thread::spawn(move || {
                 state.lock().perform(&request).unwrap().0["message_id"].clone()
@@ -642,7 +745,7 @@ fn incompatible_clients_get_protocol_errors_without_mutation() {
     let (_directory, mut broker) = broker();
     let alice = register(&mut broker, "one");
     let old = Request {
-        protocol: 0,
+        protocol: 2,
         ..as_request(&alice, "lease", json!({"pid":std::process::id()}))
     };
     assert!(
@@ -784,8 +887,7 @@ fn reused_pid_is_an_exit_not_a_route_for_the_old_identity() {
         .perform(&as_request(&alice, "discover", json!({})))
         .unwrap()
         .0;
-    assert_eq!(agents["agents"].as_array().unwrap().len(), 1);
-    assert_eq!(agents["agents"][0]["id"], alice.agent_id);
+    assert!(agents["agents"].as_array().unwrap().is_empty());
     assert!(broker.store.agents[&bob.agent_id].exited_at.is_some());
 }
 
@@ -979,4 +1081,445 @@ fn callbacks_cannot_commit_unreconciled_mutations_after_storage_recovers() {
             .as_deref(),
         Some("pending")
     );
+}
+
+#[test]
+fn fingerprints_distinguish_all_four_scopes_and_preserve_legacy_receipts() {
+    let digests: std::collections::BTreeSet<_> = [
+        Scope::Workspace,
+        Scope::Session,
+        Scope::Repository,
+        Scope::All,
+    ]
+    .into_iter()
+    .map(|scope| {
+        payload_digest(
+            "recipient",
+            "same text",
+            &MessageScope {
+                scope,
+                fingerprint_version: 1,
+            },
+        )
+    })
+    .collect();
+    assert_eq!(digests.len(), 4);
+
+    for (all, scope) in [(false, Scope::Repository), (true, Scope::All)] {
+        let (directory, mut broker) = broker();
+        let alice = register(&mut broker, "one");
+        let bob = register(&mut broker, "one");
+        let params = json!({"to":bob.agent_id,"text":"legacy body","idempotency_key":"legacy key","scope":scope});
+        let (first, _) = broker
+            .perform(&as_request(&alice, "send", params.clone()))
+            .unwrap();
+        let id = first["message_id"].as_str().unwrap();
+        broker
+            .perform(&as_request(&bob, "ack", json!({"ids":[id]})))
+            .unwrap();
+        let mut legacy = serde_json::to_value(&broker.store).unwrap();
+        for agent in legacy["agents"].as_object_mut().unwrap().values_mut() {
+            let repository = agent.as_object_mut().unwrap().remove("repository").unwrap();
+            agent["workspace"] = repository;
+        }
+        let message = legacy["messages"][id].as_object_mut().unwrap();
+        message.remove("scope");
+        message.remove("fingerprint_version");
+        message.insert("all_scope".into(), json!(all));
+        message.insert(
+            "payload_digest".into(),
+            json!(payload_digest(
+                &bob.agent_id,
+                "legacy body",
+                &MessageScope {
+                    scope,
+                    fingerprint_version: 0
+                },
+            )),
+        );
+        broker.store = serde_json::from_value(legacy).unwrap();
+        broker.maintain(now()).unwrap();
+        let (retry, jobs) = broker
+            .perform(&as_request(&alice, "send", params.clone()))
+            .unwrap();
+        assert_eq!(retry["message_id"], first["message_id"]);
+        assert_eq!(retry["status"]["scope"], json!(scope));
+        assert_eq!(retry["status"]["state"], "processed");
+        assert!(jobs.is_empty());
+        for changed_scope in [
+            Scope::Workspace,
+            Scope::Session,
+            Scope::Repository,
+            Scope::All,
+        ] {
+            if changed_scope == scope {
+                continue;
+            }
+            let mut changed = params.clone();
+            changed["scope"] = json!(changed_scope);
+            assert!(
+                broker
+                    .perform(&as_request(&alice, "send", changed))
+                    .is_err()
+            );
+        }
+        let saved = load_store(directory.path()).unwrap();
+        assert!(saved.messages[id].text.is_none());
+        assert_eq!(saved.messages[id].scope.scope, scope);
+        let serialized = serde_json::to_value(saved).unwrap();
+        assert!(serialized["messages"][id].get("all_scope").is_none());
+        assert!(
+            serialized["agents"][&alice.agent_id]
+                .get("workspace")
+                .is_none()
+        );
+        assert_eq!(
+            serialized["agents"][&alice.agent_id]["repository"],
+            alice.params["repository"]
+        );
+    }
+}
+
+fn discovered_ids(broker: &mut Broker, caller: &Request, scope: Option<&str>) -> Vec<String> {
+    let params = scope
+        .map(|scope| json!({"scope":scope}))
+        .unwrap_or(json!({}));
+    let (value, _) = broker
+        .perform(&as_request(caller, "discover", params))
+        .unwrap();
+    assert_eq!(value["scope"], scope.unwrap_or("workspace"));
+    let mut ids: Vec<_> = value["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|agent| agent["id"].as_str().unwrap().to_owned())
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn live_workspace_scope_is_not_repository_session_or_receiver_readiness() {
+    let (directory, mut broker) = broker();
+    let alice = register(&mut broker, "one");
+    let bob = register(&mut broker, "one");
+    let carol = register(&mut broker, "one");
+    let dave = register(&mut broker, "one");
+    let eve = register(&mut broker, "different-repository");
+    let orphan = register(&mut broker, "one");
+    let fixture = &directory.context;
+    let workspace = alice.params["repository"].as_str().unwrap().to_owned();
+    {
+        let mut panes = fixture.panes.borrow_mut();
+        panes.get_mut(&carol.agent_id).unwrap().workspace_id = "another-workspace".into();
+        panes.get_mut(&eve.agent_id).unwrap().workspace_id = workspace.clone();
+        panes.remove(&dave.agent_id);
+        panes.remove(&orphan.agent_id);
+    }
+    fixture.publish();
+    let other_session = Session::new_in(fixture.session.root(), "another session").unwrap();
+    other_session
+        .publish(
+            1,
+            vec![ContextWorkspace {
+                id: workspace.clone(),
+                name: "same id, different session".into(),
+            }],
+            vec![ContextPane {
+                pane_id: "terminal_1".into(),
+                workspace_id: workspace,
+                pane_name: "another session pane".into(),
+                agent_id: Some(dave.agent_id.clone()),
+            }],
+        )
+        .unwrap();
+    broker
+        .store
+        .agents
+        .get_mut(&orphan.agent_id)
+        .unwrap()
+        .harness = "codex".into();
+    broker
+        .store
+        .agents
+        .get_mut(&orphan.agent_id)
+        .unwrap()
+        .session_id = Some("native-thread-not-bkpr-session".into());
+    broker
+        .perform(&as_request(
+            &orphan,
+            "lease",
+            json!({"pid":std::process::id()}),
+        ))
+        .unwrap();
+    let mut expected = vec![bob.agent_id.clone(), eve.agent_id.clone()];
+    expected.sort();
+    assert_eq!(discovered_ids(&mut broker, &alice, None), expected);
+    expected.push(carol.agent_id.clone());
+    expected.sort();
+    assert_eq!(
+        discovered_ids(&mut broker, &alice, Some("session")),
+        expected
+    );
+    let mut repository_peers = vec![
+        bob.agent_id.clone(),
+        carol.agent_id.clone(),
+        dave.agent_id.clone(),
+        orphan.agent_id.clone(),
+    ];
+    repository_peers.sort();
+    assert_eq!(
+        discovered_ids(&mut broker, &alice, Some("repository")),
+        repository_peers
+    );
+    repository_peers.push(eve.agent_id.clone());
+    repository_peers.sort();
+    assert_eq!(
+        discovered_ids(&mut broker, &alice, Some("all")),
+        repository_peers
+    );
+    let (local, _) = broker
+        .perform(&as_request(&alice, "discover", json!({})))
+        .unwrap();
+    let starting = local["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["id"] == bob.agent_id)
+        .unwrap();
+    assert_eq!(starting["attached"], true);
+    assert_eq!(starting["readiness"]["can_notify"], false);
+    let (detached, _) = broker
+        .perform(&as_request(&orphan, "whoami", json!({})))
+        .unwrap();
+    assert_eq!(detached["active"], true);
+    assert_eq!(detached["attached"], false);
+    assert!(detached["context"].is_null());
+    assert_eq!(detached["session_id"], "native-thread-not-bkpr-session");
+    for scope in ["workspace", "session"] {
+        assert!(
+            broker
+                .perform(&as_request(&orphan, "discover", json!({"scope":scope})))
+                .is_err()
+        );
+        assert!(broker.perform(&as_request(&alice, "send",
+            json!({"to":orphan.agent_id,"text":"not a member","idempotency_key":scope,"scope":scope}))).is_err());
+    }
+    for (recipient, scope) in [
+        (&carol, "session"),
+        (&dave, "repository"),
+        (&orphan, "repository"),
+        (&eve, "workspace"),
+    ] {
+        if recipient.agent_id != eve.agent_id {
+            assert!(broker.perform(&as_request(&alice, "send", json!({
+                "to":recipient.agent_id,"text":"default denied","idempotency_key":recipient.agent_id
+            }))).is_err());
+        }
+        broker.perform(&as_request(&alice, "send", json!({
+            "to":recipient.agent_id,"text":"explicit member","idempotency_key":scope.to_owned()+&recipient.agent_id,"scope":scope
+        }))).unwrap();
+    }
+    assert!(broker.perform(&as_request(&alice, "send", json!({
+        "to":eve.agent_id,"text":"wrong repository","idempotency_key":"wrong repository","scope":"repository"
+    }))).is_err());
+    assert!(broker.perform(&as_request(&alice, "send", json!({
+        "to":dave.agent_id,"text":"wrong session","idempotency_key":"wrong session","scope":"session"
+    }))).is_err());
+    broker.perform(&as_request(&alice, "send", json!({
+        "to":eve.agent_id,"text":"all explicit","idempotency_key":"all explicit","scope":"all"
+    }))).unwrap();
+}
+
+#[test]
+fn missing_caller_context_fails_closed_without_repository_fallback() {
+    let (directory, mut broker) = broker();
+    let alice = register(&mut broker, "one");
+    let bob = register(&mut broker, "one");
+    directory.context.panes.borrow_mut().remove(&alice.agent_id);
+    directory.context.publish();
+    for params in [
+        json!({}),
+        json!({"scope":"workspace"}),
+        json!({"scope":"session"}),
+    ] {
+        let error = broker
+            .perform(&as_request(&alice, "discover", params.clone()))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("current Bkpr pane context is unavailable"));
+        let mut send_params = params;
+        send_params["to"] = json!(bob.agent_id);
+        send_params["text"] = json!("must not send");
+        send_params["idempotency_key"] = json!("missing context");
+        assert!(
+            broker
+                .perform(&as_request(&alice, "send", send_params))
+                .is_err()
+        );
+    }
+    assert!(broker.store.messages.is_empty());
+    assert_eq!(
+        discovered_ids(&mut broker, &alice, Some("repository")),
+        vec![bob.agent_id.clone()]
+    );
+    assert_eq!(
+        discovered_ids(&mut broker, &alice, Some("all")),
+        vec![bob.agent_id.clone()]
+    );
+    broker.perform(&as_request(&alice, "send",
+        json!({"to":bob.agent_id,"text":"explicit","idempotency_key":"explicit","scope":"repository"}))).unwrap();
+    let (whoami, _) = broker
+        .perform(&as_request(&alice, "whoami", json!({})))
+        .unwrap();
+    assert_eq!(whoami["attached"], false);
+    assert!(whoami["context"].is_null());
+}
+
+#[test]
+fn moves_rename_and_close_use_latest_publication_without_losing_replays() {
+    let (directory, mut broker) = broker();
+    let alice = register(&mut broker, "one");
+    let bob = register(&mut broker, "one");
+    let (first, _) = send(&mut broker, &alice, &bob, "before move");
+    let workspace = alice.params["repository"].as_str().unwrap().to_owned();
+    let fixture = &directory.context;
+    fixture
+        .panes
+        .borrow_mut()
+        .get_mut(&bob.agent_id)
+        .unwrap()
+        .workspace_id = "moved".into();
+    fixture.publish_as(
+        vec![
+            ContextWorkspace {
+                id: workspace.clone(),
+                name: "original".into(),
+            },
+            ContextWorkspace {
+                id: "moved".into(),
+                name: "renamed workspace".into(),
+            },
+        ],
+        fixture.panes.borrow().values().cloned().collect(),
+    );
+    assert!(discovered_ids(&mut broker, &alice, None).is_empty());
+    assert_eq!(
+        discovered_ids(&mut broker, &alice, Some("session")),
+        vec![bob.agent_id.clone()]
+    );
+    let (whoami, _) = broker
+        .perform(&as_request(&bob, "whoami", json!({})))
+        .unwrap();
+    assert_eq!(whoami["context"]["workspace_id"], "moved");
+    assert_eq!(whoami["context"]["workspace_name"], "renamed workspace");
+    assert_eq!(
+        whoami["context"]["session_id"],
+        fixture.session.session_id()
+    );
+    assert!(
+        broker
+            .perform(&as_request(
+                &alice,
+                "send",
+                json!({"to":bob.agent_id,"text":"after move","idempotency_key":"after move"})
+            ))
+            .is_err()
+    );
+    broker.perform(&as_request(&alice, "send",
+        json!({"to":bob.agent_id,"text":"after move","idempotency_key":"after move","scope":"session"}))).unwrap();
+    fixture.panes.borrow_mut().remove(&bob.agent_id);
+    fixture.publish();
+    assert!(discovered_ids(&mut broker, &alice, Some("session")).is_empty());
+    let snapshot = snapshot_status(&broker.store);
+    let closed = snapshot["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["id"] == bob.agent_id)
+        .unwrap();
+    assert_eq!(closed["attached"], false);
+    assert!(closed["context"].is_null());
+    let (retry, jobs) = send(&mut broker, &alice, &bob, "before move");
+    assert_eq!(retry["message_id"], first["message_id"]);
+    assert_eq!(retry["duplicate"], true);
+    assert!(jobs.is_empty());
+    let (inbox, _) = broker
+        .perform(&as_request(&bob, "inbox", json!({})))
+        .unwrap();
+    assert_eq!(inbox["messages"].as_array().unwrap().len(), 2);
+    broker
+        .perform(&as_request(
+            &bob,
+            "ack",
+            json!({"ids":[first["message_id"]]}),
+        ))
+        .unwrap();
+    let (retry, _) = send(&mut broker, &alice, &bob, "before move");
+    assert_eq!(retry["status"]["state"], "processed");
+    assert_eq!(
+        discovered_ids(&mut broker, &alice, Some("repository")),
+        vec![bob.agent_id.clone()]
+    );
+}
+
+#[test]
+fn each_selected_scope_survives_ack_reload_and_rejects_scope_reuse() {
+    for selected in [
+        Scope::Workspace,
+        Scope::Session,
+        Scope::Repository,
+        Scope::All,
+    ] {
+        let (directory, mut broker) = broker();
+        let alice = register(&mut broker, "one");
+        let bob = register(&mut broker, "one");
+        let params = json!({"to":bob.agent_id,"text":"same payload","idempotency_key":"scope key","scope":selected});
+        let (first, _) = broker
+            .perform(&as_request(&alice, "send", params.clone()))
+            .unwrap();
+        assert_eq!(first["status"]["scope"], json!(selected));
+        broker
+            .perform(&as_request(
+                &bob,
+                "ack",
+                json!({"ids":[first["message_id"]]}),
+            ))
+            .unwrap();
+        broker.store = load_store(directory.path()).unwrap();
+        directory.context.panes.borrow_mut().clear();
+        directory.context.publish();
+        let (retry, jobs) = broker
+            .perform(&as_request(&alice, "send", params.clone()))
+            .unwrap();
+        assert_eq!(retry["message_id"], first["message_id"]);
+        assert_eq!(retry["status"]["state"], "processed");
+        assert!(jobs.is_empty());
+        for other in [
+            Scope::Workspace,
+            Scope::Session,
+            Scope::Repository,
+            Scope::All,
+        ] {
+            if other == selected {
+                continue;
+            }
+            let mut changed = params.clone();
+            changed["scope"] = json!(other);
+            assert!(
+                broker
+                    .perform(&as_request(&alice, "send", changed))
+                    .is_err()
+            );
+        }
+        let mut changed = params;
+        changed["text"] = json!("different payload");
+        assert!(
+            broker
+                .perform(&as_request(&alice, "send", changed))
+                .is_err()
+        );
+        assert_eq!(broker.store.messages.len(), 1);
+    }
 }

@@ -3,6 +3,7 @@ use bkpr::agent_contract::{
     ProgramStatusUpdate, harness_name,
 };
 use bkpr::ci_contract::{CiRefreshTarget, CiSnapshot};
+use bkpr::context_contract::{ContextPane, ContextPublication, ContextWorkspace};
 use bkpr::{
     Action, Attention, Effect, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Pane, ProjectIdentity, Request,
     Response, Snapshot, Status, Workspace,
@@ -24,6 +25,39 @@ pub const REFRESH_CI: &str = "bkpr-native-refresh-ci";
 struct NativeCiRefresh {
     client_id: u16,
     target: CiRefreshTarget,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct HostContextTab {
+    tab_id: usize,
+    workspace_id: String,
+    workspace_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct HostContextPane {
+    pane_id: String,
+    tab_id: usize,
+    workspace_id: String,
+    workspace_name: String,
+    #[serde(default)]
+    root_pid: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct HostContext {
+    version: u32,
+    session_id: String,
+    session_name: String,
+    tabs: Vec<HostContextTab>,
+    panes: Vec<HostContextPane>,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+struct ContextProjection {
+    session_name: String,
+    workspaces: Vec<ContextWorkspace>,
+    panes: Vec<ContextPane>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -414,9 +448,21 @@ fn clock_millis() -> u64 {
 }
 
 pub fn configuration_valid(configuration: &BTreeMap<String, String>, role: &str) -> bool {
-    configuration.len() == 6
+    let owner = role == "native-owner";
+    configuration.len() == (if owner { 8 } else { 7 })
+        && matches!(role, "native-owner" | "sidebar")
         && configuration.get("role").map(String::as_str) == Some(role)
         && configuration.get("session").is_some_and(|s| !s.is_empty())
+        && configuration
+            .get("session_id")
+            .is_some_and(|s| !s.is_empty())
+        && (if owner {
+            configuration
+                .get("context_owner")
+                .is_some_and(|s| !s.is_empty())
+        } else {
+            !configuration.contains_key("context_owner")
+        })
         && ["program", "initial_cwd"].iter().all(|key| {
             configuration
                 .get(*key)
@@ -475,41 +521,18 @@ pub fn restart_owner(
     configuration: &BTreeMap<String, String>,
     closed_id: u32,
 ) -> std::io::Result<()> {
-    let mut owner_configuration = configuration.clone();
-    owner_configuration.remove("sidebar_bootstrap");
-    owner_configuration.remove("mode_info_format");
-    owner_configuration.insert("role".to_owned(), "native-owner".to_owned());
-    owner_configuration.insert(
-        "caller_cwd".to_owned(),
-        configuration["initial_cwd"].clone(),
-    );
-    let identity = serde_json::to_vec(&owner_configuration)
-        .expect("serializing native owner restart identity");
-    let hash = identity.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    let session_id = configuration.get("session_id").ok_or_else(|| {
+        std::io::Error::other("Cannot restart native owner without session identity")
+    })?;
+    post_message_to_plugin(PluginMessage {
+        name: "bkpr_context_owner_restart".to_owned(),
+        payload: serde_json::json!({
+            "session_id": session_id,
+            "closed_owner": closed_id,
+        })
+        .to_string(),
+        ..PluginMessage::default()
     });
-    let claim = format!(
-        "/cache/bkpr-owner-restart-{}-{hash:016x}-{closed_id}",
-        get_plugin_ids().zellij_pid,
-    );
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(claim)
-    {
-        // Opt into the host's authorized, lossless guide stream without changing identity.
-        Ok(_) => {
-            owner_configuration.insert("mode_info_format".to_owned(), "json".to_owned());
-            load_new_plugin(
-                &configuration["plugin_url"],
-                owner_configuration,
-                true,
-                false,
-            );
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error),
-    }
     Ok(())
 }
 
@@ -551,6 +574,18 @@ struct Model {
     published_revision: Option<u64>,
     #[serde(default)]
     published_error: Option<String>,
+    #[serde(default)]
+    host_context: Option<HostContext>,
+    #[serde(default)]
+    context_sequence: u64,
+    #[serde(default)]
+    context_generation: u64,
+    #[serde(default)]
+    context_published: Option<ContextProjection>,
+    #[serde(default)]
+    context_publisher: Option<u32>,
+    #[serde(default)]
+    context_error: Option<String>,
     next_workspace: u64,
     workspaces: BTreeMap<String, NativeWorkspace>,
     tabs: BTreeMap<usize, String>,
@@ -694,6 +729,12 @@ impl Model {
             revision: 0,
             published_revision: None,
             published_error: None,
+            host_context: None,
+            context_sequence: 0,
+            context_generation: 0,
+            context_published: None,
+            context_publisher: None,
+            context_error: None,
             next_workspace: 0,
             workspaces: BTreeMap::new(),
             tabs: BTreeMap::new(),
@@ -725,10 +766,199 @@ impl Model {
     }
 
     fn workspace(&mut self, name: String) -> String {
-        self.next_workspace += 1;
-        let id = format!("native-workspace-{}", self.next_workspace);
+        let id = loop {
+            self.next_workspace += 1;
+            let id = format!(
+                "{}:workspace:bkpr:{}",
+                self.configuration["session_id"], self.next_workspace
+            );
+            if !self.workspaces.contains_key(&id) {
+                break id;
+            }
+        };
         self.workspaces.insert(id.clone(), NativeWorkspace { name });
         id
+    }
+
+    fn adopt_context(&mut self, context: HostContext) -> Result<bool, &'static str> {
+        if context.version != 1
+            || self.configuration.get("session_id") != Some(&context.session_id)
+            || context.session_name.is_empty()
+        {
+            return Err("Native context has an invalid session identity");
+        }
+        let mut tabs = BTreeMap::new();
+        let mut names = BTreeMap::new();
+        for tab in &context.tabs {
+            if tab.workspace_id.is_empty()
+                || tab.workspace_name.is_empty()
+                || tabs.insert(tab.tab_id, tab.workspace_id.clone()).is_some()
+                || names
+                    .insert(tab.workspace_id.clone(), tab.workspace_name.clone())
+                    .is_some_and(|name| name != tab.workspace_name)
+            {
+                return Err("Native context has inconsistent workspace bindings");
+            }
+        }
+        let mut panes = BTreeMap::new();
+        for pane in &context.panes {
+            if tabs.get(&pane.tab_id) != Some(&pane.workspace_id)
+                || names.get(&pane.workspace_id) != Some(&pane.workspace_name)
+            {
+                return Err("Native context has inconsistent terminal bindings");
+            }
+            if pane
+                .pane_id
+                .strip_prefix("plugin_")
+                .is_some_and(|id| id.parse::<u32>().is_ok())
+            {
+                continue;
+            }
+            let Some(id) = terminal_id(&pane.pane_id) else {
+                return Err("Native context has an invalid terminal identity");
+            };
+            if panes.insert(id, pane).is_some() {
+                return Err("Native context has inconsistent terminal bindings");
+            }
+        }
+        self.closed_tabs.retain(|tab| {
+            tabs.get(tab).is_some_and(|workspace| {
+                self.host_context
+                    .as_ref()
+                    .and_then(|previous| previous.tabs.iter().find(|old| old.tab_id == *tab))
+                    .is_none_or(|old| old.workspace_id == *workspace)
+            })
+        });
+        let mut changed = self.host_context.as_ref() != Some(&context);
+        let removed: Vec<_> = self
+            .panes
+            .keys()
+            .filter(|id| !panes.contains_key(*id))
+            .copied()
+            .collect();
+        for id in removed {
+            changed |= self.close_pane(id);
+        }
+        for (id, binding) in &panes {
+            if let Some(pane) = self.panes.get_mut(id)
+                && (pane.workspace != binding.workspace_id || pane.tab != binding.tab_id)
+            {
+                pane.workspace = binding.workspace_id.clone();
+                pane.tab = binding.tab_id;
+                self.agent_generation += 1;
+                self.agents_dirty = true;
+                changed = true;
+            }
+        }
+        for (tab, workspace) in &tabs {
+            if !self.closed_tabs.contains(tab) {
+                self.tabs.insert(*tab, workspace.clone());
+            }
+        }
+        self.tabs.retain(|tab, _| {
+            !self.closed_tabs.contains(tab)
+                && (tabs.contains_key(tab) || self.pending_tabs.contains(tab))
+        });
+        for (id, name) in names {
+            self.workspaces.insert(id, NativeWorkspace { name });
+        }
+        self.workspaces
+            .retain(|id, _| self.tabs.values().any(|workspace| workspace == id));
+        self.host_context = Some(context);
+        Ok(changed)
+    }
+
+    fn context_projection(&self) -> Option<ContextProjection> {
+        let context = self.host_context.as_ref()?;
+        let workspaces: BTreeMap<_, _> = context
+            .tabs
+            .iter()
+            .filter(|tab| !self.closed_tabs.contains(&tab.tab_id))
+            .filter(|tab| {
+                !self.pending_tabs.contains(&tab.tab_id)
+                    || self.panes.values().any(|pane| pane.tab == tab.tab_id)
+            })
+            .map(|tab| (tab.workspace_id.clone(), tab.workspace_name.clone()))
+            .collect();
+        Some(ContextProjection {
+            session_name: context.session_name.clone(),
+            workspaces: workspaces
+                .into_iter()
+                .map(|(id, name)| ContextWorkspace { id, name })
+                .collect(),
+            panes: self
+                .panes
+                .iter()
+                .map(|(id, pane)| ContextPane {
+                    pane_id: format!("terminal_{id}"),
+                    workspace_id: pane.workspace.clone(),
+                    pane_name: self.pane_name(*id, pane),
+                    agent_id: self
+                        .pane_agent(*id)
+                        .and_then(|agent| agent.agent_id.clone()),
+                })
+                .collect(),
+        })
+    }
+
+    fn pane_agent(&self, id: u32) -> Option<&AgentExecution> {
+        self.agents
+            .get(&id)
+            .filter(|agent| harness_name(&agent.harness).is_some())
+    }
+
+    fn pane_name(&self, id: u32, pane: &NativePane) -> String {
+        if pane.renamed {
+            return pane.name.clone();
+        }
+        let agent = self.pane_agent(id);
+        let program = self.program_status.get(&id);
+        let harness = program
+            .and_then(|program| program.harness_record(agent.is_some()))
+            .and_then(|record| record.app.as_deref())
+            .or_else(|| agent.map(|agent| agent.harness.as_str()));
+        program
+            .and_then(NativeProgram::label)
+            .or_else(|| {
+                pane.has_native_title
+                    .then(|| native_title(&pane.name, harness).to_owned())
+            })
+            .or_else(|| {
+                program
+                    .and_then(NativeProgram::dominant)
+                    .and_then(|record| record.app.as_deref())
+                    .map(|app| harness_name(app).unwrap_or(app).to_owned())
+            })
+            .or_else(|| agent.and_then(|agent| harness_name(&agent.harness).map(str::to_owned)))
+            .unwrap_or_else(|| pane.name.clone())
+    }
+
+    fn reserve_context(
+        &mut self,
+        server: i32,
+        owner: u32,
+        reloaded: bool,
+    ) -> Option<ContextPublication> {
+        let projection = self.context_projection()?;
+        if !reloaded
+            && self.context_publisher == Some(owner)
+            && self.context_published.as_ref() == Some(&projection)
+        {
+            return None;
+        }
+        self.context_sequence = self.context_sequence.checked_add(1)?;
+        self.context_publisher = Some(owner);
+        self.context_published = Some(projection.clone());
+        Some(ContextPublication {
+            session_id: self.configuration["session_id"].clone(),
+            session_name: projection.session_name,
+            server,
+            owner,
+            sequence: self.context_sequence,
+            token: self.configuration["context_owner"].clone(),
+            workspaces: projection.workspaces,
+            panes: projection.panes,
+        })
     }
 
     fn snapshot(&self, error: Option<String>, client_id: u16) -> Snapshot {
@@ -736,10 +966,7 @@ impl Model {
             .panes
             .iter()
             .map(|(id, pane)| {
-                let agent = self
-                    .agents
-                    .get(id)
-                    .filter(|agent| harness_name(&agent.harness).is_some());
+                let agent = self.pane_agent(*id);
                 let program = self.program_status.get(id);
                 let project = pane.cwd.as_deref().and_then(|cwd| self.projects.get(cwd));
                 let record = program.and_then(NativeProgram::dominant);
@@ -748,30 +975,12 @@ impl Model {
                 let harness = harness_record
                     .and_then(|record| record.app.as_deref())
                     .or_else(|| agent.map(|agent| agent.harness.as_str()));
-                let reported_name = program
-                    .and_then(NativeProgram::label)
-                    .or_else(|| {
-                        pane.has_native_title
-                            .then(|| native_title(&pane.name, harness).to_owned())
-                    })
-                    .or_else(|| {
-                        record
-                            .and_then(|r| r.app.as_deref())
-                            .map(|app| harness_name(app).unwrap_or(app).to_owned())
-                    })
-                    .or_else(|| {
-                        agent.and_then(|agent| harness_name(&agent.harness).map(str::to_owned))
-                    });
                 Pane {
                     id: format!("terminal_{id}"),
                     terminal_id: format!("terminal_{id}"),
                     workspace_id: pane.workspace.clone(),
                     tab_id: format!("tab_{}", pane.tab),
-                    name: if pane.renamed {
-                        pane.name.clone()
-                    } else {
-                        reported_name.unwrap_or_else(|| pane.name.clone())
-                    },
+                    name: self.pane_name(*id, pane),
                     description: if let Some(program) = program {
                         program.description()
                     } else if agent.is_some() {
@@ -876,11 +1085,15 @@ impl Model {
             protocol: PROTOCOL_VERSION,
             instance_id: self.instance.clone(),
             revision: self.revision,
-            session: self.configuration["session"].clone(),
+            session: self.host_context.as_ref().map_or_else(
+                || self.configuration["session"].clone(),
+                |context| context.session_name.clone(),
+            ),
             connected: error.is_none(),
             error: error
                 .or_else(|| self.project_error.clone())
-                .or_else(|| self.agent_error.clone()),
+                .or_else(|| self.agent_error.clone())
+                .or_else(|| self.context_error.clone()),
             focused_pane_id: self
                 .focus
                 .get(&client_id)
@@ -890,17 +1103,30 @@ impl Model {
         }
     }
 
-    // Stable tab IDs, not tab positions, own workspace membership. Existing destinations win;
-    // a newly broken-out tab inherits the lowest-ID existing terminal's workspace. An entirely
-    // new stock tab adopts a fresh workspace. Splits consequently inherit their native tab.
-    fn reconcile(&mut self, tabs: &[TabInfo], manifest: &PaneManifest) -> bool {
+    fn reconcile_topology(&mut self, tabs: &[TabInfo], manifest: &PaneManifest) -> bool {
+        let Some(context) = &self.host_context else {
+            return false;
+        };
+        let bindings: BTreeMap<_, _> = context
+            .tabs
+            .iter()
+            .map(|tab| (tab.tab_id, tab.workspace_id.clone()))
+            .collect();
+        let pane_bindings: BTreeMap<_, _> = context
+            .panes
+            .iter()
+            .filter_map(|pane| terminal_id(&pane.pane_id).map(|id| (id, pane.tab_id)))
+            .collect();
         let mut changed = false;
         let mut agent_topology_changed = false;
         // Zellij terminal IDs are monotonic for the server lifetime. Keep close tombstones
         // across topology callbacks so a delayed notification cannot resurrect a terminal.
-        self.closed_tabs
-            .retain(|id| tabs.iter().any(|tab| tab.tab_id == *id));
-        let mut alive = BTreeSet::new();
+        let mut alive: BTreeSet<_> = context
+            .panes
+            .iter()
+            .filter_map(|pane| terminal_id(&pane.pane_id))
+            .filter(|id| self.panes.contains_key(id) && !self.closed_panes.contains(id))
+            .collect();
         let mut ordered: Vec<_> = tabs.iter().collect();
         ordered.sort_by_key(|tab| tab.tab_id);
         for tab in ordered {
@@ -920,19 +1146,22 @@ impl Model {
             };
             let mut terminals: Vec<_> = panes
                 .iter()
-                .filter(|p| !p.is_plugin && !self.closed_panes.contains(&p.id))
+                .filter(|p| {
+                    !p.is_plugin
+                        && !self.closed_panes.contains(&p.id)
+                        && pane_bindings.get(&p.id) == Some(&tab.tab_id)
+                })
                 .collect();
             terminals.sort_by_key(|p| p.id);
-            let workspace = if let Some(workspace) = self.tabs.get(&tab.tab_id) {
-                workspace.clone()
-            } else {
-                changed = true;
-                let inherited = terminals
-                    .iter()
-                    .find_map(|p| self.panes.get(&p.id).map(|p| p.workspace.clone()));
-                let workspace = inherited.unwrap_or_else(|| self.workspace(tab.name.clone()));
-                self.tabs.insert(tab.tab_id, workspace.clone());
-                workspace
+            let Some(workspace) = bindings.get(&tab.tab_id).cloned() else {
+                // The topology stream may precede its canonical host binding.
+                alive.extend(
+                    self.panes
+                        .iter()
+                        .filter(|(_, pane)| pane.tab == tab.tab_id)
+                        .map(|(id, _)| *id),
+                );
+                continue;
             };
             for pane in terminals {
                 alive.insert(pane.id);
@@ -990,10 +1219,10 @@ impl Model {
             .retain(|id, _| !self.closed_panes.contains(id));
         self.agent_roots.retain(|id, _| alive.contains(id));
         // Preserve new bindings until their terminal arrives, not merely the tab/plugin.
-        let known_tabs: BTreeSet<_> = tabs
-            .iter()
-            .filter(|tab| !self.closed_tabs.contains(&tab.tab_id))
-            .map(|t| t.tab_id)
+        let known_tabs: BTreeSet<_> = bindings
+            .keys()
+            .filter(|tab| !self.closed_tabs.contains(*tab))
+            .copied()
             .collect();
         let previous_count = self.tabs.len();
         self.pending_tabs
@@ -1369,6 +1598,8 @@ pub struct Owner {
     keymap_cache: Option<KeymapCacheRef>,
     keymap_payload: String,
     keymap_generation: u64,
+    context_ready: bool,
+    context_reload: bool,
 }
 
 impl Owner {
@@ -1399,6 +1630,8 @@ impl Owner {
         self.keymap_cache = None;
         self.keymap_payload.clear();
         self.keymap_generation = 0;
+        self.context_ready = false;
+        self.context_reload = true;
         self.configuration = configuration.clone();
         self.refresh_metadata = true;
         subscribe(&[
@@ -1440,6 +1673,11 @@ impl Owner {
                 self.model = Some(Model::new(configuration.clone(), format!("native:{pid}:{hash:016x}")));
             }
             Err(error) => self.error = Some(format!("Cannot recover native metadata: {error}")),
+        }
+        // Context publication is a background service, not a consequence of sidebar registration.
+        if self.error.is_none() {
+            self.permission_requested = true;
+            request_permission(super::PERMISSIONS);
         }
     }
 
@@ -1618,11 +1856,23 @@ impl Owner {
         });
     }
 
+    fn snapshot_error(&self) -> Option<String> {
+        self.error.clone().or_else(|| {
+            (!self.context_ready).then(|| {
+                "Native workspace context is unavailable until the host reports its bindings"
+                    .to_owned()
+            })
+        })
+    }
+
     fn state(&self, client_id: u16) -> Option<NativeState> {
         let own_client = client_id == self.client_id;
         Some(NativeState {
             client_id,
-            snapshot: self.model.as_ref()?.snapshot(self.error.clone(), client_id),
+            snapshot: self
+                .model
+                .as_ref()?
+                .snapshot(self.snapshot_error(), client_id),
             ui_selection: if own_client {
                 self.ui_selections.get(&client_id).cloned()
             } else {
@@ -1647,6 +1897,7 @@ impl Owner {
 
     fn publish(&mut self) -> bool {
         self.prune_selections();
+        self.publish_context();
         let Some(model) = self.model.as_mut() else {
             return false;
         };
@@ -1693,6 +1944,76 @@ impl Owner {
         true
     }
 
+    fn publish_context(&mut self) {
+        if !self.granted || !self.context_ready || self.error.is_some() {
+            return;
+        }
+        let Some(publication) = self
+            .model
+            .as_mut()
+            .and_then(|model| model.reserve_context(self.server, self.id, self.context_reload))
+        else {
+            return;
+        };
+        self.context_reload = false;
+        // Reserve in artifact-shared storage before creating an asynchronous native helper.
+        // Reloads recover the reservation, so an older helper can never outrank its successor.
+        self.save();
+        if self.error.is_some() {
+            return;
+        }
+        let json = serde_json::to_string(&publication).expect("serializing native context");
+        run_command(
+            &[
+                &self.configuration["program"],
+                "context-publish",
+                "--json",
+                &json,
+            ],
+            BTreeMap::from([(
+                "native_context".to_owned(),
+                publication.sequence.to_string(),
+            )]),
+        );
+    }
+
+    fn update_host_context(&mut self) {
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        let Some(generation) = model.context_generation.checked_add(1) else {
+            self.error = Some("Native context update sequence exhausted".to_owned());
+            return;
+        };
+        model.context_generation = generation;
+        let tabs: Vec<_> = model
+            .tabs
+            .iter()
+            .filter_map(|(tab, workspace)| {
+                model.workspaces.get(workspace).map(|name| HostContextTab {
+                    tab_id: *tab,
+                    workspace_id: workspace.clone(),
+                    workspace_name: name.name.clone(),
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "session_id": self.configuration["session_id"],
+            "generation": generation,
+            "tabs": tabs,
+        })
+        .to_string();
+        self.save();
+        if self.error.is_none() {
+            // Native host authenticates against this owner's private plugin configuration.
+            post_message_to_plugin(PluginMessage {
+                name: "bkpr_context_update".to_owned(),
+                payload,
+                ..PluginMessage::default()
+            });
+        }
+    }
+
     fn schedule(&mut self) {
         if !self.reconcile_pending {
             self.reconcile_pending = true;
@@ -1701,7 +2022,7 @@ impl Owner {
     }
 
     fn reconcile(&mut self) {
-        if self.error.is_some() {
+        if self.error.is_some() || !self.context_ready {
             return;
         }
         let Some((tabs, manifest)) = self.topology.ready.take() else {
@@ -1717,7 +2038,7 @@ impl Owner {
             }
         }
         let generation = model.agent_generation;
-        let mut changed = model.reconcile(&tabs, &manifest);
+        let mut changed = model.reconcile_topology(&tabs, &manifest);
         let refresh_metadata = std::mem::take(&mut self.refresh_metadata);
         let metadata: Vec<_> = model
             .panes
@@ -1996,6 +2317,31 @@ impl Owner {
                 self.error = Some("Native owner permissions denied".to_owned())
             }
             Event::CustomMessage(name, payload)
+                if self.granted && name == "bkpr_context" && payload.len() <= MAX_MESSAGE_BYTES =>
+            {
+                let Ok(context) = serde_json::from_str::<HostContext>(&payload) else {
+                    return false;
+                };
+                let Some(model) = self.model.as_mut() else {
+                    return false;
+                };
+                let Ok(changed) = model.adopt_context(context) else {
+                    return false;
+                };
+                self.context_ready = true;
+                if changed {
+                    model.revision += 1;
+                }
+                if self.topology.ready.is_none() {
+                    self.topology.ready = self.topology.reconciled.take();
+                }
+                self.reconcile();
+                if changed {
+                    self.request_agents();
+                }
+                self.publish();
+            }
+            Event::CustomMessage(name, payload)
                 if self.granted && name == "mode_info" && payload.len() <= MAX_MESSAGE_BYTES =>
             {
                 if let Ok(mode) = serde_json::from_str::<GuideMode>(&payload) {
@@ -2129,6 +2475,30 @@ impl Owner {
                 self.save();
             }
             Event::RunCommandResult(code, stdout, stderr, context) if self.granted => {
+                if let Some(sequence) = context
+                    .get("native_context")
+                    .and_then(|sequence| sequence.parse::<u64>().ok())
+                {
+                    if let Some(model) = self.model.as_mut()
+                        && model.context_sequence == sequence
+                        && model.context_publisher == Some(self.id)
+                    {
+                        let error = (code != Some(0)).then(|| {
+                            format!(
+                                "Native context publication failed: {}",
+                                crate::ui::clean(&String::from_utf8_lossy(
+                                    &stderr[..stderr.len().min(4096)]
+                                ))
+                            )
+                        });
+                        if model.context_error != error {
+                            model.context_error = error;
+                            model.revision += 1;
+                            self.publish();
+                        }
+                    }
+                    return false;
+                }
                 if let Some(context) = context.get("native_agent") {
                     self.agent_response(code, &stdout, &stderr, context);
                     return false;
@@ -2177,6 +2547,12 @@ impl Owner {
     ) -> Result<Option<u32>, String> {
         if let Some(error) = &self.error {
             return Err(error.clone());
+        }
+        if !self.context_ready && !matches!(&action, Action::Snapshot | Action::RegisterFrontend) {
+            return Err(
+                "Native workspace context is unavailable until the host reports its bindings"
+                    .to_owned(),
+            );
         }
         let model = self
             .model
@@ -2234,6 +2610,7 @@ impl Owner {
                         rename_tab_with_id(*tab as u64, &label);
                     }
                 }
+                self.update_host_context();
                 Ok(None)
             }
             Action::RenamePane { pane_id, label } => {
@@ -2328,6 +2705,7 @@ impl Owner {
             None => label.unwrap_or_else(|| format!("Workspace {}", model.next_workspace + 1)),
         };
         let mut sidebar_configuration = self.configuration.clone();
+        sidebar_configuration.remove("context_owner");
         sidebar_configuration.insert("role".to_owned(), "sidebar".to_owned());
         let mode = self.guide_mode.ok_or("Native input mode is unavailable")?;
         let keymap = self
@@ -2348,6 +2726,8 @@ impl Owner {
             serde_json::to_string(&bootstrap)
                 .map_err(|error| format!("Cannot encode sidebar bootstrap: {error}"))?,
         );
+        let created_workspace = workspace.is_none();
+        let workspace = workspace.unwrap_or_else(|| model.workspace(name.clone()));
         // Preserve startup configuration/owner identity; geometry is inherited separately.
         let layout = bkpr::native_layout(
             &self.configuration["plugin_url"],
@@ -2355,13 +2735,16 @@ impl Owner {
             &name,
             &cwd,
             sidebar_percent,
+            Some((&workspace, &name)),
         )
         .map_err(|error| format!("Cannot create native terminal layout: {error}"))?;
         let tabs = new_tabs_with_layout(&layout);
         if tabs.is_empty() {
+            if created_workspace {
+                model.workspaces.remove(&workspace);
+            }
             return Err("Zellij could not create the native terminal tab".to_owned());
         }
-        let workspace = workspace.unwrap_or_else(|| model.workspace(name));
         for id in &tabs {
             model.tabs.insert(*id, workspace.clone());
             model.pending_tabs.insert(*id);
@@ -2465,7 +2848,7 @@ impl Owner {
                 self.model
                     .as_ref()
                     .map(|m| {
-                        serde_json::to_string(&m.snapshot(self.error.clone(), self.client_id))
+                        serde_json::to_string(&m.snapshot(self.snapshot_error(), self.client_id))
                             .expect("serializing queried native state")
                     })
                     .unwrap_or_else(|| serde_json::json!({"error": self.error}).to_string())
@@ -2726,9 +3109,89 @@ mod tests {
 
     fn model() -> Model {
         Model::new(
-            BTreeMap::from([("session".to_owned(), "test".to_owned())]),
+            BTreeMap::from([
+                ("session".to_owned(), "test".to_owned()),
+                ("session_id".to_owned(), "test-session-id".to_owned()),
+                ("context_owner".to_owned(), "private-test-owner".to_owned()),
+            ]),
             "test-instance".to_owned(),
         )
+    }
+
+    impl Model {
+        // Model-focused fixtures provide an explicit simulated host binding before topology.
+        // Production never allocates stock workspace identities from PaneUpdate/TabUpdate.
+        fn reconcile(&mut self, tabs: &[TabInfo], manifest: &PaneManifest) -> bool {
+            let host_tabs: Vec<_> = tabs
+                .iter()
+                .map(|tab| {
+                    let workspace_id = self
+                        .tabs
+                        .get(&tab.tab_id)
+                        .cloned()
+                        .or_else(|| {
+                            manifest.panes.get(&tab.position).and_then(|panes| {
+                                panes.iter().find_map(|pane| {
+                                    self.panes.get(&pane.id).map(|pane| pane.workspace.clone())
+                                })
+                            })
+                        })
+                        .unwrap_or_else(|| format!("test-session-id:workspace:{}", tab.tab_id));
+                    let workspace_name = self
+                        .workspaces
+                        .get(&workspace_id)
+                        .map(|workspace| workspace.name.clone())
+                        .unwrap_or_else(|| tab.name.clone());
+                    HostContextTab {
+                        tab_id: tab.tab_id,
+                        workspace_id,
+                        workspace_name,
+                    }
+                })
+                .collect();
+            let mut host_panes = Vec::new();
+            for tab in &host_tabs {
+                let position = tabs
+                    .iter()
+                    .find(|native| native.tab_id == tab.tab_id)
+                    .unwrap()
+                    .position;
+                if let Some(panes) = manifest.panes.get(&position) {
+                    for pane in panes.iter().filter(|pane| !pane.is_plugin) {
+                        host_panes.push(HostContextPane {
+                            pane_id: format!("terminal_{}", pane.id),
+                            tab_id: tab.tab_id,
+                            workspace_id: tab.workspace_id.clone(),
+                            workspace_name: tab.workspace_name.clone(),
+                            root_pid: None,
+                        });
+                    }
+                } else if let Some(context) = &self.host_context {
+                    host_panes.extend(
+                        context
+                            .panes
+                            .iter()
+                            .filter(|pane| pane.tab_id == tab.tab_id)
+                            .cloned()
+                            .map(|mut pane| {
+                                pane.workspace_id = tab.workspace_id.clone();
+                                pane.workspace_name = tab.workspace_name.clone();
+                                pane
+                            }),
+                    );
+                }
+            }
+            let changed = self
+                .adopt_context(HostContext {
+                    version: 1,
+                    session_id: "test-session-id".to_owned(),
+                    session_name: "test".to_owned(),
+                    tabs: host_tabs,
+                    panes: host_panes,
+                })
+                .unwrap();
+            self.reconcile_topology(tabs, manifest) || changed
+        }
     }
     fn tab(id: usize, position: usize) -> TabInfo {
         TabInfo {
@@ -2749,6 +3212,246 @@ mod tests {
         PaneManifest {
             panes: entries.iter().cloned().collect(),
         }
+    }
+
+    fn host_context(tabs: &[(usize, &str, &str)], panes: &[(u32, usize)]) -> HostContext {
+        HostContext {
+            version: 1,
+            session_id: "test-session-id".to_owned(),
+            session_name: "Native session".to_owned(),
+            tabs: tabs
+                .iter()
+                .map(|(tab_id, id, name)| HostContextTab {
+                    tab_id: *tab_id,
+                    workspace_id: (*id).to_owned(),
+                    workspace_name: (*name).to_owned(),
+                })
+                .collect(),
+            panes: panes
+                .iter()
+                .map(|(id, tab)| {
+                    let (_, workspace_id, workspace_name) =
+                        tabs.iter().find(|(tab_id, _, _)| tab_id == tab).unwrap();
+                    HostContextPane {
+                        pane_id: format!("terminal_{id}"),
+                        tab_id: *tab,
+                        workspace_id: (*workspace_id).to_owned(),
+                        workspace_name: (*workspace_name).to_owned(),
+                        root_pid: Some(100 + id),
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn topology_waits_for_host_and_adopts_canonical_not_repository_identity() {
+        let mut model = model();
+        let tabs = [tab(10, 0), tab(20, 1)];
+        let panes = manifest(&[
+            (
+                0,
+                vec![
+                    PaneInfo {
+                        is_plugin: true,
+                        ..pane(1)
+                    },
+                    pane(1),
+                ],
+            ),
+            (1, vec![pane(2)]),
+        ]);
+        assert!(!model.reconcile_topology(&tabs, &panes));
+        assert!(model.panes.is_empty());
+        assert!(model.context_projection().is_none());
+        let mut context = host_context(
+            &[
+                (10, "canonical-A", "First workspace"),
+                (20, "canonical-B", "Second workspace"),
+            ],
+            &[(1, 10), (2, 20)],
+        );
+        context.panes.push(HostContextPane {
+            pane_id: "plugin_1".to_owned(),
+            tab_id: 10,
+            workspace_id: "canonical-A".to_owned(),
+            workspace_name: "First workspace".to_owned(),
+            root_pid: None,
+        });
+        let mut foreign = context.clone();
+        foreign.session_id = "foreign".to_owned();
+        assert!(model.adopt_context(foreign).is_err());
+        model.adopt_context(context).unwrap();
+        assert!(model.reconcile_topology(&tabs, &panes));
+        model.observe_cwd(1, "/same/repository".to_owned());
+        model.observe_cwd(2, "/same/repository".to_owned());
+        assert_eq!(model.panes[&1].workspace, "canonical-A");
+        assert_eq!(model.panes[&2].workspace, "canonical-B");
+        assert_eq!(model.workspaces["canonical-A"].name, "First workspace");
+        assert_eq!(model.snapshot(None, 0).session, "Native session");
+        assert_eq!(model.next_workspace, 0);
+    }
+
+    #[test]
+    fn canonical_groups_follow_host_move_rename_and_close_not_stale_topology() {
+        let mut model = model();
+        let tabs = [tab(10, 0), tab(20, 1), tab(30, 2)];
+        let old_panes = manifest(&[(0, vec![pane(1)]), (1, vec![pane(2)]), (2, vec![pane(3)])]);
+        model
+            .adopt_context(host_context(
+                &[
+                    (10, "grouped", "Together"),
+                    (20, "grouped", "Together"),
+                    (30, "other", "Other"),
+                ],
+                &[(1, 10), (2, 20), (3, 30)],
+            ))
+            .unwrap();
+        model.reconcile_topology(&tabs, &old_panes);
+        assert_eq!(model.snapshot(None, 0).workspaces.len(), 2);
+        model
+            .adopt_context(host_context(
+                &[
+                    (10, "grouped", "Renamed"),
+                    (20, "grouped", "Renamed"),
+                    (30, "other", "Other"),
+                ],
+                &[(1, 10), (2, 30), (3, 30)],
+            ))
+            .unwrap();
+        model.reconcile_topology(&tabs, &old_panes);
+        assert_eq!(model.panes[&2].workspace, "other");
+        assert_eq!(model.panes[&2].tab, 30);
+        assert_eq!(model.workspaces["grouped"].name, "Renamed");
+        model
+            .adopt_context(host_context(&[(30, "other", "Other")], &[(2, 30), (3, 30)]))
+            .unwrap();
+        model.reconcile_topology(&tabs, &old_panes);
+        assert!(!model.panes.contains_key(&1));
+        assert!(!model.workspaces.contains_key("grouped"));
+        assert_eq!(model.panes[&2].workspace, "other");
+    }
+
+    #[test]
+    fn a_closed_native_tab_id_can_host_a_new_workspace() {
+        let mut model = model();
+        let first = host_context(&[(10, "first", "First")], &[(1, 10)]);
+        model.adopt_context(first.clone()).unwrap();
+        model.reconcile_topology(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
+        model.closed_tabs.insert(10);
+        model.close_pane(1);
+        model.tabs.remove(&10);
+        model.adopt_context(first).unwrap();
+        assert!(!model.tabs.contains_key(&10));
+        model.adopt_context(host_context(&[], &[])).unwrap();
+        model
+            .adopt_context(host_context(&[(10, "second", "Second")], &[(2, 10)]))
+            .unwrap();
+        model.reconcile_topology(&[tab(10, 0)], &manifest(&[(0, vec![pane(2)])]));
+        let projection = model.context_projection().unwrap();
+        assert_eq!(projection.panes[0].pane_id, "terminal_2");
+        assert_eq!(projection.panes[0].workspace_id, "second");
+        assert_eq!(projection.workspaces[0].name, "Second");
+        assert!(!model.panes.contains_key(&1));
+    }
+
+    #[test]
+    fn publication_tracks_foreground_ids_names_without_frontends_or_focus() {
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1), pane(2)])]));
+        let mut agent = execution(1);
+        agent.agent_id = Some("registered-agent".to_owned());
+        model.agents.insert(1, agent);
+        let ordinary = model.panes.get_mut(&2).unwrap();
+        ordinary.name = "Build shell".to_owned();
+        ordinary.renamed = true;
+        let first = model.reserve_context(99, 5, false).unwrap();
+        assert!(model.frontends.is_empty());
+        assert!(model.focus.is_empty());
+        assert_eq!(first.panes[0].agent_id.as_deref(), Some("registered-agent"));
+        assert_eq!(first.panes[1].agent_id, None);
+        assert_eq!(first.panes[1].pane_name, "Build shell");
+        let snapshot = model.snapshot(None, 0);
+        for (published, pane) in first.panes.iter().zip(&snapshot.panes) {
+            assert_eq!(published.agent_id, pane.agent_id);
+            assert_eq!(published.pane_name, pane.name);
+        }
+        assert!(
+            !serde_json::to_string(&snapshot)
+                .unwrap()
+                .contains("private-test-owner")
+        );
+        assert!(model.reserve_context(99, 5, false).is_none());
+        model.record_focus(7, 2);
+        assert!(model.reserve_context(99, 5, false).is_none());
+        model.invalidate_agent(1);
+        let next = model.reserve_context(99, 5, false).unwrap();
+        assert!(next.sequence > first.sequence);
+        assert_eq!(next.panes[0].agent_id, None);
+        model.close_pane(1);
+        let closed = model.reserve_context(99, 5, false).unwrap();
+        assert_eq!(closed.panes.len(), 1);
+    }
+
+    #[test]
+    fn publication_reservations_survive_reload_and_rotate_owner_before_dispatch() {
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
+        let reserved = model.reserve_context(99, 5, false).unwrap();
+        let bytes = serde_json::to_vec(&model).unwrap();
+        let mut reloaded = Model::decode(&bytes).unwrap();
+        assert_eq!(reloaded.context_sequence, reserved.sequence);
+        assert!(reloaded.reserve_context(99, 5, false).is_none());
+        let same_id_reload = reloaded.reserve_context(99, 5, true).unwrap();
+        assert!(same_id_reload.sequence > reserved.sequence);
+        let replacement = reloaded.reserve_context(99, 6, false).unwrap();
+        assert!(replacement.sequence > same_id_reload.sequence);
+        assert_eq!(replacement.owner, 6);
+        assert_eq!(replacement.panes, reserved.panes);
+        let persisted = Model::decode(&serde_json::to_vec(&reloaded).unwrap()).unwrap();
+        assert_eq!(persisted.context_sequence, replacement.sequence);
+        assert_eq!(persisted.context_publisher, Some(6));
+    }
+
+    #[test]
+    fn strict_role_configuration_keeps_context_authority_owner_only() {
+        let mut configuration = BTreeMap::from([
+            ("role".to_owned(), "native-owner".to_owned()),
+            ("session".to_owned(), "test".to_owned()),
+            ("session_id".to_owned(), "test-session-id".to_owned()),
+            ("context_owner".to_owned(), "private-test-owner".to_owned()),
+            ("program".to_owned(), "/bin/bkpr".to_owned()),
+            ("initial_cwd".to_owned(), "/work".to_owned()),
+            ("plugin_url".to_owned(), "file:/bkpr.wasm".to_owned()),
+            ("sidebar_width".to_owned(), "28".to_owned()),
+        ]);
+        assert!(configuration_valid(&configuration, "native-owner"));
+        configuration.insert("role".to_owned(), "sidebar".to_owned());
+        assert!(!configuration_valid(&configuration, "sidebar"));
+        configuration.remove("context_owner");
+        assert!(configuration_valid(&configuration, "sidebar"));
+        configuration.insert("unexpected".to_owned(), "value".to_owned());
+        assert!(!configuration_valid(&configuration, "sidebar"));
+    }
+
+    #[test]
+    fn grouped_tab_layout_prebinds_workspace_before_terminal_creation() {
+        let configuration = BTreeMap::from([
+            ("role".to_owned(), "sidebar".to_owned()),
+            ("session_id".to_owned(), "test-session-id".to_owned()),
+        ]);
+        let layout = bkpr::native_layout(
+            "file:/bkpr.wasm",
+            &configuration,
+            "Together",
+            "/same/repository",
+            20,
+            Some(("canonical-shared-workspace", "Together")),
+        )
+        .unwrap();
+        assert!(layout.contains("bkpr_workspace_id=\"canonical-shared-workspace\""));
+        assert!(layout.contains("bkpr_workspace_name=\"Together\""));
+        assert!(!layout.contains("context_owner"));
     }
 
     #[test]
@@ -3294,7 +3997,7 @@ mod tests {
         model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
         let workspace = model.panes[&1].workspace.clone();
         model.workspaces.get_mut(&workspace).unwrap().name = "Persistent label".to_owned();
-        assert!(!model.reconcile(&[tab(10, 0)], &PaneManifest::default()));
+        model.reconcile(&[tab(10, 0)], &PaneManifest::default());
         assert_eq!(model.panes[&1].workspace, workspace);
         assert_eq!(model.workspaces[&workspace].name, "Persistent label");
         model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![])]));

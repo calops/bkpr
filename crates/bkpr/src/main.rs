@@ -3,6 +3,7 @@ mod agent_relay;
 mod ci;
 mod claude;
 mod codex;
+mod context;
 mod launcher;
 mod omp;
 mod project;
@@ -36,6 +37,18 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Show this pane's current native session and workspace context.
+    Context {
+        /// Emit compact JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Publish the native owner's authenticated foreground context projection.
+    #[command(hide = true)]
+    ContextPublish {
+        #[arg(long)]
+        json: String,
+    },
     /// Inspect communication bridge readiness and retained messages.
     Bridge {
         #[command(subcommand)]
@@ -160,6 +173,19 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         None => launcher::run(cli.launch),
+        Some(Commands::Context { json }) => {
+            let value = context::current()?;
+            let mut stdout = io::stdout().lock();
+            if json {
+                serde_json::to_writer(&mut stdout, &value)?;
+            } else {
+                serde_json::to_writer_pretty(&mut stdout, &value)?;
+            }
+            writeln!(stdout)?;
+            stdout.flush()?;
+            Ok(())
+        }
+        Some(Commands::ContextPublish { json }) => context::publish(&json),
         Some(Commands::Bridge { command }) => {
             let (value, compact) = match command {
                 BridgeCommands::Status { json } => (relay::status()?, json),
