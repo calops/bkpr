@@ -827,6 +827,29 @@ mod tests {
 
     #[test]
     fn owner_lease_drop_invalidates_live_server_context_and_delayed_publications() -> Result<()> {
+        const ISOLATED: &str = "BKPR_TEST_OWNER_LEASE_DROP";
+        if std::env::var_os(ISOLATED).is_none() {
+            // flock leases follow the open file description across fork. Other
+            // tests spawning commands can inherit this fixture's lease until
+            // exec, so closing our File would not necessarily release it yet.
+            // Run the drop assertion without concurrent subprocess-spawning tests.
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "context::tests::owner_lease_drop_invalidates_live_server_context_and_delayed_publications",
+                    "--test-threads=1",
+                ])
+                .env(ISOLATED, "1")
+                .output()?;
+            assert!(
+                output.status.success(),
+                "isolated owner lease test failed ({}):\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return Ok(());
+        }
         let mut session = Session::new("Work")?;
         let _guard = session.guard();
         session.publish(1, vec![workspace("a", "A")], vec![pane("a", Some("agent"))])?;
