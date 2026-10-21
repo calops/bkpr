@@ -252,12 +252,13 @@ Use the devshell and incremental Cargo builds for iteration. The shell supplies 
 
 ```sh
 nix develop
-cargo build --locked -p bkpr
-cargo build --locked -p bkpr-zellij --target wasm32-wasip1
-cargo run --locked -p bkpr -- --session dev
+just build
+just run --session dev
 ```
 
-The devshell selects the debug WASM artifact and the pinned fork runtime. `cargo run` remains the normal launch path. Retain `target/` for incremental builds; do not use `nix build` for the edit/run loop. When changing Zellij itself, use the fork's devshell and Cargo, then select its debug executable with `--zellij ../bkpr-zellij/target/debug/zellij`. Start a fresh session after native changes: existing servers keep their original code.
+`just build` builds the debug launcher and WASI plugin together. `just run` performs that build before launching and selects the plugin from the same Cargo target directory, rather than reusing an unrelated `BKPR_PLUGIN` override. It forwards Bkpr arguments unchanged, including quoted session names and `--zellij` / `--plugin` overrides. `just` lists the available commands. Plain `cargo run` still works, but builds only the launcher; rebuild the WASI plugin separately when using it.
+
+The devshell supplies `just` and the pinned fork runtime. Retain `target/` for incremental builds; do not use `nix build` for the edit/run loop. `CARGO_TARGET_DIR` is respected for both builds and plugin selection. When changing Zellij itself, use the fork's devshell and Cargo, then run `just run --zellij ../bkpr-zellij/target/debug/zellij`. Start a fresh session to use native changes; existing servers keep their original code.
 
 ```sh
 # In the devshell:
