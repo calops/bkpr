@@ -824,6 +824,13 @@ fn hook_recovery_keeps_last_failure_and_private_log_pointer() {
         .perform(&as_request(
             &alice,
             "hook_diagnostic",
+            json!({"kind":"binding","state":"failed","detail":"native transport failed","log_path":log}),
+        ))
+        .unwrap();
+    broker
+        .perform(&as_request(
+            &alice,
+            "hook_diagnostic",
             json!({"state":"ready","detail":"native binding ready","log_path":log}),
         ))
         .unwrap();
@@ -833,6 +840,9 @@ fn hook_recovery_keeps_last_failure_and_private_log_pointer() {
     assert_eq!(hook["last_failure"]["state"], "failed");
     assert_eq!(hook["last_failure"]["detail"], "session binding failed");
     assert_eq!(hook["log_path"], json!(log));
+    let binding = &saved.agents[&alice.agent_id].diagnostics["binding"];
+    assert_eq!(binding["state"], "failed");
+    assert_eq!(binding["detail"], "native transport failed");
 }
 
 #[test]

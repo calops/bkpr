@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
@@ -28,26 +28,6 @@ pub fn wrapper(program: &Path, directory: &Path) -> Result<String> {
         crate::claude::shell_quote(program),
         crate::claude::shell_quote(directory),
     ))
-}
-
-fn real_omp(directory: &Path) -> Result<PathBuf> {
-    let wrapper = fs::canonicalize(directory.join("omp"))?;
-    for entry in env::split_paths(&env::var_os("PATH").unwrap_or_default()) {
-        let candidate = entry.join("omp");
-        if fs::metadata(&candidate)
-            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-            && let Ok(resolved) = fs::canonicalize(&candidate)
-            && resolved != wrapper
-        {
-            // Bare relative paths would cause Command to search PATH again.
-            return if candidate.is_absolute() {
-                Ok(candidate)
-            } else {
-                Ok(env::current_dir()?.join(candidate))
-            };
-        }
-    }
-    bail!("OMP is not installed on PATH outside the session wrapper")
 }
 
 fn check_arguments(arguments: &[OsString]) -> Result<()> {
@@ -125,14 +105,20 @@ fn extension_package(
     Ok(directory)
 }
 
-pub fn launch(directory: &Path, arguments: Vec<OsString>) -> Result<()> {
+pub fn launch(directory: Option<&Path>, arguments: Vec<OsString>) -> Result<()> {
     check_arguments(&arguments)?;
-    let executable = real_omp(directory)?;
+    let executable = crate::harness::resolve("omp", directory)?;
     let cwd = env::current_dir().context("locate OMP working directory")?;
     let program = env::current_exe().context("locate Bkpr MCP executable")?;
     let relay = relay::prepare("omp", &cwd)?;
-    let runtime = directory.parent().context("locate session runtime")?;
-    let package = extension_package(runtime, &program, &cwd, &relay)?;
+    let runtime = match directory {
+        Some(directory) => directory
+            .parent()
+            .context("locate session runtime")?
+            .to_path_buf(),
+        None => crate::launcher::runtime_root()?,
+    };
+    let package = extension_package(&runtime, &program, &cwd, &relay)?;
     let mut command = Command::new(executable);
     relay.apply(&mut command);
     command
@@ -170,6 +156,7 @@ pub fn launch(directory: &Path, arguments: Vec<OsString>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn trusted_extension_conflict_does_not_consume_prompt() {

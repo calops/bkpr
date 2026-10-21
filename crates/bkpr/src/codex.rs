@@ -1,13 +1,14 @@
-//! Launch-local Codex MCP and native, trust-gated queued notifications.
+//! Launch-local Codex MCP and exact native thread binding before the first turn.
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,9 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::{claude::shell_quote, relay};
+
+#[path = "codex_startup.rs"]
+mod startup;
 
 const IDENTITY_ENV: [&str; 4] = [
     "BKPR_RELAY_AGENT_ID",
@@ -38,25 +42,6 @@ pub fn wrapper(program: &Path, directory: &Path) -> Result<String> {
                 .context("Codex wrapper directory is not UTF-8")?
         ),
     ))
-}
-
-fn real_codex(directory: &Path) -> Result<PathBuf> {
-    let wrapper = fs::canonicalize(directory.join("codex"))?;
-    for entry in env::split_paths(&env::var_os("PATH").unwrap_or_default()) {
-        let candidate = entry.join("codex");
-        if fs::metadata(&candidate)
-            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-            && let Ok(resolved) = fs::canonicalize(&candidate)
-            && resolved != wrapper
-        {
-            return if candidate.is_absolute() {
-                Ok(candidate)
-            } else {
-                Ok(env::current_dir()?.join(candidate))
-            };
-        }
-    }
-    bail!("Codex is not installed on PATH outside the session wrapper")
 }
 
 struct LaunchPlan {
@@ -91,7 +76,7 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
                 bail!("Codex {option} conflicts with bkpr's launch-local native queue server")
             }
             "--dangerously-bypass-hook-trust" => {
-                bail!("bkpr's Codex hook requires normal hook trust; review it in /hooks")
+                bail!("bkpr preserves normal Codex hook trust; review user hooks in /hooks")
             }
             "-p" | "--profile" => {
                 bail!(
@@ -108,7 +93,6 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
                         .context("Codex --config requires key=value")?
                         .clone()
                 };
-                validate_override(&value)?;
                 plan.overrides.extend([OsString::from("-c"), value]);
             }
             "--enable" | "--disable" => {
@@ -147,7 +131,6 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
             }
             _ if option.starts_with("-c") && !option.starts_with("--") => {
                 let value = OsString::from(&argument[2..]);
-                validate_override(&value)?;
                 plan.overrides.extend([OsString::from("-c"), value]);
             }
             _ if option.starts_with("-p") && !option.starts_with("--") => {
@@ -184,35 +167,17 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
     Ok(plan)
 }
 
-fn validate_override(value: &std::ffi::OsStr) -> Result<()> {
-    let (key, _) = value
-        .to_str()
-        .context("Codex config override is not UTF-8")?
-        .split_once('=')
-        .context("Codex config override requires key=value")?;
-    let key: String = key
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '\'' && *c != '"')
-        .collect();
-    if key == "hooks" || key == "hooks.SessionStart" || key.starts_with("hooks.SessionStart.") {
-        bail!(
-            "a Codex CLI SessionStart override replaces bkpr's hook; keep additive user hooks in the Codex config file instead"
-        )
-    }
-    Ok(())
-}
-
-pub fn launch(directory: &Path, arguments: Vec<OsString>) -> Result<()> {
-    let executable = real_codex(directory)?;
+pub fn launch(directory: Option<&Path>, arguments: Vec<OsString>) -> Result<()> {
+    let executable = crate::harness::resolve("codex", directory)?;
     let plan = launch_plan(&arguments)?;
     if plan.passthrough {
         return Err(Command::new(executable).args(arguments).exec()).context("execute Codex");
     }
     let identity = relay::prepare("codex", &plan.cwd)?;
-    let program = env::current_exe().context("locate Codex MCP and hook executable")?;
+    let program = env::current_exe().context("locate Codex MCP executable")?;
     let program_string = program
         .to_str()
-        .context("Codex hook program path is not UTF-8")?;
+        .context("Codex MCP program path is not UTF-8")?;
     // Use a short, private runtime path even when the workspace/state path is long.
     // It deliberately outlives the terminal: Codex owns durable native queue state.
     let runtime = tempfile::Builder::new()
@@ -225,12 +190,12 @@ pub fn launch(directory: &Path, arguments: Vec<OsString>) -> Result<()> {
         socket.to_str().context("Codex socket path is not UTF-8")?
     );
     let log_path = runtime.path().join("server.log");
-    let hook_log_path = runtime.path().join("hook.jsonl");
-    OpenOptions::new()
+    let binding_log_path = runtime.path().join("binding.jsonl");
+    let binding_log = OpenOptions::new()
         .create_new(true)
         .write(true)
         .mode(0o600)
-        .open(&hook_log_path)?;
+        .open(&binding_log_path)?;
     let log = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -241,20 +206,13 @@ pub fn launch(directory: &Path, arguments: Vec<OsString>) -> Result<()> {
         serde_json::to_string(program_string)?,
         serde_json::to_string(&IDENTITY_ENV)?,
     );
-    let hook = format!(
-        "hooks.SessionStart=[{{hooks=[{{type=\"command\",command={},timeout=10}}]}}]",
-        serde_json::to_string(&format!("{} codex-hook", shell_quote(program_string)))?,
-    );
     let mut command = Command::new(&executable);
     identity.apply(&mut command);
     command
         .args(["app-server", "--listen", &endpoint])
         .args(&plan.overrides)
-        .args(["-c", &mcp, "-c", &hook])
+        .args(["-c", &mcp])
         .current_dir(&plan.cwd)
-        .env("BKPR_CODEX_ENDPOINT", &endpoint)
-        .env("BKPR_CODEX_PROGRAM", &executable)
-        .env("BKPR_CODEX_HOOK_LOG", &hook_log_path)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
@@ -290,6 +248,7 @@ pub fn launch(directory: &Path, arguments: Vec<OsString>) -> Result<()> {
             }
             thread::sleep(Duration::from_millis(50));
         }
+        validate_endpoint(&endpoint)?;
         // The server, not this launcher, owns the route after the TUI exits.
         relay::request_as(
             &identity.socket,
@@ -299,7 +258,7 @@ pub fn launch(directory: &Path, arguments: Vec<OsString>) -> Result<()> {
             json!({
                 "pid": server.id(),
                 "codex_log": log_path,
-                "hook_log": hook_log_path,
+                "binding_log": binding_log_path,
             }),
         )
         .context("lease the broker route to the Codex server")?;
@@ -317,7 +276,7 @@ pub fn launch(directory: &Path, arguments: Vec<OsString>) -> Result<()> {
             &json!({
                 "agent_id": identity.agent_id, "pid": server.id(), "endpoint": endpoint,
                 "program": executable, "log": log_path,
-                "hook_log": hook_log_path,
+                "binding_log": binding_log_path,
                 "process_start": process_start,
                 "relay_socket": identity.socket, "token": identity.token,
             }),
@@ -333,34 +292,116 @@ pub fn launch(directory: &Path, arguments: Vec<OsString>) -> Result<()> {
         return Err(error);
     }
     let runtime = runtime.keep();
-    eprintln!(
-        "bkpr: Codex requires hook trust. Review and trust the bkpr SessionStart hook in /hooks, then resume if its initial hook was skipped. Until then, peer messages remain in the durable broker inbox."
-    );
-    eprintln!(
-        "bkpr: Stop the native queue server when its broker inbox is empty: bkpr codex-stop --manifest {}",
-        shell_quote(&runtime.join("server.json").to_string_lossy())
-    );
-    eprintln!(
-        "bkpr: Private Codex hook diagnostics: {}",
-        hook_log_path.display()
-    );
-    let mut tui = Command::new(&executable);
-    identity.apply(&mut tui);
-    let error = tui
-        .args(["--remote", &endpoint])
-        .args(arguments)
-        .env("BKPR_CODEX_ENDPOINT", &endpoint)
-        .env("BKPR_CODEX_HOOK_LOG", &hook_log_path)
-        .env("BKPR_CODEX_PROGRAM", &executable)
-        .exec();
-    let _ = server.kill();
-    let _ = server.wait();
-    let _ = fs::remove_dir_all(&runtime);
-    Err(error).context("execute Codex TUI")
+    let proxy_socket = runtime.join("tui.sock");
+    let bound = AtomicBool::new(false);
+    let result = (|| -> Result<std::process::ExitStatus> {
+        let listener =
+            UnixListener::bind(&proxy_socket).context("open private Codex TUI transport")?;
+        let tui_endpoint = format!(
+            "unix://{}",
+            proxy_socket
+                .to_str()
+                .context("Codex TUI socket path is not UTF-8")?
+        );
+        eprintln!(
+            "bkpr: Stop the native queue server when its broker inbox is empty: bkpr codex-stop --manifest {}",
+            shell_quote(&runtime.join("server.json").to_string_lossy())
+        );
+        eprintln!(
+            "bkpr: Private Codex binding diagnostics: {}",
+            binding_log_path.display()
+        );
+        let mut tui = Command::new(&executable);
+        identity.apply(&mut tui);
+        // Codex owns foreground interrupts; the waiting transport must survive them.
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+            tui.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+                Ok(())
+            });
+        }
+        let tui = tui
+            .args(["--remote", &tui_endpoint])
+            .args(arguments)
+            .spawn()
+            .context("start Codex TUI")?;
+        let mut binding_log = binding_log;
+        startup::supervise(tui, listener, &socket, |method, session| {
+            relay::request_as(
+                &identity.socket,
+                &identity.agent_id,
+                &identity.token,
+                "bind_session",
+                json!({
+                    "session_id": session, "queue_endpoint": endpoint,
+                    "codex_program": executable,
+                }),
+            )
+            .context("bind the TUI-selected Codex native thread")?;
+            // Binding may already dispatch durable inbox messages. Preserve its
+            // owned server even if a later diagnostic write fails.
+            bound.store(true, Ordering::Release);
+            serde_json::to_writer(
+                &mut binding_log,
+                &json!({
+                    "state":"ready", "method":method, "session_id":session,
+                }),
+            )?;
+            writeln!(binding_log)?;
+            binding_log.flush()?;
+            binding_log.sync_data()?;
+            relay::request_as(
+                &identity.socket,
+                &identity.agent_id,
+                &identity.token,
+                "hook_diagnostic",
+                json!({
+                    "kind":"binding", "state":"ready",
+                    "detail":"TUI-selected native thread bound before its selection response",
+                    "log_path":binding_log_path,
+                }),
+            )
+            .context("record Codex native binding readiness")?;
+            Ok(())
+        })
+    })();
+    let _ = fs::remove_file(&proxy_socket);
+    if !bound.load(Ordering::Acquire) {
+        let _ = server.kill();
+        let _ = server.wait();
+    }
+    match result {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => std::process::exit(
+            status
+                .code()
+                .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)),
+        ),
+        Err(error) => {
+            let _ = record_hook_result(&binding_log_path, "native_binding", Some(&error));
+            let _ = relay::request_as(
+                &identity.socket,
+                &identity.agent_id,
+                &identity.token,
+                "hook_diagnostic",
+                json!({
+                    "kind":"binding", "state":"failed",
+                    "detail":"Native TUI binding failed; inspect the private binding log",
+                    "log_path":binding_log_path,
+                }),
+            );
+            Err(error).with_context(|| {
+                format!("Codex native binding; see {}", binding_log_path.display())
+            })
+        }
+    }
 }
 
-/// Only Codex's ordinary, user-trusted SessionStart hook maps the native thread.
-/// Nothing is written to stdout: transport metadata is not model context.
+/// LEGACY_COMPAT(next-major): running sessions still invoke their trusted
+/// SessionStart hook through the mutable launcher path. New launches use native responses.
 pub fn hook() -> Result<()> {
     let log_path = PathBuf::from(
         env::var_os("BKPR_CODEX_HOOK_LOG").context("Codex hook is missing its diagnostic log")?,
@@ -467,6 +508,7 @@ fn record_hook_result(path: &Path, stage: &str, error: Option<&anyhow::Error>) -
     Ok(())
 }
 
+// LEGACY_COMPAT(next-major): payload decoding for existing SessionStart hooks.
 fn hook_session(payload: &Value) -> Result<&str> {
     if payload
         .get("hook_event_name")
@@ -756,16 +798,22 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_transports_and_hook_replacements_are_rejected() {
+    fn conflicting_transports_and_trust_bypasses_are_rejected() {
         for values in [
             vec!["--remote", "unix:///other"],
             vec!["--no-daemon"],
             vec!["--dangerously-bypass-hook-trust"],
-            vec!["-c", "hooks.SessionStart=[]"],
-            vec!["--config=hooks.\"SessionStart\"=[]"],
             vec!["--profile", "other"],
         ] {
             assert!(launch_plan(&args(&values)).is_err(), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn user_session_start_hooks_remain_native_config_overrides() {
+        for value in ["hooks.SessionStart=[]", "hooks.\"SessionStart\"=[]"] {
+            let arguments = args(&["-c", value]);
+            assert_eq!(launch_plan(&arguments).unwrap().overrides, arguments);
         }
     }
 
@@ -777,6 +825,7 @@ mod tests {
         assert!(launch_plan(&args(&["exec", "prompt"])).is_err());
     }
 
+    // LEGACY_COMPAT(next-major): old sessions still call the hook handler.
     #[test]
     fn session_mapping_requires_the_native_start_event() {
         assert_eq!(
