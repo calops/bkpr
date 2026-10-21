@@ -42,12 +42,11 @@ pub fn run(options: Options) -> Result<()> {
     } else {
         executable(&options.zellij)?
     };
-    let plugin = plugin_path(options.plugin.clone(), &program)?;
     check_zellij(&zellij)?;
-    run_native(&options, &program, &zellij, &plugin)
+    run_native(&options, &program, &zellij)
 }
 
-fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -> Result<()> {
+fn run_native(options: &Options, program: &Path, zellij: &Path) -> Result<()> {
     // Capture the attaching terminal's source before setting the child-only
     // stable relay address. Unset/empty is intentional, never a server fallback.
     let agent_source = env::var_os("SSH_AUTH_SOCK");
@@ -63,10 +62,14 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
     let zellij_session = format!("bkpr-native-{identity_hash:016x}");
     let existing = session_exists(zellij, &config_dir, &socket_dir, &zellij_session)?;
     let session_context = crate::context::SessionBootstrap::prepare(&runtime, session, existing)
-        .context("initialize Bkpr session context; sessions from older builds need a fresh native session")?;
+        .context("initialize Bkpr session context")?;
     let config_path = config_dir.join("config.kdl");
     let layout_path = runtime.join("layout.kdl");
     if !existing {
+        let session_context = session_context
+            .as_ref()
+            .context("fresh native session has no context bootstrap")?;
+        let plugin = plugin_path(options.plugin.clone(), program)?;
         let sidebar_percent =
             bkpr::native_sidebar_percent(usize::from(options.sidebar_width), terminal_columns()?)
                 .context("terminal needs at least two columns for a sidebar and terminal pane")?;
@@ -154,10 +157,18 @@ fn run_native(options: &Options, program: &Path, zellij: &Path, plugin: &Path) -
     ] {
         client.env_remove(name);
     }
-    client
-        .env("BKPR_SESSION_ID", &session_context.session_id)
-        .env("BKPR_SESSION_NAME", &session_context.session_name)
-        .env("BKPR_NATIVE_CONTEXT", "1");
+    if let Some(context) = &session_context {
+        client
+            .env("BKPR_SESSION_ID", &context.session_id)
+            .env("BKPR_SESSION_NAME", &context.session_name)
+            .env("BKPR_NATIVE_CONTEXT", "1");
+    } else {
+        // LEGACY_COMPAT(next-major): attach without rewriting the old server's
+        // assets or claiming context it cannot publish. Remove next major.
+        eprintln!(
+            "bkpr: attaching to a legacy session; workspace context requires a fresh session"
+        );
+    }
     client.env("SSH_AUTH_SOCK", agent_lease.socket());
     if !existing {
         let bin = runtime.join("bin");
