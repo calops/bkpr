@@ -889,13 +889,15 @@ mod tests {
             relay::WakeOutcome::Failed(_)
         ));
 
-        let program = directory.path().join("exit-after-spawn");
-        fs::write(&program, "#!/bin/sh\nexit 9\n").unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(matches!(
-            wake(&program, &endpoint, "thread", "notification"),
-            relay::WakeOutcome::Unknown(_)
-        ));
+        // Reuse the test executable: libtest rejects wake's --remote option
+        // after a successful spawn. Creating a script here races unrelated
+        // subprocess forks inheriting its writable FD, causing ETXTBSY on exec.
+        let program = std::env::current_exe().unwrap();
+        let outcome = wake(&program, &endpoint, "thread", "notification");
+        assert!(
+            matches!(outcome, relay::WakeOutcome::Unknown(_)),
+            "{outcome:?}"
+        );
     }
 
     #[cfg(target_os = "linux")]
