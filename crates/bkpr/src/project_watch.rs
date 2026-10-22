@@ -28,6 +28,18 @@ pub(crate) fn send_pipe(zellij_session: &str, pipe: &str, json: &str) -> Result<
     }
 }
 
+/// A bounded subprocess exceeded its deadline (its effect may still have happened).
+#[derive(Debug)]
+pub(crate) struct TimedOut(pub(crate) String);
+
+impl std::fmt::Display for TimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "subprocess {} timed out", self.0)
+    }
+}
+
+impl std::error::Error for TimedOut {}
+
 pub(crate) fn serve(json: &str, listener_fd: i32) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -493,7 +505,7 @@ mod linux {
             let mut scratch = [0u8; 8192];
             loop {
                 if Instant::now() >= deadline {
-                    bail!("subprocess {:?} timed out", command.get_program());
+                    return Err(TimedOut(format!("{:?}", command.get_program())).into());
                 }
                 if let Some(writer) = stdin.as_mut() {
                     if remaining.is_empty() {
