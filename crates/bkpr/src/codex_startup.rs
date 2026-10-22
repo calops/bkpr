@@ -583,6 +583,29 @@ mod tests {
     }
 
     #[test]
+    fn rebinds_on_selection_after_first() -> Result<()> {
+        let mut state = Selections::default();
+        state.request(&json!({"id":1,"method":"thread/start","params":{"threadSource":"user"}}))?;
+        assert_eq!(
+            state.response(&json!({"id":1,"result":{"thread":{"id":"first"}}}))?,
+            Some(("thread/start", "first".to_owned()))
+        );
+        // No selection is pending now, so model output is not parsed.
+        assert!(state.pending.is_empty());
+        state.request(&json!({"id":2,"method":"thread/resume","params":{"threadId":"resumed"}}))?;
+        assert_eq!(
+            state.response(&json!({"id":2,"result":{"thread":{"id":"resumed"}}}))?,
+            Some(("thread/resume", "resumed".to_owned()))
+        );
+        state.request(&json!({"id":3,"method":"thread/start","params":{"threadSource":"user"}}))?;
+        assert_eq!(
+            state.response(&json!({"id":3,"result":{"thread":{"id":"fresh"}}}))?,
+            Some(("thread/start", "fresh".to_owned()))
+        );
+        Ok(())
+    }
+
+    #[test]
     fn stale_selection_cannot_overwrite_newer_selection() -> Result<()> {
         let mut state = Selections::default();
         state.request(&json!({"id":1,"method":"thread/resume","params":{"threadId":"old"}}))?;
