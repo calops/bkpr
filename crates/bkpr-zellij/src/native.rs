@@ -25,6 +25,8 @@ pub const STATE: &str = "bkpr-native-state";
 pub const QUERY: &str = "bkpr-native-query";
 pub const PROJECT: &str = "bkpr-native-project";
 pub const REFRESH_CI: &str = "bkpr-native-refresh-ci";
+/// CLI pipe from `bkpr restore-pane`: `{"key": <leaf key>, "pane_id": "terminal_N"}`.
+pub const RESTORE_NAME: &str = "bkpr-restore-name";
 #[derive(Serialize, Deserialize)]
 struct NativeCiRefresh {
     client_id: u16,
@@ -341,6 +343,59 @@ enum RecoveryDecision {
 /// First retry delay after a failed, refused or lost update; doubles up to the cap.
 const RECOVERY_RETRY_MILLIS: u64 = 1_000;
 const RECOVERY_RETRY_MAX_MILLIS: u64 = 30_000;
+/// Longest a restored session's first update waits for its expected panes.
+const RESTORE_BASELINE_MILLIS: u64 = 10_000;
+
+/// Restore-time sticky names from the startup owner configuration. Creation data, not
+/// identity; persisted in the shared model so per-client replicas apply each name once.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+struct RestoreNames {
+    /// Unclaimed sticky names by restore-layout leaf key.
+    names: BTreeMap<String, String>,
+    /// Leaf keys already claimed by their pane; later claims are ignored.
+    consumed: BTreeSet<String>,
+    /// Claimed names whose terminal has not reached the model yet.
+    pending: BTreeMap<u32, String>,
+}
+
+#[derive(Deserialize)]
+struct RestoreNameRequest {
+    key: String,
+    pane_id: String,
+}
+
+/// Strip the restore-time owner keys (`restore_names`, a JSON `{leaf key: name}` object, and
+/// `restore_expected_panes`, a decimal count) so validation, the storage identity and the
+/// sidebar configurations derived from the owner's stay those of an ordinary session.
+fn take_restore_seed(
+    configuration: &mut BTreeMap<String, String>,
+) -> Result<(BTreeMap<String, String>, Option<usize>), String> {
+    let names = match configuration.remove("restore_names") {
+        None => BTreeMap::new(),
+        Some(json) => serde_json::from_str(&json)
+            .map_err(|error| format!("Invalid restore_names owner configuration: {error}"))?,
+    };
+    let expected = match configuration.remove("restore_expected_panes") {
+        None => None,
+        Some(count) => Some(count.parse::<usize>().map_err(|error| {
+            format!("Invalid restore_expected_panes owner configuration: {error}")
+        })?),
+    };
+    Ok((names, expected))
+}
+
+/// Acknowledge CLI pipe input. The host shim is a no-op off WASM, so tests record it.
+fn acknowledge_cli(source: &str) {
+    #[cfg(test)]
+    ACKNOWLEDGED_CLI.with(|acknowledged| acknowledged.borrow_mut().push(source.to_owned()));
+    unblock_cli_pipe_input(source);
+}
+
+#[cfg(test)]
+thread_local! {
+    static ACKNOWLEDGED_CLI: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 
 /// Owner-side write cadence for the session recovery record. Persisted in the shared
 /// model so every per-client owner replica observes one sequence and one in-flight helper.
@@ -369,6 +424,12 @@ struct RecoveryGate {
     backoff: u64,
     /// The session has no claimed record (it predates recovery); stop sending.
     disabled: bool,
+    /// Restored sessions: terminal panes the restore layout spawns. The first update waits
+    /// for them (or `RESTORE_BASELINE_MILLIS`) so a partial spawn cannot shrink the record.
+    /// Cleared by the first acknowledged update.
+    restore_expected: Option<usize>,
+    /// Millis of the first offered topology while `restore_expected` is set.
+    restore_since: Option<u64>,
 }
 
 impl RecoveryGate {
@@ -384,6 +445,9 @@ impl RecoveryGate {
                 self.in_flight_since.saturating_add(RECOVERY_RESULT_MILLIS),
             );
         }
+        let restore_since = self
+            .restore_expected
+            .map(|_| *self.restore_since.get_or_insert(now));
         let (session_name, session_id) = session;
         let unchanged = self.retry_at.is_none()
             && self.acknowledged.as_ref().is_some_and(|acknowledged| {
@@ -417,6 +481,11 @@ impl RecoveryGate {
         } else {
             self.held_since = None;
         }
+        if let (Some(expected), Some(since)) = (self.restore_expected, restore_since)
+            && next.keys.len() < expected
+        {
+            due = due.max(since.saturating_add(RESTORE_BASELINE_MILLIS));
+        }
         if now < due {
             return RecoveryDecision::WaitUntil(due);
         }
@@ -445,6 +514,8 @@ impl RecoveryGate {
             Some(0) => {
                 self.acknowledged = self.pending.take();
                 self.acknowledged_keys = std::mem::take(&mut self.pending_keys);
+                self.restore_expected = None;
+                self.restore_since = None;
                 self.held_since = None;
                 self.retry_at = None;
                 self.backoff = 0;
@@ -882,6 +953,8 @@ struct Model {
     recovery: RecoveryGate,
     #[serde(default)]
     recovery_error: Option<String>,
+    #[serde(default)]
+    restore: RestoreNames,
 }
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -1026,7 +1099,45 @@ impl Model {
             project_error: None,
             recovery: RecoveryGate::default(),
             recovery_error: None,
+            restore: RestoreNames::default(),
         }
+    }
+
+    /// Claim `key`'s sticky name for terminal `pane`; false for unknown or consumed keys.
+    fn restore_name(&mut self, key: &str, pane: u32) -> bool {
+        let Some(name) = self.restore.names.remove(key) else {
+            return false;
+        };
+        self.restore.consumed.insert(key.to_owned());
+        self.restore.pending.insert(pane, name);
+        true
+    }
+
+    /// Apply claimed names to terminals now in the model; returns them for native renaming.
+    /// Claims for terminals that closed before arriving are dropped.
+    fn apply_restore_names(&mut self) -> Vec<(u32, String)> {
+        let closed = &self.closed_panes;
+        self.restore.pending.retain(|id, _| !closed.contains(id));
+        let ready: Vec<_> = self
+            .restore
+            .pending
+            .keys()
+            .filter(|id| self.panes.contains_key(id))
+            .copied()
+            .collect();
+        let mut applied = Vec::new();
+        for id in ready {
+            let name = self
+                .restore
+                .pending
+                .remove(&id)
+                .expect("pending restore name");
+            let pane = self.panes.get_mut(&id).expect("restored terminal");
+            pane.name = name.clone();
+            pane.renamed = true;
+            applied.push((id, name));
+        }
+        applied
     }
 
     fn workspace(&mut self, name: String) -> String {
@@ -2014,6 +2125,8 @@ impl Owner {
         configuration.remove("caller_cwd");
         configuration.remove("mode_info_format");
         configuration.remove("sidebar_bootstrap");
+        // Restore-time creation data; the model seeds from it below.
+        let restore_seed = take_restore_seed(&mut configuration);
         let ids = get_plugin_ids();
         self.client_id = ids.client_id;
         self.id = ids.plugin_id;
@@ -2060,6 +2173,13 @@ impl Owner {
             ));
             return;
         }
+        let (restore_names, restore_expected) = match restore_seed {
+            Ok(seed) => seed,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
         let pid = ids.zellij_pid;
         let identity = serde_json::to_vec(&configuration).expect("serializing owner configuration");
         let hash = identity.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
@@ -2075,7 +2195,11 @@ impl Owner {
                 _ => self.error = Some("Native metadata cache is corrupt or has a conflicting identity; refusing to reset labels".to_owned()),
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.model = Some(Model::new(configuration.clone(), format!("native:{pid}:{hash:016x}")));
+                let mut model = Model::new(configuration.clone(), format!("native:{pid}:{hash:016x}"));
+                // Only a new model is seeded: an existing one already holds the claims.
+                model.restore.names = restore_names;
+                model.recovery.restore_expected = restore_expected;
+                self.model = Some(model);
             }
             Err(error) => self.error = Some(format!("Cannot recover native metadata: {error}")),
         }
@@ -2551,6 +2675,10 @@ impl Owner {
         }
         let generation = model.agent_generation;
         let mut changed = model.reconcile_topology(&tabs, &manifest);
+        for (id, name) in model.apply_restore_names() {
+            rename_terminal_pane(id, &name);
+            changed = true;
+        }
         let refresh_metadata = std::mem::take(&mut self.refresh_metadata);
         let metadata: Vec<_> = model
             .panes
@@ -3288,6 +3416,46 @@ impl Owner {
     }
 
     pub fn pipe(&mut self, message: PipeMessage) -> bool {
+        if message.name == RESTORE_NAME {
+            let PipeSource::Cli(source) = &message.source else {
+                return false;
+            };
+            // Restored panes start before an authorized frontend grants the owner;
+            // replaying the queue acknowledges the input then.
+            if !self.granted {
+                if self.queued.len() < 128 {
+                    self.queued.push(message);
+                } else {
+                    acknowledge_cli(source);
+                }
+                return false;
+            }
+            acknowledge_cli(source);
+            let Some(request) = message
+                .payload
+                .as_deref()
+                .filter(|payload| payload.len() <= MAX_MESSAGE_BYTES)
+                .and_then(|payload| serde_json::from_str::<RestoreNameRequest>(payload).ok())
+            else {
+                return false;
+            };
+            let Some(id) = terminal_id(&request.pane_id) else {
+                return false;
+            };
+            self.recover();
+            let Some(model) = self.model.as_mut() else {
+                return false;
+            };
+            if !model.restore_name(&request.key, id) {
+                return false;
+            }
+            for (id, name) in model.apply_restore_names() {
+                rename_terminal_pane(id, &name);
+            }
+            model.revision += 1;
+            self.publish();
+            return false;
+        }
         if message.name == REFRESH_CI {
             let PipeSource::Plugin(source) = message.source else {
                 return false;
@@ -6729,9 +6897,12 @@ mod tests {
         let object = value.as_object_mut().unwrap();
         object.remove("recovery");
         object.remove("recovery_error");
+        object.remove("restore");
         let decoded = Model::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
         assert_eq!(decoded.recovery.sequence, 0);
         assert!(decoded.recovery_error.is_none());
+        assert_eq!(decoded.restore, RestoreNames::default());
+        assert_eq!(decoded.recovery.restore_expected, None);
         let error = Model {
             recovery_error: Some("Session recovery update failed: disk full".to_owned()),
             ..model()
@@ -6740,5 +6911,243 @@ mod tests {
             error.snapshot(None, 0).error.as_deref(),
             Some("Session recovery update failed: disk full")
         );
+    }
+
+    #[test]
+    fn restore_keys_are_stripped_before_identity() {
+        let ordinary = BTreeMap::from([
+            ("role".to_owned(), "native-owner".to_owned()),
+            ("session".to_owned(), "test".to_owned()),
+            ("session_id".to_owned(), "test-session-id".to_owned()),
+            ("context_owner".to_owned(), "private-test-owner".to_owned()),
+            ("program".to_owned(), "/bin/bkpr".to_owned()),
+            ("initial_cwd".to_owned(), "/work".to_owned()),
+            ("plugin_url".to_owned(), "file:/bkpr.wasm".to_owned()),
+            ("sidebar_width".to_owned(), "28".to_owned()),
+        ]);
+        let mut restored = ordinary.clone();
+        restored.insert(
+            "restore_names".to_owned(),
+            r#"{"w0t0p1":"Build \"server\""}"#.to_owned(),
+        );
+        restored.insert("restore_expected_panes".to_owned(), "3".to_owned());
+        let (names, expected) = take_restore_seed(&mut restored).unwrap();
+        assert_eq!(restored, ordinary);
+        assert!(configuration_valid(&restored, "native-owner"));
+        assert_eq!(
+            names,
+            BTreeMap::from([("w0t0p1".to_owned(), r#"Build "server""#.to_owned())])
+        );
+        assert_eq!(expected, Some(3));
+        // An ordinary session has neither key.
+        let mut plain = ordinary.clone();
+        assert_eq!(
+            take_restore_seed(&mut plain).unwrap(),
+            (BTreeMap::new(), None)
+        );
+        assert_eq!(plain, ordinary);
+        for (key, value) in [
+            ("restore_names", "[1]"),
+            ("restore_names", "{\"k\":1}"),
+            ("restore_expected_panes", "-1"),
+            ("restore_expected_panes", "many"),
+        ] {
+            let mut malformed = ordinary.clone();
+            malformed.insert(key.to_owned(), value.to_owned());
+            assert!(take_restore_seed(&mut malformed).is_err(), "{key}={value}");
+        }
+    }
+
+    #[test]
+    fn restore_name_pipe_applies_once() {
+        let directory = std::env::temp_dir().join(format!(
+            "bkpr-native-restore-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1), pane(2)])]));
+        model.restore.names = BTreeMap::from([
+            ("w0t0p0".to_owned(), "Sticky one".to_owned()),
+            ("w0t0p1".to_owned(), "Sticky two".to_owned()),
+        ]);
+        let mut owner = Owner {
+            configuration: model.configuration.clone(),
+            model: Some(model),
+            storage: directory.join("owner.json"),
+            granted: true,
+            ..Owner::default()
+        };
+        owner.save();
+        let message = |source: &str, payload: &str| PipeMessage {
+            source: PipeSource::Cli(source.to_owned()),
+            name: RESTORE_NAME.to_owned(),
+            payload: Some(payload.to_owned()),
+            args: BTreeMap::new(),
+            is_private: false,
+        };
+        let acknowledged = || ACKNOWLEDGED_CLI.with(|acknowledged| acknowledged.take());
+        let pane = |owner: &Owner, id: u32| owner.model.as_ref().unwrap().panes[&id].clone();
+        acknowledged();
+
+        owner.pipe(message(
+            "first",
+            r#"{"key":"w0t0p0","pane_id":"terminal_1"}"#,
+        ));
+        assert_eq!(acknowledged(), ["first"]);
+        assert_eq!(pane(&owner, 1).name, "Sticky one");
+        assert!(pane(&owner, 1).renamed);
+        let restore = owner.model.as_ref().unwrap().restore.clone();
+        assert!(restore.consumed.contains("w0t0p0"));
+        assert!(!restore.names.contains_key("w0t0p0"));
+
+        // A consumed key is ignored, even for another terminal.
+        owner.pipe(message(
+            "again",
+            r#"{"key":"w0t0p0","pane_id":"terminal_2"}"#,
+        ));
+        assert_eq!(acknowledged(), ["again"]);
+        assert!(!pane(&owner, 2).renamed);
+
+        // Unknown keys and malformed payloads are acknowledged and ignored.
+        owner.pipe(message(
+            "unknown",
+            r#"{"key":"w9t9p9","pane_id":"terminal_2"}"#,
+        ));
+        owner.pipe(message("malformed", "{"));
+        owner.pipe(message(
+            "bad-pane",
+            r#"{"key":"w0t0p1","pane_id":"plugin_2"}"#,
+        ));
+        assert_eq!(acknowledged(), ["unknown", "malformed", "bad-pane"]);
+        assert!(!pane(&owner, 2).renamed);
+        assert!(
+            owner
+                .model
+                .as_ref()
+                .unwrap()
+                .restore
+                .names
+                .contains_key("w0t0p1")
+        );
+
+        // Before the owner is granted, input is queued and acknowledged on replay.
+        owner.granted = false;
+        owner.pipe(message(
+            "early",
+            r#"{"key":"w0t0p1","pane_id":"terminal_2"}"#,
+        ));
+        assert!(acknowledged().is_empty());
+        owner.granted = true;
+        for queued in std::mem::take(&mut owner.queued) {
+            owner.pipe(queued);
+        }
+        assert_eq!(acknowledged(), ["early"]);
+        assert_eq!(pane(&owner, 2).name, "Sticky two");
+
+        // The claim is persisted for the other owner replicas.
+        let mut replica = Owner {
+            configuration: owner.configuration.clone(),
+            storage: owner.storage.clone(),
+            ..Owner::default()
+        };
+        replica.recover_model();
+        assert!(replica.model.unwrap().restore.consumed.contains("w0t0p0"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn restore_name_waits_for_its_terminal() {
+        let mut model = model();
+        model.restore.names = BTreeMap::from([("w0t0p0".to_owned(), "Late".to_owned())]);
+        assert!(model.restore_name("w0t0p0", 1));
+        assert!(!model.restore_name("w0t0p0", 1));
+        assert!(model.apply_restore_names().is_empty());
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
+        assert_eq!(model.apply_restore_names(), [(1, "Late".to_owned())]);
+        assert_eq!(model.panes[&1].name, "Late");
+        assert!(model.panes[&1].renamed);
+        assert!(model.restore.pending.is_empty());
+        // A later native title does not replace the restored name.
+        let mut titled = pane(1);
+        titled.title = "vim".to_owned();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![titled])]));
+        assert_eq!(model.panes[&1].name, "Late");
+        // A claim for a terminal that closed first is dropped.
+        model
+            .restore
+            .names
+            .insert("w0t0p1".to_owned(), "Gone".to_owned());
+        model.closed_panes.insert(7);
+        assert!(model.restore_name("w0t0p1", 7));
+        assert!(model.apply_restore_names().is_empty());
+        assert!(model.restore.pending.is_empty());
+    }
+
+    #[test]
+    fn restore_baseline_waits_for_expected_panes() {
+        let mut gate = RecoveryGate {
+            restore_expected: Some(3),
+            ..RecoveryGate::default()
+        };
+        let deadline = 1_000 + RESTORE_BASELINE_MILLIS;
+        assert_eq!(
+            gate.offer(recovery_view(&[(1, None)]), 1_000, SESSION),
+            RecoveryDecision::WaitUntil(deadline)
+        );
+        assert_eq!(
+            gate.offer(recovery_view(&[(1, None), (2, None)]), 2_000, SESSION),
+            RecoveryDecision::WaitUntil(deadline)
+        );
+        // The full restore is recorded as soon as it is present.
+        let update = sent(gate.offer(
+            recovery_view(&[(1, None), (2, None), (3, None)]),
+            3_000,
+            SESSION,
+        ));
+        assert!(gate.finish(update.sequence, Some(0), 3_000));
+        assert_eq!(gate.restore_expected, None);
+        // Afterwards behavior is unchanged: removals wait out only the ordinary grace.
+        assert_eq!(
+            gate.offer(recovery_view(&[(1, None)]), 20_000, SESSION),
+            RecoveryDecision::WaitUntil(20_000 + RECOVERY_REMOVAL_GRACE_MILLIS)
+        );
+
+        // A restore that never fills up is recorded after the baseline deadline.
+        let mut gate = RecoveryGate {
+            restore_expected: Some(3),
+            ..RecoveryGate::default()
+        };
+        // An empty topology (before adoption) already starts the clock.
+        assert_eq!(
+            gate.offer(
+                RecoveryView {
+                    workspaces: Vec::new(),
+                    keys: BTreeMap::new(),
+                },
+                1_000,
+                SESSION
+            ),
+            RecoveryDecision::Unchanged
+        );
+        assert_eq!(
+            gate.offer(recovery_view(&[(1, None)]), 5_000, SESSION),
+            RecoveryDecision::WaitUntil(deadline)
+        );
+        let update = sent(gate.offer(recovery_view(&[(1, None)]), deadline, SESSION));
+        assert_eq!(update.sequence, 1);
+        // A failed first write keeps the baseline; its deadline has already passed.
+        assert!(gate.finish(1, Some(1), deadline));
+        assert_eq!(gate.restore_expected, Some(3));
+        let retry = gate.retry_at.unwrap();
+        sent(gate.offer(recovery_view(&[(1, None)]), retry, SESSION));
+
+        // Ordinary sessions send their first update immediately.
+        let mut gate = RecoveryGate::default();
+        sent(gate.offer(recovery_view(&[(1, None)]), 1_000, SESSION));
     }
 }
