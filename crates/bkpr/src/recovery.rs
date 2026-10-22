@@ -1,0 +1,345 @@
+//! Durable session-recovery records under `$XDG_STATE_HOME/bkpr/sessions/<hash>/recovery.json`.
+//!
+//! Only the launcher claims a record (`claim`); the native-owner plugin updates it through
+//! `bkpr session-record`. An update is accepted only from the claimed `session_id` with a
+//! non-decreasing sequence, so stale or foreign plugins can never overwrite a newer record.
+//! Uses `flock` and Unix file modes, like the other state stores, so it is not Linux-gated.
+
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Read, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, Result, bail};
+use bkpr::MAX_MESSAGE_BYTES;
+use bkpr::recovery_contract::{RECOVERY_VERSION, RecoveryRecord, RecoveryUpdate};
+
+const FILE_NAME: &str = "recovery.json";
+const MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// No record is claimed for this session (it predates recovery or was never launched
+/// through the launcher). `bkpr session-record` maps it to exit code 3 so a reloaded
+/// plugin stays silent.
+#[derive(Debug)]
+pub(crate) struct Unclaimed;
+
+impl std::fmt::Display for Unclaimed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("session recovery is not claimed for this session")
+    }
+}
+
+impl std::error::Error for Unclaimed {}
+
+fn state_root() -> Result<PathBuf> {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|home| home.join(".local/state"))
+        })
+        .context("neither XDG_STATE_HOME nor HOME is an absolute path")
+}
+
+fn session_directory(root: &Path, session_name: &str) -> PathBuf {
+    let hash = session_name
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+    root.join("bkpr/sessions").join(format!("{hash:016x}"))
+}
+
+// Consumed by the launcher once restore lands.
+#[allow(dead_code)]
+pub(crate) fn record_path(session_name: &str) -> Result<PathBuf> {
+    Ok(session_directory(&state_root()?, session_name).join(FILE_NAME))
+}
+
+// Consumed by the launcher once restore lands.
+#[allow(dead_code)]
+pub(crate) fn load(session_name: &str) -> Result<Option<RecoveryRecord>> {
+    read_record(&session_directory(&state_root()?, session_name).join(FILE_NAME))
+}
+
+/// Launcher-only: make `session_id` the sole accepted writer, keeping `workspaces`
+/// (restore) or clearing them (fresh/overwrite).
+// Consumed by the launcher once restore lands.
+#[allow(dead_code)]
+pub(crate) fn claim(
+    session_name: &str,
+    session_id: &str,
+    keep: Option<&RecoveryRecord>,
+) -> Result<()> {
+    claim_in(&state_root()?, session_name, session_id, keep)
+}
+
+pub(crate) fn record(json: &str) -> Result<()> {
+    record_in(&state_root()?, json)
+}
+
+fn claim_in(
+    root: &Path,
+    session_name: &str,
+    session_id: &str,
+    keep: Option<&RecoveryRecord>,
+) -> Result<()> {
+    let directory = session_directory(root, session_name);
+    fs::create_dir_all(
+        directory
+            .parent()
+            .context("session directory has no parent")?,
+    )?;
+    crate::launcher::private_directory(&directory)?;
+    let _lock = lock(&directory)?;
+    write_record(
+        &directory,
+        &RecoveryRecord {
+            version: RECOVERY_VERSION,
+            session_name: session_name.to_owned(),
+            session_id: session_id.to_owned(),
+            sequence: 0,
+            written_by: env!("CARGO_PKG_VERSION").to_owned(),
+            updated_at_millis: now_millis(),
+            workspaces: keep
+                .map(|record| record.workspaces.clone())
+                .unwrap_or_default(),
+        },
+    )
+}
+
+fn record_in(root: &Path, json: &str) -> Result<()> {
+    if json.len() > MAX_MESSAGE_BYTES {
+        bail!("recovery update exceeds {MAX_MESSAGE_BYTES} bytes");
+    }
+    let update: RecoveryUpdate = serde_json::from_str(json).context("parse recovery update")?;
+    let directory = session_directory(root, &update.session_name);
+    // Never create state for an unclaimed session.
+    if !directory.is_dir() {
+        return Err(Unclaimed.into());
+    }
+    let _lock = lock(&directory)?;
+    let Some(current) = read_record(&directory.join(FILE_NAME))? else {
+        return Err(Unclaimed.into());
+    };
+    if current.session_id != update.session_id {
+        bail!(
+            "recovery record is owned by session {}, not {}",
+            current.session_id,
+            update.session_id
+        );
+    }
+    if update.sequence < current.sequence {
+        bail!(
+            "stale recovery update {} is older than {}",
+            update.sequence,
+            current.sequence
+        );
+    }
+    if update.sequence == current.sequence {
+        return Ok(());
+    }
+    write_record(
+        &directory,
+        &RecoveryRecord {
+            version: RECOVERY_VERSION,
+            session_name: update.session_name,
+            session_id: update.session_id,
+            sequence: update.sequence,
+            written_by: env!("CARGO_PKG_VERSION").to_owned(),
+            updated_at_millis: now_millis(),
+            workspaces: update.workspaces,
+        },
+    )
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+fn lock(directory: &Path) -> Result<File> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(directory.join("lock"))?;
+    // SAFETY: the descriptor is owned by `file` for the duration of the call.
+    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&file), libc::LOCK_EX) } == -1 {
+        return Err(std::io::Error::last_os_error()).context("lock recovery record");
+    }
+    Ok(file)
+}
+
+fn read_record(path: &Path) -> Result<Option<RecoveryRecord>> {
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("open {}", path.display())),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } {
+        bail!("{} is not a current-user-owned file", path.display());
+    }
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(MAX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_BYTES {
+        bail!("{} exceeds {MAX_BYTES} bytes", path.display());
+    }
+    Ok(Some(
+        RecoveryRecord::decode(&bytes).with_context(|| path.display().to_string())?,
+    ))
+}
+
+/// Tempfile, fsync, rename, then fsync the directory. Caller holds the lock.
+fn write_record(directory: &Path, record: &RecoveryRecord) -> Result<()> {
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    serde_json::to_writer(temporary.as_file_mut(), record)?;
+    temporary.as_file_mut().flush()?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(directory.join(FILE_NAME))?;
+    File::open(directory)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bkpr::recovery_contract::{RecoveryPane, RecoveryTab, RecoveryWorkspace, SplitNode};
+    use std::os::unix::fs::PermissionsExt;
+
+    fn workspaces() -> Vec<RecoveryWorkspace> {
+        vec![RecoveryWorkspace {
+            name: "w".into(),
+            tabs: vec![RecoveryTab {
+                name: "t".into(),
+                focused: true,
+                layout: SplitNode::Pane {
+                    pane: RecoveryPane {
+                        cwd: Some("/tmp".into()),
+                        name: "p".into(),
+                        renamed: false,
+                        harness: None,
+                        agent_id: None,
+                        focused: true,
+                    },
+                },
+            }],
+        }]
+    }
+
+    fn update(session_id: &str, sequence: u64) -> String {
+        serde_json::to_string(&RecoveryUpdate {
+            session_name: "main".into(),
+            session_id: session_id.into(),
+            sequence,
+            workspaces: workspaces(),
+        })
+        .unwrap()
+    }
+
+    fn file(root: &Path) -> PathBuf {
+        session_directory(root, "main").join(FILE_NAME)
+    }
+
+    fn loaded(root: &Path) -> Option<RecoveryRecord> {
+        read_record(&file(root)).unwrap()
+    }
+
+    #[test]
+    fn claim_then_update_writes_atomically() {
+        let root = tempfile::tempdir().unwrap();
+        claim_in(root.path(), "main", "s1", None).unwrap();
+        record_in(root.path(), &update("s1", 1)).unwrap();
+        let record = loaded(root.path()).unwrap();
+        assert_eq!(record.sequence, 1);
+        assert_eq!(record.workspaces, workspaces());
+        assert_eq!(record.written_by, env!("CARGO_PKG_VERSION"));
+        let mode = fs::metadata(file(root.path()))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let mode = fs::metadata(session_directory(root.path(), "main"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
+    fn foreign_owner_update_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        claim_in(root.path(), "main", "s2", None).unwrap();
+        let before = fs::read(file(root.path())).unwrap();
+        let error = record_in(root.path(), &update("s1", 1)).unwrap_err();
+        assert!(error.downcast_ref::<Unclaimed>().is_none());
+        assert_eq!(fs::read(file(root.path())).unwrap(), before);
+    }
+
+    #[test]
+    fn stale_sequence_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        claim_in(root.path(), "main", "s1", None).unwrap();
+        record_in(root.path(), &update("s1", 5)).unwrap();
+        assert!(record_in(root.path(), &update("s1", 4)).is_err());
+        record_in(root.path(), &update("s1", 5)).unwrap();
+        assert_eq!(loaded(root.path()).unwrap().sequence, 5);
+    }
+
+    #[test]
+    fn unclaimed_update_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let error = record_in(root.path(), &update("s1", 1)).unwrap_err();
+        assert!(error.downcast_ref::<Unclaimed>().is_some());
+        // No state is created for an unclaimed session.
+        assert!(!session_directory(root.path(), "main").exists());
+    }
+
+    #[test]
+    fn claim_keep_preserves_workspaces() {
+        let root = tempfile::tempdir().unwrap();
+        claim_in(root.path(), "main", "s1", None).unwrap();
+        record_in(root.path(), &update("s1", 7)).unwrap();
+        let old = loaded(root.path()).unwrap();
+        claim_in(root.path(), "main", "s3", Some(&old)).unwrap();
+        let record = loaded(root.path()).unwrap();
+        assert_eq!(record.session_id, "s3");
+        assert_eq!(record.sequence, 0);
+        assert_eq!(record.workspaces, workspaces());
+        claim_in(root.path(), "main", "s4", None).unwrap();
+        assert!(loaded(root.path()).unwrap().workspaces.is_empty());
+    }
+
+    #[test]
+    fn load_future_version_errors_without_touching_file() {
+        let root = tempfile::tempdir().unwrap();
+        claim_in(root.path(), "main", "s1", None).unwrap();
+        let future = br#"{"version":99,"anything":true}"#;
+        fs::write(file(root.path()), future).unwrap();
+        assert!(read_record(&file(root.path())).is_err());
+        assert!(record_in(root.path(), &update("s1", 1)).is_err());
+        assert_eq!(fs::read(file(root.path())).unwrap(), future);
+    }
+
+    #[test]
+    fn oversized_payload_is_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let json = " ".repeat(MAX_MESSAGE_BYTES + 1);
+        assert!(record_in(root.path(), &json).is_err());
+    }
+}
