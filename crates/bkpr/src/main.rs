@@ -11,6 +11,7 @@ mod project;
 #[cfg(target_os = "linux")]
 mod project_cache;
 mod project_watch;
+mod recovery;
 mod relay;
 
 use std::io::{self, Write};
@@ -126,6 +127,12 @@ enum Commands {
         #[arg(long)]
         manifest: PathBuf,
     },
+    /// Apply a recovery update from the native-owner plugin.
+    #[command(hide = true)]
+    SessionRecord {
+        #[arg(long)]
+        json: String,
+    },
     /// Serve the authenticated launch-local MCP connection over stdio.
     #[command(hide = true)]
     RelayMcp,
@@ -173,6 +180,10 @@ enum AgentCommands {
 
 fn main() {
     if let Err(error) = run() {
+        // The owner plugin treats 3 as "recovery not claimed": stay silent.
+        if error.downcast_ref::<recovery::Unclaimed>().is_some() {
+            std::process::exit(3);
+        }
         eprintln!("bkpr: {error:#}");
         std::process::exit(1);
     }
@@ -271,6 +282,7 @@ fn run() -> Result<()> {
         Some(Commands::ProjectWatchDaemon { json, listener_fd }) => {
             project_watch::serve(&json, listener_fd)
         }
+        Some(Commands::SessionRecord { json }) => recovery::record(&json),
     }
 }
 
