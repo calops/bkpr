@@ -413,14 +413,20 @@ pub(crate) fn restore_pane(args: RestorePaneArgs) -> Result<()> {
     if let (Some(harness), Some(session_id)) = (args.harness, args.session_id.as_deref()) {
         let stopped = match &args.codex_manifest {
             // Only set for a Codex agent whose own detached app-server still holds the thread.
-            Some(manifest) => match crate::codex::stop(manifest) {
-                Ok(()) => true,
+            // Stopping retires its broker route, so start the shared broker first when none
+            // runs (it may have ended with the closed session). A live one is never replaced.
+            Some(manifest) => match crate::relay::ensure_broker() {
                 Err(error) => {
-                    print_note(&[format!(
-                        "Codex session still owned by its previous server: {error:#}"
-                    )]);
+                    print_note(&[format!("relay broker unavailable: {error:#}")]);
                     false
                 }
+                Ok(_) => match crate::codex::stop(manifest) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        print_note(&[codex_stop_note(&error)]);
+                        false
+                    }
+                },
             },
             None => true,
         };
@@ -429,6 +435,24 @@ pub(crate) fn restore_pane(args: RestorePaneArgs) -> Result<()> {
         }
     }
     exec_shell(&cwd)
+}
+
+/// Why a Codex agent's previous server could not be stopped: a broker that is not there,
+/// pending messages the broker refuses to drop, or any other refusal.
+fn codex_stop_note(error: &anyhow::Error) -> String {
+    if error
+        .downcast_ref::<crate::relay::BrokerUnavailable>()
+        .is_some()
+    {
+        format!("relay broker unavailable; Codex session left with its previous server: {error:#}")
+    } else if error
+        .chain()
+        .any(|cause| cause.to_string() == crate::relay::UNACKNOWLEDGED_STOP)
+    {
+        "Codex session has unacknowledged messages; its previous server keeps it until they are read and acknowledged".to_owned()
+    } else {
+        format!("Codex session still owned by its previous server: {error:#}")
+    }
 }
 
 /// One dim stderr line; nothing for no notes.
@@ -1065,5 +1089,55 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let json = " ".repeat(MAX_MESSAGE_BYTES + 1);
         assert!(record_in(root.path(), &json).is_err());
+    }
+
+    /// The note must say which of the two blocking causes applies: a missing broker is not
+    /// a pending-message problem, and neither is any other refusal.
+    #[test]
+    fn codex_stop_notes_tell_causes_apart() {
+        let root = tempfile::tempdir().unwrap();
+        let unavailable = crate::relay::request_as(
+            &root.path().join("broker.sock"),
+            "agent",
+            "token",
+            "deactivate",
+            serde_json::json!({}),
+        )
+        .unwrap_err()
+        .context("retire Codex broker route");
+        let note = codex_stop_note(&unavailable);
+        assert!(note.starts_with("relay broker unavailable"), "{note}");
+        assert!(!note.contains("acknowledge"), "{note}");
+
+        let unread =
+            anyhow::anyhow!(crate::relay::UNACKNOWLEDGED_STOP).context("retire Codex broker route");
+        let note = codex_stop_note(&unread);
+        assert!(note.contains("unacknowledged messages"), "{note}");
+        assert!(!note.contains("broker unavailable"), "{note}");
+
+        let other = anyhow::anyhow!("Codex server process identity changed; refusing to signal it");
+        let note = codex_stop_note(&other);
+        assert!(
+            note.starts_with("Codex session still owned by its previous server"),
+            "{note}"
+        );
+        assert!(!note.contains("unacknowledged") && !note.contains("broker unavailable"));
+    }
+
+    /// Start-if-absent never replaces a live broker: a listening socket is left alone.
+    #[test]
+    fn ensure_broker_keeps_a_live_broker() {
+        let runtime = tempfile::tempdir().unwrap();
+        let socket = runtime.path().join("broker.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let identity = std::fs::metadata(&socket).unwrap().ino();
+        assert_eq!(
+            crate::relay::ensure_broker_in(runtime.path()).unwrap(),
+            socket
+        );
+        assert_eq!(std::fs::metadata(&socket).unwrap().ino(), identity);
+        listener.set_nonblocking(true).unwrap();
+        // The probe connection reached the original listener.
+        assert!(listener.accept().is_ok());
     }
 }

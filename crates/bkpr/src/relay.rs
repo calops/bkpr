@@ -355,15 +355,18 @@ fn state_directory() -> Result<PathBuf> {
     Ok(directory)
 }
 
-pub(crate) fn prepare(harness: &str, cwd: &Path) -> Result<RelayLaunch> {
-    if !matches!(harness, "claude" | "omp" | "codex") {
-        bail!("unsupported relay harness");
-    }
-    let cwd = fs::canonicalize(cwd)?;
+/// The shared broker socket, starting a broker only when none answers there. A live
+/// broker is never restarted or replaced, whatever its protocol: callers' protocol checks
+/// fail closed against it instead.
+pub(crate) fn ensure_broker() -> Result<PathBuf> {
     let runtime = crate::launcher::runtime_root()?.join("relay");
     crate::launcher::private_directory(&runtime)?;
+    ensure_broker_in(&runtime)
+}
+
+pub(crate) fn ensure_broker_in(runtime: &Path) -> Result<PathBuf> {
     let socket = runtime.join("broker.sock");
-    let _lock = crate::launcher::startup_lock(&runtime)?;
+    let _lock = crate::launcher::startup_lock(runtime)?;
     if UnixStream::connect(&socket).is_err() {
         match fs::symlink_metadata(&socket) {
             Ok(metadata)
@@ -396,6 +399,15 @@ pub(crate) fn prepare(harness: &str, cwd: &Path) -> Result<RelayLaunch> {
             bail!("relay broker did not start");
         }
     }
+    Ok(socket)
+}
+
+pub(crate) fn prepare(harness: &str, cwd: &Path) -> Result<RelayLaunch> {
+    if !matches!(harness, "claude" | "omp" | "codex") {
+        bail!("unsupported relay harness");
+    }
+    let cwd = fs::canonicalize(cwd)?;
+    let socket = ensure_broker()?;
     let launch = RelayLaunch {
         agent_id: random_hex(16)?,
         token: random_hex(32)?,
@@ -455,10 +467,28 @@ fn call(socket: &Path, id: &str, token: &str, method: &str, params: Value) -> Re
     raw_call(socket, id, token, method, params)
 }
 
+/// Context for a broker that does not answer at all (no listener, refused connection),
+/// as opposed to one that answered with an error or an incompatible protocol.
+#[derive(Debug)]
+pub(crate) struct BrokerUnavailable(PathBuf);
+
+impl std::fmt::Display for BrokerUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "relay broker at {} is unavailable for a protocol query",
+            self.0.display()
+        )
+    }
+}
+
+/// The broker's refusal to deactivate an agent that still has pending messages.
+pub(crate) const UNACKNOWLEDGED_STOP: &str = "cannot stop an agent with unacknowledged messages";
+
 fn check_protocol(socket: &Path) -> Result<()> {
     let version = raw_call(socket, "", "", "protocol", json!({})).map_err(|error| {
         if error.downcast_ref::<io::Error>().is_some() {
-            error.context(format!("relay broker at {} is unavailable for a protocol query", socket.display()))
+            error.context(BrokerUnavailable(socket.to_owned()))
         } else {
             error.context(format!("relay broker at {} is incompatible or does not report its protocol; existing brokers are not restarted automatically; preserve pending messages and replace the old broker explicitly", socket.display()))
         }
@@ -1234,7 +1264,7 @@ impl Broker {
                 if self.store.messages.values().any(|m| {
                     m.to == agent.id && m.acknowledged_at.is_none() && m.expired_at.is_none()
                 }) {
-                    bail!("cannot stop an agent with unacknowledged messages");
+                    bail!(UNACKNOWLEDGED_STOP);
                 }
                 self.store
                     .agents

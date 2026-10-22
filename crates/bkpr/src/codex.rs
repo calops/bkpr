@@ -742,9 +742,8 @@ fn stop_linux(manifest: &Path) -> Result<()> {
     // A server that already exited leased the route, so the broker prunes it
     // and cannot deactivate it any more; only the runtime remains to remove.
     if pidfd.is_some() {
-        retired.context(
-            "retire Codex broker route; acknowledge all pending messages before stopping",
-        )?;
+        // The broker's own error says whether pending messages or the broker blocked it.
+        retired.context("retire Codex broker route")?;
     }
     if let Some(pidfd) = pidfd {
         let result = unsafe {
