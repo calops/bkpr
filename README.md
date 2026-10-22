@@ -234,7 +234,7 @@ Antigravity is recognition-only. Bkpr doesn't wrap `agy`/`antigravity`, install 
 
 ### Agent communication (experimental)
 
-Fresh Bkpr sessions supply launch-local wrappers for `claude`, `omp` and `codex`. Each supported interactive launch receives its own authenticated agent ID and a Bkpr MCP server without changing user-level harness settings. Tools: `whoami`, `discover_agents`, `send_message`, `read_inbox`, `ack_message`, `inspect_outbox` and `set_title`.
+Fresh Bkpr sessions supply launch-local wrappers for `claude`, `omp` and `codex`. Each supported interactive launch receives its own authenticated agent ID and a Bkpr MCP server without changing user-level harness settings. Messages go through a relay broker, a shared background process that starts on demand and keeps running after the session that started it closes; finding it still running after every session has closed is expected. Tools: `whoami`, `discover_agents`, `send_message`, `read_inbox`, `ack_message`, `inspect_outbox` and `set_title`.
 
 Discovery returns peers only, excluding the caller. Its default `scope: "workspace"` uses current native Bkpr workspace membership, not CWD or Git grouping. `scope: "session"` includes other workspaces in the same Bkpr session; `"repository"` explicitly uses the canonical Git worktree or canonical launch directory outside Git; `"all"` includes other active launches. Unknown workspace/session context is an error, never a fallback to repository scope.
 
