@@ -195,13 +195,27 @@ enum AgentCommands {
 
 fn main() {
     if let Err(error) = run() {
-        // The owner plugin treats 3 as "recovery not claimed": stay silent.
-        if error.downcast_ref::<recovery::Unclaimed>().is_some() {
-            std::process::exit(3);
-        }
-        eprintln!("bkpr: {error:#}");
-        std::process::exit(1);
+        let code = report_failure(&error, &mut std::io::stdout(), &mut std::io::stderr());
+        std::process::exit(code);
     }
+}
+
+/// Report a failed command and return its exit code. The native-owner plugin treats 3 as
+/// "recovery not claimed" (silent) and 4 as "continue past the sequence on stdout".
+fn report_failure(
+    error: &anyhow::Error,
+    stdout: &mut dyn std::io::Write,
+    stderr: &mut dyn std::io::Write,
+) -> i32 {
+    if error.downcast_ref::<recovery::Unclaimed>().is_some() {
+        return 3;
+    }
+    if let Some(stale) = error.downcast_ref::<recovery::StaleSequence>() {
+        let _ = writeln!(stdout, "{}", stale.current).and_then(|()| stdout.flush());
+        return 4;
+    }
+    let _ = writeln!(stderr, "bkpr: {error:#}");
+    1
 }
 
 /// Launch options given before a subcommand, as their long flags.
@@ -331,6 +345,30 @@ fn run() -> Result<()> {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn failures_map_to_owner_exit_codes() {
+        let report = |error: anyhow::Error| {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = report_failure(&error, &mut out, &mut err);
+            (
+                code,
+                String::from_utf8(out).unwrap(),
+                String::from_utf8(err).unwrap(),
+            )
+        };
+        assert_eq!(
+            report(recovery::Unclaimed.into()),
+            (3, String::new(), String::new())
+        );
+        assert_eq!(
+            report(anyhow::Error::new(recovery::StaleSequence { current: 9 }).context("x")),
+            (4, "9\n".to_owned(), String::new())
+        );
+        let (code, out, err) = report(anyhow::anyhow!("boom"));
+        assert_eq!((code, out.as_str()), (1, ""));
+        assert!(err.contains("boom"), "{err}");
+    }
 
     #[test]
     fn resume_rejects_top_level_launch_options() {
