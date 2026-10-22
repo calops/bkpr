@@ -1722,3 +1722,49 @@ fn recovery_agents_liveness_and_holders() {
     assert!(!agents.live_holders.contains_key("u"));
     assert!(!agents.live_holders.contains_key("r"));
 }
+
+/// Start-if-absent never replaces a live broker: a listening socket is left alone.
+#[test]
+fn ensure_broker_keeps_a_live_broker() {
+    let runtime = tempfile::tempdir().unwrap();
+    let socket = runtime.path().join("broker.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let identity = fs::metadata(&socket).unwrap().ino();
+    assert_eq!(ensure_broker_in(runtime.path()).unwrap(), socket);
+    assert_eq!(fs::metadata(&socket).unwrap().ino(), identity);
+    listener.set_nonblocking(true).unwrap();
+    // The probe connection reached the original listener.
+    assert!(listener.accept().is_ok());
+}
+
+/// A broker started from a pane must outlive it: its own session and process group (so
+/// Ctrl+C at that pane's prompt or the pane's hangup never reach it), with default signal
+/// dispositions even when the starter ignores them.
+#[test]
+fn broker_spawn_is_detached_with_default_signals() {
+    let directory = tempfile::tempdir().unwrap();
+    let report = directory.path().join("report");
+    let mut command = Command::new("/bin/sh");
+    command.arg("-c").arg(format!(
+        "{{ cut -d' ' -f5,6 /proc/self/stat; grep SigIgn /proc/self/status; echo $$; }} > {}",
+        report.display()
+    ));
+    // SAFETY: SIG_IGN/SIG_DFL install no handler; SIGHUP is unused by the test harness.
+    unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) };
+    let mut child = spawn_detached(&mut command).unwrap();
+    unsafe { libc::signal(libc::SIGHUP, libc::SIG_DFL) };
+    assert!(child.wait().unwrap().success());
+    let text = fs::read_to_string(&report).unwrap();
+    let lines: Vec<_> = text.lines().collect();
+    let pid: u32 = lines[2].trim().parse().unwrap();
+    // `cut` is a child of the shell: its pgrp and session are the shell's own pid.
+    assert_eq!(lines[0], format!("{pid} {pid}"), "{text}");
+    let ignored = u64::from_str_radix(lines[1].trim_start_matches("SigIgn:").trim(), 16).unwrap();
+    for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM] {
+        assert_eq!(
+            ignored & (1 << (signal - 1)),
+            0,
+            "signal {signal} ignored: {text}"
+        );
+    }
+}

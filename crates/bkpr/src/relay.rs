@@ -7,6 +7,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, mpsc};
@@ -379,14 +380,15 @@ pub(crate) fn ensure_broker_in(runtime: &Path) -> Result<PathBuf> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        Command::new(env::current_exe()?)
-            .arg("relay-daemon")
-            .arg("--socket")
-            .arg(&socket)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+        spawn_detached(
+            Command::new(env::current_exe()?)
+                .arg("relay-daemon")
+                .arg("--socket")
+                .arg(&socket)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )?;
         let mut ready = false;
         for _ in 0..100 {
             if UnixStream::connect(&socket).is_ok() {
@@ -400,6 +402,39 @@ pub(crate) fn ensure_broker_in(runtime: &Path) -> Result<PathBuf> {
         }
     }
     Ok(socket)
+}
+
+/// Signals whose inherited `SIG_IGN` would survive `exec` into the shared broker.
+const BROKER_DEFAULT_SIGNALS: [libc::c_int; 8] = [
+    libc::SIGHUP,
+    libc::SIGINT,
+    libc::SIGQUIT,
+    libc::SIGTERM,
+    libc::SIGTSTP,
+    libc::SIGTTIN,
+    libc::SIGTTOU,
+    libc::SIGPIPE,
+];
+
+/// Spawn the shared broker outside the starter's session and process group, so Ctrl+C at
+/// that pane's prompt, its job control or its hangup never reach a broker every pane
+/// shares, and with default dispositions whatever the starter ignored.
+fn spawn_detached(command: &mut Command) -> Result<std::process::Child> {
+    // SAFETY: the closure only calls the async-signal-safe `setsid` and `signal`.
+    unsafe {
+        command.pre_exec(|| {
+            // A new session is also a new process group; no prior `setpgid` (setsid would
+            // then fail for a group leader).
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            for signal in BROKER_DEFAULT_SIGNALS {
+                libc::signal(signal, libc::SIG_DFL);
+            }
+            Ok(())
+        });
+    }
+    Ok(command.spawn()?)
 }
 
 pub(crate) fn prepare(harness: &str, cwd: &Path) -> Result<RelayLaunch> {
