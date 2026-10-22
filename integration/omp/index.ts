@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from '@oh-my-pi/pi-coding-agent';
+import type { ExtensionAPI, ExtensionContext } from '@oh-my-pi/pi-coding-agent';
 
 /** Launch-local MCP pointers become agent context, never editor/user input. */
 export default function bkpr(pi: ExtensionAPI) {
@@ -13,6 +13,25 @@ export default function bkpr(pi: ExtensionAPI) {
       throw new Error(result.stderr.trim() || 'Bkpr receiver registration failed');
     }
   };
+  // Recovery resumes each harness on the native session ID held by the broker.
+  // OMP can move to a new session ID without session_switch ("open elsewhere"),
+  // so turn boundaries rebind too; the last bound ID dedups the calls.
+  let boundSessionId: string | undefined;
+  let bindWarned = false;
+  const bind = async (ctx: ExtensionContext) => {
+    if (!serverName || !program || ctx.agent.kind !== 'main') return;
+    const sessionId = ctx.sessionManager.getSessionId();
+    if (!sessionId || sessionId === boundSessionId) return;
+    try {
+      const result = await pi.exec(program, ['relay-bind-session', '--session-id', sessionId], { timeout: 5000 });
+      if (result.code !== 0) throw new Error(result.stderr.trim() || 'Bkpr session binding failed');
+      boundSessionId = sessionId;
+    } catch (error) {
+      if (bindWarned) return;
+      bindWarned = true;
+      ctx.ui.notify(`Bkpr session binding: ${String(error)}`, 'warning');
+    }
+  };
   pi.on('session_start', async (_event, ctx) => {
     if (!serverName || ctx.agent.kind !== 'main') return;
     try {
@@ -20,6 +39,13 @@ export default function bkpr(pi: ExtensionAPI) {
     } catch (error) {
       ctx.ui.notify(`Bkpr message receiver is not ready: ${String(error)}`, 'error');
     }
+    await bind(ctx);
+  });
+  pi.on('session_switch', async (_event, ctx) => {
+    await bind(ctx);
+  });
+  pi.on('turn_end', async (_event, ctx) => {
+    await bind(ctx);
   });
   pi.on('session_shutdown', async (_event, ctx) => {
     if (!serverName || ctx.agent.kind !== 'main') return;

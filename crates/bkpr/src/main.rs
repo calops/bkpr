@@ -144,6 +144,12 @@ enum Commands {
         #[arg(long)]
         disable: bool,
     },
+    /// Bind the launch's agent to its current native harness session ID.
+    #[command(hide = true)]
+    RelayBindSession {
+        #[arg(long)]
+        session_id: String,
+    },
     /// Own the private native durable message broker.
     #[command(hide = true)]
     RelayDaemon {
@@ -255,6 +261,7 @@ fn run() -> Result<()> {
             )?;
             Ok(())
         }
+        Some(Commands::RelayBindSession { session_id }) => relay::bind_session(&session_id),
         Some(Commands::RelayDaemon { socket }) => relay::daemon(&socket),
         Some(Commands::AgentRelayDaemon { runtime }) => agent_relay::daemon(&runtime),
         Some(Commands::Agent { command }) => match command {
