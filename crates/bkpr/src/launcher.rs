@@ -1,14 +1,18 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{IsTerminal, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use bkpr::recovery_contract::{RecoveryRecord, RestoreLeaf, recovery_layout};
 use clap::Args;
+
+use crate::recovery::{self, PaneLaunch};
+use crate::relay::RecoveryAgents;
 
 #[derive(Debug, Args)]
 pub struct Options {
@@ -26,12 +30,180 @@ pub struct Options {
     /// Initial shared sidebar outer width in columns (16–120); resizable across tabs.
     #[arg(long, default_value_t = 38, value_parser = clap::value_parser!(u16).range(16..=120), help_heading = "Session")]
     pub sidebar_width: u16,
+    /// Start a fresh session over this session's recovery record, discarding it.
+    #[arg(long, help_heading = "Session")]
+    pub overwrite: bool,
+}
+
+/// How a launch starts its native session.
+#[derive(Debug)]
+pub(crate) enum StartMode {
+    /// Attach to the live session; its recovery record is untouched.
+    Attach,
+    /// Start an empty session and claim a cleared record.
+    Fresh,
+    /// Recreate the recorded topology and claim the record, keeping its workspaces.
+    Restore(RecoveryRecord),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Intent {
+    /// `bkpr [--session X]`: attach, else start (asking before replacing a record).
+    Open,
+    /// `bkpr resume --session X`: restore the record of a session that is not running.
+    Resume,
+}
+
+/// Pure start decision. `ask` (true = recover) is only called when `interactive`.
+pub(crate) fn decide(
+    session: &str,
+    intent: Intent,
+    live: bool,
+    record: Option<RecoveryRecord>,
+    overwrite: bool,
+    interactive: bool,
+    ask: &mut dyn FnMut() -> Result<bool>,
+) -> Result<StartMode> {
+    let record = record.filter(RecoveryRecord::usable);
+    let name = shell_word(session);
+    match intent {
+        Intent::Open if live => Ok(StartMode::Attach),
+        Intent::Resume if live => {
+            bail!("session {name} is running; attach with `bkpr --session {name}`")
+        }
+        Intent::Resume => match record {
+            Some(record) => Ok(StartMode::Restore(record)),
+            None => bail!("no recovery record for session {name}"),
+        },
+        Intent::Open => match record {
+            None => Ok(StartMode::Fresh),
+            Some(_) if overwrite => Ok(StartMode::Fresh),
+            Some(_) if !interactive => bail!(
+                "session {name} has a recovery record; restore it with `bkpr resume --session {name}` or discard it with `bkpr --session {name} --overwrite`"
+            ),
+            Some(record) => Ok(if ask()? {
+                StartMode::Restore(record)
+            } else {
+                StartMode::Fresh
+            }),
+        },
+    }
+}
+
+/// Quote a session name for a copyable command only when it needs it.
+fn shell_word(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:@".contains(c))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+/// `[r]ecover` is true, `[o]verwrite` is false; anything else asks again.
+fn parse_answer(line: &str) -> Option<bool> {
+    match line.trim().to_ascii_lowercase().as_str() {
+        "r" | "recover" => Some(true),
+        "o" | "overwrite" => Some(false),
+        _ => None,
+    }
+}
+
+fn ask_recover(session: &str) -> Result<bool> {
+    let stdin = std::io::stdin();
+    let mut stderr = std::io::stderr();
+    loop {
+        write!(
+            stderr,
+            "bkpr: session {} has a recovery record. [r]ecover / [o]verwrite? ",
+            shell_word(session)
+        )?;
+        stderr.flush()?;
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line)? == 0 {
+            bail!("no answer; the recovery record was left unchanged");
+        }
+        if let Some(recover) = parse_answer(&line) {
+            return Ok(recover);
+        }
+    }
+}
+
+/// A restore startup layout plus the owner's restore seed.
+#[derive(Debug)]
+struct RestoreLayout {
+    layout: String,
+    /// Sticky (user-assigned) names by leaf key, for the owner's `restore_names`.
+    names: BTreeMap<String, String>,
+    /// Terminal panes the layout spawns, for the owner's `restore_expected_panes`. The owner
+    /// counts the same unit: one removal key per recorded terminal leaf, stacks included.
+    expected_panes: usize,
+}
+
+/// Build the restore layout. Each leaf runs `program restore-pane …`; when relay state is
+/// unreadable (`agents` is `Err(reason)`), harness panes restore as shells noting why.
+fn restore_layout(
+    plugin_url: &str,
+    sidebar_configuration: &BTreeMap<String, String>,
+    sidebar_percent: u8,
+    session_id: &str,
+    record: &RecoveryRecord,
+    program: &str,
+    agents: std::result::Result<&RecoveryAgents, &str>,
+) -> Result<RestoreLayout> {
+    let mut names = BTreeMap::new();
+    let layout = recovery_layout(
+        plugin_url,
+        sidebar_configuration,
+        sidebar_percent,
+        session_id,
+        record,
+        &mut |key, pane| {
+            let launch = match agents {
+                Ok(agents) => recovery::resolve(pane, agents),
+                Err(reason) => recovery::unresolved(pane, reason),
+            };
+            if pane.renamed {
+                names.insert(key.to_owned(), pane.name.clone());
+            }
+            let (PaneLaunch::Shell { cwd, .. } | PaneLaunch::Harness { cwd, .. }) = &launch;
+            let mut args = vec!["restore-pane".to_owned()];
+            args.extend(recovery::restore_pane_args(key, pane, &launch));
+            RestoreLeaf {
+                key: key.to_owned(),
+                cwd: cwd.display().to_string(),
+                program: program.to_owned(),
+                args,
+            }
+        },
+    )?;
+    Ok(RestoreLayout {
+        layout,
+        names,
+        expected_panes: record.pane_count(),
+    })
 }
 
 pub fn run(options: Options) -> Result<()> {
-    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        bail!("launch requires an interactive terminal");
+    launch(options, Intent::Open)
+}
+
+pub fn run_resume(options: Options) -> Result<()> {
+    if options.session.is_none() {
+        bail!("bkpr resume requires --session <name>");
     }
+    if options.overwrite {
+        bail!(
+            "bkpr resume restores a recovery record; --overwrite only applies to `bkpr --session <name>`"
+        );
+    }
+    launch(options, Intent::Resume)
+}
+
+fn launch(options: Options, intent: Intent) -> Result<()> {
     let program = env::current_exe().context("locate native bkpr command")?;
     let bundled_zellij = program.with_file_name("zellij");
     let zellij = if options.zellij == Path::new("zellij")
@@ -43,10 +215,10 @@ pub fn run(options: Options) -> Result<()> {
         executable(&options.zellij)?
     };
     check_zellij(&zellij)?;
-    run_native(&options, &program, &zellij)
+    run_native(&options, intent, &program, &zellij)
 }
 
-fn run_native(options: &Options, program: &Path, zellij: &Path) -> Result<()> {
+fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) -> Result<()> {
     // Capture the attaching terminal's source before setting the child-only
     // stable relay address. Unset/empty is intentional, never a server fallback.
     let agent_source = env::var_os("SSH_AUTH_SOCK");
@@ -60,7 +232,38 @@ fn run_native(options: &Options, program: &Path, zellij: &Path) -> Result<()> {
     let socket_dir = zellij_socket_dir()?;
     let lock = startup_lock(&runtime)?;
     let zellij_session = format!("bkpr-native-{identity_hash:016x}");
-    let existing = session_exists(zellij, &config_dir, &socket_dir, &zellij_session)?;
+    let live = session_exists(zellij, &config_dir, &socket_dir, &zellij_session)?;
+    // Decide before requiring a terminal, so a non-interactive launch over a record gets
+    // the specific refusal. A live session never reads its record (legacy attach path).
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let record = if live {
+        None
+    } else {
+        match recovery::load(session) {
+            Ok(record) => record,
+            // An explicit overwrite replaces even an unreadable record.
+            Err(_) if intent == Intent::Open && options.overwrite => None,
+            Err(error) => {
+                let name = shell_word(session);
+                return Err(error).context(format!(
+                    "read the recovery record of session {name}; `bkpr --session {name} --overwrite` discards it"
+                ));
+            }
+        }
+    };
+    let mode = decide(
+        session,
+        intent,
+        live,
+        record,
+        options.overwrite,
+        interactive,
+        &mut || ask_recover(session),
+    )?;
+    if !interactive {
+        bail!("launch requires an interactive terminal");
+    }
+    let existing = matches!(mode, StartMode::Attach);
     let session_context = crate::context::SessionBootstrap::prepare(&runtime, session, existing)
         .context("initialize Bkpr session context")?;
     let config_path = config_dir.join("config.kdl");
@@ -112,12 +315,45 @@ fn run_native(options: &Options, program: &Path, zellij: &Path) -> Result<()> {
             ("initial_cwd".into(), cwd.into()),
             ("sidebar_width".into(), options.sidebar_width.to_string()),
         ]);
-        let mut config = ZELLIJ_CONFIG.to_owned();
         let mut owner_configuration = configuration.clone();
         owner_configuration.insert("role".into(), "native-owner".into());
         owner_configuration.insert("context_owner".into(), session_context.owner_token.clone());
         owner_configuration.insert("caller_cwd".into(), cwd.into());
         owner_configuration.insert("mode_info_format".into(), "json".into());
+        let layout = match &mode {
+            StartMode::Restore(record) => {
+                // Unreadable relay state degrades harness panes to shells; never fail resume.
+                let agents = crate::relay::recovery_agents().map_err(|error| format!("{error:#}"));
+                let restore = restore_layout(
+                    &plugin_url,
+                    &configuration,
+                    sidebar_percent,
+                    &session_context.session_id,
+                    record,
+                    program,
+                    agents.as_ref().map_err(String::as_str),
+                )?;
+                // Creation-only owner keys; the owner strips them before validation.
+                owner_configuration.insert(
+                    "restore_names".into(),
+                    serde_json::to_string(&restore.names)?,
+                );
+                owner_configuration.insert(
+                    "restore_expected_panes".into(),
+                    restore.expected_panes.to_string(),
+                );
+                restore.layout
+            }
+            StartMode::Fresh | StartMode::Attach => bkpr::native_layout(
+                &plugin_url,
+                &configuration,
+                "Workspace",
+                cwd,
+                sidebar_percent,
+                None,
+            )?,
+        };
+        let mut config = ZELLIJ_CONFIG.to_owned();
         config.push_str(&format!(
             "\nload_plugins {{\n {} {{\n",
             serde_json::to_string(&plugin_url)?,
@@ -127,18 +363,7 @@ fn run_native(options: &Options, program: &Path, zellij: &Path) -> Result<()> {
         }
         config.push_str(" }\n}\n");
         private_file(&config_path, config.as_bytes())?;
-        private_file(
-            &layout_path,
-            bkpr::native_layout(
-                &plugin_url,
-                &configuration,
-                "Workspace",
-                cwd,
-                sidebar_percent,
-                None,
-            )?
-            .as_bytes(),
-        )?;
+        private_file(&layout_path, layout.as_bytes())?;
     }
     let agent_lease = crate::agent_relay::acquire_locked(program, &runtime, agent_source)?;
     let mut client = zellij_command(zellij, &config_dir, &socket_dir);
@@ -194,6 +419,17 @@ fn run_native(options: &Options, program: &Path, zellij: &Path) -> Result<()> {
         client
             .args(["--session", &zellij_session, "--new-session-with-layout"])
             .arg(&layout_path);
+    }
+    // Claim the record for this new session id before its owner can write; attach never claims.
+    if let Some(context) = &session_context {
+        match &mode {
+            StartMode::Attach => Ok(()),
+            StartMode::Fresh => recovery::claim(session, &context.session_id, None),
+            StartMode::Restore(record) => {
+                recovery::claim(session, &context.session_id, Some(record))
+            }
+        }
+        .context("claim the session recovery record")?;
     }
     let mut child = client.spawn().context("launch native Zellij client")?;
     if !existing {
@@ -456,6 +692,274 @@ mod tests {
             let cli = crate::Cli::try_parse_from(["bkpr", flag]).unwrap();
             assert!(cli.launch.detach_others);
         }
+    }
+
+    fn record(panes: usize) -> RecoveryRecord {
+        use bkpr::recovery_contract::{RecoveryPane, RecoveryTab, RecoveryWorkspace, SplitNode};
+        let pane = |index: usize| RecoveryPane {
+            cwd: Some("/work".into()),
+            name: format!("p{index}"),
+            renamed: false,
+            harness: None,
+            agent_id: None,
+            focused: index == 0,
+        };
+        RecoveryRecord {
+            version: bkpr::recovery_contract::RECOVERY_VERSION,
+            session_name: "work".into(),
+            session_id: "old".into(),
+            sequence: 1,
+            written_by: "test".into(),
+            updated_at_millis: 0,
+            workspaces: if panes == 0 {
+                Vec::new()
+            } else {
+                vec![RecoveryWorkspace {
+                    name: "w".into(),
+                    tabs: vec![RecoveryTab {
+                        name: "t".into(),
+                        focused: true,
+                        layout: SplitNode::Stack {
+                            panes: (0..panes).map(pane).collect(),
+                        },
+                    }],
+                }]
+            },
+        }
+    }
+
+    /// Runs `decide` and reports how often it asked.
+    fn decide_with(
+        intent: Intent,
+        live: bool,
+        record: Option<RecoveryRecord>,
+        overwrite: bool,
+        interactive: bool,
+        answer: bool,
+    ) -> (Result<StartMode>, usize) {
+        let mut asked = 0;
+        let mode = decide(
+            "work",
+            intent,
+            live,
+            record,
+            overwrite,
+            interactive,
+            &mut || {
+                asked += 1;
+                Ok(answer)
+            },
+        );
+        (mode, asked)
+    }
+
+    #[test]
+    fn open_live_attaches() {
+        let (mode, asked) = decide_with(Intent::Open, true, Some(record(2)), false, true, true);
+        assert!(matches!(mode.unwrap(), StartMode::Attach));
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn resume_live_refuses() {
+        let (mode, asked) = decide_with(Intent::Resume, true, Some(record(2)), false, true, true);
+        let error = format!("{:#}", mode.err().expect("live resume refuses"));
+        assert!(error.contains("bkpr --session work"), "{error}");
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn resume_without_usable_record_refuses() {
+        for record in [None, Some(record(0))] {
+            let (mode, asked) = decide_with(Intent::Resume, false, record, false, true, true);
+            let error = format!("{:#}", mode.err().expect("nothing to resume"));
+            assert!(error.contains("no recovery record"), "{error}");
+            assert_eq!(asked, 0);
+        }
+    }
+
+    #[test]
+    fn resume_restores_without_asking() {
+        let (mode, asked) =
+            decide_with(Intent::Resume, false, Some(record(2)), false, false, false);
+        assert!(matches!(mode.unwrap(), StartMode::Restore(record) if record.pane_count() == 2));
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn open_over_record_prompts_and_recovers() {
+        let (mode, asked) = decide_with(Intent::Open, false, Some(record(2)), false, true, true);
+        assert!(matches!(mode.unwrap(), StartMode::Restore(record) if record.pane_count() == 2));
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn open_over_record_prompts_and_overwrites() {
+        let (mode, asked) = decide_with(Intent::Open, false, Some(record(2)), false, true, false);
+        assert!(matches!(mode.unwrap(), StartMode::Fresh));
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn open_over_record_noninteractive_refuses() {
+        let (mode, asked) = decide_with(Intent::Open, false, Some(record(2)), false, false, true);
+        let error = format!("{:#}", mode.err().expect("cannot ask"));
+        assert!(error.contains("bkpr resume --session work"), "{error}");
+        assert!(error.contains("--overwrite"), "{error}");
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn open_over_record_with_overwrite_is_fresh() {
+        let (mode, asked) = decide_with(Intent::Open, false, Some(record(2)), true, true, true);
+        assert!(matches!(mode.unwrap(), StartMode::Fresh));
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn open_without_record_is_fresh() {
+        for record in [None, Some(record(0))] {
+            let (mode, asked) = decide_with(Intent::Open, false, record, false, false, true);
+            assert!(matches!(mode.unwrap(), StartMode::Fresh));
+            assert_eq!(asked, 0);
+        }
+    }
+
+    #[test]
+    fn prompt_answers_parse_strictly() {
+        for answer in ["r", "R", "recover", " Recover\n"] {
+            assert_eq!(parse_answer(answer), Some(true), "{answer:?}");
+        }
+        for answer in ["o", "O", "overwrite", "overwrite\n"] {
+            assert_eq!(parse_answer(answer), Some(false), "{answer:?}");
+        }
+        for answer in ["", "\n", "y", "yes", "re", "over"] {
+            assert_eq!(parse_answer(answer), None, "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn restore_layout_resumes_harnesses_and_seeds_sticky_names() {
+        use crate::relay::{RecoveredAgent, RecoveryAgents};
+        use bkpr::recovery_contract::{RecoveryPane, RecoveryTab, RecoveryWorkspace, SplitNode};
+        let pane = |name: &str, renamed: bool, agent: Option<&str>| RecoveryPane {
+            cwd: Some("/".into()),
+            name: name.into(),
+            renamed,
+            harness: agent.map(|_| "claude".into()),
+            agent_id: agent.map(str::to_owned),
+            focused: false,
+        };
+        let mut record = record(0);
+        record.workspaces = vec![RecoveryWorkspace {
+            name: "w".into(),
+            tabs: vec![RecoveryTab {
+                name: "t".into(),
+                focused: true,
+                layout: SplitNode::Split {
+                    direction: bkpr::recovery_contract::SplitDirection::Vertical,
+                    children: vec![
+                        SplitNode::Pane {
+                            pane: pane("Build", true, None),
+                        },
+                        SplitNode::Stack {
+                            panes: vec![
+                                pane("shell", false, None),
+                                pane("Agent", true, Some("a1")),
+                            ],
+                        },
+                    ],
+                },
+            }],
+        }];
+        let configuration = BTreeMap::from([("role".to_owned(), "sidebar".to_owned())]);
+        let agents = RecoveryAgents::from_entries([(
+            "a1".to_owned(),
+            RecoveredAgent {
+                harness: "claude".into(),
+                session_id: Some("native-1".into()),
+                live: false,
+                queue_endpoint: None,
+            },
+        )]);
+        let restore = restore_layout(
+            "file:/bkpr.wasm",
+            &configuration,
+            30,
+            "new-session",
+            &record,
+            "/bin/bkpr",
+            Ok(&agents),
+        )
+        .unwrap();
+        assert_eq!(restore.expected_panes, 3);
+        assert_eq!(
+            restore.names,
+            BTreeMap::from([
+                ("w0t0p0".to_owned(), "Build".to_owned()),
+                ("w0t0p2".to_owned(), "Agent".to_owned()),
+            ])
+        );
+        assert!(
+            restore
+                .layout
+                .contains("bkpr_workspace_id=\"new-session:workspace:bkpr:00000\"")
+        );
+        assert!(restore.layout.contains("command=\"/bin/bkpr\""));
+        assert!(restore.layout.contains("\"restore-pane\" \"--key=w0t0p2\""));
+        assert!(
+            restore
+                .layout
+                .contains("\"--harness=claude\" \"--session-id=native-1\"")
+        );
+        assert!(!restore.layout.contains("restore_names"));
+
+        // Unreadable relay state never fails the resume: harness panes become noted shells.
+        let restore = restore_layout(
+            "file:/bkpr.wasm",
+            &configuration,
+            30,
+            "new-session",
+            &record,
+            "/bin/bkpr",
+            Err("permission denied"),
+        )
+        .unwrap();
+        assert!(!restore.layout.contains("--harness="));
+        assert!(
+            restore
+                .layout
+                .contains("relay state was unreadable: permission denied")
+        );
+        assert_eq!(restore.expected_panes, 3);
+    }
+
+    #[test]
+    fn resume_requires_a_session_and_takes_launch_options() {
+        use clap::Parser;
+
+        let cli =
+            crate::Cli::try_parse_from(["bkpr", "resume", "--session", "work", "-d"]).unwrap();
+        let Some(crate::Commands::Resume { launch }) = cli.command else {
+            panic!("expected resume");
+        };
+        assert_eq!(launch.session.as_deref(), Some("work"));
+        assert!(launch.detach_others && !launch.overwrite);
+        let cli = crate::Cli::try_parse_from(["bkpr", "resume"]).unwrap();
+        let Some(crate::Commands::Resume { launch }) = cli.command else {
+            panic!("expected resume");
+        };
+        let error = run_resume(launch).unwrap_err().to_string();
+        assert_eq!(error, "bkpr resume requires --session <name>");
+        let cli = crate::Cli::try_parse_from(["bkpr", "--session", "work", "--overwrite"]).unwrap();
+        assert!(cli.launch.overwrite);
+    }
+
+    #[test]
+    fn refusals_quote_session_names_for_copying() {
+        assert_eq!(shell_word("work-2.x"), "work-2.x");
+        assert_eq!(shell_word("my work"), "'my work'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
     }
 
     #[test]

@@ -28,7 +28,7 @@ use clap::{Parser, Subcommand};
     disable_help_subcommand = true,
     override_usage = "bkpr [OPTIONS] [COMMAND]",
     about = "Persistent local Zellij workspaces with an agent-aware sidebar",
-    after_help = "Examples:\n  bkpr                         Open or attach to the default local session\n  bkpr --session work          Open or attach to a named local session\n  bkpr --sidebar-width 44      Set the sidebar width\n\nSessions use native Zellij terminals.\nAutomatic Git branch, diff and CI reporting is available on Linux."
+    after_help = "Examples:\n  bkpr                         Open or attach to the default local session\n  bkpr --session work          Open or attach to a named local session\n  bkpr resume --session work   Rebuild a closed session from its recovery record\n  bkpr --sidebar-width 44      Set the sidebar width\n\nSessions use native Zellij terminals.\nAutomatic Git branch, diff and CI reporting is available on Linux."
 )]
 struct Cli {
     #[command(flatten)]
@@ -39,6 +39,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Restore a stopped session from its recovery record.
+    Resume {
+        #[command(flatten)]
+        launch: launcher::Options,
+    },
     /// Run a supported harness with launch-local Bkpr integration.
     Run {
         #[arg(value_enum)]
@@ -202,6 +207,7 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         None => launcher::run(cli.launch),
+        Some(Commands::Resume { launch }) => launcher::run_resume(launch),
         Some(Commands::Run { harness, arguments }) => harness.launch(arguments),
         Some(Commands::Context { json }) => {
             let value = context::current()?;
