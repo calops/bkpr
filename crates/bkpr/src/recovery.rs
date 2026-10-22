@@ -41,6 +41,26 @@ impl std::fmt::Display for Unclaimed {
 
 impl std::error::Error for Unclaimed {}
 
+/// The claimed owner sent a sequence older than the record's (its model was recreated and
+/// restarted counting). `bkpr session-record` exits 4 and prints `current` on stdout so the
+/// owner continues past it at once.
+#[derive(Debug)]
+pub(crate) struct StaleSequence {
+    pub(crate) current: u64,
+}
+
+impl std::fmt::Display for StaleSequence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "stale recovery update; the record is at sequence {}",
+            self.current
+        )
+    }
+}
+
+impl std::error::Error for StaleSequence {}
+
 /// Neither `XDG_STATE_HOME` nor `HOME` locates a state directory, so recovery is off.
 /// Distinct from an unreadable record: launching fresh cannot discard anything.
 #[derive(Debug)]
@@ -77,12 +97,30 @@ fn session_directory(root: &Path, session_name: &str) -> PathBuf {
     root.join("bkpr/sessions").join(format!("{hash:016x}"))
 }
 
-pub(crate) fn record_path(session_name: &str) -> Result<PathBuf> {
-    Ok(session_directory(&state_root()?, session_name).join(FILE_NAME))
+pub(crate) fn load(session_name: &str) -> Result<Option<RecoveryRecord>> {
+    load_in(&state_root()?, session_name)
 }
 
-pub(crate) fn load(session_name: &str) -> Result<Option<RecoveryRecord>> {
-    read_record(&record_path(session_name)?)
+fn load_in(root: &Path, session_name: &str) -> Result<Option<RecoveryRecord>> {
+    read_named(
+        &session_directory(root, session_name).join(FILE_NAME),
+        session_name,
+    )
+}
+
+/// `read_record`, refusing a record of another session whose name hashes to the same
+/// directory, like an unreadable one.
+fn read_named(path: &Path, session_name: &str) -> Result<Option<RecoveryRecord>> {
+    let record = read_record(path)?;
+    if let Some(record) = &record
+        && record.session_name != session_name
+    {
+        bail!(
+            "{} belongs to another session, not {session_name:?}",
+            path.display()
+        );
+    }
+    Ok(record)
 }
 
 /// Launcher-only: make `session_id` the sole accepted writer, keeping `workspaces`
@@ -96,7 +134,19 @@ pub(crate) fn claim(
 }
 
 pub(crate) fn record(json: &str) -> Result<()> {
-    record_in(&state_root()?, json)
+    record_with(state_root(), json)
+}
+
+/// Without a state root recovery is silently off, like an unclaimed session.
+fn record_with(root: Result<PathBuf>, json: &str) -> Result<()> {
+    let root = root.map_err(|error| {
+        if error.downcast_ref::<StateUnavailable>().is_some() {
+            Unclaimed.into()
+        } else {
+            error
+        }
+    })?;
+    record_in(&root, json)
 }
 
 fn claim_in(
@@ -113,6 +163,15 @@ fn claim_in(
     )?;
     crate::launcher::private_directory(&directory)?;
     let _lock = lock(&directory)?;
+    // An unreadable record may be discarded (`--overwrite`); another session's never is.
+    if let Ok(Some(existing)) = read_record(&directory.join(FILE_NAME))
+        && existing.session_name != session_name
+    {
+        bail!(
+            "the recovery record at {} belongs to another session",
+            directory.display()
+        );
+    }
     write_record(
         &directory,
         &RecoveryRecord {
@@ -140,7 +199,7 @@ fn record_in(root: &Path, json: &str) -> Result<()> {
         return Err(Unclaimed.into());
     }
     let _lock = lock(&directory)?;
-    let Some(current) = read_record(&directory.join(FILE_NAME))? else {
+    let Some(current) = read_named(&directory.join(FILE_NAME), &update.session_name)? else {
         return Err(Unclaimed.into());
     };
     if current.session_id != update.session_id {
@@ -150,12 +209,15 @@ fn record_in(root: &Path, json: &str) -> Result<()> {
             update.session_id
         );
     }
-    if update.sequence < current.sequence {
-        bail!(
-            "stale recovery update {} is older than {}",
-            update.sequence,
-            current.sequence
-        );
+    // An equal sequence is an idempotent retry only with identical contents; otherwise,
+    // like an older one, the owner restarted counting and must continue past the record.
+    if update.sequence < current.sequence
+        || (update.sequence == current.sequence && update.workspaces != current.workspaces)
+    {
+        return Err(StaleSequence {
+            current: current.sequence,
+        }
+        .into());
     }
     if update.sequence == current.sequence {
         return Ok(());
@@ -374,6 +436,13 @@ fn existing_cwd_with(recorded: Option<&str>, fallback: &Path) -> (PathBuf, Optio
     let Some(recorded) = recorded.filter(|path| !path.is_empty()) else {
         return (fallback.to_owned(), None);
     };
+    // A restore layout (KDL) cannot carry it, so it is never used even if it exists.
+    if recorded.chars().any(char::is_control) {
+        return (
+            fallback.to_owned(),
+            Some("recorded directory name has control characters".to_owned()),
+        );
+    }
     let path = Path::new(recorded);
     if path.is_absolute() {
         if path.is_dir() {
@@ -529,7 +598,7 @@ fn run_harness(harness: Harness, session_id: &str, cwd: &Path) -> Result<()> {
     command
         .arg("run")
         .arg(name.get_name())
-        .args(resume_arguments(harness, session_id))
+        .args(resume_arguments(harness, session_id, cwd))
         .current_dir(cwd)
         .env("PWD", cwd);
     run_foreground(&mut command)?;
@@ -680,13 +749,19 @@ pub(crate) fn restore_pane_args(
     args
 }
 
-/// Harness arguments that resume `session_id`.
-pub(crate) fn resume_arguments(harness: Harness, session_id: &str) -> Vec<OsString> {
-    let flag = match harness {
-        Harness::Codex => "resume",
-        _ => "--resume",
-    };
-    vec![flag.into(), session_id.into()]
+/// Harness arguments that resume `session_id` in `cwd`. Codex is told the directory
+/// explicitly (`-C`), so a fallback cwd does not trigger its directory-change prompt; Bkpr's
+/// Codex launcher also starts its app-server there.
+pub(crate) fn resume_arguments(harness: Harness, session_id: &str, cwd: &Path) -> Vec<OsString> {
+    match harness {
+        Harness::Codex => vec![
+            "resume".into(),
+            session_id.into(),
+            "-C".into(),
+            cwd.as_os_str().to_owned(),
+        ],
+        _ => vec!["--resume".into(), session_id.into()],
+    }
 }
 
 /// An OSC 2 window title. Zellij treats it as a soft pane title that the program may replace.
@@ -764,17 +839,19 @@ mod tests {
 
     #[test]
     fn resume_arguments_per_harness() {
+        let cwd = Path::new("/srv/x y");
         assert_eq!(
-            resume_arguments(Harness::Claude, "s1"),
+            resume_arguments(Harness::Claude, "s1", cwd),
             ["--resume", "s1"].map(OsString::from)
         );
         assert_eq!(
-            resume_arguments(Harness::Omp, "s2"),
+            resume_arguments(Harness::Omp, "s2", cwd),
             ["--resume", "s2"].map(OsString::from)
         );
+        // Codex names the directory explicitly so a fallback cwd does not prompt.
         assert_eq!(
-            resume_arguments(Harness::Codex, "s3"),
-            ["resume", "s3"].map(OsString::from)
+            resume_arguments(Harness::Codex, "s3", cwd),
+            ["resume", "s3", "-C", "/srv/x y"].map(OsString::from)
         );
     }
 
@@ -790,6 +867,30 @@ mod tests {
             panic!("expected restore-pane");
         };
         args
+    }
+
+    #[test]
+    fn restore_pane_args_roundtrip_values_with_dashes_and_equals() {
+        for (name, note) in [
+            ("-n", "-x"),
+            ("--name=evil", "--note=x"),
+            ("a=b", "k=v; -/gone=1"),
+            ("=", "="),
+            ("--", "--"),
+        ] {
+            let mut recorded = pane(None, "/tmp");
+            recorded.name = name.into();
+            let launch = PaneLaunch::Shell {
+                cwd: "/".into(),
+                note: Some(note.into()),
+                retry: false,
+            };
+            let parsed = parse_restore(restore_pane_args("w0t0p0", &recorded, &launch));
+            assert_eq!(parsed.name, name);
+            assert_eq!(parsed.note.as_deref(), Some(note));
+            assert_eq!(parsed.cwd.as_deref(), Some("/"));
+            assert!(!parsed.sticky);
+        }
     }
 
     #[test]
@@ -1107,6 +1208,17 @@ mod tests {
         assert!(note.is_none());
     }
 
+    #[test]
+    fn control_character_cwd_falls_back_like_a_missing_one() {
+        // A restore layout cannot represent it, even when the directory still exists.
+        let root = tempfile::tempdir().unwrap();
+        let odd = root.path().join("a\u{1}b");
+        fs::create_dir(&odd).unwrap();
+        let (cwd, note) = existing_cwd_with(odd.to_str(), Path::new("/home/x"));
+        assert_eq!(cwd, Path::new("/home/x"));
+        assert!(!note.unwrap().contains('\u{1}'));
+    }
+
     fn update(session_id: &str, sequence: u64) -> String {
         serde_json::to_string(&RecoveryUpdate {
             session_name: "main".into(),
@@ -1164,6 +1276,50 @@ mod tests {
         assert!(record_in(root.path(), &update("s1", 4)).is_err());
         record_in(root.path(), &update("s1", 5)).unwrap();
         assert_eq!(loaded(root.path()).unwrap().sequence, 5);
+    }
+
+    #[test]
+    fn same_owner_stale_sequence_reports_the_current_one() {
+        let root = tempfile::tempdir().unwrap();
+        claim_in(root.path(), "main", "s1", None).unwrap();
+        record_in(root.path(), &update("s1", 5)).unwrap();
+        let before = fs::read(file(root.path())).unwrap();
+        // A recreated owner model restarts at 1; it learns where to continue.
+        let error = record_in(root.path(), &update("s1", 1)).unwrap_err();
+        assert_eq!(error.downcast_ref::<StaleSequence>().unwrap().current, 5);
+        // An equal sequence with different contents is a reset too, not a retry.
+        let mut different: RecoveryUpdate = serde_json::from_str(&update("s1", 5)).unwrap();
+        different.workspaces.clear();
+        let error =
+            record_in(root.path(), &serde_json::to_string(&different).unwrap()).unwrap_err();
+        assert_eq!(error.downcast_ref::<StaleSequence>().unwrap().current, 5);
+        assert_eq!(fs::read(file(root.path())).unwrap(), before);
+        // A foreign owner is refused, never told the sequence.
+        let error = record_in(root.path(), &update("s2", 1)).unwrap_err();
+        assert!(error.downcast_ref::<StaleSequence>().is_none());
+        assert!(error.downcast_ref::<Unclaimed>().is_none());
+    }
+
+    #[test]
+    fn missing_state_root_is_unclaimed() {
+        let error = record_with(Err(StateUnavailable.into()), &update("s1", 1)).unwrap_err();
+        assert!(error.downcast_ref::<Unclaimed>().is_some());
+    }
+
+    #[test]
+    fn record_of_another_session_name_is_refused() {
+        // Guards against a session-name hash collision sharing one directory.
+        let root = tempfile::tempdir().unwrap();
+        claim_in(root.path(), "main", "s1", None).unwrap();
+        let mut other = loaded(root.path()).unwrap();
+        other.session_name = "other".into();
+        write_record(&session_directory(root.path(), "main"), &other).unwrap();
+        let before = fs::read(file(root.path())).unwrap();
+        assert!(load_in(root.path(), "main").is_err());
+        let error = record_in(root.path(), &update("s1", 1)).unwrap_err();
+        assert!(error.downcast_ref::<Unclaimed>().is_none());
+        assert!(claim_in(root.path(), "main", "s2", None).is_err());
+        assert_eq!(fs::read(file(root.path())).unwrap(), before);
     }
 
     #[test]

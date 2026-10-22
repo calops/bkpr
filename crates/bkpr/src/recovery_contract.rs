@@ -307,6 +307,13 @@ pub struct RestoreLeaf {
     pub args: Vec<String>,
 }
 
+/// A KDL v1 string literal. KDL v1 has no `\uXXXX` escape (serde_json's form for control
+/// characters), so C0/C1 controls and DEL are dropped rather than invalidating the layout.
+fn kdl_string(value: &str) -> Result<String, serde_json::Error> {
+    let visible: String = value.chars().filter(|c| !c.is_control()).collect();
+    serde_json::to_string(&visible)
+}
+
 /// Restored workspace ids sort before any later-allocated `…:workspace:bkpr:{n}` id.
 pub fn restored_workspace_id(session_id: &str, index: usize) -> String {
     format!("{session_id}:workspace:bkpr:0{index:04}")
@@ -322,7 +329,7 @@ pub fn recovery_layout(
     record: &RecoveryRecord,
     leaf: &mut dyn FnMut(&str, &RecoveryPane) -> RestoreLeaf,
 ) -> Result<String, serde_json::Error> {
-    let quote = |value: &str| serde_json::to_string(value);
+    let quote = kdl_string;
     let mut layout = crate::layout_prefix(plugin_url, sidebar_configuration, sidebar_percent)?;
     // Exactly one tab is focused: the first recorded one, else the first tab.
     let focused_tab = record
@@ -411,16 +418,21 @@ fn write_leaf(
     depth: usize,
     state: &mut LeafState<'_>,
 ) -> Result<(), serde_json::Error> {
-    let quote = |value: &str| serde_json::to_string(value);
+    let quote = kdl_string;
     let indent = " ".repeat(depth);
     let key = format!("{}p{}", state.prefix, state.next);
     state.next += 1;
     let restore = (state.leaf)(&key, pane);
+    write!(out, "{indent}pane").unwrap();
+    // A cwd with a control character cannot be written without changing the path, so it
+    // is omitted like a missing one; the leaf's own arguments still locate the directory.
+    if !restore.cwd.chars().any(char::is_control) {
+        write!(out, " cwd={}", quote(&restore.cwd)?).unwrap();
+    }
     write!(
         out,
-        "{indent}pane cwd={} command={} close_on_exit=true",
-        quote(&restore.cwd)?,
-        quote(&restore.program)?,
+        " command={} close_on_exit=true",
+        quote(&restore.program)?
     )
     .unwrap();
     if pane.focused && !state.focus_taken {
@@ -704,6 +716,57 @@ mod tests {
         }
         // No raw (unescaped) hostile text can terminate a string early.
         assert!(!layout.contains("cwd=\"/w\"x"));
+    }
+
+    #[test]
+    fn layout_strips_control_characters_kdl_cannot_escape() {
+        // serde_json would emit `\u0001`, which KDL v1 rejects for the whole layout.
+        let control_name = "a\u{1}b\u{1b}[31mc\u{7f}d\u{85}e\nf";
+        let mut odd = pane("x", true);
+        odd.cwd = Some("/w/a\u{1}b".into());
+        let mut plain = pane("y", false);
+        plain.cwd = Some("/w/plain".into());
+        let record = record(vec![RecoveryWorkspace {
+            name: control_name.into(),
+            tabs: vec![RecoveryTab {
+                name: control_name.into(),
+                focused: true,
+                layout: SplitNode::Split {
+                    direction: SplitDirection::Vertical,
+                    children: vec![
+                        SplitNode::Pane { pane: odd },
+                        SplitNode::Pane { pane: plain },
+                    ],
+                },
+            }],
+        }]);
+        let layout = recovery_layout(
+            "file:/bkpr.wasm",
+            &BTreeMap::new(),
+            12,
+            "sid",
+            &record,
+            &mut |key, pane| RestoreLeaf {
+                args: vec![format!("--name={}", pane.name), "--note=x\u{1}y".into()],
+                ..restore(key, pane)
+            },
+        )
+        .unwrap();
+        assert!(!layout.contains("\\u"), "{layout}");
+        assert!(!layout.contains("\\n"), "{layout}");
+        assert!(
+            !layout.chars().any(|c| c.is_control() && c != '\n'),
+            "{layout:?}"
+        );
+        assert!(layout.contains("tab name=\"ab[31mcdef\""), "{layout}");
+        assert!(
+            layout.contains("bkpr_workspace_name=\"ab[31mcdef\""),
+            "{layout}"
+        );
+        assert!(layout.contains("\"--note=xy\""), "{layout}");
+        // An unrepresentable cwd is omitted, like a missing one; others are kept.
+        assert!(!layout.contains("/w/a"), "{layout}");
+        assert!(layout.contains("cwd=\"/w/plain\""), "{layout}");
     }
 
     #[test]

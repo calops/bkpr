@@ -130,6 +130,16 @@ fn claim_record(
     }
 }
 
+/// Attaching to a live session never touches its record, so `--overwrite` does nothing.
+fn overwrite_ignored(session: &str, intent: Intent, live: bool, overwrite: bool) -> Option<String> {
+    (intent == Intent::Open && live && overwrite).then(|| {
+        format!(
+            "session {} is running; --overwrite has no effect when attaching",
+            shell_word(session)
+        )
+    })
+}
+
 fn not_resumable(error: &anyhow::Error) -> String {
     format!("this session will not be resumable: {error:#}")
 }
@@ -305,6 +315,9 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
     // Decide before requiring a terminal, so a non-interactive launch over a record gets
     // the specific refusal. A live session never reads its record (legacy attach path).
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if let Some(warning) = overwrite_ignored(session, intent, live, options.overwrite) {
+        eprintln!("bkpr: {warning}");
+    }
     let record = if live {
         None
     } else {
@@ -823,6 +836,16 @@ mod tests {
         let (mode, asked) = decide_with(Intent::Open, true, Some(record(2)), false, true, true);
         assert!(matches!(mode.unwrap(), StartMode::Attach));
         assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn overwrite_on_a_live_session_warns() {
+        let warning = overwrite_ignored("work", Intent::Open, true, true).unwrap();
+        assert!(warning.contains("--overwrite has no effect"), "{warning}");
+        assert!(warning.contains("work"), "{warning}");
+        assert!(!warning.contains('\n'));
+        assert_eq!(overwrite_ignored("work", Intent::Open, false, true), None);
+        assert_eq!(overwrite_ignored("work", Intent::Open, true, false), None);
     }
 
     #[test]

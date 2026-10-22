@@ -817,6 +817,13 @@ mod tests {
     }
 
     #[test]
+    fn recovery_resume_directory_selects_the_server_cwd() {
+        let plan = launch_plan(&args(&["resume", "s3", "-C", "/srv/x y"])).unwrap();
+        assert!(!plan.passthrough);
+        assert_eq!(plan.cwd, Path::new("/srv/x y"));
+    }
+
+    #[test]
     fn maintenance_commands_and_literal_prompts_are_preserved() {
         assert!(launch_plan(&args(&["mcp", "list"])).unwrap().passthrough);
         assert!(launch_plan(&args(&["--help"])).unwrap().passthrough);

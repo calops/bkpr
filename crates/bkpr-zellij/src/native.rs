@@ -325,6 +325,9 @@ const RECOVERY_RESULT_MILLIS: u64 = 10_000;
 const RECOVERY_ARGUMENT_BYTES: usize = 120 * 1024;
 /// `bkpr session-record` exit code for a session without a claimed record.
 const RECOVERY_UNCLAIMED_EXIT: i32 = 3;
+/// `bkpr session-record` exit code for an update older than the record from this same
+/// owner (its model was recreated); stdout carries the record's current sequence.
+const RECOVERY_STALE_EXIT: i32 = 4;
 
 /// The recoverable topology plus each included pane's removal key. Keys are terminal IDs
 /// with their resumable agent association; they never enter the serialized record.
@@ -558,7 +561,7 @@ impl RecoveryGate {
     }
 
     /// Settle the helper result for `sequence`; false for a stale or foreign result.
-    fn finish(&mut self, sequence: u64, code: Option<i32>, now: u64) -> bool {
+    fn finish(&mut self, sequence: u64, code: Option<i32>, stdout: &[u8], now: u64) -> bool {
         if self.in_flight != Some(sequence) {
             return false;
         }
@@ -578,6 +581,19 @@ impl RecoveryGate {
                 self.pending = None;
                 self.pending_keys.clear();
             }
+            Some(RECOVERY_STALE_EXIT) => match std::str::from_utf8(stdout)
+                .ok()
+                .and_then(|text| text.trim().parse::<u64>().ok())
+            {
+                // Continue past the record and resend without backoff, even if unchanged.
+                Some(current) => {
+                    self.sequence = self.sequence.max(current);
+                    self.pending = None;
+                    self.pending_keys.clear();
+                    self.retry_at = Some(now);
+                }
+                None => self.fail(now),
+            },
             _ => self.fail(now),
         }
         true
@@ -618,7 +634,7 @@ impl RecoveryGate {
 /// Sidebar error for a settled helper result. Unclaimed sessions disable recovery silently.
 fn recovery_failure(code: Option<i32>, stderr: &[u8]) -> Option<String> {
     match code {
-        Some(0 | RECOVERY_UNCLAIMED_EXIT) => None,
+        Some(0 | RECOVERY_UNCLAIMED_EXIT | RECOVERY_STALE_EXIT) => None,
         _ => Some(format!(
             "Session recovery update failed: {}",
             crate::ui::clean(&String::from_utf8_lossy(&stderr[..stderr.len().min(4_096)]))
@@ -2051,6 +2067,14 @@ impl Model {
         let Some(pane) = self.panes.get_mut(&id) else {
             return false;
         };
+        // Zellij reports a restored pane's spawn command whenever no foreground child runs,
+        // even after the helper exec'd into the shell: keep it unknown and re-query.
+        let command = if is_restore_helper(&command) {
+            pane.metadata_initialized = false;
+            Vec::new()
+        } else {
+            command
+        };
         if pane.command == command {
             return false;
         }
@@ -2707,11 +2731,14 @@ impl Owner {
         }
     }
 
-    fn recovery_result(&mut self, sequence: u64, code: Option<i32>, stderr: &[u8]) {
+    fn recovery_result(&mut self, sequence: u64, code: Option<i32>, stdout: &[u8], stderr: &[u8]) {
         let Some(model) = self.model.as_mut() else {
             return;
         };
-        if !model.recovery.finish(sequence, code, clock_millis()) {
+        if !model
+            .recovery
+            .finish(sequence, code, stdout, clock_millis())
+        {
             return;
         }
         let error = recovery_failure(code, stderr);
@@ -2799,7 +2826,10 @@ impl Owner {
         for id in metadata {
             let cwd = get_pane_cwd(PaneId::Terminal(id));
             let command = get_pane_running_command(PaneId::Terminal(id));
-            let initialized = cwd.is_ok() && command.is_ok();
+            let initialized = cwd.is_ok()
+                && command
+                    .as_ref()
+                    .is_ok_and(|command| !is_restore_helper(command));
             if let Ok(cwd) = cwd {
                 let cwd = cwd.to_string_lossy().into_owned();
                 changed |= model.observe_cwd(id, cwd);
@@ -3277,7 +3307,7 @@ impl Owner {
                     .get("native_recovery")
                     .and_then(|sequence| sequence.parse::<u64>().ok())
                 {
-                    self.recovery_result(sequence, code, &stderr);
+                    self.recovery_result(sequence, code, &stdout, &stderr);
                     return false;
                 }
                 if context
@@ -3826,6 +3856,11 @@ impl Owner {
 
 fn terminal_id(id: &str) -> Option<u32> {
     id.strip_prefix("terminal_")?.parse().ok()
+}
+
+/// The `bkpr restore-pane --key=…` helper a restore layout spawns for each leaf.
+fn is_restore_helper(command: &[String]) -> bool {
+    matches!(command, [_, helper, key, ..] if helper == "restore-pane" && key.starts_with("--key="))
 }
 
 fn is_shell(command: &[String]) -> bool {
@@ -5696,6 +5731,36 @@ mod tests {
     }
 
     #[test]
+    fn restore_helper_command_stays_unknown_until_requeried() {
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
+        model.panes.get_mut(&1).unwrap().metadata_initialized = true;
+        // Zellij reports a restored pane's spawn command even after its exec into the shell.
+        let helper = [
+            "/nix/store/x-bkpr/bin/bkpr",
+            "restore-pane",
+            "--key=w0t0p0",
+            "--name=a",
+        ];
+        model.observe_command(1, helper.map(str::to_owned).to_vec());
+        let pane = &model.panes[&1];
+        assert!(pane.command.is_empty() && !pane.shell);
+        assert!(
+            !pane.metadata_initialized,
+            "re-queried on the next reconcile"
+        );
+        assert_eq!(
+            model.snapshot(None, 1).panes[0].description,
+            "Native Zellij terminal · execution unknown"
+        );
+        assert!(model.observe_command(1, vec!["fish".to_owned()]));
+        assert!(model.panes[&1].shell);
+        // Only the helper's own argv shape is unknown; other `restore-pane` words are kept.
+        assert!(model.observe_command(1, vec!["grep".to_owned(), "restore-pane".to_owned()]));
+        assert_eq!(model.panes[&1].command, ["grep", "restore-pane"]);
+    }
+
+    #[test]
     fn disappearing_execution_clears_agent_and_replacement_has_no_semantic_status() {
         let mut model = model();
         model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
@@ -6666,7 +6731,7 @@ mod tests {
             SESSION
         );
         assert_eq!(first.sequence, 1);
-        assert!(gate.finish(1, Some(0), 0));
+        assert!(gate.finish(1, Some(0), b"", 0));
         assert_eq!(
             gate.offer(recovery_view(&[(1, None), (2, None)]), t + 200, SESSION),
             RecoveryDecision::WaitUntil(gate.last_sent + RECOVERY_COALESCE_MILLIS)
@@ -6699,7 +6764,7 @@ mod tests {
     fn removal_waits_for_grace() {
         let mut gate = RecoveryGate::default();
         sent(gate.offer(recovery_view(&[(1, None), (2, None)]), 10_000, SESSION));
-        gate.finish(1, Some(0), 0);
+        gate.finish(1, Some(0), b"", 0);
         let t = 20_000;
         let removed = || recovery_view(&[(1, None)]);
         assert_eq!(
@@ -6714,7 +6779,7 @@ mod tests {
         assert_eq!(update.workspaces, removed().workspaces);
         // The hold lasts until the removal is written, so a retry never restarts grace.
         assert_eq!(gate.held_since, Some(t));
-        assert!(gate.finish(update.sequence, Some(0), t + 3_000));
+        assert!(gate.finish(update.sequence, Some(0), b"", t + 3_000));
         assert_eq!(gate.held_since, None);
     }
 
@@ -6722,7 +6787,7 @@ mod tests {
     fn association_loss_waits_for_grace() {
         let mut gate = RecoveryGate::default();
         sent(gate.offer(recovery_view(&[(1, Some("agent-1"))]), 10_000, SESSION));
-        gate.finish(1, Some(0), 0);
+        gate.finish(1, Some(0), b"", 0);
         let t = 20_000;
         assert_eq!(
             gate.offer(recovery_view(&[(1, None)]), t, SESSION),
@@ -6731,7 +6796,7 @@ mod tests {
         // Gaining an association is an addition and only coalesces.
         let mut gate = RecoveryGate::default();
         sent(gate.offer(recovery_view(&[(1, None)]), 10_000, SESSION));
-        gate.finish(1, Some(0), 0);
+        gate.finish(1, Some(0), b"", 0);
         sent(gate.offer(recovery_view(&[(1, Some("agent-1"))]), t, SESSION));
     }
 
@@ -6739,7 +6804,7 @@ mod tests {
     fn removal_reverted_within_grace_cancels_hold() {
         let mut gate = RecoveryGate::default();
         sent(gate.offer(recovery_view(&[(1, None), (2, None)]), 10_000, SESSION));
-        gate.finish(1, Some(0), 0);
+        gate.finish(1, Some(0), b"", 0);
         let t = 20_000;
         assert!(matches!(
             gate.offer(recovery_view(&[(1, None)]), t, SESSION),
@@ -6770,11 +6835,11 @@ mod tests {
             RecoveryDecision::WaitUntil(_)
         ));
         assert!(
-            !gate.finish(2, Some(0), 0),
+            !gate.finish(2, Some(0), b"", 0),
             "foreign sequence must not clear it"
         );
         assert_eq!(gate.in_flight, Some(1));
-        assert!(gate.finish(1, Some(0), 0));
+        assert!(gate.finish(1, Some(0), b"", 0));
         assert_eq!(gate.in_flight, None);
         assert_eq!(sent(gate.offer(next(), t + 5_000, SESSION)).sequence, 2);
     }
@@ -6812,7 +6877,7 @@ mod tests {
         let t = 10_000;
         sent(gate.offer(view(), t, SESSION));
         let failed = t + 100;
-        assert!(gate.finish(1, Some(1), failed));
+        assert!(gate.finish(1, Some(1), b"", failed));
         assert!(gate.acknowledged.is_none() && gate.pending.is_none());
         assert_eq!(
             gate.offer(view(), failed + RECOVERY_RETRY_MILLIS - 1, SESSION),
@@ -6824,7 +6889,7 @@ mod tests {
         let mut now = failed + RECOVERY_RETRY_MILLIS;
         let mut delays = Vec::new();
         for sequence in 2..9 {
-            assert!(gate.finish(sequence, Some(1), now));
+            assert!(gate.finish(sequence, Some(1), b"", now));
             delays.push(gate.backoff);
             now = gate.retry_at.unwrap();
             sent(gate.offer(view(), now, SESSION));
@@ -6833,7 +6898,7 @@ mod tests {
             delays,
             [2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]
         );
-        assert!(gate.finish(9, Some(0), now));
+        assert!(gate.finish(9, Some(0), b"", now));
         assert_eq!((gate.backoff, gate.retry_at), (0, None));
         assert_eq!(
             gate.acknowledged.as_ref().map(|update| update.sequence),
@@ -6849,27 +6914,27 @@ mod tests {
     fn removal_detection_compares_against_the_acknowledged_baseline() {
         let mut gate = RecoveryGate::default();
         sent(gate.offer(recovery_view(&[(1, None), (2, None)]), 10_000, SESSION));
-        gate.finish(1, Some(0), 10_000);
+        gate.finish(1, Some(0), b"", 10_000);
         // An unwritten addition is not a baseline: dropping pane 3 again is no removal.
         sent(gate.offer(
             recovery_view(&[(1, None), (2, None), (3, None)]),
             20_000,
             SESSION,
         ));
-        gate.finish(2, Some(1), 20_000);
+        gate.finish(2, Some(1), b"", 20_000);
         assert_eq!(
             gate.offer(recovery_view(&[(1, None)]), 30_000, SESSION),
             RecoveryDecision::WaitUntil(30_000 + RECOVERY_REMOVAL_GRACE_MILLIS)
         );
         let mut gate = RecoveryGate::default();
         sent(gate.offer(recovery_view(&[(1, None), (2, None)]), 10_000, SESSION));
-        gate.finish(1, Some(0), 10_000);
+        gate.finish(1, Some(0), b"", 10_000);
         sent(gate.offer(
             recovery_view(&[(1, None), (2, None), (3, None)]),
             20_000,
             SESSION,
         ));
-        gate.finish(2, Some(1), 20_000);
+        gate.finish(2, Some(1), b"", 20_000);
         sent(gate.offer(recovery_view(&[(1, None), (2, None)]), 30_000, SESSION));
     }
 
@@ -6979,10 +7044,41 @@ mod tests {
     }
 
     #[test]
+    fn stale_sequence_from_a_recreated_owner_jumps_past_the_record() {
+        // A recreated model restarts at sequence 1 while the record is at 41.
+        let mut gate = RecoveryGate::default();
+        let view = || recovery_view(&[(1, None)]);
+        let t = 10_000;
+        assert_eq!(sent(gate.offer(view(), t, SESSION)).sequence, 1);
+        assert!(gate.finish(1, Some(RECOVERY_STALE_EXIT), b"41\n", t + 100));
+        assert_eq!(gate.backoff, 0);
+        assert!(gate.pending.is_none() && gate.acknowledged.is_none());
+        // Resent promptly (only the usual coalescing), past the record's sequence.
+        let resend = sent(gate.offer(view(), t + RECOVERY_COALESCE_MILLIS, SESSION));
+        assert_eq!(
+            (resend.sequence, resend.workspaces),
+            (42, view().workspaces)
+        );
+        assert_eq!(recovery_failure(Some(RECOVERY_STALE_EXIT), b""), None);
+        // Even unchanged contents are resent after a stale result.
+        assert!(gate.finish(42, Some(0), b"", t + 1_100));
+        sent(gate.offer(recovery_view(&[(1, None), (2, None)]), t + 2_100, SESSION));
+        assert!(gate.finish(43, Some(RECOVERY_STALE_EXIT), b"50", t + 2_200));
+        let resend = sent(gate.offer(view(), t + 3_200, SESSION));
+        assert_eq!(resend.sequence, 51);
+        // The sequence never moves backwards; unreadable output is an ordinary failure.
+        assert!(gate.finish(51, Some(RECOVERY_STALE_EXIT), b"7", t + 3_300));
+        assert_eq!(gate.sequence, 51);
+        sent(gate.offer(view(), t + 4_300, SESSION));
+        assert!(gate.finish(52, Some(RECOVERY_STALE_EXIT), b"x", t + 4_400));
+        assert_eq!(gate.backoff, RECOVERY_RETRY_MILLIS);
+    }
+
+    #[test]
     fn unclaimed_session_disables_recovery_silently() {
         let mut gate = RecoveryGate::default();
         sent(gate.offer(recovery_view(&[(1, None)]), 10_000, SESSION));
-        assert!(gate.finish(1, Some(3), 0));
+        assert!(gate.finish(1, Some(3), b"", 0));
         assert!(gate.disabled);
         assert_eq!(
             gate.offer(recovery_view(&[(1, None), (2, None)]), 20_000, SESSION),
@@ -7360,7 +7456,7 @@ mod tests {
         let mut gate = RecoveryGate::default();
         let t = 50_000;
         sent(gate.offer(first, t, SESSION));
-        assert!(gate.finish(1, Some(0), t));
+        assert!(gate.finish(1, Some(0), b"", t));
 
         // Any detected agent ends the link for good, even after that agent leaves.
         model.observe_roots(BTreeMap::from([(1, 101), (2, 102)]));
@@ -7612,7 +7708,7 @@ mod tests {
             3_000,
             SESSION,
         ));
-        assert!(gate.finish(update.sequence, Some(0), 3_000));
+        assert!(gate.finish(update.sequence, Some(0), b"", 3_000));
         assert_eq!(gate.restore_expected, None);
         // Afterwards behavior is unchanged: removals wait out only the ordinary grace.
         assert_eq!(
@@ -7644,7 +7740,7 @@ mod tests {
         let update = sent(gate.offer(recovery_view(&[(1, None)]), deadline, SESSION));
         assert_eq!(update.sequence, 1);
         // A failed first write keeps the baseline; its deadline has already passed.
-        assert!(gate.finish(1, Some(1), deadline));
+        assert!(gate.finish(1, Some(1), b"", deadline));
         assert_eq!(gate.restore_expected, Some(3));
         let retry = gate.retry_at.unwrap();
         sent(gate.offer(recovery_view(&[(1, None)]), retry, SESSION));
