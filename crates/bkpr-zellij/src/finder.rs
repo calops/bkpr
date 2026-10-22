@@ -716,6 +716,7 @@ impl Finder {
             self.layout = Layout::new(columns.to_fixed(0), rows.to_fixed(0), self.compact);
         }
         let inputs = std::mem::take(&mut state.inputs);
+        self.theme.prepare_snapshot(&state.snapshot);
         self.state = Some(state);
         if data_changed || opening {
             self.search();

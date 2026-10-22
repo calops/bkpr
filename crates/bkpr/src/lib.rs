@@ -74,6 +74,10 @@ pub struct ProjectIdentity {
     pub id: String,
     pub name: String,
     pub repository: bool,
+    /// Session-owner assignment for this canonical repository, independent of its labels.
+    // LEGACY_COMPAT(next-major): old owner snapshots have no assignment and stay uncolored.
+    #[serde(default)]
+    pub color_slot: Option<usize>,
 }
 
 /// Line counts for a committed tree diff. Binary changes have no line counts.
@@ -283,6 +287,20 @@ pub struct Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // LEGACY_COMPAT(next-major): pre-allocation owner frames remain readable.
+    #[test]
+    fn legacy_project_identity_has_no_fabricated_color_assignment() {
+        let project: ProjectIdentity = serde_json::from_value(serde_json::json!({
+            "id": "/repo/.git", "name": "Repo", "repository": true
+        }))
+        .unwrap();
+        assert_eq!(project.color_slot, None);
+        let mut assigned = project;
+        assigned.color_slot = Some(17);
+        let recovered: ProjectIdentity =
+            serde_json::from_slice(&serde_json::to_vec(&assigned).unwrap()).unwrap();
+        assert_eq!(recovered, assigned);
+    }
 
     #[test]
     fn sidebar_percent_rounds_cell_targets_without_zero_or_overflow() {

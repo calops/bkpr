@@ -300,6 +300,7 @@ mod tests {
                     id: "git:engine".into(),
                     name: "Engine".into(),
                     repository: true,
+                    color_slot: Some(0),
                 }),
                 ci: None,
             }],

@@ -1,6 +1,10 @@
 //! Cached terminal-native styles, with surfaces shifted away from the reported foreground.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+
+// Chromatic terminal entries only: black/gray/white can disappear against native surfaces.
+const PROJECT_ACCENTS: [usize; 12] = [4, 5, 6, 3, 13, 12, 2, 1, 9, 10, 11, 14];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalColors {
@@ -21,10 +25,21 @@ pub struct Theme {
     pub added: String,
     pub deleted: String,
     pub accents: [String; 16],
+    project_colors: Vec<String>,
+    project_capacity: usize,
+    project_colors_exhausted: bool,
 }
 
 impl Default for Theme {
     fn default() -> Self {
+        let accents: [String; 16] = std::array::from_fn(|index| {
+            let code = if index < 8 {
+                30 + index
+            } else {
+                90 + index - 8
+            };
+            format!("\x1b[22;{code}m")
+        });
         Self {
             colors: TerminalColors::default(),
             base: "\x1b[22;39;49m".into(),
@@ -35,14 +50,13 @@ impl Default for Theme {
             bright: "\x1b[22;39m".into(),
             added: "\x1b[22;32m".into(),
             deleted: "\x1b[22;31m".into(),
-            accents: std::array::from_fn(|index| {
-                let code = if index < 8 {
-                    30 + index
-                } else {
-                    90 + index - 8
-                };
-                format!("\x1b[22;{code}m")
-            }),
+            project_colors: PROJECT_ACCENTS
+                .iter()
+                .map(|index| accents[*index].clone())
+                .collect(),
+            project_capacity: PROJECT_ACCENTS.len(),
+            project_colors_exhausted: true,
+            accents,
         }
     }
 }
@@ -90,6 +104,91 @@ fn enables_rgb(colors: &TerminalColors) -> bool {
 }
 
 impl Theme {
+    /// Cache styles when assignments arrive, not while painting names or dots.
+    pub fn prepare_projects(&mut self, slots: impl Iterator<Item = usize>) {
+        let required = slots.max().map_or(0, |slot| slot.saturating_add(1));
+        if required > self.project_capacity {
+            self.project_capacity = required;
+            if !self.project_colors_exhausted {
+                self.rebuild_project_colors();
+            }
+        }
+    }
+
+    pub fn prepare_snapshot(&mut self, snapshot: &bkpr::Snapshot) {
+        self.prepare_projects(
+            snapshot
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.projects.iter())
+                .chain(
+                    snapshot
+                        .panes
+                        .iter()
+                        .filter_map(|pane| pane.project.as_ref()),
+                )
+                .filter(|project| project.repository)
+                .filter_map(|project| project.color_slot),
+        );
+    }
+
+    pub fn project_color(&self, slot: Option<usize>) -> &str {
+        slot.and_then(|slot| self.project_colors.get(slot))
+            .map_or(self.muted.as_str(), String::as_str)
+    }
+
+    fn rebuild_project_colors(&mut self) {
+        let mut styles = Vec::new();
+        let mut seen = BTreeSet::new();
+        let bg = self
+            .colors
+            .background
+            .map(|bg| self.colors.foreground.map_or(bg, |fg| surface(fg, bg)));
+        for index in PROJECT_ACCENTS {
+            let style = &self.accents[index];
+            if self.colors.truecolor
+                && self.colors.ansi[index]
+                    .zip(bg)
+                    .is_some_and(|(color, bg)| blend(color, bg, 75) == bg)
+            {
+                continue;
+            }
+            // Confirmed normal/bright entries may be the exact same terminal RGB.
+            if seen.insert(style.clone()) {
+                styles.push(style.clone());
+            }
+        }
+        if let Some(bg) = bg.filter(|_| self.colors.truecolor) {
+            // Prefer visibly separated shades, then use the remaining 35–100% blends.
+            // This finite terminal-derived gamut is exhausted honestly, never modulo-reused.
+            for percent in [90, 60, 45].into_iter().chain((35..=100).rev()) {
+                if styles.len() >= self.project_capacity {
+                    break;
+                }
+                for index in PROJECT_ACCENTS {
+                    let Some(color) = self.colors.ansi[index] else {
+                        continue;
+                    };
+                    let color = blend(color, bg, percent);
+                    if color == bg {
+                        continue;
+                    }
+                    let style = foreground(color);
+                    if seen.insert(style.clone()) {
+                        styles.push(style);
+                        if styles.len() >= self.project_capacity {
+                            break;
+                        }
+                    }
+                }
+            }
+            self.project_colors_exhausted = styles.len() < self.project_capacity;
+        } else {
+            self.project_colors_exhausted = true;
+        }
+        self.project_colors = styles;
+    }
+
     /// Recompute escapes only when terminal metadata changes, never while painting rows.
     pub fn update(&mut self, colors: &TerminalColors) -> bool {
         if self.colors == *colors {
@@ -125,6 +224,8 @@ impl Theme {
             }
         }
         next.colors = colors.clone();
+        next.project_capacity = self.project_capacity;
+        next.rebuild_project_colors();
         *self = next;
         true
     }
@@ -133,6 +234,97 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_project_palette_uses_every_chromatic_entry_before_honest_exhaustion() {
+        let mut theme = Theme::default();
+        theme.prepare_projects(0..30);
+        let styles: BTreeSet<_> = (0..12)
+            .map(|slot| theme.project_color(Some(slot)))
+            .collect();
+        assert_eq!(styles.len(), 12);
+        assert_eq!(theme.project_color(Some(0)), theme.accents[4]);
+        for index in [0, 7, 8, 15] {
+            assert!(!styles.contains(theme.accents[index].as_str()));
+        }
+        for slot in 12..30 {
+            assert_eq!(theme.project_color(Some(slot)), theme.muted);
+        }
+        assert_eq!(theme.project_color(None), theme.muted);
+    }
+
+    fn project_terminal_colors() -> TerminalColors {
+        TerminalColors {
+            truecolor: true,
+            foreground: Some([230, 230, 230]),
+            background: Some([12, 18, 24]),
+            ansi: std::array::from_fn(|index| {
+                Some([
+                    40 + index as u8 * 11,
+                    220 - index as u8 * 9,
+                    70 + index as u8 * 7,
+                ])
+            }),
+        }
+    }
+
+    #[test]
+    fn project_rgb_overflow_grows_on_demand_without_recoloring_existing_slots() {
+        let colors = project_terminal_colors();
+        let mut theme = Theme::default();
+        theme.update(&colors);
+        theme.prepare_projects(0..20);
+        let first = theme.project_colors.clone();
+        theme.prepare_projects(0..100);
+        assert_eq!(&theme.project_colors[..first.len()], first);
+        assert_eq!(theme.project_colors.len(), 100);
+        let unique: BTreeSet<_> = theme
+            .project_colors
+            .iter()
+            .map(|style| rgb(style))
+            .collect();
+        assert_eq!(unique.len(), 100);
+        assert_ne!(theme.project_color(Some(99)), theme.muted);
+        let allocation = theme.project_colors.as_ptr();
+        assert!(!theme.update(&colors));
+        theme.prepare_projects(0..100);
+        assert_eq!(allocation, theme.project_colors.as_ptr());
+
+        // Capability loss must not leave derived RGB behind, and reacquiring it
+        // restores the requested capacity even without a new project snapshot.
+        theme.update(&TerminalColors::default());
+        assert_eq!(theme.project_color(Some(12)), theme.muted);
+        theme.update(&colors);
+        assert_eq!(theme.project_colors.len(), 100);
+        assert_eq!(&theme.project_colors[..first.len()], first);
+    }
+
+    #[test]
+    fn duplicate_terminal_rgb_entries_are_removed_before_derived_project_shades() {
+        let mut colors = project_terminal_colors();
+        colors.ansi[5] = colors.ansi[4];
+        let mut theme = Theme::default();
+        theme.update(&colors);
+        theme.prepare_projects(0..40);
+        let unique: BTreeSet<_> = theme
+            .project_colors
+            .iter()
+            .map(|style| rgb(style))
+            .collect();
+        assert_eq!(unique.len(), 40);
+        assert_ne!(theme.project_color(Some(0)), theme.project_color(Some(1)));
+
+        // A custom monochrome palette has a genuinely finite, quantized gamut.
+        // Requests beyond it are muted rather than modulo-reusing assigned colors.
+        colors.background = Some([0; 3]);
+        colors.foreground = Some([0; 3]);
+        colors.ansi = [Some([1; 3]); 16];
+        theme.update(&colors);
+        theme.prepare_projects(std::iter::once(usize::MAX));
+        assert!(theme.project_colors_exhausted);
+        assert_eq!(theme.project_colors.len(), 1);
+        assert_eq!(theme.project_color(Some(1)), theme.muted);
+        assert_eq!(theme.project_color(Some(usize::MAX)), theme.muted);
+    }
 
     #[test]
     fn unknown_or_limited_colors_never_emit_rgb() {

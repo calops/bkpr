@@ -1351,6 +1351,15 @@ impl Overlay {
         }
         let layout = self.layout.get_mut();
         let source_rows = tooltip.content.rows();
+        self.theme.prepare_projects(
+            source_rows
+                .iter()
+                .flat_map(|row| row.spans.iter().chain(&row.suffix).chain(&row.right))
+                .filter_map(|span| match &span.color {
+                    ui::PopupColor::Project(project) if project.repository => project.color_slot,
+                    _ => None,
+                }),
+        );
         self.refresh_requested.retain(|target| {
             tooltip.visible
                 && source_rows

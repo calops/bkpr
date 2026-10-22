@@ -127,7 +127,11 @@ The preview links the PR number next to the repository path, followed by its tit
 
 ## Repository and CI details
 
-Solid project dots identify repositories; project colors stay stable across branch changes and linked worktrees. The second line follows the foreground program's actual CWD and shows its branch, available whole-branch additions/deletions and an independent CI badge. Outside Git, it shows the program description instead. Collapsed workspaces summarize their harness and CI state.
+Solid project dots identify repositories. Colors are assigned across the whole session, not separately per workspace: the same canonical repository shares a color across linked worktrees and workspaces, while different repositories receive distinct available colors. Existing assignments survive branch changes, pane moves, metadata refreshes and owner recovery. Closing a repository's last pane frees its slot without recoloring the others.
+
+Limited terminals use twelve chromatic ANSI colors. With query-confirmed truecolor, Bkpr deduplicates known identical palette entries and derives additional shades from your terminal's own colors. If the available palette is exhausted, additional repositories stay muted rather than receiving a duplicate assigned color.
+
+The second line follows the foreground program's actual CWD and shows its branch, available whole-branch additions/deletions and an independent CI badge. Outside Git, it shows the program description instead. Collapsed workspaces summarize their harness and CI state.
 
 Branch totals compare committed `HEAD` with its merge-base, not uncommitted changes or the base branch's current tip. They cover the whole repository, including when the foreground CWD is nested. When a PR is associated, its target commit is authoritative, including stacked PRs. Otherwise, local Git configuration and refs choose the base. Bkpr never fetches automatically: a known target missing locally makes totals unavailable rather than falling back to main.
 

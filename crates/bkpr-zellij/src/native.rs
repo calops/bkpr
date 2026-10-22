@@ -630,6 +630,13 @@ struct Model {
     #[serde(default)]
     queries: BTreeSet<String>,
     projects: BTreeMap<String, Project>,
+    /// Canonical repository assignments, released only after their last pane leaves.
+    // LEGACY_COMPAT(next-major): seed assignments when recovering pre-allocation models.
+    #[serde(default)]
+    project_colors: BTreeMap<String, usize>,
+    // Preserve identity reservations through asynchronous metadata invalidation/CWD changes.
+    #[serde(default)]
+    project_color_repositories: BTreeMap<u32, String>,
     project_error: Option<String>,
     frontends: BTreeSet<u32>,
     receipts: BTreeMap<String, Receipt>,
@@ -657,7 +664,7 @@ impl Project {
             && self.head_sha.as_deref() == Some(ci.local_head_sha.as_str())
     }
 
-    fn identity(&self, cwd: &str) -> ProjectIdentity {
+    fn identity(&self, cwd: &str, colors: &BTreeMap<String, usize>) -> ProjectIdentity {
         ProjectIdentity {
             id: self
                 .repository_id
@@ -665,6 +672,11 @@ impl Project {
                 .unwrap_or_else(|| format!("directory:{cwd}")),
             name: self.name.clone(),
             repository: self.repository && self.repository_id.is_some(),
+            color_slot: self
+                .repository_id
+                .as_ref()
+                .filter(|_| self.repository)
+                .and_then(|id| colors.get(id).copied()),
         }
     }
 }
@@ -674,6 +686,9 @@ impl Model {
         match serde_json::from_slice::<Self>(bytes) {
             Ok(mut model) => {
                 model.invalidate_unidentified_ci();
+                if model.sync_project_colors() {
+                    model.revision += 1;
+                }
                 Ok(model)
             }
             Err(original_error) => {
@@ -701,6 +716,9 @@ impl Model {
                 }
                 model.revision += 1;
                 model.invalidate_unidentified_ci();
+                if model.sync_project_colors() {
+                    model.revision += 1;
+                }
                 Ok(model)
             }
         }
@@ -759,6 +777,8 @@ impl Model {
             queries: BTreeSet::new(),
             failed_projects: BTreeSet::new(),
             projects: BTreeMap::new(),
+            project_colors: BTreeMap::new(),
+            project_color_repositories: BTreeMap::new(),
             frontends: BTreeSet::new(),
             receipts: BTreeMap::new(),
             project_error: None,
@@ -1017,7 +1037,12 @@ impl Model {
                     branch_changes: project.and_then(|project| project.branch_changes.clone()),
                     project: project
                         .filter(|project| project.repository && project.repository_id.is_some())
-                        .map(|project| project.identity(pane.cwd.as_deref().unwrap_or_default())),
+                        .map(|project| {
+                            project.identity(
+                                pane.cwd.as_deref().unwrap_or_default(),
+                                &self.project_colors,
+                            )
+                        }),
                     ci: project.and_then(|project| project.ci.clone()),
                 }
             })
@@ -1045,7 +1070,7 @@ impl Model {
                                     project.repository_id.as_deref().unwrap_or(cwd),
                                     project.repository,
                                 ),
-                                project.identity(cwd),
+                                project.identity(cwd, &self.project_colors),
                             )
                         })
                     })
@@ -1297,6 +1322,48 @@ impl Model {
         true
     }
 
+    fn sync_project_colors(&mut self) -> bool {
+        self.project_color_repositories
+            .retain(|pane, _| self.panes.contains_key(pane));
+        for (id, pane) in &self.panes {
+            let Some(project) = pane.cwd.as_ref().and_then(|cwd| self.projects.get(cwd)) else {
+                // A branch refresh or worktree CWD change must not free a live reservation
+                // before the asynchronous canonical-identity result arrives.
+                continue;
+            };
+            if let Some(repository) = project
+                .repository_id
+                .as_ref()
+                .filter(|_| project.repository)
+            {
+                if self.project_color_repositories.get(id) != Some(repository) {
+                    self.project_color_repositories
+                        .insert(*id, repository.clone());
+                }
+            } else {
+                self.project_color_repositories.remove(id);
+            }
+        }
+        let live: BTreeSet<_> = self.project_color_repositories.values().collect();
+        let previous_count = self.project_colors.len();
+        self.project_colors.retain(|id, _| live.contains(id));
+        let mut changed = previous_count != self.project_colors.len();
+        let mut occupied: BTreeSet<_> = self.project_colors.values().copied().collect();
+        let mut available = 0;
+        for repository in live {
+            if self.project_colors.contains_key(repository) {
+                continue;
+            }
+            while occupied.contains(&available) {
+                available += 1;
+            }
+            self.project_colors.insert(repository.clone(), available);
+            changed = true;
+            occupied.insert(available);
+        }
+        changed
+    }
+
     fn sync_project_watches(&mut self, owner: u32) -> bool {
         let directories: BTreeSet<_> = self
             .panes
@@ -1315,6 +1382,7 @@ impl Model {
         }
         self.projects.retain(|cwd, _| directories.contains(cwd));
         self.failed_projects.retain(|cwd| directories.contains(cwd));
+        self.sync_project_colors();
         let watches: BTreeMap<_, _> = directories
             .into_iter()
             .map(|cwd| {
@@ -1386,6 +1454,7 @@ impl Model {
             self.projects.insert(update.cwd.clone(), project);
             self.failed_projects.remove(&update.cwd);
             self.project_error = None;
+            self.sync_project_colors();
             changed
         } else {
             let error = format!(
@@ -3577,6 +3646,7 @@ mod tests {
                 .projects
                 .insert(cwd.to_owned(), serde_json::from_value(metadata).unwrap());
         }
+        model.sync_project_colors();
         let snapshot = model.snapshot(None, 1);
         assert_eq!(snapshot.panes[0].project, snapshot.panes[1].project);
         assert_ne!(snapshot.panes[0].project, snapshot.panes[2].project);
@@ -3623,6 +3693,201 @@ mod tests {
         assert!(snapshot.panes[0].branch_changes.is_none());
         assert!(snapshot.panes[0].ci.is_none());
         assert_eq!(snapshot.panes[1].ci.as_ref().unwrap().head_sha, "current");
+    }
+
+    fn assign_repository(model: &mut Model, pane: u32, cwd: &str, repository: &str) {
+        model.observe_cwd(pane, cwd.to_owned());
+        model.sync_project_watches(5);
+        let project = serde_json::from_value(serde_json::json!({
+            "name": "same-name", "repository": true, "repository_id": repository,
+            "branch": "main"
+        }))
+        .unwrap();
+        assert!(model.apply_project(project_update(model, cwd, project)));
+    }
+
+    #[test]
+    fn project_slots_are_session_wide_and_preserve_formerly_colliding_repositories() {
+        let mut model = model();
+        model.reconcile(
+            &[tab(10, 0), tab(20, 1)],
+            &manifest(&[
+                (0, [1, 2, 3, 5, 6, 7].into_iter().map(pane).collect()),
+                (1, std::iter::once(4).chain(8..=14).map(pane).collect()),
+            ]),
+        );
+        for id in 1..=13 {
+            assign_repository(
+                &mut model,
+                id,
+                &format!("/worktree-{id}"),
+                &format!("/repo-{}/.git", id - 1),
+            );
+        }
+        assign_repository(&mut model, 14, "/linked-worktree", "/repo-0/.git");
+        let before = model.project_colors.clone();
+        assert_eq!(before.len(), 13);
+        assert_eq!(before.values().copied().collect::<BTreeSet<_>>().len(), 13);
+        // These actual canonical IDs both mapped to old FNV slot1 (ANSI5).
+        let old_slot = |id: &str| {
+            id.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+            }) % 6
+        };
+        assert_eq!(old_slot("/repo-1/.git"), old_slot("/repo-3/.git"));
+        assert_ne!(before["/repo-1/.git"], before["/repo-3/.git"]);
+        let snapshot = model.snapshot(None, 1);
+        assert_eq!(snapshot.workspaces.len(), 2);
+        assert_ne!(
+            snapshot.panes[1].workspace_id,
+            snapshot.panes[3].workspace_id
+        );
+        assert_eq!(snapshot.panes[0].project, snapshot.panes[13].project);
+        let mut theme = crate::palette::Theme::default();
+        theme.prepare_snapshot(&snapshot);
+        let styles: BTreeSet<_> = snapshot.panes[..12]
+            .iter()
+            .map(|pane| crate::ui::project_color(pane.project.as_ref(), &theme))
+            .collect();
+        assert_eq!(styles.len(), 12);
+        assert_eq!(
+            crate::ui::project_color(snapshot.panes[12].project.as_ref(), &theme),
+            theme.muted
+        );
+        for workspace in &snapshot.workspaces {
+            for project in &workspace.projects {
+                assert_eq!(project.color_slot, before.get(&project.id).copied());
+            }
+        }
+
+        // Moving a pane across workspaces, tab reordering and labels do not reassign.
+        model.reconcile(
+            &[tab(20, 0), tab(10, 1)],
+            &manifest(&[
+                (0, (8..=14).chain(std::iter::once(1)).map(pane).collect()),
+                (1, (2..=7).map(pane).collect()),
+            ]),
+        );
+        model
+            .workspaces
+            .values_mut()
+            .for_each(|workspace| workspace.name = "renamed".into());
+        model.panes.get_mut(&1).unwrap().name = "renamed pane".into();
+        model.sync_project_watches(5);
+        assert_eq!(model.project_colors, before);
+
+        // The last-pane reservation survives both branch invalidation and an
+        // unresolved worktree CWD change, including owner recovery mid-discovery.
+        model.invalidate_project("/worktree-2");
+        model.observe_cwd(2, "/another-linked-worktree".into());
+        model.sync_project_watches(5);
+        model = Model::decode(&serde_json::to_vec(&model).unwrap()).unwrap();
+        assert_eq!(model.project_colors, before);
+        assign_repository(&mut model, 2, "/another-linked-worktree", "/repo-1/.git");
+        let metadata = model.projects.get_mut("/another-linked-worktree").unwrap();
+        metadata.name = "repository renamed".into();
+        metadata.branch = Some("feature/other".into());
+        model.sync_project_colors();
+        assert_eq!(model.project_colors, before);
+        let recovered = Model::decode(&serde_json::to_vec(&model).unwrap()).unwrap();
+        assert_eq!(recovered.snapshot(None, 1), model.snapshot(None, 1));
+
+        // Close both copies of repo0 and repo2. Their colors become available,
+        // but all survivors (including an unrepresentable native slot) stay put.
+        model.reconcile(
+            &[tab(20, 0), tab(10, 1)],
+            &manifest(&[
+                (0, (8..=13).map(pane).collect()),
+                (1, [2, 4, 5, 6, 7, 15, 16].into_iter().map(pane).collect()),
+            ]),
+        );
+        model.sync_project_watches(5);
+        assert!(!model.project_colors.contains_key("/repo-0/.git"));
+        assert!(!model.project_colors.contains_key("/repo-2/.git"));
+        for (id, slot) in &model.project_colors {
+            assert_eq!(Some(slot), before.get(id));
+        }
+        assign_repository(&mut model, 15, "/new-project", "/new-project/.git");
+        assign_repository(&mut model, 16, "/another-project", "/another-project/.git");
+        assert_eq!(
+            model.project_colors["/new-project/.git"],
+            before["/repo-0/.git"]
+        );
+        assert_eq!(
+            model.project_colors["/another-project/.git"],
+            before["/repo-2/.git"]
+        );
+        assert_eq!(
+            model
+                .project_colors
+                .values()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            13
+        );
+    }
+
+    // LEGACY_COMPAT(next-major): recover old persisted models without color fields.
+    #[test]
+    fn legacy_owner_recovery_seeds_shared_repository_assignments() {
+        let mut model = model();
+        model.reconcile(
+            &[tab(10, 0), tab(20, 1)],
+            &manifest(&[(0, vec![pane(1)]), (1, vec![pane(2), pane(3)])]),
+        );
+        assign_repository(&mut model, 1, "/repo", "/repo/.git");
+        assign_repository(&mut model, 2, "/linked", "/repo/.git");
+        assign_repository(&mut model, 3, "/other", "/other/.git");
+        let mut wire = serde_json::to_value(&model).unwrap();
+        wire.as_object_mut().unwrap().remove("project_colors");
+        wire.as_object_mut()
+            .unwrap()
+            .remove("project_color_repositories");
+        let recovered = Model::decode(&serde_json::to_vec(&wire).unwrap()).unwrap();
+        assert_eq!(recovered.revision, model.revision + 1);
+        let snapshot = recovered.snapshot(None, 1);
+        assert_eq!(snapshot.panes[0].project, snapshot.panes[1].project);
+        assert_ne!(
+            snapshot.panes[0].project.as_ref().unwrap().color_slot,
+            snapshot.panes[2].project.as_ref().unwrap().color_slot
+        );
+        assert!(
+            snapshot
+                .panes
+                .iter()
+                .all(|pane| pane.project.as_ref().unwrap().color_slot.is_some())
+        );
+    }
+
+    #[test]
+    fn project_reservations_release_after_known_repository_or_directory_changes() {
+        let mut model = model();
+        model.reconcile(
+            &[tab(10, 0)],
+            &manifest(&[(0, vec![pane(1), pane(2), pane(3)])]),
+        );
+        assign_repository(&mut model, 1, "/repo", "/repo/.git");
+        assign_repository(&mut model, 2, "/linked", "/repo/.git");
+        let original = model.project_colors["/repo/.git"];
+        assign_repository(&mut model, 1, "/other", "/other/.git");
+        let other = model.project_colors["/other/.git"];
+        assert_ne!(original, other);
+        assert_eq!(model.project_colors["/repo/.git"], original);
+        model.observe_cwd(2, "/plain-directory".into());
+        model.sync_project_watches(5);
+        assert_eq!(model.project_colors["/repo/.git"], original);
+        let directory = serde_json::from_value(serde_json::json!({
+            "name": "directory", "repository": false
+        }))
+        .unwrap();
+        assert!(model.apply_project(project_update(&model, "/plain-directory", directory)));
+        assert!(!model.project_colors.contains_key("/repo/.git"));
+        assert_eq!(model.project_colors["/other/.git"], other);
+        assert!(model.snapshot(None, 1).panes[1].project.is_none());
+        assign_repository(&mut model, 3, "/new", "/new/.git");
+        assert_eq!(model.project_colors["/new/.git"], original);
+        assert_eq!(model.project_colors["/other/.git"], other);
     }
 
     #[test]
