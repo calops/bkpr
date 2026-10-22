@@ -4,6 +4,10 @@ use bkpr::agent_contract::{
 };
 use bkpr::ci_contract::{CiRefreshTarget, CiSnapshot};
 use bkpr::context_contract::{ContextPane, ContextPublication, ContextWorkspace};
+use bkpr::recovery_contract::{
+    GeometryPane, RECOVERY_COALESCE_MILLIS, RECOVERY_REMOVAL_GRACE_MILLIS, RecoveryPane,
+    RecoveryTab, RecoveryUpdate, RecoveryWorkspace, SplitNode, split_tree,
+};
 use bkpr::{
     Action, Attention, Effect, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Pane, ProjectIdentity, Request,
     Response, Snapshot, Status, Workspace,
@@ -309,6 +313,193 @@ struct ProjectUpdate {
     ticket: ProjectTicket,
     project: Option<Project>,
     error: Option<String>,
+}
+
+/// A `session-record` helper that never reports back (crash, lost callback) is treated as
+/// failed after this long, so recovery cannot wedge behind it.
+const RECOVERY_RESULT_MILLIS: u64 = 10_000;
+/// Linux `MAX_ARG_STRLEN` is 128 KiB per argument; keep headroom below it.
+const RECOVERY_ARGUMENT_BYTES: usize = 120 * 1024;
+/// `bkpr session-record` exit code for a session without a claimed record.
+const RECOVERY_UNCLAIMED_EXIT: i32 = 3;
+
+/// The recoverable topology plus each included pane's removal key. Keys are terminal IDs
+/// with their resumable agent association; they never enter the serialized record.
+#[derive(Debug)]
+struct RecoveryView {
+    workspaces: Vec<RecoveryWorkspace>,
+    keys: BTreeMap<u32, Option<String>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RecoveryDecision {
+    Send(RecoveryUpdate),
+    WaitUntil(u64),
+    Unchanged,
+}
+
+/// Owner-side write cadence for the session recovery record. Persisted in the shared
+/// model so every per-client owner replica observes one sequence and one in-flight helper.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct RecoveryGate {
+    sequence: u64,
+    /// Last update handed to the helper.
+    committed: Option<RecoveryUpdate>,
+    /// Removal keys of `committed`.
+    committed_keys: BTreeMap<u32, Option<String>>,
+    /// Millis when the pending removal was first observed.
+    held_since: Option<u64>,
+    /// Millis of the last handoff.
+    last_sent: u64,
+    /// Sequence awaiting its `RunCommandResult`.
+    in_flight: Option<u64>,
+    in_flight_since: u64,
+    /// The session has no claimed record (it predates recovery); stop sending.
+    disabled: bool,
+}
+
+impl RecoveryGate {
+    /// Additions coalesce to one update per `RECOVERY_COALESCE_MILLIS`; removals (a pane
+    /// key disappearing or losing its agent association) additionally wait out
+    /// `RECOVERY_REMOVAL_GRACE_MILLIS`, so a shutdown never commits its own teardown.
+    fn offer(&mut self, next: RecoveryView, now: u64, session: (&str, &str)) -> RecoveryDecision {
+        if self.disabled {
+            return RecoveryDecision::Unchanged;
+        }
+        if self.in_flight.is_some() {
+            return RecoveryDecision::WaitUntil(
+                self.in_flight_since.saturating_add(RECOVERY_RESULT_MILLIS),
+            );
+        }
+        let (session_name, session_id) = session;
+        let unchanged = self.committed.as_ref().is_some_and(|committed| {
+            committed.session_name == session_name
+                && committed.session_id == session_id
+                && committed.workspaces == next.workspaces
+        });
+        // An empty topology is never recoverable: it is startup before adoption or teardown.
+        if unchanged || next.workspaces.is_empty() {
+            self.held_since = None;
+            return RecoveryDecision::Unchanged;
+        }
+        let removal = self
+            .committed_keys
+            .iter()
+            .any(|(id, agent)| match next.keys.get(id) {
+                None => true,
+                Some(current) => agent.is_some() && current.is_none(),
+            });
+        let mut due = if self.committed.is_some() {
+            self.last_sent.saturating_add(RECOVERY_COALESCE_MILLIS)
+        } else {
+            now
+        };
+        if removal {
+            let since = *self.held_since.get_or_insert(now);
+            due = due.max(since.saturating_add(RECOVERY_REMOVAL_GRACE_MILLIS));
+        } else {
+            self.held_since = None;
+        }
+        if now < due {
+            return RecoveryDecision::WaitUntil(due);
+        }
+        self.sequence += 1;
+        let update = RecoveryUpdate {
+            session_name: session_name.to_owned(),
+            session_id: session_id.to_owned(),
+            sequence: self.sequence,
+            workspaces: next.workspaces,
+        };
+        self.committed = Some(update.clone());
+        self.committed_keys = next.keys;
+        self.held_since = None;
+        self.last_sent = now;
+        self.in_flight = Some(self.sequence);
+        self.in_flight_since = now;
+        RecoveryDecision::Send(update)
+    }
+
+    /// Settle the helper result for `sequence`; false for a stale or foreign result.
+    fn finish(&mut self, sequence: u64, code: Option<i32>) -> bool {
+        if self.in_flight != Some(sequence) {
+            return false;
+        }
+        self.in_flight = None;
+        if code == Some(RECOVERY_UNCLAIMED_EXIT) {
+            self.disabled = true;
+        }
+        true
+    }
+
+    /// Give up on an in-flight helper that has not reported within `RECOVERY_RESULT_MILLIS`.
+    /// The next topology change resends a complete update under a new sequence.
+    fn expire(&mut self, now: u64) -> bool {
+        let stale = self.in_flight.is_some()
+            && now.saturating_sub(self.in_flight_since) >= RECOVERY_RESULT_MILLIS;
+        if stale {
+            self.in_flight = None;
+        }
+        stale
+    }
+}
+
+/// Sidebar error for a settled helper result. Unclaimed sessions disable recovery silently.
+fn recovery_failure(code: Option<i32>, stderr: &[u8]) -> Option<String> {
+    match code {
+        Some(0 | RECOVERY_UNCLAIMED_EXIT) => None,
+        _ => Some(format!(
+            "Session recovery update failed: {}",
+            crate::ui::clean(&String::from_utf8_lossy(&stderr[..stderr.len().min(4_096)]))
+        )),
+    }
+}
+
+/// The `--json` argument for `session-record`, refused before it could exceed argv limits.
+fn recovery_argument(update: &RecoveryUpdate) -> Result<String, String> {
+    let json = serde_json::to_string(update).expect("serializing recovery update");
+    if json.len() > RECOVERY_ARGUMENT_BYTES {
+        return Err(format!(
+            "Session recovery update too large ({} bytes; limit {RECOVERY_ARGUMENT_BYTES}); the recovery record is no longer updated",
+            json.len()
+        ));
+    }
+    Ok(json)
+}
+
+/// Tiled terminal rectangles per native tab ID. Floating, suppressed and plugin panes
+/// (including the sidebar) are not part of the recoverable split tree.
+fn recovery_geometry(
+    tabs: &[TabInfo],
+    manifest: &PaneManifest,
+) -> BTreeMap<usize, Vec<GeometryPane>> {
+    tabs.iter()
+        .filter_map(|tab| {
+            let panes = manifest.panes.get(&tab.position)?;
+            let tiled: Vec<_> = panes
+                .iter()
+                .filter(|pane| !pane.is_plugin && !pane.is_floating && !pane.is_suppressed)
+                .map(|pane| GeometryPane {
+                    id: pane.id,
+                    x: pane.pane_x,
+                    y: pane.pane_y,
+                    columns: pane.pane_columns,
+                    rows: pane.pane_rows,
+                })
+                .collect();
+            Some((tab.tab_id, tiled))
+        })
+        .collect()
+}
+
+/// Recovery stores only harnesses it can resume.
+fn recovery_harness(harness: &str) -> Option<&'static str> {
+    match harness {
+        "claude" | "claude-code" => Some("claude"),
+        "omp" => Some("omp"),
+        "codex" => Some("codex"),
+        _ => None,
+    }
 }
 
 const AGENT_RESULT_MILLIS: u64 = 5_000;
@@ -640,6 +831,10 @@ struct Model {
     project_error: Option<String>,
     frontends: BTreeSet<u32>,
     receipts: BTreeMap<String, Receipt>,
+    #[serde(default)]
+    recovery: RecoveryGate,
+    #[serde(default)]
+    recovery_error: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -782,6 +977,8 @@ impl Model {
             frontends: BTreeSet::new(),
             receipts: BTreeMap::new(),
             project_error: None,
+            recovery: RecoveryGate::default(),
+            recovery_error: None,
         }
     }
 
@@ -953,6 +1150,95 @@ impl Model {
             .unwrap_or_else(|| pane.name.clone())
     }
 
+    /// Recoverable topology: workspaces in key order, their tabs by native position, each
+    /// tab's tiled terminals (`geometry`, keyed by tab ID) as a split tree.
+    fn recovery_workspaces(
+        &self,
+        geometry: &BTreeMap<usize, Vec<GeometryPane>>,
+        tabs: &[TabInfo],
+        focused: Option<u32>,
+    ) -> RecoveryView {
+        let mut ordered: Vec<_> = tabs.iter().collect();
+        ordered.sort_by_key(|tab| tab.position);
+        let mut keys = BTreeMap::new();
+        let mut workspaces = Vec::new();
+        for (workspace_id, workspace) in &self.workspaces {
+            let mut recovered = Vec::new();
+            for tab in &ordered {
+                if self.tabs.get(&tab.tab_id) != Some(workspace_id) {
+                    continue;
+                }
+                let panes: Vec<_> = geometry
+                    .get(&tab.tab_id)
+                    .into_iter()
+                    .flatten()
+                    .filter(|pane| {
+                        self.panes
+                            .get(&pane.id)
+                            .is_some_and(|native| native.tab == tab.tab_id)
+                    })
+                    .copied()
+                    .collect();
+                let Some(tree) = split_tree(&panes) else {
+                    continue;
+                };
+                let layout = self.recovery_layout(tree, focused, &mut keys);
+                recovered.push(RecoveryTab {
+                    name: tab.name.clone(),
+                    focused: layout.leaves().iter().any(|pane| pane.focused),
+                    layout,
+                });
+            }
+            if !recovered.is_empty() {
+                workspaces.push(RecoveryWorkspace {
+                    name: workspace.name.clone(),
+                    tabs: recovered,
+                });
+            }
+        }
+        RecoveryView { workspaces, keys }
+    }
+
+    fn recovery_layout(
+        &self,
+        node: SplitNode<u32>,
+        focused: Option<u32>,
+        keys: &mut BTreeMap<u32, Option<String>>,
+    ) -> SplitNode<RecoveryPane> {
+        let mut leaf = |id: u32| {
+            let pane = &self.panes[&id];
+            let agent = self
+                .pane_agent(id)
+                .and_then(|agent| Some((recovery_harness(&agent.harness)?, agent)));
+            let agent_id = agent.and_then(|(_, agent)| agent.agent_id.clone());
+            keys.insert(id, agent_id.clone());
+            RecoveryPane {
+                cwd: pane.cwd.clone(),
+                name: self.pane_name(id, pane),
+                renamed: pane.renamed,
+                harness: agent.map(|(harness, _)| harness.to_owned()),
+                agent_id,
+                focused: focused == Some(id),
+            }
+        };
+        match node {
+            SplitNode::Pane { pane } => SplitNode::Pane { pane: leaf(pane) },
+            SplitNode::Stack { panes } => SplitNode::Stack {
+                panes: panes.into_iter().map(leaf).collect(),
+            },
+            SplitNode::Split {
+                direction,
+                children,
+            } => SplitNode::Split {
+                direction,
+                children: children
+                    .into_iter()
+                    .map(|child| self.recovery_layout(child, focused, keys))
+                    .collect(),
+            },
+        }
+    }
+
     fn reserve_context(
         &mut self,
         server: i32,
@@ -1118,7 +1404,8 @@ impl Model {
             error: error
                 .or_else(|| self.project_error.clone())
                 .or_else(|| self.agent_error.clone())
-                .or_else(|| self.context_error.clone()),
+                .or_else(|| self.context_error.clone())
+                .or_else(|| self.recovery_error.clone()),
             focused_pane_id: self
                 .focus
                 .get(&client_id)
@@ -1669,6 +1956,8 @@ pub struct Owner {
     keymap_generation: u64,
     context_ready: bool,
     context_reload: bool,
+    // Deadline of this replica's armed recovery timer; avoids re-arming on every callback.
+    recovery_timer: Option<u64>,
 }
 
 impl Owner {
@@ -1967,6 +2256,7 @@ impl Owner {
     fn publish(&mut self) -> bool {
         self.prune_selections();
         self.publish_context();
+        self.recovery();
         let Some(model) = self.model.as_mut() else {
             return false;
         };
@@ -2044,6 +2334,101 @@ impl Owner {
                 publication.sequence.to_string(),
             )]),
         );
+    }
+
+    /// Offer the reconciled topology to the recovery gate and hand a due update to
+    /// `bkpr session-record`. Only the native owner runs this; the shared model's
+    /// `in_flight` sequence keeps per-client replicas to one helper at a time.
+    /// Returns whether the shared model changed in a sidebar-visible way.
+    fn recovery(&mut self) -> bool {
+        if !self.granted || !self.context_ready || self.error.is_some() {
+            return false;
+        }
+        let Some((tabs, manifest)) = &self.topology.reconciled else {
+            return false;
+        };
+        let Some(model) = self.model.as_mut() else {
+            return false;
+        };
+        let now = clock_millis();
+        let mut error = None;
+        if model.recovery.expire(now) {
+            error = Some(Some(format!(
+                "Session recovery helper did not report within {} s",
+                RECOVERY_RESULT_MILLIS / 1_000
+            )));
+        }
+        let mut command = None;
+        if !model.recovery.disabled {
+            let geometry = recovery_geometry(tabs, manifest);
+            // Replicas must derive identical records: use the lowest client's focus.
+            let focused = model.focus.values().next().copied();
+            let view = model.recovery_workspaces(&geometry, tabs, focused);
+            let session = (
+                self.configuration["session"].as_str(),
+                self.configuration["session_id"].as_str(),
+            );
+            match model.recovery.offer(view, now, session) {
+                RecoveryDecision::Unchanged => {}
+                RecoveryDecision::WaitUntil(deadline) => {
+                    if self
+                        .recovery_timer
+                        .is_none_or(|armed| deadline < armed || now >= armed)
+                    {
+                        self.recovery_timer = Some(deadline);
+                        // A small margin keeps the wake-up at or after the deadline.
+                        set_timeout((deadline.saturating_sub(now) + 5) as f64 / 1_000.0);
+                    }
+                }
+                RecoveryDecision::Send(update) => match recovery_argument(&update) {
+                    Ok(json) => command = Some((update.sequence, json)),
+                    Err(message) => {
+                        model.recovery.in_flight = None;
+                        error = Some(Some(message));
+                    }
+                },
+            }
+        }
+        let changed = error.is_some_and(|error| {
+            let changed = model.recovery_error != error;
+            model.recovery_error = error;
+            changed
+        });
+        if changed {
+            model.revision += 1;
+        }
+        if let Some((sequence, json)) = command {
+            // Reserve the sequence in artifact-shared storage before spawning the helper.
+            self.save();
+            if self.error.is_none() {
+                run_command(
+                    &[
+                        &self.configuration["program"],
+                        "session-record",
+                        "--json",
+                        &json,
+                    ],
+                    BTreeMap::from([("native_recovery".to_owned(), sequence.to_string())]),
+                );
+            }
+        }
+        changed
+    }
+
+    fn recovery_result(&mut self, sequence: u64, code: Option<i32>, stderr: &[u8]) {
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        if !model.recovery.finish(sequence, code) {
+            return;
+        }
+        let error = recovery_failure(code, stderr);
+        if model.recovery_error != error {
+            model.recovery_error = error;
+            model.revision += 1;
+        }
+        // Persists the settlement and offers any change held behind the in-flight update.
+        self.publish();
     }
 
     fn update_host_context(&mut self) {
@@ -2141,6 +2526,9 @@ impl Owner {
             self.request_agents();
         }
         if changed || focus_changed {
+            self.publish();
+        } else if self.recovery() {
+            // Geometry-only changes (moves, tab renames) still update the recovery record.
             self.publish();
         } else {
             self.save();
@@ -2475,6 +2863,17 @@ impl Owner {
                     self.agent_failure("Native agent inspection timed out".to_owned());
                 }
                 self.agents();
+                if self
+                    .recovery_timer
+                    .is_some_and(|armed| clock_millis() >= armed)
+                {
+                    self.recovery_timer = None;
+                }
+                if self.recovery() {
+                    self.publish();
+                } else {
+                    self.save();
+                }
             }
             Event::CwdChanged(PaneId::Terminal(id), cwd, _) if self.granted => {
                 let changed = self.model.as_mut().is_some_and(|model| {
@@ -2570,6 +2969,13 @@ impl Owner {
                 }
                 if let Some(context) = context.get("native_agent") {
                     self.agent_response(code, &stdout, &stderr, context);
+                    return false;
+                }
+                if let Some(sequence) = context
+                    .get("native_recovery")
+                    .and_then(|sequence| sequence.parse::<u64>().ok())
+                {
+                    self.recovery_result(sequence, code, &stderr);
                     return false;
                 }
                 if context
@@ -3096,6 +3502,7 @@ fn is_shell(command: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bkpr::recovery_contract::SplitDirection;
 
     #[test]
     fn keymap_cache_compares_bytes_and_keeps_creation_refs_immutable() {
@@ -5708,5 +6115,390 @@ mod tests {
         assert!(snapshot.panes.iter().all(|pane| pane.harness.is_none()));
         assert_eq!(snapshot.workspaces[0].status, Status::Unknown);
         assert_eq!(snapshot.workspaces[0].attention, None);
+    }
+
+    fn recovery_view(panes: &[(u32, Option<&str>)]) -> RecoveryView {
+        let leaf = |id: u32, agent: Option<&str>| RecoveryPane {
+            cwd: None,
+            name: format!("Terminal {id}"),
+            renamed: false,
+            harness: agent.map(|_| "claude".to_owned()),
+            agent_id: agent.map(str::to_owned),
+            focused: false,
+        };
+        RecoveryView {
+            workspaces: vec![RecoveryWorkspace {
+                name: "Workspace".to_owned(),
+                tabs: vec![RecoveryTab {
+                    name: "Tab".to_owned(),
+                    focused: true,
+                    layout: SplitNode::Split {
+                        direction: SplitDirection::Vertical,
+                        children: panes
+                            .iter()
+                            .map(|(id, agent)| SplitNode::Pane {
+                                pane: leaf(*id, *agent),
+                            })
+                            .collect(),
+                    },
+                }],
+            }],
+            keys: panes
+                .iter()
+                .map(|(id, agent)| (*id, agent.map(str::to_owned)))
+                .collect(),
+        }
+    }
+
+    const SESSION: (&str, &str) = ("test", "test-session-id");
+
+    fn sent(decision: RecoveryDecision) -> RecoveryUpdate {
+        match decision {
+            RecoveryDecision::Send(update) => update,
+            other => panic!("expected a send, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recovery_workspaces_orders_and_names() {
+        let mut model = model();
+        // Tab IDs, positions and workspace keys deliberately disagree on order.
+        let tabs = [tab(10, 0), tab(20, 2), tab(30, 1)];
+        let tiled = |id: u32, x: usize| PaneInfo {
+            pane_x: x,
+            pane_columns: 50,
+            pane_rows: 20,
+            ..pane(id)
+        };
+        let panes = manifest(&[
+            (
+                0,
+                vec![
+                    PaneInfo {
+                        is_plugin: true,
+                        ..tiled(1, 0)
+                    },
+                    tiled(1, 50),
+                ],
+            ),
+            (
+                1,
+                vec![
+                    tiled(3, 0),
+                    tiled(4, 50),
+                    PaneInfo {
+                        is_floating: true,
+                        ..tiled(5, 10)
+                    },
+                    PaneInfo {
+                        is_suppressed: true,
+                        ..tiled(6, 0)
+                    },
+                ],
+            ),
+            (2, vec![tiled(2, 0)]),
+        ]);
+        model
+            .adopt_context(host_context(
+                &[
+                    (10, "ws-b", "Beta"),
+                    (20, "ws-a", "Alpha"),
+                    (30, "ws-a", "Alpha"),
+                ],
+                &[(1, 10), (2, 20), (3, 30), (4, 30), (5, 30), (6, 30)],
+            ))
+            .unwrap();
+        assert!(model.reconcile_topology(&tabs, &panes));
+        assert!(model.panes.contains_key(&5) && model.panes.contains_key(&6));
+        model.observe_cwd(3, "/repo".to_owned());
+        let renamed = model.panes.get_mut(&3).unwrap();
+        renamed.name = "Custom".to_owned();
+        renamed.renamed = true;
+        model.agents.insert(
+            3,
+            AgentExecution {
+                agent_id: Some("agent-3".to_owned()),
+                ..execution(3)
+            },
+        );
+        // A recognized but non-resumable harness keeps neither harness nor association.
+        model.agents.insert(
+            4,
+            AgentExecution {
+                harness: "aider".to_owned(),
+                agent_id: Some("agent-4".to_owned()),
+                ..execution(4)
+            },
+        );
+        model.agents.insert(
+            2,
+            AgentExecution {
+                harness: "codex".to_owned(),
+                ..execution(2)
+            },
+        );
+
+        let geometry = recovery_geometry(&tabs, &panes);
+        let view = model.recovery_workspaces(&geometry, &tabs, Some(4));
+        let leaf =
+            |id: u32, harness: Option<&str>, agent: Option<&str>, focused: bool| RecoveryPane {
+                cwd: model.panes[&id].cwd.clone(),
+                name: model.pane_name(id, &model.panes[&id]),
+                renamed: model.panes[&id].renamed,
+                harness: harness.map(str::to_owned),
+                agent_id: agent.map(str::to_owned),
+                focused,
+            };
+        assert_eq!(
+            view.workspaces,
+            vec![
+                RecoveryWorkspace {
+                    name: "Alpha".to_owned(),
+                    tabs: vec![
+                        RecoveryTab {
+                            name: "Tab 30".to_owned(),
+                            focused: true,
+                            layout: SplitNode::Split {
+                                direction: SplitDirection::Vertical,
+                                children: vec![
+                                    SplitNode::Pane {
+                                        pane: leaf(3, Some("claude"), Some("agent-3"), false),
+                                    },
+                                    SplitNode::Pane {
+                                        pane: leaf(4, None, None, true),
+                                    },
+                                ],
+                            },
+                        },
+                        RecoveryTab {
+                            name: "Tab 20".to_owned(),
+                            focused: false,
+                            layout: SplitNode::Pane {
+                                pane: leaf(2, Some("codex"), None, false),
+                            },
+                        },
+                    ],
+                },
+                RecoveryWorkspace {
+                    name: "Beta".to_owned(),
+                    tabs: vec![RecoveryTab {
+                        name: "Tab 10".to_owned(),
+                        focused: false,
+                        layout: SplitNode::Pane {
+                            pane: leaf(1, None, None, false),
+                        },
+                    }],
+                },
+            ]
+        );
+        assert_eq!(view.workspaces[0].tabs[0].layout.leaves()[0].name, "Custom");
+        assert!(view.workspaces[0].tabs[0].layout.leaves()[0].renamed);
+        assert_eq!(
+            view.workspaces[0].tabs[0].layout.leaves()[0].cwd.as_deref(),
+            Some("/repo")
+        );
+        assert_eq!(
+            view.keys,
+            BTreeMap::from([
+                (1, None),
+                (2, None),
+                (3, Some("agent-3".to_owned())),
+                (4, None)
+            ])
+        );
+    }
+
+    #[test]
+    fn additions_send_within_coalesce_window() {
+        let mut gate = RecoveryGate::default();
+        let t = 50_000;
+        let first = sent(gate.offer(recovery_view(&[(1, None)]), t, SESSION));
+        assert_eq!(
+            (first.session_name.as_str(), first.session_id.as_str()),
+            SESSION
+        );
+        assert_eq!(first.sequence, 1);
+        assert!(gate.finish(1, Some(0)));
+        assert_eq!(
+            gate.offer(recovery_view(&[(1, None), (2, None)]), t + 200, SESSION),
+            RecoveryDecision::WaitUntil(gate.last_sent + RECOVERY_COALESCE_MILLIS)
+        );
+        assert_eq!(gate.last_sent + RECOVERY_COALESCE_MILLIS, t + 1_000);
+        let second = sent(gate.offer(recovery_view(&[(1, None), (2, None)]), t + 1_000, SESSION));
+        assert_eq!(second.sequence, 2);
+        assert_eq!(
+            second.workspaces,
+            recovery_view(&[(1, None), (2, None)]).workspaces
+        );
+        assert_eq!(gate.committed, Some(second));
+    }
+
+    #[test]
+    fn recovery_never_sends_an_empty_topology() {
+        let mut gate = RecoveryGate::default();
+        let empty = RecoveryView {
+            workspaces: Vec::new(),
+            keys: BTreeMap::new(),
+        };
+        assert_eq!(
+            gate.offer(empty, 1_000, SESSION),
+            RecoveryDecision::Unchanged
+        );
+        assert_eq!(gate.sequence, 0);
+    }
+
+    #[test]
+    fn removal_waits_for_grace() {
+        let mut gate = RecoveryGate::default();
+        sent(gate.offer(recovery_view(&[(1, None), (2, None)]), 10_000, SESSION));
+        gate.finish(1, Some(0));
+        let t = 20_000;
+        let removed = || recovery_view(&[(1, None)]);
+        assert_eq!(
+            gate.offer(removed(), t, SESSION),
+            RecoveryDecision::WaitUntil(t + RECOVERY_REMOVAL_GRACE_MILLIS)
+        );
+        assert_eq!(
+            gate.offer(removed(), t + 2_999, SESSION),
+            RecoveryDecision::WaitUntil(t + 3_000)
+        );
+        let update = sent(gate.offer(removed(), t + 3_000, SESSION));
+        assert_eq!(update.workspaces, removed().workspaces);
+        assert_eq!(gate.held_since, None);
+    }
+
+    #[test]
+    fn association_loss_waits_for_grace() {
+        let mut gate = RecoveryGate::default();
+        sent(gate.offer(recovery_view(&[(1, Some("agent-1"))]), 10_000, SESSION));
+        gate.finish(1, Some(0));
+        let t = 20_000;
+        assert_eq!(
+            gate.offer(recovery_view(&[(1, None)]), t, SESSION),
+            RecoveryDecision::WaitUntil(t + 3_000)
+        );
+        // Gaining an association is an addition and only coalesces.
+        let mut gate = RecoveryGate::default();
+        sent(gate.offer(recovery_view(&[(1, None)]), 10_000, SESSION));
+        gate.finish(1, Some(0));
+        sent(gate.offer(recovery_view(&[(1, Some("agent-1"))]), t, SESSION));
+    }
+
+    #[test]
+    fn removal_reverted_within_grace_cancels_hold() {
+        let mut gate = RecoveryGate::default();
+        sent(gate.offer(recovery_view(&[(1, None), (2, None)]), 10_000, SESSION));
+        gate.finish(1, Some(0));
+        let t = 20_000;
+        assert!(matches!(
+            gate.offer(recovery_view(&[(1, None)]), t, SESSION),
+            RecoveryDecision::WaitUntil(_)
+        ));
+        assert_eq!(gate.held_since, Some(t));
+        assert_eq!(
+            gate.offer(recovery_view(&[(1, None), (2, None)]), t + 1_000, SESSION),
+            RecoveryDecision::Unchanged
+        );
+        assert_eq!(gate.held_since, None);
+        // A later removal starts a fresh grace period.
+        assert_eq!(
+            gate.offer(recovery_view(&[(2, None)]), t + 2_500, SESSION),
+            RecoveryDecision::WaitUntil(t + 5_500)
+        );
+    }
+
+    #[test]
+    fn one_update_in_flight() {
+        let mut gate = RecoveryGate::default();
+        let t = 10_000;
+        sent(gate.offer(recovery_view(&[(1, None)]), t, SESSION));
+        assert_eq!(gate.in_flight, Some(1));
+        let next = || recovery_view(&[(1, None), (2, None)]);
+        assert!(matches!(
+            gate.offer(next(), t + 5_000, SESSION),
+            RecoveryDecision::WaitUntil(_)
+        ));
+        assert!(
+            !gate.finish(2, Some(0)),
+            "foreign sequence must not clear it"
+        );
+        assert_eq!(gate.in_flight, Some(1));
+        assert!(gate.finish(1, Some(0)));
+        assert_eq!(gate.in_flight, None);
+        assert_eq!(sent(gate.offer(next(), t + 5_000, SESSION)).sequence, 2);
+    }
+
+    #[test]
+    fn stale_in_flight_expires_after_the_helper_timeout() {
+        let mut gate = RecoveryGate::default();
+        let t = 10_000;
+        sent(gate.offer(recovery_view(&[(1, None)]), t, SESSION));
+        assert_eq!(
+            gate.offer(recovery_view(&[(1, None), (2, None)]), t + 1, SESSION),
+            RecoveryDecision::WaitUntil(t + RECOVERY_RESULT_MILLIS)
+        );
+        assert!(!gate.expire(t + RECOVERY_RESULT_MILLIS - 1));
+        assert!(gate.expire(t + RECOVERY_RESULT_MILLIS));
+        assert_eq!(gate.in_flight, None);
+        let update = sent(gate.offer(
+            recovery_view(&[(1, None), (2, None)]),
+            t + RECOVERY_RESULT_MILLIS,
+            SESSION,
+        ));
+        assert_eq!(update.sequence, 2);
+    }
+
+    #[test]
+    fn unclaimed_session_disables_recovery_silently() {
+        let mut gate = RecoveryGate::default();
+        sent(gate.offer(recovery_view(&[(1, None)]), 10_000, SESSION));
+        assert!(gate.finish(1, Some(3)));
+        assert!(gate.disabled);
+        assert_eq!(
+            gate.offer(recovery_view(&[(1, None), (2, None)]), 20_000, SESSION),
+            RecoveryDecision::Unchanged
+        );
+        assert_eq!(recovery_failure(Some(3), b"unclaimed"), None);
+        assert_eq!(recovery_failure(Some(0), b""), None);
+        assert!(
+            recovery_failure(Some(1), b"stale recovery update")
+                .is_some_and(|error| error.contains("stale recovery update"))
+        );
+        assert!(recovery_failure(None, b"").is_some());
+    }
+
+    #[test]
+    fn oversized_recovery_update_is_not_spawned() {
+        let mut update = RecoveryUpdate {
+            session_name: "test".to_owned(),
+            session_id: "test-session-id".to_owned(),
+            sequence: 1,
+            workspaces: recovery_view(&[(1, None)]).workspaces,
+        };
+        assert!(recovery_argument(&update).is_ok());
+        update.workspaces[0].name = "x".repeat(RECOVERY_ARGUMENT_BYTES);
+        assert!(
+            recovery_argument(&update)
+                .is_err_and(|error| error.contains("recovery update too large"))
+        );
+    }
+
+    #[test]
+    fn recovery_gate_defaults_for_legacy_models() {
+        let mut value = serde_json::to_value(model()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("recovery");
+        object.remove("recovery_error");
+        let decoded = Model::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(decoded.recovery.sequence, 0);
+        assert!(decoded.recovery_error.is_none());
+        let error = Model {
+            recovery_error: Some("Session recovery update failed: disk full".to_owned()),
+            ..model()
+        };
+        assert_eq!(
+            error.snapshot(None, 0).error.as_deref(),
+            Some("Session recovery update failed: disk full")
+        );
     }
 }
