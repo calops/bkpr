@@ -20,7 +20,7 @@ nix profile install .
 bkpr --session project
 ```
 
-The Nix package includes the native launcher, WASM plugin and Bkpr's Zellij 0.45.1 fork (`zellij 0.45.1-bkpr.3`). Git and GitHub CLI are discovered on the host when available. A Nerd Font is recommended for the sidebar icons. `bkpr --help` lists launch options, including the session name and initial sidebar width.
+The Nix package includes the native launcher, WASM plugin and Bkpr's Zellij 0.45.1 fork (`zellij 0.45.1-bkpr.4`). Git and GitHub CLI are discovered on the host when available. A Nerd Font is recommended for the sidebar icons. `bkpr --help` lists launch options, including the session name and initial sidebar width.
 
 Cached runtime packages do not require Rust or Cargo. The compiler belongs in the development shell and source builds, not the runtime closure.
 
@@ -86,7 +86,7 @@ Existing servers and processes cannot acquire this launch contract retroactively
 
 ## Workspaces and navigation
 
-Application input starts in Zellij's **Locked** mode, so terminal shortcuts go to the application. Press **Ctrl+Space** to focus the sidebar, or **Ctrl+g** to unlock stock Zellij controls. The rounded shortcut guide follows the current mode and effective keybindings: it stays inside the sidebar when all keys and descriptions fit without wrapping, and otherwise expands into the pane area. A widened sidebar guide stays adjacent to the sidebar instead of moving to the far-right edge.
+Every fresh launch, attachment and recovered session starts that client in Zellij's **Locked** mode, so terminal shortcuts go to the application. Reattaching does not restore an earlier unlocked mode or change another attached client's mode. Press **Ctrl+Space** to focus the sidebar, or **Ctrl+g** to unlock stock Zellij controls. The rounded shortcut guide follows the current mode and effective keybindings: it stays inside the sidebar when all keys and descriptions fit without wrapping, and otherwise expands into the pane area. A widened sidebar guide stays adjacent to the sidebar instead of moving to the far-right edge. Its border becomes bold terminal-yellow whenever unlocked, including native submodes, and returns to subdued styling when Locked.
 
 A left click activates a workspace or terminal without moving keyboard focus into the sidebar. Hover highlights a row and opens its details; moving into the popup keeps it open, and leaving both closes it. Sidebar focus opens the selected row's details automatically, and keyboard navigation follows the selection. Right click has no special popup behavior. Details include available activity, CWD, repository, pull request and checks, with clickable links.
 

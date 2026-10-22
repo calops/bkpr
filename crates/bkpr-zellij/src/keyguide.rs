@@ -818,7 +818,7 @@ pub fn render(
     let layout = Body::new(&hints);
     render_frame(
         &title(mode, context),
-        mode.is_none_or(|mode| mode.keybinds.is_none()),
+        mode,
         &hints,
         &layout,
         columns,
@@ -858,15 +858,7 @@ pub(crate) fn render_expanded(
     } else {
         needed.clamp(48, 72).min(max_columns)
     };
-    let lines = render_frame(
-        &title,
-        mode.is_none_or(|mode| mode.keybinds.is_none()),
-        &hints,
-        &layout,
-        columns,
-        max_rows,
-        theme,
-    );
+    let lines = render_frame(&title, mode, &hints, &layout, columns, max_rows, theme);
     ExpandedGuide { columns, lines }
 }
 
@@ -878,13 +870,21 @@ fn available_hints(mode: Option<Mode<'_>>, context: Context) -> Vec<Hint> {
 
 fn render_frame(
     title: &str,
-    waiting: bool,
+    mode: Option<Mode<'_>>,
     hints: &[Hint],
     layout: &Body<'_>,
     columns: usize,
     max_rows: usize,
     theme: &ui::Theme,
 ) -> Vec<String> {
+    let waiting = mode.is_none_or(|mode| mode.keybinds.is_none());
+    let unlocked = mode.is_some_and(|mode| mode.input != InputMode::Locked);
+    let border = if unlocked {
+        theme.accents[11].as_str()
+    } else {
+        theme.muted.as_str()
+    };
+    let border_weight = if unlocked { "\x1b[1m" } else { "" };
     if columns == 0 || max_rows == 0 {
         return Vec::new();
     }
@@ -939,29 +939,23 @@ fn render_frame(
     let trailing = columns - 5 - ui::width(&heading);
     let mut rows = Vec::with_capacity(content.len() + 2);
     rows.push(format!(
-        "{}{muted}╭─ {title_color}{heading}{muted} {}╮{}",
+        "{}{border}{border_weight}╭─ {title_color}{heading}{border}{border_weight} {}╮{}",
         theme.base,
         "─".repeat(trailing),
         theme.base,
-        muted = theme.muted,
         title_color = theme.accents[5],
     ));
     for line in content {
         rows.push(format!(
-            "{}{muted}│ {}{} {muted}│{}",
-            theme.base,
-            line,
-            theme.base,
-            theme.base,
-            muted = theme.muted
+            "{}{border}{border_weight}│ {}{} {border}{border_weight}│{}",
+            theme.base, line, theme.base, theme.base,
         ));
     }
     rows.push(format!(
-        "{}{muted}╰{}╯{}",
+        "{}{border}{border_weight}╰{}╯{}",
         theme.base,
         "─".repeat(columns - 2),
         theme.base,
-        muted = theme.muted
     ));
     rows
 }
@@ -1031,6 +1025,61 @@ mod tests {
         }
         assert!(!escape, "unterminated escape");
         output
+    }
+
+    #[test]
+    fn guide_borders_warn_in_every_known_unlocked_mode_without_changing_content() {
+        let theme = ui::Theme::default();
+        let locked = mode(InputMode::Locked, &[]);
+        let subdued = render(Some(view(&locked)), Context::Application, 48, 8, &theme);
+        let unknown = render(None, Context::Application, 48, 8, &theme);
+        assert_eq!(unknown.last(), subdued.last());
+        let mut warning_border: Option<String> = None;
+        for input in [
+            InputMode::Normal,
+            InputMode::Pane,
+            InputMode::Tab,
+            InputMode::Resize,
+            InputMode::Move,
+            InputMode::Scroll,
+            InputMode::Search,
+            InputMode::EnterSearch,
+            InputMode::RenamePane,
+            InputMode::RenameTab,
+            InputMode::Session,
+            InputMode::Prompt,
+            InputMode::Tmux,
+        ] {
+            let info = mode(input, &[]);
+            for context in [Context::Application, Context::Sidebar { selected: true }] {
+                let inline = render(Some(view(&info)), context, 48, 8, &theme);
+                let expanded = render_expanded(view(&info), context, 48, 72, 8, &theme);
+                for rows in [&inline, &expanded.lines] {
+                    let bottom = rows.last().unwrap();
+                    assert_ne!(Some(bottom), subdued.last(), "{input:?} {context:?}");
+                    assert_eq!(plain(bottom), plain(subdued.last().unwrap()));
+                    let border = bottom.split('╰').next().unwrap();
+                    assert_eq!(
+                        rows[0].split('╭').next().unwrap(),
+                        border,
+                        "top and bottom borders must share the attention style",
+                    );
+                    for row in &rows[1..rows.len() - 1] {
+                        assert_eq!(row.split('│').next().unwrap(), border);
+                        let before_right = row.rsplit_once('│').unwrap().0;
+                        assert!(before_right.ends_with(&border[theme.base.len()..]));
+                    }
+                    if let Some(expected) = &warning_border {
+                        assert_eq!(border, expected.as_str());
+                    } else {
+                        warning_border = Some(border.to_owned());
+                    }
+                }
+            }
+            // Empty application keymaps keep identical body text and geometry across modes.
+            let inline = render(Some(view(&info)), Context::Application, 48, 8, &theme);
+            assert_eq!(plain(&inline[1]), plain(&subdued[1]));
+        }
     }
 
     #[test]

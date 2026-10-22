@@ -496,6 +496,9 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
         if options.detach_others {
             client.arg("--detach-others");
         }
+        // Per-attachment startup state must override the saved server default,
+        // including legacy configurations, without changing another client's mode.
+        client.args(["options", "--default-mode", "locked"]);
     } else {
         client
             .args(["--session", &zellij_session, "--new-session-with-layout"])
@@ -633,9 +636,9 @@ fn plugin_path(explicit: Option<PathBuf>, program: &Path) -> Result<PathBuf> {
 fn check_zellij(program: &Path) -> Result<()> {
     let result = Command::new(program).arg("--version").output()?;
     let version = String::from_utf8(result.stdout)?;
-    if !result.status.success() || version.trim() != "zellij 0.45.1-bkpr.3" {
+    if !result.status.success() || version.trim() != "zellij 0.45.1-bkpr.4" {
         bail!(
-            "this frontend requires Zellij 0.45.1-bkpr.3; detected {}",
+            "this frontend requires Zellij 0.45.1-bkpr.4; detected {}",
             version.trim()
         );
     }
@@ -718,7 +721,7 @@ pub(crate) fn validate_session(session: &str) -> Result<()> {
 }
 
 // The sidebar accepts keyboard focus only through the explicit control binding.
-const ZELLIJ_CONFIG: &str = r#"default_mode "normal"
+const ZELLIJ_CONFIG: &str = r#"default_mode "locked"
 pane_frames false
 dangerously_enable_paste_buffer_read true
 mouse_hover_effects true
