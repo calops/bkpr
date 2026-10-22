@@ -1648,3 +1648,77 @@ fn legacy_default_titles_are_reported_as_unset() {
         json!({"id":"old","harness":"codex"})
     );
 }
+
+#[test]
+fn recovery_agents_is_read_only() {
+    let (directory, mut broker) = broker();
+    let alice = register(&mut broker, "alice");
+    let state = directory.path().join("state.json");
+    let before = fs::read(&state).unwrap();
+    let mtime = fs::metadata(&state).unwrap().modified().unwrap();
+
+    let agents = recovery_agents_in(directory.path()).unwrap();
+
+    let found = &agents.by_id[&alice.agent_id];
+    assert_eq!(found.harness, "omp");
+    assert!(found.live, "this test process is the registered pid");
+    assert_eq!(fs::read(&state).unwrap(), before);
+    assert_eq!(fs::metadata(&state).unwrap().modified().unwrap(), mtime);
+    assert!(!directory.path().join("broker.sock").exists());
+    assert!(!directory.path().join("relay").exists());
+}
+
+#[test]
+fn recovery_agents_liveness_and_holders() {
+    let (directory, mut broker) = broker();
+    let live = register(&mut broker, "live");
+    let exited = register(&mut broker, "exited");
+    let unstamped = register(&mut broker, "unstamped");
+    let recycled = register(&mut broker, "recycled");
+    for (request, session) in [
+        (&live, "s"),
+        (&exited, "s"),
+        (&unstamped, "u"),
+        (&recycled, "r"),
+    ] {
+        broker
+            .store
+            .agents
+            .get_mut(&request.agent_id)
+            .unwrap()
+            .session_id = Some(session.into());
+    }
+    broker
+        .store
+        .agents
+        .get_mut(&exited.agent_id)
+        .unwrap()
+        .exited_at = Some(1);
+    broker
+        .store
+        .agents
+        .get_mut(&unstamped.agent_id)
+        .unwrap()
+        .process_start = None;
+    broker
+        .store
+        .agents
+        .get_mut(&recycled.agent_id)
+        .unwrap()
+        .process_start = Some("1".into());
+    fs::write(
+        directory.path().join("state.json"),
+        serde_json::to_vec(&broker.store).unwrap(),
+    )
+    .unwrap();
+
+    let agents = recovery_agents_in(directory.path()).unwrap();
+
+    assert!(agents.by_id[&live.agent_id].live);
+    assert!(!agents.by_id[&exited.agent_id].live);
+    assert!(!agents.by_id[&unstamped.agent_id].live);
+    assert!(!agents.by_id[&recycled.agent_id].live);
+    assert_eq!(agents.live_holders["s"], vec![live.agent_id.clone()]);
+    assert!(!agents.live_holders.contains_key("u"));
+    assert!(!agents.live_holders.contains_key("r"));
+}

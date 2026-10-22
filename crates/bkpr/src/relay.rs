@@ -1635,6 +1635,66 @@ fn validate_log(path: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// What session recovery may know about a registered agent. Never carries its token.
+#[derive(Clone, Debug)]
+pub(crate) struct RecoveredAgent {
+    pub harness: String,
+    pub session_id: Option<String>,
+    pub queue_endpoint: Option<String>,
+    pub live: bool,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct RecoveryAgents {
+    pub by_id: BTreeMap<String, RecoveredAgent>,
+    /// session_id -> ids of live agents holding it.
+    pub live_holders: BTreeMap<String, Vec<String>>,
+}
+
+/// Strict liveness for recovery: not exited, PID running, and the recorded kernel start
+/// time matches. Unlike `alive`, an entry without a recorded start time is not live, so a
+/// legacy record can never be mistaken for a holder (or resumed over a recycled PID).
+fn recovery_live(agent: &Agent) -> bool {
+    agent.exited_at.is_none()
+        && match (process_identity(agent.pid), &agent.process_start) {
+            (Ok(Some(current)), Some(start)) => &current == start,
+            _ => false,
+        }
+}
+
+/// Read-only: parses the durable snapshot and never contacts or starts the broker,
+/// takes the write lock, or mutates state.
+// Consumed by the launcher once restore lands.
+#[allow(dead_code)]
+pub(crate) fn recovery_agents() -> Result<RecoveryAgents> {
+    recovery_agents_in(&state_path()?)
+}
+
+fn recovery_agents_in(directory: &Path) -> Result<RecoveryAgents> {
+    let store = load_store(directory)?;
+    let mut result = RecoveryAgents::default();
+    for (id, agent) in &store.agents {
+        let live = recovery_live(agent);
+        if let (true, Some(session)) = (live, &agent.session_id) {
+            result
+                .live_holders
+                .entry(session.clone())
+                .or_default()
+                .push(id.clone());
+        }
+        result.by_id.insert(
+            id.clone(),
+            RecoveredAgent {
+                harness: agent.harness.clone(),
+                session_id: agent.session_id.clone(),
+                queue_endpoint: agent.queue_endpoint.clone(),
+                live,
+            },
+        );
+    }
+    Ok(result)
+}
+
 /// An owner-only, no-follow snapshot from an already-open directory. Neither
 /// operator diagnostics nor a failed commit may follow a substituted state path.
 fn load_store(directory: &Path) -> Result<Store> {
