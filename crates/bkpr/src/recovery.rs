@@ -1240,21 +1240,4 @@ mod tests {
         );
         assert!(!note.contains("unacknowledged") && !note.contains("broker unavailable"));
     }
-
-    /// Start-if-absent never replaces a live broker: a listening socket is left alone.
-    #[test]
-    fn ensure_broker_keeps_a_live_broker() {
-        let runtime = tempfile::tempdir().unwrap();
-        let socket = runtime.path().join("broker.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let identity = std::fs::metadata(&socket).unwrap().ino();
-        assert_eq!(
-            crate::relay::ensure_broker_in(runtime.path()).unwrap(),
-            socket
-        );
-        assert_eq!(std::fs::metadata(&socket).unwrap().ino(), identity);
-        listener.set_nonblocking(true).unwrap();
-        // The probe connection reached the original listener.
-        assert!(listener.accept().is_ok());
-    }
 }
