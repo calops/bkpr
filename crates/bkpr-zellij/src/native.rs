@@ -365,12 +365,13 @@ struct RestoreNameRequest {
     pane_id: String,
 }
 
+/// Sticky names by leaf key and the expected restored terminal count.
+type RestoreSeed = (BTreeMap<String, String>, Option<usize>);
+
 /// Strip the restore-time owner keys (`restore_names`, a JSON `{leaf key: name}` object, and
 /// `restore_expected_panes`, a decimal count) so validation, the storage identity and the
 /// sidebar configurations derived from the owner's stay those of an ordinary session.
-fn take_restore_seed(
-    configuration: &mut BTreeMap<String, String>,
-) -> Result<(BTreeMap<String, String>, Option<usize>), String> {
+fn take_restore_seed(configuration: &mut BTreeMap<String, String>) -> Result<RestoreSeed, String> {
     // Remove both before parsing either, so a malformed value never leaves the other behind.
     let names = configuration.remove("restore_names");
     let expected = configuration.remove("restore_expected_panes");
@@ -386,6 +387,28 @@ fn take_restore_seed(
         })?),
     };
     Ok((names, expected))
+}
+
+/// The owner's application identity from its plugin configuration, plus the restore seed.
+/// SDK routing, creation projections and restore-time keys are not identity, so neither the
+/// storage identity nor any sidebar configuration derived from it ever carries them.
+fn owner_identity(
+    configuration: &BTreeMap<String, String>,
+) -> (BTreeMap<String, String>, Result<RestoreSeed, String>) {
+    let mut configuration = configuration.clone();
+    configuration.remove("caller_cwd");
+    configuration.remove("mode_info_format");
+    configuration.remove("sidebar_bootstrap");
+    let seed = take_restore_seed(&mut configuration);
+    (configuration, seed)
+}
+
+/// A new tab's sidebar configuration, before its creation bootstrap is added.
+fn tab_sidebar_configuration(owner: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut configuration = owner.clone();
+    configuration.remove("context_owner");
+    configuration.insert("role".to_owned(), "sidebar".to_owned());
+    configuration
 }
 
 /// Acknowledge CLI pipe input. The host shim is a no-op off WASM, so tests record it.
@@ -2123,13 +2146,7 @@ pub struct Owner {
 
 impl Owner {
     pub fn load(&mut self, configuration: &BTreeMap<String, String>) {
-        let mut configuration = configuration.clone();
-        // SDK routing and creation projections are not application identity.
-        configuration.remove("caller_cwd");
-        configuration.remove("mode_info_format");
-        configuration.remove("sidebar_bootstrap");
-        // Restore-time creation data; the model seeds from it below.
-        let restore_seed = take_restore_seed(&mut configuration);
+        let (configuration, restore_seed) = owner_identity(configuration);
         let ids = get_plugin_ids();
         self.client_id = ids.client_id;
         self.id = ids.plugin_id;
@@ -3374,9 +3391,7 @@ impl Owner {
                 .clone(),
             None => label.unwrap_or_else(|| format!("Workspace {}", model.next_workspace + 1)),
         };
-        let mut sidebar_configuration = self.configuration.clone();
-        sidebar_configuration.remove("context_owner");
-        sidebar_configuration.insert("role".to_owned(), "sidebar".to_owned());
+        let mut sidebar_configuration = tab_sidebar_configuration(&self.configuration);
         let mode = self.guide_mode.ok_or("Native input mode is unavailable")?;
         let keymap = self
             .keymap_cache
@@ -6980,6 +6995,94 @@ mod tests {
             let mut malformed = ordinary.clone();
             malformed.insert(key.to_owned(), value.to_owned());
             assert!(take_restore_seed(&mut malformed).is_err(), "{key}={value}");
+        }
+    }
+
+    /// The launcher sends `restore_expected_panes = RecoveryRecord::pane_count()`; the owner
+    /// compares it with `RecoveryView::keys`. Both must count every recorded terminal leaf,
+    /// including stacked panes, or a restored session's first update waits needlessly.
+    #[test]
+    fn restore_expected_panes_counts_the_owner_unit() {
+        use bkpr::recovery_contract::RecoveryRecord;
+
+        let mut model = model();
+        let tabs = [tab(10, 0), tab(20, 1)];
+        let at = |id: u32, x: usize, y: usize, rows: usize| PaneInfo {
+            pane_x: x,
+            pane_y: y,
+            pane_columns: 50,
+            pane_rows: rows,
+            ..pane(id)
+        };
+        let panes = manifest(&[
+            (
+                0,
+                vec![
+                    at(1, 0, 0, 20),
+                    at(2, 50, 0, 1),
+                    at(3, 50, 1, 1),
+                    at(4, 50, 2, 18),
+                ],
+            ),
+            (1, vec![at(5, 0, 0, 20)]),
+        ]);
+        model
+            .adopt_context(host_context(
+                &[(10, "ws-a", "Alpha"), (20, "ws-b", "Beta")],
+                &[(1, 10), (2, 10), (3, 10), (4, 10), (5, 20)],
+            ))
+            .unwrap();
+        assert!(model.reconcile_topology(&tabs, &panes));
+        let view = model.recovery_workspaces(&recovery_geometry(&tabs, &panes), &tabs, Some(1));
+        let SplitNode::Split { children, .. } = &view.workspaces[0].tabs[0].layout else {
+            panic!("expected a split beside the stack");
+        };
+        assert!(matches!(&children[1], SplitNode::Stack { panes } if panes.len() == 3));
+        let record = RecoveryRecord {
+            version: bkpr::recovery_contract::RECOVERY_VERSION,
+            session_name: "test".to_owned(),
+            session_id: "test-session-id".to_owned(),
+            sequence: 1,
+            written_by: "test".to_owned(),
+            updated_at_millis: 0,
+            workspaces: view.workspaces.clone(),
+        };
+        assert_eq!(record.pane_count(), 5);
+        assert_eq!(view.keys.len(), record.pane_count());
+    }
+
+    #[test]
+    fn created_tabs_never_inherit_restore_keys() {
+        let raw = BTreeMap::from([
+            ("role".to_owned(), "native-owner".to_owned()),
+            ("session".to_owned(), "test".to_owned()),
+            ("session_id".to_owned(), "test-session-id".to_owned()),
+            ("context_owner".to_owned(), "private-test-owner".to_owned()),
+            ("program".to_owned(), "/bin/bkpr".to_owned()),
+            ("initial_cwd".to_owned(), "/work".to_owned()),
+            ("plugin_url".to_owned(), "file:/bkpr.wasm".to_owned()),
+            ("sidebar_width".to_owned(), "28".to_owned()),
+            ("caller_cwd".to_owned(), "/work".to_owned()),
+            ("mode_info_format".to_owned(), "json".to_owned()),
+            (
+                "restore_names".to_owned(),
+                r#"{"w0t0p0":"Build"}"#.to_owned(),
+            ),
+            ("restore_expected_panes".to_owned(), "1".to_owned()),
+        ]);
+        let (identity, seed) = owner_identity(&raw);
+        assert_eq!(seed.unwrap().1, Some(1));
+        assert!(configuration_valid(&identity, "native-owner"));
+        let tab = tab_sidebar_configuration(&identity);
+        assert_eq!(tab["role"], "sidebar");
+        for key in [
+            "restore_names",
+            "restore_expected_panes",
+            "context_owner",
+            "caller_cwd",
+            "mode_info_format",
+        ] {
+            assert!(!tab.contains_key(key), "{key}");
         }
     }
 

@@ -62,22 +62,16 @@ fn session_directory(root: &Path, session_name: &str) -> PathBuf {
     root.join("bkpr/sessions").join(format!("{hash:016x}"))
 }
 
-// Consumed by the launcher once restore lands.
-#[allow(dead_code)]
 pub(crate) fn record_path(session_name: &str) -> Result<PathBuf> {
     Ok(session_directory(&state_root()?, session_name).join(FILE_NAME))
 }
 
-// Consumed by the launcher once restore lands.
-#[allow(dead_code)]
 pub(crate) fn load(session_name: &str) -> Result<Option<RecoveryRecord>> {
-    read_record(&session_directory(&state_root()?, session_name).join(FILE_NAME))
+    read_record(&record_path(session_name)?)
 }
 
 /// Launcher-only: make `session_id` the sole accepted writer, keeping `workspaces`
 /// (restore) or clearing them (fresh/overwrite).
-// Consumed by the launcher once restore lands.
-#[allow(dead_code)]
 pub(crate) fn claim(
     session_name: &str,
     session_id: &str,
@@ -241,8 +235,6 @@ pub(crate) enum PaneLaunch {
 
 /// Decide how to restore a pane from relay state. Resumption never adopts a session another
 /// live agent still holds; a Codex agent's own detached app-server is the sole exception.
-// Consumed by the launcher once restore lands.
-#[allow(dead_code)]
 pub(crate) fn resolve(pane: &RecoveryPane, agents: &RecoveryAgents) -> PaneLaunch {
     let (cwd, cwd_note) = existing_cwd(pane.cwd.as_deref());
     let Some(agent_id) = pane.agent_id.as_deref() else {
@@ -301,6 +293,19 @@ pub(crate) fn resolve(pane: &RecoveryPane, agents: &RecoveryAgents) -> PaneLaunc
     }
 }
 
+/// Restore `pane` as a shell because relay state is unreadable (`reason`). Harness panes
+/// note why they were not resumed; resume itself never fails for this.
+pub(crate) fn unresolved(pane: &RecoveryPane, reason: &str) -> PaneLaunch {
+    let (cwd, cwd_note) = existing_cwd(pane.cwd.as_deref());
+    let harness = pane.agent_id.is_some() || pane.harness.is_some();
+    let note = match (harness, cwd_note) {
+        (false, note) => note,
+        (true, None) => Some(format!("relay state was unreadable: {reason}")),
+        (true, Some(extra)) => Some(format!("relay state was unreadable: {reason}; {extra}")),
+    };
+    PaneLaunch::Shell { cwd, note }
+}
+
 /// `unix:///tmp/bkpr-codex-*/server.sock` -> its `server.json`. Anything else is not a
 /// location this process may later ask `codex::stop` to act on.
 fn codex_manifest(endpoint: &str) -> Option<PathBuf> {
@@ -316,8 +321,6 @@ fn codex_manifest(endpoint: &str) -> Option<PathBuf> {
 }
 
 /// The recorded directory, else its nearest existing ancestor, else `$HOME` (or `/`).
-// Consumed by the launcher once restore lands.
-#[allow(dead_code)]
 pub(crate) fn existing_cwd(recorded: Option<&str>) -> (PathBuf, Option<String>) {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -555,8 +558,6 @@ fn exec_shell(cwd: &Path) -> Result<()> {
 
 /// `bkpr restore-pane` arguments for one restore-layout leaf. `--opt=value` keeps values
 /// that begin with `-` unambiguous.
-// Consumed by the launcher once restore lands.
-#[allow(dead_code)]
 pub(crate) fn restore_pane_args(
     key: &str,
     pane: &RecoveryPane,
