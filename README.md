@@ -2,7 +2,7 @@
 
 Workspace-first terminals for Zellij, with a sidebar for projects, coding harnesses and GitHub checks.
 
-Zellij owns the terminals, scrollback and session persistence. Bkpr adds workspace grouping, editable names, a pane finder and repository details. Existing Zellij splits and tabs appear in the sidebar too.
+Zellij owns the terminals, scrollback and live sessions. Bkpr adds workspace grouping, editable names, a pane finder and repository details. Existing Zellij splits and tabs appear in the sidebar too.
 
 ## Install and run
 
@@ -43,6 +43,18 @@ To smoke-test release planning and publication locally after `npm ci`, run `node
 On first launch, click the sidebar and approve its Zellij permission request with `y`. Authorization is cached for the plugin artifact. Bkpr uses a private Zellij configuration; it doesn't replace your personal configuration or start a system service.
 
 Launching the same session attaches to its running terminals and preserves workspace labels. Detaching leaves them running. Closing a terminal terminates it; closing a workspace asks for confirmation before terminating its terminals. Processes need not survive termination of the Zellij server.
+
+### Recovering a closed session
+
+Bkpr keeps a recovery record of each session's workspaces, tabs, splits, pane directories and names, and the native sessions of Claude, omp and Codex panes. It is updated as the session changes, so a crash loses at most a few seconds. To rebuild a session after it was closed or crashed:
+
+```sh
+bkpr resume --session project
+```
+
+Resume starts a new session with the recorded layout. Each pane opens in its recorded directory (or its nearest existing parent) under its recorded name; names you set yourself stay, others give way to the next title the program sets. Claude, omp and Codex panes resume their previous sessions through Bkpr's own launchers, then leave a shell when the harness exits. A harness session that is still open elsewhere, or that Bkpr never captured, comes back as a shell with a short note instead. Other programs come back as a shell. Split sizes, floating panes, scrollback and the original harness flags are not restored. The resumed session keeps updating the same record.
+
+`bkpr resume` refuses while the session is running (attach with `bkpr --session project`) and when there is no record to restore. `bkpr --session project` over a closed session that has a record asks whether to `[r]ecover` it or `[o]verwrite` it with a fresh session; pass `--overwrite` to start fresh without asking. Without an interactive terminal it refuses rather than discard the record. Records live under `$XDG_STATE_HOME/bkpr/sessions` (default `~/.local/state/bkpr/sessions`).
 
 Sessions created before native pane context was introduced remain attachable after upgrading. Bkpr reports the limitation and preserves their startup configuration, plugins and harness wrappers without fabricating context metadata. A fresh session is needed only for the new context features. Invalid or inconsistent existing context metadata remains an error, not a legacy fallback.
 
@@ -351,4 +363,4 @@ python3 -m unittest discover -s tests -p 'test_live_bridge.py'
 - Live Git watching requires Linux inotify and pidfd support (kernel 5.3+). Nix packages are exposed for Linux and Darwin, but that doesn't imply equivalent runtime coverage.
 - Unicode names work through paste. Typed non-Latin dialog input is constrained by the pinned Zellij plugin key decoder.
 - Notification passthrough isn't implemented.
-- Semantic coverage depends on each harness's actual native producer. No transcript parsing or automatic harness resurrection is provided.
+- Semantic coverage depends on each harness's actual native producer. No transcript parsing is provided. Harnesses are resumed only by an explicit `bkpr resume`, and only from session IDs they reported themselves.

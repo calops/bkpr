@@ -2,7 +2,7 @@
 
 ## Boundaries
 
-- `crates/bkpr` owns the native launcher, Git/CI, SSH forwarding and typed state contract. `crates/bkpr-zellij` owns WASI sidebar, finder and passive overlays. Zellij owns PTYs, input, native panes/tabs and session persistence; never mirror terminal output through the plugin.
+- `crates/bkpr` owns the native launcher, Git/CI, SSH forwarding and typed state contract. `crates/bkpr-zellij` owns WASI sidebar, finder and passive overlays. Zellij owns PTYs, input, native panes/tabs and live sessions; Bkpr owns recovery records and `bkpr resume`. Never mirror terminal output through the plugin.
 - Keep workspace-first grouping and stock Zellij controls. Application input starts Locked; Ctrl+Space focuses sidebar controls. Passive details and shortcut cards never take keyboard focus or move the application cursor. Finder alone is a focused modal. Native splits/tabs must remain discoverable; close terminates, not hides.
 - Recognized harness status comes only from OSC 7501. Process/CWD recognition and OSC 0/2 titles are separate. Generic programs do not get harness-status badges; Git/CI remains available to them. Do not infer semantic state from titles, progress, output or process presence.
 - Do not change a user's harness profiles, persistent third-party settings, credentials or GitHub account. Claude's launch-local hooks supplement titles and capture native session IDs; launch-local MCP communication does not produce harness status. Antigravity is recognition-only.
