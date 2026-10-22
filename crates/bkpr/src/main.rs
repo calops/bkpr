@@ -133,6 +133,9 @@ enum Commands {
         #[arg(long)]
         json: String,
     },
+    /// Restart one recorded pane inside a restored session, then become its shell.
+    #[command(hide = true)]
+    RestorePane(recovery::RestorePaneArgs),
     /// Serve the authenticated launch-local MCP connection over stdio.
     #[command(hide = true)]
     RelayMcp,
@@ -290,6 +293,7 @@ fn run() -> Result<()> {
             project_watch::serve(&json, listener_fd)
         }
         Some(Commands::SessionRecord { json }) => recovery::record(&json),
+        Some(Commands::RestorePane(args)) => recovery::restore_pane(args),
     }
 }
 

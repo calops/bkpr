@@ -5,10 +5,13 @@
 //! non-decreasing sequence, so stale or foreign plugins can never overwrite a newer record.
 //! Uses `flock` and Unix file modes, like the other state stores, so it is not Linux-gated.
 
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -344,6 +347,196 @@ fn existing_cwd_with(recorded: Option<&str>, fallback: &Path) -> (PathBuf, Optio
     )
 }
 
+/// Arguments of the hidden `bkpr restore-pane` leaf helper, built by `restore_pane_args`.
+#[derive(Clone, Debug, PartialEq, Eq, clap::Args)]
+pub(crate) struct RestorePaneArgs {
+    /// Restore-layout leaf key (`w{i}t{j}p{k}`).
+    #[arg(long)]
+    pub(crate) key: String,
+    #[arg(long)]
+    pub(crate) cwd: Option<String>,
+    #[arg(long, allow_hyphen_values = true)]
+    pub(crate) name: String,
+    /// The recorded name was user-assigned and is restored through the owner plugin.
+    #[arg(long)]
+    pub(crate) sticky: bool,
+    #[arg(long, value_enum)]
+    pub(crate) harness: Option<Harness>,
+    #[arg(long, allow_hyphen_values = true)]
+    pub(crate) session_id: Option<String>,
+    #[arg(long)]
+    pub(crate) codex_manifest: Option<PathBuf>,
+    #[arg(long, allow_hyphen_values = true)]
+    pub(crate) note: Option<String>,
+}
+
+/// Owner-plugin CLI pipe that applies a restored pane's sticky (user-assigned) name.
+const RESTORE_NAME_PIPE: &str = "bkpr-restore-name";
+
+/// Restore one pane: enter its directory, re-apply its name, resume its harness session in
+/// the foreground, then become an interactive shell there. Every failure is a note, never
+/// an exit: the pane must always end as a usable shell.
+pub(crate) fn restore_pane(args: RestorePaneArgs) -> Result<()> {
+    let (cwd, cwd_note) = existing_cwd(args.cwd.as_deref());
+    let mut notes: Vec<String> = args.note.into_iter().chain(cwd_note).collect();
+    if let Err(error) = std::env::set_current_dir(&cwd) {
+        notes.push(format!("cannot enter {}: {error}", cwd.display()));
+    }
+    let mut stdout = std::io::stdout();
+    if args.sticky {
+        if let Err(error) = send_restore_name(&args.key) {
+            notes.push(format!("pane name not restored: {error:#}"));
+        }
+    } else {
+        let _ = stdout
+            .write_all(soft_title(&args.name).as_bytes())
+            .and_then(|()| stdout.flush());
+    }
+    print_note(&notes);
+
+    if let (Some(harness), Some(session_id)) = (args.harness, args.session_id.as_deref()) {
+        let stopped = match &args.codex_manifest {
+            // Only set for a Codex agent whose own detached app-server still holds the thread.
+            Some(manifest) => match crate::codex::stop(manifest) {
+                Ok(()) => true,
+                Err(error) => {
+                    print_note(&[format!(
+                        "Codex session still owned by its previous server: {error:#}"
+                    )]);
+                    false
+                }
+            },
+            None => true,
+        };
+        if stopped && let Err(error) = run_harness(harness, session_id, &cwd) {
+            print_note(&[format!("cannot resume session: {error:#}")]);
+        }
+    }
+    exec_shell(&cwd)
+}
+
+/// One dim stderr line; nothing for no notes.
+fn print_note(notes: &[String]) {
+    if notes.is_empty() {
+        return;
+    }
+    let text: String = notes
+        .join("; ")
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    eprintln!("\x1b[2mbkpr: {text}\x1b[0m");
+}
+
+fn send_restore_name(key: &str) -> Result<()> {
+    let pane_id = std::env::var("BKPR_PANE_ID").context("BKPR_PANE_ID is not set")?;
+    let session = std::env::var("ZELLIJ_SESSION_NAME").context("ZELLIJ_SESSION_NAME is not set")?;
+    let payload = serde_json::json!({ "key": key, "pane_id": pane_id }).to_string();
+    crate::project_watch::send_pipe(&session, RESTORE_NAME_PIPE, &payload)
+}
+
+/// Run `bkpr run <harness> <resume>` as a foreground child sharing this terminal. Its exit
+/// status is irrelevant: the shell follows either way.
+fn run_harness(harness: Harness, session_id: &str, cwd: &Path) -> Result<()> {
+    let name = harness
+        .to_possible_value()
+        .context("harness has no command-line name")?;
+    let mut child = Command::new(std::env::current_exe().context("locate bkpr")?)
+        .arg("run")
+        .arg(name.get_name())
+        .args(resume_arguments(harness, session_id))
+        .current_dir(cwd)
+        .env("PWD", cwd)
+        .spawn()
+        .context("start harness")?;
+    // Terminal interrupts reach the whole foreground process group; they are the
+    // harness's to handle, and must not kill the shell that follows it.
+    ignore_terminal_signals(true);
+    let waited = child.wait();
+    ignore_terminal_signals(false);
+    waited.context("wait for harness")?;
+    Ok(())
+}
+
+/// Ignore (or restore the default for) SIGINT and SIGQUIT. Ignored dispositions survive
+/// `exec`, so they are restored before the shell starts.
+fn ignore_terminal_signals(ignore: bool) {
+    let handler = if ignore { libc::SIG_IGN } else { libc::SIG_DFL };
+    // SAFETY: setting a predefined disposition installs no Rust handler.
+    unsafe {
+        libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGQUIT, handler);
+    }
+}
+
+/// Replace this process with the user's shell, interactive on the pane's terminal. It is
+/// started like a normal pane's shell (no login flag), so the pane closes when it exits.
+fn exec_shell(cwd: &Path) -> Result<()> {
+    let shell = std::env::var_os("SHELL")
+        .filter(|shell| !shell.is_empty())
+        .unwrap_or_else(|| "/bin/sh".into());
+    let error = Command::new(&shell).env("PWD", cwd).exec();
+    print_note(&[format!(
+        "cannot start {}: {error}",
+        Path::new(&shell).display()
+    )]);
+    Err(Command::new("/bin/sh").env("PWD", cwd).exec()).context("start /bin/sh")
+}
+
+/// `bkpr restore-pane` arguments for one restore-layout leaf. `--opt=value` keeps values
+/// that begin with `-` unambiguous.
+// Consumed by the launcher once restore lands.
+#[allow(dead_code)]
+pub(crate) fn restore_pane_args(
+    key: &str,
+    pane: &RecoveryPane,
+    launch: &PaneLaunch,
+) -> Vec<String> {
+    let mut args = vec![format!("--key={key}"), format!("--name={}", pane.name)];
+    if pane.renamed {
+        args.push("--sticky".to_owned());
+    }
+    match launch {
+        PaneLaunch::Shell { cwd, note } => {
+            args.push(format!("--cwd={}", cwd.display()));
+            if let Some(note) = note {
+                args.push(format!("--note={note}"));
+            }
+        }
+        PaneLaunch::Harness {
+            harness,
+            session_id,
+            cwd,
+            codex_manifest,
+        } => {
+            args.push(format!("--cwd={}", cwd.display()));
+            if let Some(name) = harness.to_possible_value() {
+                args.push(format!("--harness={}", name.get_name()));
+            }
+            args.push(format!("--session-id={session_id}"));
+            if let Some(manifest) = codex_manifest {
+                args.push(format!("--codex-manifest={}", manifest.display()));
+            }
+        }
+    }
+    args
+}
+
+/// Harness arguments that resume `session_id`.
+pub(crate) fn resume_arguments(harness: Harness, session_id: &str) -> Vec<OsString> {
+    let flag = match harness {
+        Harness::Codex => "resume",
+        _ => "--resume",
+    };
+    vec![flag.into(), session_id.into()]
+}
+
+/// An OSC 2 window title. Zellij treats it as a soft pane title that the program may replace.
+fn soft_title(name: &str) -> String {
+    let name: String = name.chars().filter(|c| !c.is_control()).collect();
+    format!("\x1b]2;{name}\x07")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,6 +602,87 @@ mod tests {
             PaneLaunch::Shell { note, .. } => note.as_deref(),
             PaneLaunch::Harness { .. } => panic!("expected shell"),
         }
+    }
+
+    #[test]
+    fn resume_arguments_per_harness() {
+        assert_eq!(
+            resume_arguments(Harness::Claude, "s1"),
+            ["--resume", "s1"].map(OsString::from)
+        );
+        assert_eq!(
+            resume_arguments(Harness::Omp, "s2"),
+            ["--resume", "s2"].map(OsString::from)
+        );
+        assert_eq!(
+            resume_arguments(Harness::Codex, "s3"),
+            ["resume", "s3"].map(OsString::from)
+        );
+    }
+
+    fn parse_restore(args: Vec<String>) -> RestorePaneArgs {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from(
+            ["bkpr".to_owned(), "restore-pane".to_owned()]
+                .into_iter()
+                .chain(args),
+        )
+        .unwrap();
+        let Some(crate::Commands::RestorePane(args)) = cli.command else {
+            panic!("expected restore-pane");
+        };
+        args
+    }
+
+    #[test]
+    fn restore_pane_args_roundtrip_through_clap() {
+        let mut recorded = pane(Some("a"), "/srv/x");
+        recorded.name = r#"-my "quoted" pane 'name'"#.into();
+        recorded.renamed = true;
+        let launch = PaneLaunch::Harness {
+            harness: Harness::Codex,
+            session_id: "-thread 1".into(),
+            cwd: "/srv/x y".into(),
+            codex_manifest: Some("/tmp/bkpr-codex-a/server.json".into()),
+        };
+        assert_eq!(
+            parse_restore(restore_pane_args("w0t1p2", &recorded, &launch)),
+            RestorePaneArgs {
+                key: "w0t1p2".into(),
+                cwd: Some("/srv/x y".into()),
+                name: recorded.name.clone(),
+                sticky: true,
+                harness: Some(Harness::Codex),
+                session_id: Some("-thread 1".into()),
+                codex_manifest: Some("/tmp/bkpr-codex-a/server.json".into()),
+                note: None,
+            }
+        );
+        let mut plain = pane(None, "/tmp");
+        plain.name = "two words".into();
+        let launch = PaneLaunch::Shell {
+            cwd: "/".into(),
+            note: Some("-/tmp no longer exists; \"x\"".into()),
+        };
+        assert_eq!(
+            parse_restore(restore_pane_args("w1t0p0", &plain, &launch)),
+            RestorePaneArgs {
+                key: "w1t0p0".into(),
+                cwd: Some("/".into()),
+                name: "two words".into(),
+                sticky: false,
+                harness: None,
+                session_id: None,
+                codex_manifest: None,
+                note: Some("-/tmp no longer exists; \"x\"".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn soft_title_sequence() {
+        assert_eq!(soft_title("a\x07b"), "\x1b]2;ab\x07");
+        assert_eq!(soft_title("x\x1b]0;y\n"), "\x1b]2;x]0;y\x07");
     }
 
     #[test]
