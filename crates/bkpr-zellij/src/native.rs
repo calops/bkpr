@@ -6,7 +6,7 @@ use bkpr::ci_contract::{CiRefreshTarget, CiSnapshot};
 use bkpr::context_contract::{ContextPane, ContextPublication, ContextWorkspace};
 use bkpr::recovery_contract::{
     GeometryPane, RECOVERY_COALESCE_MILLIS, RECOVERY_REMOVAL_GRACE_MILLIS, RecoveryPane,
-    RecoveryTab, RecoveryUpdate, RecoveryWorkspace, SplitNode, split_tree,
+    RecoveryTab, RecoveryUpdate, RecoveryWorkspace, RestoreLink, SplitNode, split_tree,
 };
 use bkpr::{
     Action, Attention, Effect, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Pane, ProjectIdentity, Request,
@@ -25,7 +25,8 @@ pub const STATE: &str = "bkpr-native-state";
 pub const QUERY: &str = "bkpr-native-query";
 pub const PROJECT: &str = "bkpr-native-project";
 pub const REFRESH_CI: &str = "bkpr-native-refresh-ci";
-/// CLI pipe from `bkpr restore-pane`: `{"key": <leaf key>, "pane_id": "terminal_N"}`.
+/// CLI pipe from `bkpr restore-pane`: `{"key": <leaf key>, "pane_id": "terminal_N"}`, plus
+/// `"harness"`/`"agent_id"` when the pane's recorded association is kept for a retry.
 pub const RESTORE_NAME: &str = "bkpr-restore-name";
 #[derive(Serialize, Deserialize)]
 struct NativeCiRefresh {
@@ -357,28 +358,50 @@ struct RestoreNames {
     consumed: BTreeSet<String>,
     /// Claimed names whose terminal has not reached the model yet.
     pending: BTreeMap<u32, String>,
+    /// Unclaimed recorded associations by leaf key, kept for a retry if resuming fails.
+    links: BTreeMap<String, RestoreLink>,
+    /// Claimed associations by terminal. The recovery record keeps them while the pane has
+    /// no detected agent; any detected agent or the pane closing ends them.
+    retained: BTreeMap<u32, RestoreLink>,
 }
 
 #[derive(Deserialize)]
 struct RestoreNameRequest {
     key: String,
     pane_id: String,
+    #[serde(default)]
+    harness: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
 }
 
-/// Sticky names by leaf key and the expected restored terminal count.
-type RestoreSeed = (BTreeMap<String, String>, Option<usize>);
+/// Restore-time owner seed: sticky names and retry links by leaf key, and the expected
+/// restored terminal count.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RestoreSeed {
+    names: BTreeMap<String, String>,
+    links: BTreeMap<String, RestoreLink>,
+    expected: Option<usize>,
+}
 
-/// Strip the restore-time owner keys (`restore_names`, a JSON `{leaf key: name}` object, and
+/// Strip the restore-time owner keys (`restore_names`, a JSON `{leaf key: name}` object,
+/// `restore_links`, a JSON `{leaf key: {harness, agent_id}}` object, and
 /// `restore_expected_panes`, a decimal count) so validation, the storage identity and the
 /// sidebar configurations derived from the owner's stay those of an ordinary session.
 fn take_restore_seed(configuration: &mut BTreeMap<String, String>) -> Result<RestoreSeed, String> {
-    // Remove both before parsing either, so a malformed value never leaves the other behind.
+    // Remove all before parsing any, so a malformed value never leaves another behind.
     let names = configuration.remove("restore_names");
+    let links = configuration.remove("restore_links");
     let expected = configuration.remove("restore_expected_panes");
     let names = match names {
         None => BTreeMap::new(),
         Some(json) => serde_json::from_str(&json)
             .map_err(|error| format!("Invalid restore_names owner configuration: {error}"))?,
+    };
+    let links = match links {
+        None => BTreeMap::new(),
+        Some(json) => serde_json::from_str(&json)
+            .map_err(|error| format!("Invalid restore_links owner configuration: {error}"))?,
     };
     let expected = match expected {
         None => None,
@@ -386,7 +409,11 @@ fn take_restore_seed(configuration: &mut BTreeMap<String, String>) -> Result<Res
             format!("Invalid restore_expected_panes owner configuration: {error}")
         })?),
     };
-    Ok((names, expected))
+    Ok(RestoreSeed {
+        names,
+        links,
+        expected,
+    })
 }
 
 /// The owner's application identity from its plugin configuration, plus the restore seed.
@@ -1157,6 +1184,33 @@ impl Model {
         true
     }
 
+    /// Claim `key`'s recorded association for terminal `pane`; false for unknown or consumed
+    /// keys and for a claim that does not match the seeded association exactly.
+    fn restore_link(&mut self, key: &str, pane: u32, link: &RestoreLink) -> bool {
+        if self.restore.links.get(key) != Some(link) {
+            return false;
+        }
+        self.restore.links.remove(key);
+        self.restore.consumed.insert(key.to_owned());
+        self.restore.retained.insert(pane, link.clone());
+        self.prune_retained_links();
+        true
+    }
+
+    /// End retained associations whose pane closed or now has a detected agent.
+    fn prune_retained_links(&mut self) -> bool {
+        let before = self.restore.retained.len();
+        let closed = &self.closed_panes;
+        let agents = &self.agents;
+        self.restore.retained.retain(|id, _| {
+            !closed.contains(id)
+                && agents
+                    .get(id)
+                    .is_none_or(|agent| harness_name(&agent.harness).is_none())
+        });
+        self.restore.retained.len() != before
+    }
+
     /// Apply claimed names to terminals now in the model; returns them for native renaming.
     /// Claims for terminals that closed before arriving are dropped.
     fn apply_restore_names(&mut self) -> Vec<(u32, String)> {
@@ -1409,16 +1463,30 @@ impl Model {
     ) -> SplitNode<RecoveryPane> {
         let mut leaf = |id: u32| {
             let pane = &self.panes[&id];
-            let agent = self
-                .pane_agent(id)
-                .and_then(|agent| Some((recovery_harness(&agent.harness)?, agent)));
-            let agent_id = agent.and_then(|(_, agent)| agent.agent_id.clone());
+            let (harness, agent_id) = match self.pane_agent(id) {
+                Some(agent) => match recovery_harness(&agent.harness) {
+                    Some(harness) => (Some(harness), agent.agent_id.clone()),
+                    None => (None, None),
+                },
+                // No detected agent: a restored pane keeps an association whose resume was
+                // refused or failed, so a later resume can retry it.
+                None => self
+                    .restore
+                    .retained
+                    .get(&id)
+                    .and_then(|link| {
+                        Some((recovery_harness(&link.harness)?, link.agent_id.clone()))
+                    })
+                    .map_or((None, None), |(harness, agent_id)| {
+                        (Some(harness), Some(agent_id))
+                    }),
+            };
             keys.insert(id, agent_id.clone());
             RecoveryPane {
                 cwd: pane.cwd.clone(),
                 name: self.pane_name(id, pane),
                 renamed: pane.renamed,
-                harness: agent.map(|(harness, _)| harness.to_owned()),
+                harness: harness.map(str::to_owned),
                 agent_id,
                 focused: focused == Some(id),
             }
@@ -1724,6 +1792,7 @@ impl Model {
             self.program_status.remove(id);
             self.closed_panes.insert(*id);
         }
+        changed |= self.prune_retained_links();
         let previous_count = self.panes.len();
         self.panes.retain(|id, _| alive.contains(id));
         changed |= self.panes.len() != previous_count;
@@ -1768,6 +1837,7 @@ impl Model {
     fn close_pane(&mut self, id: u32) -> bool {
         self.closed_panes.insert(id);
         self.program_status.remove(&id);
+        self.prune_retained_links();
         if self.panes.remove(&id).is_none() {
             return false;
         }
@@ -2122,6 +2192,7 @@ impl Model {
             }
         }
         self.agents = agents;
+        changed |= self.prune_retained_links();
         self.pending_agents = None;
         self.agent_error = None;
         Ok(changed)
@@ -2211,7 +2282,7 @@ impl Owner {
             ));
             return;
         }
-        let (restore_names, restore_expected) = match restore_seed {
+        let seed = match restore_seed {
             Ok(seed) => seed,
             Err(error) => {
                 self.error = Some(error);
@@ -2235,8 +2306,9 @@ impl Owner {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let mut model = Model::new(configuration.clone(), format!("native:{pid}:{hash:016x}"));
                 // Only a new model is seeded: an existing one already holds the claims.
-                model.restore.names = restore_names;
-                model.recovery.restore_expected = restore_expected;
+                model.restore.names = seed.names;
+                model.restore.links = seed.links;
+                model.recovery.restore_expected = seed.expected;
                 self.model = Some(model);
             }
             Err(error) => self.error = Some(format!("Cannot recover native metadata: {error}")),
@@ -3488,7 +3560,14 @@ impl Owner {
             let Some(model) = self.model.as_mut() else {
                 return false;
             };
-            if !model.restore_name(&request.key, id) {
+            let named = model.restore_name(&request.key, id);
+            let linked = match (request.harness, request.agent_id) {
+                (Some(harness), Some(agent_id)) => {
+                    model.restore_link(&request.key, id, &RestoreLink { harness, agent_id })
+                }
+                _ => false,
+            };
+            if !named && !linked {
                 return false;
             }
             for (id, name) in model.apply_restore_names() {
@@ -6974,19 +7053,33 @@ mod tests {
             r#"{"w0t0p1":"Build \"server\""}"#.to_owned(),
         );
         restored.insert("restore_expected_panes".to_owned(), "3".to_owned());
-        let (names, expected) = take_restore_seed(&mut restored).unwrap();
+        restored.insert(
+            "restore_links".to_owned(),
+            r#"{"w0t0p2":{"harness":"codex","agent_id":"agent-7"}}"#.to_owned(),
+        );
+        let seed = take_restore_seed(&mut restored).unwrap();
         assert_eq!(restored, ordinary);
         assert!(configuration_valid(&restored, "native-owner"));
         assert_eq!(
-            names,
+            seed.names,
             BTreeMap::from([("w0t0p1".to_owned(), r#"Build "server""#.to_owned())])
         );
-        assert_eq!(expected, Some(3));
-        // An ordinary session has neither key.
+        assert_eq!(seed.expected, Some(3));
+        assert_eq!(
+            seed.links,
+            BTreeMap::from([(
+                "w0t0p2".to_owned(),
+                RestoreLink {
+                    harness: "codex".to_owned(),
+                    agent_id: "agent-7".to_owned(),
+                }
+            )])
+        );
+        // An ordinary session has none of the keys.
         let mut plain = ordinary.clone();
         assert_eq!(
             take_restore_seed(&mut plain).unwrap(),
-            (BTreeMap::new(), None)
+            RestoreSeed::default()
         );
         assert_eq!(plain, ordinary);
         // Each malformed key reports its own error, with both keys stripped.
@@ -7003,6 +7096,12 @@ mod tests {
         assert!(
             take_restore_seed(&mut malformed)
                 .is_err_and(|error| error.contains("restore_expected_panes"))
+        );
+        assert_eq!(malformed, ordinary);
+        let mut malformed = ordinary.clone();
+        malformed.insert("restore_links".to_owned(), r#"{"k":"v"}"#.to_owned());
+        assert!(
+            take_restore_seed(&mut malformed).is_err_and(|error| error.contains("restore_links"))
         );
         assert_eq!(malformed, ordinary);
         for (key, value) in [
@@ -7183,21 +7282,170 @@ mod tests {
                 r#"{"w0t0p0":"Build"}"#.to_owned(),
             ),
             ("restore_expected_panes".to_owned(), "1".to_owned()),
+            (
+                "restore_links".to_owned(),
+                r#"{"w0t0p0":{"harness":"claude","agent_id":"a"}}"#.to_owned(),
+            ),
         ]);
         let (identity, seed) = owner_identity(&raw);
-        assert_eq!(seed.unwrap().1, Some(1));
+        assert_eq!(seed.unwrap().expected, Some(1));
         assert!(configuration_valid(&identity, "native-owner"));
         let tab = tab_sidebar_configuration(&identity);
         assert_eq!(tab["role"], "sidebar");
         for key in [
             "restore_names",
             "restore_expected_panes",
+            "restore_links",
             "context_owner",
             "caller_cwd",
             "mode_info_format",
         ] {
             assert!(!tab.contains_key(key), "{key}");
         }
+    }
+
+    fn link(agent: &str) -> RestoreLink {
+        RestoreLink {
+            harness: "claude".to_owned(),
+            agent_id: agent.to_owned(),
+        }
+    }
+
+    /// A restored pane whose resume was refused keeps its recorded association (ruling for
+    /// fix 3) until an agent is detected in it or it closes; losing it is an ordinary
+    /// removal under the grace hold, never an early write.
+    #[test]
+    fn retained_restore_link_survives_until_agent_or_close() {
+        let mut model = model();
+        let tabs = [tab(10, 0)];
+        let at = |id: u32, x: usize| PaneInfo {
+            pane_x: x,
+            pane_columns: 50,
+            pane_rows: 20,
+            ..pane(id)
+        };
+        let panes = manifest(&[(0, vec![at(1, 0), at(2, 50)])]);
+        model
+            .adopt_context(host_context(&[(10, "ws-a", "Alpha")], &[(1, 10), (2, 10)]))
+            .unwrap();
+        assert!(model.reconcile_topology(&tabs, &panes));
+        model.restore.links = BTreeMap::from([
+            ("w0t0p0".to_owned(), link("agent-1")),
+            ("w0t0p1".to_owned(), link("agent-2")),
+        ]);
+        // Unknown keys and mismatched associations are ignored and stay claimable.
+        assert!(!model.restore_link("w9t9p9", 1, &link("agent-1")));
+        assert!(!model.restore_link("w0t0p0", 1, &link("agent-x")));
+        assert!(model.restore_link("w0t0p0", 1, &link("agent-1")));
+        // One-shot per key.
+        assert!(!model.restore_link("w0t0p0", 2, &link("agent-1")));
+        assert!(model.restore_link("w0t0p1", 2, &link("agent-2")));
+
+        let view = |model: &Model| {
+            model.recovery_workspaces(&recovery_geometry(&tabs, &panes), &tabs, Some(1))
+        };
+        let associations = |view: &RecoveryView| {
+            view.workspaces[0].tabs[0]
+                .layout
+                .leaves()
+                .iter()
+                .map(|pane| (pane.harness.clone(), pane.agent_id.clone()))
+                .collect::<Vec<_>>()
+        };
+        let linked = |agent: &str| (Some("claude".to_owned()), Some(agent.to_owned()));
+        let first = view(&model);
+        assert_eq!(associations(&first), [linked("agent-1"), linked("agent-2")]);
+        assert_eq!(first.keys[&1], Some("agent-1".to_owned()));
+
+        let mut gate = RecoveryGate::default();
+        let t = 50_000;
+        sent(gate.offer(first, t, SESSION));
+        assert!(gate.finish(1, Some(0), t));
+
+        // Any detected agent ends the link for good, even after that agent leaves.
+        model.observe_roots(BTreeMap::from([(1, 101), (2, 102)]));
+        inspect(
+            &mut model,
+            vec![AgentExecution {
+                harness: "omp".to_owned(),
+                ..execution(1)
+            }],
+            t,
+        );
+        assert!(!model.restore.retained.contains_key(&1));
+        inspect(&mut model, Vec::new(), t + AGENT_RESULT_MILLIS + 2);
+        // Closing a pane drops its link.
+        assert!(model.close_pane(2));
+        assert!(model.restore.retained.is_empty());
+
+        let mut lost = view(&model);
+        assert_eq!(associations(&lost), [(None, None)]);
+        // Re-add pane 2's key unchanged so only pane 1's lost link is the removal.
+        lost.keys.insert(2, Some("agent-2".to_owned()));
+        let now = t + 2_000;
+        assert_eq!(
+            gate.offer(lost, now, SESSION),
+            RecoveryDecision::WaitUntil(now + RECOVERY_REMOVAL_GRACE_MILLIS)
+        );
+    }
+
+    #[test]
+    fn restore_link_pipe_retains_once_and_acknowledges() {
+        let directory = std::env::temp_dir().join(format!(
+            "bkpr-native-link-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1), pane(2)])]));
+        model.restore.links = BTreeMap::from([("w0t0p0".to_owned(), link("agent-1"))]);
+        let mut owner = Owner {
+            configuration: model.configuration.clone(),
+            model: Some(model),
+            storage: directory.join("owner.json"),
+            granted: true,
+            ..Owner::default()
+        };
+        owner.save();
+        let message = |source: &str, payload: &str| PipeMessage {
+            source: PipeSource::Cli(source.to_owned()),
+            name: RESTORE_NAME.to_owned(),
+            payload: Some(payload.to_owned()),
+            args: BTreeMap::new(),
+            is_private: false,
+        };
+        let acknowledged = || ACKNOWLEDGED_CLI.with(|acknowledged| acknowledged.take());
+        let retained = |owner: &Owner| owner.model.as_ref().unwrap().restore.retained.clone();
+        acknowledged();
+
+        owner.pipe(message(
+            "first",
+            r#"{"key":"w0t0p0","pane_id":"terminal_1","harness":"claude","agent_id":"agent-1"}"#,
+        ));
+        assert_eq!(acknowledged(), ["first"]);
+        assert_eq!(retained(&owner), BTreeMap::from([(1, link("agent-1"))]));
+        // Persisted in the shared model for per-client replicas.
+        let saved = Model::decode(&std::fs::read(directory.join("owner.json")).unwrap()).unwrap();
+        assert_eq!(
+            saved.restore.retained,
+            BTreeMap::from([(1, link("agent-1"))])
+        );
+
+        owner.pipe(message(
+            "again",
+            r#"{"key":"w0t0p0","pane_id":"terminal_2","harness":"claude","agent_id":"agent-1"}"#,
+        ));
+        owner.pipe(message(
+            "unknown",
+            r#"{"key":"w9t9p9","pane_id":"terminal_2","harness":"claude","agent_id":"agent-1"}"#,
+        ));
+        assert_eq!(acknowledged(), ["again", "unknown"]);
+        assert_eq!(retained(&owner), BTreeMap::from([(1, link("agent-1"))]));
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

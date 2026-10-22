@@ -182,6 +182,8 @@ struct RestoreLayout {
     layout: String,
     /// Sticky (user-assigned) names by leaf key, for the owner's `restore_names`.
     names: BTreeMap<String, String>,
+    /// Associations kept for a retry by leaf key, for the owner's `restore_links`.
+    links: BTreeMap<String, bkpr::recovery_contract::RestoreLink>,
     /// Terminal panes the layout spawns, for the owner's `restore_expected_panes`. The owner
     /// counts the same unit: one removal key per recorded terminal leaf, stacks included.
     expected_panes: usize,
@@ -199,6 +201,7 @@ fn restore_layout(
     agents: std::result::Result<&RecoveryAgents, &str>,
 ) -> Result<RestoreLayout> {
     let mut names = BTreeMap::new();
+    let mut links = BTreeMap::new();
     let layout = recovery_layout(
         plugin_url,
         sidebar_configuration,
@@ -212,6 +215,9 @@ fn restore_layout(
             };
             if pane.renamed {
                 names.insert(key.to_owned(), pane.name.clone());
+            }
+            if let Some(link) = recovery::restore_link(pane, &launch) {
+                links.insert(key.to_owned(), link);
             }
             let (PaneLaunch::Shell { cwd, .. } | PaneLaunch::Harness { cwd, .. }) = &launch;
             let mut args = vec!["restore-pane".to_owned()];
@@ -227,6 +233,7 @@ fn restore_layout(
     Ok(RestoreLayout {
         layout,
         names,
+        links,
         expected_panes: record.pane_count(),
     })
 }
@@ -383,6 +390,10 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
                 owner_configuration.insert(
                     "restore_expected_panes".into(),
                     restore.expected_panes.to_string(),
+                );
+                owner_configuration.insert(
+                    "restore_links".into(),
+                    serde_json::to_string(&restore.links)?,
                 );
                 restore.layout
             }
@@ -952,6 +963,21 @@ mod tests {
                 .contains("\"--harness=claude\" \"--session-id=native-1\"")
         );
         assert!(!restore.layout.contains("restore_names"));
+        let a1 = bkpr::recovery_contract::RestoreLink {
+            harness: "claude".into(),
+            agent_id: "a1".into(),
+        };
+        // A resumed harness keeps its link seeded until the pane reports otherwise.
+        assert_eq!(
+            restore.links,
+            BTreeMap::from([("w0t0p2".to_owned(), a1.clone())])
+        );
+        assert!(
+            restore
+                .layout
+                .contains("\"--link-harness=claude\" \"--link-agent-id=a1\"")
+        );
+        assert!(!restore.layout.contains("restore_links"));
 
         // Unreadable relay state never fails the resume: harness panes become noted shells.
         let restore = restore_layout(
@@ -971,6 +997,8 @@ mod tests {
                 .contains("relay state was unreadable: permission denied")
         );
         assert_eq!(restore.expected_panes, 3);
+        // ...and keep their association for a retry once relay state is readable.
+        assert_eq!(restore.links, BTreeMap::from([("w0t0p2".to_owned(), a1)]));
     }
 
     #[test]

@@ -23,6 +23,15 @@ pub struct RecoveryPane {
     pub focused: bool,
 }
 
+/// A restored pane's recorded harness association, kept while its resume is refused or
+/// fails so a later `bkpr resume` can retry it. The launcher seeds it by restore-layout
+/// leaf key; the pane's `bkpr restore-pane` claims it for its terminal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreLink {
+    pub harness: String,
+    pub agent_id: String,
+}
+
 /// KDL `split_direction` values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
