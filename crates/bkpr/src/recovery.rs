@@ -20,7 +20,9 @@ use clap::ValueEnum;
 
 use crate::harness::Harness;
 use crate::relay::RecoveryAgents;
-use bkpr::recovery_contract::{RECOVERY_VERSION, RecoveryPane, RecoveryRecord, RecoveryUpdate};
+use bkpr::recovery_contract::{
+    RECOVERY_VERSION, RecoveryPane, RecoveryRecord, RecoveryUpdate, RestoreLink,
+};
 
 const FILE_NAME: &str = "recovery.json";
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -236,6 +238,9 @@ pub(crate) enum PaneLaunch {
     Shell {
         cwd: PathBuf,
         note: Option<String>,
+        /// The refusal is transient (session held elsewhere, unsafe Codex stop, unreadable
+        /// relay state): the pane keeps its recorded association so a later resume retries.
+        retry: bool,
     },
     Harness {
         harness: Harness,
@@ -254,15 +259,20 @@ pub(crate) fn resolve(pane: &RecoveryPane, agents: &RecoveryAgents) -> PaneLaunc
         return PaneLaunch::Shell {
             cwd,
             note: cwd_note,
+            retry: false,
         };
     };
-    let shell = |reason: &str| PaneLaunch::Shell {
+    let refuse = |reason: &str, retry: bool| PaneLaunch::Shell {
         cwd: cwd.clone(),
         note: Some(match &cwd_note {
             Some(extra) => format!("{reason}; {extra}"),
             None => reason.to_owned(),
         }),
+        retry,
     };
+    // No captured session or an unsupported harness cannot succeed later either.
+    let shell = |reason: &str| refuse(reason, false);
+    let retry_later = |reason: &str| refuse(reason, true);
     let agent = agents.by_id.get(agent_id);
     let Some((agent, session_id)) =
         agent.and_then(|agent| Some((agent, agent.session_id.as_deref()?)))
@@ -284,18 +294,18 @@ pub(crate) fn resolve(pane: &RecoveryPane, agents: &RecoveryAgents) -> PaneLaunc
         .get(session_id)
         .is_some_and(|holders| holders.iter().any(|holder| holder != agent_id));
     if other_holder {
-        return shell("session is still open elsewhere");
+        return retry_later("session is still open elsewhere");
     }
     let mut manifest = None;
     if agent.live {
         if harness != Harness::Codex {
             // The agent's own process still has its session open.
-            return shell("session is still open elsewhere");
+            return retry_later("session is still open elsewhere");
         }
         // Its detached app-server still owns the thread; resume only after stopping it.
         manifest = agent.queue_endpoint.as_deref().and_then(codex_manifest);
         if manifest.is_none() {
-            return shell("codex server cannot be stopped safely");
+            return retry_later("codex server cannot be stopped safely");
         }
     }
     PaneLaunch::Harness {
@@ -316,7 +326,26 @@ pub(crate) fn unresolved(pane: &RecoveryPane, reason: &str) -> PaneLaunch {
         (true, None) => Some(format!("relay state was unreadable: {reason}")),
         (true, Some(extra)) => Some(format!("relay state was unreadable: {reason}; {extra}")),
     };
-    PaneLaunch::Shell { cwd, note }
+    PaneLaunch::Shell {
+        cwd,
+        note,
+        retry: harness,
+    }
+}
+
+/// The recorded association `pane` keeps for a later retry if this restore does not
+/// resume it: every resume attempt, and every transient refusal. A detected agent or the
+/// pane closing ends it (owner-side).
+pub(crate) fn restore_link(pane: &RecoveryPane, launch: &PaneLaunch) -> Option<RestoreLink> {
+    let attempted = match launch {
+        PaneLaunch::Harness { .. } => true,
+        PaneLaunch::Shell { retry, .. } => *retry,
+    };
+    Some(RestoreLink {
+        harness: pane.harness.clone()?,
+        agent_id: pane.agent_id.clone()?,
+    })
+    .filter(|_| attempted)
 }
 
 /// `unix:///tmp/bkpr-codex-*/server.sock` -> its `server.json`. Anything else is not a
@@ -384,6 +413,11 @@ pub(crate) struct RestorePaneArgs {
     pub(crate) codex_manifest: Option<PathBuf>,
     #[arg(long, allow_hyphen_values = true)]
     pub(crate) note: Option<String>,
+    /// Recorded association the owner keeps for a retry until an agent appears here.
+    #[arg(long, requires = "link_agent_id")]
+    pub(crate) link_harness: Option<String>,
+    #[arg(long, allow_hyphen_values = true, requires = "link_harness")]
+    pub(crate) link_agent_id: Option<String>,
 }
 
 /// Owner-plugin CLI pipe that applies a restored pane's sticky (user-assigned) name.
@@ -399,11 +433,16 @@ pub(crate) fn restore_pane(args: RestorePaneArgs) -> Result<()> {
         notes.push(format!("cannot enter {}: {error}", cwd.display()));
     }
     let mut stdout = std::io::stdout();
-    if args.sticky {
-        if let Err(error) = send_restore_name(&args.key) {
-            notes.push(restore_name_note(&error));
-        }
-    } else {
+    let link = args.link_harness.clone().zip(args.link_agent_id.clone());
+    // One claim carries the sticky name and the retained link, before any resume attempt,
+    // so a refusal, a failed stop or a harness that exits at once keeps the association.
+    if (args.sticky || link.is_some())
+        && let Err(error) = send_restore_claim(&args.key, link.as_ref())
+        && let Some(note) = restore_claim_note(&error, args.sticky)
+    {
+        notes.push(note);
+    }
+    if !args.sticky {
         let _ = stdout
             .write_all(soft_title(&args.name).as_bytes())
             .and_then(|()| stdout.flush());
@@ -468,10 +507,15 @@ fn print_note(notes: &[String]) {
     eprintln!("\x1b[2mbkpr: {text}\x1b[0m");
 }
 
-fn send_restore_name(key: &str) -> Result<()> {
+fn send_restore_claim(key: &str, link: Option<&(String, String)>) -> Result<()> {
     let pane_id = std::env::var("BKPR_PANE_ID").context("BKPR_PANE_ID is not set")?;
     let session = std::env::var("ZELLIJ_SESSION_NAME").context("ZELLIJ_SESSION_NAME is not set")?;
-    let payload = serde_json::json!({ "key": key, "pane_id": pane_id }).to_string();
+    let mut payload = serde_json::json!({ "key": key, "pane_id": pane_id });
+    if let Some((harness, agent_id)) = link {
+        payload["harness"] = harness.as_str().into();
+        payload["agent_id"] = agent_id.as_str().into();
+    }
+    let payload = payload.to_string();
     crate::project_watch::send_pipe(&session, RESTORE_NAME_PIPE, &payload)
 }
 
@@ -566,14 +610,16 @@ fn run_foreground(command: &mut Command) -> Result<std::process::ExitStatus> {
 
 /// Note for a failed sticky-name request. A timed-out pipe was still delivered to the
 /// owner, which applies the queued claim once it is granted.
-fn restore_name_note(error: &anyhow::Error) -> String {
+fn restore_claim_note(error: &anyhow::Error, sticky: bool) -> Option<String> {
     if error
         .downcast_ref::<crate::project_watch::TimedOut>()
         .is_some()
     {
-        "pane name will apply when the session is ready".to_owned()
+        sticky.then(|| "pane name will apply when the session is ready".to_owned())
+    } else if sticky {
+        Some(format!("pane name not restored: {error:#}"))
     } else {
-        format!("pane name not restored: {error:#}")
+        Some(format!("resume link not kept for a retry: {error:#}"))
     }
 }
 
@@ -604,8 +650,12 @@ pub(crate) fn restore_pane_args(
     if pane.renamed {
         args.push("--sticky".to_owned());
     }
+    if let Some(link) = restore_link(pane, launch) {
+        args.push(format!("--link-harness={}", link.harness));
+        args.push(format!("--link-agent-id={}", link.agent_id));
+    }
     match launch {
-        PaneLaunch::Shell { cwd, note } => {
+        PaneLaunch::Shell { cwd, note, .. } => {
             args.push(format!("--cwd={}", cwd.display()));
             if let Some(note) = note {
                 args.push(format!("--note={note}"));
@@ -744,7 +794,8 @@ mod tests {
 
     #[test]
     fn restore_pane_args_roundtrip_through_clap() {
-        let mut recorded = pane(Some("a"), "/srv/x");
+        let mut recorded = pane(Some("-a"), "/srv/x");
+        recorded.harness = Some("codex".into());
         recorded.name = r#"-my "quoted" pane 'name'"#.into();
         recorded.renamed = true;
         let launch = PaneLaunch::Harness {
@@ -764,6 +815,8 @@ mod tests {
                 session_id: Some("-thread 1".into()),
                 codex_manifest: Some("/tmp/bkpr-codex-a/server.json".into()),
                 note: None,
+                link_harness: Some("codex".into()),
+                link_agent_id: Some("-a".into()),
             }
         );
         let mut plain = pane(None, "/tmp");
@@ -771,6 +824,7 @@ mod tests {
         let launch = PaneLaunch::Shell {
             cwd: "/".into(),
             note: Some("-/tmp no longer exists; \"x\"".into()),
+            retry: false,
         };
         assert_eq!(
             parse_restore(restore_pane_args("w1t0p0", &plain, &launch)),
@@ -783,8 +837,59 @@ mod tests {
                 session_id: None,
                 codex_manifest: None,
                 note: Some("-/tmp no longer exists; \"x\"".into()),
+                link_harness: None,
+                link_agent_id: None,
             }
         );
+        // A refused resume carries its recorded association for a later retry.
+        let mut refused = pane(Some("agent-1"), "/tmp");
+        refused.harness = Some("claude".into());
+        let launch = PaneLaunch::Shell {
+            cwd: "/tmp".into(),
+            note: Some("session is still open elsewhere".into()),
+            retry: true,
+        };
+        let parsed = parse_restore(restore_pane_args("w0t0p0", &refused, &launch));
+        assert_eq!(parsed.link_harness.as_deref(), Some("claude"));
+        assert_eq!(parsed.link_agent_id.as_deref(), Some("agent-1"));
+        assert_eq!(parsed.harness, None);
+        assert_eq!(
+            restore_link(&refused, &launch),
+            Some(RestoreLink {
+                harness: "claude".into(),
+                agent_id: "agent-1".into(),
+            })
+        );
+        // Without both halves of the association there is nothing to retry.
+        refused.harness = None;
+        assert_eq!(restore_link(&refused, &launch), None);
+    }
+
+    /// Transient refusals keep the recorded association for the next `bkpr resume`;
+    /// permanent ones (no session to resume, unsupported harness) do not.
+    #[test]
+    fn transient_refusals_retry_later() {
+        let retry = |launch: &PaneLaunch| match launch {
+            PaneLaunch::Shell { retry, .. } => *retry,
+            PaneLaunch::Harness { .. } => panic!("expected shell"),
+        };
+        let held = agents(vec![
+            ("a", agent("claude", Some("s"), None, false)),
+            ("b", agent("claude", Some("s"), None, true)),
+        ]);
+        assert!(retry(&resolve(&pane(Some("a"), "/tmp"), &held)));
+        let live = agents(vec![("a", agent("omp", Some("s"), None, true))]);
+        assert!(retry(&resolve(&pane(Some("a"), "/tmp"), &live)));
+        let unsafe_codex = agents(vec![("a", agent("codex", Some("s"), None, true))]);
+        assert!(retry(&resolve(&pane(Some("a"), "/tmp"), &unsafe_codex)));
+        let uncaptured = agents(vec![("a", agent("claude", None, None, false))]);
+        assert!(!retry(&resolve(&pane(Some("a"), "/tmp"), &uncaptured)));
+        assert!(!retry(&resolve(&pane(Some("ghost"), "/tmp"), &uncaptured)));
+        let unsupported = agents(vec![("a", agent("aider", Some("s"), None, false))]);
+        assert!(!retry(&resolve(&pane(Some("a"), "/tmp"), &unsupported)));
+        assert!(!retry(&resolve(&pane(None, "/tmp"), &held)));
+        assert!(retry(&unresolved(&pane(Some("a"), "/tmp"), "corrupt")));
+        assert!(!retry(&unresolved(&pane(None, "/tmp"), "corrupt")));
     }
 
     /// Signal dispositions are process-wide; serialize the tests that change them.
@@ -848,11 +953,22 @@ mod tests {
         let timeout = anyhow::Error::new(crate::project_watch::TimedOut("zellij".into()))
             .context("send bkpr-restore-name");
         assert_eq!(
-            restore_name_note(&timeout),
-            "pane name will apply when the session is ready"
+            restore_claim_note(&timeout, true).as_deref(),
+            Some("pane name will apply when the session is ready")
         );
         let missing = anyhow::anyhow!("BKPR_PANE_ID is not set");
-        assert!(restore_name_note(&missing).starts_with("pane name not restored: "));
+        assert!(
+            restore_claim_note(&missing, true)
+                .unwrap()
+                .starts_with("pane name not restored: ")
+        );
+        // A link-only claim that timed out was still delivered: nothing to note.
+        assert_eq!(restore_claim_note(&timeout, false), None);
+        assert!(
+            restore_claim_note(&missing, false)
+                .unwrap()
+                .starts_with("resume link not kept for a retry: ")
+        );
     }
 
     #[test]
@@ -868,7 +984,8 @@ mod tests {
             launch,
             PaneLaunch::Shell {
                 cwd: "/tmp".into(),
-                note: None
+                note: None,
+                retry: false,
             }
         );
     }
