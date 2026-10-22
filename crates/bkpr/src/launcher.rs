@@ -202,6 +202,8 @@ fn restore_layout(
 ) -> Result<RestoreLayout> {
     let mut names = BTreeMap::new();
     let mut links = BTreeMap::new();
+    // Native sessions already assigned to an earlier leaf of this layout.
+    let mut resumed = std::collections::BTreeSet::new();
     let layout = recovery_layout(
         plugin_url,
         sidebar_configuration,
@@ -209,10 +211,23 @@ fn restore_layout(
         session_id,
         record,
         &mut |key, pane| {
-            let launch = match agents {
+            let mut launch = match agents {
                 Ok(agents) => recovery::resolve(pane, agents),
                 Err(reason) => recovery::unresolved(pane, reason),
             };
+            // A retained link and its resume elsewhere can name one session twice; only the
+            // first leaf resumes it. The duplicate is not transient, so it keeps no link.
+            if let PaneLaunch::Harness {
+                session_id, cwd, ..
+            } = &launch
+                && !resumed.insert(session_id.clone())
+            {
+                launch = PaneLaunch::Shell {
+                    cwd: cwd.clone(),
+                    note: Some("session is still open elsewhere".to_owned()),
+                    retry: false,
+                };
+            }
             if pane.renamed {
                 names.insert(key.to_owned(), pane.name.clone());
             }
@@ -999,6 +1014,71 @@ mod tests {
         assert_eq!(restore.expected_panes, 3);
         // ...and keep their association for a retry once relay state is readable.
         assert_eq!(restore.links, BTreeMap::from([("w0t0p2".to_owned(), a1)]));
+    }
+
+    /// Two recorded panes can name one native session (a retained link plus its resume
+    /// elsewhere): only the first leaf resumes it; the later one is a noted shell.
+    #[test]
+    fn restore_layout_resumes_each_session_once() {
+        use crate::relay::{RecoveredAgent, RecoveryAgents};
+        use bkpr::recovery_contract::{RecoveryPane, RecoveryTab, RecoveryWorkspace, SplitNode};
+        let pane = |agent: &str| SplitNode::Pane {
+            pane: RecoveryPane {
+                cwd: Some("/".into()),
+                name: agent.into(),
+                renamed: false,
+                harness: Some("claude".into()),
+                agent_id: Some(agent.into()),
+                focused: false,
+            },
+        };
+        let mut record = record(0);
+        record.workspaces = vec![RecoveryWorkspace {
+            name: "w".into(),
+            tabs: vec![RecoveryTab {
+                name: "t".into(),
+                focused: true,
+                layout: SplitNode::Split {
+                    direction: bkpr::recovery_contract::SplitDirection::Vertical,
+                    children: vec![pane("old"), pane("new")],
+                },
+            }],
+        }];
+        let dead = |session: &str| RecoveredAgent {
+            harness: "claude".into(),
+            session_id: Some(session.into()),
+            live: false,
+            queue_endpoint: None,
+        };
+        let agents = RecoveryAgents::from_entries([
+            ("old".to_owned(), dead("shared")),
+            ("new".to_owned(), dead("shared")),
+        ]);
+        let restore = restore_layout(
+            "file:/bkpr.wasm",
+            &BTreeMap::new(),
+            30,
+            "new-session",
+            &record,
+            "/bin/bkpr",
+            Ok(&agents),
+        )
+        .unwrap();
+        assert_eq!(restore.layout.matches("--session-id=shared").count(), 1);
+        assert!(restore.layout.contains("\"--key=w0t0p0\""));
+        let second = restore
+            .layout
+            .lines()
+            .skip_while(|line| !line.contains("--key=w0t0p1"))
+            .next()
+            .unwrap();
+        assert!(
+            second.contains("--note=session is still open elsewhere"),
+            "{second}"
+        );
+        assert!(!second.contains("--harness="), "{second}");
+        // The duplicate is not a transient refusal: it keeps no link to retry.
+        assert_eq!(restore.links.keys().collect::<Vec<_>>(), ["w0t0p0"]);
     }
 
     #[test]
