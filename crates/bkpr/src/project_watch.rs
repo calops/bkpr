@@ -28,6 +28,19 @@ pub(crate) fn send_pipe(zellij_session: &str, pipe: &str, json: &str) -> Result<
     }
 }
 
+/// Type `text` into `pane_id` of `zellij_session`, as if it were keyboard input.
+pub(crate) fn write_chars(zellij_session: &str, pane_id: &str, text: &str) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::write_chars(zellij_session, pane_id, text)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (zellij_session, pane_id, text);
+        bail!("native pane input requires Linux process-group support")
+    }
+}
+
 /// A bounded subprocess exceeded its deadline (its effect may still have happened).
 #[derive(Debug)]
 pub(crate) struct TimedOut(pub(crate) String);
@@ -434,6 +447,25 @@ mod linux {
         command.env("ZELLIJ_SOCKET_DIR", socket_dir);
         let output = run_output(&mut command, None, Duration::from_secs(2))?;
         check_output(&output, &format!("send {pipe}"))
+    }
+
+    pub(crate) fn write_chars(zellij_session: &str, pane_id: &str, text: &str) -> Result<()> {
+        let socket_dir = launcher::zellij_socket_dir()?;
+        let mut command =
+            Command::new(std::env::var_os("BKPR_ZELLIJ").unwrap_or_else(|| "zellij".into()));
+        command.args([
+            "--session",
+            zellij_session,
+            "action",
+            "write-chars",
+            "--pane-id",
+            pane_id,
+            "--",
+            text,
+        ]);
+        command.env("ZELLIJ_SOCKET_DIR", socket_dir);
+        let output = run_output(&mut command, None, Duration::from_secs(2))?;
+        check_output(&output, "write resume command")
     }
 
     fn nonblocking(fd: RawFd) -> Result<()> {

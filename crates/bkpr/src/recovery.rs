@@ -5,7 +5,7 @@
 //! non-decreasing sequence, so stale or foreign plugins can never overwrite a newer record.
 //! Uses `flock` and Unix file modes, like the other state stores, so it is not Linux-gated.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -492,8 +492,8 @@ pub(crate) struct RestorePaneArgs {
 /// Owner-plugin CLI pipe that applies a restored pane's sticky (user-assigned) name.
 const RESTORE_NAME_PIPE: &str = "bkpr-restore-name";
 
-/// Restore one pane: enter its directory, re-apply its name, resume its harness session in
-/// the foreground, then become an interactive shell there. Every failure is a note, never
+/// Restore one pane: enter its directory, re-apply its name, type its harness resume command
+/// for the shell, then become that interactive shell. Every failure is a note, never
 /// an exit: the pane must always end as a usable shell.
 pub(crate) fn restore_pane(args: RestorePaneArgs) -> Result<()> {
     let (cwd, cwd_note) = existing_cwd(args.cwd.as_deref());
@@ -538,8 +538,8 @@ pub(crate) fn restore_pane(args: RestorePaneArgs) -> Result<()> {
             },
             None => true,
         };
-        if stopped && let Err(error) = run_harness(harness, session_id, &cwd) {
-            print_note(&[format!("cannot resume session: {error:#}")]);
+        if stopped {
+            queue_resume(harness, session_id, &cwd);
         }
     }
     exec_shell(&cwd)
@@ -588,92 +588,91 @@ fn send_restore_claim(key: &str, link: Option<&(String, String)>) -> Result<()> 
     crate::project_watch::send_pipe(&session, RESTORE_NAME_PIPE, &payload)
 }
 
-/// Run `bkpr run <harness> <resume>` as a foreground child sharing this terminal. Its exit
-/// status is irrelevant: the shell follows either way.
-fn run_harness(harness: Harness, session_id: &str, cwd: &Path) -> Result<()> {
-    let name = harness
-        .to_possible_value()
-        .context("harness has no command-line name")?;
-    let mut command = Command::new(std::env::current_exe().context("locate bkpr")?);
-    command
-        .arg("run")
-        .arg(name.get_name())
-        .args(resume_arguments(harness, session_id, cwd))
-        .current_dir(cwd)
-        .env("PWD", cwd);
-    run_foreground(&mut command)?;
-    Ok(())
+/// Flags `resume_arguments` generates: the only typed words allowed to start with `-`.
+const RESUME_FLAGS: [&str; 2] = ["--resume", "-C"];
+
+/// Words of the command line that resumes `session_id`: `<program> run <harness> <resume…>`.
+fn resume_command(program: &Path, harness: Harness, session_id: &str, cwd: &Path) -> Vec<OsString> {
+    let mut words = vec![program.as_os_str().to_owned(), "run".into()];
+    if let Some(name) = harness.to_possible_value() {
+        words.push(name.get_name().into());
+    }
+    words.extend(resume_arguments(harness, session_id, cwd));
+    words
 }
 
-/// Signals a foreground harness owns. The helper ignores them while it waits so terminal
-/// interrupts and job control reach the harness, never the helper whose shell must follow.
-const FOREGROUND_SIGNALS: [libc::c_int; 5] = [
-    libc::SIGINT,
-    libc::SIGQUIT,
-    libc::SIGTSTP,
-    libc::SIGTTIN,
-    libc::SIGTTOU,
-];
-
-fn set_foreground_signals(handler: libc::sighandler_t) {
-    for signal in FOREGROUND_SIGNALS {
-        // SAFETY: SIG_IGN/SIG_DFL install no Rust handler; `signal` is async-signal-safe.
-        unsafe {
-            libc::signal(signal, handler);
-        }
-    }
+/// A word that fish, bash and zsh all read back literally when typed unquoted. A leading
+/// `-` is only allowed for our own flags; a leading `%` (fish `%self`) or `=` (zsh `=cmd`)
+/// would be expanded.
+fn typeable_word(word: &OsStr) -> bool {
+    let Some(word) = word.to_str() else {
+        return false;
+    };
+    let neutral =
+        |character: char| character.is_ascii_alphanumeric() || "_./:@%+=,-".contains(character);
+    !word.is_empty()
+        && word.chars().all(neutral)
+        && !word.starts_with(['%', '='])
+        && (!word.starts_with('-') || RESUME_FLAGS.contains(&word))
 }
 
-/// Restores default dispositions on every path, since ignored dispositions survive `exec`.
-struct ForegroundSignals;
-
-impl ForegroundSignals {
-    fn ignore() -> Self {
-        set_foreground_signals(libc::SIG_IGN);
-        Self
-    }
+/// The line to type, or `None` when any word would need quoting.
+fn typeable_command(words: &[OsString]) -> Option<String> {
+    words
+        .iter()
+        .map(|word| typeable_word(word).then(|| word.to_string_lossy()))
+        .collect::<Option<Vec<_>>>()
+        .map(|words| words.join(" "))
 }
 
-impl Drop for ForegroundSignals {
-    fn drop(&mut self) {
-        set_foreground_signals(libc::SIG_DFL);
-    }
-}
-
-/// Run `command` in the foreground on this terminal and return its exit status. The helper
-/// ignores the foreground signals from before the spawn (no window where Ctrl+C kills it);
-/// the child resets them to defaults. There is no job-control shell to `fg` a suspended
-/// harness yet, so a stopped child is continued at once: suspend is a no-op here.
-fn run_foreground(command: &mut Command) -> Result<std::process::ExitStatus> {
-    use std::os::unix::process::ExitStatusExt;
-    let _signals = ForegroundSignals::ignore();
-    // SAFETY: the closure only calls the async-signal-safe `signal`.
-    unsafe {
-        command.pre_exec(|| {
-            set_foreground_signals(libc::SIG_DFL);
-            Ok(())
-        });
-    }
-    let child = command.spawn().context("start harness")?;
-    let pid = child.id() as libc::pid_t;
-    loop {
-        let mut status = 0;
-        // SAFETY: waits only for our own child; `status` is a valid out pointer.
-        if unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) } == -1 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == ErrorKind::Interrupted {
-                continue;
+/// POSIX-quoted command line for a note: neutral words stay bare.
+fn quoted_command(words: &[OsString]) -> String {
+    words
+        .iter()
+        .map(|word| {
+            if typeable_word(word) {
+                word.to_string_lossy().into_owned()
+            } else {
+                crate::claude::shell_quote(&word.to_string_lossy())
             }
-            return Err(error).context("wait for harness");
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Type the resume command into this pane through `write(pane_id, text)`, where the shell
+/// exec'd next reads it as if the user had typed it, so the harness is an ordinary job
+/// (suspend, `fg`, history). Returns a note with the command when nothing was typed.
+fn offer_resume(
+    words: &[OsString],
+    pane_id: Option<&str>,
+    write: impl FnOnce(&str, &str) -> Result<()>,
+) -> Option<String> {
+    let typed = typeable_command(words)
+        .zip(pane_id)
+        .is_some_and(|(line, pane)| write(pane, &format!("{line}\n")).is_ok());
+    (!typed).then(|| format!("resume this session with: {}", quoted_command(words)))
+}
+
+/// Queue `bkpr run <harness> <resume>` as typed input for the shell that replaces this
+/// helper, or note the command when it cannot be typed safely.
+fn queue_resume(harness: Harness, session_id: &str, cwd: &Path) {
+    let program = match std::env::current_exe() {
+        Ok(program) => program,
+        Err(error) => {
+            print_note(&[format!("cannot resume session: locate bkpr: {error}")]);
+            return;
         }
-        if libc::WIFSTOPPED(status) {
-            // SAFETY: signals our own unreaped child, so the pid cannot have been reused.
-            unsafe {
-                libc::kill(pid, libc::SIGCONT);
-            }
-            continue;
-        }
-        return Ok(std::process::ExitStatus::from_raw(status));
+    };
+    let words = resume_command(&program, harness, session_id, cwd);
+    let pane_id = std::env::var("BKPR_PANE_ID").ok();
+    let note = offer_resume(&words, pane_id.as_deref(), |pane, text| {
+        let session =
+            std::env::var("ZELLIJ_SESSION_NAME").context("ZELLIJ_SESSION_NAME is not set")?;
+        crate::project_watch::write_chars(&session, pane, text)
+    });
+    if let Some(note) = note {
+        print_note(&[note]);
     }
 }
 
@@ -698,8 +697,6 @@ fn exec_shell(cwd: &Path) -> Result<()> {
     let shell = std::env::var_os("SHELL")
         .filter(|shell| !shell.is_empty())
         .unwrap_or_else(|| "/bin/sh".into());
-    // Never hand the shell ignored interrupt or job-control signals.
-    set_foreground_signals(libc::SIG_DFL);
     let error = Command::new(&shell).env("PWD", cwd).exec();
     print_note(&[format!(
         "cannot start {}: {error}",
@@ -775,6 +772,7 @@ mod tests {
     use super::*;
     use crate::relay::RecoveredAgent;
     use bkpr::recovery_contract::{RecoveryPane, RecoveryTab, RecoveryWorkspace, SplitNode};
+    use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::PermissionsExt;
 
     fn workspaces() -> Vec<RecoveryWorkspace> {
@@ -852,6 +850,151 @@ mod tests {
         assert_eq!(
             resume_arguments(Harness::Codex, "s3", cwd),
             ["resume", "s3", "-C", "/srv/x y"].map(OsString::from)
+        );
+    }
+
+    fn words(items: &[&str]) -> Vec<OsString> {
+        items.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn resume_command_per_harness() {
+        let program = Path::new("/nix/store/abc-bkpr/bin/bkpr");
+        let cwd = Path::new("/srv/project");
+        assert_eq!(
+            resume_command(program, Harness::Claude, "s1", cwd),
+            words(&[
+                "/nix/store/abc-bkpr/bin/bkpr",
+                "run",
+                "claude",
+                "--resume",
+                "s1"
+            ])
+        );
+        assert_eq!(
+            resume_command(program, Harness::Omp, "s2", cwd),
+            words(&[
+                "/nix/store/abc-bkpr/bin/bkpr",
+                "run",
+                "omp",
+                "--resume",
+                "s2"
+            ])
+        );
+        assert_eq!(
+            resume_command(program, Harness::Codex, "s3", cwd),
+            words(&[
+                "/nix/store/abc-bkpr/bin/bkpr",
+                "run",
+                "codex",
+                "resume",
+                "s3",
+                "-C",
+                "/srv/project"
+            ])
+        );
+    }
+
+    #[test]
+    fn typeable_words_are_shell_neutral() {
+        for word in [
+            "/a/b-c_d.e",
+            "run",
+            "agy",
+            "0199-abc:x@y%z+w=v,u",
+            "--resume",
+            "-C",
+        ] {
+            assert!(typeable_word(OsStr::new(word)), "{word}");
+        }
+        for word in [
+            "", "a b", "a'b", "a\"b", "$HOME", "a*", "a;b", "~/x", "a\nb", "(x)", "{a,b}", "#x",
+            "a!", "--yolo", "-x", "-",
+            // Expanded by fish (`%self`) or zsh (`=cmd`) at the start of a word.
+            "%self", "=ls", "é",
+        ] {
+            assert!(!typeable_word(OsStr::new(word)), "{word:?}");
+        }
+        assert!(!typeable_word(&OsString::from_vec(vec![b'a', 0xff])));
+    }
+
+    #[test]
+    fn typeable_command_is_the_joined_line_only_when_every_word_is_safe() {
+        let command = words(&["/bin/bkpr", "run", "codex", "resume", "s", "-C", "/srv/p"]);
+        assert_eq!(
+            typeable_command(&command).as_deref(),
+            Some("/bin/bkpr run codex resume s -C /srv/p")
+        );
+        let spaced = words(&["/bin/bkpr", "run", "codex", "resume", "s", "-C", "/srv/x y"]);
+        assert_eq!(typeable_command(&spaced), None);
+        // A session id that looks like a flag is never typed.
+        let flag = words(&["/bin/bkpr", "run", "claude", "--resume", "--rm"]);
+        assert_eq!(typeable_command(&flag), None);
+    }
+
+    #[test]
+    fn fallback_note_quotes_a_cwd_with_a_space() {
+        let command = words(&[
+            "/bin/bkpr",
+            "run",
+            "codex",
+            "resume",
+            "s",
+            "-C",
+            "/srv/x y's",
+        ]);
+        let mut typed = Vec::new();
+        let note = offer_resume(&command, Some("7"), |pane, text| {
+            typed.push((pane.to_owned(), text.to_owned()));
+            Ok(())
+        });
+        assert!(typed.is_empty());
+        assert_eq!(
+            note.as_deref(),
+            Some("resume this session with: /bin/bkpr run codex resume s -C '/srv/x y'\\''s'")
+        );
+    }
+
+    #[test]
+    fn missing_pane_id_types_nothing_and_notes() {
+        let command = words(&["/bin/bkpr", "run", "claude", "--resume", "s1"]);
+        let mut called = false;
+        let note = offer_resume(&command, None, |_, _| {
+            called = true;
+            Ok(())
+        });
+        assert!(!called);
+        assert_eq!(
+            note.as_deref(),
+            Some("resume this session with: /bin/bkpr run claude --resume s1")
+        );
+    }
+
+    #[test]
+    fn failed_write_notes_the_command() {
+        let command = words(&["/bin/bkpr", "run", "claude", "--resume", "s1"]);
+        let note = offer_resume(&command, Some("3"), |_, _| bail!("no server"));
+        assert_eq!(
+            note.as_deref(),
+            Some("resume this session with: /bin/bkpr run claude --resume s1")
+        );
+    }
+
+    #[test]
+    fn safe_command_is_typed_into_its_own_pane_with_a_newline() {
+        let command = words(&["/bin/bkpr", "run", "omp", "--resume", "s2"]);
+        let mut typed = Vec::new();
+        let note = offer_resume(&command, Some("terminal_4"), |pane, text| {
+            typed.push((pane.to_owned(), text.to_owned()));
+            Ok(())
+        });
+        assert_eq!(note, None);
+        assert_eq!(
+            typed,
+            [(
+                "terminal_4".to_owned(),
+                "/bin/bkpr run omp --resume s2\n".to_owned()
+            )]
         );
     }
 
@@ -991,65 +1134,6 @@ mod tests {
         assert!(!retry(&resolve(&pane(None, "/tmp"), &held)));
         assert!(retry(&unresolved(&pane(Some("a"), "/tmp"), "corrupt")));
         assert!(!retry(&unresolved(&pane(None, "/tmp"), "corrupt")));
-    }
-
-    /// Signal dispositions are process-wide; serialize the tests that change them.
-    static SIGNALS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[cfg(target_os = "linux")]
-    fn disposition(signal: libc::c_int) -> libc::sighandler_t {
-        // SAFETY: a null new action only queries the current one.
-        unsafe {
-            let mut current: libc::sigaction = std::mem::zeroed();
-            assert_eq!(libc::sigaction(signal, std::ptr::null(), &mut current), 0);
-            current.sa_sigaction
-        }
-    }
-
-    #[test]
-    fn stopped_harness_is_continued_not_waited_on_forever() {
-        let _signals = SIGNALS.lock().unwrap_or_else(|poison| poison.into_inner());
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut command = Command::new("/bin/sh");
-            command.args(["-c", "kill -STOP $$; exit 7"]);
-            let _ = sender.send(run_foreground(&mut command).map(|status| status.code()));
-        });
-        let code = receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("a stopped harness wedged the helper")
-            .unwrap();
-        assert_eq!(code, Some(7));
-    }
-
-    // The child signal-mask probe reads Linux procfs.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn harness_starts_and_leaves_default_signal_dispositions() {
-        let _signals = SIGNALS.lock().unwrap_or_else(|poison| poison.into_inner());
-        // Even when the helper starts with them ignored, the harness gets defaults and the
-        // helper leaves them at defaults. The probe is exec'd directly, since a shell may
-        // change its own dispositions.
-        set_foreground_signals(libc::SIG_IGN);
-        let report = tempfile::NamedTempFile::new().unwrap();
-        let mut command = Command::new("grep");
-        command
-            .args(["^SigIgn:", "/proc/self/status"])
-            .stdout(report.reopen().unwrap());
-        assert!(run_foreground(&mut command).unwrap().success());
-        let line = fs::read_to_string(report.path()).unwrap();
-        let ignored = u64::from_str_radix(line.trim_start_matches("SigIgn:").trim(), 16).unwrap();
-        for signal in FOREGROUND_SIGNALS {
-            assert_eq!(
-                ignored & (1 << (signal - 1)),
-                0,
-                "harness inherited ignored {signal}"
-            );
-        }
-        assert!(run_foreground(&mut Command::new("true")).unwrap().success());
-        for signal in FOREGROUND_SIGNALS {
-            assert_eq!(disposition(signal), libc::SIG_DFL, "signal {signal}");
-        }
     }
 
     #[test]
