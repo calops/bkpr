@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub mod agent_contract;
 pub mod ci_contract;
 pub mod context_contract;
+pub mod recovery_contract;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -160,14 +161,12 @@ pub fn native_sidebar_percent(sidebar_columns: usize, display_columns: usize) ->
     Some(percent.clamp(1, 99) as u8)
 }
 
-/// Native tabs contain ordinary Zellij-owned terminals, including stock-created tabs.
-pub fn native_layout(
+/// Layout header shared by all startup layouts: the sidebar `default_tab_template`.
+/// Ends after the template, ready for `tab` nodes.
+pub(crate) fn layout_prefix(
     plugin_url: &str,
     configuration: &std::collections::BTreeMap<String, String>,
-    tab_name: &str,
-    cwd: &str,
     sidebar_percent: u8,
-    workspace: Option<(&str, &str)>,
 ) -> Result<String, serde_json::Error> {
     use std::fmt::Write;
 
@@ -191,10 +190,25 @@ pub fn native_layout(
         writeln!(sidebar, "     {key} {}", quote(value)?).unwrap();
     }
     sidebar.push_str("    }\n   }\n");
-    let mut layout = format!(
-        "layout {{\n default_tab_template split_direction=\"vertical\" {{\n{sidebar}   children\n }}\n tab name={}",
-        quote(tab_name)?,
-    );
+    Ok(format!(
+        "layout {{\n default_tab_template split_direction=\"vertical\" {{\n{sidebar}   children\n }}\n"
+    ))
+}
+
+/// Native tabs contain ordinary Zellij-owned terminals, including stock-created tabs.
+pub fn native_layout(
+    plugin_url: &str,
+    configuration: &std::collections::BTreeMap<String, String>,
+    tab_name: &str,
+    cwd: &str,
+    sidebar_percent: u8,
+    workspace: Option<(&str, &str)>,
+) -> Result<String, serde_json::Error> {
+    use std::fmt::Write;
+
+    let quote = |value: &str| serde_json::to_string(value);
+    let mut layout = layout_prefix(plugin_url, configuration, sidebar_percent)?;
+    write!(layout, " tab name={}", quote(tab_name)?).unwrap();
     if let Some((id, name)) = workspace {
         write!(
             layout,
