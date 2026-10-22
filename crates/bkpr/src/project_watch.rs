@@ -15,6 +15,19 @@ pub(crate) fn sync(json: &str) -> Result<()> {
     }
 }
 
+/// Send one CLI pipe message to the plugins of the native Zellij session `zellij_session`.
+pub(crate) fn send_pipe(zellij_session: &str, pipe: &str, json: &str) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::send_pipe(zellij_session, pipe, json)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (zellij_session, pipe, json);
+        bail!("native pipe delivery requires Linux process-group support")
+    }
+}
+
 pub(crate) fn serve(json: &str, listener_fd: i32) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -389,21 +402,26 @@ mod linux {
         if json.len() > bkpr::MAX_MESSAGE_BYTES {
             bail!("project update exceeds message limit");
         }
+        send_pipe(&zellij_session(&request.session), PIPE, &json)
+            .context("publish native Git metadata")
+    }
+
+    pub(crate) fn send_pipe(zellij_session: &str, pipe: &str, json: &str) -> Result<()> {
         let socket_dir = launcher::zellij_socket_dir()?;
         let mut command =
             Command::new(std::env::var_os("BKPR_ZELLIJ").unwrap_or_else(|| "zellij".into()));
         command.args([
             "--session",
-            &zellij_session(&request.session),
+            zellij_session,
             "pipe",
             "--name",
-            PIPE,
+            pipe,
             "--",
-            &json,
+            json,
         ]);
         command.env("ZELLIJ_SOCKET_DIR", socket_dir);
         let output = run_output(&mut command, None, Duration::from_secs(2))?;
-        check_output(&output, "publish native Git metadata")
+        check_output(&output, &format!("send {pipe}"))
     }
 
     fn nonblocking(fd: RawFd) -> Result<()> {
