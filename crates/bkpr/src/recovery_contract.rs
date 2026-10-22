@@ -159,11 +159,60 @@ pub struct GeometryPane {
 
 /// Reconstruct a split tree from tiled pane rectangles by recursive guillotine cuts.
 /// Layouts that are not guillotine-cuttable degrade to a flat vertical split in id order.
+///
+/// Panes sharing one exact rectangle are a stack. The pinned runtime keeps one stack
+/// member visible and parks the others as suppressed panes resized to its full rectangle;
+/// tiled panes never overlap otherwise, so the cut runs on one representative per
+/// rectangle and each shared rectangle becomes a stack in id order.
 pub fn split_tree(panes: &[GeometryPane]) -> Option<SplitNode<u32>> {
-    if panes.is_empty() {
+    let mut members: BTreeMap<(usize, usize, usize, usize), Vec<u32>> = BTreeMap::new();
+    for pane in panes {
+        members
+            .entry((pane.x, pane.y, pane.columns, pane.rows))
+            .or_default()
+            .push(pane.id);
+    }
+    let mut representatives = Vec::new();
+    let mut stacks = BTreeMap::new();
+    for ((x, y, columns, rows), mut ids) in members {
+        ids.sort_unstable();
+        representatives.push(GeometryPane {
+            id: ids[0],
+            x,
+            y,
+            columns,
+            rows,
+        });
+        stacks.insert(ids[0], ids);
+    }
+    if representatives.is_empty() {
         return None;
     }
-    Some(build_tree(panes))
+    Some(expand_shared(build_tree(&representatives), &stacks))
+}
+
+/// Replace each representative leaf with every pane sharing its rectangle.
+fn expand_shared(node: SplitNode<u32>, stacks: &BTreeMap<u32, Vec<u32>>) -> SplitNode<u32> {
+    let shared = |id: u32| stacks.get(&id).cloned().unwrap_or_else(|| vec![id]);
+    match node {
+        SplitNode::Pane { pane } => match shared(pane) {
+            ids if ids.len() > 1 => SplitNode::Stack { panes: ids },
+            _ => SplitNode::Pane { pane },
+        },
+        SplitNode::Stack { panes } => SplitNode::Stack {
+            panes: panes.into_iter().flat_map(shared).collect(),
+        },
+        SplitNode::Split {
+            direction,
+            children,
+        } => SplitNode::Split {
+            direction,
+            children: children
+                .into_iter()
+                .map(|child| expand_shared(child, stacks))
+                .collect(),
+        },
+    }
 }
 
 fn build_tree(panes: &[GeometryPane]) -> SplitNode<u32> {
@@ -221,7 +270,9 @@ fn cut(panes: &[GeometryPane], direction: SplitDirection) -> Vec<Vec<GeometryPan
     groups
 }
 
-/// A single column of vertically contiguous panes where at most one is expanded.
+/// A single column of vertically contiguous panes where at most one is expanded: a
+/// classic stack with 1-row collapsed members, as the runtime reports it briefly before
+/// folding hidden members into suppressed panes.
 fn as_stack(panes: &[GeometryPane]) -> Option<SplitNode<u32>> {
     let mut sorted = panes.to_vec();
     sorted.sort_by_key(|pane| (pane.y, pane.id));
@@ -499,6 +550,46 @@ mod tests {
             tree,
             SplitNode::Stack {
                 panes: vec![1, 2, 3]
+            }
+        );
+    }
+
+    /// The pinned runtime parks hidden stack members as suppressed panes resized to the
+    /// visible member's full rectangle (no 1-row collapsed members): shared rectangles
+    /// are one stack, in id order, wherever the stack sits in the split tree.
+    #[test]
+    fn split_tree_groups_shared_rectangles_into_stacks() {
+        assert_eq!(
+            split_tree(&[
+                geo(2, 40, 0, 160, 50),
+                geo(0, 40, 0, 160, 50),
+                geo(1, 40, 0, 160, 50),
+            ])
+            .unwrap(),
+            SplitNode::Stack {
+                panes: vec![0, 1, 2]
+            }
+        );
+        assert_eq!(
+            split_tree(&[
+                geo(7, 0, 0, 40, 50),
+                geo(9, 40, 25, 40, 25),
+                geo(3, 40, 0, 40, 25),
+                geo(8, 40, 25, 40, 25),
+            ])
+            .unwrap(),
+            SplitNode::Split {
+                direction: SplitDirection::Vertical,
+                children: vec![
+                    SplitNode::Pane { pane: 7 },
+                    SplitNode::Split {
+                        direction: SplitDirection::Horizontal,
+                        children: vec![
+                            SplitNode::Pane { pane: 3 },
+                            SplitNode::Stack { panes: vec![8, 9] },
+                        ],
+                    },
+                ],
             }
         );
     }

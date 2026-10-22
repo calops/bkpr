@@ -611,26 +611,44 @@ fn recovery_argument(update: &RecoveryUpdate) -> Result<String, String> {
     Ok(json)
 }
 
-/// Tiled terminal rectangles per native tab ID. Floating, suppressed and plugin panes
-/// (including the sidebar) are not part of the recoverable split tree.
+/// Tiled terminal rectangles per native tab ID. Floating and plugin panes (including the
+/// sidebar) are not part of the recoverable split tree.
+///
+/// The runtime folds a stack into one visible member and parks the others as suppressed
+/// panes resized to its exact rectangle (in every tab, not only the active one), so a
+/// suppressed terminal sharing a visible tiled terminal's rectangle is a hidden stack
+/// member. Other suppressed panes (no visible counterpart) stay excluded.
 fn recovery_geometry(
     tabs: &[TabInfo],
     manifest: &PaneManifest,
 ) -> BTreeMap<usize, Vec<GeometryPane>> {
+    let geometry = |pane: &PaneInfo| GeometryPane {
+        id: pane.id,
+        x: pane.pane_x,
+        y: pane.pane_y,
+        columns: pane.pane_columns,
+        rows: pane.pane_rows,
+    };
+    let rectangle = |pane: &GeometryPane| (pane.x, pane.y, pane.columns, pane.rows);
     tabs.iter()
         .filter_map(|tab| {
             let panes = manifest.panes.get(&tab.position)?;
-            let tiled: Vec<_> = panes
-                .iter()
-                .filter(|pane| !pane.is_plugin && !pane.is_floating && !pane.is_suppressed)
-                .map(|pane| GeometryPane {
-                    id: pane.id,
-                    x: pane.pane_x,
-                    y: pane.pane_y,
-                    columns: pane.pane_columns,
-                    rows: pane.pane_rows,
-                })
+            let terminals = || {
+                panes
+                    .iter()
+                    .filter(|pane| !pane.is_plugin && !pane.is_floating)
+            };
+            let mut tiled: Vec<_> = terminals()
+                .filter(|pane| !pane.is_suppressed)
+                .map(geometry)
                 .collect();
+            let visible: BTreeSet<_> = tiled.iter().map(rectangle).collect();
+            tiled.extend(
+                terminals()
+                    .filter(|pane| pane.is_suppressed)
+                    .map(geometry)
+                    .filter(|pane| visible.contains(&rectangle(pane))),
+            );
             Some((tab.tab_id, tiled))
         })
         .collect()
@@ -6440,9 +6458,10 @@ mod tests {
                         is_floating: true,
                         ..tiled(5, 10)
                     },
+                    // Suppressed without a visible counterpart (not a stack member).
                     PaneInfo {
                         is_suppressed: true,
-                        ..tiled(6, 0)
+                        ..tiled(6, 20)
                     },
                 ],
             ),
@@ -6996,6 +7015,101 @@ mod tests {
             malformed.insert(key.to_owned(), value.to_owned());
             assert!(take_restore_seed(&mut malformed).is_err(), "{key}={value}");
         }
+    }
+
+    /// Shaped like the stack probe's `list-panes` data: hidden stack members are
+    /// suppressed, non-floating and full-height at the visible member's rectangle, in the
+    /// active tab and in inactive ones. Floating and unrelated suppressed panes stay out.
+    #[test]
+    fn recovery_records_suppressed_stack_members() {
+        let mut model = model();
+        let tabs = [tab(10, 0), tab(20, 1)];
+        let full = |id: u32, suppressed: bool| PaneInfo {
+            pane_x: 38,
+            pane_y: 0,
+            pane_columns: 162,
+            pane_rows: 50,
+            is_suppressed: suppressed,
+            ..pane(id)
+        };
+        let sidebar = |id: u32| PaneInfo {
+            is_plugin: true,
+            pane_x: 0,
+            pane_columns: 38,
+            pane_rows: 50,
+            ..pane(id)
+        };
+        let panes = manifest(&[
+            (
+                0,
+                vec![
+                    sidebar(1),
+                    full(0, true),
+                    full(1, false),
+                    full(2, true),
+                    PaneInfo {
+                        is_floating: true,
+                        ..full(3, false)
+                    },
+                    // A suppressed pane matching no visible rectangle is not a member.
+                    PaneInfo {
+                        pane_x: 60,
+                        pane_columns: 20,
+                        ..full(4, true)
+                    },
+                ],
+            ),
+            // Inactive tab: the runtime has already folded this stack into one list.
+            (
+                1,
+                vec![sidebar(2), full(5, true), full(6, true), full(7, false)],
+            ),
+        ]);
+        model
+            .adopt_context(host_context(
+                &[(10, "ws-a", "Alpha"), (20, "ws-a", "Alpha")],
+                &[
+                    (0, 10),
+                    (1, 10),
+                    (2, 10),
+                    (3, 10),
+                    (4, 10),
+                    (5, 20),
+                    (6, 20),
+                    (7, 20),
+                ],
+            ))
+            .unwrap();
+        assert!(model.reconcile_topology(&tabs, &panes));
+        for (id, pane) in model.panes.iter_mut() {
+            pane.name = format!("p{id}");
+            pane.renamed = true;
+        }
+        let view = model.recovery_workspaces(&recovery_geometry(&tabs, &panes), &tabs, Some(1));
+        let stacks: Vec<_> = view.workspaces[0]
+            .tabs
+            .iter()
+            .map(|tab| match &tab.layout {
+                SplitNode::Stack { panes } => panes
+                    .iter()
+                    .map(|pane| (pane.name.clone(), pane.focused))
+                    .collect::<Vec<_>>(),
+                other => panic!("expected a stack, got {other:?}"),
+            })
+            .collect();
+        let name = |id: u32| format!("p{id}");
+        assert_eq!(
+            stacks,
+            vec![
+                vec![(name(0), false), (name(1), true), (name(2), false)],
+                vec![(name(5), false), (name(6), false), (name(7), false)],
+            ]
+        );
+        assert!(view.workspaces[0].tabs[0].focused);
+        assert_eq!(
+            view.keys.keys().copied().collect::<Vec<_>>(),
+            [0, 1, 2, 5, 6, 7]
+        );
     }
 
     /// The launcher sends `restore_expected_panes = RecoveryRecord::pane_count()`; the owner
