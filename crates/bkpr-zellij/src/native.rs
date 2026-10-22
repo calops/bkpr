@@ -338,23 +338,35 @@ enum RecoveryDecision {
     Unchanged,
 }
 
+/// First retry delay after a failed, refused or lost update; doubles up to the cap.
+const RECOVERY_RETRY_MILLIS: u64 = 1_000;
+const RECOVERY_RETRY_MAX_MILLIS: u64 = 30_000;
+
 /// Owner-side write cadence for the session recovery record. Persisted in the shared
 /// model so every per-client owner replica observes one sequence and one in-flight helper.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct RecoveryGate {
     sequence: u64,
-    /// Last update handed to the helper.
-    committed: Option<RecoveryUpdate>,
-    /// Removal keys of `committed`.
-    committed_keys: BTreeMap<u32, Option<String>>,
-    /// Millis when the pending removal was first observed.
+    /// Last update the helper acknowledged as written (exit 0), with its removal keys.
+    /// Unchanged detection and removal grace compare against this baseline only.
+    acknowledged: Option<RecoveryUpdate>,
+    acknowledged_keys: BTreeMap<u32, Option<String>>,
+    /// Update handed to the helper and awaiting its result.
+    pending: Option<RecoveryUpdate>,
+    pending_keys: BTreeMap<u32, Option<String>>,
+    /// Millis when the pending removal was first observed; kept until acknowledged so a
+    /// retry does not restart the grace period.
     held_since: Option<u64>,
     /// Millis of the last handoff.
     last_sent: u64,
     /// Sequence awaiting its `RunCommandResult`.
     in_flight: Option<u64>,
     in_flight_since: u64,
+    /// After a failure: resend (even unchanged content) no earlier than this.
+    retry_at: Option<u64>,
+    /// Current retry delay; zero after a success.
+    backoff: u64,
     /// The session has no claimed record (it predates recovery); stop sending.
     disabled: bool,
 }
@@ -373,28 +385,32 @@ impl RecoveryGate {
             );
         }
         let (session_name, session_id) = session;
-        let unchanged = self.committed.as_ref().is_some_and(|committed| {
-            committed.session_name == session_name
-                && committed.session_id == session_id
-                && committed.workspaces == next.workspaces
-        });
+        let unchanged = self.retry_at.is_none()
+            && self.acknowledged.as_ref().is_some_and(|acknowledged| {
+                acknowledged.session_name == session_name
+                    && acknowledged.session_id == session_id
+                    && acknowledged.workspaces == next.workspaces
+            });
         // An empty topology is never recoverable: it is startup before adoption or teardown.
         if unchanged || next.workspaces.is_empty() {
             self.held_since = None;
             return RecoveryDecision::Unchanged;
         }
         let removal = self
-            .committed_keys
+            .acknowledged_keys
             .iter()
             .any(|(id, agent)| match next.keys.get(id) {
                 None => true,
                 Some(current) => agent.is_some() && current.is_none(),
             });
-        let mut due = if self.committed.is_some() {
+        let mut due = if self.sequence > 0 {
             self.last_sent.saturating_add(RECOVERY_COALESCE_MILLIS)
         } else {
             now
         };
+        if let Some(retry_at) = self.retry_at {
+            due = due.max(retry_at);
+        }
         if removal {
             let since = *self.held_since.get_or_insert(now);
             due = due.max(since.saturating_add(RECOVERY_REMOVAL_GRACE_MILLIS));
@@ -411,9 +427,8 @@ impl RecoveryGate {
             sequence: self.sequence,
             workspaces: next.workspaces,
         };
-        self.committed = Some(update.clone());
-        self.committed_keys = next.keys;
-        self.held_since = None;
+        self.pending = Some(update.clone());
+        self.pending_keys = next.keys;
         self.last_sent = now;
         self.in_flight = Some(self.sequence);
         self.in_flight_since = now;
@@ -421,26 +436,58 @@ impl RecoveryGate {
     }
 
     /// Settle the helper result for `sequence`; false for a stale or foreign result.
-    fn finish(&mut self, sequence: u64, code: Option<i32>) -> bool {
+    fn finish(&mut self, sequence: u64, code: Option<i32>, now: u64) -> bool {
         if self.in_flight != Some(sequence) {
             return false;
         }
         self.in_flight = None;
-        if code == Some(RECOVERY_UNCLAIMED_EXIT) {
-            self.disabled = true;
+        match code {
+            Some(0) => {
+                self.acknowledged = self.pending.take();
+                self.acknowledged_keys = std::mem::take(&mut self.pending_keys);
+                self.held_since = None;
+                self.retry_at = None;
+                self.backoff = 0;
+            }
+            Some(RECOVERY_UNCLAIMED_EXIT) => {
+                self.disabled = true;
+                self.pending = None;
+                self.pending_keys.clear();
+            }
+            _ => self.fail(now),
         }
         true
     }
 
     /// Give up on an in-flight helper that has not reported within `RECOVERY_RESULT_MILLIS`.
-    /// The next topology change resends a complete update under a new sequence.
     fn expire(&mut self, now: u64) -> bool {
         let stale = self.in_flight.is_some()
             && now.saturating_sub(self.in_flight_since) >= RECOVERY_RESULT_MILLIS;
         if stale {
             self.in_flight = None;
+            self.fail(now);
         }
         stale
+    }
+
+    /// The sent update could not be handed to the helper at all (e.g. too large).
+    fn refuse(&mut self, now: u64) {
+        self.in_flight = None;
+        self.fail(now);
+    }
+
+    /// Drop the unwritten update and schedule a resend against the acknowledged baseline.
+    fn fail(&mut self, now: u64) {
+        self.pending = None;
+        self.pending_keys.clear();
+        self.backoff = if self.backoff == 0 {
+            RECOVERY_RETRY_MILLIS
+        } else {
+            self.backoff
+                .saturating_mul(2)
+                .min(RECOVERY_RETRY_MAX_MILLIS)
+        };
+        self.retry_at = Some(now.saturating_add(self.backoff));
     }
 }
 
@@ -2359,6 +2406,7 @@ impl Owner {
             )));
         }
         let mut command = None;
+        let mut wait = None;
         if !model.recovery.disabled {
             let geometry = recovery_geometry(tabs, manifest);
             // Replicas must derive identical records: use the lowest client's focus.
@@ -2370,20 +2418,16 @@ impl Owner {
             );
             match model.recovery.offer(view, now, session) {
                 RecoveryDecision::Unchanged => {}
-                RecoveryDecision::WaitUntil(deadline) => {
-                    if self
-                        .recovery_timer
-                        .is_none_or(|armed| deadline < armed || now >= armed)
-                    {
-                        self.recovery_timer = Some(deadline);
-                        // A small margin keeps the wake-up at or after the deadline.
-                        set_timeout((deadline.saturating_sub(now) + 5) as f64 / 1_000.0);
-                    }
-                }
+                RecoveryDecision::WaitUntil(deadline) => wait = Some(deadline),
                 RecoveryDecision::Send(update) => match recovery_argument(&update) {
-                    Ok(json) => command = Some((update.sequence, json)),
+                    Ok(json) => {
+                        // A lost result must still reach `expire` without another event.
+                        wait = Some(now.saturating_add(RECOVERY_RESULT_MILLIS));
+                        command = Some((update.sequence, json));
+                    }
                     Err(message) => {
-                        model.recovery.in_flight = None;
+                        model.recovery.refuse(now);
+                        wait = model.recovery.retry_at;
                         error = Some(Some(message));
                     }
                 },
@@ -2396,6 +2440,9 @@ impl Owner {
         });
         if changed {
             model.revision += 1;
+        }
+        if let Some(deadline) = wait {
+            self.arm_recovery_timer(deadline, now);
         }
         if let Some((sequence, json)) = command {
             // Reserve the sequence in artifact-shared storage before spawning the helper.
@@ -2415,11 +2462,22 @@ impl Owner {
         changed
     }
 
+    fn arm_recovery_timer(&mut self, deadline: u64, now: u64) {
+        if self
+            .recovery_timer
+            .is_none_or(|armed| deadline < armed || now >= armed)
+        {
+            self.recovery_timer = Some(deadline);
+            // A small margin keeps the wake-up at or after the deadline.
+            set_timeout((deadline.saturating_sub(now) + 5) as f64 / 1_000.0);
+        }
+    }
+
     fn recovery_result(&mut self, sequence: u64, code: Option<i32>, stderr: &[u8]) {
         let Some(model) = self.model.as_mut() else {
             return;
         };
-        if !model.recovery.finish(sequence, code) {
+        if !model.recovery.finish(sequence, code, clock_millis()) {
             return;
         }
         let error = recovery_failure(code, stderr);
@@ -6318,7 +6376,7 @@ mod tests {
             SESSION
         );
         assert_eq!(first.sequence, 1);
-        assert!(gate.finish(1, Some(0)));
+        assert!(gate.finish(1, Some(0), 0));
         assert_eq!(
             gate.offer(recovery_view(&[(1, None), (2, None)]), t + 200, SESSION),
             RecoveryDecision::WaitUntil(gate.last_sent + RECOVERY_COALESCE_MILLIS)
@@ -6330,7 +6388,7 @@ mod tests {
             second.workspaces,
             recovery_view(&[(1, None), (2, None)]).workspaces
         );
-        assert_eq!(gate.committed, Some(second));
+        assert_eq!(gate.pending, Some(second));
     }
 
     #[test]
@@ -6351,7 +6409,7 @@ mod tests {
     fn removal_waits_for_grace() {
         let mut gate = RecoveryGate::default();
         sent(gate.offer(recovery_view(&[(1, None), (2, None)]), 10_000, SESSION));
-        gate.finish(1, Some(0));
+        gate.finish(1, Some(0), 0);
         let t = 20_000;
         let removed = || recovery_view(&[(1, None)]);
         assert_eq!(
@@ -6364,6 +6422,9 @@ mod tests {
         );
         let update = sent(gate.offer(removed(), t + 3_000, SESSION));
         assert_eq!(update.workspaces, removed().workspaces);
+        // The hold lasts until the removal is written, so a retry never restarts grace.
+        assert_eq!(gate.held_since, Some(t));
+        assert!(gate.finish(update.sequence, Some(0), t + 3_000));
         assert_eq!(gate.held_since, None);
     }
 
@@ -6371,7 +6432,7 @@ mod tests {
     fn association_loss_waits_for_grace() {
         let mut gate = RecoveryGate::default();
         sent(gate.offer(recovery_view(&[(1, Some("agent-1"))]), 10_000, SESSION));
-        gate.finish(1, Some(0));
+        gate.finish(1, Some(0), 0);
         let t = 20_000;
         assert_eq!(
             gate.offer(recovery_view(&[(1, None)]), t, SESSION),
@@ -6380,7 +6441,7 @@ mod tests {
         // Gaining an association is an addition and only coalesces.
         let mut gate = RecoveryGate::default();
         sent(gate.offer(recovery_view(&[(1, None)]), 10_000, SESSION));
-        gate.finish(1, Some(0));
+        gate.finish(1, Some(0), 0);
         sent(gate.offer(recovery_view(&[(1, Some("agent-1"))]), t, SESSION));
     }
 
@@ -6388,7 +6449,7 @@ mod tests {
     fn removal_reverted_within_grace_cancels_hold() {
         let mut gate = RecoveryGate::default();
         sent(gate.offer(recovery_view(&[(1, None), (2, None)]), 10_000, SESSION));
-        gate.finish(1, Some(0));
+        gate.finish(1, Some(0), 0);
         let t = 20_000;
         assert!(matches!(
             gate.offer(recovery_view(&[(1, None)]), t, SESSION),
@@ -6419,11 +6480,11 @@ mod tests {
             RecoveryDecision::WaitUntil(_)
         ));
         assert!(
-            !gate.finish(2, Some(0)),
+            !gate.finish(2, Some(0), 0),
             "foreign sequence must not clear it"
         );
         assert_eq!(gate.in_flight, Some(1));
-        assert!(gate.finish(1, Some(0)));
+        assert!(gate.finish(1, Some(0), 0));
         assert_eq!(gate.in_flight, None);
         assert_eq!(sent(gate.offer(next(), t + 5_000, SESSION)).sequence, 2);
     }
@@ -6438,21 +6499,200 @@ mod tests {
             RecoveryDecision::WaitUntil(t + RECOVERY_RESULT_MILLIS)
         );
         assert!(!gate.expire(t + RECOVERY_RESULT_MILLIS - 1));
-        assert!(gate.expire(t + RECOVERY_RESULT_MILLIS));
+        let lost = t + RECOVERY_RESULT_MILLIS;
+        assert!(gate.expire(lost));
         assert_eq!(gate.in_flight, None);
+        // A lost result is a failure: the never-acknowledged update is resent after backoff.
+        assert_eq!(
+            gate.offer(recovery_view(&[(1, None)]), lost, SESSION),
+            RecoveryDecision::WaitUntil(lost + RECOVERY_RETRY_MILLIS)
+        );
         let update = sent(gate.offer(
-            recovery_view(&[(1, None), (2, None)]),
-            t + RECOVERY_RESULT_MILLIS,
+            recovery_view(&[(1, None)]),
+            lost + RECOVERY_RETRY_MILLIS,
             SESSION,
         ));
         assert_eq!(update.sequence, 2);
     }
 
     #[test]
+    fn failed_send_is_resent_unchanged_after_backoff() {
+        let mut gate = RecoveryGate::default();
+        let view = || recovery_view(&[(1, None), (2, None)]);
+        let t = 10_000;
+        sent(gate.offer(view(), t, SESSION));
+        let failed = t + 100;
+        assert!(gate.finish(1, Some(1), failed));
+        assert!(gate.acknowledged.is_none() && gate.pending.is_none());
+        assert_eq!(
+            gate.offer(view(), failed + RECOVERY_RETRY_MILLIS - 1, SESSION),
+            RecoveryDecision::WaitUntil(failed + RECOVERY_RETRY_MILLIS)
+        );
+        let retry = sent(gate.offer(view(), failed + RECOVERY_RETRY_MILLIS, SESSION));
+        assert_eq!((retry.sequence, retry.workspaces), (2, view().workspaces));
+        // Repeated failures double the delay up to the cap; success resets it.
+        let mut now = failed + RECOVERY_RETRY_MILLIS;
+        let mut delays = Vec::new();
+        for sequence in 2..9 {
+            assert!(gate.finish(sequence, Some(1), now));
+            delays.push(gate.backoff);
+            now = gate.retry_at.unwrap();
+            sent(gate.offer(view(), now, SESSION));
+        }
+        assert_eq!(
+            delays,
+            [2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]
+        );
+        assert!(gate.finish(9, Some(0), now));
+        assert_eq!((gate.backoff, gate.retry_at), (0, None));
+        assert_eq!(
+            gate.acknowledged.as_ref().map(|update| update.sequence),
+            Some(9)
+        );
+        assert_eq!(
+            gate.offer(view(), now + 60_000, SESSION),
+            RecoveryDecision::Unchanged
+        );
+    }
+
+    #[test]
+    fn removal_detection_compares_against_the_acknowledged_baseline() {
+        let mut gate = RecoveryGate::default();
+        sent(gate.offer(recovery_view(&[(1, None), (2, None)]), 10_000, SESSION));
+        gate.finish(1, Some(0), 10_000);
+        // An unwritten addition is not a baseline: dropping pane 3 again is no removal.
+        sent(gate.offer(
+            recovery_view(&[(1, None), (2, None), (3, None)]),
+            20_000,
+            SESSION,
+        ));
+        gate.finish(2, Some(1), 20_000);
+        assert_eq!(
+            gate.offer(recovery_view(&[(1, None)]), 30_000, SESSION),
+            RecoveryDecision::WaitUntil(30_000 + RECOVERY_REMOVAL_GRACE_MILLIS)
+        );
+        let mut gate = RecoveryGate::default();
+        sent(gate.offer(recovery_view(&[(1, None), (2, None)]), 10_000, SESSION));
+        gate.finish(1, Some(0), 10_000);
+        sent(gate.offer(
+            recovery_view(&[(1, None), (2, None), (3, None)]),
+            20_000,
+            SESSION,
+        ));
+        gate.finish(2, Some(1), 20_000);
+        sent(gate.offer(recovery_view(&[(1, None), (2, None)]), 30_000, SESSION));
+    }
+
+    #[test]
+    fn oversized_refusal_backs_off_like_a_failure() {
+        let mut gate = RecoveryGate::default();
+        sent(gate.offer(recovery_view(&[(1, None)]), 10_000, SESSION));
+        gate.refuse(10_000);
+        assert_eq!(gate.in_flight, None);
+        assert_eq!(gate.retry_at, Some(10_000 + RECOVERY_RETRY_MILLIS));
+        assert_eq!(
+            gate.offer(recovery_view(&[(1, None)]), 10_500, SESSION),
+            RecoveryDecision::WaitUntil(11_000)
+        );
+    }
+
+    #[test]
+    fn owner_settles_recovery_results_into_the_shared_model() {
+        let directory = std::env::temp_dir().join(format!(
+            "bkpr-native-recovery-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut model = model();
+        sent(
+            model
+                .recovery
+                .offer(recovery_view(&[(1, None)]), 10_000, SESSION),
+        );
+        let mut owner = Owner {
+            configuration: model.configuration.clone(),
+            model: Some(model),
+            storage: directory.join("owner.json"),
+            granted: true,
+            ..Owner::default()
+        };
+        owner.save();
+        let result = |code: i32, stderr: &str, sequence: u64| {
+            Event::RunCommandResult(
+                Some(code),
+                Vec::new(),
+                stderr.as_bytes().to_vec(),
+                BTreeMap::from([("native_recovery".to_owned(), sequence.to_string())]),
+            )
+        };
+        let gate = |owner: &Owner| owner.model.as_ref().unwrap().recovery.clone();
+        let error = |owner: &Owner| owner.model.as_ref().unwrap().recovery_error.clone();
+
+        // Failure surfaces in the sidebar and releases the in-flight sequence.
+        owner.event(result(1, "disk full", 1));
+        assert_eq!(gate(&owner).in_flight, None);
+        assert!(gate(&owner).retry_at.is_some());
+        assert!(error(&owner).is_some_and(|error| error.contains("disk full")));
+        assert!(
+            owner
+                .model
+                .as_ref()
+                .unwrap()
+                .snapshot(None, 0)
+                .error
+                .as_deref()
+                == error(&owner).as_deref()
+        );
+
+        // A foreign sequence is ignored; success clears the error and acknowledges.
+        owner.model.as_mut().unwrap().recovery.retry_at = Some(0);
+        sent(owner.model.as_mut().unwrap().recovery.offer(
+            recovery_view(&[(1, None)]),
+            20_000,
+            SESSION,
+        ));
+        owner.save();
+        owner.event(result(0, "", 7));
+        assert_eq!(gate(&owner).in_flight, Some(2));
+        owner.event(result(0, "", 2));
+        assert_eq!(gate(&owner).in_flight, None);
+        assert_eq!(error(&owner), None);
+        assert_eq!(
+            gate(&owner).acknowledged.map(|update| update.sequence),
+            Some(2)
+        );
+
+        // Exit 3 (unclaimed) disables recovery without a sidebar error.
+        sent(owner.model.as_mut().unwrap().recovery.offer(
+            recovery_view(&[(1, None), (2, None)]),
+            30_000,
+            SESSION,
+        ));
+        owner.save();
+        owner.event(result(3, "session recovery is not claimed", 3));
+        assert!(gate(&owner).disabled);
+        assert_eq!(gate(&owner).in_flight, None);
+        assert_eq!(error(&owner), None);
+        // The settlement is persisted for other owner replicas.
+        let mut replica = Owner {
+            configuration: owner.configuration.clone(),
+            storage: owner.storage.clone(),
+            ..Owner::default()
+        };
+        replica.recover_model();
+        assert!(gate(&replica).disabled);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn unclaimed_session_disables_recovery_silently() {
         let mut gate = RecoveryGate::default();
         sent(gate.offer(recovery_view(&[(1, None)]), 10_000, SESSION));
-        assert!(gate.finish(1, Some(3)));
+        assert!(gate.finish(1, Some(3), 0));
         assert!(gate.disabled);
         assert_eq!(
             gate.offer(recovery_view(&[(1, None), (2, None)]), 20_000, SESSION),
