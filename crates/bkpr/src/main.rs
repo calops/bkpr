@@ -19,7 +19,8 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use bkpr::MAX_MESSAGE_BYTES;
-use clap::{Parser, Subcommand};
+use clap::parser::ValueSource;
+use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -203,11 +204,34 @@ fn main() {
     }
 }
 
+/// Launch options given before a subcommand, as their long flags.
+fn top_level_launch_options(matches: &ArgMatches) -> Vec<String> {
+    launcher::Options::augment_args(clap::Command::new("options"))
+        .get_arguments()
+        .filter(|arg| matches.value_source(arg.get_id().as_str()) == Some(ValueSource::CommandLine))
+        .map(|arg| format!("--{}", arg.get_long().unwrap_or(arg.get_id().as_str())))
+        .collect()
+}
+
+fn resume_option_error(options: &[String]) -> anyhow::Error {
+    anyhow::anyhow!(
+        "launch options go after `resume` (`bkpr resume --session <name> [OPTIONS]`); got {} before it",
+        options.join(", ")
+    )
+}
+
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     match cli.command {
         None => launcher::run(cli.launch),
-        Some(Commands::Resume { launch }) => launcher::run_resume(launch),
+        Some(Commands::Resume { launch }) => {
+            let misplaced = top_level_launch_options(&matches);
+            if !misplaced.is_empty() {
+                return Err(resume_option_error(&misplaced));
+            }
+            launcher::run_resume(launch)
+        }
         Some(Commands::Run { harness, arguments }) => harness.launch(arguments),
         Some(Commands::Context { json }) => {
             let value = context::current()?;
@@ -307,6 +331,26 @@ fn run() -> Result<()> {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn resume_rejects_top_level_launch_options() {
+        let supplied = |args: &[&str]| {
+            let matches = Cli::command().try_get_matches_from(args).unwrap();
+            top_level_launch_options(&matches)
+        };
+        assert!(supplied(&["bkpr", "resume", "--session", "work"]).is_empty());
+        assert_eq!(
+            supplied(&["bkpr", "--session", "work", "-d", "resume"]),
+            ["--session", "--detach-others"]
+        );
+        assert_eq!(
+            supplied(&["bkpr", "--sidebar-width", "40", "resume", "--session", "w"]),
+            ["--sidebar-width"]
+        );
+        let error = resume_option_error(&["--session".to_owned()]).to_string();
+        assert!(error.contains("after `resume`"), "{error}");
+        assert!(error.contains("--session"), "{error}");
+    }
 
     #[test]
     fn explicit_run_preserves_argument_boundaries() {
