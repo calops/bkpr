@@ -47,6 +47,8 @@
 
 Use `nix develop` and incremental debug Cargo artifacts in `target/`. Use `just build` to build the launcher and WASI plugin together, and `just run [args…]` to build both before launching with the matching plugin. Run coordinated checks once after edits: `cargo test --locked --workspace`, `cargo build --locked -p bkpr-zellij --target wasm32-wasip1`, host/WASI `cargo clippy --locked ... -- -D warnings`. Use `nix build .#bkpr` only for packaging validation, not the edit/run loop.
 
+Keep procfs signal probes and verified process-birth-identity tests Linux-only, including their helpers. Portable recovery inspection must remain read-only and report unknown process identity as not live; do not weaken production liveness checks to make another platform's tests pass.
+
 ### Forked Zellij runtime
 
 The pinned host is [calops/bkpr-zellij](https://github.com/calops/bkpr-zellij), based on Zellij 0.45.1. Stock Zellij lacks required OSC/plugin event contracts. The fork's default `main` contains the Bkpr integration history; there is no separate `bkpr` integration branch or permanent upstream branch. Retained `feature/*` branches submit PRs into `main`. Bkpr consumes `github:calops/bkpr-zellij/main` and pins its revision in `flake.lock`; do not restore a local patch queue or override the fork's locked dependencies with `follows`. Bkpr's release CI owns the shared binary cache. Ordinary native feature PRs rely on local/integration verification and human review, not a global Rust CI status.
