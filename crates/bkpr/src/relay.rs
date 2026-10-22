@@ -1672,27 +1672,39 @@ pub(crate) fn recovery_agents() -> Result<RecoveryAgents> {
 
 fn recovery_agents_in(directory: &Path) -> Result<RecoveryAgents> {
     let store = load_store(directory)?;
-    let mut result = RecoveryAgents::default();
-    for (id, agent) in &store.agents {
-        let live = recovery_live(agent);
-        if let (true, Some(session)) = (live, &agent.session_id) {
-            result
-                .live_holders
-                .entry(session.clone())
-                .or_default()
-                .push(id.clone());
+    Ok(RecoveryAgents::from_entries(store.agents.iter().map(
+        |(id, agent)| {
+            (
+                id.clone(),
+                RecoveredAgent {
+                    harness: agent.harness.clone(),
+                    session_id: agent.session_id.clone(),
+                    queue_endpoint: agent.queue_endpoint.clone(),
+                    live: recovery_live(agent),
+                },
+            )
+        },
+    )))
+}
+
+impl RecoveryAgents {
+    /// The single place `live_holders` is derived from liveness.
+    pub(crate) fn from_entries(
+        entries: impl IntoIterator<Item = (String, RecoveredAgent)>,
+    ) -> Self {
+        let mut result = Self::default();
+        for (id, agent) in entries {
+            if let (true, Some(session)) = (agent.live, &agent.session_id) {
+                result
+                    .live_holders
+                    .entry(session.clone())
+                    .or_default()
+                    .push(id.clone());
+            }
+            result.by_id.insert(id, agent);
         }
-        result.by_id.insert(
-            id.clone(),
-            RecoveredAgent {
-                harness: agent.harness.clone(),
-                session_id: agent.session_id.clone(),
-                queue_endpoint: agent.queue_endpoint.clone(),
-                live,
-            },
-        );
+        result
     }
-    Ok(result)
 }
 
 /// An owner-only, no-follow snapshot from an already-open directory. Neither

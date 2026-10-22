@@ -278,14 +278,23 @@ pub(crate) fn resolve(pane: &RecoveryPane, agents: &RecoveryAgents) -> PaneLaunc
     if other_holder {
         return shell("session is still open elsewhere");
     }
-    let codex_manifest = (harness == Harness::Codex && agent.live)
-        .then(|| agent.queue_endpoint.as_deref().and_then(codex_manifest))
-        .flatten();
+    let mut manifest = None;
+    if agent.live {
+        if harness != Harness::Codex {
+            // The agent's own process still has its session open.
+            return shell("session is still open elsewhere");
+        }
+        // Its detached app-server still owns the thread; resume only after stopping it.
+        manifest = agent.queue_endpoint.as_deref().and_then(codex_manifest);
+        if manifest.is_none() {
+            return shell("codex server cannot be stopped safely");
+        }
+    }
     PaneLaunch::Harness {
         harness,
         session_id: session_id.to_owned(),
         cwd,
-        codex_manifest,
+        codex_manifest: manifest,
     }
 }
 
@@ -377,20 +386,11 @@ mod tests {
     }
 
     fn agents(entries: Vec<(&str, RecoveredAgent)>) -> RecoveryAgents {
-        let mut result = RecoveryAgents::default();
-        for (id, agent) in entries {
-            if agent.live {
-                if let Some(session) = &agent.session_id {
-                    result
-                        .live_holders
-                        .entry(session.clone())
-                        .or_default()
-                        .push(id.into());
-                }
-            }
-            result.by_id.insert(id.into(), agent);
-        }
-        result
+        RecoveryAgents::from_entries(
+            entries
+                .into_iter()
+                .map(|(id, agent)| (id.to_owned(), agent)),
+        )
     }
 
     fn pane(agent_id: Option<&str>, cwd: &str) -> RecoveryPane {
@@ -473,13 +473,37 @@ mod tests {
             "a",
             agent("codex", Some("s"), Some("unix:///var/x/server.sock"), true),
         )]);
+        let launch = resolve(&pane(Some("a"), "/tmp"), &foreign);
+        assert!(
+            note_of(&launch)
+                .unwrap()
+                .contains("cannot be stopped safely")
+        );
+        let no_endpoint = agents(vec![("a", agent("codex", Some("s"), None, true))]);
+        let launch = resolve(&pane(Some("a"), "/tmp"), &no_endpoint);
+        assert!(
+            note_of(&launch)
+                .unwrap()
+                .contains("cannot be stopped safely")
+        );
+        // A dead Codex agent needs no manifest.
+        let dead = agents(vec![("a", agent("codex", Some("s"), None, false))]);
         assert!(matches!(
-            resolve(&pane(Some("a"), "/tmp"), &foreign),
+            resolve(&pane(Some("a"), "/tmp"), &dead),
             PaneLaunch::Harness {
                 codex_manifest: None,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn live_claude_or_omp_sole_holder_refuses_resume() {
+        for name in ["claude", "omp"] {
+            let known = agents(vec![("a", agent(name, Some("s"), None, true))]);
+            let launch = resolve(&pane(Some("a"), "/tmp"), &known);
+            assert!(note_of(&launch).unwrap().contains("still open elsewhere"));
+        }
     }
 
     #[test]
