@@ -39,8 +39,21 @@ impl std::fmt::Display for Unclaimed {
 
 impl std::error::Error for Unclaimed {}
 
+/// Neither `XDG_STATE_HOME` nor `HOME` locates a state directory, so recovery is off.
+/// Distinct from an unreadable record: launching fresh cannot discard anything.
+#[derive(Debug)]
+pub(crate) struct StateUnavailable;
+
+impl std::fmt::Display for StateUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("neither XDG_STATE_HOME nor HOME is an absolute path")
+    }
+}
+
+impl std::error::Error for StateUnavailable {}
+
 fn state_root() -> Result<PathBuf> {
-    std::env::var_os("XDG_STATE_HOME")
+    Ok(std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .or_else(|| {
@@ -49,7 +62,7 @@ fn state_root() -> Result<PathBuf> {
                 .filter(|path| path.is_absolute())
                 .map(|home| home.join(".local/state"))
         })
-        .context("neither XDG_STATE_HOME nor HOME is an absolute path")
+        .ok_or(StateUnavailable)?)
 }
 
 fn session_directory(root: &Path, session_name: &str) -> PathBuf {

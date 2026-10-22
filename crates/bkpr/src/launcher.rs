@@ -90,6 +90,50 @@ pub(crate) fn decide(
     }
 }
 
+/// The record of a session that is not live, plus a warning when recovery is off. Only an
+/// unresolvable state root degrades to "no record": an unreadable record is never replaced
+/// without an explicit `--overwrite`.
+fn loaded_record(
+    session: &str,
+    intent: Intent,
+    overwrite: bool,
+    loaded: Result<Option<RecoveryRecord>>,
+) -> Result<(Option<RecoveryRecord>, Option<String>)> {
+    match loaded {
+        Ok(record) => Ok((record, None)),
+        Err(error) if error.downcast_ref::<recovery::StateUnavailable>().is_some() => {
+            Ok((None, Some(not_resumable(&error))))
+        }
+        Err(_) if intent == Intent::Open && overwrite => Ok((None, None)),
+        Err(error) => {
+            let name = shell_word(session);
+            Err(error).context(format!(
+                "read the recovery record of session {name}; `bkpr --session {name} --overwrite` discards it"
+            ))
+        }
+    }
+}
+
+/// Claim the record for a starting session. A restore fails closed; a fresh start only warns,
+/// leaving its owner unclaimed so recovery stays silently off. Attach never claims.
+fn claim_record(
+    mode: &StartMode,
+    claim: &mut dyn FnMut(Option<&RecoveryRecord>) -> Result<()>,
+) -> Result<Option<String>> {
+    match mode {
+        StartMode::Attach => Ok(None),
+        StartMode::Fresh => Ok(claim(None).err().map(|error| not_resumable(&error))),
+        StartMode::Restore(record) => {
+            claim(Some(record)).context("claim the session recovery record")?;
+            Ok(None)
+        }
+    }
+}
+
+fn not_resumable(error: &anyhow::Error) -> String {
+    format!("this session will not be resumable: {error:#}")
+}
+
 /// Quote a session name for a copyable command only when it needs it.
 fn shell_word(value: &str) -> String {
     if !value.is_empty()
@@ -200,6 +244,9 @@ pub fn run_resume(options: Options) -> Result<()> {
             "bkpr resume restores a recovery record; --overwrite only applies to `bkpr --session <name>`"
         );
     }
+    if options.detach_others {
+        bail!("bkpr resume starts a new session; --detach-others only applies when attaching");
+    }
     launch(options, Intent::Resume)
 }
 
@@ -239,17 +286,12 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
     let record = if live {
         None
     } else {
-        match recovery::load(session) {
-            Ok(record) => record,
-            // An explicit overwrite replaces even an unreadable record.
-            Err(_) if intent == Intent::Open && options.overwrite => None,
-            Err(error) => {
-                let name = shell_word(session);
-                return Err(error).context(format!(
-                    "read the recovery record of session {name}; `bkpr --session {name} --overwrite` discards it"
-                ));
-            }
+        let (record, warning) =
+            loaded_record(session, intent, options.overwrite, recovery::load(session))?;
+        if let Some(warning) = warning {
+            eprintln!("bkpr: {warning}");
         }
+        record
     };
     let mode = decide(
         session,
@@ -421,15 +463,12 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
             .arg(&layout_path);
     }
     // Claim the record for this new session id before its owner can write; attach never claims.
-    if let Some(context) = &session_context {
-        match &mode {
-            StartMode::Attach => Ok(()),
-            StartMode::Fresh => recovery::claim(session, &context.session_id, None),
-            StartMode::Restore(record) => {
-                recovery::claim(session, &context.session_id, Some(record))
-            }
-        }
-        .context("claim the session recovery record")?;
+    if let Some(context) = &session_context
+        && let Some(warning) = claim_record(&mode, &mut |keep| {
+            recovery::claim(session, &context.session_id, keep)
+        })?
+    {
+        eprintln!("bkpr: {warning}");
     }
     let mut child = client.spawn().context("launch native Zellij client")?;
     if !existing {
@@ -953,6 +992,92 @@ mod tests {
         assert_eq!(error, "bkpr resume requires --session <name>");
         let cli = crate::Cli::try_parse_from(["bkpr", "--session", "work", "--overwrite"]).unwrap();
         assert!(cli.launch.overwrite);
+    }
+
+    #[test]
+    fn unresolvable_state_root_warns_and_starts_fresh() {
+        let loaded = Err(anyhow::Error::new(crate::recovery::StateUnavailable));
+        let (record, warning) = loaded_record("work", Intent::Open, false, loaded).unwrap();
+        assert!(record.is_none());
+        let warning = warning.expect("recovery is off");
+        assert!(
+            warning.starts_with("this session will not be resumable: "),
+            "{warning}"
+        );
+        let (mode, asked) = decide_with(Intent::Open, false, record, false, true, true);
+        assert!(matches!(mode.unwrap(), StartMode::Fresh));
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn unreadable_record_requires_overwrite() {
+        let unreadable = || Err(anyhow::anyhow!("malformed recovery record"));
+        for intent in [Intent::Open, Intent::Resume] {
+            let error = loaded_record("work", intent, false, unreadable()).unwrap_err();
+            let error = format!("{error:#}");
+            assert!(error.contains("bkpr --session work --overwrite"), "{error}");
+            assert!(error.contains("malformed recovery record"), "{error}");
+        }
+        let (discarded, warning) = loaded_record("work", Intent::Open, true, unreadable()).unwrap();
+        assert!(discarded.is_none() && warning.is_none());
+        let (kept, warning) =
+            loaded_record("work", Intent::Open, false, Ok(Some(record(1)))).unwrap();
+        assert!(kept.is_some() && warning.is_none());
+    }
+
+    #[test]
+    fn fresh_claims_fail_open_and_restores_fail_closed() {
+        let mut calls = Vec::new();
+        let mut failing = |keep: Option<&RecoveryRecord>| {
+            calls.push(keep.map(RecoveryRecord::pane_count));
+            Err(anyhow::anyhow!("read-only state"))
+        };
+        assert!(
+            claim_record(&StartMode::Attach, &mut failing)
+                .unwrap()
+                .is_none()
+        );
+        let warning = claim_record(&StartMode::Fresh, &mut failing)
+            .unwrap()
+            .expect("fresh warns");
+        assert_eq!(
+            warning,
+            "this session will not be resumable: read-only state"
+        );
+        let error = claim_record(&StartMode::Restore(record(2)), &mut failing).unwrap_err();
+        assert!(format!("{error:#}").contains("read-only state"));
+        // Attach never claims; fresh clears; restore keeps the record's workspaces.
+        assert_eq!(calls, [None, Some(2)]);
+        let mut succeeding = |_: Option<&RecoveryRecord>| Ok(());
+        assert!(
+            claim_record(&StartMode::Fresh, &mut succeeding)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            claim_record(&StartMode::Restore(record(1)), &mut succeeding)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn resume_rejects_overwrite_and_detach_others() {
+        use clap::Parser;
+
+        for flag in ["--overwrite", "-d", "--detach-others"] {
+            let cli =
+                crate::Cli::try_parse_from(["bkpr", "resume", "--session", "work", flag]).unwrap();
+            let Some(crate::Commands::Resume { launch }) = cli.command else {
+                panic!("expected resume");
+            };
+            let error = run_resume(launch).unwrap_err().to_string();
+            assert!(error.starts_with("bkpr resume"), "{flag}: {error}");
+            assert!(
+                error.contains(flag.trim_start_matches('-').split('-').next().unwrap()),
+                "{flag}: {error}"
+            );
+        }
     }
 
     #[test]
