@@ -996,6 +996,7 @@ mod tests {
     /// Signal dispositions are process-wide; serialize the tests that change them.
     static SIGNALS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[cfg(target_os = "linux")]
     fn disposition(signal: libc::c_int) -> libc::sighandler_t {
         // SAFETY: a null new action only queries the current one.
         unsafe {
@@ -1021,6 +1022,8 @@ mod tests {
         assert_eq!(code, Some(7));
     }
 
+    // The child signal-mask probe reads Linux procfs.
+    #[cfg(target_os = "linux")]
     #[test]
     fn harness_starts_and_leaves_default_signal_dispositions() {
         let _signals = SIGNALS.lock().unwrap_or_else(|poison| poison.into_inner());

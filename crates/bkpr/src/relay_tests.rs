@@ -1661,13 +1661,19 @@ fn recovery_agents_is_read_only() {
 
     let found = &agents.by_id[&alice.agent_id];
     assert_eq!(found.harness, "omp");
-    assert!(found.live, "this test process is the registered pid");
+    assert_eq!(
+        found.live,
+        cfg!(target_os = "linux"),
+        "recovery liveness requires a verified process birth identity"
+    );
     assert_eq!(fs::read(&state).unwrap(), before);
     assert_eq!(fs::metadata(&state).unwrap().modified().unwrap(), mtime);
     assert!(!directory.path().join("broker.sock").exists());
     assert!(!directory.path().join("relay").exists());
 }
 
+// Verified process birth identities currently require Linux procfs.
+#[cfg(target_os = "linux")]
 #[test]
 fn recovery_agents_liveness_and_holders() {
     let (directory, mut broker) = broker();
@@ -1737,6 +1743,7 @@ fn ensure_broker_keeps_a_live_broker() {
     assert!(listener.accept().is_ok());
 }
 
+#[cfg(target_os = "linux")]
 /// A broker started from a pane must outlive it: its own session and process group (so
 /// Ctrl+C at that pane's prompt or the pane's hangup never reach it), with default signal
 /// dispositions even when the starter ignores them.
