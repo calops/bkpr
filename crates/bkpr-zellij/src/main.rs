@@ -393,6 +393,7 @@ impl Frontend {
             self.keybinds_payload = payload;
         }
         // This is only a pre-creation projection, never a live owner acknowledgement.
+        self.theme.prepare_snapshot(&bootstrap.snapshot);
         self.snapshot = Some(bootstrap.snapshot);
         self.snapshot_is_bootstrap = true;
         self.response_state_valid = false;
@@ -1036,6 +1037,7 @@ impl Frontend {
                 {
                     self.collapsed.remove(&pane.workspace_id);
                 }
+                self.theme.prepare_snapshot(&state);
                 self.snapshot = Some(state);
                 self.snapshot_is_bootstrap = false;
                 self.bootstrap_view_pending &= !follow_focus;

@@ -221,19 +221,13 @@ pub fn status_color(status: Status, theme: &Theme) -> &str {
     }
 }
 
-/// Fixed FNV-1a, rather than a randomized/default hasher, survives owner recovery.
+/// The native owner assigns slots once; painting only borrows a cached terminal style.
 pub fn project_color<'a>(project: Option<&ProjectIdentity>, theme: &'a Theme) -> &'a str {
-    let Some(project) = project.filter(|project| project.repository) else {
-        return &theme.muted;
-    };
-    const PALETTE: [usize; 6] = [4, 5, 6, 3, 13, 12];
-    let hash = project
-        .id
-        .bytes()
-        .fold(0xcbf29ce484222325_u64, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
-        });
-    &theme.accents[PALETTE[(hash % PALETTE.len() as u64) as usize]]
+    theme.project_color(
+        project
+            .filter(|project| project.repository)
+            .and_then(|project| project.color_slot),
+    )
 }
 
 fn ci_state(ci: &CiSnapshot) -> CiStatus {
@@ -1648,6 +1642,7 @@ mod tests {
             id: id.to_owned(),
             name: "same-name".to_owned(),
             repository: true,
+            color_slot: Some(0),
         }
     }
 
@@ -1886,6 +1881,7 @@ mod tests {
     fn project_colors_follow_identity_not_name_branch_or_lifecycle() {
         let theme = Theme::default();
         let project = identity("/repo/.git");
+        assert_ne!(project_color(Some(&project), &theme), theme.muted);
         let mut renamed = project.clone();
         renamed.name = "a new name".to_owned();
         assert_eq!(
@@ -1953,6 +1949,101 @@ mod tests {
             );
             assert!(parent.contains(&format!("{TEXT}● ")));
         }
+    }
+
+    #[test]
+    fn assigned_slots_match_sidebar_finder_and_passive_popups_across_workspaces() {
+        let mut state = snapshot();
+        let workspace = state.workspaces[0].clone();
+        let pane = state.panes[0].clone();
+        state.workspaces.clear();
+        state.panes.clear();
+        for group in 0..2 {
+            let mut workspace = workspace.clone();
+            workspace.id = format!("workspace-{group}");
+            workspace.projects.clear();
+            for slot in group * 6..(group + 1) * 6 {
+                let mut project = identity(&format!("/repo-{slot}/.git"));
+                project.name = format!("repo-{slot}");
+                project.color_slot = Some(slot);
+                workspace.projects.push(project.clone());
+                let mut pane = pane.clone();
+                pane.id = format!("pane-{slot}");
+                pane.workspace_id = workspace.id.clone();
+                pane.project = Some(project);
+                pane.ci = None;
+                state.panes.push(pane);
+            }
+            state.workspaces.push(workspace);
+        }
+        let mut theme = Theme::default();
+        theme.prepare_snapshot(&state);
+        let rows = tree(&state, &Default::default());
+        let mut index = crate::pane_search::Index::default();
+        index.rebuild(&state);
+        assert_eq!(index.search("").len(), 12);
+        for pane in &state.panes {
+            let project = pane.project.as_ref().unwrap();
+            let color = project_color(Some(project), &theme);
+            assert_ne!(color, theme.muted);
+            let row = rows
+                .iter()
+                .find(|row| {
+                    row.item.as_ref() == Some(&Item::Pane(pane.id.clone()))
+                        && matches!(row.kind, RowKind::Pane { .. })
+                })
+                .unwrap();
+            let rendered = render_row(row, &state, &theme, 80, RowStyle::default());
+            assert!(rendered.contains(&format!("{color}● ")));
+            for item in [
+                Item::Pane(pane.id.clone()),
+                Item::Workspace(pane.workspace_id.clone()),
+            ] {
+                let popup = tooltip(&item, &state);
+                let popup_rows = popup.rows();
+                let spans: Vec<_> = popup_rows.iter().flat_map(|row| &row.spans)
+                    .filter(|span| matches!(&span.color, PopupColor::Project(identity) if identity.id == project.id))
+                    .collect();
+                assert_eq!(spans.len(), 1);
+                assert_eq!(spans[0].color.ansi(&theme), color);
+            }
+            let labels = rows
+                .iter()
+                .find(|row| {
+                    row.workspace_id.as_ref() == Some(&pane.workspace_id)
+                        && matches!(row.kind, RowKind::Projects { .. })
+                })
+                .unwrap();
+            assert!(
+                render_row(labels, &state, &theme, 200, RowStyle::default())
+                    .contains(&format!("{color}{}", project.name))
+            );
+        }
+        for result in 0..12 {
+            let pane = &state.panes[index.results()[result].pane];
+            let color = project_color(pane.project.as_ref(), &theme);
+            assert!(
+                crate::finder_entry::render(&mut index, &state, result, false, 80, &theme)
+                    .contains(&format!("{color}● "))
+            );
+        }
+        let folded = tree(
+            &state,
+            &std::collections::BTreeSet::from(["workspace-1".into()]),
+        );
+        assert_eq!(
+            folded
+                .iter()
+                .filter(|row| matches!(row.kind, RowKind::Pane { .. }))
+                .count(),
+            6
+        );
+        let unique: std::collections::BTreeSet<_> = state
+            .panes
+            .iter()
+            .map(|pane| project_color(pane.project.as_ref(), &theme))
+            .collect();
+        assert_eq!(unique.len(), 12);
     }
 
     #[test]
@@ -2974,6 +3065,7 @@ mod tests {
             id: "/other/.git".to_owned(),
             name: "other".to_owned(),
             repository: true,
+            color_slot: Some(1),
         };
         state.workspaces[0].projects.push(project.clone());
         let mut other = state.panes[0].clone();
