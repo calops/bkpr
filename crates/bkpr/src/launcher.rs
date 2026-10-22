@@ -828,7 +828,7 @@ mod tests {
     #[test]
     fn resume_live_refuses() {
         let (mode, asked) = decide_with(Intent::Resume, true, Some(record(2)), false, true, true);
-        let error = format!("{:#}", mode.err().expect("live resume refuses"));
+        let error = format!("{:#}", mode.expect_err("live resume refuses"));
         assert!(error.contains("bkpr --session work"), "{error}");
         assert_eq!(asked, 0);
     }
@@ -837,7 +837,7 @@ mod tests {
     fn resume_without_usable_record_refuses() {
         for record in [None, Some(record(0))] {
             let (mode, asked) = decide_with(Intent::Resume, false, record, false, true, true);
-            let error = format!("{:#}", mode.err().expect("nothing to resume"));
+            let error = format!("{:#}", mode.expect_err("nothing to resume"));
             assert!(error.contains("no recovery record"), "{error}");
             assert_eq!(asked, 0);
         }
@@ -868,7 +868,7 @@ mod tests {
     #[test]
     fn open_over_record_noninteractive_refuses() {
         let (mode, asked) = decide_with(Intent::Open, false, Some(record(2)), false, false, true);
-        let error = format!("{:#}", mode.err().expect("cannot ask"));
+        let error = format!("{:#}", mode.expect_err("cannot ask"));
         assert!(error.contains("bkpr resume --session work"), "{error}");
         assert!(error.contains("--overwrite"), "{error}");
         assert_eq!(asked, 0);
@@ -1069,8 +1069,7 @@ mod tests {
         let second = restore
             .layout
             .lines()
-            .skip_while(|line| !line.contains("--key=w0t0p1"))
-            .next()
+            .find(|line| line.contains("--key=w0t0p1"))
             .unwrap();
         assert!(
             second.contains("--note=session is still open elsewhere"),

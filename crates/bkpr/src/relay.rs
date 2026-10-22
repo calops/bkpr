@@ -1729,8 +1729,6 @@ fn recovery_live(agent: &Agent) -> bool {
 
 /// Read-only: parses the durable snapshot and never contacts or starts the broker,
 /// takes the write lock, or mutates state.
-// Consumed by the launcher once restore lands.
-#[allow(dead_code)]
 pub(crate) fn recovery_agents() -> Result<RecoveryAgents> {
     recovery_agents_in(&state_path()?)
 }
