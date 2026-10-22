@@ -371,12 +371,15 @@ struct RestoreNameRequest {
 fn take_restore_seed(
     configuration: &mut BTreeMap<String, String>,
 ) -> Result<(BTreeMap<String, String>, Option<usize>), String> {
-    let names = match configuration.remove("restore_names") {
+    // Remove both before parsing either, so a malformed value never leaves the other behind.
+    let names = configuration.remove("restore_names");
+    let expected = configuration.remove("restore_expected_panes");
+    let names = match names {
         None => BTreeMap::new(),
         Some(json) => serde_json::from_str(&json)
             .map_err(|error| format!("Invalid restore_names owner configuration: {error}"))?,
     };
-    let expected = match configuration.remove("restore_expected_panes") {
+    let expected = match expected {
         None => None,
         Some(count) => Some(count.parse::<usize>().map_err(|error| {
             format!("Invalid restore_expected_panes owner configuration: {error}")
@@ -2957,7 +2960,13 @@ impl Owner {
                 }
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
-                self.error = Some("Native owner permissions denied".to_owned())
+                self.error = Some("Native owner permissions denied".to_owned());
+                // Queued CLI inputs are never replayed now; release their senders.
+                for message in std::mem::take(&mut self.queued) {
+                    if let PipeSource::Cli(source) = &message.source {
+                        acknowledge_cli(source);
+                    }
+                }
             }
             Event::CustomMessage(name, payload)
                 if self.granted && name == "bkpr_context" && payload.len() <= MAX_MESSAGE_BYTES =>
@@ -6946,6 +6955,22 @@ mod tests {
             (BTreeMap::new(), None)
         );
         assert_eq!(plain, ordinary);
+        // Each malformed key reports its own error, with both keys stripped.
+        let mut malformed = ordinary.clone();
+        malformed.insert("restore_names".to_owned(), "{".to_owned());
+        malformed.insert("restore_expected_panes".to_owned(), "x".to_owned());
+        assert!(
+            take_restore_seed(&mut malformed).is_err_and(|error| error.contains("restore_names"))
+        );
+        assert_eq!(malformed, ordinary);
+        let mut malformed = ordinary.clone();
+        malformed.insert("restore_names".to_owned(), "{}".to_owned());
+        malformed.insert("restore_expected_panes".to_owned(), "x".to_owned());
+        assert!(
+            take_restore_seed(&mut malformed)
+                .is_err_and(|error| error.contains("restore_expected_panes"))
+        );
+        assert_eq!(malformed, ordinary);
         for (key, value) in [
             ("restore_names", "[1]"),
             ("restore_names", "{\"k\":1}"),
@@ -7048,6 +7073,19 @@ mod tests {
         }
         assert_eq!(acknowledged(), ["early"]);
         assert_eq!(pane(&owner, 2).name, "Sticky two");
+
+        // Denied permissions release every queued CLI input.
+        owner.granted = false;
+        owner.pipe(message(
+            "denied",
+            r#"{"key":"w0t0p0","pane_id":"terminal_1"}"#,
+        ));
+        assert!(acknowledged().is_empty());
+        owner.event(Event::PermissionRequestResult(PermissionStatus::Denied));
+        assert_eq!(acknowledged(), ["denied"]);
+        assert!(owner.queued.is_empty());
+        owner.error = None;
+        owner.granted = true;
 
         // The claim is persisted for the other owner replicas.
         let mut replica = Owner {

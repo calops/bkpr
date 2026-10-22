@@ -385,7 +385,7 @@ pub(crate) fn restore_pane(args: RestorePaneArgs) -> Result<()> {
     let mut stdout = std::io::stdout();
     if args.sticky {
         if let Err(error) = send_restore_name(&args.key) {
-            notes.push(format!("pane name not restored: {error:#}"));
+            notes.push(restore_name_note(&error));
         }
     } else {
         let _ = stdout
@@ -441,31 +441,99 @@ fn run_harness(harness: Harness, session_id: &str, cwd: &Path) -> Result<()> {
     let name = harness
         .to_possible_value()
         .context("harness has no command-line name")?;
-    let mut child = Command::new(std::env::current_exe().context("locate bkpr")?)
+    let mut command = Command::new(std::env::current_exe().context("locate bkpr")?);
+    command
         .arg("run")
         .arg(name.get_name())
         .args(resume_arguments(harness, session_id))
         .current_dir(cwd)
-        .env("PWD", cwd)
-        .spawn()
-        .context("start harness")?;
-    // Terminal interrupts reach the whole foreground process group; they are the
-    // harness's to handle, and must not kill the shell that follows it.
-    ignore_terminal_signals(true);
-    let waited = child.wait();
-    ignore_terminal_signals(false);
-    waited.context("wait for harness")?;
+        .env("PWD", cwd);
+    run_foreground(&mut command)?;
     Ok(())
 }
 
-/// Ignore (or restore the default for) SIGINT and SIGQUIT. Ignored dispositions survive
-/// `exec`, so they are restored before the shell starts.
-fn ignore_terminal_signals(ignore: bool) {
-    let handler = if ignore { libc::SIG_IGN } else { libc::SIG_DFL };
-    // SAFETY: setting a predefined disposition installs no Rust handler.
+/// Signals a foreground harness owns. The helper ignores them while it waits so terminal
+/// interrupts and job control reach the harness, never the helper whose shell must follow.
+const FOREGROUND_SIGNALS: [libc::c_int; 5] = [
+    libc::SIGINT,
+    libc::SIGQUIT,
+    libc::SIGTSTP,
+    libc::SIGTTIN,
+    libc::SIGTTOU,
+];
+
+fn set_foreground_signals(handler: libc::sighandler_t) {
+    for signal in FOREGROUND_SIGNALS {
+        // SAFETY: SIG_IGN/SIG_DFL install no Rust handler; `signal` is async-signal-safe.
+        unsafe {
+            libc::signal(signal, handler);
+        }
+    }
+}
+
+/// Restores default dispositions on every path, since ignored dispositions survive `exec`.
+struct ForegroundSignals;
+
+impl ForegroundSignals {
+    fn ignore() -> Self {
+        set_foreground_signals(libc::SIG_IGN);
+        Self
+    }
+}
+
+impl Drop for ForegroundSignals {
+    fn drop(&mut self) {
+        set_foreground_signals(libc::SIG_DFL);
+    }
+}
+
+/// Run `command` in the foreground on this terminal and return its exit status. The helper
+/// ignores the foreground signals from before the spawn (no window where Ctrl+C kills it);
+/// the child resets them to defaults. There is no job-control shell to `fg` a suspended
+/// harness yet, so a stopped child is continued at once: suspend is a no-op here.
+fn run_foreground(command: &mut Command) -> Result<std::process::ExitStatus> {
+    use std::os::unix::process::ExitStatusExt;
+    let _signals = ForegroundSignals::ignore();
+    // SAFETY: the closure only calls the async-signal-safe `signal`.
     unsafe {
-        libc::signal(libc::SIGINT, handler);
-        libc::signal(libc::SIGQUIT, handler);
+        command.pre_exec(|| {
+            set_foreground_signals(libc::SIG_DFL);
+            Ok(())
+        });
+    }
+    let child = command.spawn().context("start harness")?;
+    let pid = child.id() as libc::pid_t;
+    loop {
+        let mut status = 0;
+        // SAFETY: waits only for our own child; `status` is a valid out pointer.
+        if unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) } == -1 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error).context("wait for harness");
+        }
+        if libc::WIFSTOPPED(status) {
+            // SAFETY: signals our own unreaped child, so the pid cannot have been reused.
+            unsafe {
+                libc::kill(pid, libc::SIGCONT);
+            }
+            continue;
+        }
+        return Ok(std::process::ExitStatus::from_raw(status));
+    }
+}
+
+/// Note for a failed sticky-name request. A timed-out pipe was still delivered to the
+/// owner, which applies the queued claim once it is granted.
+fn restore_name_note(error: &anyhow::Error) -> String {
+    if error
+        .downcast_ref::<crate::project_watch::TimedOut>()
+        .is_some()
+    {
+        "pane name will apply when the session is ready".to_owned()
+    } else {
+        format!("pane name not restored: {error:#}")
     }
 }
 
@@ -475,6 +543,8 @@ fn exec_shell(cwd: &Path) -> Result<()> {
     let shell = std::env::var_os("SHELL")
         .filter(|shell| !shell.is_empty())
         .unwrap_or_else(|| "/bin/sh".into());
+    // Never hand the shell ignored interrupt or job-control signals.
+    set_foreground_signals(libc::SIG_DFL);
     let error = Command::new(&shell).env("PWD", cwd).exec();
     print_note(&[format!(
         "cannot start {}: {error}",
@@ -677,6 +747,74 @@ mod tests {
                 note: Some("-/tmp no longer exists; \"x\"".into()),
             }
         );
+    }
+
+    /// Signal dispositions are process-wide; serialize the tests that change them.
+    static SIGNALS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn disposition(signal: libc::c_int) -> libc::sighandler_t {
+        // SAFETY: a null new action only queries the current one.
+        unsafe {
+            let mut current: libc::sigaction = std::mem::zeroed();
+            assert_eq!(libc::sigaction(signal, std::ptr::null(), &mut current), 0);
+            current.sa_sigaction
+        }
+    }
+
+    #[test]
+    fn stopped_harness_is_continued_not_waited_on_forever() {
+        let _signals = SIGNALS.lock().unwrap_or_else(|poison| poison.into_inner());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "kill -STOP $$; exit 7"]);
+            let _ = sender.send(run_foreground(&mut command).map(|status| status.code()));
+        });
+        let code = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a stopped harness wedged the helper")
+            .unwrap();
+        assert_eq!(code, Some(7));
+    }
+
+    #[test]
+    fn harness_starts_and_leaves_default_signal_dispositions() {
+        let _signals = SIGNALS.lock().unwrap_or_else(|poison| poison.into_inner());
+        // Even when the helper starts with them ignored, the harness gets defaults and the
+        // helper leaves them at defaults. The probe is exec'd directly, since a shell may
+        // change its own dispositions.
+        set_foreground_signals(libc::SIG_IGN);
+        let report = tempfile::NamedTempFile::new().unwrap();
+        let mut command = Command::new("grep");
+        command
+            .args(["^SigIgn:", "/proc/self/status"])
+            .stdout(report.reopen().unwrap());
+        assert!(run_foreground(&mut command).unwrap().success());
+        let line = fs::read_to_string(report.path()).unwrap();
+        let ignored = u64::from_str_radix(line.trim_start_matches("SigIgn:").trim(), 16).unwrap();
+        for signal in FOREGROUND_SIGNALS {
+            assert_eq!(
+                ignored & (1 << (signal - 1)),
+                0,
+                "harness inherited ignored {signal}"
+            );
+        }
+        assert!(run_foreground(&mut Command::new("true")).unwrap().success());
+        for signal in FOREGROUND_SIGNALS {
+            assert_eq!(disposition(signal), libc::SIG_DFL, "signal {signal}");
+        }
+    }
+
+    #[test]
+    fn restore_name_timeout_is_reported_as_pending() {
+        let timeout = anyhow::Error::new(crate::project_watch::TimedOut("zellij".into()))
+            .context("send bkpr-restore-name");
+        assert_eq!(
+            restore_name_note(&timeout),
+            "pane name will apply when the session is ready"
+        );
+        let missing = anyhow::anyhow!("BKPR_PANE_ID is not set");
+        assert!(restore_name_note(&missing).starts_with("pane name not restored: "));
     }
 
     #[test]
