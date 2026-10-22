@@ -13,7 +13,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use bkpr::MAX_MESSAGE_BYTES;
-use bkpr::recovery_contract::{RECOVERY_VERSION, RecoveryRecord, RecoveryUpdate};
+use clap::ValueEnum;
+
+use crate::harness::Harness;
+use crate::relay::RecoveryAgents;
+use bkpr::recovery_contract::{RECOVERY_VERSION, RecoveryPane, RecoveryRecord, RecoveryUpdate};
 
 const FILE_NAME: &str = "recovery.json";
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -216,9 +220,125 @@ fn write_record(directory: &Path, record: &RecoveryRecord) -> Result<()> {
     Ok(())
 }
 
+/// How to restart one recorded pane.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PaneLaunch {
+    Shell {
+        cwd: PathBuf,
+        note: Option<String>,
+    },
+    Harness {
+        harness: Harness,
+        session_id: String,
+        cwd: PathBuf,
+        /// A Codex agent's own detached app-server manifest, to stop before resuming.
+        codex_manifest: Option<PathBuf>,
+    },
+}
+
+/// Decide how to restore a pane from relay state. Resumption never adopts a session another
+/// live agent still holds; a Codex agent's own detached app-server is the sole exception.
+// Consumed by the launcher once restore lands.
+#[allow(dead_code)]
+pub(crate) fn resolve(pane: &RecoveryPane, agents: &RecoveryAgents) -> PaneLaunch {
+    let (cwd, cwd_note) = existing_cwd(pane.cwd.as_deref());
+    let Some(agent_id) = pane.agent_id.as_deref() else {
+        return PaneLaunch::Shell {
+            cwd,
+            note: cwd_note,
+        };
+    };
+    let shell = |reason: &str| PaneLaunch::Shell {
+        cwd: cwd.clone(),
+        note: Some(match &cwd_note {
+            Some(extra) => format!("{reason}; {extra}"),
+            None => reason.to_owned(),
+        }),
+    };
+    let agent = agents.by_id.get(agent_id);
+    let Some((agent, session_id)) =
+        agent.and_then(|agent| Some((agent, agent.session_id.as_deref()?)))
+    else {
+        return shell("no captured session to resume");
+    };
+    let Some(harness) = [Harness::Claude, Harness::Omp, Harness::Codex]
+        .into_iter()
+        .find(|harness| {
+            harness
+                .to_possible_value()
+                .is_some_and(|v| v.matches(&agent.harness, false))
+        })
+    else {
+        return shell("harness cannot be resumed");
+    };
+    let other_holder = agents
+        .live_holders
+        .get(session_id)
+        .is_some_and(|holders| holders.iter().any(|holder| holder != agent_id));
+    if other_holder {
+        return shell("session is still open elsewhere");
+    }
+    let codex_manifest = (harness == Harness::Codex && agent.live)
+        .then(|| agent.queue_endpoint.as_deref().and_then(codex_manifest))
+        .flatten();
+    PaneLaunch::Harness {
+        harness,
+        session_id: session_id.to_owned(),
+        cwd,
+        codex_manifest,
+    }
+}
+
+/// `unix:///tmp/bkpr-codex-*/server.sock` -> its `server.json`. Anything else is not a
+/// location this process may later ask `codex::stop` to act on.
+fn codex_manifest(endpoint: &str) -> Option<PathBuf> {
+    let socket = Path::new(endpoint.strip_prefix("unix://")?);
+    let runtime = socket.parent()?;
+    (socket.file_name()? == "server.sock"
+        && runtime.parent()? == Path::new("/tmp")
+        && runtime
+            .file_name()?
+            .as_encoded_bytes()
+            .starts_with(b"bkpr-codex-"))
+    .then(|| runtime.join("server.json"))
+}
+
+/// The recorded directory, else its nearest existing ancestor, else `$HOME` (or `/`).
+// Consumed by the launcher once restore lands.
+#[allow(dead_code)]
+pub(crate) fn existing_cwd(recorded: Option<&str>) -> (PathBuf, Option<String>) {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_dir());
+    existing_cwd_with(recorded, home.as_deref().unwrap_or(Path::new("/")))
+}
+
+fn existing_cwd_with(recorded: Option<&str>, fallback: &Path) -> (PathBuf, Option<String>) {
+    let Some(recorded) = recorded.filter(|path| !path.is_empty()) else {
+        return (fallback.to_owned(), None);
+    };
+    let path = Path::new(recorded);
+    if path.is_absolute() {
+        if path.is_dir() {
+            return (path.to_owned(), None);
+        }
+        if let Some(ancestor) = path.ancestors().skip(1).find(|dir| dir.is_dir()) {
+            return (
+                ancestor.to_owned(),
+                Some(format!("{recorded} no longer exists")),
+            );
+        }
+    }
+    (
+        fallback.to_owned(),
+        Some(format!("{recorded} no longer exists")),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relay::RecoveredAgent;
     use bkpr::recovery_contract::{RecoveryPane, RecoveryTab, RecoveryWorkspace, SplitNode};
     use std::os::unix::fs::PermissionsExt;
 
@@ -240,6 +360,160 @@ mod tests {
                 },
             }],
         }]
+    }
+
+    fn agent(
+        harness: &str,
+        session: Option<&str>,
+        endpoint: Option<&str>,
+        live: bool,
+    ) -> RecoveredAgent {
+        RecoveredAgent {
+            harness: harness.into(),
+            session_id: session.map(Into::into),
+            queue_endpoint: endpoint.map(Into::into),
+            live,
+        }
+    }
+
+    fn agents(entries: Vec<(&str, RecoveredAgent)>) -> RecoveryAgents {
+        let mut result = RecoveryAgents::default();
+        for (id, agent) in entries {
+            if agent.live {
+                if let Some(session) = &agent.session_id {
+                    result
+                        .live_holders
+                        .entry(session.clone())
+                        .or_default()
+                        .push(id.into());
+                }
+            }
+            result.by_id.insert(id.into(), agent);
+        }
+        result
+    }
+
+    fn pane(agent_id: Option<&str>, cwd: &str) -> RecoveryPane {
+        RecoveryPane {
+            cwd: Some(cwd.into()),
+            name: "p".into(),
+            renamed: false,
+            harness: None,
+            agent_id: agent_id.map(Into::into),
+            focused: false,
+        }
+    }
+
+    fn note_of(launch: &PaneLaunch) -> Option<&str> {
+        match launch {
+            PaneLaunch::Shell { note, .. } => note.as_deref(),
+            PaneLaunch::Harness { .. } => panic!("expected shell"),
+        }
+    }
+
+    #[test]
+    fn no_agent_restores_shell() {
+        let launch = resolve(&pane(None, "/tmp"), &RecoveryAgents::default());
+        assert_eq!(
+            launch,
+            PaneLaunch::Shell {
+                cwd: "/tmp".into(),
+                note: None
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_agent_or_missing_session_id_notes() {
+        let known = agents(vec![("a", agent("claude", None, None, false))]);
+        for id in ["a", "ghost"] {
+            let launch = resolve(&pane(Some(id), "/tmp"), &known);
+            assert!(note_of(&launch).unwrap().contains("no captured session"));
+        }
+    }
+
+    #[test]
+    fn live_holder_refuses_resume() {
+        let known = agents(vec![
+            ("a", agent("claude", Some("s"), None, false)),
+            ("b", agent("claude", Some("s"), None, true)),
+        ]);
+        let launch = resolve(&pane(Some("a"), "/tmp"), &known);
+        assert!(note_of(&launch).unwrap().contains("still open elsewhere"));
+    }
+
+    #[test]
+    fn codex_stale_server_is_the_only_exception() {
+        let endpoint = "unix:///tmp/bkpr-codex-abc/server.sock";
+        let alone = agents(vec![("a", agent("codex", Some("s"), Some(endpoint), true))]);
+        match resolve(&pane(Some("a"), "/tmp"), &alone) {
+            PaneLaunch::Harness {
+                harness,
+                session_id,
+                codex_manifest,
+                ..
+            } => {
+                assert_eq!(harness, Harness::Codex);
+                assert_eq!(session_id, "s");
+                assert_eq!(
+                    codex_manifest,
+                    Some("/tmp/bkpr-codex-abc/server.json".into())
+                );
+            }
+            other => panic!("expected harness, got {other:?}"),
+        }
+        let shared = agents(vec![
+            ("a", agent("codex", Some("s"), Some(endpoint), true)),
+            ("b", agent("codex", Some("s"), None, true)),
+        ]);
+        let launch = resolve(&pane(Some("a"), "/tmp"), &shared);
+        assert!(note_of(&launch).unwrap().contains("still open elsewhere"));
+        // A foreign endpoint is never trusted as a manifest location.
+        let foreign = agents(vec![(
+            "a",
+            agent("codex", Some("s"), Some("unix:///var/x/server.sock"), true),
+        )]);
+        assert!(matches!(
+            resolve(&pane(Some("a"), "/tmp"), &foreign),
+            PaneLaunch::Harness {
+                codex_manifest: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn claude_and_omp_resolve_to_harness() {
+        for (name, expected) in [("claude", Harness::Claude), ("omp", Harness::Omp)] {
+            let known = agents(vec![("a", agent(name, Some("s"), None, false))]);
+            assert_eq!(
+                resolve(&pane(Some("a"), "/tmp"), &known),
+                PaneLaunch::Harness {
+                    harness: expected,
+                    session_id: "s".into(),
+                    cwd: "/tmp".into(),
+                    codex_manifest: None,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn missing_cwd_falls_back_to_ancestor() {
+        let root = tempfile::tempdir().unwrap();
+        let recorded = root.path().join("gone/deeper");
+        let (cwd, note) = existing_cwd_with(recorded.to_str(), Path::new("/home/x"));
+        assert_eq!(cwd, root.path());
+        assert!(note.unwrap().contains("no longer exists"));
+        let (cwd, note) = existing_cwd_with(Some("relative/gone"), Path::new("/"));
+        assert_eq!(cwd, Path::new("/"));
+        assert!(note.is_some());
+        let (cwd, note) = existing_cwd_with(None, root.path());
+        assert_eq!(cwd, root.path());
+        assert!(note.is_none());
+        let (cwd, note) = existing_cwd_with(root.path().to_str(), Path::new("/home/x"));
+        assert_eq!(cwd, root.path());
+        assert!(note.is_none());
     }
 
     fn update(session_id: &str, sequence: u64) -> String {
