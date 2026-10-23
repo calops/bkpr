@@ -19,6 +19,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zellij_tile::prelude::*;
 
+mod control;
+pub(crate) use control::{expire_control_ready, settle_control_ready, sidebar_control_pipe};
+pub const CONTROL: &str = "bkpr-control";
+
 pub const REQUEST: &str = "bkpr-native-request";
 pub const RESPONSE: &str = "bkpr-native-response";
 pub const STATE: &str = "bkpr-native-state";
@@ -2255,6 +2259,7 @@ pub struct Owner {
     context_reload: bool,
     // Deadline of this replica's armed recovery timer; avoids re-arming on every callback.
     recovery_timer: Option<u64>,
+    control_receipts: std::collections::VecDeque<(String, String)>,
 }
 
 impl Owner {
@@ -3560,6 +3565,9 @@ impl Owner {
     }
 
     pub fn pipe(&mut self, message: PipeMessage) -> bool {
+        if message.name == CONTROL {
+            return self.control_pipe(&message);
+        }
         if message.name == RESTORE_NAME {
             let PipeSource::Cli(source) = &message.source else {
                 return false;

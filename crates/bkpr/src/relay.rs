@@ -982,7 +982,7 @@ impl Broker {
     fn perform(&mut self, request: &Request) -> Result<(Value, Vec<WakeJob>)> {
         if request.method == "protocol" {
             return Ok((
-                json!({"protocol":PROTOCOL_VERSION,"version":env!("CARGO_PKG_VERSION"),"capabilities":["live_session_labels"]}),
+                json!({"protocol":PROTOCOL_VERSION,"version":env!("CARGO_PKG_VERSION")}),
                 Vec::new(),
             ));
         }
@@ -1552,7 +1552,7 @@ impl Broker {
             .filter(|(_, subscribers)| !subscribers.is_empty())
             .map(|(id, subscribers)| (id, subscribers.len()))
             .collect();
-        json!({"protocol":PROTOCOL_VERSION,"connections":connections,"storage_error":self.storage_failure,"capabilities":["live_session_labels"]})
+        json!({"protocol":PROTOCOL_VERSION,"connections":connections,"storage_error":self.storage_failure})
     }
 }
 
@@ -1880,7 +1880,7 @@ pub(crate) fn status() -> Result<Value> {
                     }
                 }
                 result["storage_error"] = live["storage_error"].clone();
-                result["broker"] = json!({"socket":socket,"compatible":true,"reachable":true,"capabilities":live["capabilities"]});
+                result["broker"] = json!({"socket":socket,"compatible":true,"reachable":true});
             }
             Err(error) => {
                 result["broker"] = json!({"socket":socket,"compatible":true,"reachable":false,"diagnostic":error.to_string()})
@@ -1896,31 +1896,6 @@ pub(crate) fn status() -> Result<Value> {
         }
     }
     Ok(result)
-}
-
-/// Older protocol-compatible brokers treated the creation label as authority.
-/// Refuse the new label mutation before it can detach their agent projections.
-pub(crate) fn require_live_session_labels() -> Result<()> {
-    let status = status()?;
-    let broker = &status["broker"];
-    if broker["reachable"] == false && broker["compatible"].is_null() {
-        return Ok(());
-    }
-    if broker["compatible"] == true
-        && broker["reachable"] == true
-        && broker["capabilities"]
-            .as_array()
-            .is_some_and(|capabilities| {
-                capabilities
-                    .iter()
-                    .any(|capability| capability == "live_session_labels")
-            })
-    {
-        return Ok(());
-    }
-    bail!(
-        "the running relay broker does not report live session-label support; preserve pending messages and replace it explicitly before renaming a session; no broker was restarted"
-    )
 }
 
 fn snapshot_summary(store: &Store, message: &Message) -> Value {
@@ -2484,13 +2459,16 @@ fn tool_result(result: Result<Value>) -> Result<Value> {
     })
 }
 
-fn control_tool_result(result: Result<Value>) -> Result<Value> {
+fn control_tool_result(result: Result<Value>, pane_read: bool) -> Result<Value> {
     let failed = result
         .as_ref()
         .is_ok_and(|value| matches!(value["outcome"].as_str(), Some("failed" | "unknown")));
     let mut result = tool_result(result)?;
     if failed {
         result["isError"] = json!(true);
+    }
+    if pane_read && let Err(error) = crate::control::bound_read_response(&result, MAX_FRAME) {
+        return tool_result(Err(error));
     }
     Ok(result)
 }
@@ -2565,13 +2543,17 @@ pub(crate) fn mcp() -> Result<()> {
                     _ => None,
                 };
                 if matches!(name, "control" | "terminal_input") {
-                    control_tool_result(control_call(
-                        message["params"]
-                            .get("arguments")
-                            .cloned()
-                            .unwrap_or_else(|| json!({})),
-                        name == "terminal_input",
-                    ))
+                    control_tool_result(
+                        control_call(
+                            message["params"]
+                                .get("arguments")
+                                .cloned()
+                                .unwrap_or_else(|| json!({})),
+                            name == "terminal_input",
+                        ),
+                        name == "control"
+                            && message["params"]["arguments"]["operation"] == "pane.read",
+                    )
                 } else if let Some(broker_method) = broker_method {
                     let mut params = message["params"]
                         .get("arguments")
@@ -2640,7 +2622,7 @@ mod control_tests {
     }
 
     #[test]
-    fn unresponsive_broker_is_not_an_offline_label_compatibility_exception() {
+    fn unresponsive_broker_is_distinct_from_missing_broker() {
         let socket = Path::new("/fixture/broker.sock");
         let timeout =
             classify_protocol_error(socket, io::Error::from(io::ErrorKind::TimedOut).into());
@@ -2655,6 +2637,35 @@ mod control_tests {
         assert!(resource_read("file:///etc/passwd").is_err());
         assert!(resource_read("bkpr://control/skill/../reference").is_err());
         assert!(resource_read("bkpr://control/unknown").is_err());
+    }
+
+    #[test]
+    fn pane_read_mcp_bound_counts_both_actual_compatible_payloads() {
+        let small = control_tool_result(
+            Ok(json!({"outcome":"completed","result":{"stdout":"雪\n","total_rows":1}})),
+            true,
+        )
+        .unwrap();
+        assert_eq!(small["isError"], false);
+        assert_eq!(small["structuredContent"]["result"]["stdout"], "雪\n");
+        let oversized = control_tool_result(Ok(json!({"outcome":"completed","result":{"stdout":"x".repeat(MAX_FRAME / 2),"total_rows":1}})), true).unwrap();
+        assert_eq!(oversized["isError"], true);
+        assert!(
+            oversized["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("tail/offset")
+        );
+        assert!(oversized.get("structuredContent").is_none());
+        let partial_failure = control_tool_result(Ok(json!({"outcome":"failed","result":{"stdout":"x".repeat(3 * MAX_FRAME / 4),"exit_status":1},"error":{"message":"native partial read failed"}})), true).unwrap();
+        assert_eq!(partial_failure["isError"], true);
+        assert!(partial_failure.get("structuredContent").is_none());
+        assert!(
+            partial_failure["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("tail/offset")
+        );
     }
 }
 

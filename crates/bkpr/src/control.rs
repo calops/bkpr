@@ -34,12 +34,12 @@ macro_rules! command_group {
         }
     };
 }
-command_group!(SessionCommands { List(SessionList) => "session.list", Create(SessionCreate) => "session.create", Inspect(Target) => "session.inspect", Rename(RenameSession) => "session.rename", Save(Target) => "session.save", Stop(Target) => "session.stop" });
+command_group!(SessionCommands { List(SessionList) => "session.list", Inspect(Target) => "session.inspect", Save(Target) => "session.save", Stop(Target) => "session.stop" });
 command_group!(ClientCommands { List(Target) => "client.list", Detach(Client) => "client.detach", Mode(ClientMode) => "client.mode", Focus(Focus) => "client.focus" });
 command_group!(WorkspaceCommands { List(Discovery) => "workspace.list", Inspect(Workspace) => "workspace.inspect", Create(WorkspaceCreate) => "workspace.create", Rename(RenameWorkspace) => "workspace.rename", Close(Workspace) => "workspace.close" });
 command_group!(TabCommands { List(Discovery) => "tab.list", Inspect(Tab) => "tab.inspect", Create(TabCreate) => "tab.create", Close(Tab) => "tab.close", Rename(RenameTab) => "tab.rename", Unrename(Tab) => "tab.unrename", Move(TabMove) => "tab.move", Focus(Focus) => "tab.focus", Sync(TabState) => "tab.sync", Floating(TabState) => "tab.floating" });
-command_group!(PaneCommands { List(Discovery) => "pane.list", Inspect(Pane) => "pane.inspect", Create(Create) => "pane.create", Split(Create) => "pane.split", Close(Pane) => "pane.close", Rename(RenamePane) => "pane.rename", Unrename(Pane) => "pane.unrename", Resize(Resize) => "pane.resize", Geometry(Geometry) => "pane.geometry", Move(Move) => "pane.move", Swap(Swap) => "pane.swap", Float(Pane) => "pane.float", Embed(Pane) => "pane.embed", Pin(PaneState) => "pane.pin", Border(PaneState) => "pane.border", Fullscreen(PaneState) => "pane.fullscreen", Scroll(Scroll) => "pane.scroll", Read(Read) => "pane.read", Watch(Read) => "pane.watch", Clear(Pane) => "pane.clear", Focus(Focus) => "pane.focus" });
-command_group!(LayoutCommands { Dump(Target) => "layout.dump", Apply(Layout) => "layout.apply", Cycle(LayoutCycle) => "layout.cycle" });
+command_group!(PaneCommands { List(Discovery) => "pane.list", Inspect(Pane) => "pane.inspect", Create(Create) => "pane.create", Split(Create) => "pane.split", Close(Pane) => "pane.close", Rename(RenamePane) => "pane.rename", Unrename(Pane) => "pane.unrename", Resize(Resize) => "pane.resize", Geometry(Geometry) => "pane.geometry", Move(Move) => "pane.move", Pin(PaneState) => "pane.pin", Border(PaneState) => "pane.border", Scroll(Scroll) => "pane.scroll", Read(Read) => "pane.read", Clear(Pane) => "pane.clear", Focus(Focus) => "pane.focus" });
+command_group!(LayoutCommands { Dump(Target) => "layout.dump", Cycle(LayoutCycle) => "layout.cycle" });
 command_group!(InputCommands { Text(Input) => "input.text", Paste(Input) => "input.paste", Keys(Input) => "input.keys", Bytes(Input) => "input.bytes" });
 command_group!(MessageCommands { Send(Send) => "message.send", Inbox(MessagePage) => "message.inbox", History(MessagePage) => "message.history", Read(MessageId) => "message.read", Ack(MessageId) => "message.ack", Status(MessageId) => "message.status" });
 /// Public agent commands keep their output flag local so the legacy inspection
@@ -95,7 +95,7 @@ macro_rules! root_commands {
             $name { #[arg(long, global = true)] json: bool, #[command(subcommand)] command: $group }, )*
             /// Discover agents, launch supported harnesses and inspect real bridge readiness.
             Agent { #[command(subcommand)] command: AgentCommands },
-            /// Discover the typed control API and native protocol availability.
+            /// Discover implemented baseline control operations and attached native clients.
             Capabilities { #[arg(long)] json: bool, #[arg(long)] session: Option<String> },
             /// Emit completion definitions for the typed control groups.
             Completion { #[arg(value_parser = ["bash", "fish", "zsh", "powershell", "elvish"])] shell: String },
@@ -117,12 +117,12 @@ root_commands!(
 
 fn group_help(group: &str) -> &'static str {
     match group {
-        "Session" => "Create, inspect, rename, save and stop authenticated native Bkpr sessions.",
+        "Session" => "List, inspect, save and stop authenticated native Bkpr sessions.",
         "Client" => "Inspect and explicitly control attached native clients.",
         "Workspace" => "Create and manage Bkpr workspaces and their native terminal membership.",
         "Tab" => "Manage native tabs within Bkpr workspaces, without implicit focus changes.",
         "Pane" => "Create, inspect, move, resize, read and manage exact native terminal panes.",
-        "Layout" => "Read and apply native KDL layouts to explicitly selected tabs.",
+        "Layout" => "Read native KDL layouts and cycle an explicitly selected tab's swap layouts.",
         "Agent" => "Discover agents, launch supported harnesses and inspect real bridge readiness.",
         "Message" => "Use durable future-turn collaboration, separate from terminal input.",
         "TerminalInput" => {
@@ -174,7 +174,35 @@ fn dispatch_with(
             }
         );
     }
-    operations::dispatch(&request.operation, request.arguments, &caller, zellij)
+    let response = operations::dispatch(&request.operation, request.arguments, &caller, zellij)?;
+    if zellij.is_none() && request.operation == "pane.read" {
+        bound_read_response(&response, bkpr::MAX_MESSAGE_BYTES)?;
+    }
+    Ok(response)
+}
+
+/// Account for JSON escaping, not only UTF-8 content bytes. Reject oversized MCP
+/// reads explicitly; raw CLI reads never pass through this transport bound.
+pub(crate) fn bound_read_response(response: &Value, maximum: usize) -> Result<()> {
+    struct Bounded(usize);
+    impl Write for Bounded {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if bytes.len() > self.0 {
+                return Err(io::Error::other(
+                    "pane.read MCP response exceeds transport limit; request --tail/--offset (tail/offset arguments), or use raw CLI --full",
+                ));
+            }
+            self.0 -= bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(Bounded(maximum), response).context(
+        "pane.read exceeds MCP transport bound; use tail/offset to select fewer retained rows",
+    )?;
+    Ok(())
 }
 
 pub(crate) fn run(command: Commands, launch: crate::launcher::Options) -> Result<()> {
@@ -184,11 +212,34 @@ pub(crate) fn run(command: Commands, launch: crate::launcher::Options) -> Result
         Commands::Workspace { command, json } => (command.request()?, json, false),
         Commands::Tab { command, json } => (command.request()?, json, false),
         Commands::Pane {
-            command: PaneCommands::Watch(mut arguments),
-            json,
+            command: PaneCommands::Read(mut arguments),
+            json: false,
         } => {
-            merge_session(&mut arguments.session, launch.session.as_deref())?;
-            return watch(arguments, json, &launch.zellij);
+            if let Some(session) = launch.session.as_deref()
+                && arguments
+                    .session
+                    .as_deref()
+                    .is_some_and(|selected| selected != session)
+            {
+                bail!("conflicting root and operation --session selectors");
+            }
+            if arguments.session.is_none() {
+                arguments.session = launch.session.clone();
+            }
+            let host = native::Native::resolve(
+                arguments.session.as_deref(),
+                &Caller::Operator,
+                Some(&launch.zellij),
+            )?;
+            let pane = host.pane(arguments.pane.as_deref())?;
+            return host.read_raw(
+                &pane,
+                arguments.full,
+                arguments.ansi,
+                arguments.tail,
+                arguments.offset,
+                &mut io::stdout().lock(),
+            );
         }
         Commands::Pane { command, json } => (command.request()?, json, false),
         Commands::Layout { command, json } => (command.request()?, json, false),
@@ -318,11 +369,7 @@ pub(crate) fn run(command: Commands, launch: crate::launcher::Options) -> Result
             bail!("this operation does not accept --session");
         }
     }
-    let native_text = !compact
-        && matches!(
-            request["operation"].as_str(),
-            Some("pane.read" | "layout.dump")
-        );
+    let native_text = !compact && request["operation"] == "layout.dump";
     let result = dispatch_with(request, Caller::Operator, input, Some(&launch.zellij))?;
     let mut output = io::stdout().lock();
     let text =
@@ -350,45 +397,6 @@ pub(crate) fn run(command: Commands, launch: crate::launcher::Options) -> Result
             "native operation {}; receipt printed above; do not replay unknown completion automatically",
             result["outcome"]
         );
-    }
-    Ok(())
-}
-
-fn merge_session(selected: &mut Option<String>, root: Option<&str>) -> Result<()> {
-    if let Some(root) = root {
-        if selected.as_deref().is_some_and(|selected| selected != root) {
-            bail!("conflicting root and operation --session selectors");
-        }
-        *selected = Some(root.to_owned());
-    }
-    Ok(())
-}
-fn watch(arguments: Read, json: bool, zellij: &std::path::Path) -> Result<()> {
-    let host = native::Native::resolve(
-        arguments.session.as_deref(),
-        &Caller::Operator,
-        Some(zellij),
-    )?;
-    let pane = host.pane(arguments.pane.as_deref())?;
-    // Capability validation is read-only. The subscription itself remains a
-    // direct native stream, never relayed through a WASI plugin or MCP stdin.
-    native::result(&host.call("capabilities", json!({}))?)?;
-    let mut command = crate::launcher::control_command(&host.session.runtime_name, Some(zellij))?;
-    command.args(["subscribe", "--pane-id", &pane]);
-    if arguments.full {
-        command.arg("--scrollback");
-    }
-    if arguments.ansi {
-        command.arg("--ansi");
-    }
-    if json {
-        command.args(["--format", "json"]);
-    }
-    let status = command
-        .status()
-        .context("subscribe to native pane render updates")?;
-    if !status.success() {
-        bail!("native pane subscription exited with {status}");
     }
     Ok(())
 }

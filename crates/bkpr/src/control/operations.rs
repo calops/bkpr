@@ -14,14 +14,8 @@ pub(super) fn help(operation: &str) -> &'static str {
         "session.list" => {
             "List authenticated live Bkpr sessions without starting a server. Agents default to their own session; --all explicitly discovers other same-user sessions."
         }
-        "session.create" => {
-            "Create a background managed native session with an initial shell; requires an explicit new --session name."
-        }
         "session.inspect" => {
             "Inspect one live session's native topology, clients and Bkpr bindings."
-        }
-        "session.rename" => {
-            "Change the live Bkpr display label only; stable session_key, attachment/recovery key and running programs stay unchanged. Resume after stop uses session_key."
         }
         "session.save" => "Ask native Zellij to persist the current session state immediately.",
         "session.stop" => {
@@ -35,7 +29,7 @@ pub(super) fn help(operation: &str) -> &'static str {
         }
         "client.mode" => "Change only the explicitly selected attached client's native input mode.",
         "client.focus" | "tab.focus" | "pane.focus" => {
-            "Focus an exact pane or tab for --client only; never used to implement targeting."
+            "Focus an exact tiled terminal, or an eligible terminal in a tab, for --client only. Rejects target tabs viewed by another client (baseline stack focus is shared), unknown peer bindings, shared fullscreen, selectable floating terminals, floating/suppressed targets and empty/plugin-only tabs. Unshared target tabs remain available with multiple clients. Never used to implement targeting."
         }
         "workspace.list" => {
             "List the caller's current workspace; add --session-scope for all workspaces."
@@ -91,38 +85,26 @@ pub(super) fn help(operation: &str) -> &'static str {
             "Set floating geometry in cells or percentages, e.g. --x 10% --width 80% --height 24."
         }
         "pane.move" => {
-            "Move within a tab by --direction, or preserve pane identity while moving to --tab/--workspace."
+            "Move the exact selected pane within its current tab by direction, or rotate forward/backward. Cross-tab/workspace moves are not exposed on this baseline."
         }
-        "pane.swap" => {
-            "Swap --pane with --other-pane in the same native tab and layer, without focusing either."
-        }
-        "pane.float" => "Make the exact selected pane floating (idempotent native setter).",
-        "pane.embed" => "Embed the exact selected floating pane into its native tiled layout.",
         "pane.pin" => "Set --enabled true|false for an exact floating pane's always-on-top pin.",
         "pane.border" => "Set --enabled true|false for an exact pane's border.",
-        "pane.fullscreen" => {
-            "Set fullscreen for the exact pane's shared native tab layout; does not change client focus."
-        }
         "pane.scroll" => {
             "Scroll only the exact selected pane's native scrollback, without focus emulation."
         }
         "pane.read" => {
-            "Read a native viewport; --full includes scrollback and --ansi preserves styling."
-        }
-        "pane.watch" => {
-            "Stream native render updates directly until interrupted (CLI only); --json emits native JSON events."
+            "Read the native viewport; --full includes retained scrollback. --tail N keeps N newest rows after --offset N skips newest rows; either range option implies full. Zero tail or offset beyond retained rows returns empty. Native wrapped rows and selected newline/ANSI bytes are preserved. Raw CLI output is uncapped; MCP explicitly rejects encoded tool results above 4 MiB, including both compatibility payloads (use tail/offset)."
         }
         "pane.clear" => "Clear the exact selected pane's native viewport and scrollback buffers.",
         "layout.dump" => "Read the current native session layout as KDL.",
-        "layout.apply" => "Apply explicit native KDL to --tab without selecting or focusing it.",
         "layout.cycle" => {
             "Apply the next or previous configured native swap layout to the exact selected tab."
         }
         "input.text" => {
-            "Write literal --text (or CLI --stdin); --submit appends Enter atomically. Not peer messaging."
+            "Write literal --text (or CLI --stdin); --submit appends Enter in the same native write. Not peer messaging."
         }
         "input.paste" => {
-            "Send bracketed --text paste (or CLI --stdin); optionally --submit atomically. Not model acknowledgment."
+            "Send native bracketed --text paste (or CLI --stdin); --submit sends Enter in a separate action. Partial acceptance is never automatically replayed."
         }
         "input.keys" => {
             "Send explicit --keys 'Ctrl c' 'Enter' using native key grammar; never interpolates a shell command."
@@ -149,7 +131,7 @@ pub(super) fn help(operation: &str) -> &'static str {
             "Inspect one message's actual durable delivery/read/ack state, not inferred model processing."
         }
         "capabilities" => {
-            "Inspect product operations; select a live session to query its actual native capability set."
+            "Inspect implemented baseline adapter operations; select a live session to observe attached native clients. SDK-only operations require a matching permitted owner plugin; readiness is not guessed."
         }
         "agent.list" => {
             "Discover live agents in the current workspace; explicit scope widens to session, repository or all."
@@ -179,7 +161,7 @@ pub(super) fn help(operation: &str) -> &'static str {
 macro_rules! inventory {
     ($m:ident) => { $m! {
         "capabilities" => Target, "session.list" => SessionList, "session.inspect" => Target,
-        "session.create" => SessionCreate, "session.rename" => RenameSession, "session.save" => Target, "session.stop" => Target,
+        "session.save" => Target, "session.stop" => Target,
         "client.list" => Target, "client.detach" => Client, "client.mode" => ClientMode, "client.focus" => Focus,
         "workspace.list" => Discovery, "workspace.inspect" => Workspace, "workspace.create" => WorkspaceCreate,
         "workspace.rename" => RenameWorkspace, "workspace.close" => Workspace,
@@ -188,10 +170,10 @@ macro_rules! inventory {
         "tab.sync" => TabState, "tab.floating" => TabState,
         "pane.list" => Discovery, "pane.inspect" => Pane, "pane.create" => Create, "pane.split" => Create,
         "pane.close" => Pane, "pane.rename" => RenamePane, "pane.unrename" => Pane,
-        "pane.resize" => Resize, "pane.geometry" => Geometry, "pane.move" => Move, "pane.swap" => Swap,
-        "pane.float" => Pane, "pane.embed" => Pane, "pane.pin" => PaneState, "pane.border" => PaneState,
-        "pane.fullscreen" => PaneState, "pane.scroll" => Scroll, "pane.read" => Read, "pane.clear" => Pane,
-        "pane.focus" => Focus, "layout.dump" => Target, "layout.apply" => Layout, "layout.cycle" => LayoutCycle,
+        "pane.resize" => Resize, "pane.geometry" => Geometry, "pane.move" => Move,
+        "pane.pin" => PaneState, "pane.border" => PaneState,
+        "pane.scroll" => Scroll, "pane.read" => Read, "pane.clear" => Pane,
+        "pane.focus" => Focus, "layout.dump" => Target, "layout.cycle" => LayoutCycle,
         "agent.list" => AgentQuery, "agent.whoami" => Empty, "agent.ready" => AgentQuery,
         "agent.launch" => Create, "agent.set_title" => Title,
         "message.send" => Send, "message.inbox" => MessagePage, "message.history" => MessagePage,
@@ -227,9 +209,9 @@ macro_rules! typed_arguments {
     };
 }
 typed_arguments! {
-    session: Target, SessionCreate, RenameSession, Discovery, Pane, Swap, Tab, Workspace, Create, WorkspaceCreate, TabCreate,
+    session: Target, Discovery, Pane, Tab, Workspace, Create, WorkspaceCreate, TabCreate,
         RenamePane, RenameWorkspace, RenameTab, Resize, Move, Geometry, PaneState,
-        Scroll, Read, TabMove, TabState, Layout, LayoutCycle, Client, ClientMode,
+        Scroll, Read, TabMove, TabState, LayoutCycle, Client, ClientMode,
         Focus, Input, AgentQuery;
     plain: Api, Empty, SessionList, Send, MessagePage, MessageId, Title;
 }
@@ -337,8 +319,9 @@ fn operation_schema(operation: &str) -> Result<Value> {
             "Launch via bkpr run with a fresh identity; only Claude/Codex/Omp currently support messaging readiness."
         );
     }
-    if operation == "session.create" {
-        output["required"] = json!(["session"]);
+    if operation == "pane.read" {
+        output["properties"]["tail"]["minimum"] = json!(0);
+        output["properties"]["offset"]["minimum"] = json!(0);
     }
     if operation == "agent.launch" {
         output["required"] = json!(["harness"]);
@@ -506,30 +489,9 @@ pub(super) fn dispatch(
                 )
             } else {
                 Ok(
-                    json!({"protocol":1,"operations":names(),"instructions":super::instructions(),"scope":"live caller workspace by default; explicit session_scope for session-wide discovery","receipts":"native completed/dispatched/unknown are distinct; never replay unknown automatically","exclusions":["persistent configuration","plugin loading","permission changes","absolute tiled dimensions"],"cli_only":["pane.watch","skill show/export","completion"]}),
+                    json!({"protocol":1,"operations":names(),"instructions":super::instructions(),"scope":"live caller workspace by default; explicit session_scope for session-wide discovery","receipts":"baseline CLI acceptance and SDK dispatch are not atomic completion; never replay unknown automatically","exclusions":["persistent configuration","plugin loading","permission changes","absolute tiled dimensions"],"cli_only":["skill show/export","completion"]}),
                 )
             }
-        }
-        "session.create" => {
-            let args: SessionCreate = parse(arguments)?;
-            let name = args
-                .session
-                .context("session.create requires an explicit new session name")?;
-            let options = crate::launcher::Options {
-                session: Some(name),
-                detach_others: false,
-                zellij: zellij
-                    .map(Path::to_path_buf)
-                    .or_else(|| std::env::var_os("BKPR_ZELLIJ").map(Into::into))
-                    .unwrap_or_else(|| "zellij".into()),
-                plugin: std::env::var_os("BKPR_PLUGIN").map(Into::into),
-                sidebar_width: 38,
-                overwrite: false,
-            };
-            let identity = crate::launcher::control_create(options, args.cwd.map(Into::into))?;
-            Ok(
-                json!({"outcome":"completed","result":identity,"readiness":{"native_server":"created","native_owner":"not independently observed","relay_registration":"not independently observed","notification_readiness":"not independently observed","prompt_readiness":"unknown"}}),
-            )
         }
         "session.list" => {
             let args: SessionList = parse(arguments)?;
@@ -548,11 +510,13 @@ pub(super) fn dispatch(
                 && std::env::var_os("BKPR_SESSION_ID").is_none()
             {
                 return Ok(
-                    json!({"protocol":1,"tools":["control","terminal_input"],"operations":names(),"native":"select --session to query its actual capabilities"}),
+                    json!({"protocol":1,"tools":["control","terminal_input"],"operations":names(),"native":"baseline CLI adapter; select --session to observe attached clients","owner_bridge":"requires matching permitted Bkpr owner plugin; not independently probed"}),
                 );
             }
-            Native::resolve(args.session.as_deref(), caller, zellij)?
-                .call("capabilities", json!({}))
+            let host = Native::resolve(args.session.as_deref(), caller, zellij)?;
+            Ok(
+                json!({"protocol":1,"tools":["control","terminal_input"],"operations":names(),"session_id":host.session.session_id,"native":"existing CLI actions and Bkpr owner SDK bridge","owner_bridge":"requires matching permitted Bkpr owner plugin; not independently probed","clients":host.clients()?,"receipts":"completed observations and dispatched mutations are distinct; snapshots are not atomic"}),
+            )
         }
         "agent.list" | "agent.ready" => discover(parse(arguments)?, caller, zellij),
         "agent.whoami" => {
@@ -632,6 +596,95 @@ fn validate(operation: &str, arguments: Value) -> Result<()> {
     decode_operation(operation, arguments).map(|_| ())
 }
 
+fn focus_pane(
+    snapshot: &Value,
+    requested: Option<&str>,
+    tab: Option<u64>,
+    client: u32,
+) -> Result<String> {
+    let panes = snapshot["native"]["panes"]
+        .as_array()
+        .context("native focus preflight lacks pane topology")?;
+    let eligible = |pane: &&Value| {
+        pane["is_plugin"] == false
+            && pane["is_floating"] == false
+            && pane["is_suppressed"] == false
+            && pane["is_selectable"] == true
+    };
+    let target = if let Some(pane) = requested {
+        panes
+            .iter()
+            .find(|entry| entry["pane_id"].as_str() == Some(pane))
+            .filter(eligible)
+            .context("focus target must be a live selectable tiled terminal")?
+    } else {
+        let tab = tab.context("focus requires an exact pane or tab")?;
+        panes
+            .iter()
+            .filter(|pane| pane["tab_id"].as_u64() == Some(tab))
+            .filter(eligible)
+            .min_by_key(|pane| pane["id"].as_u64())
+            .context("target tab has no eligible tiled terminal for baseline client focus")?
+    };
+    let tab = target["tab_id"]
+        .as_u64()
+        .context("focus target lacks its native tab identity")?;
+    if panes.iter().any(|pane| {
+        pane["tab_id"].as_u64() == Some(tab)
+            && pane["is_plugin"] == false
+            && pane["is_floating"] == false
+            && pane["is_fullscreen"] == true
+    }) {
+        bail!(
+            "baseline selected-client focus cannot identify the owner of shared tiled fullscreen"
+        );
+    }
+    if panes.iter().any(|pane| {
+        pane["tab_id"].as_u64() == Some(tab)
+            && pane["is_plugin"] == false
+            && pane["is_floating"] == true
+            && pane["is_selectable"] == true
+    }) {
+        bail!(
+            "baseline selected-client focus cannot preserve shared floating visibility in a tab containing selectable floating terminals"
+        );
+    }
+    let clients = snapshot["native"]["clients"]
+        .as_array()
+        .context("native focus preflight lacks client topology")?;
+    if !clients
+        .iter()
+        .any(|peer| peer["client_id"].as_u64() == Some(u64::from(client)))
+    {
+        bail!("selected client is not attached during focus preflight");
+    }
+    for peer in clients {
+        let peer_id = peer["client_id"]
+            .as_u64()
+            .context("native focus preflight has an unknown client identity")?;
+        if peer_id == u64::from(client) {
+            continue;
+        }
+        let pane = peer["pane_id"]
+            .as_str()
+            .context("native focus preflight lacks another client's exact pane")?;
+        let peer_tab = panes
+            .iter()
+            .find(|entry| entry["pane_id"].as_str() == Some(pane))
+            .and_then(|entry| entry["tab_id"].as_u64())
+            .context("cannot prove another client's tab binding; no focus was dispatched")?;
+        if peer_tab == tab {
+            bail!(
+                "baseline stacked-pane focus can affect other clients viewing the target tab; no focus was dispatched"
+            );
+        }
+    }
+    target["pane_id"]
+        .as_str()
+        .map(str::to_owned)
+        .context("focus target lacks its exact pane identity")
+}
+
 fn dispatch_native(
     operation: &str,
     arguments: Arguments,
@@ -640,20 +693,9 @@ fn dispatch_native(
 ) -> Result<Value> {
     let host = native(&arguments, caller, zellij)?;
     match operation {
-        "session.inspect" => host.call("snapshot", json!({})),
-        "session.rename" => {
-            let args: RenameSession = parse(arguments)?;
-            // A still-running pre-label broker must not silently drop the
-            // foreground membership of every agent in this session.
-            crate::relay::require_live_session_labels()?;
-            host.call("session.rename", json!({"name":args.name}))
-        }
-        "session.stop" => host.call("session.stop", json!({})),
+        "session.inspect" => Ok(json!({"outcome":"completed","result":host.snapshot()?})),
+        "session.stop" => host.stop(),
         "session.save" => host.action(vec!["save-session".into()]),
-        "pane.swap" => {
-            let args: Swap = parse(arguments)?;
-            host.call("pane.swap", json!({"pane_id":host.pane(args.pane.as_deref())?,"other_pane_id":host.pane(Some(&args.other_pane))?}))
-        }
         "client.list" => Ok(json!({"clients":host.snapshot()?["native"]["clients"]})),
         "client.detach" => {
             let args: Client = parse(arguments)?;
@@ -671,12 +713,22 @@ fn dispatch_native(
             if args.pane.is_some() && (args.tab.is_some() || args.workspace.is_some()) {
                 bail!("focus accepts a pane OR a tab/workspace, not both");
             }
-            let target = if args.pane.is_some() || operation == "pane.focus" {
-                json!({"client_id":args.client,"pane_id":host.pane(args.pane.as_deref())?})
+            let snapshot = host.snapshot()?;
+            let pane = if args.pane.is_some() || operation == "pane.focus" {
+                Some(host.pane(args.pane.as_deref())?)
             } else {
-                json!({"client_id":args.client,"tab_id":host.tab(args.tab,args.workspace.as_deref(),&host.snapshot()?)?})
+                None
             };
-            host.call("client.focus", target)
+            let tab = if pane.is_none() {
+                Some(host.tab(args.tab, args.workspace.as_deref(), &snapshot)?)
+            } else {
+                None
+            };
+            let target = focus_pane(&snapshot, pane.as_deref(), tab, args.client)?;
+            host.call(
+                "client.focus",
+                json!({"client_id":args.client,"pane_id":target}),
+            )
         }
         "pane.list" | "tab.list" | "workspace.list" => {
             let args: Discovery = parse(arguments)?;
@@ -703,6 +755,7 @@ fn dispatch_native(
                 entries.retain(|entry| entry["workspace_id"].as_str() == Some(workspace.as_str()));
             }
             if operation == "workspace.list" {
+                entries.retain(|entry| entry["workspace_id"].is_string());
                 let mut seen = std::collections::BTreeSet::new();
                 entries.retain(|entry| {
                     seen.insert(
@@ -853,47 +906,35 @@ fn dispatch_native(
         "pane.move" => {
             let args: Move = parse(arguments)?;
             let pane = host.pane(args.pane.as_deref())?;
-            if args.tab.is_some() || args.workspace.is_some() {
-                if args.direction.is_some() {
-                    bail!("cross-tab move cannot also specify direction");
-                }
-                let tab = host.tab(args.tab, args.workspace.as_deref(), &host.snapshot()?)?;
-                host.call("pane.move_to_tab", json!({"pane_id":pane,"tab_id":tab}))
-            } else {
-                let direction = args.direction.as_deref();
-                if let Some(direction) = direction {
-                    ensure(
-                        direction,
-                        &["left", "right", "up", "down", "backward"],
-                        "direction",
-                    )?;
-                }
-                pane_action(
-                    &host,
-                    Some(&pane),
-                    if direction == Some("backward") {
-                        "move-pane-backwards"
-                    } else {
-                        "move-pane"
-                    },
-                    direction
-                        .filter(|value| *value != "backward")
-                        .map(|value| vec![value.into()])
-                        .unwrap_or_default(),
-                )
+            let direction = args.direction.as_deref();
+            if let Some(direction) = direction {
+                ensure(
+                    direction,
+                    &["left", "right", "up", "down", "backward"],
+                    "direction",
+                )?;
             }
+            pane_action(
+                &host,
+                Some(&pane),
+                if direction == Some("backward") {
+                    "move-pane-backwards"
+                } else {
+                    "move-pane"
+                },
+                direction
+                    .filter(|value| *value != "backward")
+                    .map(|value| vec![value.into()])
+                    .unwrap_or_default(),
+            )
         }
-        "pane.float" | "pane.embed" => {
-            let args: Pane = parse(arguments)?;
-            host.call("pane.set_state",json!({"pane_id":host.pane(args.pane.as_deref())?,"floating":operation=="pane.float"}))
-        }
-        "pane.pin" | "pane.border" | "pane.fullscreen" => {
+        "pane.pin" | "pane.border" => {
             let args: PaneState = parse(arguments)?;
             let mut params = json!({"pane_id":host.pane(args.pane.as_deref())?});
-            let field = match operation {
-                "pane.pin" => "pinned",
-                "pane.border" => "borderless",
-                _ => "fullscreen",
+            let field = if operation == "pane.pin" {
+                "pinned"
+            } else {
+                "borderless"
             };
             params[field] = json!(if operation == "pane.border" {
                 !args.enabled
@@ -919,38 +960,27 @@ fn dispatch_native(
         }
         "pane.read" => {
             let args: Read = parse(arguments)?;
-            let mut tail = Vec::new();
-            if args.full {
-                tail.push("--full".into());
-            }
-            if args.ansi {
-                tail.push("--ansi".into());
-            }
-            pane_action(&host, args.pane.as_deref(), "dump-screen", tail)
+            let pane = host.pane(args.pane.as_deref())?;
+            host.read(&pane, args.full, args.ansi, args.tail, args.offset)
         }
         "tab.close" | "tab.unrename" => {
             let args: Tab = parse(arguments)?;
-            tab_action(
-                &host,
-                args.tab,
-                args.workspace.as_deref(),
-                if operation == "tab.close" {
-                    "close-tab"
-                } else {
-                    "undo-rename-tab"
-                },
-                vec![],
-            )
+            let tab = host.tab(args.tab, args.workspace.as_deref(), &host.snapshot()?)?;
+            if operation == "tab.close" {
+                host.action(vec!["close-tab-by-id".into(), tab.to_string()])
+            } else {
+                tab_action(&host, Some(tab), None, "undo-rename-tab", vec![])
+            }
         }
         "tab.rename" => {
             let args: RenameTab = parse(arguments)?;
-            tab_action(
-                &host,
-                args.tab,
-                args.workspace.as_deref(),
-                "rename-tab",
-                vec!["--".into(), args.name],
-            )
+            let tab = host.tab(args.tab, args.workspace.as_deref(), &host.snapshot()?)?;
+            host.action(vec![
+                "rename-tab-by-id".into(),
+                tab.to_string(),
+                "--".into(),
+                args.name,
+            ])
         }
         "tab.move" => {
             let args: TabMove = parse(arguments)?;
@@ -966,8 +996,31 @@ fn dispatch_native(
         "tab.sync" | "tab.floating" => {
             let args: TabState = parse(arguments)?;
             if operation == "tab.sync" {
-                let tab = host.tab(args.tab, args.workspace.as_deref(), &host.snapshot()?)?;
-                host.call("tab.set_sync", json!({"tab_id":tab,"sync":args.enabled}))
+                let snapshot = host.snapshot()?;
+                let tab = host.tab(args.tab, args.workspace.as_deref(), &snapshot)?;
+                let synced = snapshot["native"]["tabs"]
+                    .as_array()
+                    .and_then(|tabs| {
+                        tabs.iter()
+                            .find(|entry| entry["tab_id"].as_u64() == Some(tab))
+                    })
+                    .and_then(|entry| entry["is_sync_panes_active"].as_bool())
+                    .context("native tab sync state is unavailable")?;
+                if synced == args.enabled {
+                    Ok(
+                        json!({"outcome":"completed","result":{"tab_id":tab,"enabled":synced,"observation":"already in requested state at snapshot time"}}),
+                    )
+                } else {
+                    let mut receipt = host.action(vec![
+                        "toggle-active-sync-tab".into(),
+                        "--tab-id".into(),
+                        tab.to_string(),
+                    ])?;
+                    receipt["consistency"] = json!(
+                        "read then exact-tab toggle; concurrent native changes are not atomic"
+                    );
+                    Ok(receipt)
+                }
             } else {
                 tab_action(
                     &host,
@@ -983,11 +1036,6 @@ fn dispatch_native(
             }
         }
         "layout.dump" => host.action(vec!["dump-layout".into()]),
-        "layout.apply" => {
-            let args: Layout = parse(arguments)?;
-            let tab = host.tab(args.tab, args.workspace.as_deref(), &host.snapshot()?)?;
-            host.call("layout.apply", json!({"tab_id":tab,"layout":args.layout}))
-        }
         "layout.cycle" => {
             let args: LayoutCycle = parse(arguments)?;
             ensure(&args.direction, &["next", "previous"], "direction")?;
@@ -1258,14 +1306,58 @@ fn input(operation: &str, args: Input, host: &Native) -> Result<Value> {
         }
         _ => bail!("unknown terminal input kind"),
     }
-    let mut params =
-        json!({"pane_id":host.pane(args.pane.as_deref())?,"kind":kind,"submit":args.submit});
+    let pane = host.pane(args.pane.as_deref())?;
     match kind {
-        "text" | "paste" => params["text"] = json!(args.text),
-        "keys" => params["keys"] = json!(args.keys),
-        _ => params["bytes"] = json!(args.bytes),
-    };
-    host.call("input", params)
+        "text" => {
+            let mut text = args.text.expect("validated text");
+            if args.submit {
+                text.push('\r');
+            }
+            host.action(vec![
+                "write-chars".into(),
+                "--pane-id".into(),
+                pane,
+                "--".into(),
+                text,
+            ])
+        }
+        "paste" => {
+            let mut receipt = host.action(vec![
+                "paste".into(),
+                "--pane-id".into(),
+                pane.clone(),
+                "--".into(),
+                args.text.expect("validated paste"),
+            ])?;
+            if args.submit && receipt["outcome"] == "dispatched" {
+                match host.action(vec!["write".into(), "--pane-id".into(), pane, "13".into()]) {
+                    Ok(enter) if enter["outcome"] == "dispatched" => {
+                        receipt["result"]["submit"] = enter;
+                    }
+                    Ok(enter) => {
+                        receipt["outcome"] = json!("unknown");
+                        receipt["error"] = json!({"stage":"submit","message":"paste accepted, Enter not confirmed; do not replay paste","submit_receipt":enter});
+                    }
+                    Err(error) => {
+                        receipt["outcome"] = json!("unknown");
+                        receipt["error"] = json!({"stage":"submit","message":format!("paste accepted, Enter completion unknown: {error}; do not replay paste")});
+                    }
+                }
+            }
+            receipt["atomic"] = json!(false);
+            Ok(receipt)
+        }
+        "keys" => {
+            let mut argv = vec!["send-keys".into(), "--pane-id".into(), pane, "--".into()];
+            argv.extend(args.keys);
+            host.action(argv)
+        }
+        _ => {
+            let mut argv = vec!["write".into(), "--pane-id".into(), pane];
+            argv.extend(args.bytes.iter().map(u8::to_string));
+            host.action(argv)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1327,5 +1419,78 @@ mod tests {
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["properties"]["argv"]["type"], "array");
         assert!(schema["properties"].get("owner_token").is_none());
+    }
+    #[test]
+    fn deferred_operations_are_absent_and_reads_expose_bottom_relative_ranges() {
+        for operation in [
+            "session.create",
+            "session.rename",
+            "layout.apply",
+            "pane.swap",
+            "pane.watch",
+            "pane.float",
+            "pane.embed",
+            "pane.fullscreen",
+        ] {
+            assert!(!names().contains(&operation));
+            assert!(operation_schema(operation).is_err());
+            assert!(decode_operation(operation, json!({})).is_err());
+        }
+        assert!(validate("pane.move", json!({"tab":3})).is_err());
+        assert!(validate("pane.move", json!({"workspace":"other"})).is_err());
+        let schema = operation_schema("pane.read").unwrap();
+        assert_eq!(schema["properties"]["tail"]["type"], "integer");
+        assert_eq!(schema["properties"]["offset"]["type"], "integer");
+        let args: Read =
+            parse(decode_operation("pane.read", json!({"tail":0,"offset":usize::MAX})).unwrap())
+                .unwrap();
+        assert_eq!(args.tail, Some(0));
+        assert_eq!(args.offset, Some(usize::MAX));
+    }
+
+    #[test]
+    fn client_focus_preflight_rejects_hidden_or_visible_floating_siblings() {
+        let tiled = json!({"id":9,"pane_id":"terminal_9","tab_id":3,"is_plugin":false,"is_floating":false,"is_suppressed":false,"is_selectable":true});
+        let snapshot = json!({"native":{"panes":[tiled.clone()],"clients":[{"client_id":1,"pane_id":"terminal_9"}]}});
+        assert_eq!(
+            focus_pane(&snapshot, Some("terminal_9"), None, 1).unwrap(),
+            "terminal_9"
+        );
+        assert_eq!(
+            focus_pane(&snapshot, None, Some(3), 1).unwrap(),
+            "terminal_9"
+        );
+        assert!(focus_pane(&snapshot, None, Some(4), 1).is_err());
+        for suppressed in [false, true] {
+            let floating = json!({"id":10,"pane_id":"terminal_10","tab_id":3,"is_plugin":false,"is_floating":true,"is_suppressed":suppressed,"is_selectable":true});
+            let snapshot = json!({"native":{"panes":[tiled.clone(),floating],"clients":[{"client_id":1,"pane_id":"terminal_9"}]}});
+            assert!(focus_pane(&snapshot, Some("terminal_9"), None, 1).is_err());
+            assert!(focus_pane(&snapshot, Some("terminal_10"), None, 1).is_err());
+            assert!(focus_pane(&snapshot, None, Some(3), 1).is_err());
+        }
+        let mut fullscreen = snapshot;
+        fullscreen["native"]["panes"][0]["is_fullscreen"] = json!(true);
+        assert!(focus_pane(&fullscreen, Some("terminal_9"), None, 1).is_err());
+        assert!(focus_pane(&fullscreen, None, Some(3), 1).is_err());
+    }
+
+    #[test]
+    fn client_focus_rejects_only_other_clients_viewing_target_tab_and_unknown_bindings() {
+        let target = json!({"id":9,"pane_id":"terminal_9","tab_id":3,"is_plugin":false,"is_floating":false,"is_suppressed":false,"is_selectable":true});
+        let other = json!({"id":10,"pane_id":"terminal_10","tab_id":4,"is_plugin":false,"is_floating":false,"is_suppressed":false,"is_selectable":true});
+        let mut snapshot = json!({"native":{"panes":[target,other],"clients":[{"client_id":1,"pane_id":"terminal_10"},{"client_id":2,"pane_id":"terminal_10"}]}});
+        assert_eq!(
+            focus_pane(&snapshot, Some("terminal_9"), None, 1).unwrap(),
+            "terminal_9"
+        );
+        assert_eq!(
+            focus_pane(&snapshot, None, Some(3), 1).unwrap(),
+            "terminal_9"
+        );
+        snapshot["native"]["clients"][1]["pane_id"] = json!("terminal_9");
+        assert!(focus_pane(&snapshot, Some("terminal_9"), None, 1).is_err());
+        assert!(focus_pane(&snapshot, None, Some(3), 1).is_err());
+        snapshot["native"]["clients"][1]["pane_id"] = json!("terminal_999");
+        assert!(focus_pane(&snapshot, Some("terminal_9"), None, 1).is_err());
     }
 }
