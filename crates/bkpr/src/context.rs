@@ -199,9 +199,8 @@ fn publish_at(root: &Path, json: &str) -> Result<()> {
 
 fn authenticate(bootstrap: &SessionBootstrap, publication: &ContextPublication) -> Result<()> {
     bootstrap.validate()?;
-    if bootstrap.session_id != publication.session_id
-        || bootstrap.session_name != publication.session_name
-        || bootstrap.owner_token != publication.token
+    // Display labels are live metadata; authority remains the immutable session and token.
+    if bootstrap.session_id != publication.session_id || bootstrap.owner_token != publication.token
     {
         bail!("native context publication has foreign session authority");
     }
@@ -221,6 +220,10 @@ fn validate_snapshot(bootstrap: &SessionBootstrap, snapshot: &Snapshot) -> Resul
 }
 
 fn load(root: &Path, session: &str) -> Result<ContextPublication> {
+    load_with_runtime_name(root, session).map(|(_, publication)| publication)
+}
+
+fn load_with_runtime_name(root: &Path, session: &str) -> Result<(String, ContextPublication)> {
     validate_session_id(session)?;
     let directory = Directory::open(&root.join(session), false)?;
     let bootstrap: SessionBootstrap = directory.read("bootstrap.json")?;
@@ -230,7 +233,7 @@ fn load(root: &Path, session: &str) -> Result<ContextPublication> {
     let snapshot: Snapshot = directory.read("current.json")?;
     validate_snapshot(&bootstrap, &snapshot)?;
     directory.require_owner_lease(snapshot.publication.owner)?;
-    Ok(snapshot.publication)
+    Ok((bootstrap.session_name, snapshot.publication))
 }
 
 fn pane_context(
@@ -280,6 +283,67 @@ fn current_pane(publication: &ContextPublication, pane_id: &str) -> Result<PaneC
         .find(|pane| pane.pane_id == pane_id)
         .context("native context is unavailable: pane is no longer in the live session")?;
     Ok(pane_context(publication, pane))
+}
+
+/// Read-only same-user discovery. Every returned publication has passed bootstrap,
+/// server-birth and native-owner lease validation; credentials remain private here.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct LiveSession {
+    pub session_id: String,
+    pub session_name: String,
+    /// Stable attachment/recovery key; the live display label may change independently.
+    #[serde(rename = "session_key")]
+    pub runtime_name: String,
+    pub server: i32,
+    pub workspaces: Vec<bkpr::context_contract::ContextWorkspace>,
+    pub panes: Vec<bkpr::context_contract::ContextPane>,
+}
+
+pub(crate) fn live_sessions() -> Result<Vec<LiveSession>> {
+    let root = context_root()?;
+    let directory = match Directory::open(&root, false) {
+        Ok(directory) => directory,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error),
+    };
+    let mut sessions = Vec::new();
+    for entry in std::fs::read_dir(&root)? {
+        let entry = entry?;
+        let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Ok((runtime_name, publication)) = load_with_runtime_name(&root, &id) else {
+            continue;
+        };
+        sessions.push(LiveSession {
+            session_id: publication.session_id,
+            session_name: publication.session_name,
+            runtime_name,
+            server: publication.server,
+            workspaces: publication.workspaces,
+            panes: publication.panes,
+        });
+    }
+    drop(directory);
+    sessions.sort_by(|left, right| left.session_name.cmp(&right.session_name));
+    Ok(sessions)
+}
+
+pub(crate) fn resolve_session(selector: &str) -> Result<Option<LiveSession>> {
+    let mut matches = live_sessions()?
+        .into_iter()
+        .filter(|session| session.session_id == selector || session.runtime_name == selector);
+    let selected = matches.next();
+    if matches.next().is_some() {
+        bail!("ambiguous session selector; use the canonical session_id");
+    }
+    Ok(selected)
 }
 
 /// One scan per broker operation. Invalid/dead sessions contribute no attached
@@ -399,11 +463,18 @@ impl Directory {
             return Err(std::io::Error::last_os_error().into());
         }
         let file = unsafe { File::from_raw_fd(fd) };
+        #[cfg(test)]
+        test_support::after_file_open(name.as_bytes(), &file)?;
         let metadata = file.metadata()?;
+        // Atomic publication may unlink an already-open read-only snapshot.
+        // Its complete private inode is still safe to validate and read.
+        // Writable lease/lock handles must remain linked authority, and no
+        // context file may have additional hard-link aliases.
         if !metadata.is_file()
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.mode() & 0o077 != 0
-            || metadata.nlink() != 1
+            || metadata.nlink() > 1
+            || (metadata.nlink() == 0 && flags & libc::O_ACCMODE != libc::O_RDONLY)
         {
             bail!("unsafe native context file type, ownership, permissions, or hard links");
         }
@@ -601,8 +672,29 @@ pub(crate) mod test_support {
     use std::cell::RefCell;
     use std::os::unix::fs::PermissionsExt;
 
+    type AfterFileOpen = (&'static str, Box<dyn FnOnce(&File) -> Result<()>>);
+
     thread_local! {
         pub(super) static ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+        pub(super) static AFTER_FILE_OPEN: RefCell<Option<AfterFileOpen>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn after_file_open(name: &[u8], file: &File) -> Result<()> {
+        let hook = AFTER_FILE_OPEN.with(|hook| {
+            let mut hook = hook.borrow_mut();
+            if hook
+                .as_ref()
+                .is_some_and(|(target, _)| target.as_bytes() == name)
+            {
+                hook.take().map(|(_, callback)| callback)
+            } else {
+                None
+            }
+        });
+        if let Some(hook) = hook {
+            hook(file)?;
+        }
+        Ok(())
     }
 
     pub(crate) struct Guard(Option<PathBuf>);
@@ -723,6 +815,72 @@ mod tests {
     }
 
     #[test]
+    fn atomic_publication_after_reader_open_preserves_authenticated_membership() -> Result<()> {
+        let session = std::sync::Arc::new(Session::new("Work")?);
+        session.publish(1, vec![workspace("a", "A")], vec![pane("a", Some("agent"))])?;
+        let publisher = session.clone();
+        test_support::AFTER_FILE_OPEN.with(|hook| {
+            *hook.borrow_mut() = Some((
+                "current.json",
+                Box::new(move |opened| {
+                    publisher.publish(
+                        2,
+                        vec![workspace("a", "Updated")],
+                        vec![pane("a", Some("agent"))],
+                    )?;
+                    // This is the real rename boundary: openat retained a complete
+                    // old snapshot, but its directory entry was atomically replaced
+                    // before Directory::file could inspect the opened inode.
+                    assert_eq!(opened.metadata()?.nlink(), 0);
+                    Ok(())
+                }),
+            ));
+        });
+        let contexts = agent_contexts_at(session.root())?;
+        assert!(test_support::AFTER_FILE_OPEN.with(|hook| hook.borrow().is_none()));
+        assert_eq!(
+            contexts
+                .get("agent")
+                .map(|context| context.session_id.as_str()),
+            Some(session.session_id()),
+            "atomic publication must not transiently detach a live authenticated agent"
+        );
+        let latest = load(session.root(), session.session_id())?;
+        assert_eq!(latest.sequence, 2);
+        assert_eq!(latest.workspaces[0].name, "Updated");
+        Ok(())
+    }
+
+    #[test]
+    fn unlinked_open_owner_lease_and_publish_lock_remain_invalid() -> Result<()> {
+        for name in ["owner-1.lock", "publish.lock"] {
+            let session = std::sync::Arc::new(Session::new("Work")?);
+            session.publish(1, vec![workspace("a", "A")], vec![pane("a", Some("agent"))])?;
+            let directory_path = session.root().join(session.session_id());
+            let lock_path = directory_path.join(name);
+            test_support::AFTER_FILE_OPEN.with(|hook| {
+                *hook.borrow_mut() = Some((
+                    name,
+                    Box::new(move |opened| {
+                        std::fs::remove_file(&lock_path)?;
+                        assert_eq!(opened.metadata()?.nlink(), 0);
+                        Ok(())
+                    }),
+                ));
+            });
+            if name == "owner-1.lock" {
+                assert!(load(session.root(), session.session_id()).is_err());
+                assert!(agent_contexts_at(session.root())?.is_empty());
+            } else {
+                let directory = Directory::open(&directory_path, false)?;
+                assert!(directory.lock().is_err());
+            }
+            assert!(test_support::AFTER_FILE_OPEN.with(|hook| hook.borrow().is_none()));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn latest_projection_moves_renames_and_closes_actual_panes() -> Result<()> {
         let session = Session::new("Work")?;
         let _guard = session.guard();
@@ -753,6 +911,37 @@ mod tests {
     }
 
     #[test]
+    fn live_session_rename_keeps_authority_and_attachment_key() -> Result<()> {
+        let session = Session::new("Work")?;
+        let _guard = session.guard();
+        session.publish(1, vec![workspace("a", "A")], vec![pane("a", Some("agent"))])?;
+        let mut renamed = load(session.root(), session.session_id())?;
+        renamed.sequence = 2;
+        renamed.session_name = "Review".into();
+        publish_at(session.root(), &serde_json::to_string(&renamed)?)?;
+
+        let context = current_at(session.root(), session.session_id(), "terminal_3")?;
+        assert_eq!(context.session_id, session.session_id());
+        assert_eq!(context.session_name, "Review");
+        let live = live_sessions()?.pop().unwrap();
+        assert_eq!(live.runtime_name, "Work");
+        assert_eq!(live.session_name, "Review");
+        assert!(resolve_session("Review")?.is_none());
+        assert_eq!(
+            resolve_session("Work")?.unwrap().session_id,
+            session.session_id()
+        );
+        let json = serde_json::to_value(live)?;
+        assert_eq!(json["session_key"], "Work");
+        assert!(json.get("owner_token").is_none());
+        assert!(
+            SessionBootstrap::prepare(session._runtime.path(), "Work", true)?.unwrap()
+                == session.bootstrap
+        );
+        Ok(())
+    }
+
+    #[test]
     fn invalid_foreign_partial_and_reordered_frames_preserve_committed_state() -> Result<()> {
         let session = Session::new("Work")?;
         session.publish(
@@ -771,7 +960,7 @@ mod tests {
         assert!(publish_at(session.root(), &serde_json::to_string(&bad)?).is_err());
         bad = original.clone();
         bad.sequence = 9;
-        bad.session_name = "Foreign".into();
+        bad.session_id = "f".repeat(48);
         assert!(publish_at(session.root(), &serde_json::to_string(&bad)?).is_err());
         assert!(publish_at(session.root(), "{\"session_id\":").is_err());
         assert!(session.publish(8, vec![], vec![]).is_err());

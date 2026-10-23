@@ -12,6 +12,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 const MAX_CALLBACK_BYTES: u64 = 1024 * 1024;
 
@@ -63,6 +64,8 @@ pub fn launch(directory: Option<&Path>, mut arguments: Vec<OsString>) -> Result<
         let config = relay_config(&runtime, &env::current_exe()?)?;
         relay.apply(&mut command);
         supplement_relay(&mut arguments, &config)?;
+        let plugin = control_plugin(&runtime)?;
+        supplement_plugin(&mut arguments, &plugin)?;
     }
     Err(command.args(arguments).exec()).context("execute Claude")
 }
@@ -119,7 +122,7 @@ fn argument_plan(arguments: &[OsString]) -> Option<ArgumentPlan> {
                 index = end - 1;
             }
             "--model" | "--name" | "-n" | "--settings" | "--setting-sources"
-            | "--permission-mode" | "--session-id" | "--effort" => {
+            | "--permission-mode" | "--session-id" | "--effort" | "--plugin-dir" => {
                 let value_index = if value.is_some() { index } else { index + 1 };
                 arguments.get(value_index)?;
                 if option == "--settings" {
@@ -290,6 +293,116 @@ fn supplement_relay(arguments: &mut Vec<OsString>, config_file: &Path) -> Result
         );
     }
     Ok(())
+}
+
+fn supplement_plugin(arguments: &mut Vec<OsString>, plugin: &Path) -> Result<()> {
+    let plan = argument_plan(arguments).context("unsupported Claude plugin arguments")?;
+    arguments.splice(
+        plan.insert_at..plan.insert_at,
+        [
+            OsString::from("--plugin-dir"),
+            plugin.as_os_str().to_os_string(),
+        ],
+    );
+    Ok(())
+}
+
+fn control_plugin(runtime: &Path) -> Result<PathBuf> {
+    let manifest = serde_json::to_vec(&json!({
+        "name":"bkpr-control",
+        "version":env!("CARGO_PKG_VERSION"),
+        "description":"Launch-local Bkpr terminal control guidance"
+    }))?;
+    let files = [
+        (".claude-plugin/plugin.json", manifest.as_slice()),
+        (
+            "skills/bkpr-control/SKILL.md",
+            crate::relay::CONTROL_SKILL.as_bytes(),
+        ),
+        (
+            "skills/bkpr-control/references/control.md",
+            crate::relay::CONTROL_REFERENCE.as_bytes(),
+        ),
+    ];
+    let mut digest = Sha256::new();
+    for (name, bytes) in files {
+        digest.update(name.as_bytes());
+        digest.update(bytes);
+    }
+    use std::fmt::Write as _;
+    let mut name = String::with_capacity("claude-control-".len() + 64);
+    name.push_str("claude-control-");
+    for byte in digest.finalize() {
+        write!(&mut name, "{byte:02x}").expect("writing a digest into a String");
+    }
+    let path = runtime.join(name);
+    if !path.try_exists()? {
+        // An immutable session/cache asset, not a launch credential. Publish it
+        // atomically and retain it while any exec'd Claude may reference it.
+        let staging = tempfile::Builder::new()
+            .prefix(".claude-control-")
+            .tempdir_in(runtime)?;
+        fs::set_permissions(staging.path(), fs::Permissions::from_mode(0o700))?;
+        for directory in [
+            ".claude-plugin",
+            "skills",
+            "skills/bkpr-control",
+            "skills/bkpr-control/references",
+        ] {
+            let directory = staging.path().join(directory);
+            fs::create_dir(&directory)?;
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+        }
+        for (name, bytes) in files {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(staging.path().join(name))?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+        }
+        if let Err(error) = fs::rename(staging.path(), &path)
+            && !path.try_exists()?
+        {
+            return Err(error).context("publish Claude control plugin");
+        }
+    }
+    for directory in [
+        "",
+        ".claude-plugin",
+        "skills",
+        "skills/bkpr-control",
+        "skills/bkpr-control/references",
+    ] {
+        let metadata = fs::symlink_metadata(path.join(directory))?;
+        if !metadata.is_dir()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+        {
+            bail!("unsafe Claude control plugin directory");
+        }
+    }
+    for (name, bytes) in files {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path.join(name))?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+            || metadata.len() != bytes.len() as u64
+        {
+            bail!("unsafe Claude control plugin file");
+        }
+        let mut contents = Vec::with_capacity(bytes.len());
+        file.read_to_end(&mut contents)?;
+        if contents != bytes {
+            bail!("Claude control plugin asset was modified");
+        }
+    }
+    Ok(path)
 }
 
 fn compose(settings: &mut Value, quoted_program: &str) -> Result<()> {
@@ -564,6 +677,63 @@ fn prompt_label(value: &Value) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_plugin_preserves_user_plugins_and_literal_argument_boundary() {
+        let mut arguments = vec![
+            "--plugin-dir".into(),
+            "/user/plugin-a".into(),
+            "--plugin-dir=/user/plugin-b".into(),
+            "--settings".into(),
+            "/user/settings.json".into(),
+            "--mcp-config".into(),
+            "/user/mcp.json".into(),
+            "--".into(),
+            "--plugin-dir=literal prompt".into(),
+        ];
+        supplement_relay(&mut arguments, Path::new("/bkpr/mcp.json")).unwrap();
+        supplement_plugin(&mut arguments, Path::new("/bkpr/plugin")).unwrap();
+        let expected: Vec<OsString> = vec![
+            "--plugin-dir",
+            "/user/plugin-a",
+            "--plugin-dir=/user/plugin-b",
+            "--settings",
+            "/user/settings.json",
+            "--mcp-config",
+            "/user/mcp.json",
+            "/bkpr/mcp.json",
+            "--plugin-dir",
+            "/bkpr/plugin",
+            "--",
+            "--plugin-dir=literal prompt",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+        assert_eq!(arguments, expected);
+        assert!(argument_plan(&["--plugin-dir".into()]).is_none());
+    }
+
+    #[test]
+    fn shared_control_plugin_reuses_immutable_assets_and_rejects_tampering() {
+        let runtime = tempfile::tempdir().unwrap();
+        let path = control_plugin(runtime.path()).unwrap();
+        assert_eq!(control_plugin(runtime.path()).unwrap(), path);
+        let skill = path.join("skills/bkpr-control/SKILL.md");
+        fs::write(&skill, "modified").unwrap();
+        assert!(control_plugin(runtime.path()).is_err());
+    }
+
+    #[test]
+    fn shared_control_plugin_rejects_symlinked_files() {
+        let runtime = tempfile::tempdir().unwrap();
+        let path = control_plugin(runtime.path()).unwrap();
+        let manifest = path.join(".claude-plugin/plugin.json");
+        let other = runtime.path().join("other.json");
+        fs::rename(&manifest, &other).unwrap();
+        std::os::unix::fs::symlink(other, manifest).unwrap();
+        assert!(control_plugin(runtime.path()).is_err());
+    }
 
     #[test]
     fn private_mcp_config_detects_tampering() {

@@ -4,6 +4,7 @@ mod ci;
 mod claude;
 mod codex;
 mod context;
+mod control;
 mod harness;
 mod launcher;
 mod omp;
@@ -18,7 +19,6 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-use bkpr::MAX_MESSAGE_BYTES;
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
@@ -28,8 +28,8 @@ use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand}
     version,
     disable_help_subcommand = true,
     override_usage = "bkpr [OPTIONS] [COMMAND]",
-    about = "Persistent local Zellij workspaces with an agent-aware sidebar",
-    after_help = "Examples:\n  bkpr                         Open or attach to the default local session\n  bkpr --session work          Open or attach to a named local session\n  bkpr resume --session work   Rebuild a closed session from its recovery record\n  bkpr --sidebar-width 44      Set the sidebar width\n\nSessions use native Zellij terminals.\nAutomatic Git branch, diff and CI reporting is available on Linux."
+    about = "Persistent native terminal workspaces, agent communication and session control",
+    after_help = "Examples:\n  bkpr                                      Open or attach to the default session\n  bkpr --session work                       Open or attach to a named session\n  bkpr resume --session work                Restore a stopped session\n  bkpr session list --json                  Discover live managed sessions\n  bkpr pane list --json                     Inspect this workspace's terminals\n  bkpr pane resize --change increase        Enlarge this terminal\n  bkpr agent launch --harness codex         Launch Codex in a new pane\n  bkpr api help --operation pane.move       Explain one control operation\n  bkpr skill show                           Read the bundled agent workflow\n\nRun COMMAND --help for targets, options and examples.\nControl commands leave focus unchanged unless explicitly requested.\nSessions use native Zellij terminals. Git and CI reporting is available on Linux."
 )]
 struct Cli {
     #[command(flatten)]
@@ -69,12 +69,9 @@ enum Commands {
         #[command(subcommand)]
         command: BridgeCommands,
     },
-    /// Inspect currently live foreground agent processes.
-    #[command(hide = true)]
-    Agent {
-        #[command(subcommand)]
-        command: AgentCommands,
-    },
+    /// Control sessions, workspaces, terminals, layouts and agents.
+    #[command(flatten)]
+    Control(control::Commands),
     /// Discover a local directory's project name.
     #[command(hide = true)]
     Project {
@@ -183,14 +180,6 @@ enum BridgeCommands {
     },
     /// Read a retained message explicitly as the local operator.
     Show { message_id: String },
-}
-
-#[derive(Debug, Subcommand)]
-enum AgentCommands {
-    Inspect {
-        #[arg(long)]
-        json: String,
-    },
 }
 
 fn main() {
@@ -311,19 +300,19 @@ fn run() -> Result<()> {
         Some(Commands::RelayBindSession { session_id }) => relay::bind_session(&session_id),
         Some(Commands::RelayDaemon { socket }) => relay::daemon(&socket),
         Some(Commands::AgentRelayDaemon { runtime }) => agent_relay::daemon(&runtime),
-        Some(Commands::Agent { command }) => match command {
-            AgentCommands::Inspect { json } => {
-                let response = serde_json::to_vec(&agent::inspect(&json)?)?;
-                if response.len() > MAX_MESSAGE_BYTES {
-                    bail!("agent inspect response exceeds {MAX_MESSAGE_BYTES} bytes");
-                }
-                let mut stdout = io::stdout().lock();
-                stdout.write_all(&response)?;
-                writeln!(stdout)?;
-                stdout.flush()?;
-                Ok(())
+        Some(Commands::Control(command)) => {
+            let invalid: Vec<_> = top_level_launch_options(&matches)
+                .into_iter()
+                .filter(|option| !matches!(option.as_str(), "--session" | "--zellij"))
+                .collect();
+            if !invalid.is_empty() {
+                bail!(
+                    "{} only applies when opening or attaching to a session",
+                    invalid.join(", ")
+                );
             }
-        },
+            control::run(command, cli.launch)
+        }
         Some(Commands::Project { cwd }) => {
             let project = project::discover(&cwd)?;
             let mut stdout = io::stdout().lock();
