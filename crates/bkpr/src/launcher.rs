@@ -1,15 +1,16 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::{BufRead, IsTerminal, Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use bkpr::recovery_contract::{RecoveryRecord, RestoreLeaf, recovery_layout};
 use clap::Args;
+use serde::{Deserialize, Serialize};
 
 use crate::recovery::{self, PaneLaunch};
 use crate::relay::RecoveryAgents;
@@ -263,6 +264,129 @@ fn restore_layout(
     })
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ControlAssets {
+    version: u32,
+    session_id: String,
+    plugin_url: String,
+    configuration: BTreeMap<String, String>,
+    sidebar_percent: u8,
+}
+
+fn control_runtime(session: &str) -> Result<PathBuf> {
+    validate_session(session)?;
+    let identity = hash_identity(&format!("native-local\0{session}"));
+    Ok(runtime_root()?.join(format!("native-{identity:016x}")))
+}
+
+pub(crate) fn control_command(session: &str, native: Option<&Path>) -> Result<Command> {
+    let program = env::current_exe().context("locate native bkpr command")?;
+    let requested = native
+        .map(Path::to_path_buf)
+        .or_else(|| env::var_os("BKPR_ZELLIJ").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("zellij"));
+    let native = resolve_native(&program, &requested)?;
+    let runtime = control_runtime(session)?;
+    let identity = hash_identity(&format!("native-local\0{session}"));
+    let config = runtime.join("zellij");
+    let mut command = zellij_command(&native, &config, &zellij_socket_dir()?);
+    command
+        .arg("--config")
+        .arg(config.join("config.kdl"))
+        .arg("--session")
+        .arg(format!("bkpr-native-{identity:016x}"));
+    for name in [
+        "BKPR_RELAY_AGENT_ID",
+        "BKPR_RELAY_TOKEN",
+        "BKPR_RELAY_SOCKET",
+        "BKPR_RELAY_HARNESS",
+    ] {
+        command.env_remove(name);
+    }
+    Ok(command)
+}
+
+pub(crate) fn control_stop_command(session: &str, native: Option<&Path>) -> Result<Command> {
+    let mut command = control_command(session, native)?;
+    let identity = hash_identity(&format!("native-local\0{session}"));
+    command
+        .arg("kill-session")
+        .arg(format!("bkpr-native-{identity:016x}"));
+    Ok(command)
+}
+
+pub(crate) fn control_workspace_layout(
+    session: &str,
+    label: &str,
+    cwd: &str,
+    workspace_id: Option<&str>,
+) -> Result<String> {
+    let assets = control_assets(session)?;
+    bkpr::native_layout(
+        &assets.plugin_url,
+        &assets.configuration,
+        label,
+        cwd,
+        assets.sidebar_percent,
+        workspace_id.map(|id| (id, label)),
+    )
+    .context("build managed workspace layout")
+}
+
+pub(crate) fn control_plugin_url(session: &str) -> Result<String> {
+    Ok(control_assets(session)?.plugin_url)
+}
+
+fn control_assets(session: &str) -> Result<ControlAssets> {
+    let runtime = control_runtime(session)?;
+    let path = runtime.join("control-assets.json");
+    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+        .context("managed control assets are unavailable; this operation requires a session started by this Bkpr build")?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+        || metadata.len() > MAX_CONTROL_ASSET_BYTES
+    {
+        bail!("invalid private native control assets");
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_CONTROL_ASSET_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CONTROL_ASSET_BYTES {
+        bail!("native control assets exceed size limit");
+    }
+    let assets: ControlAssets =
+        serde_json::from_slice(&bytes).context("decode native control assets")?;
+    let bootstrap = crate::context::SessionBootstrap::prepare(&runtime, session, true)?
+        .context("native control requires a managed session identity")?;
+    if assets.version != 1
+        || assets.session_id != bootstrap.session_id
+        || assets.configuration.get("session_id") != Some(&bootstrap.session_id)
+        || assets.configuration.get("role").map(String::as_str) != Some("sidebar")
+        || !assets.plugin_url.starts_with("file:")
+        || assets.configuration.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "role"
+                    | "session"
+                    | "session_id"
+                    | "program"
+                    | "plugin_url"
+                    | "initial_cwd"
+                    | "sidebar_width"
+            )
+        })
+    {
+        bail!("native control assets do not match this managed session");
+    }
+    Ok(assets)
+}
+
+const MAX_CONTROL_ASSET_BYTES: u64 = 64 * 1024;
+
 pub fn run(options: Options) -> Result<()> {
     launch(options, Intent::Open)
 }
@@ -284,17 +408,19 @@ pub fn run_resume(options: Options) -> Result<()> {
 
 fn launch(options: Options, intent: Intent) -> Result<()> {
     let program = env::current_exe().context("locate native bkpr command")?;
-    let bundled_zellij = program.with_file_name("zellij");
-    let zellij = if options.zellij == Path::new("zellij")
-        && env::var_os("BKPR_ZELLIJ").is_none()
-        && bundled_zellij.is_file()
-    {
-        executable(&bundled_zellij)?
-    } else {
-        executable(&options.zellij)?
-    };
+    let zellij = resolve_native(&program, &options.zellij)?;
     check_zellij(&zellij)?;
     run_native(&options, intent, &program, &zellij)
+}
+
+fn resolve_native(program: &Path, requested: &Path) -> Result<PathBuf> {
+    let bundled = program.with_file_name("zellij");
+    if requested == Path::new("zellij") && env::var_os("BKPR_ZELLIJ").is_none() && bundled.is_file()
+    {
+        executable(&bundled)
+    } else {
+        executable(requested)
+    }
 }
 
 fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) -> Result<()> {
@@ -350,8 +476,9 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
             .as_ref()
             .context("fresh native session has no context bootstrap")?;
         let plugin = plugin_path(options.plugin.clone(), program)?;
+        let columns = terminal_columns()?;
         let sidebar_percent =
-            bkpr::native_sidebar_percent(usize::from(options.sidebar_width), terminal_columns()?)
+            bkpr::native_sidebar_percent(usize::from(options.sidebar_width), columns)
                 .context("terminal needs at least two columns for a sidebar and terminal pane")?;
         let bin = runtime.join("bin");
         private_directory(&bin)?;
@@ -445,6 +572,17 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
         config.push_str(" }\n}\n");
         private_file(&config_path, config.as_bytes())?;
         private_file(&layout_path, layout.as_bytes())?;
+        let assets = ControlAssets {
+            version: 1,
+            session_id: session_context.session_id.clone(),
+            plugin_url,
+            configuration,
+            sidebar_percent,
+        };
+        private_file(
+            &runtime.join("control-assets.json"),
+            &serde_json::to_vec(&assets)?,
+        )?;
     }
     let agent_lease = crate::agent_relay::acquire_locked(program, &runtime, agent_source)?;
     let mut client = zellij_command(zellij, &config_dir, &socket_dir);
@@ -460,6 +598,10 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
         "BKPR_PANE_ID",
         "BKPR_CONTEXT_OWNER",
         "BKPR_NATIVE_CONTEXT",
+        "BKPR_RELAY_AGENT_ID",
+        "BKPR_RELAY_TOKEN",
+        "BKPR_RELAY_SOCKET",
+        "BKPR_RELAY_HARNESS",
     ] {
         client.env_remove(name);
     }
@@ -514,11 +656,12 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
     }
     let mut child = client.spawn().context("launch native Zellij client")?;
     if !existing {
-        // Keep the bootstrap and startup configuration paired until this server
-        // is observable. A concurrent first attachment must reuse this identity.
+        // Keep bootstrap/config paired until the owned native socket exists.
+        // This passive marker is NOT initialized-server or control readiness:
+        // querying ConnStatus here can race baseline SessionData initialization.
         let ready = (|| -> Result<()> {
             while child.try_wait()?.is_none() {
-                if session_exists(zellij, &config_dir, &socket_dir, &zellij_session)? {
+                if startup_socket_observed(&socket_dir, &zellij_session)? {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(25));
@@ -541,6 +684,21 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
         bail!("Zellij exited with {status}");
     }
     Ok(())
+}
+
+fn startup_socket_observed(socket_dir: &Path, session: &str) -> Result<bool> {
+    // Pinned native runtime's existing client/server contract directory.
+    let socket = socket_dir.join("contract_version_1").join(session);
+    match fs::symlink_metadata(&socket) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_socket() || metadata.uid() != unsafe { libc::geteuid() } {
+                bail!("native startup endpoint is not an owned socket");
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).context("observe native startup socket without connecting"),
+    }
 }
 
 fn terminal_columns() -> Result<usize> {
@@ -758,6 +916,29 @@ keybinds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_startup_gate_observes_owned_socket_without_connecting() {
+        let root = tempfile::tempdir().unwrap();
+        let contract = root.path().join("contract_version_1");
+        fs::create_dir(&contract).unwrap();
+        assert!(!startup_socket_observed(root.path(), "fixture").unwrap());
+        let path = contract.join("fixture");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        assert!(startup_socket_observed(root.path(), "fixture").unwrap());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        drop(listener);
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"not a socket").unwrap();
+        assert!(startup_socket_observed(root.path(), "fixture").is_err());
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(contract.join("absent"), &path).unwrap();
+        assert!(startup_socket_observed(root.path(), "fixture").is_err());
+    }
 
     #[test]
     fn detach_others_is_opt_in_and_has_a_short_option() {

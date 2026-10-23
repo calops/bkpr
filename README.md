@@ -84,6 +84,49 @@ These are process-launch snapshots, not mutable shell variables. After moving a 
 
 Existing servers and processes cannot acquire this launch contract retroactively. They remain attachable, but the new context features require a fresh Bkpr session. Live lookup requires the normal Bkpr plugin permission grant and fails closed when its native owner is unavailable.
 
+## Control and automation
+
+The CLI and MCP use the same typed control dispatcher. Start with `bkpr --help`, a command group's `--help`, or `bkpr api help`; `bkpr api schema --operation pane.create` gives an operation's exact JSON arguments. Control commands support `--json` for machine-readable output.
+
+| Command group | Capabilities |
+| --- | --- |
+| `session` | Discover, inspect, save and stop |
+| `client` | Inspect attached clients; explicitly focus, set mode or detach one client |
+| `workspace`, `tab` | Create, inspect, rename and close; reorder tabs, control synchronized input and floating visibility |
+| `pane` | Create/split, inspect, rename, resize, move directionally within a tab, pin, set borders and close |
+| `pane read`, `pane scroll`, `pane clear` | Read viewport/full retained scrollback or a bottom-relative range; scroll and clear an exact terminal |
+| `layout` | Export and cycle native swap layouts |
+| `agent`, `message` | Discover launches/readiness, launch supported harnesses, set collaboration titles and use authenticated inbox/outbox messaging |
+| `terminal-input` | Explicit literal text, bracketed paste, named keys or raw bytes; submission is opt-in |
+| `skill`, `completion` | Show/export the bundled control skill and generate shell completions |
+
+For example, inside a Bkpr pane:
+
+```sh
+bkpr session list --json
+bkpr workspace list --session-scope --json
+bkpr pane split --pane terminal_3 --direction right -- /bin/sh
+bkpr pane resize --pane terminal_3 --change increase --direction left
+bkpr agent launch --harness codex --new-workspace --name review
+bkpr pane read --pane terminal_3 --full
+bkpr pane read --pane terminal_3 --tail 100 --offset 50
+bkpr api schema --operation input.text
+```
+
+Replace example pane IDs with identities returned by inspection. Defaults come from the caller's live pane/workspace, not a human client's focus. Outside Bkpr, select `--session SESSION_KEY_OR_ID` explicitly. `session.list` returns the immutable `session_key` and canonical `session_id`; display labels are not selectors.
+
+Creation does not take focus. Client-view changes require an unambiguous client; floating geometry and visibility are shared native tab state. Executable arguments follow `--` and are not shell-interpolated; with `--harness`, they are that harness's arguments instead. Harness recognition, process creation, relay registration and notification readiness are separate observations.
+
+Terminal input can act as the terminal user; it is not a fallback for peer messaging or a way to steer an active agent turn. Receipts distinguish completed, dispatched, failed and unknown outcomes. PTY acceptance does not prove application consumption. Never blindly retry an unknown creation, mutation or input operation.
+
+Pane reads show the viewport by default. `--full` reads all scrollback Zellij still retains; raw CLI output streams without a fixed message-size cap. `--tail N` reads the newest N lines of that retained content; `--offset M` first skips the newest M lines and can also be used alone to read everything older. Blank lines count, zero/past-end ranges are empty, and lines follow the native text dump. `--ansi` preserves native styling sequences. The MCP operation `pane.read` takes the same `full`, `tail`, `offset` and `ansi` arguments; oversized encoded MCP results fail explicitly instead of being truncated, so request a smaller range.
+
+Control reuses the pinned runtime's existing CLI and plugin APIs; no new Zellij control protocol or fork update is required. SDK-only operations need the matching Bkpr plugin and normal permission grants. Existing sessions remain attachable; a session running an older plugin may need a fresh session for the new plugin endpoint. Client-specific focus rejects floating/fullscreen cases and a target tab currently viewed by another client, because baseline stack/floating behavior can change shared focus. Focus into an unshared target tab remains available. Paste plus submission uses two ordered native actions, not an atomic transaction.
+
+Headless session creation, live session-label rename, arbitrary pairwise pane swaps, inactive-tab layout application and live pane watching are deferred in [TODO.md](TODO.md), along with the associated native bugs. Cross-tab/workspace movement, float/embed transitions and target-pane fullscreen are also deferred because of baseline SDK targeting/focus limitations. Floating creation, geometry and safe pin/border controls remain available. Deferred features are not exposed as placeholder commands.
+
+`bkpr skill show` prints the bundled skill; `bkpr skill export PATH` explicitly writes its `SKILL.md` and reference files without overwriting existing files. No persistent harness profile is changed. Supported interactive Claude launches load it through a private launch-local plugin, and Omp loads it alongside its temporary extension. Codex uses MCP initialization instructions and read-only resources instead; automatic Codex skill installation is not claimed.
+
 ## Workspaces and navigation
 
 Every fresh launch, attachment and recovered session starts that client in Zellij's **Locked** mode, so terminal shortcuts go to the application. Reattaching does not restore an earlier unlocked mode or change another attached client's mode. Press **Ctrl+Space** to focus the sidebar, or **Ctrl+g** to unlock stock Zellij controls. The rounded shortcut guide follows the current mode and effective keybindings: it stays inside the sidebar when all keys and descriptions fit without wrapping, and otherwise expands into the pane area. A widened sidebar guide stays adjacent to the sidebar instead of moving to the far-right edge. Its border becomes bold terminal-yellow whenever unlocked, including native submodes, and returns to subdued styling when Locked.
@@ -234,7 +277,9 @@ Antigravity is recognition-only. Bkpr doesn't wrap `agy`/`antigravity`, install 
 
 ### Agent communication (experimental)
 
-Fresh Bkpr sessions supply launch-local wrappers for `claude`, `omp` and `codex`. Each supported interactive launch receives its own authenticated agent ID and a Bkpr MCP server without changing user-level harness settings. Messages go through a relay broker, a shared background process that starts on demand and keeps running after the session that started it closes; finding it still running after every session has closed is expected. Tools: `whoami`, `discover_agents`, `send_message`, `read_inbox`, `ack_message`, `inspect_outbox` and `set_title`.
+Fresh Bkpr sessions supply launch-local wrappers for `claude`, `omp` and `codex`. Each supported interactive launch receives its own authenticated agent ID and a Bkpr MCP server without changing user-level harness settings. Messages go through a relay broker, a shared background process that starts on demand and keeps running after the session that started it closes; finding it still running after every session has closed is expected. The seven messaging tools remain `whoami`, `discover_agents`, `send_message`, `read_inbox`, `ack_message`, `inspect_outbox` and `set_title`.
+
+Two additional tools expose control without adding a tool for every operation: `control` handles inspection, lifecycle, layout, geometry and process execution; `terminal_input` handles only explicit `input.*` operations. Both accept `{"operation":"...","arguments":{...}}`. Start with `control` operation `api.help`, then `api.schema` for the chosen operation. The read-only resources `bkpr://control/skill` and `bkpr://control/reference` provide the bundled guidance; resource exposure does not guarantee a host will load it automatically. Normal tool approvals remain in effect.
 
 Discovery returns peers only, excluding the caller. Its default `scope: "workspace"` uses current native Bkpr workspace membership, not CWD or Git grouping. `scope: "session"` includes other workspaces in the same Bkpr session; `"repository"` explicitly uses the canonical Git worktree or canonical launch directory outside Git; `"all"` includes other active launches. Unknown workspace/session context is an error, never a fallback to repository scope.
 
