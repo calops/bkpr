@@ -2,7 +2,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{self, IsTerminal, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
@@ -47,6 +47,168 @@ fn check_arguments(arguments: &[OsString]) -> Result<()> {
     Ok(())
 }
 
+fn skill_arguments(arguments: &[OsString]) -> bool {
+    let mut index = 0;
+    let mut first_positional = true;
+    while index < arguments.len() {
+        let Some(argument) = arguments[index].to_str() else {
+            return false;
+        };
+        if argument == "--" {
+            return true;
+        }
+        let (option, inline) = argument
+            .split_once('=')
+            .map_or((argument, false), |(option, _)| (option, true));
+        match option {
+            "--print" | "-p" | "--mode" | "--help" | "-h" | "--version" | "-v" | "--export"
+            | "--alias" => return false,
+            "--cwd"
+            | "--add-dir"
+            | "--profile"
+            | "--config"
+            | "--session-dir"
+            | "--fork"
+            | "--model"
+            | "--smol"
+            | "--slow"
+            | "--plan"
+            | "--models"
+            | "--provider"
+            | "--api-key"
+            | "--provider-session-id"
+            | "--prompt-cache-key"
+            | "--service-tier"
+            | "--thinking"
+            | "--prewalk-into"
+            | "--plan-yolo-into"
+            | "--goal"
+            | "--tools"
+            | "--approval-mode"
+            | "--max-time"
+            | "--extension"
+            | "-e"
+            | "--hook"
+            | "--plugin-dir"
+            | "--skills"
+            | "--system-prompt"
+            | "--system-prompt-template"
+            | "--append-system-prompt" => {
+                if !inline {
+                    index += 1;
+                    if index >= arguments.len() {
+                        return false;
+                    }
+                }
+            }
+            "--resume" | "-r" | "--session" | "--restore" => {
+                if !inline
+                    && arguments
+                        .get(index + 1)
+                        .is_some_and(|next| !next.to_string_lossy().starts_with('-'))
+                {
+                    index += 1;
+                }
+            }
+            "--continue"
+            | "-c"
+            | "--allow-home"
+            | "--no-session"
+            | "--from-claude"
+            | "--from-codex"
+            | "--no-title"
+            | "--hide-thinking"
+            | "--print-thoughts"
+            | "--external-thinking"
+            | "--prewalk"
+            | "--no-prewalk"
+            | "--plan-yolo"
+            | "--no-tools"
+            | "--no-lsp"
+            | "--no-pty"
+            | "--auto-approve"
+            | "--yolo"
+            | "--advisor"
+            | "--no-extensions"
+            | "--no-skills"
+            | "--no-rules"
+                if !inline => {}
+            _ if option.starts_with('-') => return false,
+            "launch" if first_positional => first_positional = false,
+            _ if first_positional => {
+                // A single known prompt position is safe; routing commands must
+                // not acquire a skill just because they run in a terminal.
+                if matches!(
+                    argument,
+                    "acp"
+                        | "auth-broker"
+                        | "auth-gateway"
+                        | "agents"
+                        | "bench"
+                        | "browser-relay"
+                        | "cleanse"
+                        | "collab"
+                        | "clip"
+                        | "commit"
+                        | "completions"
+                        | "compress"
+                        | "config"
+                        | "dry-balance"
+                        | "find"
+                        | "gc"
+                        | "grep"
+                        | "gallery"
+                        | "git"
+                        | "grievances"
+                        | "if-bench"
+                        | "images"
+                        | "img"
+                        | "install"
+                        | "join"
+                        | "login"
+                        | "models"
+                        | "plugin"
+                        | "plugins"
+                        | "play"
+                        | "predict"
+                        | "ps"
+                        | "say"
+                        | "share"
+                        | "setup"
+                        | "shell"
+                        | "read"
+                        | "render"
+                        | "skill"
+                        | "skills"
+                        | "ssh"
+                        | "stats"
+                        | "stream"
+                        | "update"
+                        | "usage"
+                        | "tiny-models"
+                        | "token"
+                        | "toks"
+                        | "ttsr"
+                        | "worktree"
+                        | "wt"
+                        | "search"
+                        | "q"
+                        | "web-search"
+                        | "marketplace"
+                        | "uninstall"
+                        | "extensions"
+                ) {
+                    return false;
+                }
+                first_positional = false;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    true
+}
+
 fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
     OpenOptions::new()
         .write(true)
@@ -63,6 +225,7 @@ fn extension_package(
     program: &Path,
     cwd: &Path,
     relay: &RelayLaunch,
+    include_skill: bool,
 ) -> Result<TempDir> {
     // Keep credentials in the session's private runtime, never in OMP config.
     let directory = tempfile::Builder::new()
@@ -102,6 +265,15 @@ fn extension_package(
         &directory.path().join("mcp.json"),
         &serde_json::to_vec(&config)?,
     )?;
+    if include_skill {
+        let skill = directory.path().join("skills/bkpr-control");
+        fs::create_dir_all(skill.join("references"))?;
+        write_private(&skill.join("SKILL.md"), relay::CONTROL_SKILL.as_bytes())?;
+        write_private(
+            &skill.join("references/control.md"),
+            relay::CONTROL_REFERENCE.as_bytes(),
+        )?;
+    }
     Ok(directory)
 }
 
@@ -118,7 +290,9 @@ pub fn launch(directory: Option<&Path>, arguments: Vec<OsString>) -> Result<()> 
             .to_path_buf(),
         None => crate::launcher::runtime_root()?,
     };
-    let package = extension_package(&runtime, &program, &cwd, &relay)?;
+    let include_skill =
+        io::stdin().is_terminal() && io::stdout().is_terminal() && skill_arguments(&arguments);
+    let package = extension_package(&runtime, &program, &cwd, &relay, include_skill)?;
     let mut command = Command::new(executable);
     relay.apply(&mut command);
     command
@@ -167,6 +341,33 @@ mod tests {
     }
 
     #[test]
+    fn skill_loading_respects_argument_values_and_interactive_routing() {
+        assert!(skill_arguments(&[]));
+        assert!(skill_arguments(&[
+            "--model".into(),
+            "--print".into(),
+            "prompt".into()
+        ]));
+        assert!(skill_arguments(&[
+            "--".into(),
+            "--mode".into(),
+            "models".into()
+        ]));
+        assert!(skill_arguments(&["launch".into(), "models".into()]));
+        assert!(!skill_arguments(&[
+            "--model".into(),
+            "opus".into(),
+            "models".into()
+        ]));
+        assert!(!skill_arguments(&["--mode=text".into(), "prompt".into()]));
+        assert!(!skill_arguments(&["-p".into(), "prompt".into()]));
+        assert!(!skill_arguments(&[
+            "--export".into(),
+            "conversation".into()
+        ]));
+    }
+
+    #[test]
     fn temporary_credentials_are_private_and_removed_after_launch() {
         let runtime = tempfile::tempdir().unwrap();
         let relay = RelayLaunch {
@@ -180,6 +381,7 @@ mod tests {
             Path::new("/opt/bkpr"),
             Path::new("/work"),
             &relay,
+            false,
         )
         .unwrap();
         let package_path = package.path().to_path_buf();

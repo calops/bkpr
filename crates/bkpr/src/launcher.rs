@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::{BufRead, IsTerminal, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -10,6 +10,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use bkpr::recovery_contract::{RecoveryRecord, RestoreLeaf, recovery_layout};
 use clap::Args;
+use serde::{Deserialize, Serialize};
 
 use crate::recovery::{self, PaneLaunch};
 use crate::relay::RecoveryAgents;
@@ -263,6 +264,136 @@ fn restore_layout(
     })
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ControlAssets {
+    version: u32,
+    session_id: String,
+    plugin_url: String,
+    configuration: BTreeMap<String, String>,
+    sidebar_percent: u8,
+}
+
+fn control_runtime(session: &str) -> Result<PathBuf> {
+    validate_session(session)?;
+    let identity = hash_identity(&format!("native-local\0{session}"));
+    Ok(runtime_root()?.join(format!("native-{identity:016x}")))
+}
+
+pub(crate) fn control_command(session: &str, native: Option<&Path>) -> Result<Command> {
+    let program = env::current_exe().context("locate native bkpr command")?;
+    let requested = native
+        .map(Path::to_path_buf)
+        .or_else(|| env::var_os("BKPR_ZELLIJ").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("zellij"));
+    let native = resolve_native(&program, &requested)?;
+    let runtime = control_runtime(session)?;
+    let identity = hash_identity(&format!("native-local\0{session}"));
+    let config = runtime.join("zellij");
+    let mut command = zellij_command(&native, &config, &zellij_socket_dir()?);
+    command
+        .arg("--config")
+        .arg(config.join("config.kdl"))
+        .arg("--session")
+        .arg(format!("bkpr-native-{identity:016x}"));
+    for name in [
+        "BKPR_RELAY_AGENT_ID",
+        "BKPR_RELAY_TOKEN",
+        "BKPR_RELAY_SOCKET",
+        "BKPR_RELAY_HARNESS",
+    ] {
+        command.env_remove(name);
+    }
+    Ok(command)
+}
+
+pub(crate) fn control_workspace_layout(
+    session: &str,
+    label: &str,
+    cwd: &str,
+    workspace_id: Option<&str>,
+) -> Result<String> {
+    let runtime = control_runtime(session)?;
+    let path = runtime.join("control-assets.json");
+    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+        .context("managed control assets are unavailable; this operation requires a session started by this Bkpr build")?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+        || metadata.len() > MAX_CONTROL_ASSET_BYTES
+    {
+        bail!("invalid private native control assets");
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_CONTROL_ASSET_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CONTROL_ASSET_BYTES {
+        bail!("native control assets exceed size limit");
+    }
+    let assets: ControlAssets =
+        serde_json::from_slice(&bytes).context("decode native control assets")?;
+    let bootstrap = crate::context::SessionBootstrap::prepare(&runtime, session, true)?
+        .context("native control requires a managed session identity")?;
+    if assets.version != 1
+        || assets.session_id != bootstrap.session_id
+        || assets.configuration.get("session_id") != Some(&bootstrap.session_id)
+        || assets.configuration.get("role").map(String::as_str) != Some("sidebar")
+        || !assets.plugin_url.starts_with("file:")
+        || assets.configuration.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "role"
+                    | "session"
+                    | "session_id"
+                    | "program"
+                    | "plugin_url"
+                    | "initial_cwd"
+                    | "sidebar_width"
+            )
+        })
+    {
+        bail!("native control assets do not match this managed session");
+    }
+    bkpr::native_layout(
+        &assets.plugin_url,
+        &assets.configuration,
+        label,
+        cwd,
+        assets.sidebar_percent,
+        workspace_id.map(|id| (id, label)),
+    )
+    .context("build managed workspace layout")
+}
+
+const MAX_CONTROL_ASSET_BYTES: u64 = 64 * 1024;
+
+/// Start a new session without creating a managed SSH-agent attachment.
+pub(crate) fn control_create(
+    options: Options,
+    cwd: Option<PathBuf>,
+) -> Result<bkpr::context_contract::SessionIdentity> {
+    if options.session.is_none() {
+        bail!("session create requires --session <name>");
+    }
+    if options.detach_others {
+        bail!("session create does not detach existing clients");
+    }
+    let cwd = cwd
+        .unwrap_or(env::current_dir()?)
+        .canonicalize()
+        .context("resolve new session working directory")?;
+    if !cwd.is_dir() {
+        bail!("new session working directory is not a directory");
+    }
+    let program = env::current_exe().context("locate native bkpr command")?;
+    let native = resolve_native(&program, &options.zellij)?;
+    check_zellij(&native)?;
+    run_native(&options, Intent::Open, &program, &native, Some(&cwd))?
+        .context("new background session did not return its reserved identity")
+}
+
 pub fn run(options: Options) -> Result<()> {
     launch(options, Intent::Open)
 }
@@ -284,23 +415,34 @@ pub fn run_resume(options: Options) -> Result<()> {
 
 fn launch(options: Options, intent: Intent) -> Result<()> {
     let program = env::current_exe().context("locate native bkpr command")?;
-    let bundled_zellij = program.with_file_name("zellij");
-    let zellij = if options.zellij == Path::new("zellij")
-        && env::var_os("BKPR_ZELLIJ").is_none()
-        && bundled_zellij.is_file()
-    {
-        executable(&bundled_zellij)?
-    } else {
-        executable(&options.zellij)?
-    };
+    let zellij = resolve_native(&program, &options.zellij)?;
     check_zellij(&zellij)?;
-    run_native(&options, intent, &program, &zellij)
+    run_native(&options, intent, &program, &zellij, None).map(|_| ())
 }
 
-fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) -> Result<()> {
+fn resolve_native(program: &Path, requested: &Path) -> Result<PathBuf> {
+    let bundled = program.with_file_name("zellij");
+    if requested == Path::new("zellij") && env::var_os("BKPR_ZELLIJ").is_none() && bundled.is_file()
+    {
+        executable(&bundled)
+    } else {
+        executable(requested)
+    }
+}
+
+fn run_native(
+    options: &Options,
+    intent: Intent,
+    program: &Path,
+    zellij: &Path,
+    background_cwd: Option<&Path>,
+) -> Result<Option<bkpr::context_contract::SessionIdentity>> {
     // Capture the attaching terminal's source before setting the child-only
     // stable relay address. Unset/empty is intentional, never a server fallback.
-    let agent_source = env::var_os("SSH_AUTH_SOCK");
+    let agent_source = background_cwd
+        .is_none()
+        .then(|| env::var_os("SSH_AUTH_SOCK"))
+        .flatten();
     let session = options.session.as_deref().unwrap_or("bkpr");
     validate_session(session)?;
     let identity_hash = hash_identity(&format!("native-local\0{session}"));
@@ -314,7 +456,9 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
     let live = session_exists(zellij, &config_dir, &socket_dir, &zellij_session)?;
     // Decide before requiring a terminal, so a non-interactive launch over a record gets
     // the specific refusal. A live session never reads its record (legacy attach path).
-    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let interactive = background_cwd.is_none()
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal();
     if let Some(warning) = overwrite_ignored(session, intent, live, options.overwrite) {
         eprintln!("bkpr: {warning}");
     }
@@ -337,7 +481,10 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
         interactive,
         &mut || ask_recover(session),
     )?;
-    if !interactive {
+    if background_cwd.is_some() && matches!(mode, StartMode::Attach) {
+        bail!("session {session} is already running; inspect it or attach instead");
+    }
+    if !interactive && background_cwd.is_none() {
         bail!("launch requires an interactive terminal");
     }
     let existing = matches!(mode, StartMode::Attach);
@@ -350,8 +497,13 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
             .as_ref()
             .context("fresh native session has no context bootstrap")?;
         let plugin = plugin_path(options.plugin.clone(), program)?;
+        let columns = if background_cwd.is_some() {
+            80
+        } else {
+            terminal_columns()?
+        };
         let sidebar_percent =
-            bkpr::native_sidebar_percent(usize::from(options.sidebar_width), terminal_columns()?)
+            bkpr::native_sidebar_percent(usize::from(options.sidebar_width), columns)
                 .context("terminal needs at least two columns for a sidebar and terminal pane")?;
         let bin = runtime.join("bin");
         private_directory(&bin)?;
@@ -374,7 +526,10 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
             private_file(&path, wrapper.as_bytes())?;
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
         }
-        let cwd = env::current_dir().context("locate native launch directory")?;
+        let cwd = match background_cwd {
+            Some(cwd) => cwd.to_path_buf(),
+            None => env::current_dir().context("locate native launch directory")?,
+        };
         let cwd = cwd
             .to_str()
             .context("native launch directory is not UTF-8")?;
@@ -445,6 +600,17 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
         config.push_str(" }\n}\n");
         private_file(&config_path, config.as_bytes())?;
         private_file(&layout_path, layout.as_bytes())?;
+        let assets = ControlAssets {
+            version: 1,
+            session_id: session_context.session_id.clone(),
+            plugin_url,
+            configuration,
+            sidebar_percent,
+        };
+        private_file(
+            &runtime.join("control-assets.json"),
+            &serde_json::to_vec(&assets)?,
+        )?;
     }
     let agent_lease = crate::agent_relay::acquire_locked(program, &runtime, agent_source)?;
     let mut client = zellij_command(zellij, &config_dir, &socket_dir);
@@ -460,6 +626,10 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
         "BKPR_PANE_ID",
         "BKPR_CONTEXT_OWNER",
         "BKPR_NATIVE_CONTEXT",
+        "BKPR_RELAY_AGENT_ID",
+        "BKPR_RELAY_TOKEN",
+        "BKPR_RELAY_SOCKET",
+        "BKPR_RELAY_HARNESS",
     ] {
         client.env_remove(name);
     }
@@ -499,6 +669,14 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
         // Per-attachment startup state must override the saved server default,
         // including legacy configurations, without changing another client's mode.
         client.args(["options", "--default-mode", "locked"]);
+    } else if let Some(cwd) = background_cwd {
+        client
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::io::stderr())
+            .arg("--layout")
+            .arg(&layout_path)
+            .args(["attach", "--create-background", &zellij_session]);
     } else {
         client
             .args(["--session", &zellij_session, "--new-session-with-layout"])
@@ -540,7 +718,17 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
     if !status.success() {
         bail!("Zellij exited with {status}");
     }
-    Ok(())
+    if background_cwd.is_some()
+        && !session_exists(zellij, &config_dir, &socket_dir, &zellij_session)?
+    {
+        bail!("background startup outcome is unknown; inspect the session before retrying");
+    }
+    Ok(
+        session_context.map(|context| bkpr::context_contract::SessionIdentity {
+            session_id: context.session_id,
+            session_name: context.session_name,
+        }),
+    )
 }
 
 fn terminal_columns() -> Result<usize> {

@@ -151,6 +151,7 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
+ "clap_complete",
  "libc",
  "parking_lot",
  "scraper",
