@@ -496,6 +496,7 @@ const RESTORE_NAME_PIPE: &str = "bkpr-restore-name";
 /// for the shell, then become that interactive shell. Every failure is a note, never
 /// an exit: the pane must always end as a usable shell.
 pub(crate) fn restore_pane(args: RestorePaneArgs) -> Result<()> {
+    set_setup_signals(libc::SIG_IGN);
     let (cwd, cwd_note) = existing_cwd(args.cwd.as_deref());
     let mut notes: Vec<String> = args.note.into_iter().chain(cwd_note).collect();
     if let Err(error) = std::env::set_current_dir(&cwd) {
@@ -588,49 +589,69 @@ fn send_restore_claim(key: &str, link: Option<&(String, String)>) -> Result<()> 
     crate::project_watch::send_pipe(&session, RESTORE_NAME_PIPE, &payload)
 }
 
-/// Flags `resume_arguments` generates: the only typed words allowed to start with `-`.
-const RESUME_FLAGS: [&str; 2] = ["--resume", "-C"];
+/// The command line that resumes a session, with the positions of the flags it generated:
+/// `--resume` before the id (Claude, omp) or `-C` before the directory (Codex).
+#[derive(Debug, PartialEq, Eq)]
+struct ResumeCommand {
+    words: Vec<OsString>,
+    flags: Vec<usize>,
+}
 
-/// Words of the command line that resumes `session_id`: `<program> run <harness> <resume…>`.
-fn resume_command(program: &Path, harness: Harness, session_id: &str, cwd: &Path) -> Vec<OsString> {
+/// `<program> run <harness> <resume_arguments…>`.
+fn resume_command(program: &Path, harness: Harness, session_id: &str, cwd: &Path) -> ResumeCommand {
     let mut words = vec![program.as_os_str().to_owned(), "run".into()];
     if let Some(name) = harness.to_possible_value() {
         words.push(name.get_name().into());
     }
-    words.extend(resume_arguments(harness, session_id, cwd));
-    words
+    let start = words.len();
+    let arguments = resume_arguments(harness, session_id, cwd);
+    // Our flags sit at fixed positions of `resume_arguments`: `--resume <id>` and
+    // `resume <id> -C <cwd>`. Values there never count as flags.
+    let flags = match harness {
+        Harness::Codex => vec![start + 2],
+        _ => vec![start],
+    };
+    words.extend(arguments);
+    ResumeCommand { words, flags }
 }
 
-/// A word that fish, bash and zsh all read back literally when typed unquoted. A leading
-/// `-` is only allowed for our own flags; a leading `%` (fish `%self`) or `=` (zsh `=cmd`)
-/// would be expanded.
+/// A word that fish, bash and zsh all read back literally when typed unquoted, and that no
+/// program can take for an option. A leading `%` (fish `%self`) or `=` (zsh `=cmd`) would
+/// be expanded.
 fn typeable_word(word: &OsStr) -> bool {
     let Some(word) = word.to_str() else {
         return false;
     };
     let neutral =
         |character: char| character.is_ascii_alphanumeric() || "_./:@%+=,-".contains(character);
-    !word.is_empty()
-        && word.chars().all(neutral)
-        && !word.starts_with(['%', '='])
-        && (!word.starts_with('-') || RESUME_FLAGS.contains(&word))
+    !word.is_empty() && word.chars().all(neutral) && !word.starts_with(['%', '=', '-'])
 }
 
+/// Words that may stay bare: generated flags at their own positions, else neutral words.
+fn bare_words(command: &ResumeCommand) -> impl Iterator<Item = (&OsString, bool)> {
+    command.words.iter().enumerate().map(|(index, word)| {
+        let flag =
+            command.flags.contains(&index) && RESUME_FLAGS.contains(&&*word.to_string_lossy());
+        (word, flag || typeable_word(word))
+    })
+}
+
+/// Flags `resume_arguments` generates.
+const RESUME_FLAGS: [&str; 2] = ["--resume", "-C"];
+
 /// The line to type, or `None` when any word would need quoting.
-fn typeable_command(words: &[OsString]) -> Option<String> {
-    words
-        .iter()
-        .map(|word| typeable_word(word).then(|| word.to_string_lossy()))
+fn typeable_command(command: &ResumeCommand) -> Option<String> {
+    bare_words(command)
+        .map(|(word, bare)| bare.then(|| word.to_string_lossy()))
         .collect::<Option<Vec<_>>>()
         .map(|words| words.join(" "))
 }
 
-/// POSIX-quoted command line for a note: neutral words stay bare.
-fn quoted_command(words: &[OsString]) -> String {
-    words
-        .iter()
-        .map(|word| {
-            if typeable_word(word) {
+/// POSIX-quoted command line for a note: bare words stay bare.
+fn quoted_command(command: &ResumeCommand) -> String {
+    bare_words(command)
+        .map(|(word, bare)| {
+            if bare {
                 word.to_string_lossy().into_owned()
             } else {
                 crate::claude::shell_quote(&word.to_string_lossy())
@@ -644,14 +665,14 @@ fn quoted_command(words: &[OsString]) -> String {
 /// exec'd next reads it as if the user had typed it, so the harness is an ordinary job
 /// (suspend, `fg`, history). Returns a note with the command when nothing was typed.
 fn offer_resume(
-    words: &[OsString],
+    command: &ResumeCommand,
     pane_id: Option<&str>,
     write: impl FnOnce(&str, &str) -> Result<()>,
 ) -> Option<String> {
-    let typed = typeable_command(words)
+    let typed = typeable_command(command)
         .zip(pane_id)
         .is_some_and(|(line, pane)| write(pane, &format!("{line}\n")).is_ok());
-    (!typed).then(|| format!("resume this session with: {}", quoted_command(words)))
+    (!typed).then(|| format!("resume this session with: {}", quoted_command(command)))
 }
 
 /// Queue `bkpr run <harness> <resume>` as typed input for the shell that replaces this
@@ -664,15 +685,88 @@ fn queue_resume(harness: Harness, session_id: &str, cwd: &Path) {
             return;
         }
     };
-    let words = resume_command(&program, harness, session_id, cwd);
+    let command = resume_command(&program, harness, session_id, cwd);
     let pane_id = std::env::var("BKPR_PANE_ID").ok();
-    let note = offer_resume(&words, pane_id.as_deref(), |pane, text| {
+    let note = offer_resume(&command, pane_id.as_deref(), |pane, text| {
         let session =
             std::env::var("ZELLIJ_SESSION_NAME").context("ZELLIJ_SESSION_NAME is not set")?;
-        crate::project_watch::write_chars(&session, pane, text)
+        // The line discipline would echo the text before the shell's prompt, and the line
+        // editor shows it again: hide it until it is queued. Dropped before the shell starts.
+        let _echo = EchoGuard::new(libc::STDIN_FILENO);
+        crate::project_watch::write_chars(&session, pane, text)?;
+        wait_queued(libc::STDIN_FILENO, text.len(), QUEUE_WAIT);
+        Ok(())
     });
     if let Some(note) = note {
         print_note(&[note]);
+    }
+}
+
+/// How long the helper waits for typed text to reach its terminal before starting the shell.
+const QUEUE_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Clears ECHO on a terminal and restores its saved settings on drop, without flushing the
+/// queued input (`TCSANOW`, never `TCSAFLUSH`).
+struct EchoGuard {
+    fd: libc::c_int,
+    saved: libc::termios,
+}
+
+impl EchoGuard {
+    /// `None` when `fd` is not a terminal or its settings cannot be changed.
+    fn new(fd: libc::c_int) -> Option<Self> {
+        // SAFETY: `termios` is plain data and `tcgetattr` fully initializes it on success.
+        let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: valid out pointer; a non-terminal fd fails with ENOTTY.
+        if unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {
+            return None;
+        }
+        let mut quiet = saved;
+        quiet.c_lflag &= !libc::ECHO;
+        // SAFETY: valid termios pointer.
+        (unsafe { libc::tcsetattr(fd, libc::TCSANOW, &quiet) } == 0).then_some(Self { fd, saved })
+    }
+}
+
+impl Drop for EchoGuard {
+    fn drop(&mut self) {
+        // SAFETY: restores the settings read from the same fd.
+        unsafe {
+            libc::tcsetattr(self.fd, libc::TCSANOW, &self.saved);
+        }
+    }
+}
+
+/// Wait until at least `bytes` bytes of input are queued on terminal `fd` (in canonical
+/// mode, complete lines only), or `timeout` passes. Returns whether they arrived.
+fn wait_queued(fd: libc::c_int, bytes: usize, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let mut queued: libc::c_int = 0;
+        // SAFETY: valid out pointer.
+        if unsafe { libc::ioctl(fd, libc::FIONREAD, &mut queued) } == 0
+            && usize::try_from(queued).unwrap_or(0) >= bytes
+        {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Terminal signals the helper ignores while it sets up, so an early Ctrl+C or Ctrl+Z cannot
+/// kill or stop it before its shell starts. Reset to defaults right before the exec, since
+/// ignored dispositions survive it.
+const SETUP_SIGNALS: [libc::c_int; 3] = [libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP];
+
+fn set_setup_signals(handler: libc::sighandler_t) {
+    for signal in SETUP_SIGNALS {
+        // SAFETY: SIG_IGN/SIG_DFL install no Rust handler.
+        unsafe {
+            libc::signal(signal, handler);
+        }
     }
 }
 
@@ -697,6 +791,8 @@ fn exec_shell(cwd: &Path) -> Result<()> {
     let shell = std::env::var_os("SHELL")
         .filter(|shell| !shell.is_empty())
         .unwrap_or_else(|| "/bin/sh".into());
+    // Never hand the shell the dispositions ignored during setup.
+    set_setup_signals(libc::SIG_DFL);
     let error = Command::new(&shell).env("PWD", cwd).exec();
     print_note(&[format!(
         "cannot start {}: {error}",
@@ -857,59 +953,38 @@ mod tests {
         items.iter().map(OsString::from).collect()
     }
 
+    const BKPR: &str = "/bin/bkpr";
+
+    fn command(harness: Harness, session_id: &str, cwd: &str) -> ResumeCommand {
+        resume_command(Path::new(BKPR), harness, session_id, Path::new(cwd))
+    }
+
     #[test]
     fn resume_command_per_harness() {
-        let program = Path::new("/nix/store/abc-bkpr/bin/bkpr");
-        let cwd = Path::new("/srv/project");
         assert_eq!(
-            resume_command(program, Harness::Claude, "s1", cwd),
-            words(&[
-                "/nix/store/abc-bkpr/bin/bkpr",
-                "run",
-                "claude",
-                "--resume",
-                "s1"
-            ])
+            command(Harness::Claude, "s1", "/srv/p").words,
+            words(&[BKPR, "run", "claude", "--resume", "s1"])
         );
         assert_eq!(
-            resume_command(program, Harness::Omp, "s2", cwd),
-            words(&[
-                "/nix/store/abc-bkpr/bin/bkpr",
-                "run",
-                "omp",
-                "--resume",
-                "s2"
-            ])
+            command(Harness::Omp, "s2", "/srv/p").words,
+            words(&[BKPR, "run", "omp", "--resume", "s2"])
         );
         assert_eq!(
-            resume_command(program, Harness::Codex, "s3", cwd),
-            words(&[
-                "/nix/store/abc-bkpr/bin/bkpr",
-                "run",
-                "codex",
-                "resume",
-                "s3",
-                "-C",
-                "/srv/project"
-            ])
+            command(Harness::Codex, "s3", "/srv/p").words,
+            words(&[BKPR, "run", "codex", "resume", "s3", "-C", "/srv/p"])
         );
     }
 
     #[test]
     fn typeable_words_are_shell_neutral() {
-        for word in [
-            "/a/b-c_d.e",
-            "run",
-            "agy",
-            "0199-abc:x@y%z+w=v,u",
-            "--resume",
-            "-C",
-        ] {
+        for word in ["/a/b-c_d.e", "run", "agy", "0199-abc:x@y%z+w=v,u"] {
             assert!(typeable_word(OsStr::new(word)), "{word}");
         }
         for word in [
             "", "a b", "a'b", "a\"b", "$HOME", "a*", "a;b", "~/x", "a\nb", "(x)", "{a,b}", "#x",
-            "a!", "--yolo", "-x", "-",
+            "a!", "-", "-x", "--yolo",
+            // Only the generated flags, at their own positions, may start with `-`.
+            "--resume", "-C",
             // Expanded by fish (`%self`) or zsh (`=cmd`) at the start of a word.
             "%self", "=ls", "é",
         ] {
@@ -920,46 +995,60 @@ mod tests {
 
     #[test]
     fn typeable_command_is_the_joined_line_only_when_every_word_is_safe() {
-        let command = words(&["/bin/bkpr", "run", "codex", "resume", "s", "-C", "/srv/p"]);
         assert_eq!(
-            typeable_command(&command).as_deref(),
+            typeable_command(&command(Harness::Codex, "s", "/srv/p")).as_deref(),
             Some("/bin/bkpr run codex resume s -C /srv/p")
         );
-        let spaced = words(&["/bin/bkpr", "run", "codex", "resume", "s", "-C", "/srv/x y"]);
-        assert_eq!(typeable_command(&spaced), None);
-        // A session id that looks like a flag is never typed.
-        let flag = words(&["/bin/bkpr", "run", "claude", "--resume", "--rm"]);
-        assert_eq!(typeable_command(&flag), None);
+        assert_eq!(
+            typeable_command(&command(Harness::Claude, "s", "/srv/p")).as_deref(),
+            Some("/bin/bkpr run claude --resume s")
+        );
+        assert_eq!(
+            typeable_command(&command(Harness::Codex, "s", "/srv/x y")),
+            None
+        );
+    }
+
+    #[test]
+    fn flags_are_accepted_only_at_their_generated_positions() {
+        // A session id equal to (or shaped like) a flag is never typed.
+        for id in ["--resume", "-C", "--rm", "-"] {
+            for harness in [Harness::Claude, Harness::Omp, Harness::Codex] {
+                let resume = command(harness, id, "/srv/p");
+                assert_eq!(typeable_command(&resume), None, "{harness:?} {id}");
+                let note = offer_resume(&resume, Some("1"), |_, _| panic!("typed {id}"));
+                assert!(note.unwrap().starts_with("resume this session with: "));
+            }
+        }
     }
 
     #[test]
     fn fallback_note_quotes_a_cwd_with_a_space() {
-        let command = words(&[
-            "/bin/bkpr",
-            "run",
-            "codex",
-            "resume",
-            "s",
-            "-C",
-            "/srv/x y's",
-        ]);
         let mut typed = Vec::new();
-        let note = offer_resume(&command, Some("7"), |pane, text| {
-            typed.push((pane.to_owned(), text.to_owned()));
-            Ok(())
-        });
+        let note = offer_resume(
+            &command(Harness::Codex, "s", "/srv/x y's"),
+            Some("7"),
+            |pane, text| {
+                typed.push((pane.to_owned(), text.to_owned()));
+                Ok(())
+            },
+        );
         assert!(typed.is_empty());
         assert_eq!(
             note.as_deref(),
             Some("resume this session with: /bin/bkpr run codex resume s -C '/srv/x y'\\''s'")
         );
+        // A flag-shaped session id is quoted in the note, generated flags stay bare.
+        assert_eq!(
+            offer_resume(&command(Harness::Claude, "--rm", "/"), None, |_, _| Ok(())).as_deref(),
+            Some("resume this session with: /bin/bkpr run claude --resume '--rm'")
+        );
     }
 
     #[test]
     fn missing_pane_id_types_nothing_and_notes() {
-        let command = words(&["/bin/bkpr", "run", "claude", "--resume", "s1"]);
         let mut called = false;
-        let note = offer_resume(&command, None, |_, _| {
+        let note = offer_resume(&command(Harness::Claude, "s1", "/"), None, |_, _| {
             called = true;
             Ok(())
         });
@@ -972,8 +1061,9 @@ mod tests {
 
     #[test]
     fn failed_write_notes_the_command() {
-        let command = words(&["/bin/bkpr", "run", "claude", "--resume", "s1"]);
-        let note = offer_resume(&command, Some("3"), |_, _| bail!("no server"));
+        let note = offer_resume(&command(Harness::Claude, "s1", "/"), Some("3"), |_, _| {
+            bail!("no server")
+        });
         assert_eq!(
             note.as_deref(),
             Some("resume this session with: /bin/bkpr run claude --resume s1")
@@ -982,12 +1072,15 @@ mod tests {
 
     #[test]
     fn safe_command_is_typed_into_its_own_pane_with_a_newline() {
-        let command = words(&["/bin/bkpr", "run", "omp", "--resume", "s2"]);
         let mut typed = Vec::new();
-        let note = offer_resume(&command, Some("terminal_4"), |pane, text| {
-            typed.push((pane.to_owned(), text.to_owned()));
-            Ok(())
-        });
+        let note = offer_resume(
+            &command(Harness::Omp, "s2", "/"),
+            Some("terminal_4"),
+            |pane, text| {
+                typed.push((pane.to_owned(), text.to_owned()));
+                Ok(())
+            },
+        );
         assert_eq!(note, None);
         assert_eq!(
             typed,
@@ -996,6 +1089,117 @@ mod tests {
                 "/bin/bkpr run omp --resume s2\n".to_owned()
             )]
         );
+    }
+
+    /// A pty pair: (master, slave). Its slave starts in canonical mode with ECHO set.
+    fn pty() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
+        use std::os::fd::FromRawFd;
+        let (mut master, mut slave) = (-1, -1);
+        // SAFETY: valid out pointers; null name/termios/winsize are allowed.
+        let result = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(result, 0, "openpty: {}", std::io::Error::last_os_error());
+        // SAFETY: openpty returned two fresh descriptors we now own.
+        unsafe {
+            (
+                std::os::fd::OwnedFd::from_raw_fd(master),
+                std::os::fd::OwnedFd::from_raw_fd(slave),
+            )
+        }
+    }
+
+    fn local_flags(fd: &std::os::fd::OwnedFd) -> libc::tcflag_t {
+        use std::os::fd::AsRawFd;
+        // SAFETY: valid fd and out pointer.
+        unsafe {
+            let mut termios: libc::termios = std::mem::zeroed();
+            assert_eq!(libc::tcgetattr(fd.as_raw_fd(), &mut termios), 0);
+            termios.c_lflag
+        }
+    }
+
+    #[test]
+    fn echo_guard_hides_typed_input_and_restores_the_terminal_on_drop() {
+        use std::os::fd::AsRawFd;
+        let (master, slave) = pty();
+        let before = local_flags(&slave);
+        assert_ne!(before & libc::ECHO, 0);
+        {
+            let _guard = EchoGuard::new(slave.as_raw_fd()).expect("a pty is a terminal");
+            assert_eq!(local_flags(&slave) & libc::ECHO, 0);
+            assert_eq!(local_flags(&slave) & libc::ICANON, before & libc::ICANON);
+            let line = b"/bin/bkpr run claude --resume s\n";
+            assert_eq!(
+                // SAFETY: writes from a valid buffer to our master fd.
+                unsafe { libc::write(master.as_raw_fd(), line.as_ptr().cast(), line.len()) },
+                line.len() as isize
+            );
+            assert!(wait_queued(
+                slave.as_raw_fd(),
+                line.len(),
+                std::time::Duration::from_secs(2)
+            ));
+        }
+        assert_eq!(local_flags(&slave), before);
+        // Nothing was echoed back to the terminal, and the line is still queued for the shell.
+        // SAFETY: valid fds and out pointers.
+        unsafe {
+            let mut echoed: libc::c_int = 0;
+            assert_eq!(
+                libc::ioctl(master.as_raw_fd(), libc::FIONREAD, &mut echoed),
+                0
+            );
+            assert_eq!(echoed, 0);
+            let mut queued: libc::c_int = 0;
+            assert_eq!(
+                libc::ioctl(slave.as_raw_fd(), libc::FIONREAD, &mut queued),
+                0
+            );
+            assert!(queued > 0);
+        }
+    }
+
+    #[test]
+    fn echo_guard_skips_non_terminals_and_wait_gives_up() {
+        use std::os::fd::AsRawFd;
+        let file = tempfile::tempfile().unwrap();
+        assert!(EchoGuard::new(file.as_raw_fd()).is_none());
+        let (_master, slave) = pty();
+        let started = std::time::Instant::now();
+        assert!(!wait_queued(
+            slave.as_raw_fd(),
+            4,
+            std::time::Duration::from_millis(100)
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    fn disposition(signal: libc::c_int) -> libc::sighandler_t {
+        // SAFETY: a null new action only queries the current one.
+        unsafe {
+            let mut current: libc::sigaction = std::mem::zeroed();
+            assert_eq!(libc::sigaction(signal, std::ptr::null(), &mut current), 0);
+            current.sa_sigaction
+        }
+    }
+
+    #[test]
+    fn setup_signals_are_ignored_then_reset_to_defaults() {
+        set_setup_signals(libc::SIG_IGN);
+        for signal in SETUP_SIGNALS {
+            assert_eq!(disposition(signal), libc::SIG_IGN, "signal {signal}");
+        }
+        set_setup_signals(libc::SIG_DFL);
+        for signal in SETUP_SIGNALS {
+            assert_eq!(disposition(signal), libc::SIG_DFL, "signal {signal}");
+        }
     }
 
     fn parse_restore(args: Vec<String>) -> RestorePaneArgs {
