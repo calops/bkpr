@@ -56,6 +56,7 @@
               ./LICENSE
               ./crates
               ./integration/omp
+              ./integration/control
             ];
           };
           native = rustPlatform.buildRustPackage {
