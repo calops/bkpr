@@ -24,15 +24,6 @@ pub(crate) struct SessionList {
     #[serde(default)]
     pub all: bool,
 }
-record!(SessionCreate {
-    /// Initial directory for the new managed shell.
-    #[arg(long)] #[serde(default)] cwd: Option<String>,
-});
-record!(RenameSession {
-    /// New display label; canonical session identity and native socket stay unchanged.
-    #[arg(long)]
-    name: String,
-});
 record!(Discovery {
     #[arg(long)] #[serde(default)] workspace: Option<String>,
     /// Discover the entire selected session rather than the caller's workspace.
@@ -40,11 +31,6 @@ record!(Discovery {
 });
 record!(Pane {
     #[arg(long)] #[serde(default)] pane: Option<String>,
-});
-record!(Swap {
-    #[arg(long)] #[serde(default)] pane: Option<String>,
-    /// The other pane in the same native tab and layer.
-    #[arg(long)] other_pane: String,
 });
 record!(Tab {
     #[arg(long)] #[serde(default)] tab: Option<u64>,
@@ -169,8 +155,6 @@ record!(Resize {
 record!(Move {
     #[arg(long)] #[serde(default)] pane: Option<String>,
     #[arg(long, value_parser = ["left", "right", "up", "down", "backward"])] #[serde(default)] direction: Option<String>,
-    #[arg(long)] #[serde(default)] tab: Option<u64>,
-    #[arg(long)] #[serde(default)] workspace: Option<String>,
 });
 record!(Geometry {
     #[arg(long)] #[serde(default)] pane: Option<String>,
@@ -189,8 +173,15 @@ record!(Scroll {
 });
 record!(Read {
     #[arg(long)] #[serde(default)] pane: Option<String>,
+    /// Include all retained native scrollback, without a CLI output-size cap.
     #[arg(long)] #[serde(default)] full: bool,
+    /// Preserve native ANSI styling.
     #[arg(long)] #[serde(default)] ansi: bool,
+    /// Keep the newest N dumped terminal rows after --offset; implies --full. Zero returns empty.
+    #[arg(long)] #[serde(default)] tail: Option<usize>,
+    /// Skip N newest dumped terminal rows before --tail; implies --full. Beyond the start returns empty.
+    /// Wrapped terminal rows follow native dump-screen output; a final newline terminates a row, not an extra empty row.
+    #[arg(long)] #[serde(default)] offset: Option<usize>,
 });
 record!(TabMove {
     #[arg(long)] #[serde(default)] tab: Option<u64>,
@@ -201,12 +192,6 @@ record!(TabState {
     #[arg(long)] #[serde(default)] tab: Option<u64>,
     #[arg(long)] #[serde(default)] workspace: Option<String>,
     #[arg(long, action = clap::ArgAction::Set, required = true)] enabled: bool,
-});
-record!(Layout {
-    #[arg(long)] #[serde(default)] tab: Option<u64>,
-    #[arg(long)] #[serde(default)] workspace: Option<String>,
-    /// Native KDL layout text. No shell command interpolation.
-    #[arg(long)] layout: String,
 });
 record!(LayoutCycle {
     #[arg(long)] #[serde(default)] tab: Option<u64>,
@@ -236,7 +221,7 @@ record!(Input {
     #[arg(long)] #[serde(default, skip_serializing_if = "Option::is_none")] text: Option<String>,
     #[arg(long, num_args = 1..)] #[serde(default, skip_serializing_if = "Vec::is_empty")] keys: Vec<String>,
     #[arg(long, num_args = 1..)] #[serde(default, skip_serializing_if = "Vec::is_empty")] bytes: Vec<u8>,
-    /// Append Enter atomically after text/paste. Acceptance is not agent processing.
+    /// Append Enter after text/paste; paste and Enter are separate native actions, not an atomic transaction.
     #[arg(long)] #[serde(default, skip_serializing_if = "disabled")] submit: bool,
 });
 fn disabled(value: &bool) -> bool {

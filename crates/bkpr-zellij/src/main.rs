@@ -118,6 +118,8 @@ struct Frontend {
     native_owner: native::Owner,
     native_owner_id: Option<u32>,
     native_client: String,
+    control_receipts: VecDeque<(String, String)>,
+    control_ready: Vec<(String, String, Instant)>,
     // Explicit keyboard control owns selection; pointer interaction does not own focus.
     local_selection: bool,
     keyboard_control: bool,
@@ -2274,9 +2276,19 @@ impl ZellijPlugin for Frontend {
         if self.finder_role {
             return self.finder_view.event(event);
         }
+        if matches!(&event, Event::Timer(_)) {
+            native::expire_control_ready(self);
+        }
+        if matches!(&event, Event::BeforeClose) {
+            native::settle_control_ready(
+                self,
+                Some("Selected sidebar closed before permission readiness"),
+            );
+        }
         match event {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 self.granted = true;
+                native::settle_control_ready(self, None);
                 set_selectable(false);
                 if !self.apply_sidebar_bootstrap() {
                     self.request_mode(InputMode::Locked);
@@ -2284,7 +2296,8 @@ impl ZellijPlugin for Frontend {
                 self.startup();
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
-                self.error = Some("Required permissions denied; reload to authorize".to_owned())
+                self.error = Some("Required permissions denied; reload to authorize".to_owned());
+                native::settle_control_ready(self, Some("Normal sidebar permissions were denied"));
             }
             Event::PaneUpdate(manifest) if self.granted => {
                 let before = (
@@ -2425,6 +2438,10 @@ impl ZellijPlugin for Frontend {
     }
 
     fn pipe(&mut self, message: PipeMessage) -> bool {
+        // Broadcast CLI pipes must be acknowledged by every loaded replica, not only owners.
+        if message.name == native::CONTROL && !self.native_owner_role {
+            return native::sidebar_control_pipe(self, &message);
+        }
         if self.overlay_role {
             return self.overlay.pipe(message);
         }
