@@ -913,6 +913,7 @@ mod tests {
             workspace_id: "workspace-a".into(),
             pane_name: "shell".into(),
             agent_id: Some("agent-a".into()),
+            status: None,
         };
         session
             .publish(1, workspaces.clone(), vec![pane.clone()])
@@ -924,6 +925,7 @@ mod tests {
             workspace_name: "A".into(),
             pane_id: "terminal_1".into(),
             pane_name: "shell".into(),
+            status: None,
         };
         let caller = Caller::Agent {
             agent_id: "agent-a".into(),
@@ -972,6 +974,7 @@ mod tests {
                     workspace_id: "foreign-workspace".into(),
                     pane_name: "foreign shell".into(),
                     agent_id: None,
+                    status: None,
                 }],
             )
             .unwrap();
@@ -1250,12 +1253,14 @@ mod tests {
                     workspace_id: "a".into(),
                     pane_name: "one".into(),
                     agent_id: None,
+                    status: None,
                 },
                 ContextPane {
                     pane_id: "terminal_2".into(),
                     workspace_id: "b".into(),
                     pane_name: "two".into(),
                     agent_id: None,
+                    status: None,
                 },
             ],
         };
