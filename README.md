@@ -143,7 +143,7 @@ Each sidebar-created terminal opens in its own native tab, grouped under its wor
 
 The pane finder and **n / N** creation prompts use centered, titled, bordered overlays. Workspace creation accepts an optional name and working directory; terminal creation keeps the selected workspace and accepts an optional directory. **Tab** switches workspace fields, **Ctrl+u** clears the current field, and **Esc** cancels before creation is dispatched. Once dispatched, creation waits for its result; an error keeps the form available for correction and retry.
 
-Focused overlays dim surrounding terminal text using terminal-native faint styling. Raster-image pixels are unchanged. Overlays are local to the client that opened them; other clients keep their focus and undimmed view. Passive details and shortcut cards do not dim the UI. These overlays require a fresh native session; existing sessions remain attachable with their retained UI.
+Focused overlays dim surrounding terminal text using terminal-native faint styling for the client that opened them. Raster-image pixels are unchanged. Passive details and shortcut cards do not dim the UI. These overlays require a fresh native session; existing sessions remain attachable with their retained UI.
 
 | Context | Key | Action |
 | --- | --- | --- |

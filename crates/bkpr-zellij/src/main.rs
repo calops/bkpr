@@ -2178,7 +2178,6 @@ impl ZellijPlugin for Frontend {
         self.id = ids.plugin_id;
         self.client_id = ids.client_id;
         self.tooltip.client_id = ids.client_id;
-        self.guide_popup.client_id = ids.client_id;
         self.focused.client_id = ids.client_id;
         self.visible = true;
         self.overlay_role = configuration
@@ -2213,8 +2212,7 @@ impl ZellijPlugin for Frontend {
             return;
         }
         if self.guide_role {
-            self.guide_view
-                .load(&self.configuration, self.id, ids.client_id);
+            self.guide_view.load(&self.configuration, self.id);
             return;
         }
         if self.native_owner_role {
