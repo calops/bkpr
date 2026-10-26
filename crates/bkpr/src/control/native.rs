@@ -1027,6 +1027,7 @@ mod tests {
     #[test]
     fn read_consumer_preserves_large_full_dump_and_bottom_relative_boundaries() {
         use std::os::unix::fs::PermissionsExt;
+        let _runtime = crate::launcher::test_support::isolate_runtime();
         let directory = tempfile::tempdir().unwrap();
         let dump = directory.path().join("dump");
         let executable = directory.path().join("native-fixture");
@@ -1124,6 +1125,7 @@ mod tests {
         };
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
+            let _runtime = crate::launcher::test_support::isolate_runtime();
             let mut output = Observed {
                 bytes: vec![],
                 first: Some(sender),

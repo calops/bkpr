@@ -53,6 +53,8 @@ Reuse the existing checkouts for sequential feature work; do not create sibling 
 
 Keep procfs signal probes and verified process-birth-identity tests Linux-only, including their helpers. Portable recovery inspection must remain read-only and report unknown process identity as not live; do not weaken production liveness checks to make another platform's tests pass.
 
+Native command fixtures must use thread-local private runtime roots, not the developer's HOME/XDG state or process-global environment mutation. Install those guards inside spawned worker threads too. Assert PTY echo through nonblocking reads from the master rather than assuming its `FIONREAD` count is portable.
+
 ### Forked Zellij runtime
 
 The pinned host is [calops/bkpr-zellij](https://github.com/calops/bkpr-zellij), based on Zellij 0.45.1. Stock Zellij lacks required OSC/plugin event contracts. The fork's default `main` contains the Bkpr integration history; there is no separate `bkpr` integration branch or permanent upstream branch. Retained `feature/*` branches submit PRs into `main`. Bkpr consumes `github:calops/bkpr-zellij/main` and pins its revision in `flake.lock`; do not restore a local patch queue or override the fork's locked dependencies with `follows`. Bkpr's release CI owns the shared binary cache. Ordinary native feature PRs rely on local/integration verification and human review, not a global Rust CI status.

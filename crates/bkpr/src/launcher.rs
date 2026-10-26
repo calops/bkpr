@@ -811,6 +811,10 @@ pub(crate) fn zellij_socket_dir() -> Result<PathBuf> {
 }
 
 pub(crate) fn runtime_root() -> Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(root) = test_support::ROOT.with(|root| root.borrow().clone()) {
+        return Ok(root);
+    }
     let base = if let Some(dir) = env::var_os("XDG_RUNTIME_DIR") {
         PathBuf::from(dir).join("bkpr")
     } else {
@@ -914,6 +918,36 @@ keybinds {
     }
 }
 "#;
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+
+    thread_local! {
+        pub(super) static ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) struct Runtime {
+        previous: Option<PathBuf>,
+        _directory: tempfile::TempDir,
+    }
+
+    pub(crate) fn isolate_runtime() -> Runtime {
+        let directory = tempfile::tempdir().unwrap();
+        let previous = ROOT.with(|root| root.replace(Some(directory.path().to_owned())));
+        Runtime {
+            previous,
+            _directory: directory,
+        }
+    }
+
+    impl Drop for Runtime {
+        fn drop(&mut self) {
+            ROOT.with(|root| *root.borrow_mut() = self.previous.take());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1151,12 +1151,21 @@ mod tests {
         // Nothing was echoed back to the terminal, and the line is still queued for the shell.
         // SAFETY: valid fds and out pointers.
         unsafe {
-            let mut echoed: libc::c_int = 0;
+            let flags = libc::fcntl(master.as_raw_fd(), libc::F_GETFL);
+            assert!(flags >= 0);
             assert_eq!(
-                libc::ioctl(master.as_raw_fd(), libc::FIONREAD, &mut echoed),
+                libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK),
                 0
             );
-            assert_eq!(echoed, 0);
+            let mut byte = 0u8;
+            assert_eq!(
+                libc::read(master.as_raw_fd(), (&mut byte as *mut u8).cast(), 1),
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
             let mut queued: libc::c_int = 0;
             assert_eq!(
                 libc::ioctl(slave.as_raw_fd(), libc::FIONREAD, &mut queued),
