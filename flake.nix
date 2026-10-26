@@ -61,7 +61,7 @@
           };
           native = rustPlatform.buildRustPackage {
             pname = "bkpr-native";
-            version = "0.2.2";
+            version = "1.0.0";
             inherit src;
             cargoLock.lockFileContents = builtins.readFile ./Cargo.lock;
             # Rust's standard-library source locations must not retain the toolchain.
@@ -86,7 +86,7 @@
           };
           plugin = rustPlatform.buildRustPackage {
             pname = "bkpr-zellij";
-            version = "0.2.2";
+            version = "1.0.0";
             inherit src;
             cargoLock.lockFileContents = builtins.readFile ./Cargo.lock;
             RUSTFLAGS = "--remap-path-prefix=${toolchain}=/rust-toolchain";
@@ -107,7 +107,7 @@
             meta.license = pkgs.lib.licenses.mit;
           };
           product =
-            pkgs.runCommand "bkpr-0.2.2"
+            pkgs.runCommand "bkpr-1.0.0"
               {
                 nativeBuildInputs = [ pkgs.makeWrapper ];
                 meta.mainProgram = "bkpr";
