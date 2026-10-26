@@ -2817,6 +2817,18 @@ impl Owner {
         }
     }
 
+    fn adopt_context(&mut self, context: HostContext) -> Result<bool, &'static str> {
+        let model = self.model.as_mut().ok_or("Native model is unavailable")?;
+        let changed = model.adopt_context(context)?;
+        self.context_ready = true;
+        if changed {
+            model.revision += 1;
+        }
+        // Consumed topology is replica-local and may predate another client's title.
+        // Only an unconsumed PaneUpdate/TabUpdate pair can update terminal metadata.
+        Ok(changed)
+    }
+
     fn reconcile(&mut self) {
         if self.error.is_some() || !self.context_ready {
             return;
@@ -3134,19 +3146,9 @@ impl Owner {
                 let Ok(context) = serde_json::from_str::<HostContext>(&payload) else {
                     return false;
                 };
-                let Some(model) = self.model.as_mut() else {
+                let Ok(changed) = self.adopt_context(context) else {
                     return false;
                 };
-                let Ok(changed) = model.adopt_context(context) else {
-                    return false;
-                };
-                self.context_ready = true;
-                if changed {
-                    model.revision += 1;
-                }
-                if self.topology.ready.is_none() {
-                    self.topology.ready = self.topology.reconciled.take();
-                }
                 self.reconcile();
                 if changed {
                     self.request_agents();
@@ -4838,6 +4840,65 @@ mod tests {
         first.save();
         assert_eq!(std::fs::read(&first.storage).unwrap(), b"{corrupt");
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn context_updates_do_not_replay_a_replicas_consumed_titles() {
+        for context_changed in [false, true] {
+            let tabs = vec![tab(10, 0)];
+            let mut terminal = pane(1);
+            terminal.title = "Previous task".to_owned();
+            let old_manifest = manifest(&[(0, vec![terminal.clone()])]);
+            let mut model = model();
+            model.reconcile(&tabs, &old_manifest);
+            let mut context = model.host_context.clone().unwrap();
+            terminal.title = "Current task".to_owned();
+            model.reconcile(&tabs, &manifest(&[(0, vec![terminal])]));
+            if context_changed {
+                context.session_name = "Renamed session".to_owned();
+            }
+            let mut owner = Owner {
+                model: Some(model),
+                context_ready: true,
+                topology: Topology {
+                    reconciled: Some((tabs, old_manifest)),
+                    ..Topology::default()
+                },
+                ..Owner::default()
+            };
+            assert_eq!(owner.adopt_context(context), Ok(context_changed));
+            assert_eq!(
+                owner.model.as_ref().unwrap().snapshot(None, 0).panes[0].name,
+                "Current task"
+            );
+            assert!(owner.topology.ready.is_none());
+            assert!(owner.topology.reconciled.is_some());
+        }
+    }
+
+    #[test]
+    fn initial_context_preserves_waiting_fresh_topology() {
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
+        let context = model.host_context.take().unwrap();
+        let mut terminal = pane(1);
+        terminal.title = "Fresh task".to_owned();
+        let mut owner = Owner {
+            model: Some(model),
+            topology: Topology {
+                ready: Some((vec![tab(10, 0)], manifest(&[(0, vec![terminal])]))),
+                ..Topology::default()
+            },
+            ..Owner::default()
+        };
+        owner.reconcile();
+        assert!(owner.topology.ready.is_some());
+        assert!(owner.adopt_context(context).unwrap());
+        assert!(owner.context_ready);
+        let (tabs, manifest) = owner.topology.ready.take().unwrap();
+        let model = owner.model.as_mut().unwrap();
+        assert!(model.reconcile_topology(&tabs, &manifest));
+        assert_eq!(model.snapshot(None, 0).panes[0].name, "Fresh task");
     }
 
     #[test]
