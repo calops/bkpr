@@ -131,9 +131,11 @@ Headless session creation, live session-label rename, arbitrary pairwise pane sw
 
 Every fresh launch, attachment and recovered session starts that client in Zellij's **Locked** mode, so terminal shortcuts go to the application. Reattaching does not restore an earlier unlocked mode or change another attached client's mode. Press **Ctrl+Space** to focus the sidebar, or **Ctrl+g** to unlock stock Zellij controls. The rounded shortcut guide follows the current mode and effective keybindings: it stays inside the sidebar when all keys and descriptions fit without wrapping, and otherwise expands into the pane area. A widened sidebar guide stays adjacent to the sidebar instead of moving to the far-right edge. Its border becomes bold terminal-yellow whenever unlocked, including native submodes, and returns to subdued styling when Locked.
 
+Locked is only the client's initial mode; Normal remains the base mode, so sidebar keys and ordinary application typing still work after unlocking. Attachment overrides a legacy session's saved base mode for the new client without rewriting its configuration or changing other clients.
+
 A left click activates a workspace or terminal without moving keyboard focus into the sidebar. Hover highlights a row and opens its details; moving into the popup keeps it open, and leaving both closes it. Sidebar focus opens the selected row's details automatically, and keyboard navigation follows the selection. Right click has no special popup behavior. Details include available activity, CWD, repository, pull request and checks, with clickable links.
 
-Moving or closing details repaints only the exposed terminal cells. Moving the pointer within an unchanged popup does not redraw it; refresh-button hover styling still updates.
+Moving or closing details repaints only the exposed terminal cells. Moving the pointer within an unchanged popup does not redraw it; refresh-button hover styling still updates. Cursorless sidebar controls and passive cards preserve the last input-cursor position, including hidden cursors, so terminal cursor trails do not jump between paint regions. Rename dialogs and the finder retain their own input cursors.
 
 The first sidebar line centers the beekeeper icon and project name. Workspaces and terminals use dot markers; recognized harnesses keep their separate identity icons beside their names. Item rows keep a left gutter for the hover outline and use the rightmost sidebar column.
 
@@ -162,7 +164,7 @@ Double click a workspace group to fold or unfold it. Stock resize, move, scroll 
 
 ### Pane finder
 
-Press **Ctrl+Space**, then **/** to open a centered, whole-window finder. Search pane metadata without switching terminals. The selected match shows the same details as its context popup.
+Press **Ctrl+Space**, then **/** to open a centered, whole-window finder. Search pane metadata without switching terminals. The selected match shows the same details as its context popup. The finder belongs to the opening client; replicas on other attached clients cannot focus, hide or close it.
 
 Results underline matching text in blue and keep their project's sidebar color. Metadata-only matches include a short excerpt. Finder key hints appear in the sidebar.
 
@@ -192,13 +194,13 @@ Branch totals compare committed `HEAD` with its merge-base, not uncommitted chan
 
 GitHub CI monitoring runs `gh` from the item's canonical working directory, including nested directories rather than substituting the repository root. This preserves directory-dependent wrappers and authentication configuration. Run `gh auth login` in that directory if needed. Bkpr doesn't switch accounts, override `GH_CONFIG_DIR`, or edit credentials. Monitoring requires an explicit `github.com` HTTPS/SSH remote and a current commit; GitHub Enterprise and SSH aliases aren't supported.
 
-First loads query GitHub eagerly. Panes in the same canonical CWD share requests and results; batching stays within that directory so separate directories and worktrees can use different authentication contexts. Requests remain spaced at least two seconds apart per session, with shared backoff and provider limits. Non-green remote checks refresh every 60 seconds. Green or entirely skipped checks, no checks, and missing remote branches stay idle; Git metadata events invalidate results after local commits, ref changes and pushes. Transport failures use bounded backoff, and provider rate limits remain authoritative. Use refresh for remote changes without a local ref event, same-commit reruns, newly added checks or PR-state changes.
+First loads query GitHub eagerly. Panes in the same canonical CWD share requests and results; batching stays within that directory so separate directories and worktrees can use different authentication contexts. Requests remain spaced at least two seconds apart per session, with shared backoff and provider limits. Checks refresh every 60 seconds while pending, running or unresolved. Complete results stop refreshing, including failed, cancelled, passed and skipped checks; no checks and missing remote branches also stay idle. Git metadata events invalidate results after local commits, ref changes and pushes. Transport failures use bounded backoff, and provider rate limits remain authoritative. Use refresh for remote changes without a local ref event, same-commit reruns, newly added checks or PR-state changes. If refresh observes checks running again, automatic checking resumes until they finish.
 
 For named branches, checks belong to the latest commit of the corresponding remote branch, selected from the configured push/upstream relationship. GitHub resolves that tip without a Git fetch. The popup labels the checked remote ref and commit and notes when local `HEAD` differs; passing remote checks never imply that unpushed local work was tested. A missing remote branch is unavailable, not a reason to substitute main. Detached HEADs use exact-commit lookup.
 
 Refreshing cached results is a loading/stale state, not an error. Real provider failures remain visible until a successful response replaces them.
 
-Results persist per canonical CWD under `$XDG_STATE_HOME/bkpr/projects` (default `~/.local/state/bkpr/projects`). Repository, local branch, local commit, selected remote target and Git refs must still match before restoring them. The checked commit is retained independently of local `HEAD`. Unchanged green results need no request after restart; non-green results appear immediately from cache and resume checking.
+Results persist per canonical CWD under `$XDG_STATE_HOME/bkpr/projects` (default `~/.local/state/bkpr/projects`). Repository, local branch, local commit, selected remote target and Git refs must still match before restoring them. The checked commit is retained independently of local `HEAD`. Unchanged complete results need no request after restart, including failures and cancellations; unfinished or unresolved results appear immediately from cache and resume checking.
 
 Open PR links follow the branch even while local commits are unpushed. Linear associations come from canonical issue links in the PR's first ten rendered comments, without workspace-specific mappings, Linear credentials or configuration.
 

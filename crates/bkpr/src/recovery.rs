@@ -1101,8 +1101,8 @@ mod tests {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
+                std::ptr::null_mut::<libc::termios>(),
+                std::ptr::null_mut::<libc::winsize>(),
             )
         };
         assert_eq!(result, 0, "openpty: {}", std::io::Error::last_os_error());

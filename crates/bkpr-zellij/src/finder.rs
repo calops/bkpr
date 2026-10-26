@@ -61,6 +61,7 @@ enum Readiness {
 
 pub struct Controller {
     pub id: Option<u32>,
+    pub client_id: ClientId,
     instance: String,
     generation: u64,
     revision: u64,
@@ -74,6 +75,7 @@ impl Default for Controller {
     fn default() -> Self {
         Self {
             id: None,
+            client_id: 0,
             instance: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|time| time.as_nanos().to_string())
@@ -284,6 +286,7 @@ impl Controller {
             let mut config = configuration.clone();
             config.insert("role".to_owned(), "finder".to_owned());
             config.insert("owner".to_owned(), owner.to_string());
+            config.insert("owner_client_id".to_owned(), self.client_id.to_string());
             // Stable across opens: exact URL/config identity prevents duplicate launches.
             config.insert("finder_instance".to_owned(), self.instance.clone());
             message.plugin_url = Some(url.clone());
@@ -504,6 +507,7 @@ pub struct Finder {
     id: u32,
     instance: String,
     granted: bool,
+    foreign_client: bool,
     owner_seen: bool,
     owner_tab: Option<usize>,
     active_tab: Option<usize>,
@@ -537,7 +541,7 @@ impl Finder {
         self.theme.update(colors)
     }
 
-    pub fn load(&mut self, configuration: &BTreeMap<String, String>, id: u32) {
+    pub fn load(&mut self, configuration: &BTreeMap<String, String>, id: u32, client_id: ClientId) {
         self.id = id;
         self.owner = configuration
             .get("owner")
@@ -546,6 +550,14 @@ impl Finder {
             .get("finder_instance")
             .cloned()
             .unwrap_or_default();
+        self.foreign_client = configuration
+            .get("owner_client_id")
+            .and_then(|owner| owner.parse::<ClientId>().ok())
+            != Some(client_id);
+        // Foreign replicas must not focus, hide or close the shared finder pane.
+        if self.foreign_client {
+            return;
+        }
         set_selectable(false);
         subscribe(&[
             EventType::PermissionRequestResult,
@@ -580,6 +592,9 @@ impl Finder {
     }
 
     pub fn event(&mut self, event: Event) -> bool {
+        if self.foreign_client {
+            return false;
+        }
         match event {
             Event::Timer(_) => {
                 let active = self.working_clock_active();
@@ -654,6 +669,9 @@ impl Finder {
         if let PipeSource::Cli(pipe) = &message.source {
             // Never strand an unexpected CLI sender, including malformed/bootstrap messages.
             unblock_cli_pipe_input(pipe);
+            return false;
+        }
+        if self.foreign_client {
             return false;
         }
         if message.name != UPDATE
@@ -1075,6 +1093,9 @@ impl Finder {
     }
 
     pub fn render(&mut self, rows: usize, columns: usize) {
+        if self.foreign_client {
+            return;
+        }
         if !self.granted || !self.visible() {
             return;
         }
@@ -1805,6 +1826,26 @@ mod tests {
         let mut foreign = state(3, 4);
         foreign.instance = "another-owner".to_owned();
         assert!(!finder.receive(foreign));
+    }
+
+    #[test]
+    fn foreign_client_replica_cannot_adopt_or_close_the_shared_finder() {
+        let mut finder = Finder::default();
+        finder.load(
+            &BTreeMap::from([
+                ("owner".to_owned(), "3".to_owned()),
+                ("owner_client_id".to_owned(), "1".to_owned()),
+                ("finder_instance".to_owned(), "owned-finder".to_owned()),
+            ]),
+            9,
+            2,
+        );
+        assert!(!finder.event(Event::PermissionRequestResult(PermissionStatus::Granted)));
+        assert!(!finder.granted);
+        assert!(!finder.event(Event::BeforeClose));
+        assert!(!finder.dismissed);
+        finder.render(40, 120);
+        assert!(finder.cursor.is_none());
     }
 
     #[test]
