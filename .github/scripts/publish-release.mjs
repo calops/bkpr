@@ -5,6 +5,9 @@ import versionPlugin from './version-plugin.cjs';
 const assets = ['CHANGELOG.md', 'Cargo.toml', 'Cargo.lock', 'flake.nix'];
 
 export async function publishRelease({ nextRelease }, { cwd = process.cwd(), env = process.env } = {}) {
+  if (!nextRelease.version.startsWith('0.')) {
+    throw new Error('Automatic releases must remain in 0.x; leaving 0.x requires a deliberate policy update.');
+  }
   const options = {
     cwd,
     env: {

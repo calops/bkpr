@@ -330,6 +330,8 @@ The broker wire protocol is version 3. New clients fail clearly against older br
 
 The Rust workspace contains the native launcher/metadata helper in `crates/bkpr` and the WASI sidebar/plugin in `crates/bkpr-zellij`. Zellij owns application PTYs; a session-wide plugin owns workspace metadata, with one native helper for Git and shared CI requests.
 
+Automatic releases remain in **0.x**. Breaking changes increment the minor version; the publisher rejects any computed nonzero major before changing release metadata or tags. A move to 1.0 requires a deliberate release-policy update.
+
 Use the devshell and incremental Cargo builds for iteration. The shell supplies the pinned [Bkpr Zellij fork](https://github.com/calops/bkpr-zellij/tree/main); no local patch application or native runtime build is needed for ordinary Bkpr development.
 
 ```sh
