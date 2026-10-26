@@ -3,7 +3,7 @@ use bkpr::agent_contract::{
     ProgramStatusUpdate, harness_name,
 };
 use bkpr::ci_contract::{CiRefreshTarget, CiSnapshot};
-use bkpr::context_contract::{ContextPane, ContextPublication, ContextWorkspace};
+use bkpr::context_contract::{ContextPane, ContextPublication, ContextWorkspace, PaneStatus};
 use bkpr::{
     Action, Attention, Effect, MAX_MESSAGE_BYTES, PROTOCOL_VERSION, Pane, ProjectIdentity, Request,
     Response, Snapshot, Status, Workspace,
@@ -896,8 +896,26 @@ impl Model {
                     agent_id: self
                         .pane_agent(*id)
                         .and_then(|agent| agent.agent_id.clone()),
+                    status: self.pane_status(*id),
                 })
                 .collect(),
+        })
+    }
+
+    /// Published harness status follows the sidebar's harness gating: only an
+    /// OSC 7501 record from a recognized harness, never generic program status.
+    fn pane_status(&self, id: u32) -> Option<PaneStatus> {
+        let has_process_harness = self.pane_agent(id).is_some();
+        let program = self.program_status.get(&id)?;
+        let record = program.harness_record(has_process_harness)?;
+        Some(PaneStatus {
+            state: record.status(),
+            attention: program.harness_attention(has_process_harness),
+            message: record
+                .msg
+                .as_deref()
+                .map(display_text)
+                .filter(|message| !message.is_empty()),
         })
     }
 
@@ -4755,6 +4773,60 @@ mod tests {
                 records,
             })
             .unwrap();
+    }
+
+    #[test]
+    fn publication_carries_harness_status_but_not_generic_status_or_progress() {
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1), pane(2)])]));
+        model.observe_roots(BTreeMap::from([(1, 101)]));
+        let mut working = program("working", "omp");
+        working.msg = Some("Running tests".to_owned());
+        working.progress = Some(10);
+        inspect_programs(&mut model, vec![execution(1)], vec![working.clone()], 1_000);
+        model
+            .apply_program_status(ProgramStatusUpdate {
+                pane_id: 2,
+                records: vec![program("working", "cargo")],
+            })
+            .unwrap();
+        let first = model.reserve_context(99, 5, false).unwrap();
+        assert_eq!(
+            first.panes[0].status,
+            Some(PaneStatus {
+                state: Status::Working,
+                attention: None,
+                message: Some("Running tests".to_owned()),
+            })
+        );
+        assert_eq!(first.panes[1].status, None);
+
+        working.progress = Some(90);
+        model
+            .apply_program_status(ProgramStatusUpdate {
+                pane_id: 1,
+                records: vec![working.clone()],
+            })
+            .unwrap();
+        assert!(model.reserve_context(99, 5, false).is_none());
+
+        let mut blocked = program("blocked", "omp");
+        blocked.kind = Some("permission".to_owned());
+        model
+            .apply_program_status(ProgramStatusUpdate {
+                pane_id: 1,
+                records: vec![blocked],
+            })
+            .unwrap();
+        let next = model.reserve_context(99, 5, false).unwrap();
+        assert_eq!(
+            next.panes[0].status,
+            Some(PaneStatus {
+                state: Status::Blocked,
+                attention: Some(Attention::Permission),
+                message: None,
+            })
+        );
     }
 
     #[test]
