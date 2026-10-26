@@ -116,6 +116,7 @@ fn register(broker: &mut Broker, workspace: &str) -> Request {
             workspace_id: workspace.to_string_lossy().into_owned(),
             pane_name: format!("{} pane", request.agent_id),
             agent_id: Some(request.agent_id.clone()),
+            status: None,
         },
     );
     context.publish();
@@ -1240,6 +1241,7 @@ fn live_workspace_scope_is_not_repository_session_or_receiver_readiness() {
                 workspace_id: workspace,
                 pane_name: "another session pane".into(),
                 agent_id: Some(dave.agent_id.clone()),
+                status: None,
             }],
         )
         .unwrap();
@@ -1774,4 +1776,37 @@ fn broker_spawn_is_detached_with_default_signals() {
             "signal {signal} ignored: {text}"
         );
     }
+}
+
+#[test]
+fn compact_discovery_reports_live_harness_status() {
+    let (_directory, mut broker) = broker();
+    let alice = register(&mut broker, "one");
+    let bob = register(&mut broker, "one");
+    let context = fixture(&broker);
+    context
+        .panes
+        .borrow_mut()
+        .get_mut(&bob.agent_id)
+        .unwrap()
+        .status = Some(bkpr::context_contract::PaneStatus {
+        state: bkpr::Status::Blocked,
+        attention: Some(bkpr::Attention::Question),
+        message: Some("Which branch?".into()),
+    });
+    context.publish();
+    let full = discovered(&mut broker, &alice, &bob);
+    assert_eq!(
+        full["context"]["status"],
+        json!({"state":"blocked","attention":"question","message":"Which branch?"})
+    );
+    let summary = agent_summary(&full);
+    assert_eq!(summary["status"], "blocked");
+    assert_eq!(summary["attention"], "question");
+    assert_eq!(summary["status_message"], "Which branch?");
+    assert!(
+        agent_summary(&discovered(&mut broker, &bob, &alice))
+            .get("status")
+            .is_none()
+    );
 }

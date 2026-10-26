@@ -1,4 +1,5 @@
 //! Live native session context; authority tokens are confined to internal publications.
+use crate::{Attention, Status};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,6 +18,20 @@ pub struct PaneContext {
     pub workspace_name: String,
     pub pane_id: String,
     pub pane_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<PaneStatus>,
+}
+
+/// Recognized harness status, sourced only from OSC 7501. Generic programs
+/// have none. Progress is excluded so it does not churn publications.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaneStatus {
+    pub state: Status,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention: Option<Attention>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +41,8 @@ pub struct ContextPane {
     pub workspace_id: String,
     pub pane_name: String,
     pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<PaneStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
