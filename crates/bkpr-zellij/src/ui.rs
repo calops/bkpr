@@ -1447,6 +1447,31 @@ pub struct Input {
 }
 
 impl Input {
+    pub fn key(&mut self, key: &zellij_tile::prelude::KeyWithModifier) -> bool {
+        use zellij_tile::prelude::{BareKey, KeyModifier};
+        if key.key_modifiers.contains(&KeyModifier::Alt)
+            || key.key_modifiers.contains(&KeyModifier::Super)
+        {
+            return false;
+        }
+        let ctrl = key.key_modifiers.contains(&KeyModifier::Ctrl);
+        match key.bare_key {
+            BareKey::Char('u') if ctrl => {
+                self.value.clear();
+                self.cursor = 0;
+            }
+            BareKey::Char(character) if !ctrl => self.insert(&character.to_string()),
+            BareKey::Backspace if !ctrl => self.backspace(),
+            BareKey::Delete if !ctrl => self.delete(),
+            BareKey::Left if !ctrl => self.left(),
+            BareKey::Right if !ctrl => self.right(),
+            BareKey::Home if !ctrl => self.cursor = 0,
+            BareKey::End if !ctrl => self.cursor = self.value.len(),
+            _ => return false,
+        }
+        true
+    }
+
     pub fn new(value: String) -> Self {
         let cursor = value.len();
         Self { value, cursor }
@@ -1506,34 +1531,13 @@ impl Input {
 }
 
 pub enum Modal {
-    Create {
-        name: Input,
-        cwd: Input,
-        cwd_active: bool,
-    },
-    CreatePane {
-        workspace_id: String,
-        cwd: Input,
-    },
-    Rename {
-        item: Item,
-        input: Input,
-    },
-    Close {
-        item: Item,
-        name: String,
-    },
+    Rename { item: Item, input: Input },
+    Close { item: Item, name: String },
 }
 
 impl Modal {
     pub fn input_mut(&mut self) -> Option<&mut Input> {
         match self {
-            Self::Create {
-                name,
-                cwd,
-                cwd_active,
-            } => Some(if *cwd_active { cwd } else { name }),
-            Self::CreatePane { cwd, .. } => Some(cwd),
             Self::Rename { input, .. } => Some(input),
             Self::Close { .. } => None,
         }
@@ -1541,39 +1545,6 @@ impl Modal {
 
     pub fn lines(&self, columns: usize) -> (Vec<String>, Option<(usize, usize)>) {
         match self {
-            Self::Create {
-                name,
-                cwd,
-                cwd_active,
-            } => {
-                let (name_line, name_cursor) = name.visible(columns.saturating_sub(2));
-                let (cwd_line, cwd_cursor) = cwd.visible(columns.saturating_sub(2));
-                (
-                    vec![
-                        "Create workspace".to_owned(),
-                        "Name (optional):".to_owned(),
-                        format!("  {name_line}"),
-                        "Directory (optional):".to_owned(),
-                        format!("  {cwd_line}"),
-                    ],
-                    Some(if *cwd_active {
-                        (2 + cwd_cursor, 4)
-                    } else {
-                        (2 + name_cursor, 2)
-                    }),
-                )
-            }
-            Self::CreatePane { cwd, .. } => {
-                let (line, cursor) = cwd.visible(columns.saturating_sub(2));
-                (
-                    vec![
-                        "Create terminal".to_owned(),
-                        "Directory (optional):".to_owned(),
-                        format!("  {line}"),
-                    ],
-                    Some((2 + cursor, 2)),
-                )
-            }
             Self::Rename { input, .. } => {
                 let (line, cursor) = input.visible(columns.saturating_sub(2));
                 (

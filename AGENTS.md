@@ -3,7 +3,7 @@
 ## Boundaries
 
 - `crates/bkpr` owns the native launcher, Git/CI, SSH forwarding and typed state contract. `crates/bkpr-zellij` owns WASI sidebar, finder and passive overlays. Zellij owns PTYs, input, native panes/tabs and live sessions; Bkpr owns recovery records and `bkpr resume`. Never mirror terminal output through the plugin.
-- Keep workspace-first grouping and stock Zellij controls. Every fresh launch, attachment and recovery starts its own client Locked, without changing other attached clients or rewriting legacy session assets. Honor explicit attachment modes on the attaching IPC connection before input starts, including against older servers. Ctrl+Space focuses sidebar controls. Passive details and shortcut cards never take keyboard focus or move the application cursor. Finder alone is a focused modal. Native splits/tabs must remain discoverable; close terminates, not hides.
+- Keep workspace-first grouping and stock Zellij controls. Every fresh launch, attachment and recovery starts its own client Locked, without changing other attached clients or rewriting legacy session assets. Honor explicit attachment modes on the attaching IPC connection before input starts, including against older servers. Ctrl+Space focuses sidebar controls. Passive details and shortcut cards never take keyboard focus or move the application cursor. Finder and creation forms share the focused-overlay host/controller; keep domain content separate from transport, readiness, framing, cursor and focus restoration. Native splits/tabs must remain discoverable; close terminates, not hides.
 - Recognized harness status comes only from OSC 7501. Process/CWD recognition and OSC 0/2 titles are separate. Generic programs do not get harness-status badges; Git/CI remains available to them. Do not infer semantic state from titles, progress, output or process presence.
 - Do not change a user's harness profiles, persistent third-party settings, credentials or GitHub account. Claude's launch-local hooks supplement titles and capture native session IDs; launch-local MCP communication does not produce harness status. Antigravity is recognition-only.
 - Prefer Bkpr-owned APIs and push events. Add changes to the native fork only when its plugin/launcher API cannot provide the behavior; keep each change on a retained feature branch.
@@ -49,6 +49,8 @@
 
 Use `nix develop` and incremental debug Cargo artifacts in `target/`. Use `just build` to build the launcher and WASI plugin together, and `just run [args…]` to build both before launching with the matching plugin. Run coordinated checks once after edits: `cargo test --locked --workspace`, `cargo build --locked -p bkpr-zellij --target wasm32-wasip1`, host/WASI `cargo clippy --locked ... -- -D warnings`. Use `nix build .#bkpr` only for packaging validation, not the edit/run loop.
 
+Reuse the existing checkouts for sequential feature work; do not create sibling feature worktrees under `~/projects`. If concurrent work genuinely requires a worktree, place it under `~/.local/share/bkpr/worktrees/<repository>/` and point `CARGO_TARGET_DIR` at the canonical checkout's existing `target/`. Do not create per-feature Cargo target directories. Preserve a known-good runtime binary outside the build output when a live-session or comparison fixture needs it; do not isolate builds by discarding the incremental cache.
+
 Keep procfs signal probes and verified process-birth-identity tests Linux-only, including their helpers. Portable recovery inspection must remain read-only and report unknown process identity as not live; do not weaken production liveness checks to make another platform's tests pass.
 
 ### Forked Zellij runtime
@@ -59,7 +61,7 @@ The fork polls stable Zellij releases daily and opens `update/zellij-vX.Y.Z` PRs
 
 Normal Bkpr development is `nix develop`, then `just run --session dev`. The shell supplies `just` and the pinned native runtime; the recipe builds both debug components and selects the matching WASM, including with `CARGO_TARGET_DIR`. Plain `cargo run --locked -p bkpr` builds only the launcher, so the WASI plugin must be built separately. Use `--zellij ../bkpr-zellij/target/debug/zellij` to select an incremental native build explicitly; the argument is an executable path, not a checkout directory. Use incremental Cargo artifacts for tests and iteration, not `nix build`; reserve Nix builds for explicit packaging validation.
 
-For native changes, clone the fork beside Bkpr and work on a retained feature branch. In that checkout:
+For native changes, reuse the existing fork checkout beside Bkpr and work on a retained feature branch. Keep its `target/` across branches; additional worktrees must use that same directory via `CARGO_TARGET_DIR`. In the canonical checkout:
 
 ```sh
 nix develop --accept-flake-config

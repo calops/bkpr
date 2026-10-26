@@ -20,7 +20,7 @@ nix profile install .
 bkpr --session project
 ```
 
-The Nix package includes the native launcher, WASM plugin and Bkpr's Zellij 0.45.1 fork (`zellij 0.45.1-bkpr.4`). Git and GitHub CLI are discovered on the host when available. A Nerd Font is recommended for the sidebar icons. `bkpr --help` lists launch options, including the session name and initial sidebar width.
+The Nix package includes the native launcher, WASM plugin and Bkpr's Zellij 0.45.1 fork (`zellij 0.45.1-bkpr.6`). Git and GitHub CLI are discovered on the host when available. A Nerd Font is recommended for the sidebar icons. `bkpr --help` lists launch options, including the session name and initial sidebar width.
 
 Cached runtime packages do not require Rust or Cargo. The compiler belongs in the development shell and source builds, not the runtime closure.
 
@@ -135,11 +135,15 @@ Locked is only the client's initial mode; Normal remains the base mode, so sideb
 
 A left click activates a workspace or terminal without moving keyboard focus into the sidebar. Hover highlights a row and opens its details; moving into the popup keeps it open, and leaving both closes it. Sidebar focus opens the selected row's details automatically, and keyboard navigation follows the selection. Right click has no special popup behavior. Details include available activity, CWD, repository, pull request and checks, with clickable links.
 
-Moving or closing details repaints only the exposed terminal cells. Moving the pointer within an unchanged popup does not redraw it; refresh-button hover styling still updates. Cursorless sidebar controls and passive cards preserve the last input-cursor position, including hidden cursors, so terminal cursor trails do not jump between paint regions. Rename dialogs and the finder retain their own input cursors.
+Moving or closing details repaints only the exposed terminal cells. Moving the pointer within an unchanged popup does not redraw it; refresh-button hover styling still updates. Cursorless sidebar controls and passive cards preserve the last input-cursor position, including hidden cursors, so terminal cursor trails do not jump between paint regions. Rename dialogs and focused overlays retain their own input cursors.
 
 The first sidebar line centers the beekeeper icon and project name. Workspaces and terminals use dot markers; recognized harnesses keep their separate identity icons beside their names. Item rows keep a left gutter for the hover outline and use the rightmost sidebar column.
 
 Each sidebar-created terminal opens in its own native tab, grouped under its workspace. Stock splits remain available. Drag the separator to resize the sidebar, or use Zellij's resize mode. New sidebar-created tabs inherit the current width, folds and scroll position while their live state arrives.
+
+The pane finder and **n / N** creation prompts use centered, titled, bordered overlays. Workspace creation accepts an optional name and working directory; terminal creation keeps the selected workspace and accepts an optional directory. **Tab** switches workspace fields, **Ctrl+u** clears the current field, and **Esc** cancels before creation is dispatched. Once dispatched, creation waits for its result; an error keeps the form available for correction and retry.
+
+Focused overlays dim surrounding terminal text using terminal-native faint styling. Raster-image pixels are unchanged. Overlays are local to the client that opened them; other clients keep their focus and undimmed view. Passive details and shortcut cards do not dim the UI. These overlays require a fresh native session; existing sessions remain attachable with their retained UI.
 
 | Context | Key | Action |
 | --- | --- | --- |

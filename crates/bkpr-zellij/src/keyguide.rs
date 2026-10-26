@@ -8,6 +8,7 @@ pub enum Context {
     Application,
     Sidebar { selected: bool },
     Edit { multiple_fields: bool },
+    Create { multiple_fields: bool },
     Confirm,
     Finder,
 }
@@ -149,7 +150,9 @@ fn native_hint(actions: &[Action], mode: InputMode, context: Context) -> Option<
             {
                 match payload.as_deref() {
                     Some("toggle") => (
-                        if application || context == Context::Finder {
+                        if application
+                            || matches!(context, Context::Finder | Context::Create { .. })
+                        {
                             "sidebar"
                         } else {
                             "return to app"
@@ -157,6 +160,7 @@ fn native_hint(actions: &[Action], mode: InputMode, context: Context) -> Option<
                         0,
                     ),
                     Some("leave") if context == Context::Finder => ("close finder", 0),
+                    Some("leave") if matches!(context, Context::Create { .. }) => ("cancel", 0),
                     Some("leave") if !application => ("return to app", 0),
                     Some("leave") => continue,
                     _ => return None,
@@ -447,9 +451,18 @@ fn hints(mode: Mode<'_>, context: Context) -> Vec<Hint> {
                 );
                 local(&[PageUp, PageDown], false, "page", 36);
             }
-            Context::Edit { multiple_fields } => {
+            Context::Edit { multiple_fields } | Context::Create { multiple_fields } => {
                 local(&[Esc], false, "cancel", 0);
-                local(&[Enter], false, "save", 1);
+                local(
+                    &[Enter],
+                    false,
+                    if matches!(context, Context::Create { .. }) {
+                        "create"
+                    } else {
+                        "save"
+                    },
+                    1,
+                );
                 if multiple_fields {
                     local(&[Tab], false, "next field", 10);
                 }
@@ -500,6 +513,12 @@ fn title(mode: Option<Mode<'_>>, context: Context) -> String {
             Context::Application => "",
             Context::Sidebar { .. } => " · Sidebar",
             Context::Edit { .. } => " · Sidebar edit",
+            Context::Create {
+                multiple_fields: true,
+            } => " · New workspace",
+            Context::Create {
+                multiple_fields: false,
+            } => " · New terminal",
             Context::Confirm => " · Sidebar confirm",
             Context::Finder => " · Finder",
         });
@@ -1565,6 +1584,12 @@ mod tests {
                     Context::Sidebar { selected: true },
                     Context::Edit {
                         multiple_fields: true,
+                    },
+                    Context::Create {
+                        multiple_fields: true,
+                    },
+                    Context::Create {
+                        multiple_fields: false,
                     },
                     Context::Confirm,
                     Context::Finder,

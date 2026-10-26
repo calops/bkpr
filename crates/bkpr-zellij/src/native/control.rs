@@ -135,7 +135,7 @@ pub(crate) fn sidebar_control_pipe(frontend: &mut crate::Frontend, message: &Pip
     };
     if frontend.overlay_role
         || frontend.guide_role
-        || frontend.finder_role
+        || frontend.focused_role
         || frontend.configuration.get("role").map(String::as_str) != Some("sidebar")
     {
         return false;

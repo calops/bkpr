@@ -795,9 +795,9 @@ fn plugin_path(explicit: Option<PathBuf>, program: &Path) -> Result<PathBuf> {
 fn check_zellij(program: &Path) -> Result<()> {
     let result = Command::new(program).arg("--version").output()?;
     let version = String::from_utf8(result.stdout)?;
-    if !result.status.success() || version.trim() != "zellij 0.45.1-bkpr.5" {
+    if !result.status.success() || version.trim() != "zellij 0.45.1-bkpr.6" {
         bail!(
-            "this frontend requires Zellij 0.45.1-bkpr.5; detected {}",
+            "this frontend requires Zellij 0.45.1-bkpr.6; detected {}",
             version.trim()
         );
     }

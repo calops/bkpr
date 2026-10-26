@@ -1,6 +1,7 @@
 mod animation;
 mod finder;
 mod finder_entry;
+mod focused;
 mod keyguide;
 mod native;
 mod overlay;
@@ -97,15 +98,6 @@ struct NativeRequestIdentity {
     request_id: u64,
 }
 
-struct FinderReturn {
-    sidebar: bool,
-    terminal: Option<u32>,
-    cursor: Option<Item>,
-    mode: InputMode,
-    ready: bool,
-    locked: bool,
-}
-
 #[derive(Default)]
 struct Frontend {
     configuration: BTreeMap<String, String>,
@@ -114,7 +106,7 @@ struct Frontend {
     overlay_role: bool,
     guide_role: bool,
     native_owner_role: bool,
-    finder_role: bool,
+    focused_role: bool,
     native_owner: native::Owner,
     native_owner_id: Option<u32>,
     native_client: String,
@@ -129,9 +121,8 @@ struct Frontend {
     tooltip: overlay::Controller,
     guide_view: overlay::GuideOverlay,
     guide_popup: overlay::GuideController,
-    finder_view: finder::Finder,
-    finder: finder::Controller,
-    finder_return: Option<FinderReturn>,
+    focused_view: focused::Host,
+    focused: focused::Controller,
     theme: ui::Theme,
     mode: Option<ModeState>,
     mode_intent: Option<InputMode>,
@@ -185,23 +176,23 @@ struct Frontend {
 register_plugin!(Frontend);
 
 impl Frontend {
-    fn finder_dimensions(&self) -> Option<(usize, usize)> {
+    fn focused_dimensions(&self) -> Option<(usize, usize)> {
         let tab = self.tabs.iter().find(|tab| tab.active)?;
         (tab.display_area_columns > 0 && tab.display_area_rows > 0)
             .then_some((tab.display_area_columns, tab.display_area_rows))
     }
 
-    fn open_finder(&mut self) {
-        if !self.granted || !self.visible || self.modal.is_some() || self.finder.is_open() {
+    fn open_focused(&mut self, kind: focused::Kind) {
+        if !self.granted || !self.visible || self.modal.is_some() || self.focused.is_open() {
             return;
         }
-        let Some((columns, rows)) = self.finder_dimensions() else {
+        let Some((columns, rows)) = self.focused_dimensions() else {
             return;
         };
         let Some(snapshot) = self.snapshot.as_ref() else {
             return;
         };
-        self.finder_return = Some(FinderReturn {
+        self.focused.context = Some(focused::ReturnContext {
             sidebar: self.keyboard_control,
             terminal: self.control_terminal.or(self.native_focus),
             cursor: self.cursor.clone(),
@@ -212,27 +203,47 @@ impl Frontend {
             ready: false,
             locked: false,
         });
-        self.finder
-            .open(self.id, &self.configuration, snapshot, columns, rows);
+        self.focused
+            .open(self.id, &self.configuration, snapshot, kind, columns, rows);
         self.hide_tooltip();
         // Keep ownership of input until the guest acknowledges all warmup keystrokes.
         self.request_mode(InputMode::Locked);
         self.reconcile_viewport(false);
     }
 
-    fn refresh_finder(&mut self) {
-        if self.finder.is_open()
-            && let Some((columns, rows)) = self.finder_dimensions()
+    fn refresh_focused(&mut self) {
+        if self.focused.is_open()
+            && let Some((columns, rows)) = self.focused_dimensions()
             && let Some(snapshot) = self.snapshot.as_ref()
         {
-            self.finder
+            self.focused
                 .update(self.id, &self.configuration, snapshot, columns, rows);
         }
     }
 
-    fn close_finder(&mut self, restore: bool) {
-        self.finder.close(self.id, &self.configuration);
-        let Some(context) = self.finder_return.take() else {
+    fn cancel_focused(&mut self, restore: bool) {
+        // A dispatched creation cannot be unsent. Keep its result correlated rather
+        // than claiming Esc aborted it; queued creations are still cancellable.
+        if restore
+            && self.focused.submission.is_some_and(|id| {
+                self.in_flight
+                    .as_ref()
+                    .is_some_and(|request| request.request_id == id)
+            })
+        {
+            return;
+        }
+        self.close_focused(restore);
+    }
+
+    fn close_focused(&mut self, restore: bool) {
+        if let Some(request_id) = self.focused.submission.take() {
+            self.queue
+                .retain(|queued| queued.request.request_id != request_id);
+            self.finish_user_action();
+        }
+        self.focused.close(self.id, &self.configuration);
+        let Some(context) = self.focused.context.take() else {
             return;
         };
         if restore && self.visible {
@@ -261,26 +272,30 @@ impl Frontend {
         self.refresh_tooltip();
     }
 
-    fn finder_pipe(&mut self, message: &PipeMessage) -> bool {
-        let Some(notice) = self.finder.pipe(message, self.id, &self.configuration) else {
+    fn focused_pipe(&mut self, message: &PipeMessage) -> bool {
+        let Some(notice) = self.focused.pipe(message, self.id, &self.configuration) else {
             return false;
         };
         match notice {
-            finder::Notice::Ready => {
-                let Some(context) = self.finder_return.as_mut() else {
-                    self.finder.close(self.id, &self.configuration);
+            focused::Notice::Ready => {
+                let Some(context) = self.focused.context.as_mut() else {
+                    self.focused.close(self.id, &self.configuration);
                     return false;
                 };
                 context.ready = true;
                 self.leave_control(false);
                 self.request_mode(InputMode::Locked);
-                if let Some(id) = self.finder.id {
+                if let Some(id) = self.focused.id {
                     focus_plugin_pane(id, true, false);
                 }
             }
-            finder::Notice::Cancelled { restore } => self.close_finder(restore),
-            finder::Notice::Selected { pane_id } => {
-                self.finder_return = None;
+            focused::Notice::Cancelled { restore } => self.cancel_focused(restore),
+            focused::Notice::Submitted(action) => {
+                self.focused.submission = Some(self.request_id.saturating_add(1));
+                self.enqueue(action);
+            }
+            focused::Notice::Selected { pane_id } => {
+                self.focused.context = None;
                 self.leave_control(false);
                 self.request_mode(InputMode::Locked);
                 self.cursor = Some(Item::Pane(pane_id));
@@ -291,18 +306,38 @@ impl Frontend {
         true
     }
 
+    fn finish_focused_submission(&mut self, request_id: u64, error: Option<String>) {
+        if self.focused.submission != Some(request_id) {
+            return;
+        }
+        self.focused.submission = None;
+        if let Some(error) = error {
+            self.focused
+                .submission_failed(error, self.id, &self.configuration);
+        } else {
+            self.focused.close(self.id, &self.configuration);
+            self.focused.context = None;
+            self.request_mode(InputMode::Locked);
+        }
+    }
+
     fn keyguide_context(&self) -> keyguide::Context {
-        if self.finder.is_open() {
-            return keyguide::Context::Finder;
+        if let Some(kind) = self.focused.kind() {
+            return match kind {
+                focused::Kind::Finder => keyguide::Context::Finder,
+                focused::Kind::Workspace => keyguide::Context::Create {
+                    multiple_fields: true,
+                },
+                focused::Kind::Pane { .. } => keyguide::Context::Create {
+                    multiple_fields: false,
+                },
+            };
         }
         if !self.keyboard_control {
             return keyguide::Context::Application;
         }
         match &self.modal {
-            Some(Modal::Create { .. }) => keyguide::Context::Edit {
-                multiple_fields: true,
-            },
-            Some(Modal::CreatePane { .. } | Modal::Rename { .. }) => keyguide::Context::Edit {
+            Some(Modal::Rename { .. }) => keyguide::Context::Edit {
                 multiple_fields: false,
             },
             Some(Modal::Close { .. }) => keyguide::Context::Confirm,
@@ -322,8 +357,8 @@ impl Frontend {
         if self.guide_role {
             return self.guide_view.set_terminal_colors(&colors);
         }
-        if self.finder_role {
-            return self.finder_view.set_terminal_colors(&colors);
+        if self.focused_role {
+            return self.focused_view.set_terminal_colors(&colors);
         }
         if self.native_owner_role || !self.theme.update(&colors) {
             return false;
@@ -415,7 +450,7 @@ impl Frontend {
     }
 
     fn mode_changed(&mut self, mode: InputMode, changed: bool) -> bool {
-        let dismiss_finder = self.finder_return.as_mut().is_some_and(|context| {
+        let dismiss_focused = self.focused.context.as_mut().is_some_and(|context| {
             if mode == InputMode::Locked {
                 context.locked = true;
                 false
@@ -428,9 +463,9 @@ impl Frontend {
             && mode == InputMode::Locked
             && self.mode_intent.is_none()
             && self.modal.is_none()
-            && !self.finder.is_open();
-        if dismiss_finder {
-            self.close_finder(false);
+            && !self.focused.is_open();
+        if dismiss_focused {
+            self.close_focused(false);
         }
         self.keyguide_dirty |= changed;
         if leave_control {
@@ -447,7 +482,7 @@ impl Frontend {
         if !self.granted
             || !self.visible
             || self.guide_mode()? == InputMode::Locked
-            || self.finder.is_open()
+            || self.focused.is_open()
         {
             return None;
         }
@@ -488,7 +523,6 @@ impl Frontend {
         let mut content_rows = available.div_ceil(2).min(4);
         if self.modal.is_some() {
             let modal_rows = match self.modal {
-                Some(Modal::Create { .. }) => 5,
                 Some(Modal::Close { .. }) => 4,
                 _ => 3,
             };
@@ -667,8 +701,9 @@ impl Frontend {
         if !active_sidebar {
             return false;
         }
-        if self.finder.is_open() && matches!(message.payload.as_deref(), Some("toggle" | "leave")) {
-            self.close_finder(true);
+        if self.focused.is_open() && matches!(message.payload.as_deref(), Some("toggle" | "leave"))
+        {
+            self.close_focused(true);
             return true;
         }
         match message.payload.as_deref() {
@@ -896,7 +931,9 @@ impl Frontend {
             return_mode,
             view.as_ref(),
         ) {
-            self.error = Some(format!("Cannot encode native request: {error}"));
+            let error = format!("Cannot encode native request: {error}");
+            self.error = Some(error.clone());
+            self.finish_focused_submission(request.request_id, Some(error));
             self.finish_selection(request.request_id, true);
         } else {
             self.in_flight = Some(request);
@@ -956,6 +993,7 @@ impl Frontend {
                 {
                     self.local_selection = false;
                 }
+                self.finish_focused_submission(request.request_id, None);
                 for effect in response.effects {
                     // A superseded click must not move host focus back to an older target.
                     if !obsolete_selection || !matches!(effect, Effect::FocusPane { .. }) {
@@ -963,6 +1001,9 @@ impl Frontend {
                     }
                 }
             }
+        }
+        if failed {
+            self.finish_focused_submission(request.request_id, self.error.clone());
         }
         self.finish_selection(request.request_id, failed);
         self.ensure_cursor_visible();
@@ -1020,7 +1061,7 @@ impl Frontend {
                         .is_some_and(|current| current.instance_id != state.instance_id)
                 {
                     self.reset_pending_actions();
-                    self.close_finder(false);
+                    self.close_focused(false);
                 }
                 let follow_focus = self.desired_selection.is_none()
                     && self.relayed_selection.is_none()
@@ -1049,7 +1090,7 @@ impl Frontend {
                     self.ensure_cursor_visible();
                 }
                 self.refresh_tooltip();
-                self.refresh_finder();
+                self.refresh_focused();
                 true
             }
             Ok(false) => true,
@@ -1406,7 +1447,7 @@ impl Frontend {
             return;
         }
         self.reconcile_viewport(false);
-        if !self.visible || self.modal.is_some() || self.finder.is_open() {
+        if !self.visible || self.modal.is_some() || self.focused.is_open() {
             self.hide_tooltip();
             return;
         }
@@ -1452,7 +1493,7 @@ impl Frontend {
                     self.popup_cache.len() - 1
                 });
         let height = self.tree_height();
-        let tooltip = if self.visible && self.modal.is_none() && !self.finder.is_open() {
+        let tooltip = if self.visible && self.modal.is_none() && !self.focused.is_open() {
             self.popup_item
                 .as_ref()
                 .zip(self.snapshot.as_ref())
@@ -1651,14 +1692,6 @@ impl Frontend {
                 return;
             };
             let action = match modal {
-                Modal::Create { name, cwd, .. } => Action::CreateWorkspace {
-                    label: (!name.value.trim().is_empty()).then(|| name.value.trim().to_owned()),
-                    cwd: (!cwd.value.trim().is_empty()).then(|| cwd.value.trim().to_owned()),
-                },
-                Modal::CreatePane { workspace_id, cwd } => Action::CreatePane {
-                    workspace_id,
-                    cwd: (!cwd.value.trim().is_empty()).then(|| cwd.value.trim().to_owned()),
-                },
                 Modal::Rename { item, input } => {
                     let label = input.value.trim().to_owned();
                     if label.is_empty() {
@@ -1683,54 +1716,28 @@ impl Frontend {
             self.enqueue(action);
             return;
         }
-        if key.bare_key == BareKey::Tab {
-            if let Some(Modal::Create { cwd_active, .. }) = self.modal.as_mut() {
-                *cwd_active = !*cwd_active;
-            }
-            return;
-        }
         let Some(input) = self.modal.as_mut().and_then(Modal::input_mut) else {
             return;
         };
-        if key.key_modifiers.contains(&KeyModifier::Ctrl) {
-            if matches!(key.bare_key, BareKey::Char('u')) {
-                input.value.clear();
-                input.cursor = 0;
-            }
-            return;
-        }
-        if key.key_modifiers.contains(&KeyModifier::Alt)
-            || key.key_modifiers.contains(&KeyModifier::Super)
-        {
-            return;
-        }
-        match key.bare_key {
-            BareKey::Char(character) => input.insert(&character.to_string()),
-            BareKey::Backspace => input.backspace(),
-            BareKey::Delete => input.delete(),
-            BareKey::Left => input.left(),
-            BareKey::Right => input.right(),
-            BareKey::Home => input.cursor = 0,
-            BareKey::End => input.cursor = input.value.len(),
-            _ => {}
-        }
+        input.key(&key);
     }
 
     fn key(&mut self, key: KeyWithModifier) {
         self.reconcile_viewport(false);
         self.last_click = None;
-        if self.finder.is_open() {
+        if self.focused.is_open() {
             if key.bare_key == BareKey::Esc
                 && key.key_modifiers.is_empty()
                 && self
-                    .finder_return
+                    .focused
+                    .context
                     .as_ref()
                     .is_some_and(|context| !context.ready)
             {
-                self.close_finder(true);
+                self.cancel_focused(true);
             } else {
-                self.finder
-                    .input(finder::Input::Key(key), self.id, &self.configuration);
+                self.focused
+                    .input(focused::Input::Key(key), self.id, &self.configuration);
             }
             return;
         }
@@ -1770,7 +1777,7 @@ impl Frontend {
             self.hover = None;
         }
         match bare_key {
-            BareKey::Char('/') if self.keyboard_control => self.open_finder(),
+            BareKey::Char('/') if self.keyboard_control => self.open_focused(focused::Kind::Finder),
             BareKey::Up | BareKey::Char('k') => self.navigate(-1),
             BareKey::Down | BareKey::Char('j') => self.navigate(1),
             BareKey::PageUp => self.navigate(-(self.tree_height() as isize / 2).max(1)),
@@ -1797,15 +1804,7 @@ impl Frontend {
                     self.fold(workspace, folded);
                 }
             }
-            BareKey::Char('n') => {
-                self.modal = Some(Modal::Create {
-                    name: ui::Input::default(),
-                    cwd: ui::Input::default(),
-                    cwd_active: false,
-                });
-                self.hide_tooltip();
-                self.request_mode(InputMode::Locked);
-            }
+            BareKey::Char('n') => self.open_focused(focused::Kind::Workspace),
             BareKey::Char('N') => {
                 let workspace = self
                     .cursor
@@ -1817,12 +1816,7 @@ impl Frontend {
                     })
                     .map(str::to_owned);
                 if let Some(workspace_id) = workspace {
-                    self.modal = Some(Modal::CreatePane {
-                        workspace_id,
-                        cwd: ui::Input::default(),
-                    });
-                    self.hide_tooltip();
-                    self.request_mode(InputMode::Locked);
+                    self.open_focused(focused::Kind::Pane { workspace_id });
                 }
             }
             BareKey::Char('r') => self.edit_selected(false),
@@ -1846,7 +1840,7 @@ impl Frontend {
     }
 
     fn mouse(&mut self, mouse: Mouse) -> bool {
-        if self.modal.is_some() || self.finder.is_open() {
+        if self.modal.is_some() || self.focused.is_open() {
             return false;
         }
         let viewport_changed = self.reconcile_viewport(false);
@@ -1958,7 +1952,7 @@ impl Frontend {
     }
 
     fn working_clock_visible(&self) -> bool {
-        if !self.granted || !self.visible || self.modal.is_some() || self.finder.is_open() {
+        if !self.granted || !self.visible || self.modal.is_some() || self.focused.is_open() {
             return false;
         }
         if let Some(tab) = self.tabs.iter().find(|tab| tab.active)
@@ -2019,7 +2013,7 @@ impl Frontend {
         self.rows = rows;
         self.columns = columns;
         if resized {
-            self.refresh_finder();
+            self.refresh_focused();
         }
         let viewport_changed = self.reconcile_viewport(resized);
         if rows > 0 && columns > 0 {
@@ -2184,7 +2178,8 @@ impl ZellijPlugin for Frontend {
         self.id = ids.plugin_id;
         self.client_id = ids.client_id;
         self.tooltip.client_id = ids.client_id;
-        self.finder.client_id = ids.client_id;
+        self.guide_popup.client_id = ids.client_id;
+        self.focused.client_id = ids.client_id;
         self.visible = true;
         self.overlay_role = configuration
             .get("role")
@@ -2192,8 +2187,9 @@ impl ZellijPlugin for Frontend {
         self.guide_role = configuration.get("role").map(String::as_str) == Some("guide-overlay");
         self.native_owner_role =
             configuration.get("role").map(String::as_str) == Some("native-owner");
-        self.finder_role = configuration.get("role").map(String::as_str) == Some("finder");
-        if !self.overlay_role && !self.guide_role && !self.native_owner_role && !self.finder_role {
+        self.focused_role =
+            configuration.get("role").map(String::as_str) == Some("focused-overlay");
+        if !self.overlay_role && !self.guide_role && !self.native_owner_role && !self.focused_role {
             self.extract_sidebar_bootstrap(&mut configuration);
             // Host event routing is not part of the sidebar's application configuration.
             configuration.remove("mode_info_format");
@@ -2217,15 +2213,16 @@ impl ZellijPlugin for Frontend {
             return;
         }
         if self.guide_role {
-            self.guide_view.load(&self.configuration, self.id);
+            self.guide_view
+                .load(&self.configuration, self.id, ids.client_id);
             return;
         }
         if self.native_owner_role {
             self.native_owner.load(&self.configuration);
             return;
         }
-        if self.finder_role {
-            self.finder_view
+        if self.focused_role {
+            self.focused_view
                 .load(&self.configuration, self.id, ids.client_id);
             return;
         }
@@ -2275,8 +2272,8 @@ impl ZellijPlugin for Frontend {
         if self.native_owner_role {
             return self.native_owner.event(event);
         }
-        if self.finder_role {
-            return self.finder_view.event(event);
+        if self.focused_role {
+            return self.focused_view.event(event);
         }
         if matches!(&event, Event::Timer(_)) {
             native::expire_control_ready(self);
@@ -2343,12 +2340,12 @@ impl ZellijPlugin for Frontend {
                     self.popup_hover = false;
                     self.popup_probe = false;
                     self.popup_probe_revision = None;
-                    self.close_finder(false);
+                    self.close_focused(false);
                 }
                 self.tabs = tabs;
                 self.synchronize_focus();
                 self.refresh_tooltip();
-                self.refresh_finder();
+                self.refresh_focused();
                 return before
                     != (
                         self.native_focus,
@@ -2366,9 +2363,9 @@ impl ZellijPlugin for Frontend {
                 self.tooltip.forget(id);
                 self.guide_popup.forget(id);
                 self.keyguide_dirty = true;
-                if self.finder.id == Some(id) {
-                    self.finder.forget(id);
-                    self.finder_return = None;
+                if self.focused.id == Some(id) {
+                    self.focused.forget(id);
+                    self.close_focused(true);
                 }
                 if self.native_owner_id == Some(id) && self.granted {
                     self.native_owner_id = None;
@@ -2398,9 +2395,9 @@ impl ZellijPlugin for Frontend {
                 return self.timer(now);
             }
             Event::PastedText(text) if self.granted => {
-                if self.finder.is_open() {
-                    self.finder
-                        .input(finder::Input::Paste(text), self.id, &self.configuration);
+                if self.focused.is_open() {
+                    self.focused
+                        .input(focused::Input::Paste(text), self.id, &self.configuration);
                 } else if let Some(input) = self.modal.as_mut().and_then(Modal::input_mut) {
                     input.insert(&text);
                 }
@@ -2413,7 +2410,7 @@ impl ZellijPlugin for Frontend {
                 self.keyguide_dirty = true;
                 if !visible {
                     self.working_clock.schedule(Instant::now(), false);
-                    self.close_finder(false);
+                    self.close_focused(false);
                     self.leave_control(false);
                     self.control_has_focus = false;
                     self.local_selection = false;
@@ -2429,7 +2426,7 @@ impl ZellijPlugin for Frontend {
             }
             Event::BeforeClose if self.granted => {
                 self.working_clock.schedule(Instant::now(), false);
-                self.close_finder(false);
+                self.close_focused(false);
                 self.leave_control(false);
                 self.tooltip.close(self.id, &self.configuration);
                 self.guide_popup.close(self.id, &self.configuration);
@@ -2440,6 +2437,9 @@ impl ZellijPlugin for Frontend {
     }
 
     fn pipe(&mut self, message: PipeMessage) -> bool {
+        if self.focused_role {
+            return self.focused_view.pipe(message);
+        }
         // Broadcast CLI pipes must be acknowledged by every loaded replica, not only owners.
         if message.name == native::CONTROL && !self.native_owner_role {
             return native::sidebar_control_pipe(self, &message);
@@ -2453,16 +2453,13 @@ impl ZellijPlugin for Frontend {
         if self.native_owner_role {
             return self.native_owner.pipe(message);
         }
-        if self.finder_role {
-            return self.finder_view.pipe(message);
-        }
         if self.granted
             && matches!(
                 message.name.as_str(),
-                finder::READY | finder::CANCEL | finder::SELECTED
+                focused::READY | focused::CANCEL | focused::SELECTED | focused::SUBMIT
             )
         {
-            return self.finder_pipe(&message);
+            return self.focused_pipe(&message);
         }
         if message.name == CONTROL_PIPE {
             return self.control_pipe(&message);
@@ -2613,8 +2610,8 @@ impl ZellijPlugin for Frontend {
             self.overlay.render(rows, columns);
         } else if self.guide_role {
             self.guide_view.render(rows, columns);
-        } else if self.finder_role {
-            self.finder_view.render(rows, columns);
+        } else if self.focused_role {
+            self.focused_view.render(rows, columns);
         } else if !self.native_owner_role {
             self.render_sidebar(rows, columns);
         }
@@ -3495,10 +3492,9 @@ mod tests {
                 frontend.render_cursor = Some(None);
                 frontend.keyboard_control = true;
                 frontend.control_has_focus = true;
-                frontend.modal = Some(Modal::Create {
-                    name: ui::Input::default(),
-                    cwd: ui::Input::default(),
-                    cwd_active: true,
+                frontend.modal = Some(Modal::Rename {
+                    item: Item::Pane("terminal_1".to_owned()),
+                    input: ui::Input::default(),
                 });
                 frontend.update(mode_event(guide_mode(InputMode::Locked)));
                 frontend.update(keybinds_event(&guide_mode(InputMode::Locked)));
@@ -4018,7 +4014,7 @@ mod tests {
         let mut frontend = popup_frontend();
         sidebar_focus(&mut frontend, true);
         hover_item(&mut frontend, &Item::Pane("terminal_2".to_owned()));
-        frontend.key(KeyWithModifier::new(BareKey::Char('n')));
+        frontend.key(KeyWithModifier::new(BareKey::Char('r')));
         assert!(frontend.modal.is_some());
         assert!(frontend.popup_item.is_none());
         frontend.mouse(Mouse::Hover(2, 5));
@@ -5179,13 +5175,136 @@ mod tests {
             frontend.keyboard_control = true;
             frontend.key(key);
             assert!(matches!(
-                frontend.modal,
-                Some(Modal::CreatePane { workspace_id, .. }) if workspace_id == workspace
+                frontend.focused.kind(),
+                Some(focused::Kind::Pane { workspace_id }) if workspace_id == &workspace
             ));
         }
         let mut frontend = popup_frontend();
         frontend.keyboard_control = true;
         frontend.key(KeyWithModifier::new(BareKey::Char('n')));
-        assert!(matches!(frontend.modal, Some(Modal::Create { .. })));
+        assert!(matches!(
+            frontend.focused.kind(),
+            Some(focused::Kind::Workspace)
+        ));
+    }
+
+    #[test]
+    fn focused_creation_cancel_restores_exact_sidebar_selection_and_mode() {
+        for kind in [
+            focused::Kind::Workspace,
+            focused::Kind::Pane {
+                workspace_id: "workspace_1".to_owned(),
+            },
+        ] {
+            let mut frontend = popup_frontend();
+            frontend.keyboard_control = true;
+            frontend.local_selection = true;
+            frontend.control_terminal = Some(1);
+            frontend.cursor = Some(Item::Pane("terminal_2".to_owned()));
+            frontend.mode = Some(ModeState {
+                mode: InputMode::Normal,
+                base_mode: Some(InputMode::Normal),
+            });
+            let cursor = frontend.cursor.clone();
+            frontend.open_focused(kind);
+            assert!(frontend.modal.is_none());
+            assert!(frontend.focused.is_open());
+            assert_eq!(frontend.guide_mode(), Some(InputMode::Locked));
+            frontend.key(KeyWithModifier::new(BareKey::Esc));
+            assert!(!frontend.focused.is_open());
+            assert!(frontend.keyboard_control);
+            assert_eq!(frontend.control_terminal, Some(1));
+            assert_eq!(frontend.cursor, cursor);
+            assert_eq!(frontend.guide_mode(), Some(InputMode::Normal));
+        }
+    }
+
+    #[test]
+    fn stale_creation_result_cannot_close_a_new_focused_form() {
+        let mut frontend = popup_frontend();
+        frontend.open_focused(focused::Kind::Workspace);
+        frontend.focused.submission = Some(10);
+        frontend.close_focused(true);
+        frontend.open_focused(focused::Kind::Pane {
+            workspace_id: "workspace_1".to_owned(),
+        });
+        frontend.finish_focused_submission(10, None);
+        assert!(matches!(
+            frontend.focused.kind(),
+            Some(focused::Kind::Pane { .. })
+        ));
+        frontend.focused.submission = Some(11);
+        frontend.finish_focused_submission(11, None);
+        assert!(!frontend.focused.is_open());
+        assert_eq!(frontend.guide_mode(), Some(InputMode::Locked));
+    }
+
+    #[test]
+    fn cancelled_focused_creation_never_dispatches_after_an_older_request_completes() {
+        let mut frontend = popup_frontend();
+        frontend.keyboard_control = true;
+        frontend.open_focused(focused::Kind::Workspace);
+        frontend.request_id = 17;
+        frontend.in_flight = Some(Request::new(17, Action::Snapshot));
+        frontend.focused.submission = Some(18);
+        frontend.enqueue(Action::CreateWorkspace {
+            label: Some("cancelled".to_owned()),
+            cwd: None,
+        });
+        frontend.close_focused(true);
+        assert!(
+            frontend.queue.is_empty(),
+            "cancelled creation remained dispatchable"
+        );
+        frontend.native_response(native::NativeResponse {
+            client: frontend.native_client.clone(),
+            client_id: frontend.client_id,
+            response: Response {
+                protocol: PROTOCOL_VERSION,
+                request_id: 17,
+                state: Some(snapshot(3, "terminal_1")),
+                effects: vec![],
+                error: None,
+            },
+        });
+        assert!(frontend.in_flight.is_none());
+        assert!(!frontend.user_action_pending());
+        assert!(frontend.focused.submission.is_none());
+    }
+
+    #[test]
+    fn escape_cannot_abandon_a_dispatched_creation_or_its_failure() {
+        let mut frontend = popup_frontend();
+        frontend.open_focused(focused::Kind::Workspace);
+        frontend.focused.submission = Some(18);
+        frontend.in_flight = Some(Request::new(
+            18,
+            Action::CreateWorkspace {
+                label: Some("submitted".to_owned()),
+                cwd: None,
+            },
+        ));
+        frontend.cancel_focused(true);
+        assert!(frontend.focused.is_open());
+        assert_eq!(frontend.focused.submission, Some(18));
+        frontend.native_response(native::NativeResponse {
+            client: frontend.native_client.clone(),
+            client_id: frontend.client_id,
+            response: Response {
+                protocol: PROTOCOL_VERSION,
+                request_id: 18,
+                state: Some(snapshot(3, "terminal_1")),
+                effects: vec![],
+                error: Some("creation failed".to_owned()),
+            },
+        });
+        assert!(
+            frontend.focused.is_open(),
+            "failure must remain available for retry"
+        );
+        assert!(frontend.focused.submission.is_none());
+        assert_eq!(frontend.error.as_deref(), Some("creation failed"));
+        frontend.cancel_focused(true);
+        assert!(!frontend.focused.is_open());
     }
 }
