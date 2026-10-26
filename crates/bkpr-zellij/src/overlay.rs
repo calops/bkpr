@@ -23,6 +23,7 @@ const MAX_GUIDE_ROWS: usize = 256;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuideReady {
     pub id: u32,
+    pub client_id: ClientId,
     pub instance: String,
     pub generation: u64,
     pub revision: u64,
@@ -30,6 +31,7 @@ pub struct GuideReady {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct GuideFrame {
+    client_id: ClientId,
     instance: String,
     generation: u64,
     revision: u64,
@@ -304,6 +306,7 @@ impl Controller {
             };
             let mut config = configuration.clone();
             config.insert("role".to_owned(), "overlay".to_owned());
+            config.insert("client_overlay".to_owned(), "true".to_owned());
             config.insert("owner".to_owned(), owner.to_string());
             config.insert("owner_client_id".to_owned(), self.client_id.to_string());
             config.insert("popup_instance".to_owned(), self.instance.clone());
@@ -353,6 +356,7 @@ impl Controller {
 
 pub struct GuideController {
     pub id: Option<u32>,
+    pub client_id: ClientId,
     instance: String,
     generation: u64,
     revision: u64,
@@ -366,6 +370,7 @@ impl Default for GuideController {
     fn default() -> Self {
         Self {
             id: None,
+            client_id: 0,
             instance: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|time| time.as_nanos().to_string())
@@ -402,7 +407,10 @@ impl GuideController {
         coordinates.pinned = Some(true);
         coordinates.borderless = Some(true);
         if self.pending.as_ref().is_some_and(|old| {
-            old.visible == visible && old.lines == lines && old.coordinates == coordinates
+            old.client_id == self.client_id
+                && old.visible == visible
+                && old.lines == lines
+                && old.coordinates == coordinates
         }) {
             return;
         }
@@ -411,6 +419,7 @@ impl GuideController {
             self.visible_revision = self.revision;
         }
         self.pending = Some(GuideFrame {
+            client_id: self.client_id,
             instance: self.instance.clone(),
             generation: self.generation,
             revision: self.revision,
@@ -431,9 +440,11 @@ impl GuideController {
         configuration: &BTreeMap<String, String>,
     ) -> bool {
         if !self.launched
+            || ready.client_id != self.client_id
             || self.id.is_some_and(|id| id != ready.id)
             || !self.pending.as_ref().is_some_and(|state| {
-                ready.instance == state.instance
+                ready.client_id == state.client_id
+                    && ready.instance == state.instance
                     && ready.generation == state.generation
                     && ready.revision > 0
                     && ready.revision <= state.revision
@@ -484,7 +495,9 @@ impl GuideController {
             };
             let mut config = configuration.clone();
             config.insert("role".to_owned(), "guide-overlay".to_owned());
+            config.insert("client_overlay".to_owned(), "true".to_owned());
             config.insert("owner".to_owned(), owner.to_string());
+            config.insert("owner_client_id".to_owned(), self.client_id.to_string());
             config.insert("guide_instance".to_owned(), self.instance.clone());
             config.insert("guide_generation".to_owned(), self.generation.to_string());
             message.plugin_url = Some(url.clone());
@@ -1798,6 +1811,8 @@ pub struct GuideOverlay {
     theme: ui::Theme,
     owner: Option<u32>,
     id: u32,
+    client_id: ClientId,
+    foreign_client: bool,
     instance: String,
     generation: u64,
     granted: bool,
@@ -1810,11 +1825,22 @@ pub struct GuideOverlay {
 
 impl GuideOverlay {
     pub fn set_terminal_colors(&mut self, colors: &crate::palette::TerminalColors) -> bool {
+        if self.foreign_client {
+            return false;
+        }
         self.theme.update(colors)
     }
 
-    pub fn load(&mut self, configuration: &BTreeMap<String, String>, id: u32) {
+    pub fn load(&mut self, configuration: &BTreeMap<String, String>, id: u32, client_id: ClientId) {
         self.id = id;
+        self.client_id = client_id;
+        self.foreign_client = configuration
+            .get("owner_client_id")
+            .and_then(|owner| owner.parse::<ClientId>().ok())
+            != Some(client_id);
+        if self.foreign_client {
+            return;
+        }
         self.owner = configuration
             .get("owner")
             .and_then(|owner| owner.parse().ok());
@@ -1838,6 +1864,9 @@ impl GuideOverlay {
     }
 
     pub fn event(&mut self, event: Event) -> bool {
+        if self.foreign_client {
+            return false;
+        }
         match event {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 self.granted = true;
@@ -1883,7 +1912,7 @@ impl GuideOverlay {
     }
 
     pub fn pipe(&mut self, message: PipeMessage) -> bool {
-        if message.name != GUIDE_UPDATE {
+        if self.foreign_client || message.name != GUIDE_UPDATE {
             return false;
         }
         let PipeSource::Plugin(source) = message.source else {
@@ -1909,7 +1938,9 @@ impl GuideOverlay {
     }
 
     fn accept(&mut self, source: u32, mut frame: GuideFrame) -> bool {
-        if self.closed
+        if self.foreign_client
+            || self.closed
+            || frame.client_id != self.client_id
             || Some(source) != self.owner
             || self.instance.is_empty()
             || frame.instance != self.instance
@@ -1931,7 +1962,7 @@ impl GuideOverlay {
     }
 
     fn retire(&mut self) {
-        if !self.closed {
+        if !self.foreign_client && !self.closed {
             self.closed = true;
             self.state = None;
             if self.granted {
@@ -1941,7 +1972,7 @@ impl GuideOverlay {
     }
 
     fn apply(&mut self) {
-        if !self.granted || self.closed {
+        if self.foreign_client || !self.granted || self.closed {
             return;
         }
         if self.state.as_ref().is_some_and(|state| state.closed) {
@@ -1974,6 +2005,9 @@ impl GuideOverlay {
     }
 
     pub fn render(&self, rows: usize, columns: usize) {
+        if self.foreign_client {
+            return;
+        }
         let Some(state) = self
             .state
             .as_ref()
@@ -1996,6 +2030,7 @@ impl GuideOverlay {
         if complete {
             let ready = GuideReady {
                 id: self.id,
+                client_id: self.client_id,
                 instance: state.instance.clone(),
                 generation: state.generation,
                 revision: state.revision,
@@ -2803,6 +2838,7 @@ mod tests {
 
     fn guide_frame(revision: u64) -> GuideFrame {
         GuideFrame {
+            client_id: 1,
             instance: "guide:test".to_owned(),
             generation: 2,
             revision,
@@ -2819,6 +2855,7 @@ mod tests {
         GuideOverlay {
             owner: Some(3),
             id: 7,
+            client_id: 1,
             instance: "guide:test".to_owned(),
             generation: 2,
             ..GuideOverlay::default()
@@ -2826,9 +2863,49 @@ mod tests {
     }
 
     #[test]
+    fn foreign_guide_replica_ignores_owner_frames_and_lifecycle_callbacks() {
+        let mut guide = guide_overlay();
+        guide.load(
+            &BTreeMap::from([("owner_client_id".to_owned(), "1".to_owned())]),
+            7,
+            2,
+        );
+        assert!(!guide.accept(3, guide_frame(1)));
+        assert!(guide.state.is_none());
+
+        // Even stale local state cannot make a foreign callback alter the shared pane,
+        // emit a render acknowledgement, or draw the owner's valid complete frame.
+        guide.granted = true;
+        guide.owner_seen = true;
+        guide.shown = Some(true);
+        guide.state = Some(guide_frame(1));
+        for event in [
+            Event::PermissionRequestResult(PermissionStatus::Granted),
+            Event::PermissionRequestResult(PermissionStatus::Denied),
+            Event::PaneClosed(PaneId::Plugin(3)),
+            Event::BeforeClose,
+        ] {
+            assert!(!guide.event(event));
+            assert!(guide.granted);
+            assert!(!guide.closed);
+            assert_eq!(guide.shown, Some(true));
+            assert_eq!(guide.state.as_ref().unwrap().revision, 1);
+        }
+        guide.apply();
+        guide.retire();
+        guide.render(1, 48);
+        assert!(!guide.closed);
+        assert_eq!(guide.shown, Some(true));
+        assert_eq!(guide.state.as_ref().unwrap().revision, 1);
+    }
+
+    #[test]
     fn guide_consumer_isolates_owner_launch_and_revision() {
         let mut guide = guide_overlay();
         assert!(!guide.accept(4, guide_frame(1)));
+        let mut foreign_client = guide_frame(1);
+        foreign_client.client_id = 2;
+        assert!(!guide.accept(3, foreign_client));
         let mut foreign = guide_frame(1);
         foreign.instance = "another-guide".to_owned();
         assert!(!guide.accept(3, foreign));
@@ -2879,6 +2956,7 @@ mod tests {
         let frame = guide_frame(3);
         let mut guide = GuideController {
             id: Some(7),
+            client_id: frame.client_id,
             instance: frame.instance.clone(),
             generation: frame.generation,
             revision: frame.revision,
@@ -2890,10 +2968,15 @@ mod tests {
         let configuration = BTreeMap::new();
         let mut ready = GuideReady {
             id: 7,
+            client_id: 1,
             instance: "guide:test".to_owned(),
             generation: 2,
             revision: 3,
         };
+        ready.client_id = 2;
+        assert!(!guide.ready(&ready, 3, &configuration));
+        assert!(!guide.ready_for_display());
+        ready.client_id = 1;
         assert!(!guide.ready_for_display());
         assert!(guide.ready(&ready, 3, &configuration));
         assert!(guide.ready_for_display());
