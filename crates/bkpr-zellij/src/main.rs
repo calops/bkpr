@@ -2184,6 +2184,7 @@ impl ZellijPlugin for Frontend {
         self.id = ids.plugin_id;
         self.client_id = ids.client_id;
         self.tooltip.client_id = ids.client_id;
+        self.finder.client_id = ids.client_id;
         self.visible = true;
         self.overlay_role = configuration
             .get("role")
@@ -2224,7 +2225,8 @@ impl ZellijPlugin for Frontend {
             return;
         }
         if self.finder_role {
-            self.finder_view.load(&self.configuration, self.id);
+            self.finder_view
+                .load(&self.configuration, self.id, ids.client_id);
             return;
         }
         set_selectable(true);

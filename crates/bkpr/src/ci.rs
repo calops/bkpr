@@ -637,10 +637,15 @@ mod linux {
             } else {
                 snapshot.fetch_state == CiFetchState::Ready
                     && snapshot.error.is_none()
-                    && snapshot
-                        .checks
-                        .iter()
-                        .all(|check| matches!(check.status, CiStatus::Passed | CiStatus::Skipped))
+                    && snapshot.checks.iter().all(|check| {
+                        matches!(
+                            check.status,
+                            CiStatus::Passed
+                                | CiStatus::Failed
+                                | CiStatus::Cancelled
+                                | CiStatus::Skipped
+                        )
+                    })
             }
     }
 
@@ -1230,6 +1235,9 @@ mod linux {
             for statuses in [
                 vec![CiStatus::Passed],
                 vec![CiStatus::Passed, CiStatus::Skipped],
+                vec![CiStatus::Failed],
+                vec![CiStatus::Cancelled],
+                vec![CiStatus::Passed, CiStatus::Failed, CiStatus::Skipped],
                 vec![],
             ] {
                 let mut monitor = Monitor::new();
@@ -1247,12 +1255,10 @@ mod linux {
                 assert!(!monitor.snapshot(&source).unwrap().stale);
             }
             for statuses in [
-                vec![CiStatus::Failed],
                 vec![CiStatus::Unknown],
                 vec![CiStatus::NoChecks],
                 vec![CiStatus::Failed, CiStatus::Running],
                 vec![CiStatus::Failed, CiStatus::Pending],
-                vec![CiStatus::Cancelled],
             ] {
                 let mut monitor = Monitor::new();
                 monitor.sync([source.clone()].into_iter());
@@ -1278,7 +1284,7 @@ mod linux {
         }
 
         #[test]
-        fn restored_current_results_freeze_only_fresh_green_or_no_checks() {
+        fn restored_current_results_freeze_only_fresh_terminal_results() {
             let source = source("cached");
             for statuses in [
                 vec![],
@@ -1299,9 +1305,15 @@ mod linux {
                         _ => {}
                     }
                     let frozen = variant == 0
-                        && statuses
-                            .iter()
-                            .all(|status| matches!(status, CiStatus::Passed | CiStatus::Skipped));
+                        && statuses.iter().all(|status| {
+                            matches!(
+                                status,
+                                CiStatus::Passed
+                                    | CiStatus::Failed
+                                    | CiStatus::Cancelled
+                                    | CiStatus::Skipped
+                            )
+                        });
                     monitor.restore(&source, snapshot.clone());
                     assert_eq!(monitor.snapshot(&source), Some(snapshot));
                     assert_eq!(monitor.entries[&source].due.is_none(), frozen);
@@ -1451,42 +1463,45 @@ mod linux {
 
         #[test]
         fn manual_refresh_shares_commit_coalesces_and_returns_to_frozen_after_rerun() {
-            let mut monitor = Monitor::new();
-            let source = source("same");
-            let mut linked = source.clone();
-            linked.branch = Some("linked".into());
-            monitor.sync([source.clone(), linked.clone()].into_iter());
-            let snapshot = complete_snapshot(&source, &[CiStatus::Passed]);
-            finish_snapshot(&mut monitor, &source, snapshot.clone());
-            monitor.next_request = Instant::now() + Duration::from_secs(MIN_REQUEST_SECONDS);
-            let budget = monitor.next_request;
-            monitor.refresh(&target(&source));
-            let due = monitor.entries[&source].due;
-            for _ in 0..8 {
+            for status in [CiStatus::Passed, CiStatus::Failed, CiStatus::Cancelled] {
+                let mut monitor = Monitor::new();
+                let source = source("same");
+                let mut linked = source.clone();
+                linked.branch = Some("linked".into());
+                monitor.sync([source.clone(), linked.clone()].into_iter());
+                let snapshot = complete_snapshot(&source, &[status]);
+                finish_snapshot(&mut monitor, &source, snapshot.clone());
+                assert!(monitor.entries.values().all(|entry| entry.due.is_none()));
+                monitor.next_request = Instant::now() + Duration::from_secs(MIN_REQUEST_SECONDS);
+                let budget = monitor.next_request;
                 monitor.refresh(&target(&source));
-                monitor.advance();
-                assert_eq!(monitor.entries[&source].due, due);
+                let due = monitor.entries[&source].due;
+                for _ in 0..8 {
+                    monitor.refresh(&target(&source));
+                    monitor.advance();
+                    assert_eq!(monitor.entries[&source].due, due);
+                }
+                assert_eq!(monitor.requests, 0);
+                assert_eq!(monitor.next_request, budget);
+                assert_eq!(monitor.due_batch(budget).len(), 2);
+                for subscriber in [&source, &linked] {
+                    let current = monitor.snapshot(subscriber).unwrap();
+                    assert_eq!(current.fetch_state, CiFetchState::Loading);
+                    assert_eq!(current.checks, snapshot.checks);
+                    assert!(current.stale);
+                    assert!(monitor.entries[subscriber].eager);
+                }
+                finish_snapshot(
+                    &mut monitor,
+                    &source,
+                    complete_snapshot(&source, &[CiStatus::Running]),
+                );
+                assert!(monitor.entries[&source].due.is_some());
+                assert!(!monitor.entries[&source].eager);
+                finish_snapshot(&mut monitor, &source, snapshot);
+                assert!(monitor.entries.values().all(|entry| entry.due.is_none()));
+                assert_eq!(monitor.timeout(), -1);
             }
-            assert_eq!(monitor.requests, 0);
-            assert_eq!(monitor.next_request, budget);
-            assert_eq!(monitor.due_batch(budget).len(), 2);
-            for subscriber in [&source, &linked] {
-                let current = monitor.snapshot(subscriber).unwrap();
-                assert_eq!(current.fetch_state, CiFetchState::Loading);
-                assert_eq!(current.checks, snapshot.checks);
-                assert!(current.stale);
-                assert!(monitor.entries[subscriber].eager);
-            }
-            finish_snapshot(
-                &mut monitor,
-                &source,
-                complete_snapshot(&source, &[CiStatus::Running]),
-            );
-            assert!(monitor.entries[&source].due.is_some());
-            assert!(!monitor.entries[&source].eager);
-            finish_snapshot(&mut monitor, &source, snapshot);
-            assert!(monitor.entries.values().all(|entry| entry.due.is_none()));
-            assert_eq!(monitor.timeout(), -1);
         }
 
         #[test]
