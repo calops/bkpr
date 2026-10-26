@@ -137,6 +137,13 @@ fn validate(publication: &ContextPublication) -> Result<()> {
             bail!("invalid, duplicate, or unbound native context pane");
         }
         text(&pane.pane_name, true)?;
+        if let Some(message) = pane
+            .status
+            .as_ref()
+            .and_then(|status| status.message.as_ref())
+        {
+            text(message, false)?;
+        }
         if let Some(agent) = &pane.agent_id {
             text(agent, false)?;
             if !agents.insert(agent) {
@@ -249,6 +256,7 @@ fn pane_context(
         workspace_name: workspace.name.clone(),
         pane_id: pane.pane_id.clone(),
         pane_name: pane.pane_name.clone(),
+        status: pane.status.clone(),
     }
 }
 
@@ -702,7 +710,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bkpr::context_contract::{ContextPane, ContextWorkspace};
+    use bkpr::context_contract::{ContextPane, ContextWorkspace, PaneStatus};
     use std::os::unix::fs::{PermissionsExt, symlink};
     use test_support::Session;
 
@@ -719,6 +727,7 @@ mod tests {
             workspace_id: workspace.into(),
             pane_name: "Editor".into(),
             agent_id: agent.map(str::to_owned),
+            status: None,
         }
     }
 
@@ -772,6 +781,14 @@ mod tests {
         bad = original.clone();
         bad.sequence = 9;
         bad.session_name = "Foreign".into();
+        assert!(publish_at(session.root(), &serde_json::to_string(&bad)?).is_err());
+        bad = original.clone();
+        bad.sequence = 9;
+        bad.panes[0].status = Some(PaneStatus {
+            state: bkpr::Status::Working,
+            attention: None,
+            message: Some(String::new()),
+        });
         assert!(publish_at(session.root(), &serde_json::to_string(&bad)?).is_err());
         assert!(publish_at(session.root(), "{\"session_id\":").is_err());
         assert!(session.publish(8, vec![], vec![]).is_err());
