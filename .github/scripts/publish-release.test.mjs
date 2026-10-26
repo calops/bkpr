@@ -139,3 +139,31 @@ test('dispatch failure stays visible without moving the published tag', t => {
   assert.match(result.stderr, /Do not move the tag; run gh workflow run cache.yml --ref v0\.1\.1/);
   published(f);
 });
+
+test('breaking commits plan and publish the next 0.x minor release', t => {
+  const f = fixture(t);
+  f.git('commit', '--allow-empty', '-m', 'feat!: change the fixture protocol');
+  f.git('push', 'origin', 'main');
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const tag = f.remoteRef('refs/tags/v0.2.0');
+  assert.equal(f.remoteRef('refs/heads/main'), tag);
+  assert.match(readFileSync(join(f.cwd, 'Cargo.toml'), 'utf8'), /version = "0\.2\.0"/);
+  assert.equal(readFileSync(f.env.DISPATCH_LOG, 'utf8'), 'workflow\nrun\ncache.yml\n--ref\nv0.2.0\n');
+  f.noRemoteRef('refs/tags/v1.0.0');
+});
+
+test('nonzero-major releases are rejected before any mutation or dispatch', async t => {
+  for (const version of ['1.0.0', '1.1.0', '2.0.0']) {
+    const f = fixture(t);
+    await assert.rejects(
+      publishRelease({ nextRelease: { version, gitTag: `v${version}`, notes: '' } }, f),
+      /Automatic releases must remain in 0\.x/,
+    );
+    assert.equal(f.remoteRef('refs/heads/main'), f.head);
+    assert.equal(f.git('rev-parse', 'HEAD'), f.head);
+    assert.equal(f.git('status', '--porcelain'), '');
+    f.noRemoteRef(`refs/tags/v${version}`);
+    assert.throws(() => readFileSync(f.env.DISPATCH_LOG));
+  }
+});

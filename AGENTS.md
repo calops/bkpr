@@ -41,6 +41,7 @@
 ## Releases and commits
 
 - Use Conventional Commits for new commits: `feat:` for user-visible features, `fix:` for fixes, and `type(scope):` when a scope helps. Mark breaking changes with `!` and a `BREAKING CHANGE:` footer. Maintenance-only commits use `chore:`, `docs:`, `test:`, or `refactor:`; do not label them as features or fixes to force a release. The manual release workflow derives SemVer and release notes from these messages; earlier nonconforming history is not rewritten.
+- Automatic releases stay in `0.x`: breaking changes increment the minor version, and publication rejects a nonzero major before changing files or refs. Leaving `0.x` requires the user's deliberate policy update; commit markers alone must never promote to `1.0`.
 - `unstable` is a moving cache tag. Version tags are immutable `vMAJOR.MINOR.PATCH` SemVer releases (optional prerelease/build suffixes); publish release assets only after the tagged cache build succeeds.
 
 ## Development
