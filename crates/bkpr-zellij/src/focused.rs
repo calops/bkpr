@@ -355,7 +355,7 @@ impl Controller {
             }
             let mut config = configuration.clone();
             config.insert("role".to_owned(), "focused-overlay".to_owned());
-            config.insert("modal_overlay".to_owned(), "true".to_owned());
+            config.insert("dim_background".to_owned(), "true".to_owned());
             config.insert("owner".to_owned(), owner.to_string());
             config.insert("owner_client_id".to_owned(), self.client_id.to_string());
             // Stable across opens: exact URL/config identity prevents duplicate launches.
@@ -436,7 +436,7 @@ impl Kind {
 
 fn configuration_valid(configuration: &BTreeMap<String, String>) -> bool {
     if configuration.get("role").map(String::as_str) != Some("focused-overlay")
-        || configuration.get("modal_overlay").map(String::as_str) != Some("true")
+        || configuration.get("dim_background").map(String::as_str) != Some("true")
         || configuration
             .get("owner")
             .and_then(|value| value.parse::<u32>().ok())
@@ -455,7 +455,7 @@ fn configuration_valid(configuration: &BTreeMap<String, String>) -> bool {
     for key in [
         // Added by native message routing, not sidebar application configuration.
         "caller_cwd",
-        "modal_overlay",
+        "dim_background",
         "owner",
         "owner_client_id",
         "focused_instance",
@@ -1579,7 +1579,7 @@ mod tests {
             ("owner".to_owned(), "3".to_owned()),
             ("owner_client_id".to_owned(), "1".to_owned()),
             ("focused_instance".to_owned(), "focused:test".to_owned()),
-            ("modal_overlay".to_owned(), "true".to_owned()),
+            ("dim_background".to_owned(), "true".to_owned()),
         ])
     }
 
