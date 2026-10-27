@@ -1002,21 +1002,32 @@ pub(crate) fn outlined_line(
     columns: usize,
     theme: &ui::Theme,
 ) -> String {
+    outlined_line_with_style(text, row, rows, columns, theme, &theme.bright)
+}
+
+pub(crate) fn outlined_line_with_style(
+    text: String,
+    row: usize,
+    rows: usize,
+    columns: usize,
+    theme: &ui::Theme,
+    border_style: &str,
+) -> String {
     let (left, right) = outline_edges(row, rows);
     let center = if row == 0 || row + 1 == rows {
-        format!("{}{}", theme.bright, "─".repeat(columns.saturating_sub(2)))
+        format!("{border_style}{}", "─".repeat(columns.saturating_sub(2)))
     } else {
         text
     };
     if columns >= 2 {
         format!(
             "{OSC8_CLOSE}{}{}{left}{center}{OSC8_CLOSE}{}{}{right}{OSC8_CLOSE}",
-            theme.base, theme.bright, theme.base, theme.bright
+            theme.base, border_style, theme.base, border_style
         )
     } else if columns == 1 {
         format!(
             "{OSC8_CLOSE}{}{}{left}{OSC8_CLOSE}",
-            theme.base, theme.bright
+            theme.base, border_style
         )
     } else {
         OSC8_CLOSE.to_owned()
