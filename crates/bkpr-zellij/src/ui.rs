@@ -1010,6 +1010,11 @@ fn render_content_row(
             } else {
                 " ".repeat(fill)
             };
+            let dot = if width(&dot) == 2 {
+                theme.workspace_icon()
+            } else {
+                dot
+            };
             format!(
                 "{TEXT}{dot}{TEXT}\u{1b}[1m{name}\u{1b}[22m{muted}{tail}{}{}{badge}{}{icon}",
                 if badge.is_empty() { "" } else { " " },
@@ -1065,6 +1070,12 @@ fn render_content_row(
                 ("", 0)
             };
             let name = fit(&pane.name, available.saturating_sub(icon_columns));
+            // Geometry uses the plain two-cell marker; add graphics only after fitting.
+            let indicator = if width(&indicator) == 2 {
+                theme.project_icon(project_color(pane.project.as_ref(), theme))
+            } else {
+                indicator
+            };
             format!(
                 "{guides}{lead}{}{indicator}{logo_color}{icon}{}{TEXT}{name}{}{status}",
                 project_color(pane.project.as_ref(), theme),

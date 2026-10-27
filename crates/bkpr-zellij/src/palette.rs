@@ -9,6 +9,10 @@ const PROJECT_ACCENTS: [usize; 12] = [4, 5, 6, 3, 13, 12, 2, 1, 9, 10, 11, 14];
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalColors {
     pub truecolor: bool,
+    #[serde(default)]
+    pub kitty_graphics: bool,
+    #[serde(default)]
+    pub cell_pixels: Option<[u32; 2]>,
     pub foreground: Option<[u8; 3]>,
     pub background: Option<[u8; 3]>,
     pub ansi: [Option<[u8; 3]>; 16],
@@ -17,6 +21,8 @@ pub struct TerminalColors {
 #[derive(Clone, Debug)]
 pub struct Theme {
     colors: TerminalColors,
+    graphics: std::rc::Rc<std::cell::RefCell<crate::graphics::Graphics>>,
+    hive_graphics: std::rc::Rc<std::cell::RefCell<crate::graphics::Graphics>>,
     pub base: String,
     pub selected: String,
     pub hovered: String,
@@ -42,6 +48,10 @@ impl Default for Theme {
         });
         Self {
             colors: TerminalColors::default(),
+            graphics: Default::default(),
+            hive_graphics: std::rc::Rc::new(std::cell::RefCell::new(
+                crate::graphics::Graphics::hive(),
+            )),
             base: "\x1b[22;39;49m".into(),
             // Attribute-only highlights retain terminal-native colors on limited terminals.
             selected: "\x1b[7m".into(),
@@ -113,6 +123,7 @@ impl Theme {
                 self.rebuild_project_colors();
             }
         }
+        self.prepare_graphics();
     }
 
     pub fn prepare_snapshot(&mut self, snapshot: &bkpr::Snapshot) {
@@ -130,6 +141,43 @@ impl Theme {
                 .filter(|project| project.repository)
                 .filter_map(|project| project.color_slot),
         );
+    }
+
+    fn prepare_graphics(&self) {
+        self.hive_graphics.borrow_mut().prepare(
+            self.colors.kitty_graphics,
+            self.colors.cell_pixels,
+            [crate::ui::TEXT].into_iter(),
+            &self.colors.ansi,
+            self.colors.foreground,
+        );
+        self.graphics.borrow_mut().prepare(
+            self.colors.kitty_graphics,
+            self.colors.cell_pixels,
+            self.project_colors
+                .iter()
+                .map(String::as_str)
+                .chain([self.muted.as_str()]),
+            &self.colors.ansi,
+            self.colors.foreground,
+        );
+    }
+
+    pub fn project_icon(&self, style: &str) -> String {
+        self.graphics.borrow_mut().icon(style)
+    }
+
+    pub fn workspace_icon(&self) -> String {
+        self.hive_graphics.borrow_mut().icon(crate::ui::TEXT)
+    }
+
+    pub fn begin_graphics_frame(&self) -> &'static str {
+        let clear = self.graphics.borrow().begin_frame();
+        if clear.is_empty() {
+            self.hive_graphics.borrow().begin_frame()
+        } else {
+            clear
+        }
     }
 
     pub fn project_color(&self, slot: Option<usize>) -> &str {
@@ -195,8 +243,14 @@ impl Theme {
             return false;
         }
         if !enables_rgb(&self.colors) && !enables_rgb(colors) {
+            let graphics_changed = self.colors.kitty_graphics != colors.kitty_graphics
+                || self.colors.cell_pixels != colors.cell_pixels
+                || (colors.kitty_graphics
+                    && (self.colors.ansi != colors.ansi
+                        || self.colors.foreground != colors.foreground));
             self.colors.clone_from(colors);
-            return false;
+            self.prepare_graphics();
+            return graphics_changed;
         }
         let mut next = Self::default();
         if colors.truecolor {
@@ -223,9 +277,12 @@ impl Theme {
                 next.deleted.clone_from(&next.accents[1]);
             }
         }
+        next.graphics = self.graphics.clone();
+        next.hive_graphics = self.hive_graphics.clone();
         next.colors = colors.clone();
         next.project_capacity = self.project_capacity;
         next.rebuild_project_colors();
+        next.prepare_graphics();
         *self = next;
         true
     }
@@ -264,6 +321,7 @@ mod tests {
                     70 + index as u8 * 7,
                 ])
             }),
+            ..Default::default()
         }
     }
 

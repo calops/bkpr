@@ -1334,7 +1334,11 @@ impl Host {
                 .is_some_and(|height| height.to_fixed(0) == rows);
         if !exact_size {
             self.set_cursor(None);
-            print!("{}\u{1b}[2J", overlay::OSC8_CLOSE);
+            print!(
+                "{}{}\u{1b}[2J",
+                overlay::OSC8_CLOSE,
+                self.theme.begin_graphics_frame()
+            );
             return;
         }
         let cursor = self.content.prepare(&state.kind, rows, columns);
@@ -1348,6 +1352,7 @@ impl Host {
             self.callback(PRESENTED, None, false, None);
             self.presented = Some(revision);
         }
+        print!("{}", self.theme.begin_graphics_frame());
         self.content.render(
             state,
             &self.theme,

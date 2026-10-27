@@ -50,7 +50,9 @@ pub fn render(
     let has_context = annotations.contexts(visible).next().is_some();
     let mut row = Row::new(columns, theme);
     row.text(if selected { "› " } else { "  " }, TEXT);
+    let marker_start = row.output.len();
     row.text("● ", ui::project_color(pane.project.as_ref(), theme));
+    let marker_end = row.output.len();
     if let Some(name) = name {
         let budget = if has_context {
             row.remaining().div_ceil(2)
@@ -77,7 +79,17 @@ pub fn render(
         row.text(" · ", &theme.muted);
         row.value(&annotations, value, row.remaining(), &theme.bright);
     }
-    row.finish()
+    let mut output = row.finish();
+    if columns >= 4 {
+        let style = ui::project_color(pane.project.as_ref(), theme);
+        // Replace the generated marker after fitting, including when its color
+        // is inherited from the arrow. User-provided dots remain ordinary text.
+        output.replace_range(
+            marker_start..marker_end,
+            &format!("{style}{}", theme.project_icon(style)),
+        );
+    }
+    output
 }
 
 struct Row<'a> {

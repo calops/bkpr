@@ -1,0 +1,12 @@
+bee.svg is the bee icon from Material Design Icons by Pictogrammers.
+Source: https://github.com/Templarian/MaterialDesign/blob/master/svg/bee.svg
+Retrieved: 2026-10-27
+License: Apache-2.0; see Apache-2.0.txt and MaterialDesign-LICENSE.
+Modification: tightened the viewBox to 4 4 16 16 for rendering at one terminal row.
+
+hive.svg is the unmodified beehive-outline icon from Material Design Icons by Pictogrammers.
+Source: https://github.com/Templarian/MaterialDesign/blob/master/svg/beehive-outline.svg
+Retrieved: 2026-10-27
+License: Apache-2.0; see Apache-2.0.txt and MaterialDesign-LICENSE.
+
+The license and this notice are also embedded in the plugin binary.
