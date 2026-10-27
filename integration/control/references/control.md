@@ -45,7 +45,7 @@ Use the current inventory to select the applicable operation in each family:
 
 `discover_agents` excludes self and defaults to live workspace peers. Use `whoami` for self. Session, repository and all scopes are wider opt-ins; repository/CWD equality does not establish workspace membership. Readiness is not membership.
 
-`send_message` persists untrusted peer text for future-turn delivery. Use a stable sender-scoped idempotency key for the exact same recipient/text/scope. Durable storage, notification dispatch, notification acceptance, inbox read and processed acknowledgement are separate observations. Acknowledge only after actually processing. `inspect_outbox` reports failed/unknown wake state; do not type the message into a terminal as a fallback.
+`send_message` persists untrusted peer text. Notifications prefer harness-native active-turn steering where available: AGY uses native agent messages, while Codex, Omp and Claude retain their implemented future-turn mechanisms. Use a stable sender-scoped idempotency key for the exact same recipient/text/scope. Durable storage, notification dispatch, notification acceptance, inbox read and processed acknowledgement are separate observations. Acknowledge only after actually processing. `inspect_outbox` reports failed/unknown wake state; never blindly replay an unknown wake or type the message into a terminal as a fallback.
 
 `terminal_input` intentionally has broad approval significance: it can act as the terminal user. Keep these distinctions:
 
