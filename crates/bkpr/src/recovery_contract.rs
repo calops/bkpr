@@ -17,7 +17,7 @@ pub struct RecoveryPane {
     pub cwd: Option<String>,
     pub name: String,
     pub renamed: bool,
-    /// "claude" | "omp" | "codex" only.
+    /// "claude" | "omp" | "codex" | "agy" only.
     pub harness: Option<String>,
     pub agent_id: Option<String>,
     pub focused: bool,

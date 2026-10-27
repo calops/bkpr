@@ -240,7 +240,7 @@ Harness status comes from native **OSC 7501** reports. Titles, progress bars, no
 
 Reported **working** status uses a twelve-position clockwise clock animation in the sidebar, details popups and finder previews. Animation runs only for visible working badges and stops when the status changes or the surface is hidden.
 
-The upstream capabilities below were checked on **2026-10-14**:
+The upstream capabilities below were checked on **2026-10-14**, with Antigravity updated on **2026-10-27**:
 
 | Harness | Semantic reporting |
 | --- | --- |
@@ -248,7 +248,8 @@ The upstream capabilities below were checked on **2026-10-14**:
 | Codex | Available in [0.163.0-alpha.12](https://github.com/openai/codex/releases/tag/rust-v0.163.0-alpha.12), not the checked stable 0.162.1 |
 | omp | Native OSC 7501 since [18.8.7](https://github.com/can1357/oh-my-pi/releases/tag/v18.8.7); `terminal.programStatus` defaults to enabled |
 | OpenCode | [OSC 7501 PR](https://github.com/anomalyco/opencode/pull/54560); not released at the checked date |
-| Antigravity, Cursor, Copilot, Aider, Cline, Goose | Recognition only; no native OSC 7501 producer established at the checked date |
+| Antigravity | Native OSC 7501 since [1.4.0](https://github.com/google-antigravity/antigravity-cli/releases/tag/1.4.0) |
+| Cursor, Copilot, Aider, Cline, Goose | Recognition only; no native OSC 7501 producer established at the checked date |
 
 An alpha release isn't stable availability, and an open PR isn't a release commitment. Upstream Pi isn't omp.
 
@@ -263,7 +264,7 @@ bkpr run omp
 bkpr run opencode
 ```
 
-Supported names are `claude`, `codex`, `omp`, `opencode`, `agy`, `cursor`, `copilot`, `aider`, `cline` and `goose`. Aliases include `claude-code`, `antigravity`, `cursor-agent`, `copilot-cli`, `github-copilot` and `.cline`. Unknown names are rejected. Claude, Codex and omp use the same launch-local integrations as their wrappers; the others execute their installed CLI directly without acquiring a parent agent's messaging identity.
+Supported names are `claude`, `codex`, `omp`, `opencode`, `agy`, `cursor`, `copilot`, `aider`, `cline` and `goose`. Aliases include `claude-code`, `antigravity`, `cursor-agent`, `copilot-cli`, `github-copilot` and `.cline`. Unknown names are rejected. Claude, Codex, omp and Antigravity use the same launch integrations as their wrappers; the others execute their installed CLI directly without acquiring a parent agent's messaging identity.
 
 Arguments after the harness name belong to that harness. An initial `--` separates Bkpr's arguments; later `--` arguments are preserved. Executables are resolved from `PATH` while skipping Bkpr-managed wrappers and their aliases. The command works outside Bkpr too, but workspace/session-scoped messaging still requires a managed pane's live context. Automatic session-local wrappers remain enabled.
 
@@ -281,15 +282,31 @@ This research-preview renderer handles conversation scrollback and selection ins
 
 Bkpr adds a launch-local title hook for supported interactive `claude` invocations. It supplies a first-prompt fallback label without replacing later native titles or explicit Bkpr renames. Resume/continue and noninteractive invocations do not receive this title hook. Aliases, shell functions and absolute executable paths can bypass the wrapper. `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` disables title supplementation. The hook doesn't change global settings, credentials, permission policy or semantic status.
 
+### Antigravity
+
+Install the latest `agy` and a stable `bkpr` command on `PATH`, then explicitly register Bkpr's MCP server:
+
+```sh
+bkpr install agy --dry-run
+bkpr install agy
+bkpr run agy
+```
+
+The installer uses `agy mcp add` to add `bkpr` to `~/.gemini/config/mcp_config.json`. It preserves unrelated configuration and refuses conflicting or disabled `bkpr` entries and malformed files. An equivalent entry is a no-op. This is an explicit persistent MCP registration; ordinary launches never edit AGY settings, install plugins or hooks, or redirect its profile. The entry stores only a command and arguments, never launch credentials.
+
+Interactive launches receive a fresh authenticated Bkpr identity. The first Bkpr MCP tool call captures AGY's root conversation ID from native request metadata. MCP instructions then guide AGY to start a private receiver through its native command tool, under normal tool approvals. No plugin or hook installation is needed. Before that handshake, the launch is not ready for incoming notifications; an MCP connection alone is not readiness.
+
+The receiver keeps AGY's endpoint credentials in its own process and queues only an opaque inbox pointer through the internal native `WHEN_IDLE` operation. Busy conversations finish their current turn before receiving a follow-up; idle conversations wake automatically. Bkpr does not use `agentapi send-message`, which can inject into an active turn. Native acceptance, inbox reading and explicit processed acknowledgement remain separate. This integration was exercised with AGY **1.4.8**; it uses an internal host API that may change in later versions.
+
+Recovery resumes the captured conversation with `--conversation <id>`. No captured ID means no guessed resume, and a live owner prevents competing recovery. Each resumed launch gets a new Bkpr identity rather than adopting the old launch's inbox. Semantic status still comes only from AGY's native OSC 7501 reports, never from the receiver.
+
 ### Other harnesses
 
 Run `omp` directly with version 18.8.7 or newer and native program status enabled. Semantic status still comes from omp's native reports, not Bkpr's communication adapter.
 
-Antigravity is recognition-only. Bkpr doesn't wrap `agy`/`antigravity`, install callbacks, edit settings or redirect its profile. Other recognition-only harnesses also need native semantic reports before their status can be shown.
-
 ### Agent communication (experimental)
 
-Fresh Bkpr sessions supply launch-local wrappers for `claude`, `omp` and `codex`. Each supported interactive launch receives its own authenticated agent ID and a Bkpr MCP server without changing user-level harness settings. Messages go through a relay broker, a shared background process that starts on demand and keeps running after the session that started it closes; finding it still running after every session has closed is expected. The seven messaging tools remain `whoami`, `discover_agents`, `send_message`, `read_inbox`, `ack_message`, `inspect_outbox` and `set_title`.
+Fresh Bkpr sessions supply launch-local wrappers for `claude`, `omp`, `codex` and `agy`/`antigravity`. Each supported interactive launch receives its own authenticated agent ID. Claude, Codex and omp receive launch-local MCP registration; Antigravity uses the explicit user-level registration above. Messages go through a relay broker, a shared background process that starts on demand and keeps running after the session that started it closes; finding it still running after every session has closed is expected. The seven messaging tools remain `whoami`, `discover_agents`, `send_message`, `read_inbox`, `ack_message`, `inspect_outbox` and `set_title`.
 
 Two additional tools expose control without adding a tool for every operation: `control` handles inspection, lifecycle, layout, geometry and process execution; `terminal_input` handles only explicit `input.*` operations. Both accept `{"operation":"...","arguments":{...}}`. Start with `control` operation `api.help`, then `api.schema` for the chosen operation. The read-only resources `bkpr://control/skill` and `bkpr://control/reference` provide the bundled guidance; resource exposure does not guarantee a host will load it automatically. Normal tool approvals remain in effect.
 
@@ -334,7 +351,7 @@ Codex keeps a single writable owner for a conversation. If a new launch's resume
 
 Session-local wrappers are found through `PATH`; `bkpr run` provides the explicit alternative. Already-running processes and sessions created before these wrappers are installed do not gain them retroactively. Interactive consent and trust requirements cannot be bypassed by Bkpr. Codex noninteractive `exec` and `review` do not support this native remote queue and fail clearly instead of silently claiming message delivery.
 
-The broker wire protocol is version 3. New clients fail clearly against older brokers rather than applying the old repository-based meaning of “workspace.” Running brokers are never replaced automatically; inspect their pending work before explicitly restarting them and relaunching managed harnesses. Retained messages and idempotency receipts preserve their original scope during migration.
+The broker wire protocol is version 4. New clients fail closed against older brokers; running brokers are never replaced automatically. Inspect pending work before explicitly stopping the old broker, then relaunch managed harnesses with the new binary. Retained messages and idempotency receipts remain in the durable store. Protocol 4 adds authenticated, generation-bound AGY native queue outcomes; writing a notification to its helper is not treated as host acceptance.
 
 ## Develop
 

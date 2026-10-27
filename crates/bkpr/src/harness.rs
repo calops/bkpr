@@ -37,7 +37,7 @@ impl Harness {
             Self::Codex => return crate::codex::launch(None, arguments),
             Self::Omp => return crate::omp::launch(None, arguments),
             Self::Opencode => &["opencode"],
-            Self::Antigravity => &["agy", "antigravity"],
+            Self::Antigravity => return crate::agy::launch(None, arguments),
             Self::Cursor => &["cursor-agent"],
             Self::Copilot => &["copilot"],
             Self::Aider => &["aider"],
@@ -85,7 +85,7 @@ fn managed_script(path: &Path) -> bool {
         return false;
     };
     text.contains("--wrapper-dir")
-        && ["claude-launch", "codex-launch", "omp-launch"]
+        && ["claude-launch", "codex-launch", "omp-launch", "agy-launch"]
             .iter()
             .any(|name| text.contains(name))
 }
@@ -96,7 +96,7 @@ pub(crate) fn resolve(name: &str, wrapper_directory: Option<&Path>) -> Result<Pa
     let directories = wrapper_directory.into_iter().chain(inherited.as_deref());
     let mut excluded = Vec::new();
     for directory in directories {
-        for managed in ["claude", "codex", "omp"] {
+        for managed in ["claude", "codex", "omp", "agy", "antigravity"] {
             if let Ok(metadata) = fs::metadata(directory.join(managed)) {
                 excluded.push(metadata);
             }

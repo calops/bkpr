@@ -707,6 +707,7 @@ fn recovery_harness(harness: &str) -> Option<&'static str> {
         "claude" | "claude-code" => Some("claude"),
         "omp" => Some("omp"),
         "codex" => Some("codex"),
+        "agy" | "antigravity" => Some("agy"),
         _ => None,
     }
 }
@@ -6710,6 +6711,38 @@ mod tests {
             RecoveryDecision::Send(update) => update,
             other => panic!("expected a send, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn agy_recovery_projection_keeps_detected_and_retained_associations() {
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
+        model.agents.insert(
+            1,
+            AgentExecution {
+                harness: "agy".to_owned(),
+                agent_id: Some("agent-agy".to_owned()),
+                ..execution(1)
+            },
+        );
+        let mut keys = BTreeMap::new();
+        let detected = model.recovery_layout(SplitNode::Pane { pane: 1 }, None, &mut keys);
+        let leaf = detected.leaves()[0];
+        assert_eq!(leaf.harness.as_deref(), Some("agy"));
+        assert_eq!(leaf.agent_id.as_deref(), Some("agent-agy"));
+
+        model.agents.clear();
+        model.restore.retained.insert(
+            1,
+            RestoreLink {
+                harness: "antigravity".to_owned(),
+                agent_id: "agent-agy".to_owned(),
+            },
+        );
+        let retained = model.recovery_layout(SplitNode::Pane { pane: 1 }, None, &mut keys);
+        let leaf = retained.leaves()[0];
+        assert_eq!(leaf.harness.as_deref(), Some("agy"));
+        assert_eq!(leaf.agent_id.as_deref(), Some("agent-agy"));
     }
 
     #[test]
