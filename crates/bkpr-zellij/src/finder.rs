@@ -462,7 +462,14 @@ impl Finder {
             self.index.results().len(),
             snapshot.panes.len()
         );
-        crate::focused::frame(rows, columns, self.layout.border, &title, theme);
+        crate::focused::frame(
+            rows,
+            columns,
+            self.layout.border,
+            &title,
+            theme,
+            &theme.bright,
+        );
         if self.layout.border {
             paint(
                 0,

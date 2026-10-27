@@ -585,6 +585,13 @@ struct Field<'a> {
     row: usize,
 }
 
+struct FormLayout {
+    padding: usize,
+    input_x: usize,
+    input_width: usize,
+    expanded: bool,
+}
+
 impl Form {
     fn new(kind: &Kind) -> Self {
         Self {
@@ -679,27 +686,45 @@ impl Form {
         self.fields(kind).into_iter().nth(index).flatten()
     }
 
+    fn layout(kind: &Kind, rows: usize, columns: usize) -> FormLayout {
+        let padding = if rows >= 3 && columns >= 8 {
+            2
+        } else {
+            usize::from(rows >= 3 && columns >= 4)
+        };
+        let width = columns.saturating_sub(padding * 2);
+        let prefix = if width >= 4 { 2 } else { 0 };
+        FormLayout {
+            padding,
+            input_x: padding + prefix,
+            input_width: width.saturating_sub(prefix),
+            expanded: rows >= 8 && (!matches!(kind, Kind::Workspace) || rows >= 10),
+        }
+    }
+
     fn cursor(&self, kind: &Kind, rows: usize, columns: usize) -> Option<(usize, usize)> {
-        let margin = usize::from(rows >= 3 && columns >= 4);
-        let width = columns.saturating_sub(margin * 2);
-        if rows == 0 || width == 0 {
+        let layout = Self::layout(kind, rows, columns);
+        if rows == 0 || layout.input_width == 0 {
             return None;
         }
         let field = self.field(kind)?;
-        let expanded = rows >= 8 && (!matches!(kind, Kind::Workspace) || rows >= 9);
-        let row = if expanded {
+        let row = if layout.expanded {
             field.row + 1
         } else {
-            margin.min(rows - 1)
+            usize::from(rows >= 3).min(rows - 1)
         };
-        let (_, cursor) = field.input.visible(width);
-        Some((margin + cursor, row.min(rows.saturating_sub(margin + 1))))
+        let (_, cursor) = field.input.visible(layout.input_width);
+        Some((
+            layout.input_x + cursor,
+            row.min(rows.saturating_sub(usize::from(rows >= 3 && columns >= 4) + 1)),
+        ))
     }
 
     fn render(&self, state: &State, theme: &ui::Theme, rows: usize, columns: usize) {
         let border = rows >= 3 && columns >= 4;
-        let margin = usize::from(border);
-        let width = columns.saturating_sub(margin * 2);
+        let layout = Self::layout(&state.kind, rows, columns);
+        let width = columns.saturating_sub(layout.padding * 2);
+        let accent = &theme.accents[6];
         let title = match &state.kind {
             Kind::Workspace => " Create workspace ",
             Kind::Pane { .. } => " Create terminal ",
@@ -713,56 +738,111 @@ impl Form {
             } => " Rename pane ",
             Kind::Finder => return,
         };
-        frame(rows, columns, border, title, theme);
-        if rows == 0 || width == 0 {
+        frame(rows, columns, border, title, theme, accent);
+        if rows == 0 || layout.input_width == 0 {
             return;
         }
-        if rows >= 8 && (!matches!(state.kind, Kind::Workspace) || rows >= 9) {
-            for field in self.fields(&state.kind).into_iter().flatten() {
-                paint(margin, field.row, &ui::truncate(field.label, width), theme);
-                paint(margin, field.row + 1, &field.input.visible(width).0, theme);
+        let active_row = self.field(&state.kind).map(|field| field.row);
+        for field in self.fields(&state.kind).into_iter().flatten() {
+            if !layout.expanded && Some(field.row) != active_row {
+                continue;
             }
-        } else if let Some((_, row)) = self.cursor(&state.kind, rows, columns)
-            && let Some(field) = self.field(&state.kind)
-        {
-            paint(margin, row, &field.input.visible(width).0, theme);
+            let row = if layout.expanded {
+                paint(
+                    layout.padding,
+                    field.row,
+                    &format!("{}{}", theme.muted, ui::truncate(field.label, width)),
+                    theme,
+                );
+                field.row + 1
+            } else {
+                self.cursor(&state.kind, rows, columns).unwrap().1
+            };
+            let style = if Some(field.row) == active_row {
+                accent
+            } else {
+                &theme.muted
+            };
+            if layout.input_x > layout.padding {
+                paint(
+                    layout.padding,
+                    row,
+                    &format!(
+                        "{style}{} ",
+                        if Some(field.row) == active_row {
+                            "›"
+                        } else {
+                            " "
+                        }
+                    ),
+                    theme,
+                );
+            }
+            paint(
+                layout.input_x,
+                row,
+                &format!(
+                    "{}{}",
+                    theme.bright,
+                    field.input.visible(layout.input_width).0
+                ),
+                theme,
+            );
+            if layout.expanded {
+                paint(
+                    layout.input_x,
+                    row + 1,
+                    &format!("{style}{}", "─".repeat(layout.input_width)),
+                    theme,
+                );
+            }
         }
-        if rows >= 5 {
-            let hint = if let Some(error) = state.error.as_deref() {
-                error
-            } else if state.busy {
-                if matches!(state.kind, Kind::Rename { .. }) {
+        let status = state.error.as_deref().or_else(|| {
+            state
+                .busy
+                .then_some(if matches!(state.kind, Kind::Rename { .. }) {
                     "Renaming…"
                 } else {
                     "Creating…"
-                }
-            } else if matches!(state.kind, Kind::Workspace) {
-                "Enter create · Esc cancel · Tab next field"
-            } else if matches!(state.kind, Kind::Rename { .. }) {
-                "Enter rename · Esc cancel"
-            } else {
-                "Enter create · Esc cancel"
-            };
+                })
+        });
+        if rows >= 5
+            && let Some(status) = status
+        {
             let style = if state.error.is_some() {
                 &theme.deleted
             } else {
                 &theme.muted
             };
             paint(
-                margin,
-                rows - margin - 1,
-                &format!("{style}{}", ui::truncate(hint, width)),
+                layout.padding,
+                rows - usize::from(border) - 1,
+                &format!("{style}{}", ui::truncate(status, width)),
                 theme,
             );
         }
     }
 }
 
-pub(crate) fn frame(rows: usize, columns: usize, border: bool, title: &str, theme: &ui::Theme) {
+pub(crate) fn frame(
+    rows: usize,
+    columns: usize,
+    border: bool,
+    title: &str,
+    theme: &ui::Theme,
+    border_style: &str,
+) {
     let blank = " ".repeat(columns.saturating_sub(usize::from(border) * 2));
     let lines = [0, 1, rows.saturating_sub(1)].map(|row| {
         if border {
-            overlay::outlined_line(blank.clone(), row, rows, columns, theme)
+            overlay::outlined_line_with_style(
+                blank.clone(),
+                row,
+                rows,
+                columns,
+                theme,
+                border_style,
+            )
         } else {
             blank.clone()
         }
@@ -786,8 +866,7 @@ pub(crate) fn frame(rows: usize, columns: usize, border: bool, title: &str, them
             2,
             0,
             &format!(
-                "{}{}",
-                theme.bright,
+                "{border_style}\u{1b}[1m{}",
                 ui::truncate(title, columns.saturating_sub(4))
             ),
             theme,
@@ -1495,7 +1574,6 @@ mod tests {
             let mut owner = owner(kind.clone());
             let mut host = guest();
             assert!(host.receive(owner.pending.clone().unwrap()));
-            assert_eq!(form(&host).cursor(&kind, 8, 64), Some((4, 3)));
             host.input_event(key(BareKey::Left));
             host.input_event(Input::Paste("β".to_owned()));
             assert_eq!(form(&host).name.value, "界βα");
@@ -1510,7 +1588,6 @@ mod tests {
             assert!(host.receive(owner.pending.clone().unwrap()));
             assert_eq!(form(&host).name.value, "界βα");
             assert_eq!(form(&host).name.cursor, "界β".len());
-            assert_eq!(form(&host).cursor(&kind, 7, 40), Some((4, 1)));
             host.input_event(key(BareKey::Delete));
             host.input_event(Input::Paste("ζ".to_owned()));
             assert_eq!(form(&host).name.value, "界βζ");
@@ -1668,7 +1745,6 @@ mod tests {
         assert!(host.receive(owner.pending.clone().unwrap()));
         assert!(host.visible());
         assert_eq!(form(&host).name.value, "Fresh α");
-        assert_eq!(form(&host).cursor(&next, 8, 64), Some((8, 3)));
         assert!(host.state.as_ref().unwrap().error.is_none());
         assert!(
             owner
@@ -1900,8 +1976,8 @@ mod tests {
                 name: "Workspace α".to_owned(),
             },
         ] {
-            for columns in [1, 2, 20, 80, 175, 300] {
-                for rows in [1, 2, 5, 24, 48, 100] {
+            for columns in [1, 2, 4, 7, 8, 20, 80, 175, 300] {
+                for rows in [1, 2, 3, 5, 7, 8, 9, 10, 24, 48, 100] {
                     let coordinates = geometry(&kind, columns, rows);
                     let x = coordinates.x.unwrap().to_position(columns);
                     let y = coordinates.y.unwrap().to_position(rows);
@@ -1917,6 +1993,9 @@ mod tests {
                         };
                         if let Some((x, y)) = form.cursor(&kind, height, width) {
                             assert!(x < width && y < height);
+                            if height >= 3 && width >= 4 {
+                                assert!(x > 0 && y > 0 && x + 1 < width && y + 1 < height);
+                            }
                         }
                     }
                 }
