@@ -2,8 +2,9 @@
 
 ### Features
 
-* Add Antigravity launch identities, MCP conversation binding, native idle-safe peer wake and exact-conversation recovery.
+* Add Antigravity launch identities, MCP conversation binding, native peer wake and exact-conversation recovery.
 * Add `bkpr install agy` with native MCP registration, dry-run and conflict protection.
+* Prefer native active-turn steering for peer notifications where available; Antigravity now uses native agent messages without terminal input, while other harnesses retain future-turn delivery.
 
 ### Breaking Changes
 
