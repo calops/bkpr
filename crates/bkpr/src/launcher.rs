@@ -850,18 +850,34 @@ fn private_file(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn startup_lock(runtime: &Path) -> Result<File> {
-    let file = OpenOptions::new()
+fn startup_lock_file(runtime: &Path) -> Result<File> {
+    Ok(OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(runtime.join("startup.lock"))?;
+        .open(runtime.join("startup.lock"))?)
+}
+
+pub(crate) fn startup_lock(runtime: &Path) -> Result<File> {
+    let file = startup_lock_file(runtime)?;
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == -1 {
         return Err(std::io::Error::last_os_error()).context("lock session startup");
     }
     Ok(file)
+}
+
+pub(crate) fn try_startup_lock(runtime: &Path) -> Result<Option<File>> {
+    let file = startup_lock_file(runtime)?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == -1 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            return Ok(None);
+        }
+        return Err(error).context("lock session startup");
+    }
+    Ok(Some(file))
 }
 
 fn hash_identity(identity: &str) -> u64 {
