@@ -901,7 +901,13 @@ pub(crate) fn validate_session(session: &str) -> Result<()> {
 
 // The sidebar accepts keyboard focus only through the explicit control binding.
 const ZELLIJ_CONFIG: &str = r#"default_mode "normal"
-pane_frames false
+pane_frames true
+pane_frame_style "full"
+ui {
+    pane_frames {
+        rounded_corners true
+    }
+}
 dangerously_enable_paste_buffer_read true
 mouse_hover_effects true
 focus_follows_mouse false
