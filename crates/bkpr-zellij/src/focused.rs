@@ -388,7 +388,7 @@ fn geometry(kind: &Kind, columns: usize, rows: usize) -> FloatingPaneCoordinates
             (rows.saturating_mul(3) / 4).clamp(1, 36),
         ),
         Kind::Workspace => (64, 10),
-        Kind::Pane { .. } => (64, 8),
+        Kind::Pane { .. } | Kind::Rename { .. } => (64, 8),
     };
     let width = width.min(columns.max(1));
     let height = height.min(rows.max(1));
@@ -417,6 +417,7 @@ pub enum Kind {
     Finder,
     Workspace,
     Pane { workspace_id: String },
+    Rename { item: ui::Item, name: String },
 }
 
 impl Kind {
@@ -429,6 +430,20 @@ impl Kind {
                 },
                 bkpr::Action::CreatePane { workspace_id, .. },
             ) => expected == workspace_id,
+            (
+                Self::Rename {
+                    item: ui::Item::Workspace(expected),
+                    ..
+                },
+                bkpr::Action::RenameWorkspace { workspace_id, .. },
+            ) => expected == workspace_id,
+            (
+                Self::Rename {
+                    item: ui::Item::Pane(expected),
+                    ..
+                },
+                bkpr::Action::RenamePane { pane_id, .. },
+            ) => expected == pane_id,
             _ => false,
         }
     }
@@ -490,7 +505,7 @@ impl Content {
     fn new(kind: &Kind) -> Self {
         match kind {
             Kind::Finder => Self::default(),
-            _ => Self::Form(Form::default()),
+            _ => Self::Form(Form::new(kind)),
         }
     }
 
@@ -564,13 +579,31 @@ struct Form {
     cwd_active: bool,
 }
 
+struct Field<'a> {
+    input: &'a ui::Input,
+    label: &'static str,
+    row: usize,
+}
+
 impl Form {
+    fn new(kind: &Kind) -> Self {
+        Self {
+            name: match kind {
+                Kind::Rename { name, .. } => ui::Input::new(name.clone()),
+                _ => ui::Input::default(),
+            },
+            ..Self::default()
+        }
+    }
+
     fn input(&mut self, kind: &Kind, input: Input) -> KeyAction {
         if matches!(&input, Input::Key(key) if key.key_modifiers.contains(&KeyModifier::Alt) || key.key_modifiers.contains(&KeyModifier::Super))
         {
             return KeyAction::None;
         }
-        let editor = if matches!(kind, Kind::Pane { .. }) || self.cwd_active {
+        let editor = if matches!(kind, Kind::Pane { .. })
+            || (matches!(kind, Kind::Workspace) && self.cwd_active)
+        {
             &mut self.cwd
         } else {
             &mut self.name
@@ -591,12 +624,12 @@ impl Form {
         KeyAction::None
     }
 
-    fn action(&self, kind: &Kind) -> Option<bkpr::Action> {
+    fn action(&self, kind: &Kind) -> Result<Option<bkpr::Action>, &'static str> {
         let optional = |value: &str| {
             let value = value.trim();
             (!value.is_empty()).then(|| value.to_owned())
         };
-        match kind {
+        Ok(match kind {
             Kind::Workspace => Some(bkpr::Action::CreateWorkspace {
                 label: optional(&self.name.value),
                 cwd: optional(&self.cwd.value),
@@ -605,24 +638,45 @@ impl Form {
                 workspace_id: workspace_id.clone(),
                 cwd: optional(&self.cwd.value),
             }),
+            Kind::Rename { item, .. } => {
+                let label = optional(&self.name.value).ok_or("A name cannot be empty")?;
+                Some(match item {
+                    ui::Item::Workspace(workspace_id) => bkpr::Action::RenameWorkspace {
+                        workspace_id: workspace_id.clone(),
+                        label,
+                    },
+                    ui::Item::Pane(pane_id) => bkpr::Action::RenamePane {
+                        pane_id: pane_id.clone(),
+                        label,
+                    },
+                })
+            }
             Kind::Finder => None,
+        })
+    }
+
+    fn fields(&self, kind: &Kind) -> [Option<Field<'_>>; 2] {
+        let name = |label| Field {
+            input: &self.name,
+            label,
+            row: 2,
+        };
+        let cwd = |row| Field {
+            input: &self.cwd,
+            label: "Working directory (optional)",
+            row,
+        };
+        match kind {
+            Kind::Workspace => [Some(name("Workspace name (optional)")), Some(cwd(5))],
+            Kind::Pane { .. } => [Some(cwd(2)), None],
+            Kind::Rename { .. } => [Some(name("Name")), None],
+            Kind::Finder => [None, None],
         }
     }
 
-    fn field(&self, kind: &Kind) -> (&ui::Input, &'static str, usize) {
-        if matches!(kind, Kind::Pane { .. }) || self.cwd_active {
-            (
-                &self.cwd,
-                "Working directory (optional)",
-                if matches!(kind, Kind::Workspace) {
-                    5
-                } else {
-                    2
-                },
-            )
-        } else {
-            (&self.name, "Workspace name (optional)", 2)
-        }
+    fn field(&self, kind: &Kind) -> Option<Field<'_>> {
+        let index = usize::from(matches!(kind, Kind::Workspace) && self.cwd_active);
+        self.fields(kind).into_iter().nth(index).flatten()
     }
 
     fn cursor(&self, kind: &Kind, rows: usize, columns: usize) -> Option<(usize, usize)> {
@@ -631,14 +685,14 @@ impl Form {
         if rows == 0 || width == 0 {
             return None;
         }
-        let (input, _, desired) = self.field(kind);
+        let field = self.field(kind)?;
         let expanded = rows >= 8 && (!matches!(kind, Kind::Workspace) || rows >= 9);
         let row = if expanded {
-            desired + 1
+            field.row + 1
         } else {
             margin.min(rows - 1)
         };
-        let (_, cursor) = input.visible(width);
+        let (_, cursor) = field.input.visible(width);
         Some((margin + cursor, row.min(rows.saturating_sub(margin + 1))))
     }
 
@@ -646,52 +700,46 @@ impl Form {
         let border = rows >= 3 && columns >= 4;
         let margin = usize::from(border);
         let width = columns.saturating_sub(margin * 2);
-        let title = if matches!(state.kind, Kind::Workspace) {
-            " Create workspace "
-        } else {
-            " Create terminal "
+        let title = match &state.kind {
+            Kind::Workspace => " Create workspace ",
+            Kind::Pane { .. } => " Create terminal ",
+            Kind::Rename {
+                item: ui::Item::Workspace(_),
+                ..
+            } => " Rename workspace ",
+            Kind::Rename {
+                item: ui::Item::Pane(_),
+                ..
+            } => " Rename pane ",
+            Kind::Finder => return,
         };
         frame(rows, columns, border, title, theme);
         if rows == 0 || width == 0 {
             return;
         }
         if rows >= 8 && (!matches!(state.kind, Kind::Workspace) || rows >= 9) {
-            if matches!(state.kind, Kind::Workspace) {
-                paint(
-                    margin,
-                    2,
-                    &ui::truncate("Workspace name (optional)", width),
-                    theme,
-                );
-                paint(margin, 3, &self.name.visible(width).0, theme);
+            for field in self.fields(&state.kind).into_iter().flatten() {
+                paint(margin, field.row, &ui::truncate(field.label, width), theme);
+                paint(margin, field.row + 1, &field.input.visible(width).0, theme);
             }
-            let row = if matches!(state.kind, Kind::Workspace) {
-                5
-            } else {
-                2
-            };
-            paint(
-                margin,
-                row,
-                &ui::truncate("Working directory (optional)", width),
-                theme,
-            );
-            paint(margin, row + 1, &self.cwd.visible(width).0, theme);
-        } else if let Some((_, row)) = self.cursor(&state.kind, rows, columns) {
-            paint(
-                margin,
-                row,
-                &self.field(&state.kind).0.visible(width).0,
-                theme,
-            );
+        } else if let Some((_, row)) = self.cursor(&state.kind, rows, columns)
+            && let Some(field) = self.field(&state.kind)
+        {
+            paint(margin, row, &field.input.visible(width).0, theme);
         }
         if rows >= 5 {
             let hint = if let Some(error) = state.error.as_deref() {
                 error
             } else if state.busy {
-                "Creating…"
+                if matches!(state.kind, Kind::Rename { .. }) {
+                    "Renaming…"
+                } else {
+                    "Creating…"
+                }
             } else if matches!(state.kind, Kind::Workspace) {
                 "Enter create · Esc cancel · Tab next field"
+            } else if matches!(state.kind, Kind::Rename { .. }) {
+                "Enter rename · Esc cancel"
             } else {
                 "Enter create · Esc cancel"
             };
@@ -1131,7 +1179,7 @@ impl Host {
         match action {
             KeyAction::Cancel => {
                 if self.state.as_ref().is_some_and(|state| state.busy) {
-                    // Only the owner knows whether creation is still queued.
+                    // Only the owner knows whether the submitted action is still queued.
                     self.callback(CANCEL, None, true, None);
                 } else {
                     self.finish(CANCEL, None, true);
@@ -1145,10 +1193,17 @@ impl Host {
             KeyAction::Submit => {
                 if let (Content::Form(form), Some(state)) = (&self.content, &self.state)
                     && !state.busy
-                    && let Some(action) = form.action(&state.kind)
                 {
-                    self.callback(SUBMIT, None, false, Some(action));
-                    self.state.as_mut().unwrap().busy = true;
+                    match form.action(&state.kind) {
+                        Ok(Some(action)) => {
+                            self.callback(SUBMIT, None, false, Some(action));
+                            let state = self.state.as_mut().unwrap();
+                            state.busy = true;
+                            state.error = None;
+                        }
+                        Err(error) => self.state.as_mut().unwrap().error = Some(error.to_owned()),
+                        Ok(None) => {}
+                    }
                 }
             }
             KeyAction::None => {}
@@ -1337,7 +1392,7 @@ mod tests {
     fn form(host: &Host) -> &Form {
         match &host.content {
             Content::Form(form) => form,
-            _ => panic!("expected creation form"),
+            _ => panic!("expected focused form"),
         }
     }
 
@@ -1360,7 +1415,7 @@ mod tests {
         assert_eq!(form(&host).name.value, "  Work α  ");
         assert_eq!(form(&host).cwd.value, " /tmp/project ");
         let mut submitted = callback(&host);
-        submitted.action = form(&host).action(&Kind::Workspace);
+        submitted.action = form(&host).action(&Kind::Workspace).unwrap();
         assert!(
             matches!(&submitted.action, Some(bkpr::Action::CreateWorkspace { label: Some(label), cwd: Some(cwd) }) if label == "Work α" && cwd == "/tmp/project")
         );
@@ -1411,20 +1466,216 @@ mod tests {
         host.input_event(Input::Paste("   ".to_owned()));
         assert!(form(&host).name.value.is_empty());
         assert!(
-            matches!(form(&host).action(&kind), Some(bkpr::Action::CreatePane { workspace_id, cwd: None }) if workspace_id == "workspace-target")
+            matches!(form(&host).action(&kind).unwrap(), Some(bkpr::Action::CreatePane { workspace_id, cwd: None }) if workspace_id == "workspace-target")
         );
         host.input_event(Input::Paste("/tmp/界".to_owned()));
         host.input_event(key(BareKey::Left));
         host.input_event(key(BareKey::Delete));
         assert_eq!(form(&host).cwd.value, "   /tmp/");
         assert_eq!(host.input_event(key(BareKey::Esc)), KeyAction::Cancel);
-        assert!(!Kind::Workspace.accepts(&form(&host).action(&kind).unwrap()));
+        assert!(!Kind::Workspace.accepts(&form(&host).action(&kind).unwrap().unwrap()));
         assert!(
             !Kind::Pane {
                 workspace_id: "other".to_owned()
             }
-            .accepts(&form(&host).action(&kind).unwrap())
+            .accepts(&form(&host).action(&kind).unwrap().unwrap())
         );
+    }
+
+    #[test]
+    fn rename_retains_unicode_edits_and_captured_target_across_snapshot_and_resize() {
+        for item in [
+            ui::Item::Pane("pane-1".to_owned()),
+            ui::Item::Workspace("workspace".to_owned()),
+        ] {
+            let kind = Kind::Rename {
+                item: item.clone(),
+                name: "界α".to_owned(),
+            };
+            let mut owner = owner(kind.clone());
+            let mut host = guest();
+            assert!(host.receive(owner.pending.clone().unwrap()));
+            assert_eq!(form(&host).cursor(&kind, 8, 64), Some((4, 3)));
+            host.input_event(key(BareKey::Left));
+            host.input_event(Input::Paste("β".to_owned()));
+            assert_eq!(form(&host).name.value, "界βα");
+            assert_eq!(form(&host).name.cursor, "界β".len());
+
+            let mut changed = snapshot();
+            changed.focused_pane_id = Some("pane-3".to_owned());
+            changed.panes.reverse();
+            changed.panes[2].name = "Externally renamed".to_owned();
+            changed.workspaces[0].name = "External workspace".to_owned();
+            owner.update(3, &BTreeMap::new(), &changed, 40, 7);
+            assert!(host.receive(owner.pending.clone().unwrap()));
+            assert_eq!(form(&host).name.value, "界βα");
+            assert_eq!(form(&host).name.cursor, "界β".len());
+            assert_eq!(form(&host).cursor(&kind, 7, 40), Some((4, 1)));
+            host.input_event(key(BareKey::Delete));
+            host.input_event(Input::Paste("ζ".to_owned()));
+            assert_eq!(form(&host).name.value, "界βζ");
+            let mut submitted = callback(&host);
+            submitted.action = form(&host).action(&kind).unwrap();
+            let Some(Notice::Submitted(action)) =
+                owner.pipe(&message(SUBMIT, &submitted, 7), 3, &BTreeMap::new())
+            else {
+                panic!("rename did not reach its owner");
+            };
+            match (item, action) {
+                (ui::Item::Pane(expected), bkpr::Action::RenamePane { pane_id, label }) => {
+                    assert_eq!(pane_id, expected);
+                    assert_eq!(label, "界βζ");
+                }
+                (
+                    ui::Item::Workspace(expected),
+                    bkpr::Action::RenameWorkspace {
+                        workspace_id,
+                        label,
+                    },
+                ) => {
+                    assert_eq!(workspace_id, expected);
+                    assert_eq!(label, "界βζ");
+                }
+                _ => panic!("rename changed its captured target type"),
+            }
+        }
+    }
+
+    #[test]
+    fn rename_owner_rejects_wrong_target_id_type_and_creation_actions() {
+        for item in [
+            ui::Item::Pane("target".to_owned()),
+            ui::Item::Workspace("target".to_owned()),
+        ] {
+            let kind = Kind::Rename {
+                item: item.clone(),
+                name: "Name".to_owned(),
+            };
+            let mut owner = owner(kind);
+            let mut host = guest();
+            assert!(host.receive(owner.pending.clone().unwrap()));
+            let wrong_type = match item {
+                ui::Item::Pane(_) => bkpr::Action::RenameWorkspace {
+                    workspace_id: "target".to_owned(),
+                    label: "Name".to_owned(),
+                },
+                ui::Item::Workspace(_) => bkpr::Action::RenamePane {
+                    pane_id: "target".to_owned(),
+                    label: "Name".to_owned(),
+                },
+            };
+            for action in [
+                wrong_type,
+                bkpr::Action::RenamePane {
+                    pane_id: "other".to_owned(),
+                    label: "Name".to_owned(),
+                },
+                bkpr::Action::RenameWorkspace {
+                    workspace_id: "other".to_owned(),
+                    label: "Name".to_owned(),
+                },
+                bkpr::Action::CreateWorkspace {
+                    label: Some("Name".to_owned()),
+                    cwd: None,
+                },
+                bkpr::Action::CreatePane {
+                    workspace_id: "target".to_owned(),
+                    cwd: None,
+                },
+            ] {
+                let mut submitted = callback(&host);
+                submitted.action = Some(action);
+                assert!(
+                    owner
+                        .pipe(&message(SUBMIT, &submitted, 7), 3, &BTreeMap::new())
+                        .is_none()
+                );
+                assert!(!owner.pending.as_ref().unwrap().busy);
+            }
+        }
+    }
+
+    #[test]
+    fn rename_rejects_empty_and_whitespace_names_without_leaving_the_editable_form() {
+        for item in [
+            ui::Item::Pane("pane-1".to_owned()),
+            ui::Item::Workspace("workspace".to_owned()),
+        ] {
+            let kind = Kind::Rename {
+                item,
+                name: String::new(),
+            };
+            let mut host = guest();
+            assert!(host.receive(state(kind.clone(), 1, 1)));
+            for text in ["", " \u{2003}  "] {
+                host.input_event(Input::Paste(text.to_owned()));
+                let action = host.input_event(key(BareKey::Enter));
+                host.dispatch(action);
+                assert!(host.visible());
+                assert!(!host.state.as_ref().unwrap().busy);
+                assert_eq!(
+                    host.state.as_ref().unwrap().error.as_deref(),
+                    Some("A name cannot be empty")
+                );
+            }
+            while !form(&host).name.value.is_empty() {
+                host.input_event(key(BareKey::Backspace));
+            }
+            host.input_event(key(BareKey::Tab));
+            host.input_event(Input::Paste("  Fixed 界  ".to_owned()));
+            assert!(form(&host).cwd.value.is_empty());
+            assert!(matches!(
+                form(&host).action(&kind).unwrap(),
+                Some(bkpr::Action::RenamePane { label, .. }
+                    | bkpr::Action::RenameWorkspace { label, .. }) if label == "Fixed 界"
+            ));
+            let action = host.input_event(key(BareKey::Enter));
+            host.dispatch(action);
+            assert!(host.visible());
+            assert!(host.state.as_ref().unwrap().busy);
+            assert!(host.state.as_ref().unwrap().error.is_none());
+        }
+    }
+
+    #[test]
+    fn cancelled_rename_discards_buffered_tail_and_prefills_only_the_new_opening() {
+        let mut owner = owner(Kind::Rename {
+            item: ui::Item::Pane("pane-1".to_owned()),
+            name: "Original".to_owned(),
+        });
+        owner.queue_input(Input::Paste("界".to_owned()));
+        owner.queue_input(key(BareKey::Esc));
+        owner.queue_input(Input::Paste("discard".to_owned()));
+        let mut host = guest();
+        assert!(host.receive(owner.pending.clone().unwrap()));
+        assert_eq!(form(&host).name.value, "Original界");
+        assert_eq!(host.applied_sequence, 2);
+        let mut cancelled = callback(&host);
+        cancelled.restore = true;
+        let action = host.pending_action.take().unwrap();
+        host.dispatch(action);
+        assert!(!host.visible());
+        assert!(matches!(
+            owner.pipe(&message(CANCEL, &cancelled, 7), 3, &BTreeMap::new()),
+            Some(Notice::Cancelled { restore: true })
+        ));
+        assert!(host.receive(owner.pending.clone().unwrap()));
+        let next = Kind::Rename {
+            item: ui::Item::Workspace("workspace".to_owned()),
+            name: "Fresh α".to_owned(),
+        };
+        owner.open(3, &BTreeMap::new(), &snapshot(), next.clone(), 160, 48);
+        assert!(host.receive(owner.pending.clone().unwrap()));
+        assert!(host.visible());
+        assert_eq!(form(&host).name.value, "Fresh α");
+        assert_eq!(form(&host).cursor(&next, 8, 64), Some((8, 3)));
+        assert!(host.state.as_ref().unwrap().error.is_none());
+        assert!(
+            owner
+                .pipe(&message(CANCEL, &cancelled, 7), 3, &BTreeMap::new())
+                .is_none()
+        );
+        assert!(owner.is_open());
     }
 
     #[test]
@@ -1640,6 +1891,14 @@ mod tests {
             Kind::Pane {
                 workspace_id: "workspace".to_owned(),
             },
+            Kind::Rename {
+                item: ui::Item::Pane("pane-1".to_owned()),
+                name: "界α".to_owned(),
+            },
+            Kind::Rename {
+                item: ui::Item::Workspace("workspace".to_owned()),
+                name: "Workspace α".to_owned(),
+            },
         ] {
             for columns in [1, 2, 20, 80, 175, 300] {
                 for rows in [1, 2, 5, 24, 48, 100] {
@@ -1654,7 +1913,7 @@ mod tests {
                     for cwd_active in [false, true] {
                         let form = Form {
                             cwd_active,
-                            ..Form::default()
+                            ..Form::new(&kind)
                         };
                         if let Some((x, y)) = form.cursor(&kind, height, width) {
                             assert!(x < width && y < height);

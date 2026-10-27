@@ -12,7 +12,7 @@ pub use crate::palette::Theme;
 pub const TEXT: &str = "\u{1b}[22;39m";
 const WORKFLOW: &str = "\u{f52e}"; // nf-oct-workflow
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Item {
     Workspace(String),
     Pane(String),
@@ -1531,36 +1531,18 @@ impl Input {
 }
 
 pub enum Modal {
-    Rename { item: Item, input: Input },
     Close { item: Item, name: String },
 }
 
 impl Modal {
-    pub fn input_mut(&mut self) -> Option<&mut Input> {
+    pub fn lines(&self) -> Vec<String> {
         match self {
-            Self::Rename { input, .. } => Some(input),
-            Self::Close { .. } => None,
-        }
-    }
-
-    pub fn lines(&self, columns: usize) -> (Vec<String>, Option<(usize, usize)>) {
-        match self {
-            Self::Rename { input, .. } => {
-                let (line, cursor) = input.visible(columns.saturating_sub(2));
-                (
-                    vec!["Rename".to_owned(), String::new(), format!("  {line}")],
-                    Some((2 + cursor, 2)),
-                )
-            }
-            Self::Close { name, .. } => (
-                vec![
-                    "Close permanently?".to_owned(),
-                    name.clone(),
-                    String::new(),
-                    "This terminates native terminals.".to_owned(),
-                ],
-                None,
-            ),
+            Self::Close { name, .. } => vec![
+                "Close permanently?".to_owned(),
+                name.clone(),
+                String::new(),
+                "This terminates native terminals.".to_owned(),
+            ],
         }
     }
 }
