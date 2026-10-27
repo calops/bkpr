@@ -804,7 +804,8 @@ pub(crate) fn zellij_socket_dir() -> Result<PathBuf> {
     Ok(path)
 }
 
-pub(crate) fn runtime_root() -> Result<PathBuf> {
+/// Resolve the conventional runtime location without creating or chmodding it.
+pub(crate) fn runtime_path() -> Result<PathBuf> {
     #[cfg(test)]
     if let Some(root) = test_support::ROOT.with(|root| root.borrow().clone()) {
         return Ok(root);
@@ -818,6 +819,11 @@ pub(crate) fn runtime_root() -> Result<PathBuf> {
             .context("HOME or XDG_STATE_HOME is required")?;
         state.join("bkpr/run")
     };
+    Ok(base)
+}
+
+pub(crate) fn runtime_root() -> Result<PathBuf> {
+    let base = runtime_path()?;
     private_directory(&base)?;
     Ok(base)
 }
@@ -944,7 +950,8 @@ pub(crate) mod test_support {
 
     pub(crate) fn isolate_runtime() -> Runtime {
         let directory = tempfile::tempdir().unwrap();
-        let previous = ROOT.with(|root| root.replace(Some(directory.path().to_owned())));
+        let path = std::fs::canonicalize(directory.path()).unwrap();
+        let previous = ROOT.with(|root| root.replace(Some(path)));
         Runtime {
             previous,
             _directory: directory,

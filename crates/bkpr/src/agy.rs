@@ -24,7 +24,7 @@ pub fn wrapper(program: &Path, directory: &Path) -> Result<String> {
 
 // Only recognized interactive routing may register an agent. In particular, option
 // values are not commands or switches, and arguments after `--` are prompt text.
-fn interactive_arguments(arguments: &[OsString]) -> bool {
+pub(crate) fn interactive_arguments(arguments: &[OsString]) -> bool {
     let mut index = 0;
     let mut first_positional = true;
     while index < arguments.len() {
@@ -124,7 +124,11 @@ pub fn launch(directory: Option<&Path>, arguments: Vec<OsString>) -> Result<()> 
         .env_remove("ANTIGRAVITY_LS_ADDRESS")
         .env_remove("ANTIGRAVITY_CSRF_TOKEN")
         .env_remove("ANTIGRAVITY_CONVERSATION_ID");
-    if io::stdin().is_terminal() && io::stdout().is_terminal() && interactive_arguments(&arguments)
+    let installed = crate::install::installed_launch("agy", &arguments)?;
+    if !installed
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+        && interactive_arguments(&arguments)
     {
         let cwd = env::current_dir().context("locate AGY working directory")?;
         let relay = crate::relay::prepare("agy", &cwd)?;

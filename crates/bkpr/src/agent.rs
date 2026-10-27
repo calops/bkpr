@@ -16,7 +16,7 @@ const MAX_PANES: usize = 1024;
 const MAX_PROCESSES: usize = 32768;
 const MAX_ARGUMENT_BYTES: usize = 65536;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Process {
     pid: i32,
     parent: i32,
@@ -214,7 +214,7 @@ fn live_ancestry(
         let Some(current) = platform::process(expected.pid)? else {
             return Ok(false);
         };
-        if current.identity != expected.identity || current.parent != expected.parent {
+        if current != *expected {
             return Ok(false);
         }
         if current.pid == root.pid {
@@ -226,6 +226,254 @@ fn live_ancestry(
         expected = parent;
     }
     Ok(false)
+}
+
+/// Birth-bound authority for one interactive harness inside an authenticated
+/// native server. This contains no native-owner or relay credentials.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NativeRoot {
+    pub pid: i32,
+    pub parent: i32,
+    pub identity: String,
+    pub harness: String,
+    pub tty: u64,
+    pub server: i32,
+    pub server_identity: String,
+    pub session_id: String,
+}
+
+fn native_lineage(root: &Process, server: &Process, processes: &HashMap<i32, Process>) -> bool {
+    if root.stopped || root.tty == 0 || root.group != root.foreground {
+        return false;
+    }
+    let mut current = root;
+    for _ in 0..128 {
+        if current.pid == server.pid {
+            return true;
+        }
+        // A nested PTY is not a terminal owned by this native server. Every
+        // process between the pane's initial child and the harness must retain
+        // the same controlling terminal, including intervening shells.
+        if current.tty != root.tty || current.stopped {
+            return false;
+        }
+        let Some(parent) = processes.get(&current.parent) else {
+            return false;
+        };
+        current = parent;
+    }
+    false
+}
+
+fn native_root(
+    process: &Process,
+    harness: &str,
+    processes: &HashMap<i32, Process>,
+    sessions: &[crate::context::LiveSession],
+) -> Result<Option<NativeRoot>> {
+    let mut selected = None;
+    for session in sessions {
+        let Some(server) = processes.get(&session.server) else {
+            continue;
+        };
+        if !native_lineage(process, server, processes) {
+            continue;
+        }
+        if selected.is_some() || !live_ancestry(process, server, processes)? {
+            return Ok(None);
+        }
+        selected = Some(NativeRoot {
+            pid: process.pid,
+            parent: process.parent,
+            identity: process.identity.clone(),
+            harness: harness.to_owned(),
+            tty: process.tty,
+            server: server.pid,
+            server_identity: server.identity.clone(),
+            session_id: session.session_id.clone(),
+        });
+    }
+    Ok(selected)
+}
+
+/// Resolve from OS ancestry, never from inherited public context or a claimed
+/// harness session ID. Hook/MCP stdio and native tool PTYs are transport only;
+/// they cannot replace the root's independently verified native terminal.
+pub(crate) fn installed_ancestor(harness: &str) -> Result<Option<NativeRoot>> {
+    let processes = platform::snapshot()?;
+    let Some(helper) = processes.get(&(std::process::id() as i32)) else {
+        return Ok(None);
+    };
+    let sessions = crate::context::live_sessions()?;
+    let Some(process) =
+        installed_candidate(helper, harness, &processes, &sessions, recognize_process)?
+    else {
+        return Ok(None);
+    };
+    let Some(root) = native_root(process, harness, &processes, &sessions)? else {
+        return Ok(None);
+    };
+    if live_ancestry(helper, process, &processes)? {
+        Ok(Some(root))
+    } else {
+        Ok(None)
+    }
+}
+
+fn installed_candidate<'a>(
+    helper: &'a Process,
+    harness: &str,
+    processes: &'a HashMap<i32, Process>,
+    sessions: &[crate::context::LiveSession],
+    mut recognize: impl FnMut(i32) -> Result<Option<&'static str>>,
+) -> Result<Option<&'a Process>> {
+    let mut current = helper;
+    let mut selected = None;
+    for _ in 0..128 {
+        if let Some(recognized) = recognize(current.pid)?
+            && !current.stopped
+            && current.tty != 0
+            && current.group == current.foreground
+        {
+            if !sessions.iter().any(|session| {
+                processes
+                    .get(&session.server)
+                    .is_some_and(|server| native_lineage(current, server, processes))
+            }) {
+                // A recognized interactive harness in a nested/unmanaged PTY
+                // cannot lend its callbacks to an outer native harness.
+                return Ok(None);
+            }
+            if selected.is_some() {
+                // A nested interactive harness must not borrow its parent's
+                // managed identity, even when both executables have the same name.
+                return Ok(None);
+            }
+            selected = Some((current, recognized));
+        }
+        let Some(parent) = processes.get(&current.parent) else {
+            return Ok(selected
+                .filter(|(_, recognized)| *recognized == harness)
+                .map(|(process, _)| process));
+        };
+        current = parent;
+    }
+    // A cycle or an overlong ancestry is not partial authority.
+    Ok(None)
+}
+
+pub(crate) fn revalidate_native_root(expected: &NativeRoot) -> Result<bool> {
+    Ok(native_session(expected)?.is_some())
+}
+
+/// Revalidate only this root's ancestry, not the entire process table, and return
+/// the authenticated owner publication used by startup's association barrier.
+pub(crate) fn native_session(expected: &NativeRoot) -> Result<Option<crate::context::LiveSession>> {
+    let mut processes = HashMap::new();
+    let mut pid = expected.pid;
+    for _ in 0..128 {
+        let Some(process) = platform::process(pid)? else {
+            return Ok(None);
+        };
+        let parent = process.parent;
+        if processes.insert(pid, process).is_some() {
+            return Ok(None);
+        }
+        if pid == expected.server {
+            break;
+        }
+        pid = parent;
+    }
+    let Some(process) = processes.get(&expected.pid) else {
+        return Ok(None);
+    };
+    if process.identity != expected.identity
+        || process.parent != expected.parent
+        || recognize_process(process.pid)? != Some(expected.harness.as_str())
+    {
+        return Ok(None);
+    }
+    for ancestor in processes.values() {
+        if ancestor.pid != expected.pid
+            && ancestor.pid != expected.server
+            && ancestor.tty != 0
+            && !ancestor.stopped
+            && ancestor.group == ancestor.foreground
+            && recognize_process(ancestor.pid)?.is_some()
+        {
+            return Ok(None);
+        }
+    }
+    let Some(session) = crate::context::resolve_session(&expected.session_id)? else {
+        return Ok(None);
+    };
+    if native_root(
+        process,
+        &expected.harness,
+        &processes,
+        std::slice::from_ref(&session),
+    )?
+    .as_ref()
+        != Some(expected)
+    {
+        return Ok(None);
+    }
+    Ok(Some(session))
+}
+
+pub(crate) fn root_alive(root: &NativeRoot) -> Result<bool> {
+    Ok(platform::process(root.pid)?
+        .is_some_and(|process| process.identity == root.identity && process.parent == root.parent))
+}
+
+pub(crate) fn process_birth(pid: i32) -> Result<Option<String>> {
+    Ok(platform::process(pid)?.map(|process| process.identity))
+}
+
+pub(crate) fn root_directory(root: &NativeRoot) -> Result<PathBuf> {
+    platform::cwd(root.pid)?
+        .map(PathBuf::from)
+        .context("native harness root has no accessible working directory")
+}
+
+pub(crate) fn claude_resumed(root: &NativeRoot) -> Result<bool> {
+    Ok(platform::arguments(root.pid)?
+        .iter()
+        .take_while(|argument| *argument != "--")
+        .any(|argument| {
+            argument.to_str().is_some_and(|argument| {
+                matches!(argument, "--resume" | "-r" | "--continue" | "-c")
+                    || argument.starts_with("--resume=")
+            })
+        }))
+}
+
+pub(crate) fn root_terminal(root: &NativeRoot) -> Result<PathBuf> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    #[cfg(target_os = "linux")]
+    for descriptor in 0..3 {
+        if let Ok(path) = std::fs::read_link(format!("/proc/{}/fd/{descriptor}", root.pid))
+            && path.starts_with("/dev")
+            && std::fs::metadata(&path).is_ok_and(|metadata| {
+                metadata.file_type().is_char_device() && metadata.rdev() == root.tty
+            })
+        {
+            return Ok(path);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    for entry in std::fs::read_dir("/dev")? {
+        let entry = entry?;
+        if entry.file_name().as_encoded_bytes().starts_with(b"tty")
+            && entry.metadata().is_ok_and(|metadata| {
+                metadata.file_type().is_char_device() && metadata.rdev() == root.tty
+            })
+        {
+            return Ok(entry.path());
+        }
+    }
+    bail!("cannot resolve the verified native harness terminal")
 }
 
 #[cfg(any(test, target_os = "macos"))]
@@ -310,6 +558,24 @@ fn relay_id(_pid: i32, _harness: &str) -> Option<String> {
     None
 }
 
+pub(crate) fn root_launch(root: &NativeRoot) -> Option<crate::relay::RelayLaunch> {
+    #[cfg(target_os = "linux")]
+    let bytes = bounded_read(
+        File::open(format!("/proc/{}/environ", root.pid)).ok()?,
+        64 * 1024,
+    )
+    .ok()?;
+    #[cfg(target_os = "macos")]
+    let bytes = platform::process_arguments(root.pid).ok()?;
+    #[cfg(target_os = "linux")]
+    let environment = bytes.as_slice();
+    #[cfg(target_os = "macos")]
+    let environment = darwin_process_arguments(&bytes)?.environment;
+    let launch = crate::relay::launch_from_environment(environment, &root.harness)?;
+    crate::relay::verify_launch(&launch, root.pid as u32).ok()?;
+    Some(launch)
+}
+
 pub fn inspect(json: &str) -> Result<InspectResponse> {
     if json.len() > MAX_MESSAGE_BYTES {
         bail!("inspect request exceeds message size limit");
@@ -320,6 +586,8 @@ pub fn inspect(json: &str) -> Result<InspectResponse> {
         bail!("inspect request exceeds {MAX_PANES} panes");
     }
     let processes = platform::snapshot()?;
+    let mut sessions = Vec::new();
+    let mut sessions_loaded = false;
     let mut foreground: HashMap<u64, Vec<&Process>> = HashMap::new();
     for process in processes.values() {
         if !process.stopped && process.tty != 0 && process.group == process.foreground {
@@ -369,7 +637,19 @@ pub fn inspect(json: &str) -> Result<InspectResponse> {
         // Both process reads enforce same-UID ownership. Keep metadata reads
         // inside the birth/ancestry checks so a reused PID cannot lend its ID.
         let cwd = platform::cwd(current.pid)?;
-        let agent_id = relay_id(current.pid, harness);
+        let agent_id = if matches!(harness, "claude" | "omp" | "agy") {
+            if !sessions_loaded {
+                sessions = crate::context::live_sessions()?;
+                sessions_loaded = true;
+            }
+            match native_root(process, harness, &processes, &sessions)? {
+                Some(native) => crate::installed::lookup(&native)?
+                    .or_else(|| root_launch(&native).map(|launch| launch.agent_id)),
+                None => None,
+            }
+        } else {
+            relay_id(current.pid, harness)
+        };
         if !live_ancestry(process, root, &processes)? {
             continue;
         }
@@ -1035,5 +1315,148 @@ mod tests {
         ] {
             assert_eq!(recognize_arguments("/bin/python3.14", &arguments), None);
         }
+    }
+
+    fn native_fixture() -> (HashMap<i32, Process>, Vec<crate::context::LiveSession>) {
+        let process = |pid, parent, tty, group, foreground| Process {
+            pid,
+            parent,
+            tty,
+            group,
+            foreground,
+            stopped: false,
+            identity: format!("fixture:birth:{pid}"),
+        };
+        let processes = HashMap::from([
+            (10, process(10, 1, 0, 10, 0)),
+            (11, process(11, 10, 17, 11, 20)),
+            (20, process(20, 11, 17, 20, 20)),
+            (21, process(21, 20, 99, 21, 21)),
+            (22, process(22, 21, 99, 21, 21)),
+        ]);
+        let sessions = vec![crate::context::LiveSession {
+            session_id: "a".repeat(48),
+            session_name: "owned".into(),
+            runtime_name: "owned-key".into(),
+            server: 10,
+            workspaces: Vec::new(),
+            panes: Vec::new(),
+        }];
+        (processes, sessions)
+    }
+
+    #[test]
+    fn installed_root_proves_native_terminal_not_native_tool_transport() {
+        let (processes, sessions) = native_fixture();
+        let selected = installed_candidate(&processes[&22], "agy", &processes, &sessions, |pid| {
+            Ok((pid == 20).then_some("agy"))
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(selected.pid, 20);
+        assert_ne!(processes[&22].tty, selected.tty);
+        assert!(native_lineage(selected, &processes[&10], &processes));
+        let mut nested = processes.clone();
+        nested.get_mut(&11).unwrap().tty = 99;
+        assert!(!native_lineage(&nested[&20], &nested[&10], &nested));
+        assert!(
+            installed_candidate(&nested[&22], "agy", &nested, &sessions, |pid| Ok((pid
+                == 20)
+                .then_some("agy")),)
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn installed_root_rejects_outside_wrong_harness_and_missing_uid_ancestry() {
+        let (mut processes, sessions) = native_fixture();
+        assert!(
+            installed_candidate(&processes[&22], "omp", &processes, &sessions, |pid| Ok(
+                (pid == 20).then_some("agy")
+            ),)
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            installed_candidate(&processes[&22], "agy", &processes, &[], |pid| Ok((pid
+                == 20)
+                .then_some("agy")),)
+            .unwrap()
+            .is_none()
+        );
+        // Same-UID platform snapshots omit a foreign owner, an exited parent,
+        // and a reparented root equally: none supplies a complete native chain.
+        processes.remove(&11);
+        assert!(
+            installed_candidate(&processes[&22], "agy", &processes, &sessions, |pid| Ok(
+                (pid == 20).then_some("agy")
+            ),)
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn nested_interactive_harness_cannot_adopt_parent_but_ttyless_ls_is_ignored() {
+        let (mut processes, sessions) = native_fixture();
+        for inner_harness in ["agy", "claude"] {
+            assert!(
+                installed_candidate(&processes[&22], "agy", &processes, &sessions, |pid| Ok(
+                    match pid {
+                        20 => Some("agy"),
+                        21 => Some(inner_harness),
+                        _ => None,
+                    }
+                ),)
+                .unwrap()
+                .is_none()
+            );
+        }
+        processes.get_mut(&21).unwrap().tty = 17;
+        assert!(
+            installed_candidate(&processes[&22], "agy", &processes, &sessions, |pid| Ok(
+                matches!(pid, 20 | 21).then_some("agy")
+            ),)
+            .unwrap()
+            .is_none()
+        );
+        processes.get_mut(&21).unwrap().tty = 0;
+        assert_eq!(
+            installed_candidate(&processes[&22], "agy", &processes, &sessions, |pid| Ok(
+                matches!(pid, 20 | 21).then_some("agy")
+            ),)
+            .unwrap()
+            .unwrap()
+            .pid,
+            20
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_birth_liveness_rejects_reused_and_reparented_pid() {
+        let process = platform::process(std::process::id() as i32)
+            .unwrap()
+            .unwrap();
+        let root = NativeRoot {
+            pid: process.pid,
+            parent: process.parent,
+            identity: process.identity,
+            harness: "omp".into(),
+            tty: process.tty,
+            server: 1,
+            server_identity: "unused".into(),
+            session_id: "a".repeat(48),
+        };
+        assert!(root_alive(&root).unwrap());
+        assert!(
+            !root_alive(&NativeRoot {
+                identity: "other-birth".into(),
+                ..root.clone()
+            })
+            .unwrap()
+        );
+        assert!(!root_alive(&NativeRoot { parent: 0, ..root }).unwrap());
     }
 }

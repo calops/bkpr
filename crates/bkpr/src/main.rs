@@ -9,6 +9,7 @@ mod context;
 mod control;
 mod harness;
 mod install;
+mod installed;
 mod launcher;
 mod omp;
 mod project;
@@ -57,6 +58,9 @@ enum Commands {
     },
     /// Install Bkpr's MCP integration in a harness's user configuration.
     Install(install::Args),
+    /// Bootstrap a verified direct harness launch for an installed adapter.
+    #[command(hide = true)]
+    Integration(installed::Args),
     /// Show this pane's current native session and workspace context.
     Context {
         /// Emit compact JSON.
@@ -261,6 +265,7 @@ fn run() -> Result<()> {
         }
         Some(Commands::Run { harness, arguments }) => harness.launch(arguments),
         Some(Commands::Install(args)) => install::run(args),
+        Some(Commands::Integration(args)) => installed::run(args),
         Some(Commands::Context { json }) => {
             let value = context::current()?;
             let mut stdout = io::stdout().lock();

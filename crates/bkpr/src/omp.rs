@@ -16,6 +16,16 @@ use crate::relay::{self, RelayLaunch};
 
 const EXTENSION: &str = include_str!("../../../integration/omp/index.ts");
 
+pub(crate) fn installed_extension(program: &Path) -> Result<String> {
+    let program = program
+        .to_str()
+        .context("installed Omp command is not UTF-8")?;
+    Ok(EXTENSION.replace(
+        "/* BKPR_INSTALLED_PROGRAM */ undefined",
+        &serde_json::to_string(program)?,
+    ))
+}
+
 pub fn wrapper(program: &Path, directory: &Path) -> Result<String> {
     let program = program
         .to_str()
@@ -45,6 +55,10 @@ fn check_arguments(arguments: &[OsString]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn interactive_arguments(arguments: &[OsString]) -> bool {
+    skill_arguments(arguments)
 }
 
 fn skill_arguments(arguments: &[OsString]) -> bool {
@@ -277,9 +291,29 @@ fn extension_package(
     Ok(directory)
 }
 
+fn clear_identity(command: &mut Command) {
+    for (name, _) in env::vars_os() {
+        if name.as_encoded_bytes().starts_with(b"BKPR_RELAY_")
+            || name.as_encoded_bytes().starts_with(b"BKPR_OMP_")
+        {
+            command.env_remove(name);
+        }
+    }
+}
+
 pub fn launch(directory: Option<&Path>, arguments: Vec<OsString>) -> Result<()> {
-    check_arguments(&arguments)?;
     let executable = crate::harness::resolve("omp", directory)?;
+    if crate::install::installed_launch("omp", &arguments)?
+        || crate::install::launch_restricted(
+            &arguments,
+            &["--no-extensions", "--trusted-extension"],
+        )
+    {
+        let mut command = Command::new(executable);
+        clear_identity(&mut command);
+        return Err(command.args(arguments).exec()).context("execute installed OMP");
+    }
+    check_arguments(&arguments)?;
     let cwd = env::current_dir().context("locate OMP working directory")?;
     let program = env::current_exe().context("locate Bkpr MCP executable")?;
     let relay = relay::prepare("omp", &cwd)?;
@@ -290,8 +324,10 @@ pub fn launch(directory: Option<&Path>, arguments: Vec<OsString>) -> Result<()> 
             .to_path_buf(),
         None => crate::launcher::runtime_root()?,
     };
-    let include_skill =
-        io::stdin().is_terminal() && io::stdout().is_terminal() && skill_arguments(&arguments);
+    let include_skill = io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+        && skill_arguments(&arguments)
+        && !crate::install::launch_restricted(&arguments, &["--no-skills"]);
     let package = extension_package(&runtime, &program, &cwd, &relay, include_skill)?;
     let mut command = Command::new(executable);
     relay.apply(&mut command);

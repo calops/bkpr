@@ -125,7 +125,7 @@ Control reuses the pinned runtime's existing CLI and plugin APIs; no new Zellij 
 
 Headless session creation, live session-label rename, arbitrary pairwise pane swaps, inactive-tab layout application and live pane watching are deferred in [TODO.md](TODO.md), along with the associated native bugs. Cross-tab/workspace movement, float/embed transitions and target-pane fullscreen are also deferred because of baseline SDK targeting/focus limitations. Floating creation, geometry and safe pin/border controls remain available. Deferred features are not exposed as placeholder commands.
 
-`bkpr skill show` prints the bundled skill; `bkpr skill export PATH` explicitly writes its `SKILL.md` and reference files without overwriting existing files. No persistent harness profile is changed. Supported interactive Claude launches load it through a private launch-local plugin, and Omp loads it alongside its temporary extension. Codex uses MCP initialization instructions and read-only resources instead; automatic Codex skill installation is not claimed.
+`bkpr skill show` prints the bundled skill; `bkpr skill export PATH` explicitly writes its `SKILL.md` and reference files without overwriting existing files. Default Claude launches load it through a private launch-local plugin, and Omp loads it alongside its temporary extension. The opt-in installers below place the same skill in those harnesses' user directories. Codex uses MCP initialization instructions and read-only resources instead; automatic Codex skill installation is not claimed.
 
 ## Workspaces and navigation
 
@@ -266,7 +266,29 @@ bkpr run opencode
 
 Supported names are `claude`, `codex`, `omp`, `opencode`, `agy`, `cursor`, `copilot`, `aider`, `cline` and `goose`. Aliases include `claude-code`, `antigravity`, `cursor-agent`, `copilot-cli`, `github-copilot` and `.cline`. Unknown names are rejected. Claude, Codex, omp and Antigravity use the same launch integrations as their wrappers; the others execute their installed CLI directly without acquiring a parent agent's messaging identity.
 
-Arguments after the harness name belong to that harness. An initial `--` separates Bkpr's arguments; later `--` arguments are preserved. Executables are resolved from `PATH` while skipping Bkpr-managed wrappers and their aliases. The command works outside Bkpr too, but workspace/session-scoped messaging still requires a managed pane's live context. Automatic session-local wrappers remain enabled.
+Arguments after the harness name belong to that harness. An initial `--` separates Bkpr's arguments; later `--` arguments are preserved. Executables are resolved from `PATH` while skipping Bkpr-managed wrappers and their aliases. The command works outside Bkpr too, but workspace/session-scoped messaging requires a managed pane's live context. Installed adapters require a live managed pane for authentication. Automatic session-local wrappers remain enabled.
+
+### Persistent harness integration
+
+Opt in once to keep Bkpr integration when direnv or a Nix shell removes the session wrapper directory from `PATH`:
+
+| Harness | Installer | Persistent assets |
+| --- | --- | --- |
+| Claude Code | `bkpr install claude` | User MCP server, title/inbox/wakeup hooks and control skill |
+| Omp | `bkpr install omp` | User MCP server, the existing lifecycle extension and control skill |
+| Antigravity | `bkpr install agy` | User MCP server; its native receiver still starts through an approved tool call |
+
+Add `--dry-run` to preflight without writing. `bkpr install omp --profile work` installs into that Omp profile rather than the default; inherited `OMP_PROFILE` / `PI_PROFILE` and supported harness config-directory overrides are respected.
+
+Install an upgrade-stable public `bkpr` command first, such as `~/.local/bin/bkpr` or a Nix profile's `bin/bkpr`. Configuration stores its absolute public path, not a temporary wrapper, Cargo build or immutable Nix store path. Losing the wrapper prefix from `PATH` then no longer matters: run the actual `claude`, `omp` or `agy` directly in a managed Bkpr pane. `bkpr run` and existing wrappers recognize complete installed integration and do not inject a second MCP registration, extension or identity.
+
+Only this explicit installer writes user configuration. It preserves unrelated servers, hooks, permissions and settings; refuses malformed, conflicting, disabled or symlinked artifacts; and records owned asset hashes so rerunning it can update unmodified Bkpr assets without overwriting user edits. No bearer tokens, agent IDs or conversation IDs are installed. Ordinary launches do not repair partial installs or override explicit harness restrictions.
+
+Start a fresh Bkpr session after upgrading to use installed-agent registration; older native-owner plugins cannot observe its registry notifications. Existing sessions remain attachable. Runtime adapters bind to the verified foreground harness process and native owner, then obtain a fresh per-launch identity. Hooks and MCP converge on that same identity without changing the harness's environment. Outside a managed pane, installed MCP fails closed and installed hooks do nothing. Normal harness trust/tool approvals still apply.
+
+The relay broker must also support birth-bound launch verification. An older running broker can use protocol 4 without this capability; inspect pending messages and replace that broker explicitly before using installed adapters. Bkpr never replaces a live broker automatically.
+
+Codex's wrapper-free bootstrap is still under investigation; its existing launch integration is unchanged.
 
 ### Claude Code
 
@@ -280,19 +302,11 @@ claude --settings '{"tui":"fullscreen"}'
 
 This research-preview renderer handles conversation scrollback and selection inside Claude. Activity describes current work, not necessarily the original task. Successful completion can emit `done` without a summary, so the activity description clears.
 
-Bkpr adds a launch-local title hook for supported interactive `claude` invocations. It supplies a first-prompt fallback label without replacing later native titles or explicit Bkpr renames. Resume/continue and noninteractive invocations do not receive this title hook. Aliases, shell functions and absolute executable paths can bypass the wrapper. `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` disables title supplementation. The hook doesn't change global settings, credentials, permission policy or semantic status.
+Bkpr's title hook supplies a first-prompt fallback label without replacing later native titles or explicit Bkpr renames. Default integration injects it for supported interactive `claude` invocations; the persistent installer registers the same hook in user settings. The launch-local path skips resume/continue and noninteractive fallback titles; installed hooks also preserve resumed interactive titles. Aliases, shell functions and absolute executable paths can bypass the wrapper, but not an installed integration. `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` disables title supplementation. The hook doesn't change credentials, permission policy or semantic status.
 
 ### Antigravity
 
-Install the latest `agy` and a stable `bkpr` command on `PATH`, then explicitly register Bkpr's MCP server:
-
-```sh
-bkpr install agy --dry-run
-bkpr install agy
-bkpr run agy
-```
-
-The installer uses `agy mcp add` to add `bkpr` to `~/.gemini/config/mcp_config.json`. It preserves unrelated configuration and refuses conflicting or disabled `bkpr` entries and malformed files. An equivalent entry is a no-op. This is an explicit persistent MCP registration; ordinary launches never edit AGY settings, install plugins or hooks, or redirect its profile. The entry stores only a command and arguments, never launch credentials.
+Use the explicit installer above with the latest `agy`. It registers Bkpr in `~/.gemini/config/mcp_config.json`; rerunning it also migrates the exact original MCP-only Bkpr registration. After installation, bare `agy` in a managed pane no longer needs a launch wrapper. No AGY plugin, hook or profile redirection is required.
 
 Interactive launches receive a fresh authenticated Bkpr identity. The first Bkpr MCP tool call captures AGY's root conversation ID from native request metadata. MCP instructions then guide AGY to start a private receiver through its native command tool, under normal tool approvals. No plugin or hook installation is needed. Before that handshake, the launch is not ready for incoming notifications; an MCP connection alone is not readiness.
 
@@ -306,7 +320,7 @@ Run `omp` directly with version 18.8.7 or newer and native program status enable
 
 ### Agent communication (experimental)
 
-Fresh Bkpr sessions supply launch-local wrappers for `claude`, `omp`, `codex` and `agy`/`antigravity`. Each supported interactive launch receives its own authenticated agent ID. Claude, Codex and omp receive launch-local MCP registration; Antigravity uses the explicit user-level registration above. Messages go through a shared relay broker that starts on demand. It remains alive while any registered launch is running, a connection or delivery is in flight, or an unacknowledged message body remains. After those clear, it exits following a one-second idle grace and removes its own socket; the next managed launch starts a fresh broker. Durable receipts and history remain on disk but do not keep it running. A durable-store failure prevents automatic shutdown until explicit restart and reconciliation. The seven messaging tools remain `whoami`, `discover_agents`, `send_message`, `read_inbox`, `ack_message`, `inspect_outbox` and `set_title`.
+Fresh Bkpr sessions supply launch-local wrappers for `claude`, `omp`, `codex` and `agy`/`antigravity`. Each supported interactive launch receives its own authenticated agent ID. Claude and Omp can instead use their opt-in installed adapters; Antigravity uses explicit user-level MCP registration. Messages go through a shared relay broker that starts on demand. It remains alive while any registered launch is running, a connection or delivery is in flight, or an unacknowledged message body remains. After those clear, it exits following a one-second idle grace and removes its own socket; the next managed launch starts a fresh broker. Durable receipts and history remain on disk but do not keep it running. A durable-store failure prevents automatic shutdown until explicit restart and reconciliation. The seven messaging tools remain `whoami`, `discover_agents`, `send_message`, `read_inbox`, `ack_message`, `inspect_outbox` and `set_title`.
 
 Two additional tools expose control without adding a tool for every operation: `control` handles inspection, lifecycle, layout, geometry and process execution; `terminal_input` handles only explicit `input.*` operations. Both accept `{"operation":"...","arguments":{...}}`. Start with `control` operation `api.help`, then `api.schema` for the chosen operation. The read-only resources `bkpr://control/skill` and `bkpr://control/reference` provide the bundled guidance; resource exposure does not guarantee a host will load it automatically. Normal tool approvals remain in effect.
 
@@ -333,9 +347,9 @@ bkpr bridge show MESSAGE_ID
 
 Status reports readiness, message/wake metadata and available private diagnostic-log paths without message bodies or bearer tokens. `show` retrieves a retained body only when explicitly requested and never returns an expired body, even from an offline snapshot. Codex records native startup-binding failures in its private `binding.jsonl`; older running launches retain their hook diagnostics. Claude waiter errors also have a private per-agent log.
 
-Claude uses launch-local `PostToolUse` and `PostToolUseFailure` hooks to supply inbox context during a turn. A long-running tool or text-only response delays delivery until a tool boundary or idle wake; tools are not cancelled. The synchronous hooks never wait for the broker. One background [`asyncRewake` waiter](https://code.claude.com/docs/en/hooks#run-hooks-in-the-background) coordinates active context and idle wake, including before the first prompt. `SessionStart`, `UserPromptSubmit` and `Stop` rearm it. Its timeout is one day. Hook-disabled or unsupported explicit file-settings launches can still use MCP tools but cannot receive automatic notifications. New active delivery requires the broker's explicit capability acknowledgement; an older broker fails closed and is never replaced automatically. Existing launches retain their original hook behavior. Claude's title hook captures its native session ID when enabled.
+Claude uses `PostToolUse` and `PostToolUseFailure` hooks to supply inbox context during a turn. A long-running tool or text-only response delays delivery until a tool boundary or idle wake; tools are not cancelled. The synchronous inbox handler consumes local cached state; installed callbacks also validate their launch through the runtime bootstrap. One background [`asyncRewake` waiter](https://code.claude.com/docs/en/hooks#run-hooks-in-the-background) coordinates active context and idle wake, including before the first prompt. `SessionStart`, `UserPromptSubmit` and `Stop` rearm it. Its timeout is one day. Hook-disabled or unsupported explicit file-settings launches can still use MCP tools but cannot receive automatic notifications. New active delivery requires the broker's explicit capability acknowledgement; an older broker fails closed and is never replaced automatically. Existing launches retain their original hook behavior. Claude's title hook captures its native session ID when enabled.
 
-Omp uses native `aside` delivery through its launch-local extension: context reaches the next agent-step boundary without cancelling the foreground tool batch, and an idle session starts a turn. Native interruptible `wait` may end early; idle plan mode folds the notification into context instead of starting a turn. Readiness requires the extension's capability handshake, not just an MCP connection. The extension runs inside Omp's own runtime; Bkpr adds no Node dependency. Verified with Omp 18.13.2 and Claude 2.1.311.
+Omp uses native `aside` delivery through its Bkpr extension, whether launch-local or installed: context reaches the next agent-step boundary without cancelling the foreground tool batch, and an idle session starts a turn. Native interruptible `wait` may end early; idle plan mode folds the notification into context instead of starting a turn. Readiness requires the extension's capability handshake, not just an MCP connection. The extension runs inside Omp's own runtime; Bkpr adds no Node dependency. Installed adapters were exercised with Omp 18.12.2 and Claude 2.1.303; launch-local active delivery was also verified with Omp 18.13.2 and Claude 2.1.311.
 
 Codex binds its native thread before the first prompt by observing response-correlated thread selections on its TUI's private app-server connection. Fresh sessions, explicit resume/fork and picker selections bind the conversation Codex actually selected, not a guessed latest thread or an auxiliary title-generation thread. No synthetic startup turn is sent, and no Bkpr `SessionStart` hook approval is needed for new launches. Native user hooks, trust and tool approvals remain unchanged.
 
@@ -345,13 +359,13 @@ Codex sees a stable MCP server named `bkpr`; agent IDs and bearer tokens still c
 
 Codex may expose its launch-local endpoint as a symlink into its daemon socket directory. Bkpr accepts that indirection only when the endpoint is user-owned, both endpoint directories are private and user-owned, and the resolved target is a user-owned Unix socket. Missing targets, link loops and ordinary files are rejected.
 
-Bkpr uses one private MCP JSON file per managed session (`0700` directory, `0600` file), shared by its Claude launches through `--mcp-config`. The file contains only the Bkpr executable path and MCP command; each launch receives its own authenticated agent ID and token through its environment. This supplements rather than edits the user's MCP configuration. No development-channel flag or persistent Claude registration is required.
+Without persistent installation, Bkpr uses one private MCP JSON file per managed session (`0700` directory, `0600` file), shared by its Claude launches through `--mcp-config`. The file contains only the Bkpr executable path and MCP command; each launch receives its own authenticated agent ID and token through its environment. This supplements rather than edits the user's MCP configuration. No development-channel flag or persistent Claude registration is required for that default launch-local path.
 
 Codex's dedicated native app-server outlives its terminal so its queue remains available. It prints a private manifest location and an exact `bkpr codex-stop --manifest <path>` command. Acknowledge all pending messages before stopping it; Bkpr refuses to stop a server with unread messages. Omp's temporary extension package is removed on normal exit, but forced termination can leave its private package in the managed session runtime.
 
 Codex keeps a single writable owner for a conversation. If a new launch's resume reports that the conversation is open in another app, finish pending work and explicitly stop its previous queue server with the printed command before retrying. Bkpr does not steal the conversation or terminate the previous owner automatically.
 
-Session-local wrappers are found through `PATH`; `bkpr run` provides the explicit alternative. Already-running processes and sessions created before these wrappers are installed do not gain them retroactively. Interactive consent and trust requirements cannot be bypassed by Bkpr. Codex noninteractive `exec` and `review` do not support this native remote queue and fail clearly instead of silently claiming message delivery.
+Session-local wrappers are found through `PATH`; `bkpr run` provides the explicit alternative, and opt-in installed adapters remove that dependency for Claude, Omp and AGY in managed panes. Already-running processes do not gain a new integration retroactively. Interactive consent and trust requirements cannot be bypassed by Bkpr. Codex noninteractive `exec` and `review` do not support this native remote queue and fail clearly instead of silently claiming message delivery.
 
 The broker wire protocol is version 4. New clients fail closed against older brokers; running brokers are never replaced automatically. Inspect pending work before explicitly stopping the old broker, then relaunch managed harnesses with the new binary. Retained messages and idempotency receipts remain in the durable store. Protocol 4 adds authenticated, generation-bound AGY native queue outcomes; writing a notification to its helper is not treated as host acceptance.
 

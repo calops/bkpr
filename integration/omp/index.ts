@@ -1,12 +1,17 @@
 import type { ExtensionAPI, ExtensionContext } from '@oh-my-pi/pi-coding-agent';
 
+// The installer substitutes only this public path; credentials remain runtime-only.
+const installedProgram: string | undefined = /* BKPR_INSTALLED_PROGRAM */ undefined;
+
 /** Launch-local MCP pointers become agent context, never editor/user input. */
 export default function bkpr(pi: ExtensionAPI) {
-  const serverName = process.env.BKPR_OMP_SERVER;
-  const program = process.env.BKPR_OMP_PROGRAM;
+  const serverName = installedProgram ? 'bkpr' : process.env.BKPR_OMP_SERVER;
+  const program = installedProgram ?? process.env.BKPR_OMP_PROGRAM;
   const setReceiver = async (enabled: boolean) => {
     if (!program) throw new Error('Bkpr receiver executable is missing from this launch');
-    const args = ['relay-receiver', '--pid', String(process.pid)];
+    const args = installedProgram
+      ? ['integration', 'omp', 'omp-receiver', '--pid', String(process.pid)]
+      : ['relay-receiver', '--pid', String(process.pid)];
     if (enabled) args.push('--active-turn');
     if (!enabled) args.push('--disable');
     const result = await pi.exec(program, args, { timeout: 5000 });
@@ -24,7 +29,10 @@ export default function bkpr(pi: ExtensionAPI) {
     const sessionId = ctx.sessionManager.getSessionId();
     if (!sessionId || sessionId === boundSessionId) return;
     try {
-      const result = await pi.exec(program, ['relay-bind-session', '--session-id', sessionId], { timeout: 5000 });
+      const args = installedProgram
+        ? ['integration', 'omp', 'bind-session', '--session-id', sessionId]
+        : ['relay-bind-session', '--session-id', sessionId];
+      const result = await pi.exec(program, args, { timeout: 5000 });
       if (result.code !== 0) throw new Error(result.stderr.trim() || 'Bkpr session binding failed');
       boundSessionId = sessionId;
     } catch (error) {

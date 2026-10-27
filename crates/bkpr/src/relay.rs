@@ -135,6 +135,8 @@ struct WakeFailure {
     recorded_at: u64,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RelayLaunch {
     pub agent_id: String,
     pub token: String,
@@ -168,6 +170,9 @@ struct Agent {
     /// Kernel start time of `pid`; a recycled PID has a different value.
     #[serde(default)]
     process_start: Option<String>,
+    /// Full OS birth identity (including Linux boot), required for installed reuse.
+    #[serde(default)]
+    root_birth: Option<String>,
     created_at: u64,
     session_id: Option<String>,
     queue_endpoint: Option<String>,
@@ -388,6 +393,12 @@ fn process_identity(pid: u32) -> Result<Option<String>> {
 /// An agent lives exactly as long as the process it registered or leased.
 /// Entries without a recorded start time predate it and rely on PID presence.
 fn alive(agent: &Agent) -> bool {
+    if let Some(expected) = &agent.root_birth {
+        return crate::agent::process_birth(agent.pid as i32)
+            .is_ok_and(|current| current.as_ref() == Some(expected));
+    }
+    // LEGACY_COMPAT(next-major): older non-Codex records lack the full birth
+    // identity. Codex independently retains its existing app-server identity.
     match (process_identity(agent.pid), &agent.process_start) {
         (Ok(current), Some(start)) => current.as_ref() == Some(start),
         (Ok(_), None) => true,
@@ -497,9 +508,37 @@ fn spawn_detached(command: &mut Command) -> Result<std::process::Child> {
 }
 
 pub(crate) fn prepare(harness: &str, cwd: &Path) -> Result<RelayLaunch> {
+    prepare_registered(harness, cwd, std::process::id(), None)
+}
+
+pub(crate) fn prepare_for_process(
+    harness: &str,
+    cwd: &Path,
+    pid: u32,
+    expected_birth: &str,
+) -> Result<RelayLaunch> {
+    prepare_registered(harness, cwd, pid, Some(expected_birth))
+}
+
+fn prepare_registered(
+    harness: &str,
+    cwd: &Path,
+    pid: u32,
+    expected_birth: Option<&str>,
+) -> Result<RelayLaunch> {
     if !matches!(harness, "claude" | "omp" | "codex" | "agy") {
         bail!("unsupported relay harness");
     }
+    let root_birth = if harness == "codex" {
+        None
+    } else if let Some(expected) = expected_birth {
+        Some(expected.to_owned())
+    } else {
+        Some(
+            crate::agent::process_birth(pid as i32)?
+                .context("harness root exited before relay preparation")?,
+        )
+    };
     let cwd = fs::canonicalize(cwd)?;
     let agent_id = random_hex(16)?;
     let token = random_hex(32)?;
@@ -536,7 +575,8 @@ pub(crate) fn prepare(harness: &str, cwd: &Path) -> Result<RelayLaunch> {
         &launch.token,
         "register",
         json!({
-            "harness":harness,"cwd":cwd,"repository":repository,"pid":std::process::id()
+            "harness":harness,"cwd":cwd,"repository":repository,"pid":pid,
+            "root_birth":root_birth
         }),
     )?;
     Ok(launch)
@@ -665,6 +705,52 @@ pub(crate) fn request_as(
     params: Value,
 ) -> Result<Value> {
     call(socket, agent_id, token, method, params)
+}
+
+/// The authenticated broker, not inherited environment, proves launch ownership.
+/// In particular, a tool-spawned harness cannot adopt its parent's inbox.
+pub(crate) fn verify_launch(launch: &RelayLaunch, pid: u32) -> Result<()> {
+    call(
+        &launch.socket,
+        &launch.agent_id,
+        &launch.token,
+        "launch_identity",
+        json!({"pid":pid,"harness":launch.harness}),
+    )?;
+    Ok(())
+}
+
+pub(crate) fn launch_from_environment(bytes: &[u8], harness: &str) -> Option<RelayLaunch> {
+    use std::os::unix::ffi::OsStringExt;
+    let field = |name: &[u8]| {
+        bytes
+            .split(|byte| *byte == 0)
+            .find_map(|entry| entry.strip_prefix(name))
+    };
+    if field(b"BKPR_RELAY_HARNESS=")? != harness.as_bytes() {
+        return None;
+    }
+    let agent_id = std::str::from_utf8(field(b"BKPR_RELAY_AGENT_ID=")?).ok()?;
+    let token = std::str::from_utf8(field(b"BKPR_RELAY_TOKEN=")?).ok()?;
+    if agent_id.len() != 32
+        || token.len() != 64
+        || !agent_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !token.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let socket = PathBuf::from(std::ffi::OsString::from_vec(
+        field(b"BKPR_RELAY_SOCKET=")?.to_vec(),
+    ));
+    if !socket.is_absolute() {
+        return None;
+    }
+    Some(RelayLaunch {
+        agent_id: agent_id.to_owned(),
+        token: token.to_owned(),
+        socket,
+        harness: harness.to_owned(),
+    })
 }
 
 pub(crate) fn request(method: &str, params: Value) -> Result<Value> {
@@ -839,6 +925,9 @@ impl Broker {
                 agent.notification = None;
                 self.subscribers.remove(&agent.id);
                 changed = true;
+            }
+            if agent.exited_at.is_some() && agent.root_birth.is_some() {
+                crate::installed::retire(agent.pid, &agent.id)?;
             }
         }
         for message in self.store.messages.values_mut() {
@@ -1170,6 +1259,17 @@ impl Broker {
                 .as_u64()
                 .context("missing pid")?
                 .try_into()?;
+            let root_birth = request
+                .params
+                .get("root_birth")
+                .filter(|value| !value.is_null())
+                .map(|value| value.as_str().context("invalid process birth identity"))
+                .transpose()?;
+            if let Some(expected) = root_birth
+                && crate::agent::process_birth(pid as i32)?.as_deref() != Some(expected)
+            {
+                bail!("registration process birth identity changed");
+            }
             let agent = Agent {
                 id: request.agent_id.clone(),
                 token: request.token.clone(),
@@ -1179,6 +1279,7 @@ impl Broker {
                 title: None,
                 pid,
                 process_start: process_identity(pid)?,
+                root_birth: root_birth.map(str::to_owned),
                 created_at: now(),
                 session_id: None,
                 queue_endpoint: None,
@@ -1198,6 +1299,22 @@ impl Broker {
         let agent = self.authenticate(request)?;
         let params = &request.params;
         match request.method.as_str() {
+            "launch_identity" => {
+                let pid: u32 = params["pid"]
+                    .as_u64()
+                    .context("missing root pid")?
+                    .try_into()?;
+                if agent.pid != pid
+                    || string(params, "harness")? != agent.harness
+                    || agent.exited_at.is_some()
+                    || !alive(&agent)
+                    || agent.root_birth.is_none()
+                    || agent.root_birth != crate::agent::process_birth(pid as i32)?
+                {
+                    bail!("relay credentials do not belong to this live harness root");
+                }
+                Ok((json!({"verified":true}), Vec::new()))
+            }
             "whoami" => {
                 let contexts = crate::context::agent_contexts()?;
                 Ok((
@@ -1500,6 +1617,9 @@ impl Broker {
                     .context("unknown agent")?;
                 updated.pid = pid;
                 updated.process_start = start;
+                if updated.harness != "codex" {
+                    updated.root_birth = crate::agent::process_birth(pid as i32)?;
+                }
                 updated.diagnostics.extend(logs);
                 self.save()?;
                 Ok((public_agent(&self.store.agents[&agent.id]), Vec::new()))
@@ -3055,11 +3175,16 @@ fn agy_root_metadata(message: &Value) -> Result<&str> {
     Ok(root)
 }
 
-fn agy_bootstrap_instructions(program: &Path) -> Result<String> {
+fn agy_bootstrap_instructions(program: &Path, installed: bool) -> Result<String> {
     let program = program
         .to_str()
         .context("Bkpr receiver executable path is not UTF-8")?;
-    let command = format!("{} agy-receiver", crate::claude::shell_quote(program));
+    let role = if installed {
+        "integration agy agy-receiver"
+    } else {
+        "agy-receiver"
+    };
+    let command = format!("{} {role}", crate::claude::shell_quote(program));
     Ok(format!(
         "Antigravity: first call Bkpr whoami to bind this launch from authoritative root-conversation tool metadata. If Bkpr native receiver readiness is false, bootstrap once for the current root conversation using Antigravity's native run_command tool with CommandLine={}, IsDaemon:true. Do not type this command or peer text into a terminal, and do not start another receiver while one is ready. The native child inherits the current conversation's local language-server credentials; MCP does not. It delivers opaque inbox pointers through native agent messages, including during an active turn. Receiver readiness is not semantic harness status.",
         serde_json::to_string(&command)?,
@@ -3070,8 +3195,19 @@ pub(crate) fn mcp() -> Result<()> {
     // Authenticate before advertising tools. Never register an identity per MCP restart.
     let identity = request("whoami", json!({}))?;
     let harness = identity["harness"].as_str().unwrap_or_default().to_owned();
+    let installed = env::var("BKPR_INSTALLED_INTEGRATION").as_deref() == Ok(harness.as_str());
     let bootstrap = if harness == "agy" {
-        Some(agy_bootstrap_instructions(&env::current_exe()?)?)
+        let program = if installed {
+            let program = PathBuf::from(
+                env::var_os("BKPR_INSTALLED_PROGRAM")
+                    .context("missing installed public Bkpr executable path")?,
+            );
+            crate::install::validate_public_program(&program)?;
+            program
+        } else {
+            env::current_exe()?
+        };
+        Some(agy_bootstrap_instructions(&program, installed)?)
     } else {
         None
     };

@@ -138,6 +138,13 @@ pub(crate) fn instructions() -> &'static str {
     "Use control with operation=api.schema to discover operations, then api.schema arguments.operation for a specific typed schema. Native control never sends terminal input; use terminal_input explicitly. Default scope is your live session/workspace. Explicit arguments.session can select another verified same-user session; foreign targets require explicit pane/workspace/client rather than borrowing your source pane. For agents, session.list widens only with all:true. Creation does not focus another client or grant harness/plugin approvals. Native acceptance is not model processing or prompt readiness. Read the bkpr-control skill resource for examples."
 }
 
+pub(crate) fn notify_agent_registry_changed(
+    session: &crate::context::LiveSession,
+    change: &bkpr::agent_contract::AgentRegistryChanged,
+) -> Result<()> {
+    native::notify_agent_registry_changed(session, change)
+}
+
 pub(crate) fn tool_schema(terminal_input: bool) -> Value {
     json!({"type":"object","additionalProperties":false,"required":["operation","arguments"],"properties":{"operation":{"type":"string","description":if terminal_input { "input.text, input.paste, input.keys, input.bytes; use control api.schema for details" } else { "Typed operation, e.g. api.schema, pane.create, pane.read, workspace.list. Discover through api.schema." }},"arguments":{"type":"object"}}})
 }
