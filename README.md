@@ -135,13 +135,15 @@ Locked is only the client's initial mode; Normal remains the base mode, so sideb
 
 A left click activates a workspace or terminal without moving keyboard focus into the sidebar. Hover highlights a row and opens its details; moving into the popup keeps it open, and leaving both closes it. Sidebar focus opens the selected row's details automatically, and keyboard navigation follows the selection. Right click has no special popup behavior. Details include available activity, CWD, repository, pull request and checks, with clickable links.
 
-Moving or closing details repaints only the exposed terminal cells. Moving the pointer within an unchanged popup does not redraw it; refresh-button hover styling still updates. Cursorless sidebar controls and passive cards preserve the last input-cursor position, including hidden cursors, so terminal cursor trails do not jump between paint regions. Rename dialogs and focused overlays retain their own input cursors.
+Moving or closing details repaints only the exposed terminal cells. Moving the pointer within an unchanged popup does not redraw it; refresh-button hover styling still updates. Cursorless sidebar controls and passive cards preserve the last input-cursor position, including hidden cursors, so terminal cursor trails do not jump between paint regions. Focused overlays retain their own input cursors.
 
 The first sidebar line centers the beekeeper icon and project name. Workspaces and terminals use dot markers; recognized harnesses keep their separate identity icons beside their names. Item rows keep a left gutter for the hover outline and use the rightmost sidebar column.
 
 Each sidebar-created terminal opens in its own native tab, grouped under its workspace. Stock splits remain available. Drag the separator to resize the sidebar, or use Zellij's resize mode. New sidebar-created tabs inherit the current width, folds and scroll position while their live state arrives.
 
-The pane finder and **n / N** creation prompts use centered, titled, bordered overlays. Workspace creation accepts an optional name and working directory; terminal creation keeps the selected workspace and accepts an optional directory. **Tab** switches workspace fields, **Ctrl+u** clears the current field, and **Esc** cancels before creation is dispatched. Once dispatched, creation waits for its result; an error keeps the form available for correction and retry.
+The pane finder, **n / N** creation prompts and **r** rename prompts use centered, titled, bordered overlays. Workspace creation accepts an optional name and working directory; terminal creation keeps the selected workspace and accepts an optional directory. Rename starts with the selected pane or workspace's current name and requires a nonempty name; live updates do not change its target or overwrite edits.
+
+**Tab** switches workspace creation fields, **Ctrl+u** clears the current field, and **Esc** cancels before submission is dispatched. Once dispatched, a form waits for its result; an error keeps it available for correction and retry. Cancelling or completing a rename restores sidebar selection and keyboard control.
 
 Focused overlays dim surrounding terminal text using terminal-native faint styling for the client that opened them. Raster-image pixels are unchanged. Passive details and shortcut cards do not dim the UI. These overlays require a fresh native session; existing sessions remain attachable with their retained UI.
 

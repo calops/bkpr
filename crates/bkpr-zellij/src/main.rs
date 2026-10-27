@@ -222,8 +222,8 @@ impl Frontend {
     }
 
     fn cancel_focused(&mut self, restore: bool) {
-        // A dispatched creation cannot be unsent. Keep its result correlated rather
-        // than claiming Esc aborted it; queued creations are still cancellable.
+        // A dispatched form submission cannot be unsent. Keep its result correlated
+        // rather than claiming Esc aborted it; queued submissions are cancellable.
         if restore
             && self.focused.submission.is_some_and(|id| {
                 self.in_flight
@@ -314,6 +314,8 @@ impl Frontend {
         if let Some(error) = error {
             self.focused
                 .submission_failed(error, self.id, &self.configuration);
+        } else if matches!(self.focused.kind(), Some(focused::Kind::Rename { .. })) {
+            self.close_focused(true);
         } else {
             self.focused.close(self.id, &self.configuration);
             self.focused.context = None;
@@ -331,15 +333,15 @@ impl Frontend {
                 focused::Kind::Pane { .. } => keyguide::Context::Create {
                     multiple_fields: false,
                 },
+                focused::Kind::Rename { .. } => keyguide::Context::Edit {
+                    multiple_fields: false,
+                },
             };
         }
         if !self.keyboard_control {
             return keyguide::Context::Application;
         }
         match &self.modal {
-            Some(Modal::Rename { .. }) => keyguide::Context::Edit {
-                multiple_fields: false,
-            },
             Some(Modal::Close { .. }) => keyguide::Context::Confirm,
             None => keyguide::Context::Sidebar {
                 selected: self.cursor.is_some(),
@@ -1661,14 +1663,11 @@ impl Frontend {
                 .map(|p| p.name.clone()),
         };
         let Some(name) = name else { return };
-        self.modal = Some(if close {
-            Modal::Close { item, name }
-        } else {
-            Modal::Rename {
-                item,
-                input: ui::Input::new(name),
-            }
-        });
+        if !close {
+            self.open_focused(focused::Kind::Rename { item, name });
+            return;
+        }
+        self.modal = Some(Modal::Close { item, name });
         self.hide_tooltip();
         self.request_mode(InputMode::Locked);
     }
@@ -1692,21 +1691,6 @@ impl Frontend {
                 return;
             };
             let action = match modal {
-                Modal::Rename { item, input } => {
-                    let label = input.value.trim().to_owned();
-                    if label.is_empty() {
-                        self.error = Some("A name cannot be empty".to_owned());
-                        self.modal = Some(Modal::Rename { item, input });
-                        return;
-                    }
-                    match item {
-                        Item::Workspace(workspace_id) => Action::RenameWorkspace {
-                            workspace_id,
-                            label,
-                        },
-                        Item::Pane(pane_id) => Action::RenamePane { pane_id, label },
-                    }
-                }
                 Modal::Close { item, .. } => match item {
                     Item::Workspace(workspace_id) => Action::CloseWorkspace { workspace_id },
                     Item::Pane(pane_id) => Action::ClosePane { pane_id },
@@ -1714,12 +1698,7 @@ impl Frontend {
             };
             self.request_mode(InputMode::Normal);
             self.enqueue(action);
-            return;
         }
-        let Some(input) = self.modal.as_mut().and_then(Modal::input_mut) else {
-            return;
-        };
-        input.key(&key);
     }
 
     fn key(&mut self, key: KeyWithModifier) {
@@ -2019,7 +1998,6 @@ impl Frontend {
         if rows > 0 && columns > 0 {
             self.bootstrap_view_pending = false;
         }
-        let body_height = self.tree_height();
         let tree_end = self.tree_end();
         if (resized || viewport_changed) && self.popup_item.is_some() {
             // Host commands must precede the sidebar's rendering bytes.
@@ -2062,21 +2040,11 @@ impl Frontend {
         } else {
             "Connecting to native owner…".to_owned()
         };
-        let modal_render = self.modal.as_ref().map(|modal| modal.lines(columns));
-        let modal_scroll = modal_render
-            .as_ref()
-            .and_then(|(_, cursor)| *cursor)
-            .map_or(0, |(_, y)| (y + 1).saturating_sub(body_height));
-        // Host commands share stdout with rendering; emit them before any terminal bytes.
-        let cursor = modal_render
-            .as_ref()
-            .and_then(|(_, cursor)| *cursor)
-            .filter(|(x, _)| *x < columns && body_height > 0)
-            .map(|(x, y)| (x, y + 2 - modal_scroll));
+        let modal_render = self.modal.as_ref().map(Modal::lines);
         // None means not initialized; Some(None) records an explicit host cursor hide.
-        if self.render_cursor != Some(cursor) {
-            self.render_cursor = Some(cursor);
-            show_cursor(cursor);
+        if self.render_cursor != Some(None) {
+            self.render_cursor = Some(None);
+            show_cursor(None);
         }
         for row in 0..rows {
             let line: Cow<'_, str> = if row >= tree_end {
@@ -2111,14 +2079,11 @@ impl Frontend {
                         self.theme.muted.as_str()
                     };
                     format!("{color}{}{}", ui::fit(&status, columns), ui::RESET)
-                } else if let Some((lines, _)) = &modal_render {
+                } else if let Some(lines) = &modal_render {
                     format!(
                         "{}{}",
                         ui::fit(
-                            lines
-                                .get(row - 2 + modal_scroll)
-                                .map(String::as_str)
-                                .unwrap_or(""),
+                            lines.get(row - 2).map(String::as_str).unwrap_or(""),
                             columns
                         ),
                         ui::RESET
@@ -2396,8 +2361,6 @@ impl ZellijPlugin for Frontend {
                 if self.focused.is_open() {
                     self.focused
                         .input(focused::Input::Paste(text), self.id, &self.configuration);
-                } else if let Some(input) = self.modal.as_mut().and_then(Modal::input_mut) {
-                    input.insert(&text);
                 }
             }
             Event::Visible(visible) => {
@@ -3378,9 +3341,9 @@ mod tests {
             frontend.control_has_focus = true;
             frontend.local_selection = true;
             if modal {
-                frontend.modal = Some(Modal::Rename {
+                frontend.modal = Some(Modal::Close {
                     item: Item::Pane("terminal_1".to_owned()),
-                    input: ui::Input::new("name".to_owned()),
+                    name: "name".to_owned(),
                 });
             }
             assert!(frontend.update(mode_event(guide_mode(InputMode::Locked))));
@@ -3483,16 +3446,16 @@ mod tests {
     }
 
     #[test]
-    fn tiny_sidebar_keeps_content_and_modal_cursor_above_the_guide() {
+    fn tiny_sidebar_keeps_content_and_close_modal_above_the_guide() {
         for rows in 0..=12 {
             for columns in [0, 1, 2, 3, 24] {
                 let mut frontend = frontend();
                 frontend.render_cursor = Some(None);
                 frontend.keyboard_control = true;
                 frontend.control_has_focus = true;
-                frontend.modal = Some(Modal::Rename {
+                frontend.modal = Some(Modal::Close {
                     item: Item::Pane("terminal_1".to_owned()),
-                    input: ui::Input::default(),
+                    name: "Terminal 1".to_owned(),
                 });
                 frontend.update(mode_event(guide_mode(InputMode::Locked)));
                 frontend.update(keybinds_event(&guide_mode(InputMode::Locked)));
@@ -3501,13 +3464,7 @@ mod tests {
                 if rows > 2 {
                     assert!(frontend.tree_height() > 0);
                 }
-                if rows > 2 && columns > 2 {
-                    let (x, y) = frontend.render_cursor.unwrap().unwrap();
-                    assert!(x < columns);
-                    assert!((2..frontend.tree_end()).contains(&y));
-                } else {
-                    assert_eq!(frontend.render_cursor, Some(None));
-                }
+                assert_eq!(frontend.render_cursor, Some(None));
             }
         }
     }
@@ -4012,7 +3969,7 @@ mod tests {
         let mut frontend = popup_frontend();
         sidebar_focus(&mut frontend, true);
         hover_item(&mut frontend, &Item::Pane("terminal_2".to_owned()));
-        frontend.key(KeyWithModifier::new(BareKey::Char('r')));
+        frontend.key(KeyWithModifier::new(BareKey::Char('x')));
         assert!(frontend.modal.is_some());
         assert!(frontend.popup_item.is_none());
         frontend.mouse(Mouse::Hover(2, 5));
@@ -5010,9 +4967,9 @@ mod tests {
     #[test]
     fn modal_selection_is_pinned_and_folded_focus_highlights_its_workspace() {
         let mut frontend = frontend();
-        frontend.modal = Some(Modal::Rename {
+        frontend.modal = Some(Modal::Close {
             item: Item::Pane("terminal_1".to_owned()),
-            input: ui::Input::new("Terminal 1".to_owned()),
+            name: "Terminal 1".to_owned(),
         });
         frontend.accept_snapshot(snapshot(2, "terminal_2"));
         host_focus(&mut frontend, PaneId::Terminal(2));
@@ -5184,6 +5141,88 @@ mod tests {
             frontend.focused.kind(),
             Some(focused::Kind::Workspace)
         ));
+    }
+
+    #[test]
+    fn rename_captures_selected_identity_and_name_and_restores_on_cancel() {
+        for item in [
+            Item::Pane("terminal_1".to_owned()),
+            Item::Workspace("workspace_1".to_owned()),
+        ] {
+            let mut frontend = popup_frontend();
+            frontend.keyboard_control = true;
+            frontend.local_selection = true;
+            frontend.control_terminal = Some(1);
+            frontend.cursor = Some(item.clone());
+            frontend.mode = Some(ModeState {
+                mode: InputMode::Normal,
+                base_mode: Some(InputMode::Normal),
+            });
+            let state = frontend.snapshot.as_ref().unwrap();
+            let expected_name = match &item {
+                Item::Pane(id) => state
+                    .panes
+                    .iter()
+                    .find(|pane| &pane.id == id)
+                    .unwrap()
+                    .name
+                    .clone(),
+                Item::Workspace(id) => state
+                    .workspaces
+                    .iter()
+                    .find(|workspace| &workspace.id == id)
+                    .unwrap()
+                    .name
+                    .clone(),
+            };
+            frontend.edit_selected(false);
+            assert!(frontend.modal.is_none());
+            assert!(matches!(
+                frontend.focused.kind(),
+                Some(focused::Kind::Rename { item: target, name })
+                    if target == &item && name == &expected_name
+            ));
+            assert_eq!(
+                frontend.keyguide_context(),
+                keyguide::Context::Edit {
+                    multiple_fields: false
+                }
+            );
+            frontend.cursor = Some(Item::Pane("terminal_2".to_owned()));
+            assert!(matches!(
+                frontend.focused.kind(),
+                Some(focused::Kind::Rename { item: target, name })
+                    if target == &item && name == &expected_name
+            ));
+            frontend.key(KeyWithModifier::new(BareKey::Esc));
+            assert!(!frontend.focused.is_open());
+            assert!(frontend.keyboard_control);
+            assert_eq!(frontend.cursor, Some(item));
+            assert_eq!(frontend.control_terminal, Some(1));
+            assert_eq!(frontend.guide_mode(), Some(InputMode::Normal));
+        }
+    }
+
+    #[test]
+    fn successful_rename_restores_sidebar_selection_and_mode() {
+        let mut frontend = popup_frontend();
+        frontend.keyboard_control = true;
+        frontend.local_selection = true;
+        frontend.control_terminal = Some(1);
+        frontend.cursor = Some(Item::Pane("terminal_1".to_owned()));
+        frontend.mode = Some(ModeState {
+            mode: InputMode::Normal,
+            base_mode: Some(InputMode::Normal),
+        });
+        frontend.edit_selected(false);
+        frontend.focused.submission = Some(10);
+        frontend.cursor = Some(Item::Pane("terminal_2".to_owned()));
+        frontend.finish_focused_submission(10, None);
+        assert!(!frontend.focused.is_open());
+        assert!(frontend.keyboard_control);
+        assert_eq!(frontend.cursor, Some(Item::Pane("terminal_1".to_owned())));
+        assert_eq!(frontend.control_terminal, Some(1));
+        assert_eq!(frontend.guide_mode(), Some(InputMode::Normal));
     }
 
     #[test]
