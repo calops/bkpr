@@ -829,6 +829,171 @@ fn unix_subscription_pushes_one_opaque_pointer_until_receiver_reads() {
 }
 
 #[test]
+fn claude_pointer_transport_is_not_hook_output_acceptance_or_inbox_read() {
+    let (_directory, mut state) = broker();
+    let sender = register(&mut state, "one");
+    let claude = register_harness(&mut state, "one", "claude");
+    state
+        .perform(&as_request(
+            &claude,
+            "bind_session",
+            json!({"session_id":"root"}),
+        ))
+        .unwrap();
+    state
+        .perform(&as_request(
+            &claude,
+            "receiver",
+            json!({
+                "kind":"claude_hook","pid":std::process::id(),"session_id":"root","active_turn":true
+            }),
+        ))
+        .unwrap();
+    let (first, _) = send(&mut state, &sender, &claude, "private body");
+    let shared = Arc::new(Mutex::new(state));
+    let (mut client, server) = UnixStream::pair().unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let server_state = Arc::clone(&shared);
+    let server = std::thread::spawn(move || serve_connection(server, server_state).unwrap());
+    write_frame(
+        &mut client,
+        &json!({"protocol":PROTOCOL_VERSION,"agent_id":claude.agent_id,
+        "token":claude.token,"method":"subscribe"}),
+    )
+    .unwrap();
+    let mut reader = BufReader::new(client);
+    assert_eq!(read_frame(&mut reader).unwrap().unwrap()["event"], "ready");
+    let event = read_frame(&mut reader).unwrap().unwrap();
+    assert_eq!(event["message"]["id"], first["message_id"]);
+    assert!(event["message"].get("text").is_none());
+    {
+        let mut state = shared.lock();
+        let message = &state.store.messages[first["message_id"].as_str().unwrap()];
+        assert_eq!(message.delivery.outcome.as_deref(), Some("pending"));
+        assert!(message.read_at.is_none());
+        assert!(message.acknowledged_at.is_none());
+        let (second, jobs) = send(&mut state, &sender, &claude, "burst body");
+        assert!(jobs.is_empty());
+        assert_eq!(second["status"]["delivery"]["state"], "coalesced");
+        let params = json!({"session_id":"root","pid":std::process::id(),
+            "notification_id":event["message"]["id"],"generation":event["generation"],"outcome":"accepted"});
+        let mut wrong_root = params.clone();
+        wrong_root["session_id"] = json!("child");
+        assert!(
+            state
+                .perform(&as_request(&claude, "claude_wake_outcome", wrong_root))
+                .is_err()
+        );
+        let mut wrong_generation = params.clone();
+        wrong_generation["generation"] = json!(999);
+        assert!(
+            state
+                .perform(&as_request(
+                    &claude,
+                    "claude_wake_outcome",
+                    wrong_generation
+                ))
+                .is_err()
+        );
+        state
+            .perform(&as_request(&claude, "claude_wake_outcome", params.clone()))
+            .unwrap();
+        let message = &state.store.messages[first["message_id"].as_str().unwrap()];
+        assert_eq!(message.delivery.outcome.as_deref(), Some("accepted"));
+        assert!(message.read_at.is_none());
+        assert!(message.acknowledged_at.is_none());
+        let (inbox, _) = state
+            .perform(&as_request(&claude, "inbox", json!({})))
+            .unwrap();
+        assert_eq!(inbox["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(inbox["consumed_notification"]["id"], first["message_id"]);
+        assert_eq!(
+            inbox["consumed_notification"]["generation"],
+            event["generation"]
+        );
+        assert!(
+            state
+                .store
+                .messages
+                .values()
+                .all(|message| message.acknowledged_at.is_none())
+        );
+        let (_, next) = send(&mut state, &sender, &claude, "next generation");
+        let mut late_unknown = params;
+        late_unknown["outcome"] = json!("unknown");
+        state
+            .perform(&as_request(&claude, "claude_wake_outcome", late_unknown))
+            .unwrap();
+        assert_eq!(
+            state.store.agents[&claude.agent_id]
+                .notification
+                .as_ref()
+                .unwrap()
+                .generation,
+            next[0].generation
+        );
+        let (reread, _) = state
+            .perform(&as_request(&claude, "inbox", json!({"limit":2})))
+            .unwrap();
+        assert!(reread["consumed_notification"].is_null());
+    }
+    drop(reader);
+    server.join().unwrap();
+}
+
+#[test]
+fn busy_delivery_requires_explicit_new_adapter_capability() {
+    let (_directory, mut state) = broker();
+    for (harness, kind, expected) in [
+        ("omp", "omp_mcp", "agent_step_boundary"),
+        ("claude", "claude_hook", "tool_boundary"),
+        ("codex", "codex_queue", "future_turn_only"),
+    ] {
+        let agent = register_harness(&mut state, "one", harness);
+        state
+            .perform(&as_request(
+                &agent,
+                "bind_session",
+                json!({"session_id":"root"}),
+            ))
+            .unwrap();
+        // LEGACY_COMPAT(next-major): pre-aside/tool-boundary launch receivers.
+        let legacy = json!({"kind":kind,"pid":std::process::id()});
+        state
+            .perform(&as_request(&agent, "receiver", legacy.clone()))
+            .unwrap();
+        let (who, _) = state
+            .perform(&as_request(&agent, "whoami", json!({})))
+            .unwrap();
+        assert_eq!(who["readiness"]["busy_delivery"], "future_turn_only");
+        assert_eq!(who["readiness"]["active_turn_steering"], false);
+        let mut active = legacy;
+        active["active_turn"] = json!(true);
+        active["session_id"] = json!("root");
+        let (registration, _) = state
+            .perform(&as_request(&agent, "receiver", active))
+            .unwrap();
+        assert_eq!(registration["readiness"]["busy_delivery"], expected);
+        assert_eq!(
+            registration["readiness"]["active_turn_steering"],
+            harness != "codex"
+        );
+        assert_eq!(registration["readiness"]["active_turn_interruption"], false);
+        let mut serialized =
+            serde_json::to_value(&state.store.agents[&agent.agent_id].receiver).unwrap();
+        serialized.as_object_mut().unwrap().remove("active_turn");
+        let old: Receiver = serde_json::from_value(serialized).unwrap();
+        assert!(
+            !old.active_turn,
+            "a retained old receiver cannot inherit new capabilities"
+        );
+    }
+}
+
+// LEGACY_COMPAT(next-major): retain omitted-capability coverage for live old extensions.
+#[test]
 fn extension_readiness_is_separate_and_stale_clear_is_ignored() {
     let (_directory, mut broker) = broker();
     let alice = register(&mut broker, "one");
@@ -1116,6 +1281,7 @@ fn reused_pid_is_an_exit_not_a_route_for_the_old_identity() {
     assert!(broker.store.agents[&bob.agent_id].exited_at.is_some());
 }
 
+// LEGACY_COMPAT(next-major): old future-turn adapters still share one subscriber wake.
 #[test]
 fn overlapping_subscribers_get_one_future_turn_notification_for_the_launch() {
     let (_directory, mut state) = broker();

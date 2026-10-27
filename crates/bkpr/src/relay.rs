@@ -80,6 +80,9 @@ struct Receiver {
     enabled: bool,
     #[serde(default)]
     session_id: Option<String>,
+    /// Explicitly advertised by new launch-local adapters; old launches remain future-only.
+    #[serde(default)]
+    active_turn: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -939,6 +942,12 @@ impl Broker {
         {
             return Some("native Antigravity receiver binding is not ready");
         }
+        if agent.harness == "claude"
+            && agent.receiver.active_turn
+            && (agent.session_id.is_none() || agent.receiver.session_id != agent.session_id)
+        {
+            return Some("Claude tool-boundary receiver binding is not ready");
+        }
         if agent.harness == "codex"
             && (agent.session_id.is_none()
                 || agent.queue_endpoint.is_none()
@@ -1244,6 +1253,13 @@ impl Broker {
                                     == Some(notification.id.as_str())
                         })
                     });
+                let consumed_notification = consumes_notification.then(|| {
+                    let notification = self.store.agents[&agent.id]
+                        .notification
+                        .as_ref()
+                        .expect("consumed notification");
+                    json!({"id":notification.id,"generation":notification.generation})
+                });
                 // Only the page actually returned is marked read. Remaining
                 // pages obtain their own notification after this one is consumed.
                 for id in &ids {
@@ -1269,7 +1285,8 @@ impl Broker {
                     .map(|id| inbox_message(&self.store.messages[id]))
                     .collect();
                 Ok((
-                    json!({"messages":page,"has_more":has_more,"next_cursor":ids.last()}),
+                    json!({"messages":page,"has_more":has_more,"next_cursor":ids.last(),
+                        "consumed_notification":consumed_notification}),
                     jobs,
                 ))
             }
@@ -1521,6 +1538,51 @@ impl Broker {
                 self.save()?;
                 Ok((public_agent(&self.store.agents[&agent.id]), Vec::new()))
             }
+            "claude_wake_outcome" => {
+                let session_id = string(params, "session_id")?;
+                let pid: u32 = params["pid"]
+                    .as_u64()
+                    .context("missing receiver pid")?
+                    .try_into()?;
+                if agent.harness != "claude"
+                    || !agent.receiver.active_turn
+                    || !matches!(agent.receiver.kind, Some(ReceiverKind::ClaudeHook))
+                    || agent.session_id.as_deref() != Some(session_id)
+                    || agent.receiver.session_id.as_deref() != Some(session_id)
+                    || agent.receiver.pid != Some(pid)
+                    || !receiver_alive(&agent.receiver)
+                {
+                    bail!("Claude inbox receiver binding is stale or inactive");
+                }
+                let id = string(params, "notification_id")?;
+                let generation = params["generation"]
+                    .as_u64()
+                    .context("missing notification generation")?;
+                if !self.store.messages.values().any(|message| {
+                    message.to == agent.id
+                        && message.delivery.notification_id.as_deref() == Some(id)
+                        && message.delivery.generation == Some(generation)
+                }) {
+                    bail!("unknown notification generation");
+                }
+                let outcome = match string(params, "outcome")? {
+                    "accepted" => WakeOutcome::Accepted,
+                    "unknown" => WakeOutcome::Unknown(
+                        "Claude hook output acceptance is unknown after an interrupted delivery"
+                            .to_owned(),
+                    ),
+                    _ => bail!("invalid Claude hook outcome"),
+                };
+                self.outcome(
+                    &WakeJob {
+                        recipient: agent.id.clone(),
+                        id: id.to_owned(),
+                        generation,
+                    },
+                    outcome,
+                )?;
+                Ok((json!({"recorded":true}), Vec::new()))
+            }
             "agy_wake_validate" | "agy_wake_outcome" => {
                 agy_receiver_binding(&agent, params)?;
                 let id = string(params, "notification_id")?;
@@ -1595,6 +1657,12 @@ impl Broker {
                         bail!(
                             "native Antigravity readiness does not publish semantic activity or credentials"
                         );
+                    }
+                    Some(session.to_owned())
+                } else if agent.harness == "claude" && params["active_turn"] == true {
+                    let session = string(params, "session_id")?;
+                    if agent.session_id.as_deref() != Some(session) {
+                        bail!("Claude inbox receiver does not match the root session");
                     }
                     Some(session.to_owned())
                 } else {
@@ -1694,6 +1762,12 @@ impl Broker {
                     lease_until: lease.map(|ms| now().saturating_add(ms)),
                     diagnostic_log,
                     session_id,
+                    active_turn: params
+                        .get("active_turn")
+                        .map(|value| value.as_bool().context("active_turn must be a boolean"))
+                        .transpose()?
+                        .unwrap_or(false)
+                        && matches!(agent.harness.as_str(), "claude" | "omp"),
                 };
                 let jobs = self.schedule(&agent.id)?;
                 self.save()?;
@@ -1946,15 +2020,22 @@ fn readiness(agent: &Agent, connections: usize) -> Value {
         && (agent.harness != "agy"
             || (bound
                 && agent.receiver.session_id == agent.session_id
-                && matches!(agent.receiver.kind, Some(ReceiverKind::AgyNative))));
+                && matches!(agent.receiver.kind, Some(ReceiverKind::AgyNative))))
+        && (agent.harness != "claude"
+            || !agent.receiver.active_turn
+            || (bound && agent.receiver.session_id == agent.session_id));
     json!({"registered":true,"launch_alive":active,"native_bound":bound,
         "receiver_alive":receiver,
         "notification_connection":connections > 0,"notification_connections":connections,
-        "notification_transport":if agent.harness == "codex" {"private_codex_queue"} else if agent.harness == "omp" {"mcp_notification"} else if agent.harness == "agy" {"private_agy_message"} else {"claude_channel"},
+        "notification_transport":if agent.harness == "codex" {"private_codex_queue"} else if agent.harness == "omp" {"mcp_notification"} else if agent.harness == "agy" {"private_agy_message"} else {"claude_hook"},
         "can_notify":active && agent.accepting && receiver && (native_queue || connections > 0)
             && (agent.notification.is_some() || agent.generation < u64::MAX),
-        "busy_delivery":if agent.harness == "agy" {"active_turn"} else {"future_turn_only"},
-        "active_turn_steering":agent.harness == "agy","active_turn_interruption":false,
+        "busy_delivery":if agent.harness == "agy" {"active_turn"}
+            else if agent.receiver.active_turn && agent.harness == "omp" {"agent_step_boundary"}
+            else if agent.receiver.active_turn && agent.harness == "claude" {"tool_boundary"}
+            else {"future_turn_only"},
+        "active_turn_steering":agent.harness == "agy" || agent.receiver.active_turn,
+        "active_turn_interruption":false,
         "receiver":agent.receiver,"hook_diagnostics":agent.diagnostics,
         "notification":agent.notification})
 }
@@ -2842,7 +2923,16 @@ fn serve_subscription(
                             "receiver write failed; notification acceptance is unknown".to_owned(),
                         ),
                     )?;
-                } else if binding.is_none() {
+                } else if binding.is_none()
+                    && !broker
+                        .lock()
+                        .store
+                        .agents
+                        .get(&job.recipient)
+                        .is_some_and(|agent| {
+                            agent.harness == "claude" && agent.receiver.active_turn
+                        })
+                {
                     broker.lock().outcome(&job, WakeOutcome::Accepted)?;
                 }
             }
