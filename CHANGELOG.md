@@ -4,7 +4,7 @@
 
 * Add Antigravity launch identities, MCP conversation binding, native peer wake and exact-conversation recovery.
 * Add `bkpr install agy` with native MCP registration, dry-run and conflict protection.
-* Prefer native active-turn steering for peer notifications where available; Antigravity now uses native agent messages without terminal input, while other harnesses retain future-turn delivery.
+* Prefer native active-turn steering for peer notifications: Antigravity uses native agent messages, Omp uses agent-step asides, and Claude adds tool-boundary context while retaining idle wake. Codex retains future-turn delivery.
 
 ### Breaking Changes
 

@@ -110,7 +110,13 @@ enum Commands {
     ClaudeTitle,
     /// Wait for a broker message from a launch-local Claude hook.
     #[command(hide = true)]
-    ClaudeWait,
+    ClaudeWait {
+        #[arg(long)]
+        active_turn: bool,
+    },
+    /// Deliver a private inbox pointer at a Claude tool boundary.
+    #[command(hide = true)]
+    ClaudeInbox,
     /// Launch OMP with launch-local messaging.
     #[command(hide = true)]
     OmpLaunch {
@@ -158,13 +164,15 @@ enum Commands {
     /// Serve the authenticated launch-local MCP connection over stdio.
     #[command(hide = true)]
     RelayMcp,
-    /// Register the launch-local OMP extension's future-turn receiver.
+    /// Register the launch-local OMP extension's notification receiver.
     #[command(hide = true)]
     RelayReceiver {
         #[arg(long)]
         pid: u32,
         #[arg(long)]
         disable: bool,
+        #[arg(long)]
+        active_turn: bool,
     },
     /// Bind the launch's agent to its current native harness session ID.
     #[command(hide = true)]
@@ -288,7 +296,8 @@ fn run() -> Result<()> {
             arguments,
         }) => claude::launch(Some(&wrapper_dir), arguments),
         Some(Commands::ClaudeTitle) => claude::prompt_title(),
-        Some(Commands::ClaudeWait) => claude::wait_message(),
+        Some(Commands::ClaudeWait { active_turn }) => claude::wait_message(active_turn),
+        Some(Commands::ClaudeInbox) => claude::inbox_context(),
         Some(Commands::OmpLaunch {
             wrapper_dir,
             arguments,
@@ -306,7 +315,11 @@ fn run() -> Result<()> {
         Some(Commands::CodexHook) => codex::hook(),
         Some(Commands::CodexStop { manifest }) => codex::stop(&manifest),
         Some(Commands::RelayMcp) => relay::mcp(),
-        Some(Commands::RelayReceiver { pid, disable }) => {
+        Some(Commands::RelayReceiver {
+            pid,
+            disable,
+            active_turn,
+        }) => {
             relay::request(
                 "receiver",
                 serde_json::json!({
@@ -314,6 +327,7 @@ fn run() -> Result<()> {
                     "pid": pid,
                     "activity": "unknown",
                     "enabled": !disable,
+                    "active_turn": active_turn,
                     "diagnostic": null,
                 }),
             )?;
