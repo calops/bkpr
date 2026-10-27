@@ -145,6 +145,8 @@ The pane finder, **n / N** creation prompts and **r** rename prompts use centere
 
 Creation and rename forms use terminal-palette cyan borders, bold titles, muted labels and inset, underlined input fields. The active field has a colored marker and underline. Shortcuts stay in the existing hint popup; forms show only validation errors or submission progress, not duplicate key hints.
 
+Input text and underlines have matching left and right insets. The pane finder's outer border and search/preview separators use the same terminal-cyan accent.
+
 **Tab** switches workspace creation fields, **Ctrl+u** clears the current field, and **Esc** cancels before submission is dispatched. Once dispatched, a form waits for its result; an error keeps it available for correction and retry. Cancelling or completing a rename restores sidebar selection and keyboard control.
 
 Focused overlays dim surrounding terminal text using terminal-native faint styling for the client that opened them. Raster-image pixels are unchanged. Passive details and shortcut cards do not dim the UI. These overlays require a fresh native session; existing sessions remain attachable with their retained UI.
