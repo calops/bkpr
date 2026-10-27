@@ -35,7 +35,12 @@ impl Native {
                 let current = live
                     .get(agent_id)
                     .context("authenticated agent no longer has a live native context")?;
-                if current != context {
+                // Labels and OSC status can change during a tool permission
+                // prompt. Authority follows native membership, not presentation.
+                if current.session_id != context.session_id
+                    || current.workspace_id != context.workspace_id
+                    || current.pane_id != context.pane_id
+                {
                     bail!(
                         "authenticated agent context changed; request fresh context before retrying"
                     );
@@ -490,6 +495,62 @@ impl Native {
         }
         Ok(tab)
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegistryChangedAck {
+    session_id: String,
+    agent_id: String,
+    accepted: bool,
+}
+
+fn registry_changed_acknowledged(
+    bytes: &[u8],
+    change: &bkpr::agent_contract::AgentRegistryChanged,
+) -> bool {
+    std::str::from_utf8(bytes).is_ok_and(|text| {
+        text.lines().any(|line| {
+            serde_json::from_str::<RegistryChangedAck>(line).is_ok_and(|ack| {
+                ack.accepted
+                    && ack.session_id == change.session_id
+                    && ack.agent_id == change.agent_id
+            })
+        })
+    })
+}
+
+pub(super) fn notify_agent_registry_changed(
+    session: &LiveSession,
+    change: &bkpr::agent_contract::AgentRegistryChanged,
+) -> Result<()> {
+    if session.session_id != change.session_id {
+        bail!("installed registry notification targets a different native session");
+    }
+    let payload = serde_json::to_string(change)?;
+    if payload.len() > MAX_BRIDGE_REQUEST_BYTES {
+        bail!("installed registry notification exceeds the native pipe limit");
+    }
+    let mut command = crate::launcher::control_command(&session.runtime_name, None)?;
+    command.args([
+        "action",
+        "pipe",
+        "--name",
+        bkpr::agent_contract::AGENT_REGISTRY_CHANGED_PIPE,
+        "--",
+        &payload,
+    ]);
+    let output = run(command, Some(MAX_BRIDGE_REQUEST_BYTES), true)?;
+    if !output.status.success() {
+        bail!(
+            "native owner rejected installed registry notification: {}",
+            output.status
+        );
+    }
+    if !registry_changed_acknowledged(&output.stdout, change) {
+        bail!("live native owner does not acknowledge installed registry notifications");
+    }
+    Ok(())
 }
 fn run(
     mut command: std::process::Command,
@@ -1005,6 +1066,63 @@ mod tests {
         assert!(serialized[0].get("token").is_none());
         assert!(serialized[0].get("owner_token").is_none());
     }
+
+    #[test]
+    fn live_authority_survives_status_and_label_updates_but_not_binding_changes() {
+        use bkpr::context_contract::{ContextPane, ContextWorkspace, PaneStatus};
+        let session = crate::context::test_support::Session::new("control-status").unwrap();
+        let _guard = session.guard();
+        let mut workspace = ContextWorkspace {
+            id: "workspace-a".into(),
+            name: "Original workspace".into(),
+        };
+        let mut pane = ContextPane {
+            pane_id: "terminal_1".into(),
+            workspace_id: workspace.id.clone(),
+            pane_name: "Original pane".into(),
+            agent_id: Some("agent-a".into()),
+            status: None,
+        };
+        session
+            .publish(1, vec![workspace.clone()], vec![pane.clone()])
+            .unwrap();
+        let context = crate::context::agent_contexts()
+            .unwrap()
+            .remove("agent-a")
+            .unwrap();
+        let caller = Caller::Agent {
+            agent_id: "agent-a".into(),
+            context: context.clone(),
+        };
+        workspace.name = "Renamed workspace".into();
+        pane.pane_name = "Renamed pane".into();
+        pane.status = Some(PaneStatus {
+            state: bkpr::Status::Working,
+            attention: None,
+            message: Some("Running a tool".into()),
+        });
+        session
+            .publish(2, vec![workspace], vec![pane.clone()])
+            .unwrap();
+        let resolved = Native::resolve(None, &caller, None).unwrap();
+        assert_eq!(resolved.source.as_deref(), Some("terminal_1"));
+        assert_eq!(resolved.session.workspaces[0].name, "Renamed workspace");
+        assert_eq!(resolved.session.panes[0].pane_name, "Renamed pane");
+        assert_eq!(resolved.session.panes[0].status, pane.status);
+        for field in 0..3 {
+            let mut invalid = context.clone();
+            match field {
+                0 => invalid.session_id = "foreign-session".into(),
+                1 => invalid.workspace_id = "foreign-workspace".into(),
+                _ => invalid.pane_id = "terminal_2".into(),
+            }
+            let caller = Caller::Agent {
+                agent_id: "agent-a".into(),
+                context: invalid,
+            };
+            assert!(Native::resolve(None, &caller, None).is_err());
+        }
+    }
     #[test]
     fn owner_envelopes_require_correlation_and_preserve_dispatch() {
         assert!(
@@ -1287,5 +1405,35 @@ mod tests {
         assert!(snapshot["panes"][1].get("workspace_id").is_none());
         assert!(snapshot["tabs"][0].get("workspace_id").is_none());
         assert!(snapshot["tabs"][0]["binding_diagnostic"].is_string());
+    }
+
+    #[test]
+    fn registry_notification_ack_is_exact_and_does_not_claim_attachment() {
+        let change = bkpr::agent_contract::AgentRegistryChanged {
+            session_id: "session".into(),
+            agent_id: "a".repeat(32),
+        };
+        let accepted = json!({
+            "session_id":change.session_id,"agent_id":change.agent_id,"accepted":true,
+        });
+        assert!(registry_changed_acknowledged(
+            accepted.to_string().as_bytes(),
+            &change
+        ));
+        for rejected in [
+            json!({"session_id":"foreign","agent_id":change.agent_id,"accepted":true}),
+            json!({"session_id":change.session_id,"agent_id":"other","accepted":true}),
+            json!({"session_id":change.session_id,"agent_id":change.agent_id,"accepted":false}),
+            json!({"session_id":change.session_id,"agent_id":change.agent_id}),
+            json!({"session_id":change.session_id,"agent_id":change.agent_id,"accepted":true,"attached":true}),
+        ] {
+            assert!(!registry_changed_acknowledged(
+                rejected.to_string().as_bytes(),
+                &change
+            ));
+        }
+        assert!(!registry_changed_acknowledged(b"ok\n", &change));
+        assert!(!registry_changed_acknowledged(b"", &change));
+        assert!(!registry_changed_acknowledged(b"\xff", &change));
     }
 }

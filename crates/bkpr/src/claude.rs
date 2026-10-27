@@ -38,6 +38,21 @@ pub fn wrapper(program: &Path, directory: &Path) -> Result<String> {
 pub fn launch(directory: Option<&Path>, mut arguments: Vec<OsString>) -> Result<()> {
     let executable = crate::harness::resolve("claude", directory)?;
     let mut command = Command::new(executable);
+    if crate::install::installed_launch("claude", &arguments)?
+        || crate::install::launch_restricted(
+            &arguments,
+            &["--bare", "--strict-mcp-config", "--setting-sources"],
+        )
+    {
+        for (name, _) in env::vars_os() {
+            if name.as_encoded_bytes().starts_with(b"BKPR_RELAY_")
+                || name.as_encoded_bytes().starts_with(b"BKPR_CLAUDE_")
+            {
+                command.env_remove(name);
+            }
+        }
+        return Err(command.args(arguments).exec()).context("execute installed Claude");
+    }
     if std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
         && let Some(plan) = argument_plan(&arguments)
@@ -87,6 +102,10 @@ struct ArgumentPlan {
     insert_at: usize,
     mcp_insert: Option<usize>,
     resumed: bool,
+}
+
+pub(crate) fn interactive_arguments(arguments: &[OsString]) -> bool {
+    argument_plan(arguments).is_some()
 }
 
 fn argument_plan(arguments: &[OsString]) -> Option<ArgumentPlan> {
@@ -406,7 +425,33 @@ fn control_plugin(runtime: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Runtime state belongs to a verified process launch, never persistent settings.
+/// The caller supplies BKPR_CLAUDE_TTY from the authenticated root process.
+pub(crate) fn prepare_installed(
+    command: &mut Command,
+    runtime: &Path,
+    resumed: bool,
+) -> Result<()> {
+    let titles = runtime.join("claude-titles");
+    crate::launcher::private_directory(&titles)?;
+    if !resumed {
+        command.env("BKPR_CLAUDE_TITLE_DIR", &titles);
+    } else {
+        command.env_remove("BKPR_CLAUDE_TITLE_DIR");
+    }
+    command.env("BKPR_CLAUDE_WAIT_DIR", titles);
+    Ok(())
+}
+
+pub(crate) fn compose_installed(settings: &mut Value, quoted_program: &str) -> Result<()> {
+    compose_commands(settings, &format!("{quoted_program} integration claude"))
+}
+
 fn compose(settings: &mut Value, quoted_program: &str) -> Result<()> {
+    compose_commands(settings, quoted_program)
+}
+
+fn compose_commands(settings: &mut Value, quoted_program: &str) -> Result<()> {
     let object = settings
         .as_object_mut()
         .context("explicit Claude settings must be an object")?;
@@ -1137,6 +1182,9 @@ fn title_text(text: &str) -> String {
 }
 
 fn emit_title(text: &str) {
+    if env::var("CLAUDE_CODE_DISABLE_TERMINAL_TITLE").as_deref() == Ok("1") {
+        return;
+    }
     let title = title_text(text);
     if title.is_empty() {
         return;

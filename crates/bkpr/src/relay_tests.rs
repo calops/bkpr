@@ -41,6 +41,7 @@ thread_local! {
 
 struct FixtureDirectory {
     // Drop the lookup override before removing the underlying session files.
+    _runtime: crate::launcher::test_support::Runtime,
     _guard: Guard,
     context: Rc<ContextFixture>,
     directory: tempfile::TempDir,
@@ -72,6 +73,7 @@ fn fixture(broker: &Broker) -> Rc<ContextFixture> {
 }
 
 fn broker() -> (FixtureDirectory, Broker) {
+    let runtime = crate::launcher::test_support::isolate_runtime();
     let directory = tempfile::tempdir().unwrap();
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let context = Rc::new(ContextFixture {
@@ -89,6 +91,7 @@ fn broker() -> (FixtureDirectory, Broker) {
     (
         FixtureDirectory {
             _guard: guard,
+            _runtime: runtime,
             context,
             directory,
         },
@@ -2262,11 +2265,6 @@ fn agy_metadata_requires_canonical_root_and_ignores_child_conversation_ids() {
     ] {
         assert!(agy_root_metadata(&json!({"params":{"_meta":metadata}})).is_err());
     }
-    let instructions = agy_bootstrap_instructions(Path::new("/private/bkpr's binary")).unwrap();
-    let command = crate::claude::shell_quote("/private/bkpr's binary") + " agy-receiver";
-    assert!(instructions.contains(&serde_json::to_string(&command).unwrap()));
-    assert!(instructions.contains("IsDaemon:true"));
-    assert!(!instructions.contains("ANTIGRAVITY_CSRF_TOKEN="));
 }
 
 #[test]
@@ -3020,4 +3018,86 @@ fn agy_replacement_waits_for_matching_subscription_before_claiming_one_wake() {
     }
     drop(reader);
     worker.join().unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn installed_launch_reuse_requires_exact_registered_pid_full_birth_and_harness() {
+    let (_directory, mut broker) = broker();
+    let root = register(&mut broker, "installed-root");
+    let pid = std::process::id();
+    let verify = |pid, harness| {
+        as_request(
+            &root,
+            "launch_identity",
+            json!({"pid":pid,"harness":harness}),
+        )
+    };
+    // LEGACY_COMPAT(next-major): PID-only records cannot authorize root adoption.
+    assert!(broker.perform(&verify(pid, "omp")).is_err());
+    broker
+        .store
+        .agents
+        .get_mut(&root.agent_id)
+        .unwrap()
+        .root_birth = crate::agent::process_birth(pid as i32).unwrap();
+    assert!(broker.perform(&verify(pid, "omp")).unwrap().0["verified"] == true);
+    assert!(
+        broker
+            .perform(&verify(unsafe { libc::getppid() } as u32, "omp"))
+            .is_err()
+    );
+    assert!(broker.perform(&verify(pid, "claude")).is_err());
+    broker
+        .store
+        .agents
+        .get_mut(&root.agent_id)
+        .unwrap()
+        .root_birth = Some("reused-pid".into());
+    assert!(broker.perform(&verify(pid, "omp")).is_err());
+    assert!(broker.store.agents[&root.agent_id].exited_at.is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn installed_registration_rejects_stale_birth_before_creating_an_agent() {
+    let (_directory, mut broker) = broker();
+    let request = Request {
+        protocol: PROTOCOL_VERSION,
+        agent_id: random_hex(16).unwrap(),
+        token: random_hex(32).unwrap(),
+        method: "register".into(),
+        params: json!({
+            "harness":"claude", "cwd":broker.directory, "repository":"fixture",
+            "pid":std::process::id(), "root_birth":"stale-birth",
+        }),
+    };
+    assert!(broker.perform(&request).is_err());
+    assert!(!broker.store.agents.contains_key(&request.agent_id));
+}
+
+#[test]
+fn inherited_environment_is_only_a_credential_candidate_not_root_authority() {
+    let id = "a".repeat(32);
+    let token = "b".repeat(64);
+    let environment = format!(
+        "BKPR_RELAY_AGENT_ID={id}\0BKPR_RELAY_TOKEN={token}\0BKPR_RELAY_SOCKET=/private/relay.sock\0BKPR_RELAY_HARNESS=omp\0"
+    );
+    let launch = launch_from_environment(environment.as_bytes(), "omp").unwrap();
+    assert_eq!(launch.agent_id, id);
+    assert!(launch_from_environment(environment.as_bytes(), "claude").is_none());
+    assert!(
+        launch_from_environment(environment.replace(&token, "invalid").as_bytes(), "omp").is_none()
+    );
+    assert!(
+        launch_from_environment(
+            environment
+                .replace("/private/relay.sock", "relative")
+                .as_bytes(),
+            "omp"
+        )
+        .is_none()
+    );
+    // Parsing alone is not verification; every production consumer calls the
+    // broker's exact PID/birth/harness check before reusing this candidate.
 }

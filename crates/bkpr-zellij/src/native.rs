@@ -1,6 +1,6 @@
 use bkpr::agent_contract::{
-    AgentExecution, InspectRequest, InspectResponse, PaneProcess, ProgramStatus,
-    ProgramStatusUpdate, harness_name,
+    AGENT_REGISTRY_CHANGED_PIPE, AgentExecution, AgentRegistryChanged, InspectRequest,
+    InspectResponse, PaneProcess, ProgramStatus, ProgramStatusUpdate, harness_name,
 };
 use bkpr::ci_contract::{CiRefreshTarget, CiSnapshot};
 use bkpr::context_contract::{ContextPane, ContextPublication, ContextWorkspace, PaneStatus};
@@ -2086,6 +2086,28 @@ impl Model {
         self.agents.remove(&id);
     }
 
+    fn registry_changed(&mut self, change: &AgentRegistryChanged) -> Result<bool, &'static str> {
+        if self.configuration.get("session_id") != Some(&change.session_id)
+            || change.agent_id.len() != 32
+            || !change.agent_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err("Invalid native agent registry notification");
+        }
+        if self
+            .agents
+            .values()
+            .any(|agent| agent.agent_id.as_deref() == Some(change.agent_id.as_str()))
+        {
+            return Ok(false);
+        }
+        // An unchanged foreground PID can acquire a rendezvous after its first
+        // inspection. Reject any pre-publication result, then inspect afresh.
+        self.agent_generation += 1;
+        self.pending_agents = None;
+        self.agents_dirty = true;
+        Ok(true)
+    }
+
     fn observe_command(&mut self, id: u32, command: Vec<String>) -> bool {
         let Some(pane) = self.panes.get_mut(&id) else {
             return false;
@@ -3588,6 +3610,37 @@ impl Owner {
     pub fn pipe(&mut self, message: PipeMessage) -> bool {
         if message.name == CONTROL {
             return self.control_pipe(&message);
+        }
+        if message.name == AGENT_REGISTRY_CHANGED_PIPE {
+            let PipeSource::Cli(source) = &message.source else {
+                return false;
+            };
+            let change = message
+                .payload
+                .as_deref()
+                .filter(|payload| payload.len() <= MAX_MESSAGE_BYTES)
+                .and_then(|payload| serde_json::from_str::<AgentRegistryChanged>(payload).ok());
+            if self.granted
+                && let Some(change) = change
+            {
+                self.recover();
+                if let Some(model) = self.model.as_mut()
+                    && let Ok(refresh) = model.registry_changed(&change)
+                {
+                    if refresh {
+                        self.save();
+                        self.schedule();
+                    }
+                    let accepted = serde_json::json!({
+                        "session_id": change.session_id,
+                        "agent_id": change.agent_id,
+                        "accepted": true,
+                    });
+                    cli_pipe_output(source, &format!("{accepted}\n"));
+                }
+            }
+            acknowledge_cli(source);
+            return false;
         }
         if message.name == RESTORE_NAME {
             let PipeSource::Cli(source) = &message.source else {
@@ -5334,6 +5387,69 @@ mod tests {
             cwd: None,
             agent_id: None,
         }
+    }
+
+    #[test]
+    fn registry_publication_rejects_stale_inspection_without_trusting_the_hint() {
+        let mut model = model();
+        model.reconcile(&[tab(10, 0)], &manifest(&[(0, vec![pane(1)])]));
+        model.observe_roots(BTreeMap::from([(1, 101)]));
+        let now = clock_millis();
+        inspect(&mut model, vec![execution(1)], now);
+        let stale = model.agent_ticket(5, 1, now + 2).unwrap();
+        let generation = model.agent_generation;
+        let change = AgentRegistryChanged {
+            session_id: "test-session-id".into(),
+            agent_id: "a".repeat(32),
+        };
+        for invalid in [
+            AgentRegistryChanged {
+                session_id: "foreign-session".into(),
+                ..change.clone()
+            },
+            AgentRegistryChanged {
+                agent_id: "not-an-agent".into(),
+                ..change.clone()
+            },
+        ] {
+            assert!(model.registry_changed(&invalid).is_err());
+            assert_eq!(model.agent_generation, generation);
+            assert!(model.pending_agents.as_ref() == Some(&stale));
+        }
+        assert!(model.registry_changed(&change).unwrap());
+        assert!(model.agents_dirty);
+        assert_eq!(model.agents[&1].agent_id, None);
+        assert!(
+            model
+                .apply_agents(
+                    &stale,
+                    InspectResponse {
+                        executions: vec![execution(1)]
+                    },
+                    now + 3,
+                )
+                .is_err()
+        );
+        let fresh = model.agent_ticket(5, 1, now + 4).unwrap();
+        let mut verified = execution(1);
+        verified.agent_id = Some(change.agent_id.clone());
+        model
+            .apply_agents(
+                &fresh,
+                InspectResponse {
+                    executions: vec![verified],
+                },
+                now + 5,
+            )
+            .unwrap();
+        assert_eq!(
+            model.snapshot(None, 1).panes[0].agent_id,
+            Some(change.agent_id.clone())
+        );
+        let generation = model.agent_generation;
+        assert!(!model.registry_changed(&change).unwrap());
+        assert_eq!(model.agent_generation, generation);
+        assert!(model.pending_agents.is_none());
     }
 
     fn inspect(model: &mut Model, executions: Vec<AgentExecution>, now: u64) {

@@ -14,6 +14,16 @@ pub struct InspectRequest {
     pub panes: Vec<PaneProcess>,
 }
 
+pub const AGENT_REGISTRY_CHANGED_PIPE: &str = "bkpr-native-agent-registry-changed";
+
+/// A cache invalidation hint, never authority to attach the supplied agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRegistryChanged {
+    pub session_id: String,
+    pub agent_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentExecution {
     pub pane_id: u32,
@@ -23,7 +33,7 @@ pub struct AgentExecution {
     pub identity: String,
     pub harness: String,
     pub cwd: Option<String>,
-    /// Bkpr relay launch ID, only when present in the foreground harness environment.
+    /// Relay launch ID verified from the root environment or its private rendezvous.
     #[serde(default)]
     pub agent_id: Option<String>,
 }
