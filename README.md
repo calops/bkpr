@@ -139,6 +139,8 @@ Moving or closing details repaints only the exposed terminal cells. Moving the p
 
 The first sidebar line centers the beekeeper icon and project name. On terminals with confirmed Kitty graphics support, workspaces use hive icons in the terminal's foreground color, and project markers in the sidebar and pane finder are transparent bee icons in the project's existing color. Each icon occupies two columns and one row and stays sharp when the terminal font size changes. Other terminals retain dot markers. Recognized harnesses keep their separate identity icons beside their names. Item rows keep a left gutter for the hover outline and use the rightmost sidebar column.
 
+New sessions use full pane frames. Terminals with confirmed Kitty graphics, truecolor and pixel dimensions use rounded, recessed edges whose outer surface matches the sidebar. Other terminals use ordinary frames. Stacked panes retain native frames. Existing sessions retain their saved presentation.
+
 Each sidebar-created terminal opens in its own native tab, grouped under its workspace. Stock splits remain available. Drag the separator to resize the sidebar, or use Zellij's resize mode. New sidebar-created tabs inherit the current width, folds and scroll position while their live state arrives.
 
 The pane finder, **n / N** creation prompts and **r** rename prompts use centered, titled, bordered overlays. Workspace creation accepts an optional name and working directory; terminal creation keeps the selected workspace and accepts an optional directory. Rename starts with the selected pane or workspace's current name and requires a nonempty name; live updates do not change its target or overwrite edits.
