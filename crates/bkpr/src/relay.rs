@@ -11,7 +11,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, mpsc};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use bkpr::context_contract::PaneContext;
@@ -25,8 +25,6 @@ const MAX_TEXT: usize = 64 * 1024;
 const MAX_INBOX: usize = 1000;
 const PROTOCOL_VERSION: u64 = 4;
 const RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
-const IDLE_GRACE: Duration = Duration::from_secs(1);
-const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 pub(crate) const CONTROL_SKILL: &str = include_str!("../../../integration/control/SKILL.md");
 pub(crate) const CONTROL_REFERENCE: &str =
@@ -278,28 +276,6 @@ struct Broker {
     subscribers: BTreeMap<String, Vec<Subscriber>>,
     maintenance: Arc<Condvar>,
     storage_failure: Option<String>,
-    active_operations: usize,
-    stopping: bool,
-}
-
-struct ActiveOperation {
-    broker: Arc<Mutex<Broker>>,
-}
-
-impl ActiveOperation {
-    fn begin(broker: &Arc<Mutex<Broker>>) -> Self {
-        broker.lock().active_operations += 1;
-        Self {
-            broker: Arc::clone(broker),
-        }
-    }
-}
-
-impl Drop for ActiveOperation {
-    fn drop(&mut self) {
-        let mut state = self.broker.lock();
-        state.active_operations -= 1;
-    }
 }
 
 #[derive(Clone)]
@@ -417,13 +393,8 @@ pub(crate) fn ensure_broker() -> Result<PathBuf> {
 }
 
 pub(crate) fn ensure_broker_in(runtime: &Path) -> Result<PathBuf> {
-    let _lock = crate::launcher::startup_lock(runtime)?;
-    ensure_broker_locked(runtime)
-}
-
-/// The caller keeps startup locked until its startup/registration handshake finishes.
-fn ensure_broker_locked(runtime: &Path) -> Result<PathBuf> {
     let socket = runtime.join("broker.sock");
+    let _lock = crate::launcher::startup_lock(runtime)?;
     if UnixStream::connect(&socket).is_err() {
         match fs::symlink_metadata(&socket) {
             Ok(metadata)
@@ -498,37 +469,20 @@ pub(crate) fn prepare(harness: &str, cwd: &Path) -> Result<RelayLaunch> {
         bail!("unsupported relay harness");
     }
     let cwd = fs::canonicalize(cwd)?;
-    let agent_id = random_hex(16)?;
-    let token = random_hex(32)?;
+    let socket = ensure_broker()?;
+    let launch = RelayLaunch {
+        agent_id: random_hex(16)?,
+        token: random_hex(32)?,
+        socket,
+        harness: harness.to_owned(),
+    };
     let repository = crate::project::git_text(&cwd, &["rev-parse", "--show-toplevel"])
         .and_then(|root| fs::canonicalize(root).ok())
         .unwrap_or_else(|| cwd.clone())
         .to_string_lossy()
         .into_owned();
-    let runtime = crate::launcher::runtime_root()?.join("relay");
-    crate::launcher::private_directory(&runtime)?;
-    // Retirement must not separate startup, protocol negotiation and durable registration.
-    // The broker only tries this lock, so it keeps accepting while we await its reply.
-    let _lock = crate::launcher::startup_lock(&runtime)?;
-    let socket = ensure_broker_locked(&runtime)?;
-    let launch = RelayLaunch {
-        agent_id,
-        token,
-        socket,
-        harness: harness.to_owned(),
-    };
-    check_protocol_result(
+    call(
         &launch.socket,
-        raw_call_on(
-            UnixStream::connect(&launch.socket).context("connect relay broker")?,
-            "",
-            "",
-            "protocol",
-            json!({}),
-        ),
-    )?;
-    raw_call_on(
-        UnixStream::connect(&launch.socket).context("connect relay broker")?,
         &launch.agent_id,
         &launch.token,
         "register",
@@ -607,11 +561,8 @@ fn classify_protocol_error(socket: &Path, error: anyhow::Error) -> anyhow::Error
 }
 
 fn check_protocol(socket: &Path) -> Result<()> {
-    check_protocol_result(socket, raw_call(socket, "", "", "protocol", json!({})))
-}
-
-fn check_protocol_result(socket: &Path, result: Result<Value>) -> Result<()> {
-    let version = result.map_err(|error| classify_protocol_error(socket, error))?;
+    let version = raw_call(socket, "", "", "protocol", json!({}))
+        .map_err(|error| classify_protocol_error(socket, error))?;
     if version["protocol"].as_u64() != Some(PROTOCOL_VERSION) {
         bail!(
             "relay broker at {} uses incompatible protocol {}; expected {PROTOCOL_VERSION}; preserve pending messages and replace the old broker explicitly",
@@ -623,23 +574,7 @@ fn check_protocol_result(socket: &Path, result: Result<Value>) -> Result<()> {
 }
 
 fn raw_call(socket: &Path, id: &str, token: &str, method: &str, params: Value) -> Result<Value> {
-    raw_call_on(connect_broker(socket)?, id, token, method, params)
-}
-
-/// Only connection establishment shares retirement's lock, never an RPC or subscription.
-fn connect_broker(socket: &Path) -> Result<UnixStream> {
-    let runtime = socket.parent().context("missing relay socket directory")?;
-    let _lock = crate::launcher::startup_lock(runtime)?;
-    UnixStream::connect(socket).context("connect relay broker")
-}
-
-fn raw_call_on(
-    mut stream: UnixStream,
-    id: &str,
-    token: &str,
-    method: &str,
-    params: Value,
-) -> Result<Value> {
+    let mut stream = UnixStream::connect(socket).context("connect relay broker")?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     write_frame(
@@ -685,7 +620,7 @@ pub(crate) fn subscribe_agy(session_id: &str) -> Result<BufReader<UnixStream>> {
 fn subscribe_with(params: Value) -> Result<BufReader<UnixStream>> {
     let (socket, id, token) = credentials()?;
     check_protocol(&socket)?;
-    let mut stream = connect_broker(&socket)?;
+    let mut stream = UnixStream::connect(socket)?;
     write_frame(
         &mut stream,
         &json!({"protocol":PROTOCOL_VERSION,"agent_id":id,"token":token,"method":"subscribe","params":params}),
@@ -705,24 +640,7 @@ impl Broker {
             subscribers: BTreeMap::new(),
             maintenance: Arc::new(Condvar::new()),
             storage_failure: None,
-            active_operations: 0,
-            stopping: false,
         }
-    }
-
-    fn shutdown_ready(&self) -> bool {
-        self.storage_failure.is_none()
-            && self.active_operations == 0
-            && !self
-                .store
-                .agents
-                .values()
-                .any(|agent| agent.exited_at.is_none() && alive(agent))
-            && !self.store.messages.values().any(|message| {
-                message.text.is_some()
-                    && message.acknowledged_at.is_none()
-                    && message.expired_at.is_none()
-            })
     }
 
     fn next_expiry(&self) -> Option<u64> {
@@ -2474,116 +2392,27 @@ pub(crate) fn daemon(socket: &Path) -> Result<()> {
         .filter_map(|agent| state.pending_job(&agent.id))
         .collect();
     let broker = Arc::new(Mutex::new(state));
-    let runtime = socket.parent().context("missing relay socket directory")?;
+    let maintenance = Arc::clone(&broker);
+    std::thread::spawn(move || retain_until_deadline(maintenance));
     let listener = UnixListener::bind(socket)?;
     fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
-    let ownership = fs::symlink_metadata(socket)?;
-    listener.set_nonblocking(true)?;
-    let maintenance_broker = Arc::clone(&broker);
-    let maintenance = std::thread::spawn(move || retain_until_deadline(maintenance_broker));
-    let result = (|| {
-        dispatch_jobs(&broker, resumable)?;
-        accept_until_idle(listener, socket, &ownership, runtime, &broker)
-    })();
-    {
-        let mut state = broker.lock();
-        state.stopping = true;
-        state.maintenance.notify_one();
-    }
-    maintenance
-        .join()
-        .map_err(|_| anyhow::anyhow!("relay retention worker panicked"))?;
-    result
-}
-
-fn accept_until_idle(
-    listener: UnixListener,
-    socket: &Path,
-    ownership: &fs::Metadata,
-    runtime: &Path,
-    broker: &Arc<Mutex<Broker>>,
-) -> Result<()> {
-    let mut idle_since = None;
-    loop {
-        if accept_connections(&listener, broker)? {
-            idle_since = None;
-        }
-        if !broker.lock().shutdown_ready() {
-            idle_since = None;
-        } else if idle_since.get_or_insert_with(Instant::now).elapsed() >= IDLE_GRACE {
-            // A starter can hold this lock while waiting for our protocol/register
-            // replies. Never block accepting those connections while it holds it.
-            if let Some(_lock) = crate::launcher::try_startup_lock(runtime)? {
-                // Count anything queued before the lock, then recheck all state.
-                // Library clients take the same lock only while connecting.
-                if accept_connections(&listener, broker)? {
-                    idle_since = None;
-                    continue;
-                }
-                let mut state = broker.lock();
-                if state.shutdown_ready() {
-                    // Freeze maintenance under the same mutex as the final
-                    // storage-failure check; no commit can fail after it.
-                    state.stopping = true;
-                    state.maintenance.notify_one();
-                    drop(listener);
-                    match fs::symlink_metadata(socket) {
-                        Ok(current)
-                            if current.dev() == ownership.dev()
-                                && current.ino() == ownership.ino() =>
-                        {
-                            fs::remove_file(socket)?;
-                        }
-                        Ok(_) => {}
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                        Err(error) => return Err(error.into()),
-                    }
-                    return Ok(());
-                }
-                idle_since = None;
-            }
-        }
-        let mut descriptor = libc::pollfd {
-            fd: listener.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        if unsafe { libc::poll(&mut descriptor, 1, IDLE_POLL_INTERVAL.as_millis() as i32) } < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error.into());
-            }
-        }
-    }
-}
-
-fn accept_connections(listener: &UnixListener, broker: &Arc<Mutex<Broker>>) -> Result<bool> {
-    let mut accepted = false;
-    loop {
-        let stream = match listener.accept() {
-            Ok((stream, _)) => stream,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(accepted),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error.into()),
-        };
-        accepted = true;
-        // Reserve before spawning: partial, unauthenticated and protocol-only
-        // streams are real work even before their handler can acquire the mutex.
-        let operation = ActiveOperation::begin(broker);
-        let broker = Arc::clone(broker);
+    dispatch_jobs(&broker, resumable)?;
+    for stream in listener.incoming() {
+        let stream = stream?;
+        let broker = Arc::clone(&broker);
         std::thread::spawn(move || {
-            let _operation = operation;
             if let Err(error) = serve_connection(stream, broker) {
                 eprintln!("bkpr relay: {error:#}");
             }
         });
     }
+    Ok(())
 }
 
 fn retain_until_deadline(broker: Arc<Mutex<Broker>>) {
     let condition = Arc::clone(&broker.lock().maintenance);
     let mut state = broker.lock();
-    while !state.stopping {
+    loop {
         if let Err(error) = state.maintain(now()) {
             eprintln!("bkpr relay: retention maintenance failed: {error:#}");
             // Retry only after another storage/registration event, not in an
@@ -2591,23 +2420,11 @@ fn retain_until_deadline(broker: Arc<Mutex<Broker>>) {
             condition.wait(&mut state);
             continue;
         }
-        let expiry = state
-            .next_expiry()
-            .map(|deadline| Duration::from_millis(deadline.saturating_sub(now()).max(1)));
-        let delay = if state
-            .store
-            .agents
-            .values()
-            .any(|agent| agent.exited_at.is_none())
-        {
-            // Observe process exit even without RPCs, but once all launches have
-            // exited, retained bodies only need their existing expiry deadline.
-            Some(expiry.map_or(IDLE_POLL_INTERVAL, |delay| delay.min(IDLE_POLL_INTERVAL)))
-        } else {
-            expiry
-        };
-        if let Some(delay) = delay {
-            condition.wait_for(&mut state, delay);
+        if let Some(deadline) = state.next_expiry() {
+            condition.wait_for(
+                &mut state,
+                Duration::from_millis(deadline.saturating_sub(now()).max(1)),
+            );
         } else {
             condition.wait(&mut state);
         }
@@ -2615,7 +2432,6 @@ fn retain_until_deadline(broker: Arc<Mutex<Broker>>) {
 }
 
 fn serve_connection(mut stream: UnixStream, broker: Arc<Mutex<Broker>>) -> Result<()> {
-    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     let request = match read_frame(&mut BufReader::new(stream.try_clone()?))? {
@@ -2705,12 +2521,8 @@ fn dispatch_jobs(broker: &Arc<Mutex<Broker>>, jobs: Vec<WakeJob>) -> Result<()> 
             codex
         };
         if let Some(agent) = codex {
-            // The originating connection (or startup) owns dispatch until this
-            // guard takes over, including persistence of the asynchronous result.
-            let operation = ActiveOperation::begin(broker);
             let broker = Arc::clone(broker);
             std::thread::spawn(move || {
-                let _operation = operation;
                 let outcome = if let (Some(program), Some(endpoint), Some(session)) =
                     (agent.codex_program, agent.queue_endpoint, agent.session_id)
                 {
