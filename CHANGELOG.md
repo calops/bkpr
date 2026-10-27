@@ -1,3 +1,14 @@
+## Unreleased
+
+### Features
+
+* Add Antigravity launch identities, MCP conversation binding, native idle-safe peer wake and exact-conversation recovery.
+* Add `bkpr install agy` with native MCP registration, dry-run and conflict protection.
+
+### Breaking Changes
+
+* Relay protocol 4 adds authenticated AGY native wake outcomes. Older brokers fail closed and must be stopped explicitly after inspecting pending work; live brokers are never replaced automatically.
+
 ## [0.4.2](https://github.com/calops/bkpr/compare/v0.4.1...v0.4.2) (2026-10-26)
 
 ## [0.4.1](https://github.com/calops/bkpr/compare/v0.4.0...v0.4.1) (2026-10-26)

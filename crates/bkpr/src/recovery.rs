@@ -341,14 +341,18 @@ pub(crate) fn resolve(pane: &RecoveryPane, agents: &RecoveryAgents) -> PaneLaunc
     else {
         return shell("no captured session to resume");
     };
-    let Some(harness) = [Harness::Claude, Harness::Omp, Harness::Codex]
-        .into_iter()
-        .find(|harness| {
-            harness
-                .to_possible_value()
-                .is_some_and(|v| v.matches(&agent.harness, false))
-        })
-    else {
+    let Some(harness) = [
+        Harness::Claude,
+        Harness::Omp,
+        Harness::Codex,
+        Harness::Antigravity,
+    ]
+    .into_iter()
+    .find(|harness| {
+        harness
+            .to_possible_value()
+            .is_some_and(|v| v.matches(&agent.harness, false))
+    }) else {
         return shell("harness cannot be resumed");
     };
     let other_holder = agents
@@ -590,7 +594,7 @@ fn send_restore_claim(key: &str, link: Option<&(String, String)>) -> Result<()> 
 }
 
 /// The command line that resumes a session, with the positions of the flags it generated:
-/// `--resume` before the id (Claude, omp) or `-C` before the directory (Codex).
+/// `--resume` (Claude, omp) or `--conversation` (AGY) before the id, or `-C` before the directory (Codex).
 #[derive(Debug, PartialEq, Eq)]
 struct ResumeCommand {
     words: Vec<OsString>,
@@ -605,8 +609,8 @@ fn resume_command(program: &Path, harness: Harness, session_id: &str, cwd: &Path
     }
     let start = words.len();
     let arguments = resume_arguments(harness, session_id, cwd);
-    // Our flags sit at fixed positions of `resume_arguments`: `--resume <id>` and
-    // `resume <id> -C <cwd>`. Values there never count as flags.
+    // Our flags sit at fixed positions of `resume_arguments`: a resume flag
+    // before the id, or `resume <id> -C <cwd>`. Values there never count as flags.
     let flags = match harness {
         Harness::Codex => vec![start + 2],
         _ => vec![start],
@@ -637,7 +641,7 @@ fn bare_words(command: &ResumeCommand) -> impl Iterator<Item = (&OsString, bool)
 }
 
 /// Flags `resume_arguments` generates.
-const RESUME_FLAGS: [&str; 2] = ["--resume", "-C"];
+const RESUME_FLAGS: [&str; 3] = ["--resume", "--conversation", "-C"];
 
 /// The line to type, or `None` when any word would need quoting.
 fn typeable_command(command: &ResumeCommand) -> Option<String> {
@@ -853,6 +857,7 @@ pub(crate) fn resume_arguments(harness: Harness, session_id: &str, cwd: &Path) -
             "-C".into(),
             cwd.as_os_str().to_owned(),
         ],
+        Harness::Antigravity => vec!["--conversation".into(), session_id.into()],
         _ => vec!["--resume".into(), session_id.into()],
     }
 }
@@ -947,6 +952,10 @@ mod tests {
             resume_arguments(Harness::Codex, "s3", cwd),
             ["resume", "s3", "-C", "/srv/x y"].map(OsString::from)
         );
+        assert_eq!(
+            resume_arguments(Harness::Antigravity, "root-conversation-id", cwd),
+            ["--conversation", "root-conversation-id"].map(OsString::from)
+        );
     }
 
     fn words(items: &[&str]) -> Vec<OsString> {
@@ -972,6 +981,10 @@ mod tests {
         assert_eq!(
             command(Harness::Codex, "s3", "/srv/p").words,
             words(&[BKPR, "run", "codex", "resume", "s3", "-C", "/srv/p"])
+        );
+        assert_eq!(
+            command(Harness::Antigravity, "root-conversation-id", "/srv/p").words,
+            words(&[BKPR, "run", "agy", "--conversation", "root-conversation-id"])
         );
     }
 
@@ -1004,6 +1017,10 @@ mod tests {
             Some("/bin/bkpr run claude --resume s")
         );
         assert_eq!(
+            typeable_command(&command(Harness::Antigravity, "s", "/srv/p")).as_deref(),
+            Some("/bin/bkpr run agy --conversation s")
+        );
+        assert_eq!(
             typeable_command(&command(Harness::Codex, "s", "/srv/x y")),
             None
         );
@@ -1012,8 +1029,13 @@ mod tests {
     #[test]
     fn flags_are_accepted_only_at_their_generated_positions() {
         // A session id equal to (or shaped like) a flag is never typed.
-        for id in ["--resume", "-C", "--rm", "-"] {
-            for harness in [Harness::Claude, Harness::Omp, Harness::Codex] {
+        for id in ["--resume", "--conversation", "-C", "--rm", "-"] {
+            for harness in [
+                Harness::Claude,
+                Harness::Omp,
+                Harness::Codex,
+                Harness::Antigravity,
+            ] {
                 let resume = command(harness, id, "/srv/p");
                 assert_eq!(typeable_command(&resume), None, "{harness:?} {id}");
                 let note = offer_resume(&resume, Some("1"), |_, _| panic!("typed {id}"));
@@ -1466,8 +1488,8 @@ mod tests {
     }
 
     #[test]
-    fn live_claude_or_omp_sole_holder_refuses_resume() {
-        for name in ["claude", "omp"] {
+    fn live_interactive_sole_holder_refuses_resume() {
+        for name in ["claude", "omp", "agy", "antigravity"] {
             let known = agents(vec![("a", agent(name, Some("s"), None, true))]);
             let launch = resolve(&pane(Some("a"), "/tmp"), &known);
             assert!(note_of(&launch).unwrap().contains("still open elsewhere"));
@@ -1475,8 +1497,13 @@ mod tests {
     }
 
     #[test]
-    fn claude_and_omp_resolve_to_harness() {
-        for (name, expected) in [("claude", Harness::Claude), ("omp", Harness::Omp)] {
+    fn resumable_harnesses_use_the_exact_captured_session() {
+        for (name, expected) in [
+            ("claude", Harness::Claude),
+            ("omp", Harness::Omp),
+            ("agy", Harness::Antigravity),
+            ("antigravity", Harness::Antigravity),
+        ] {
             let known = agents(vec![("a", agent(name, Some("s"), None, false))]);
             assert_eq!(
                 resolve(&pane(Some("a"), "/tmp"), &known),
@@ -1488,6 +1515,19 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn agy_requires_captured_identity_and_refuses_other_live_holders() {
+        let uncaptured = agents(vec![("a", agent("agy", None, None, false))]);
+        let launch = resolve(&pane(Some("a"), "/tmp"), &uncaptured);
+        assert!(note_of(&launch).unwrap().contains("no captured session"));
+        let shared = agents(vec![
+            ("a", agent("agy", Some("root-id"), None, false)),
+            ("b", agent("agy", Some("root-id"), None, true)),
+        ]);
+        let launch = resolve(&pane(Some("a"), "/tmp"), &shared);
+        assert!(note_of(&launch).unwrap().contains("still open elsewhere"));
     }
 
     #[test]

@@ -97,6 +97,10 @@ fn broker() -> (FixtureDirectory, Broker) {
 }
 
 fn register(broker: &mut Broker, workspace: &str) -> Request {
+    register_harness(broker, workspace, "omp")
+}
+
+fn register_harness(broker: &mut Broker, workspace: &str, harness: &str) -> Request {
     let workspace = broker.directory.join(workspace);
     fs::create_dir_all(&workspace).unwrap();
     let request = Request {
@@ -104,7 +108,7 @@ fn register(broker: &mut Broker, workspace: &str) -> Request {
         agent_id: random_hex(16).unwrap(),
         token: random_hex(32).unwrap(),
         method: "register".into(),
-        params: json!({"cwd":workspace,"repository":workspace,"harness":"omp","pid":std::process::id()}),
+        params: json!({"cwd":workspace,"repository":workspace,"harness":harness,"pid":std::process::id()}),
     };
     broker.perform(&request).unwrap();
     let context = fixture(broker);
@@ -157,6 +161,7 @@ fn connect_receiver(broker: &mut Broker, recipient: &Request) -> mpsc::Receiver<
         .push(Subscriber {
             id: "test".to_owned(),
             sender,
+            binding: None,
         });
     receiver
 }
@@ -1809,4 +1814,832 @@ fn compact_discovery_reports_live_harness_status() {
             .get("status")
             .is_none()
     );
+}
+
+const AGY_ROOT: &str = "81121061-d248-4d4a-b8b0-a5b711d08490";
+const AGY_OTHER_ROOT: &str = "fce9f077-6258-41b0-9ad3-e30b561120e4";
+
+fn agy_receiver_params(root: &str) -> Value {
+    json!({"kind":"agy_native","session_id":root,"pid":std::process::id()})
+}
+
+fn ready_agy(broker: &mut Broker, agent: &Request) -> mpsc::Receiver<Value> {
+    broker
+        .perform(&as_request(
+            agent,
+            "bind_session",
+            json!({"session_id":AGY_ROOT}),
+        ))
+        .unwrap();
+    broker
+        .perform(&as_request(
+            agent,
+            "receiver",
+            agy_receiver_params(AGY_ROOT),
+        ))
+        .unwrap();
+    let (sender, receiver) = mpsc::channel();
+    let binding = agy_receiver_binding(
+        &broker.store.agents[&agent.agent_id],
+        &agy_receiver_params(AGY_ROOT),
+    )
+    .unwrap();
+    broker
+        .subscribers
+        .entry(agent.agent_id.clone())
+        .or_default()
+        .push(Subscriber {
+            id: "native-agy-test".to_owned(),
+            sender,
+            binding: Some(binding),
+        });
+    receiver
+}
+
+fn agy_callback(agent: &Request, job: &WakeJob, outcome: &str, reason: Option<&str>) -> Request {
+    let mut params = agy_receiver_params(AGY_ROOT);
+    params["notification_id"] = json!(job.id);
+    params["generation"] = json!(job.generation);
+    params["outcome"] = json!(outcome);
+    if let Some(reason) = reason {
+        params["reason"] = json!(reason);
+    }
+    as_request(agent, "agy_wake_outcome", params)
+}
+
+#[test]
+fn agy_metadata_requires_canonical_root_and_ignores_child_conversation_ids() {
+    let call = json!({"params":{"_meta":{
+        "antigravity.google/root_conversation_id":AGY_ROOT,
+        "antigravity.google/conversation_id":AGY_OTHER_ROOT,
+    }}});
+    assert_eq!(agy_root_metadata(&call).unwrap(), AGY_ROOT);
+    for metadata in [
+        json!({}),
+        json!(null),
+        json!({"antigravity.google/conversation_id":AGY_ROOT}),
+        json!({"antigravity.google/root_conversation_id":42}),
+        json!({"antigravity.google/root_conversation_id":""}),
+        json!({"antigravity.google/root_conversation_id":"81121061-D248-4D4A-B8B0-A5B711D08490"}),
+        json!({"antigravity.google/root_conversation_id":"00000000-0000-0000-0000-000000000000"}),
+        json!({"antigravity.google/root_conversation_id":format!("{AGY_ROOT}\n")}),
+        json!({"antigravity.google/root_conversation_id":AGY_ROOT.replace('-', "")}),
+    ] {
+        assert!(agy_root_metadata(&json!({"params":{"_meta":metadata}})).is_err());
+    }
+    let instructions = agy_bootstrap_instructions(Path::new("/private/bkpr's binary")).unwrap();
+    let command = crate::claude::shell_quote("/private/bkpr's binary") + " agy-receiver";
+    assert!(instructions.contains(&serde_json::to_string(&command).unwrap()));
+    assert!(instructions.contains("IsDaemon:true"));
+    assert!(!instructions.contains("ANTIGRAVITY_CSRF_TOKEN="));
+}
+
+#[test]
+fn agy_admission_requires_mcp_root_before_native_receiver_and_keeps_status_unknown() {
+    let (_directory, mut broker) = broker();
+    let agy = register_harness(&mut broker, "one", "agy");
+    assert!(
+        broker
+            .perform(&as_request(&agy, "receiver", agy_receiver_params(AGY_ROOT)))
+            .is_err()
+    );
+    assert!(
+        broker
+            .perform(&as_request(
+                &agy,
+                "bind_session",
+                json!({"session_id":"not-a-uuid"})
+            ))
+            .is_err()
+    );
+    broker
+        .perform(&as_request(
+            &agy,
+            "bind_session",
+            json!({"session_id":AGY_ROOT}),
+        ))
+        .unwrap();
+    assert!(
+        broker
+            .perform(&as_request(
+                &agy,
+                "receiver",
+                agy_receiver_params(AGY_OTHER_ROOT)
+            ))
+            .is_err()
+    );
+    for field in ["queue_endpoint", "codex_program"] {
+        let mut params = json!({"session_id":AGY_ROOT});
+        params[field] = json!("secret must not be persisted");
+        assert!(
+            broker
+                .perform(&as_request(&agy, "bind_session", params))
+                .is_err()
+        );
+    }
+    for patch in [
+        json!({"kind":"omp_mcp"}),
+        json!({"activity":"busy"}),
+        json!({"diagnostic":"native-secret"}),
+        json!({"diagnostic_log":"/private/native-secret"}),
+        json!({"lease_ms":0}),
+        json!({"lease_ms":300001}),
+    ] {
+        let mut params = agy_receiver_params(AGY_ROOT);
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        assert!(
+            broker
+                .perform(&as_request(&agy, "receiver", params))
+                .is_err()
+        );
+    }
+    let _receiver = ready_agy(&mut broker, &agy);
+    let (who, _) = broker
+        .perform(&as_request(&agy, "whoami", json!({})))
+        .unwrap();
+    assert_eq!(who["session_id"], AGY_ROOT);
+    assert_eq!(who["readiness"]["receiver"]["kind"], "agy_native");
+    assert_eq!(who["readiness"]["receiver"]["activity"], "unknown");
+    assert_eq!(
+        who["readiness"]["future_turn_transport"],
+        "private_agy_when_idle"
+    );
+    assert_eq!(who["readiness"]["can_notify"], true);
+    assert!(who["context"]["status"].is_null());
+    let snapshot = serde_json::to_string(&broker.store).unwrap();
+    assert!(!snapshot.contains("native-secret"));
+    assert!(!snapshot.contains("ANTIGRAVITY_LS_ADDRESS"));
+}
+
+#[test]
+fn agy_unix_pointer_write_is_not_native_acceptance_and_coalesces_until_read_and_ack() {
+    let (_directory, mut state) = broker();
+    let sender = register(&mut state, "one");
+    let agy = register_harness(&mut state, "one", "agy");
+    state
+        .perform(&as_request(
+            &agy,
+            "bind_session",
+            json!({"session_id":AGY_ROOT}),
+        ))
+        .unwrap();
+    state
+        .perform(&as_request(&agy, "receiver", agy_receiver_params(AGY_ROOT)))
+        .unwrap();
+    let (first, jobs) = send(&mut state, &sender, &agy, "first private body");
+    assert!(jobs.is_empty());
+    let state = Arc::new(Mutex::new(state));
+    let (mut client, server) = UnixStream::pair().unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let server_state = Arc::clone(&state);
+    let worker = std::thread::spawn(move || serve_connection(server, server_state).unwrap());
+    write_frame(
+        &mut client,
+        &json!({
+            "protocol":PROTOCOL_VERSION,"agent_id":agy.agent_id,"token":agy.token,
+            "method":"subscribe","params":agy_receiver_params(AGY_ROOT),
+        }),
+    )
+    .unwrap();
+    let mut reader = BufReader::new(client);
+    assert_eq!(read_frame(&mut reader).unwrap().unwrap()["event"], "ready");
+    let event = read_frame(&mut reader).unwrap().unwrap();
+    assert_eq!(event["message"]["id"], first["message_id"]);
+    assert!(!event.to_string().contains("private body"));
+    let job = WakeJob {
+        recipient: agy.agent_id.clone(),
+        id: first["message_id"].as_str().unwrap().to_owned(),
+        generation: event["generation"].as_u64().unwrap(),
+    };
+    let (second, jobs) = send(&mut state.lock(), &sender, &agy, "second private body");
+    assert!(jobs.is_empty());
+    {
+        let mut state = state.lock();
+        assert_eq!(
+            state.store.messages[&job.id].delivery.outcome.as_deref(),
+            Some("pending")
+        );
+        let mut validate = agy_callback(&agy, &job, "accepted", None);
+        validate.method = "agy_wake_validate".into();
+        assert_eq!(state.perform(&validate).unwrap().0["current"], true);
+        state
+            .perform(&agy_callback(&agy, &job, "accepted", None))
+            .unwrap();
+        let first_message = &state.store.messages[&job.id];
+        assert_eq!(first_message.delivery.state, "accepted");
+        assert!(first_message.read_at.is_none());
+        assert!(first_message.acknowledged_at.is_none());
+        let second_message = &state.store.messages[second["message_id"].as_str().unwrap()];
+        assert_eq!(second_message.delivery.state, "coalesced");
+        assert_eq!(second_message.delivery.outcome.as_deref(), Some("accepted"));
+        let (inbox, _) = state
+            .perform(&as_request(&agy, "inbox", json!({})))
+            .unwrap();
+        assert_eq!(inbox["messages"].as_array().unwrap().len(), 2);
+        assert!(state.store.messages[&job.id].read_at.is_some());
+        assert!(state.store.messages[&job.id].acknowledged_at.is_none());
+        state
+            .perform(&as_request(
+                &agy,
+                "ack",
+                json!({"ids":[job.id,second["message_id"]]}),
+            ))
+            .unwrap();
+        assert!(
+            state.store.messages[first["message_id"].as_str().unwrap()]
+                .text
+                .is_none()
+        );
+    }
+    drop(reader);
+    worker.join().unwrap();
+}
+
+#[test]
+fn agy_rebind_invalidates_receiver_and_uncertain_generation_without_replaying() {
+    let (_directory, mut broker) = broker();
+    let sender = register(&mut broker, "one");
+    let agy = register_harness(&mut broker, "one", "agy");
+    let receiver = ready_agy(&mut broker, &agy);
+    let (first, jobs) = send(&mut broker, &sender, &agy, "old root pointer");
+    let job = jobs[0].clone();
+    let broker = Arc::new(Mutex::new(broker));
+    dispatch_jobs(&broker, jobs).unwrap();
+    assert_eq!(receiver.recv().unwrap()["event"], "message");
+    let mut broker = broker.lock();
+    broker
+        .perform(&as_request(
+            &agy,
+            "bind_session",
+            json!({"session_id":AGY_OTHER_ROOT}),
+        ))
+        .unwrap();
+    assert_eq!(receiver.recv().unwrap()["event"], "invalidated");
+    let current = &broker.store.agents[&agy.agent_id];
+    assert_eq!(readiness(current, 0)["receiver_alive"], false);
+    assert_eq!(readiness(current, 0)["can_notify"], false);
+    assert_eq!(current.notification.as_ref().unwrap().state, "unknown");
+    assert!(
+        broker
+            .perform(&agy_callback(&agy, &job, "accepted", None))
+            .is_err()
+    );
+    assert!(
+        broker
+            .perform(&as_request(&agy, "receiver", agy_receiver_params(AGY_ROOT)))
+            .is_err()
+    );
+    let (_, jobs) = broker
+        .perform(&as_request(
+            &agy,
+            "receiver",
+            agy_receiver_params(AGY_OTHER_ROOT),
+        ))
+        .unwrap();
+    assert!(
+        jobs.is_empty(),
+        "uncertain old-root wake must not be replayed against a new root"
+    );
+    assert_eq!(
+        broker.store.messages[first["message_id"].as_str().unwrap()]
+            .wake_failure
+            .as_ref()
+            .unwrap()
+            .state,
+        "unknown"
+    );
+}
+
+#[test]
+fn agy_authenticated_callbacks_preserve_old_read_receipts_and_never_change_new_generation() {
+    let (directory, mut broker) = broker();
+    let sender = register(&mut broker, "one");
+    let agy = register_harness(&mut broker, "one", "agy");
+    let _receiver = ready_agy(&mut broker, &agy);
+    let (first, jobs) = send(&mut broker, &sender, &agy, "first");
+    let old = &jobs[0];
+    broker
+        .store
+        .agents
+        .get_mut(&agy.agent_id)
+        .unwrap()
+        .notification
+        .as_mut()
+        .unwrap()
+        .dispatched = true;
+    broker
+        .perform(&as_request(&agy, "inbox", json!({})))
+        .unwrap();
+    let (_, jobs) = send(&mut broker, &sender, &agy, "new");
+    let current = &jobs[0];
+    broker
+        .perform(&agy_callback(
+            &agy,
+            old,
+            "unknown",
+            Some("transport_unknown"),
+        ))
+        .unwrap();
+    let saved = load_store(directory.path()).unwrap();
+    let old_receipt = &saved.messages[first["message_id"].as_str().unwrap()];
+    assert_eq!(old_receipt.delivery.state, "consumed");
+    assert_eq!(old_receipt.delivery.outcome.as_deref(), Some("unknown"));
+    assert_eq!(
+        old_receipt.wake_failure.as_ref().unwrap().generation,
+        old.generation
+    );
+    assert_eq!(
+        saved.agents[&agy.agent_id]
+            .notification
+            .as_ref()
+            .unwrap()
+            .generation,
+        current.generation
+    );
+    assert_eq!(
+        saved.agents[&agy.agent_id]
+            .notification
+            .as_ref()
+            .unwrap()
+            .state,
+        "pending"
+    );
+    for mut callback in [
+        Request {
+            token: "0".repeat(64),
+            ..agy_callback(&agy, current, "accepted", None)
+        },
+        agy_callback(
+            &agy,
+            &WakeJob {
+                generation: current.generation + 1,
+                ..current.clone()
+            },
+            "accepted",
+            None,
+        ),
+        agy_callback(&agy, current, "unknown", Some("raw-CSRF-secret")),
+    ] {
+        assert!(broker.perform(&callback).is_err());
+        callback.params["pid"] = json!(0);
+        assert!(broker.perform(&callback).is_err());
+    }
+    broker.storage_failure = Some("injected durable failure".into());
+    assert!(
+        broker
+            .perform(&agy_callback(&agy, current, "accepted", None))
+            .is_err()
+    );
+    let mut validate = agy_callback(&agy, current, "accepted", None);
+    validate.method = "agy_wake_validate".into();
+    assert!(broker.perform(&validate).is_err());
+    assert_eq!(
+        broker.store.agents[&agy.agent_id]
+            .notification
+            .as_ref()
+            .unwrap()
+            .state,
+        "pending"
+    );
+}
+
+#[test]
+fn agy_unknown_and_failed_native_outcomes_are_not_blindly_resent() {
+    for (outcome, reason) in [
+        ("failed", "connect_failed"),
+        ("failed", "http_rejected"),
+        ("unknown", "transport_unknown"),
+        ("unknown", "invalid_response"),
+    ] {
+        let (_directory, mut broker) = broker();
+        let sender = register(&mut broker, "one");
+        let agy = register_harness(&mut broker, "one", "agy");
+        let _receiver = ready_agy(&mut broker, &agy);
+        let (_, jobs) = send(&mut broker, &sender, &agy, "first");
+        let job = &jobs[0];
+        broker
+            .store
+            .agents
+            .get_mut(&agy.agent_id)
+            .unwrap()
+            .notification
+            .as_mut()
+            .unwrap()
+            .dispatched = true;
+        broker
+            .perform(&agy_callback(&agy, job, outcome, Some(reason)))
+            .unwrap();
+        assert!(send(&mut broker, &sender, &agy, "second").1.is_empty());
+        assert!(
+            broker
+                .perform(&as_request(&agy, "receiver", agy_receiver_params(AGY_ROOT)))
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        assert_eq!(
+            broker.store.agents[&agy.agent_id]
+                .notification
+                .as_ref()
+                .unwrap()
+                .state,
+            outcome
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn agy_receiver_birth_mismatch_and_launch_exit_invalidate_authentication() {
+    let (_directory, mut broker) = broker();
+    let agy = register_harness(&mut broker, "one", "agy");
+    let _receiver = ready_agy(&mut broker, &agy);
+    broker
+        .store
+        .agents
+        .get_mut(&agy.agent_id)
+        .unwrap()
+        .receiver
+        .process_start = Some("recycled-pid".into());
+    assert!(!receiver_alive(
+        &broker.store.agents[&agy.agent_id].receiver
+    ));
+    assert!(
+        agy_receiver_binding(
+            &broker.store.agents[&agy.agent_id],
+            &agy_receiver_params(AGY_ROOT)
+        )
+        .is_err()
+    );
+    broker
+        .store
+        .agents
+        .get_mut(&agy.agent_id)
+        .unwrap()
+        .process_start = Some("exited-launch".into());
+    assert!(
+        broker
+            .perform(&as_request(&agy, "receiver", agy_receiver_params(AGY_ROOT)))
+            .is_err()
+    );
+    assert!(broker.store.agents[&agy.agent_id].exited_at.is_some());
+}
+
+#[test]
+fn agy_subscription_requires_exact_native_binding_and_durable_store_health() {
+    for rejected in [
+        json!({}),
+        json!({"kind":"agy_native","session_id":AGY_OTHER_ROOT,"pid":std::process::id()}),
+        json!({"kind":"agy_native","session_id":AGY_ROOT,"pid":0}),
+    ] {
+        let (_directory, mut state) = broker();
+        let agy = register_harness(&mut state, "one", "agy");
+        state
+            .perform(&as_request(
+                &agy,
+                "bind_session",
+                json!({"session_id":AGY_ROOT}),
+            ))
+            .unwrap();
+        state
+            .perform(&as_request(&agy, "receiver", agy_receiver_params(AGY_ROOT)))
+            .unwrap();
+        let state = Arc::new(Mutex::new(state));
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let server_state = Arc::clone(&state);
+        let worker = std::thread::spawn(move || serve_connection(server, server_state).unwrap());
+        write_frame(
+            &mut client,
+            &json!({
+                "protocol":PROTOCOL_VERSION,"agent_id":agy.agent_id,"token":agy.token,
+                "method":"subscribe","params":rejected,
+            }),
+        )
+        .unwrap();
+        assert!(
+            read_frame(&mut BufReader::new(client))
+                .unwrap()
+                .unwrap()
+                .get("error")
+                .is_some()
+        );
+        worker.join().unwrap();
+        assert!(state.lock().subscribers.is_empty());
+    }
+    let (_directory, mut state) = broker();
+    let agy = register_harness(&mut state, "one", "agy");
+    let _receiver = ready_agy(&mut state, &agy);
+    state.storage_failure = Some("injected durable failure".into());
+    let state = Arc::new(Mutex::new(state));
+    let (mut client, server) = UnixStream::pair().unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let server_state = Arc::clone(&state);
+    let worker = std::thread::spawn(move || serve_connection(server, server_state).unwrap());
+    write_frame(
+        &mut client,
+        &json!({
+            "protocol":PROTOCOL_VERSION,"agent_id":agy.agent_id,"token":agy.token,
+            "method":"subscribe","params":agy_receiver_params(AGY_ROOT),
+        }),
+    )
+    .unwrap();
+    assert!(
+        read_frame(&mut BufReader::new(client))
+            .unwrap()
+            .unwrap()
+            .get("error")
+            .is_some()
+    );
+    worker.join().unwrap();
+    assert_eq!(state.lock().subscribers[&agy.agent_id].len(), 1);
+}
+
+#[test]
+fn agy_disconnect_before_native_confirmation_is_unknown_and_not_replayed() {
+    let (_directory, mut state) = broker();
+    let sender = register(&mut state, "one");
+    let agy = register_harness(&mut state, "one", "agy");
+    state
+        .perform(&as_request(
+            &agy,
+            "bind_session",
+            json!({"session_id":AGY_ROOT}),
+        ))
+        .unwrap();
+    state
+        .perform(&as_request(&agy, "receiver", agy_receiver_params(AGY_ROOT)))
+        .unwrap();
+    let (message, _) = send(&mut state, &sender, &agy, "no native confirmation");
+    let state = Arc::new(Mutex::new(state));
+    let (mut client, server) = UnixStream::pair().unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let server_state = Arc::clone(&state);
+    let worker = std::thread::spawn(move || serve_connection(server, server_state).unwrap());
+    write_frame(
+        &mut client,
+        &json!({
+            "protocol":PROTOCOL_VERSION,"agent_id":agy.agent_id,"token":agy.token,
+            "method":"subscribe","params":agy_receiver_params(AGY_ROOT),
+        }),
+    )
+    .unwrap();
+    let mut reader = BufReader::new(client);
+    assert_eq!(read_frame(&mut reader).unwrap().unwrap()["event"], "ready");
+    assert_eq!(
+        read_frame(&mut reader).unwrap().unwrap()["event"],
+        "message"
+    );
+    drop(reader);
+    worker.join().unwrap();
+    let mut state = state.lock();
+    let receipt = &state.store.messages[message["message_id"].as_str().unwrap()];
+    assert_eq!(receipt.delivery.outcome.as_deref(), Some("unknown"));
+    assert!(receipt.read_at.is_none());
+    assert!(receipt.acknowledged_at.is_none());
+    assert!(
+        send(&mut state, &sender, &agy, "do not replay uncertain pointer")
+            .1
+            .is_empty()
+    );
+}
+
+#[cfg(target_os = "linux")]
+struct AgyReceiverProcess(std::process::Child);
+
+#[cfg(target_os = "linux")]
+impl AgyReceiverProcess {
+    fn spawn(stdout: Stdio) -> Self {
+        Self(
+            Command::new("/bin/sh")
+                .args(["-c", "read unused"])
+                .env_clear()
+                .stdin(Stdio::piped())
+                .stdout(stdout)
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
+    }
+
+    fn reap(&mut self) {
+        self.0.kill().unwrap();
+        self.0.wait().unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for AgyReceiverProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn agy_reaped_receiver_eof_persists_unknown_without_native_callback() {
+    let (directory, mut state) = broker();
+    let sender = register(&mut state, "one");
+    let agy = register_harness(&mut state, "one", "agy");
+    state
+        .perform(&as_request(
+            &agy,
+            "bind_session",
+            json!({"session_id":AGY_ROOT}),
+        ))
+        .unwrap();
+    let (mut client, server) = UnixStream::pair().unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    // Retain an observer socket until after the child is reaped, forcing EOF
+    // cleanup to see a definitely dead PID rather than racing zombie liveness.
+    let socket = std::os::fd::OwnedFd::from(client.try_clone().unwrap());
+    let mut receiver = AgyReceiverProcess::spawn(Stdio::from(socket));
+    let pid = receiver.0.id();
+    let mut params = agy_receiver_params(AGY_ROOT);
+    params["pid"] = json!(pid);
+    state
+        .perform(&as_request(&agy, "receiver", params.clone()))
+        .unwrap();
+    let (message, jobs) = send(
+        &mut state,
+        &sender,
+        &agy,
+        "receiver dies before HTTP acknowledgement",
+    );
+    assert!(jobs.is_empty());
+    let state = Arc::new(Mutex::new(state));
+    let server_state = Arc::clone(&state);
+    let worker = std::thread::spawn(move || serve_connection(server, server_state).unwrap());
+    write_frame(
+        &mut client,
+        &json!({
+            "protocol":PROTOCOL_VERSION,"agent_id":agy.agent_id,"token":agy.token,
+            "method":"subscribe","params":params,
+        }),
+    )
+    .unwrap();
+    let mut reader = BufReader::new(client);
+    assert_eq!(read_frame(&mut reader).unwrap().unwrap()["event"], "ready");
+    assert_eq!(
+        read_frame(&mut reader).unwrap().unwrap()["event"],
+        "message"
+    );
+    assert_eq!(
+        state.lock().store.messages[message["message_id"].as_str().unwrap()]
+            .delivery
+            .outcome
+            .as_deref(),
+        Some("pending")
+    );
+    receiver.reap();
+    assert!(process_identity(pid).is_err());
+    drop(reader);
+    worker.join().unwrap();
+    let saved = load_store(directory.path()).unwrap();
+    let receipt = &saved.messages[message["message_id"].as_str().unwrap()];
+    assert_eq!(receipt.delivery.outcome.as_deref(), Some("unknown"));
+    assert_eq!(receipt.wake_failure.as_ref().unwrap().state, "unknown");
+    assert!(receipt.read_at.is_none());
+    assert!(receipt.acknowledged_at.is_none());
+    let agent = &saved.agents[&agy.agent_id];
+    assert!(
+        alive(agent),
+        "the AGY launch remains alive after its helper exits"
+    );
+    assert!(!receiver_alive(&agent.receiver));
+    assert_eq!(agent.notification.as_ref().unwrap().state, "unknown");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn agy_replacement_waits_for_matching_subscription_before_claiming_one_wake() {
+    let (_directory, mut state) = broker();
+    let sender = register(&mut state, "one");
+    let agy = register_harness(&mut state, "one", "agy");
+    state
+        .perform(&as_request(
+            &agy,
+            "bind_session",
+            json!({"session_id":AGY_ROOT}),
+        ))
+        .unwrap();
+    let mut old_receiver = AgyReceiverProcess::spawn(Stdio::null());
+    let mut old_params = agy_receiver_params(AGY_ROOT);
+    old_params["pid"] = json!(old_receiver.0.id());
+    state
+        .perform(&as_request(&agy, "receiver", old_params.clone()))
+        .unwrap();
+    let old_binding =
+        agy_receiver_binding(&state.store.agents[&agy.agent_id], &old_params).unwrap();
+    let (stale_sender, stale_receiver) = mpsc::channel();
+    state
+        .subscribers
+        .entry(agy.agent_id.clone())
+        .or_default()
+        .push(Subscriber {
+            id: "old-subscriber-awaiting-eof-cleanup".to_owned(),
+            sender: stale_sender,
+            binding: Some(old_binding),
+        });
+    old_receiver.reap();
+    let (message, jobs) = send(
+        &mut state,
+        &sender,
+        &agy,
+        "wait for replacement subscription",
+    );
+    assert!(jobs.is_empty());
+    assert!(state.store.agents[&agy.agent_id].notification.is_none());
+    let generation = state.store.agents[&agy.agent_id].generation;
+    let (_, jobs) = state
+        .perform(&as_request(&agy, "receiver", agy_receiver_params(AGY_ROOT)))
+        .unwrap();
+    assert!(
+        jobs.is_empty(),
+        "stale subscribers cannot claim a replacement receiver's wake"
+    );
+    let agent = &state.store.agents[&agy.agent_id];
+    assert_eq!(agent.generation, generation);
+    assert!(agent.notification.is_none());
+    assert!(receiver_alive(&agent.receiver));
+    assert_eq!(state.subscribers[&agy.agent_id].len(), 1);
+    let who = state
+        .perform(&as_request(&agy, "whoami", json!({})))
+        .unwrap()
+        .0;
+    assert_eq!(who["readiness"]["notification_connection"], false);
+    assert_eq!(who["readiness"]["can_notify"], false);
+    assert_eq!(
+        state.store.messages[message["message_id"].as_str().unwrap()]
+            .delivery
+            .state,
+        "blocked"
+    );
+    let state = Arc::new(Mutex::new(state));
+    let (mut client, server) = UnixStream::pair().unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let server_state = Arc::clone(&state);
+    let worker = std::thread::spawn(move || serve_connection(server, server_state).unwrap());
+    write_frame(
+        &mut client,
+        &json!({
+            "protocol":PROTOCOL_VERSION,"agent_id":agy.agent_id,"token":agy.token,
+            "method":"subscribe","params":agy_receiver_params(AGY_ROOT),
+        }),
+    )
+    .unwrap();
+    let mut reader = BufReader::new(client);
+    assert_eq!(read_frame(&mut reader).unwrap().unwrap()["event"], "ready");
+    let event = read_frame(&mut reader).unwrap().unwrap();
+    assert_eq!(event["message"]["id"], message["message_id"]);
+    assert_eq!(event["generation"].as_u64(), Some(generation + 1));
+    assert!(stale_receiver.try_recv().is_err());
+    {
+        let mut state = state.lock();
+        let job = WakeJob {
+            recipient: agy.agent_id.clone(),
+            id: message["message_id"].as_str().unwrap().to_owned(),
+            generation: event["generation"].as_u64().unwrap(),
+        };
+        state
+            .perform(&agy_callback(&agy, &job, "accepted", None))
+            .unwrap();
+        assert!(
+            send(
+                &mut state,
+                &sender,
+                &agy,
+                "coalesce with the single fresh wake"
+            )
+            .1
+            .is_empty()
+        );
+        assert_eq!(state.store.agents[&agy.agent_id].generation, generation + 1);
+        assert_eq!(
+            state.store.agents[&agy.agent_id]
+                .notification
+                .as_ref()
+                .unwrap()
+                .state,
+            "accepted"
+        );
+    }
+    drop(reader);
+    worker.join().unwrap();
 }

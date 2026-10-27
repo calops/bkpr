@@ -1,11 +1,14 @@
 mod agent;
 mod agent_relay;
+mod agy;
+mod agy_receiver;
 mod ci;
 mod claude;
 mod codex;
 mod context;
 mod control;
 mod harness;
+mod install;
 mod launcher;
 mod omp;
 mod project;
@@ -52,6 +55,8 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         arguments: Vec<std::ffi::OsString>,
     },
+    /// Install Bkpr's MCP integration in a harness's user configuration.
+    Install(install::Args),
     /// Show this pane's current native session and workspace context.
     Context {
         /// Emit compact JSON.
@@ -114,6 +119,17 @@ enum Commands {
         #[arg(last = true)]
         arguments: Vec<std::ffi::OsString>,
     },
+    /// Launch AGY with a private per-launch relay identity.
+    #[command(hide = true)]
+    AgyLaunch {
+        #[arg(long)]
+        wrapper_dir: PathBuf,
+        #[arg(last = true)]
+        arguments: Vec<std::ffi::OsString>,
+    },
+    /// Receive future-turn notifications from AGY's native command environment.
+    #[command(hide = true)]
+    AgyReceiver,
     /// Launch Codex with launch-local messaging.
     #[command(hide = true)]
     CodexLaunch {
@@ -236,6 +252,7 @@ fn run() -> Result<()> {
             launcher::run_resume(launch)
         }
         Some(Commands::Run { harness, arguments }) => harness.launch(arguments),
+        Some(Commands::Install(args)) => install::run(args),
         Some(Commands::Context { json }) => {
             let value = context::current()?;
             let mut stdout = io::stdout().lock();
@@ -276,6 +293,11 @@ fn run() -> Result<()> {
             wrapper_dir,
             arguments,
         }) => omp::launch(Some(&wrapper_dir), arguments),
+        Some(Commands::AgyLaunch {
+            wrapper_dir,
+            arguments,
+        }) => agy::launch(Some(&wrapper_dir), arguments),
+        Some(Commands::AgyReceiver) => agy_receiver::run(),
         Some(Commands::CodexLaunch {
             wrapper_dir,
             arguments,

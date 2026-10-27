@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 const MAX_FRAME: usize = 4 * 1024 * 1024;
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_INBOX: usize = 1000;
-const PROTOCOL_VERSION: u64 = 3;
+const PROTOCOL_VERSION: u64 = 4;
 const RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 pub(crate) const CONTROL_SKILL: &str = include_str!("../../../integration/control/SKILL.md");
@@ -53,6 +53,7 @@ enum ReceiverKind {
     ClaudeHook,
     OmpMcp,
     CodexQueue,
+    AgyNative,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -75,6 +76,8 @@ struct Receiver {
     diagnostic_log: Option<PathBuf>,
     #[serde(default)]
     enabled: bool,
+    #[serde(default)]
+    session_id: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -285,6 +288,25 @@ struct WakeJob {
 struct Subscriber {
     id: String,
     sender: mpsc::Sender<Value>,
+    binding: Option<SubscriberBinding>,
+}
+
+#[derive(Clone)]
+struct SubscriberBinding {
+    session_id: String,
+    pid: u32,
+    process_start: Option<String>,
+}
+
+impl SubscriberBinding {
+    // Disconnect settlement still needs the saved authority after helper death.
+    // Callers admitting a new wake must check receiver liveness separately.
+    fn matches(&self, agent: &Agent) -> bool {
+        agent.session_id.as_deref() == Some(self.session_id.as_str())
+            && agent.receiver.session_id.as_deref() == Some(self.session_id.as_str())
+            && agent.receiver.pid == Some(self.pid)
+            && agent.receiver.process_start == self.process_start
+    }
 }
 
 #[derive(Deserialize)]
@@ -443,7 +465,7 @@ fn spawn_detached(command: &mut Command) -> Result<std::process::Child> {
 }
 
 pub(crate) fn prepare(harness: &str, cwd: &Path) -> Result<RelayLaunch> {
-    if !matches!(harness, "claude" | "omp" | "codex") {
+    if !matches!(harness, "claude" | "omp" | "codex" | "agy") {
         bail!("unsupported relay harness");
     }
     let cwd = fs::canonicalize(cwd)?;
@@ -588,14 +610,26 @@ pub(crate) fn bind_session(session_id: &str) -> Result<()> {
 }
 
 pub(crate) fn subscribe() -> Result<BufReader<UnixStream>> {
+    subscribe_with(json!({}))
+}
+
+pub(crate) fn subscribe_agy(session_id: &str) -> Result<BufReader<UnixStream>> {
+    subscribe_with(json!({"kind":"agy_native","session_id":session_id,"pid":std::process::id()}))
+}
+
+fn subscribe_with(params: Value) -> Result<BufReader<UnixStream>> {
     let (socket, id, token) = credentials()?;
     check_protocol(&socket)?;
     let mut stream = UnixStream::connect(socket)?;
     write_frame(
         &mut stream,
-        &json!({"protocol":PROTOCOL_VERSION,"agent_id":id,"token":token,"method":"subscribe"}),
+        &json!({"protocol":PROTOCOL_VERSION,"agent_id":id,"token":token,"method":"subscribe","params":params}),
     )?;
     Ok(BufReader::new(stream))
+}
+
+pub(crate) fn next_subscription_event(reader: &mut BufReader<UnixStream>) -> Result<Option<Value>> {
+    read_frame(reader)
 }
 
 impl Broker {
@@ -785,6 +819,24 @@ impl Broker {
         Ok(agent.clone())
     }
 
+    fn receiver_connections(&self, agent: &Agent) -> usize {
+        self.subscribers.get(&agent.id).map_or(0, |subscribers| {
+            if agent.harness == "agy" {
+                subscribers
+                    .iter()
+                    .filter(|subscriber| {
+                        subscriber
+                            .binding
+                            .as_ref()
+                            .is_some_and(|binding| binding.matches(agent))
+                    })
+                    .count()
+            } else {
+                subscribers.len()
+            }
+        })
+    }
+
     fn unavailable_reason(&self, agent: &Agent) -> Option<&'static str> {
         if self.storage_failure.is_some() {
             return Some("broker storage is unavailable; delivery is suspended");
@@ -798,6 +850,13 @@ impl Broker {
         if agent.notification.is_none() && agent.generation == u64::MAX {
             return Some("notification generation exhausted; recipient must start a new launch");
         }
+        if agent.harness == "agy"
+            && (agent.session_id.is_none()
+                || agent.receiver.session_id != agent.session_id
+                || !matches!(agent.receiver.kind, Some(ReceiverKind::AgyNative)))
+        {
+            return Some("native Antigravity receiver binding is not ready");
+        }
         if agent.harness == "codex"
             && (agent.session_id.is_none()
                 || agent.queue_endpoint.is_none()
@@ -808,8 +867,7 @@ impl Broker {
         if !receiver_alive(&agent.receiver) {
             return Some("receiver helper or extension has not registered live readiness");
         }
-        if agent.harness != "codex" && self.subscribers.get(&agent.id).is_none_or(|s| s.is_empty())
-        {
+        if agent.harness != "codex" && self.receiver_connections(agent) == 0 {
             return Some("no connected receiver subscriber");
         }
         None
@@ -1012,7 +1070,7 @@ impl Broker {
                 bail!("agent id already registered, including inactive identities");
             }
             let harness = string(&request.params, "harness")?;
-            if !matches!(harness, "claude" | "omp" | "codex") {
+            if !matches!(harness, "claude" | "omp" | "codex" | "agy") {
                 bail!("unsupported harness");
             }
             let cwd = fs::canonicalize(string(&request.params, "cwd")?)?;
@@ -1381,17 +1439,85 @@ impl Broker {
                 self.save()?;
                 Ok((public_agent(&self.store.agents[&agent.id]), Vec::new()))
             }
+            "agy_wake_validate" | "agy_wake_outcome" => {
+                agy_receiver_binding(&agent, params)?;
+                let id = string(params, "notification_id")?;
+                let generation = params["generation"]
+                    .as_u64()
+                    .context("missing notification generation")?;
+                let job = WakeJob {
+                    recipient: agent.id.clone(),
+                    id: id.to_owned(),
+                    generation,
+                };
+                let current = agent.notification.as_ref().is_some_and(|notification| {
+                    notification.id == id
+                        && notification.generation == generation
+                        && notification.dispatched
+                        && notification.state == "pending"
+                });
+                if request.method == "agy_wake_validate" {
+                    return Ok((json!({"current":current}), Vec::new()));
+                }
+                let known = self.store.messages.values().any(|message| {
+                    message.to == agent.id
+                        && message.delivery.notification_id.as_deref() == Some(id)
+                        && message.delivery.generation == Some(generation)
+                });
+                if !known {
+                    bail!("unknown notification generation");
+                }
+                let outcome = match string(params, "outcome")? {
+                    "accepted" => WakeOutcome::Accepted,
+                    "failed" => WakeOutcome::Failed(match string(params, "reason")? {
+                        "connect_failed" => "native Antigravity queue connection failed",
+                        "http_rejected" => "native Antigravity queue rejected the notification",
+                        _ => bail!("invalid native Antigravity failure reason"),
+                    }.to_owned()),
+                    "unknown" => WakeOutcome::Unknown(match string(params, "reason")? {
+                        "transport_unknown" => "native Antigravity queue acceptance is unknown after a transport failure",
+                        "invalid_response" => "native Antigravity queue returned an invalid or oversized response; acceptance is unknown",
+                        _ => bail!("invalid native Antigravity uncertainty reason"),
+                    }.to_owned()),
+                    _ => bail!("invalid native Antigravity wake outcome"),
+                };
+                self.outcome(&job, outcome)?;
+                Ok((json!({"recorded":true}), Vec::new()))
+            }
             "receiver" => {
                 let contexts = crate::context::agent_contexts().unwrap_or_default();
                 let kind = string(params, "kind")?;
                 let expected = match agent.harness.as_str() {
                     "claude" => "claude_hook",
                     "omp" => "omp_mcp",
+                    "agy" => "agy_native",
                     _ => "codex_queue",
                 };
                 if kind != expected {
                     bail!("receiver kind does not match launch harness");
                 }
+                let session_id = if agent.harness == "agy" {
+                    let session = string(params, "session_id")?;
+                    validate_agy_session(session)?;
+                    if agent.session_id.as_deref() != Some(session) {
+                        bail!(
+                            "native Antigravity receiver does not match the MCP root conversation"
+                        );
+                    }
+                    if params
+                        .get("activity")
+                        .is_some_and(|activity| activity != "unknown")
+                        || params.get("diagnostic").is_some()
+                        || params.get("diagnostic_log").is_some()
+                    {
+                        bail!(
+                            "native Antigravity readiness does not publish semantic activity or credentials"
+                        );
+                    }
+                    Some(session.to_owned())
+                } else {
+                    None
+                };
                 let activity: ReceiverActivity = serde_json::from_value(
                     params.get("activity").cloned().unwrap_or(json!("unknown")),
                 )?;
@@ -1418,6 +1544,16 @@ impl Broker {
                     .map(|v| v.as_bool().context("enabled must be a boolean"))
                     .transpose()?
                     .unwrap_or(true);
+                if agent.harness == "agy" && pid.is_none() {
+                    bail!("native Antigravity receiver requires its process identity");
+                }
+                if agent.harness == "agy"
+                    && enabled
+                    && receiver_alive(&agent.receiver)
+                    && agent.receiver.pid != pid
+                {
+                    bail!("a live native Antigravity receiver already owns this conversation");
+                }
                 let identity = pid.map(process_identity).transpose().map(Option::flatten);
                 if !enabled {
                     let current = self
@@ -1464,6 +1600,7 @@ impl Broker {
                     kind: Some(match kind {
                         "claude_hook" => ReceiverKind::ClaudeHook,
                         "omp_mcp" => ReceiverKind::OmpMcp,
+                        "agy_native" => ReceiverKind::AgyNative,
                         _ => ReceiverKind::CodexQueue,
                     }),
                     pid,
@@ -1474,6 +1611,7 @@ impl Broker {
                     updated_at: Some(now()),
                     lease_until: lease.map(|ms| now().saturating_add(ms)),
                     diagnostic_log,
+                    session_id,
                 };
                 let jobs = self.schedule(&agent.id)?;
                 self.save()?;
@@ -1483,6 +1621,38 @@ impl Broker {
                 ))
             }
             "set_title" | "bind_session" => {
+                if request.method == "bind_session" && agent.harness == "agy" {
+                    let session = string(params, "session_id")?;
+                    validate_agy_session(session)?;
+                    if params.get("queue_endpoint").is_some()
+                        || params.get("codex_program").is_some()
+                    {
+                        bail!("native Antigravity queue credentials must remain receiver-local");
+                    }
+                    if agent.session_id.as_deref() != Some(session) {
+                        if let Some(notification) =
+                            agent.notification.as_ref().filter(|n| n.state == "pending")
+                        {
+                            self.outcome(&WakeJob {
+                                recipient: agent.id.clone(), id: notification.id.clone(), generation: notification.generation,
+                            }, if notification.dispatched {
+                                WakeOutcome::Unknown("native Antigravity root conversation changed before queue acceptance was confirmed".to_owned())
+                            } else {
+                                WakeOutcome::Failed("native Antigravity root conversation changed before notification dispatch".to_owned())
+                            })?;
+                        }
+                        self.store
+                            .agents
+                            .get_mut(&agent.id)
+                            .context("unknown agent")?
+                            .receiver = Receiver::default();
+                        if let Some(subscribers) = self.subscribers.remove(&agent.id) {
+                            for subscriber in subscribers {
+                                let _ = subscriber.sender.send(json!({"event":"invalidated"}));
+                            }
+                        }
+                    }
+                }
                 let updated = self
                     .store
                     .agents
@@ -1531,7 +1701,12 @@ impl Broker {
                 }
                 let jobs = self.schedule(&agent.id)?;
                 self.save()?;
-                Ok((public_agent(&self.store.agents[&agent.id]), jobs))
+                let updated = &self.store.agents[&agent.id];
+                let mut result = public_agent(updated);
+                if updated.harness == "agy" {
+                    result["readiness"] = readiness(updated, self.receiver_connections(updated));
+                }
+                Ok((result, jobs))
             }
             _ => bail!("unknown relay method for protocol {PROTOCOL_VERSION}"),
         }
@@ -1539,7 +1714,7 @@ impl Broker {
 
     fn agent_metadata(&self, agent: &Agent, context: Option<&PaneContext>) -> Value {
         let mut result = metadata(agent, context);
-        result["readiness"] = readiness(agent, self.subscribers.get(&agent.id).map_or(0, Vec::len));
+        result["readiness"] = readiness(agent, self.receiver_connections(agent));
         result
     }
 
@@ -1550,7 +1725,15 @@ impl Broker {
             .subscribers
             .iter()
             .filter(|(_, subscribers)| !subscribers.is_empty())
-            .map(|(id, subscribers)| (id, subscribers.len()))
+            .map(|(id, _)| {
+                (
+                    id,
+                    self.store
+                        .agents
+                        .get(id)
+                        .map_or(0, |agent| self.receiver_connections(agent)),
+                )
+            })
             .collect();
         json!({"protocol":PROTOCOL_VERSION,"connections":connections,"storage_error":self.storage_failure})
     }
@@ -1676,11 +1859,16 @@ fn readiness(agent: &Agent, connections: usize) -> Value {
         && bound
         && agent.queue_endpoint.is_some()
         && agent.codex_program.is_some();
-    let receiver = active && receiver_alive(&agent.receiver);
+    let receiver = active
+        && receiver_alive(&agent.receiver)
+        && (agent.harness != "agy"
+            || (bound
+                && agent.receiver.session_id == agent.session_id
+                && matches!(agent.receiver.kind, Some(ReceiverKind::AgyNative))));
     json!({"registered":true,"launch_alive":active,"native_bound":bound,
         "receiver_alive":receiver,
         "notification_connection":connections > 0,"notification_connections":connections,
-        "future_turn_transport":if agent.harness == "codex" {"private_codex_queue"} else if agent.harness == "omp" {"mcp_notification"} else {"claude_channel"},
+        "future_turn_transport":if agent.harness == "codex" {"private_codex_queue"} else if agent.harness == "omp" {"mcp_notification"} else if agent.harness == "agy" {"private_agy_when_idle"} else {"claude_channel"},
         "can_notify":active && agent.accepting && receiver && (native_queue || connections > 0)
             && (agent.notification.is_some() || agent.generation < u64::MAX),
         "busy_delivery":"future_turn_only","active_turn_interruption":false,
@@ -1926,6 +2114,48 @@ fn string<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
         .get(field)
         .and_then(Value::as_str)
         .with_context(|| format!("missing string field {field}"))
+}
+
+pub(crate) fn validate_agy_session(session: &str) -> Result<()> {
+    if session.len() != 36
+        || !session.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            }
+        })
+        || session == "00000000-0000-0000-0000-000000000000"
+    {
+        bail!("Antigravity root conversation must be a canonical UUID");
+    }
+    Ok(())
+}
+
+fn agy_receiver_binding(agent: &Agent, params: &Value) -> Result<SubscriberBinding> {
+    if agent.harness != "agy" || !matches!(agent.receiver.kind, Some(ReceiverKind::AgyNative)) {
+        bail!("launch has no native Antigravity receiver");
+    }
+    let session_id = string(params, "session_id")?;
+    validate_agy_session(session_id)?;
+    let pid: u32 = params["pid"]
+        .as_u64()
+        .context("missing receiver pid")?
+        .try_into()?;
+    let process_start = process_identity(pid)?;
+    if agent.session_id.as_deref() != Some(session_id)
+        || agent.receiver.session_id.as_deref() != Some(session_id)
+        || agent.receiver.pid != Some(pid)
+        || agent.receiver.process_start != process_start
+        || !receiver_alive(&agent.receiver)
+    {
+        bail!("native Antigravity receiver binding is stale or inactive");
+    }
+    Ok(SubscriberBinding {
+        session_id: session_id.to_owned(),
+        pid,
+        process_start,
+    })
 }
 
 fn scope(params: &Value) -> Result<Scope> {
@@ -2252,10 +2482,24 @@ fn dispatch_jobs(broker: &Arc<Mutex<Broker>>, jobs: Vec<WakeJob>) -> Result<()> 
                 .context("missing notification claim")?;
             notification.dispatched = true;
             let codex = (agent.harness == "codex").then(|| agent.clone());
+            let binding = (agent.harness == "agy").then(|| SubscriberBinding {
+                session_id: agent.session_id.clone().unwrap_or_default(),
+                pid: agent.receiver.pid.unwrap_or_default(),
+                process_start: agent.receiver.process_start.clone(),
+            });
             state.save()?;
             if codex.is_none() {
                 let event = message_event(&job);
                 let subscribers = state.subscribers.entry(job.recipient.clone()).or_default();
+                subscribers.retain(|subscriber| match (&binding, &subscriber.binding) {
+                    (Some(current), Some(subscribed)) => {
+                        current.session_id == subscribed.session_id
+                            && current.pid == subscribed.pid
+                            && current.process_start == subscribed.process_start
+                    }
+                    (None, None) => true,
+                    _ => false,
+                });
                 // MCP restarts can briefly overlap. One launch gets one wake,
                 // not one prompt per connected observer; prefer the newest.
                 while let Some(subscriber) = subscribers.last() {
@@ -2304,6 +2548,8 @@ fn serve_subscription(
 ) -> Result<()> {
     let (sender, receiver) = mpsc::channel();
     let subscriber_id = random_hex(16)?;
+    let mut binding: Option<SubscriberBinding> = None;
+    let mut connected = false;
     let result = (|| -> Result<()> {
         let jobs = {
             let mut state = broker.lock();
@@ -2312,7 +2558,13 @@ fn serve_subscription(
                     bail!("incompatible relay protocol; expected {PROTOCOL_VERSION}");
                 }
                 state.maintain(now())?;
-                state.authenticate(&request)?;
+                let agent = state.authenticate(&request)?;
+                if agent.harness == "agy" {
+                    if request.params["kind"] != "agy_native" {
+                        bail!("Antigravity subscriptions require a native receiver");
+                    }
+                    binding = Some(agy_receiver_binding(&agent, &request.params)?);
+                }
                 if state
                     .subscribers
                     .get(&request.agent_id)
@@ -2334,7 +2586,9 @@ fn serve_subscription(
                 .push(Subscriber {
                     id: subscriber_id.clone(),
                     sender: sender.clone(),
+                    binding: binding.clone(),
                 });
+            connected = true;
             let mut jobs = state.schedule(&request.agent_id)?;
             if jobs.is_empty()
                 && let Some(job) = state.pending_job(&request.agent_id)
@@ -2354,7 +2608,10 @@ fn serve_subscription(
             let _ = sender.send(json!({"event":"disconnected"}));
         });
         for event in receiver {
-            if event["event"] == "disconnected" {
+            if matches!(
+                event["event"].as_str(),
+                Some("disconnected" | "invalidated")
+            ) {
                 break;
             }
             let job = event
@@ -2370,6 +2627,9 @@ fn serve_subscription(
                 });
             if let Some(job) = &job {
                 let state = broker.lock();
+                if let Some(error) = &state.storage_failure {
+                    bail!("{error}");
+                }
                 let current = state
                     .store
                     .agents
@@ -2384,14 +2644,18 @@ fn serve_subscription(
             }
             let sent = write_frame(&mut stream, &event);
             if let Some(job) = job {
-                let outcome = if sent.is_ok() {
-                    WakeOutcome::Accepted
-                } else {
-                    WakeOutcome::Unknown(
-                        "receiver write failed; notification acceptance is unknown".to_owned(),
-                    )
-                };
-                broker.lock().outcome(&job, outcome)?;
+                // Native AGY queue acceptance is confirmed by the authenticated
+                // receiver callback, never by writing its opaque pointer.
+                if sent.is_err() {
+                    broker.lock().outcome(
+                        &job,
+                        WakeOutcome::Unknown(
+                            "receiver write failed; notification acceptance is unknown".to_owned(),
+                        ),
+                    )?;
+                } else if binding.is_none() {
+                    broker.lock().outcome(&job, WakeOutcome::Accepted)?;
+                }
             }
             sent?;
         }
@@ -2401,6 +2665,30 @@ fn serve_subscription(
     let mut state = broker.lock();
     if let Some(subscribers) = state.subscribers.get_mut(&request.agent_id) {
         subscribers.retain(|s| s.id != subscriber_id);
+    }
+    if let Some(binding) = &binding
+        && connected
+        && state.storage_failure.is_none()
+        && let Some(job) = state
+            .store
+            .agents
+            .get(&request.agent_id)
+            .filter(|agent| binding.matches(agent) && state.receiver_connections(agent) == 0)
+            .and_then(|agent| agent.notification.as_ref())
+            .filter(|notification| notification.dispatched && notification.state == "pending")
+            .map(|notification| WakeJob {
+                recipient: request.agent_id.clone(),
+                id: notification.id.clone(),
+                generation: notification.generation,
+            })
+    {
+        state.outcome(
+            &job,
+            WakeOutcome::Unknown(
+                "native Antigravity receiver disconnected before queue acceptance was confirmed"
+                    .to_owned(),
+            ),
+        )?;
     }
     result
 }
@@ -2481,10 +2769,33 @@ fn stdout_frame(output: &Arc<Mutex<io::Stdout>>, value: &Value) -> Result<()> {
     write_frame(&mut *writer, value)
 }
 
+fn agy_root_metadata(message: &Value) -> Result<&str> {
+    let root = message["params"]["_meta"]["antigravity.google/root_conversation_id"]
+        .as_str().context("Antigravity tools/call requires root_conversation_id metadata; no conversation is guessed")?;
+    validate_agy_session(root)?;
+    Ok(root)
+}
+
+fn agy_bootstrap_instructions(program: &Path) -> Result<String> {
+    let program = program
+        .to_str()
+        .context("Bkpr receiver executable path is not UTF-8")?;
+    let command = format!("{} agy-receiver", crate::claude::shell_quote(program));
+    Ok(format!(
+        "Antigravity: first call Bkpr whoami to bind this launch from authoritative root-conversation tool metadata. If Bkpr native receiver readiness is false, bootstrap once for the current root conversation using Antigravity's native run_command tool with CommandLine={}, IsDaemon:true. Do not type this command or peer text into a terminal, do not use agentapi send-message, and do not start another receiver while one is ready. The native child inherits the current conversation's local language-server credentials; MCP does not. Receiver readiness is not semantic harness status.",
+        serde_json::to_string(&command)?,
+    ))
+}
+
 pub(crate) fn mcp() -> Result<()> {
     // Authenticate before advertising tools. Never register an identity per MCP restart.
-    request("whoami", json!({}))?;
-    let harness = env::var("BKPR_RELAY_HARNESS").unwrap_or_default();
+    let identity = request("whoami", json!({}))?;
+    let harness = identity["harness"].as_str().unwrap_or_default().to_owned();
+    let bootstrap = if harness == "agy" {
+        Some(agy_bootstrap_instructions(&env::current_exe()?)?)
+    } else {
+        None
+    };
     let output = Arc::new(Mutex::new(io::stdout()));
     let mut input = io::stdin().lock();
     let mut subscribed = false;
@@ -2502,7 +2813,7 @@ pub(crate) fn mcp() -> Result<()> {
                     .unwrap_or("2025-11-25"),
                 "capabilities":{"tools":{},"resources":{}},
                 "serverInfo":{"name":"bkpr","version":env!("CARGO_PKG_VERSION")},
-                "instructions":format!("{} {}", MCP_INSTRUCTIONS, crate::control::instructions())
+                "instructions":format!("{} {} {}", MCP_INSTRUCTIONS, crate::control::instructions(), bootstrap.as_deref().unwrap_or_default())
             })),
             "notifications/initialized" => {
                 if !subscribed && harness == "omp" {
@@ -2533,7 +2844,18 @@ pub(crate) fn mcp() -> Result<()> {
             "resources/read" => {
                 resource_read(message["params"]["uri"].as_str().unwrap_or_default())
             }
-            "tools/call" => {
+            "tools/call" => (|| -> Result<Value> {
+                let receiver_ready = if harness == "agy" {
+                    let bound = match agy_root_metadata(&message)
+                        .and_then(|session| request("bind_session", json!({"session_id":session})))
+                    {
+                        Ok(bound) => bound,
+                        Err(error) => return tool_result(Err(error)),
+                    };
+                    bound["readiness"]["can_notify"] == true
+                } else {
+                    true
+                };
                 let name = message["params"]["name"].as_str().unwrap_or_default();
                 let broker_method = match name {
                     "whoami" => Some("whoami"),
@@ -2545,7 +2867,7 @@ pub(crate) fn mcp() -> Result<()> {
                     "set_title" => Some("set_title"),
                     _ => None,
                 };
-                if matches!(name, "control" | "terminal_input") {
+                let mut result = if matches!(name, "control" | "terminal_input") {
                     control_tool_result(
                         control_call(
                             message["params"]
@@ -2573,8 +2895,13 @@ pub(crate) fn mcp() -> Result<()> {
                     )
                 } else {
                     Err(anyhow::anyhow!("unknown tool"))
+                }?;
+                if !receiver_ready && let Some(instructions) = &bootstrap {
+                    result["content"].as_array_mut().context("invalid MCP tool content")?
+                        .push(json!({"type":"text","text":format!("Bkpr native receiver is not ready. {instructions}")}));
                 }
-            }
+                Ok(result)
+            })(),
             _ if id.is_none() => continue,
             _ => Err(anyhow::anyhow!("method not found")),
         };

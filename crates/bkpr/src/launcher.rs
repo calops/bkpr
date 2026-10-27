@@ -482,20 +482,14 @@ fn run_native(options: &Options, intent: Intent, program: &Path, zellij: &Path) 
                 .context("terminal needs at least two columns for a sidebar and terminal pane")?;
         let bin = runtime.join("bin");
         private_directory(&bin)?;
-        // Retired launchers can survive a previous session in this owned directory.
-        for name in ["agy", "antigravity"] {
-            match fs::remove_file(bin.join(name)) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error).context("remove retired session launcher"),
-            }
-        }
         let wrapper = bin.join("claude");
         private_file(&wrapper, crate::claude::wrapper(program, &bin)?.as_bytes())?;
         fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700))?;
         for (name, wrapper) in [
             ("omp", crate::omp::wrapper(program, &bin)?),
             ("codex", crate::codex::wrapper(program, &bin)?),
+            ("agy", crate::agy::wrapper(program, &bin)?),
+            ("antigravity", crate::agy::wrapper(program, &bin)?),
         ] {
             let path = bin.join(name);
             private_file(&path, wrapper.as_bytes())?;
