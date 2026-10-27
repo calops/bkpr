@@ -2,6 +2,7 @@ mod animation;
 mod finder;
 mod finder_entry;
 mod focused;
+mod graphics;
 mod keyguide;
 mod native;
 mod overlay;
@@ -2046,6 +2047,7 @@ impl Frontend {
             self.render_cursor = Some(None);
             show_cursor(None);
         }
+        write!(output, "{}", self.theme.begin_graphics_frame()).expect("clearing icon placements");
         for row in 0..rows {
             let line: Cow<'_, str> = if row >= tree_end {
                 Cow::Borrowed(
@@ -3315,6 +3317,7 @@ mod tests {
             foreground: Some([32, 32, 32]),
             background: Some([248, 248, 248]),
             ansi: [None; 16],
+            ..Default::default()
         };
         let event = Event::CustomMessage(
             "bkpr_terminal_colors".to_owned(),

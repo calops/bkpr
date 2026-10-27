@@ -11,8 +11,10 @@ name = "bkpr-zellij"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22"
 bkpr = { path = "../bkpr" }
 nucleo-matcher = "0.3"
+resvg = { version = "0.47", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 unicode-segmentation = "1"

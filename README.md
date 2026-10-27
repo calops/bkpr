@@ -137,7 +137,7 @@ A left click activates a workspace or terminal without moving keyboard focus int
 
 Moving or closing details repaints only the exposed terminal cells. Moving the pointer within an unchanged popup does not redraw it; refresh-button hover styling still updates. Cursorless sidebar controls and passive cards preserve the last input-cursor position, including hidden cursors, so terminal cursor trails do not jump between paint regions. Focused overlays retain their own input cursors.
 
-The first sidebar line centers the beekeeper icon and project name. Workspaces and terminals use dot markers; recognized harnesses keep their separate identity icons beside their names. Item rows keep a left gutter for the hover outline and use the rightmost sidebar column.
+The first sidebar line centers the beekeeper icon and project name. On terminals with confirmed Kitty graphics support, workspaces use hive icons in the terminal's foreground color, and project markers in the sidebar and pane finder are transparent bee icons in the project's existing color. Each icon occupies two columns and one row and stays sharp when the terminal font size changes. Other terminals retain dot markers. Recognized harnesses keep their separate identity icons beside their names. Item rows keep a left gutter for the hover outline and use the rightmost sidebar column.
 
 Each sidebar-created terminal opens in its own native tab, grouped under its workspace. Stock splits remain available. Drag the separator to resize the sidebar, or use Zellij's resize mode. New sidebar-created tabs inherit the current width, folds and scroll position while their live state arrives.
 
