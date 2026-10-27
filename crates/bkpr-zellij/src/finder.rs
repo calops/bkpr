@@ -468,13 +468,13 @@ impl Finder {
             self.layout.border,
             &title,
             theme,
-            &theme.bright,
+            &theme.accents[6],
         );
         if self.layout.border {
             paint(
                 0,
                 rows - 1,
-                &format!("{}{}", theme.bright, self.layout.bottom_line(columns)),
+                &format!("{}{}", theme.accents[6], self.layout.bottom_line(columns)),
                 theme,
             );
         }
@@ -490,12 +490,12 @@ impl Finder {
             paint(
                 separator.x,
                 separator.y,
-                &format!("{}{}", theme.bright, self.layout.rule_line(separator)),
+                &format!("{}{}", theme.accents[6], self.layout.rule_line(separator)),
                 theme,
             );
         }
         if let Some(separator) = self.layout.vertical {
-            let line = format!("{}│", theme.bright);
+            let line = format!("{}│", theme.accents[6]);
             for row in separator.y..separator.y + separator.height {
                 paint(separator.x, row, &line, theme);
             }
@@ -504,7 +504,7 @@ impl Finder {
             paint(
                 separator.x,
                 separator.y,
-                &format!("{}{}", theme.bright, self.layout.rule_line(separator)),
+                &format!("{}{}", theme.accents[6], self.layout.rule_line(separator)),
                 theme,
             );
         }

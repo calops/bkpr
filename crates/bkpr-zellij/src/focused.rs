@@ -693,11 +693,11 @@ impl Form {
             usize::from(rows >= 3 && columns >= 4)
         };
         let width = columns.saturating_sub(padding * 2);
-        let prefix = if width >= 4 { 2 } else { 0 };
+        let prefix = if width >= 5 { 2 } else { 0 };
         FormLayout {
             padding,
             input_x: padding + prefix,
-            input_width: width.saturating_sub(prefix),
+            input_width: width.saturating_sub(prefix * 2),
             expanded: rows >= 8 && (!matches!(kind, Kind::Workspace) || rows >= 10),
         }
     }
