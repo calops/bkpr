@@ -25,6 +25,7 @@ const PERMISSIONS: &[PermissionType] = &[
     PermissionType::RunCommands,
     PermissionType::MessageAndLaunchOtherPlugins,
     PermissionType::ReadCliPipes,
+    PermissionType::Reconfigure,
 ];
 
 const CONTROL_PIPE: &str = "bkpr-controls";
@@ -82,6 +83,18 @@ struct ModeState {
 }
 
 #[derive(serde::Deserialize)]
+struct FrameModeUpdate {
+    mode: InputMode,
+    base_mode: Option<InputMode>,
+    style: Option<FrameStyle>,
+}
+
+#[derive(serde::Deserialize)]
+struct FrameStyle {
+    rounded_corners: bool,
+}
+
+#[derive(serde::Deserialize)]
 struct NativeStateIdentity {
     client_id: u16,
 }
@@ -116,6 +129,7 @@ struct Frontend {
     // Explicit keyboard control owns selection; pointer interaction does not own focus.
     local_selection: bool,
     keyboard_control: bool,
+    fancy_borders_disabled: bool,
     control_has_focus: bool,
     control_terminal: Option<u32>,
     overlay: overlay::Overlay,
@@ -373,8 +387,15 @@ impl Frontend {
     }
 
     fn mode_message(&mut self, payload: &str) -> bool {
-        let Ok(mode) = serde_json::from_str::<ModeState>(payload) else {
+        let Ok(update) = serde_json::from_str::<FrameModeUpdate>(payload) else {
             return false;
+        };
+        if let Some(style) = update.style {
+            self.fancy_borders_disabled = !style.rounded_corners;
+        }
+        let mode = ModeState {
+            mode: update.mode,
+            base_mode: update.base_mode,
         };
         let previous = self.guide_mode();
         let changed = self.mode != Some(mode);
@@ -710,6 +731,16 @@ impl Frontend {
             return true;
         }
         match message.payload.as_deref() {
+            Some("toggle-borders") => {
+                self.fancy_borders_disabled = !self.fancy_borders_disabled;
+                reconfigure(
+                    format!(
+                        "ui {{\n pane_frames {{\n rounded_corners {}\n }}\n}}\n",
+                        !self.fancy_borders_disabled,
+                    ),
+                    false,
+                );
+            }
             Some("toggle") if !self.keyboard_control => self.enter_control(),
             Some("toggle" | "leave") => {
                 self.leave_control(true);

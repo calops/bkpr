@@ -928,6 +928,9 @@ themes {
     }
 }
 keybinds {
+    shared {
+        bind "Alt Shift b" { MessagePlugin { name "bkpr-controls"; payload "toggle-borders"; }; }
+    }
     locked {
         bind "Ctrl Space" { MessagePlugin { name "bkpr-controls"; payload "toggle"; }; }
     }

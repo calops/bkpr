@@ -149,6 +149,7 @@ fn native_hint(actions: &[Action], mode: InputMode, context: Context) -> Option<
                 && plugin_id.is_none() =>
             {
                 match payload.as_deref() {
+                    Some("toggle-borders") => ("fancy borders", 40),
                     Some("toggle") => (
                         if application
                             || matches!(context, Context::Finder | Context::Create { .. })
