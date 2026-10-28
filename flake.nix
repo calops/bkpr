@@ -145,28 +145,40 @@
         let
           pkgs = pkgsFor system;
           zellij = bkpr-zellij.packages.${system}.zellij;
+          mkDevShell =
+            localRuntime:
+            pkgs.mkShell (
+              {
+                packages = [
+                  (toolchainFor pkgs)
+                  pkgs.just
+                  pkgs.git
+                  pkgs.gh
+                  pkgs.pkg-config
+                  (pkgs.python3.withPackages (ps: [ ps.pyte ]))
+                ]
+                ++ pkgs.lib.optionals (!localRuntime) [ zellij ];
+                buildInputs = [
+                  pkgs.openssl
+                  pkgs.curl
+                ];
+                shellHook = ''
+                  export BKPR_PLUGIN="$PWD/target/wasm32-wasip1/debug/bkpr-zellij.wasm"
+                ''
+                + pkgs.lib.optionalString localRuntime ''
+                  export BKPR_ZELLIJ_CHECKOUT="''${BKPR_ZELLIJ_CHECKOUT:-../bkpr-zellij}"
+                  unset BKPR_ZELLIJ BKPR_ZELLIJ_VENDOR
+                '';
+              }
+              // pkgs.lib.optionalAttrs (!localRuntime) {
+                BKPR_ZELLIJ = "${zellij}/bin/zellij";
+                BKPR_ZELLIJ_VENDOR = bkpr-zellij.packages.${system}.cargo-vendor;
+              }
+            );
         in
         {
-          default = pkgs.mkShell {
-            packages = [
-              (toolchainFor pkgs)
-              zellij
-              pkgs.just
-              pkgs.git
-              pkgs.gh
-              pkgs.pkg-config
-              (pkgs.python3.withPackages (ps: [ ps.pyte ]))
-            ];
-            buildInputs = [
-              pkgs.openssl
-              pkgs.curl
-            ];
-            BKPR_ZELLIJ = "${zellij}/bin/zellij";
-            BKPR_ZELLIJ_VENDOR = bkpr-zellij.packages.${system}.cargo-vendor;
-            shellHook = ''
-              export BKPR_PLUGIN="$PWD/target/wasm32-wasip1/debug/bkpr-zellij.wasm"
-            '';
-          };
+          default = mkDevShell false;
+          local = mkDevShell true;
         }
       );
 

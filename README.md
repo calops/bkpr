@@ -387,7 +387,25 @@ just run --session dev
 
 `just build` builds the debug launcher and WASI plugin together. `just run` performs that build before launching and selects the plugin from the same Cargo target directory, rather than reusing an unrelated `BKPR_PLUGIN` override. It forwards Bkpr arguments unchanged, including quoted session names and `--zellij` / `--plugin` overrides. `just` lists the available commands. Plain `cargo run` still works, but builds only the launcher; rebuild the WASI plugin separately when using it.
 
-The devshell supplies `just` and the pinned fork runtime. Retain `target/` for incremental builds; do not use `nix build` for the edit/run loop. `CARGO_TARGET_DIR` is respected for both builds and plugin selection. When changing Zellij itself, use the fork's devshell and Cargo, then run `just run --zellij ../bkpr-zellij/target/debug/zellij`. Start a fresh session to use native changes; existing servers keep their original code.
+The default devshell supplies `just` and the pinned fork runtime. For native work,
+enter the local-runtime shell instead:
+
+```sh
+nix develop .#local
+just run --session native-dev
+```
+
+This shell does not build or install the pinned Zellij package. `just run` builds
+the sibling `../bkpr-zellij` checkout through its own devshell and uses its debug
+binary, retaining that checkout's Rust toolchain, `target/` and Cargo cache.
+Set `BKPR_ZELLIJ_CHECKOUT` to use another checkout. `just build-native` builds only
+that runtime. Start a fresh session to use native changes; existing servers keep
+their original code.
+
+Retain `target/` for incremental builds; do not use `nix build` for the edit/run
+loop. `CARGO_TARGET_DIR` applies to Bkpr's launcher/plugin; the sibling runtime
+uses its own existing `target/`. Explicit `--zellij` and `--plugin` arguments
+continue to override the development defaults.
 
 ```sh
 # In the devshell:
