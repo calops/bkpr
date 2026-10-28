@@ -1568,6 +1568,7 @@ impl Frontend {
                     self.popup_cache.len() - 1
                 });
         let height = self.tree_height();
+        let mut attachment = None;
         let tooltip = if self.visible && self.modal.is_none() && !self.focused.is_open() {
             self.popup_item
                 .as_ref()
@@ -1610,12 +1611,30 @@ impl Frontend {
                         overlay::geometry(sidebar, self.columns, tab, top..=bottom, content)?;
                     let placement =
                         Self::constrain_tooltip_to_guide(self.keyguide.as_ref(), placement)?;
+                    let first = (*band.start()).max(self.scroll);
+                    let last = (*band.end()).min(self.scroll + height - 1);
+                    let guide_first = first.saturating_sub(1).max(self.scroll);
+                    let guide_last = (last + 1)
+                        .min(self.scroll + height - 1)
+                        .min(self.tree_cache.len() - 1);
+                    attachment = Some(overlay::SurfaceAttachment {
+                        x: sidebar.pane_content_x,
+                        y: sidebar.pane_content_y + 2 + first - self.scroll,
+                        columns: self.columns,
+                        rows: last - first + 1,
+                        guide_y: sidebar.pane_content_y + 2 + guide_first - self.scroll,
+                        guide_columns: self.tree_cache[guide_first..=guide_last]
+                            .iter()
+                            .map(|row| row.guide_columns(self.columns))
+                            .collect(),
+                    });
                     Some((content, placement))
                 })
         } else {
             None
         };
         let previous_revision = self.tooltip.pending.as_ref().map(|state| state.revision);
+        self.tooltip.set_attachment(attachment);
         self.tooltip.update(self.id, &self.configuration, tooltip);
         let revision = self
             .tooltip
