@@ -67,6 +67,7 @@ struct CachedKeyGuide {
     expanded_columns: usize,
     expanded_rows: usize,
     reserved_rows: usize,
+    placement_anchor: Option<FloatingPaneCoordinates>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -502,12 +503,8 @@ impl Frontend {
         changed || leave_control
     }
 
-    fn guide_space(&self) -> Option<GuideSpace> {
-        if !self.granted
-            || !self.visible
-            || self.guide_mode()? == InputMode::Locked
-            || self.focused.is_open()
-        {
+    fn guide_anchor(&self) -> Option<(&PaneInfo, &TabInfo)> {
+        if !self.granted || !self.visible {
             return None;
         }
         let (position, sidebar) = self.manifest.panes.iter().find_map(|(position, panes)| {
@@ -520,6 +517,14 @@ impl Frontend {
             .tabs
             .iter()
             .find(|tab| tab.position == position && tab.active)?;
+        Some((sidebar, tab))
+    }
+
+    fn guide_space(&self) -> Option<GuideSpace> {
+        if self.guide_mode()? == InputMode::Locked || self.focused.is_open() {
+            return None;
+        }
+        let (sidebar, tab) = self.guide_anchor()?;
         let x = sidebar.pane_content_x.saturating_add(
             if matches!(self.keyguide_context(), keyguide::Context::Sidebar { .. }) {
                 self.columns
@@ -539,9 +544,24 @@ impl Frontend {
         })
     }
 
+    fn inline_guide_coordinates(&self, height: usize) -> Option<FloatingPaneCoordinates> {
+        if height == 0 || height > self.rows || self.columns == 0 {
+            return None;
+        }
+        let (sidebar, _) = self.guide_anchor()?;
+        Some(
+            FloatingPaneCoordinates::default()
+                .with_x_fixed(sidebar.pane_content_x)
+                .with_y_fixed(sidebar.pane_content_y + self.rows - height)
+                .with_width_fixed(self.columns)
+                .with_height_fixed(height),
+        )
+    }
+
     fn refresh_keyguide(&mut self) -> bool {
         let context = self.keyguide_context();
         let space = self.guide_space();
+        let placement_anchor = self.inline_guide_coordinates(1);
         let available = self.rows.saturating_sub(2);
         // Leave real tree content above the guide even on short terminals.
         let mut content_rows = available.div_ceil(2).min(4);
@@ -560,6 +580,7 @@ impl Frontend {
                     && cached.max_rows == max_rows
                     && cached.space == space
                     && cached.overlay_ready == self.guide_popup.ready_for_display()
+                    && cached.placement_anchor == placement_anchor
             })
         {
             return false;
@@ -586,7 +607,8 @@ impl Frontend {
         let expanded_columns = expanded.as_ref().map_or(0, |(_, guide)| guide.columns);
         let expanded_x = expanded.as_ref().map_or(0, |(space, _)| space.x);
         let expanded_rows = expanded.as_ref().map_or(0, |(_, guide)| guide.lines.len());
-        let (lines, reserved_rows) = if let Some((space, guide)) = expanded {
+        let is_expanded = expanded.is_some();
+        let (card_lines, coordinates, reserved_rows) = if let Some((space, guide)) = expanded {
             let height = guide.lines.len();
             let coordinates = FloatingPaneCoordinates {
                 pinned: Some(true),
@@ -597,26 +619,42 @@ impl Frontend {
                     .with_width_fixed(guide.columns)
                     .with_height_fixed(height)
             };
-            self.guide_popup.update(
-                self.id,
-                &self.configuration,
-                Some((&guide.lines, coordinates)),
-            );
-            if matches!(context, keyguide::Context::Sidebar { .. }) {
-                (Vec::new(), 0)
-            } else if self.guide_popup.ready_for_display() {
-                (Vec::new(), height)
+            let reserved = if matches!(context, keyguide::Context::Sidebar { .. }) {
+                0
             } else {
-                (
-                    keyguide::render(mode, context, self.columns, height, &self.theme),
-                    height,
-                )
-            }
+                height
+            };
+            (guide.lines, Some(coordinates), reserved)
         } else {
-            self.guide_popup.update(self.id, &self.configuration, None);
             let lines = keyguide::render(mode, context, self.columns, max_rows, &self.theme);
             let height = lines.len();
-            (lines, height)
+            (lines, self.inline_guide_coordinates(height), height)
+        };
+        // Width selects a placement, not a renderer. Every card uses the same
+        // passive surface host; inline text is only its readiness fallback.
+        let hosted = coordinates.is_some();
+        let accent = if self.keyboard_control {
+            Some(4) // Terminal blue distinguishes sidebar control from native modes.
+        } else if self
+            .guide_mode()
+            .is_some_and(|mode| mode != InputMode::Locked)
+        {
+            Some(3) // Terminal yellow retains the native unlocked warning.
+        } else {
+            None
+        };
+        self.guide_popup.set_accent(accent);
+        self.guide_popup.update(
+            self.id,
+            &self.configuration,
+            coordinates.map(|coordinates| (&card_lines[..], coordinates)),
+        );
+        let lines = if hosted && self.guide_popup.ready_for_display() || reserved_rows == 0 {
+            Vec::new()
+        } else if is_expanded {
+            keyguide::render(mode, context, self.columns, reserved_rows, &self.theme)
+        } else {
+            card_lines
         };
         let height_changed = old_height != reserved_rows;
         self.keyguide = Some(CachedKeyGuide {
@@ -630,6 +668,7 @@ impl Frontend {
             expanded_columns,
             expanded_rows,
             reserved_rows,
+            placement_anchor,
         });
         self.keyguide_dirty = false;
         height_changed
@@ -1257,7 +1296,9 @@ impl Frontend {
     }
 
     fn pane_update(&mut self, manifest: PaneManifest) {
+        let geometry = self.sidebar_geometry();
         self.manifest = manifest;
+        self.keyguide_dirty |= geometry != self.sidebar_geometry();
         self.synchronize_focus();
         self.refresh_tooltip();
     }
@@ -4166,6 +4207,7 @@ mod tests {
             expanded_columns: 64,
             expanded_rows: 4,
             reserved_rows: 4,
+            placement_anchor: None,
         });
         let tree_height = frontend.tree_height();
         let coordinates = FloatingPaneCoordinates::default()
