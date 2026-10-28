@@ -21,6 +21,21 @@ const MAX_GUIDE_PAYLOAD: usize = 128 * 1024;
 const MAX_GUIDE_ROWS: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfacePresentation {
+    version: u8,
+    pub accent: Option<u8>,
+}
+
+impl Default for SurfacePresentation {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            accent: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuideReady {
     pub id: u32,
     pub instance: String,
@@ -37,6 +52,8 @@ struct GuideFrame {
     closed: bool,
     lines: Vec<String>,
     coordinates: FloatingPaneCoordinates,
+    #[serde(default)]
+    presentation: SurfacePresentation,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -360,6 +377,7 @@ pub struct GuideController {
     ready_revision: u64,
     launched: bool,
     pending: Option<GuideFrame>,
+    presentation: SurfacePresentation,
 }
 
 impl Default for GuideController {
@@ -376,11 +394,19 @@ impl Default for GuideController {
             ready_revision: 0,
             launched: false,
             pending: None,
+            presentation: SurfacePresentation::default(),
         }
     }
 }
 
 impl GuideController {
+    pub fn set_accent(&mut self, accent: Option<u8>) {
+        self.presentation = SurfacePresentation {
+            accent,
+            ..SurfacePresentation::default()
+        };
+    }
+
     pub fn update(
         &mut self,
         owner: u32,
@@ -402,7 +428,10 @@ impl GuideController {
         coordinates.pinned = Some(true);
         coordinates.borderless = Some(true);
         if self.pending.as_ref().is_some_and(|old| {
-            old.visible == visible && old.lines == lines && old.coordinates == coordinates
+            old.visible == visible
+                && old.lines == lines
+                && old.coordinates == coordinates
+                && old.presentation == self.presentation
         }) {
             return;
         }
@@ -418,6 +447,7 @@ impl GuideController {
             closed: false,
             lines: lines.to_vec(),
             coordinates,
+            presentation: self.presentation.clone(),
         });
         if self.launched || visible {
             self.send(owner, configuration);
@@ -484,6 +514,7 @@ impl GuideController {
             };
             let mut config = configuration.clone();
             config.insert("role".to_owned(), "guide-overlay".to_owned());
+            config.insert("bkpr_surface".to_owned(), "raised-outline".to_owned());
             config.insert("owner".to_owned(), owner.to_string());
             config.insert("guide_instance".to_owned(), self.instance.clone());
             config.insert("guide_generation".to_owned(), self.generation.to_string());
@@ -2021,6 +2052,11 @@ impl GuideOverlay {
                 );
             }
         }
+        if let Ok(presentation) = serde_json::to_string(&state.presentation) {
+            // Frame-local presentation only; old hosts ignore this private OSC
+            // and retain the outlined fallback. It carries no harness status.
+            print!("\x1b]7502;{presentation}\x07");
+        }
         for row in 0..rows {
             let (line, cells) = state
                 .lines
@@ -2820,6 +2856,7 @@ mod tests {
             visible: true,
             closed: false,
             lines: vec!["\u{1b}[38;2;137;180;250mCtrl+p\u{1b}[0m Panes".to_owned()],
+            presentation: SurfacePresentation::default(),
             coordinates: FloatingPaneCoordinates::default()
                 .with_width_fixed(48)
                 .with_height_fixed(1),
