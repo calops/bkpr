@@ -38,6 +38,19 @@ pub struct TreeRow {
     pub kind: RowKind,
 }
 
+impl TreeRow {
+    /// Decorative prefix in rendered columns, including render_row's gutter.
+    pub fn guide_columns(&self, columns: usize) -> usize {
+        let lead = match self.kind {
+            RowKind::Spacer | RowKind::Workspace { .. } => return 0,
+            RowKind::Projects { .. } => 2,
+            RowKind::Pane { .. } => 3,
+            RowKind::Detail { .. } => 5,
+        };
+        (1 + lead).min(columns)
+    }
+}
+
 #[derive(Clone)]
 pub enum RowKind {
     Spacer,

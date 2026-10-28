@@ -24,6 +24,18 @@ const MAX_GUIDE_ROWS: usize = 256;
 pub struct SurfacePresentation {
     version: u8,
     pub accent: Option<u8>,
+    #[serde(default)]
+    pub attachment: Option<SurfaceAttachment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceAttachment {
+    pub x: usize,
+    pub y: usize,
+    pub columns: usize,
+    pub rows: usize,
+    pub guide_columns: Vec<usize>,
+    pub guide_y: usize,
 }
 
 impl Default for SurfacePresentation {
@@ -31,6 +43,7 @@ impl Default for SurfacePresentation {
         Self {
             version: 1,
             accent: None,
+            attachment: None,
         }
     }
 }
@@ -107,6 +120,8 @@ pub struct Tooltip {
     pub visible: bool,
     pub content: ui::PopupContent,
     pub coordinates: FloatingPaneCoordinates,
+    #[serde(default)]
+    pub attachment: Option<SurfaceAttachment>,
 }
 
 impl Tooltip {
@@ -133,6 +148,7 @@ pub struct Controller {
     close_pending: bool,
     instance: String,
     refresh_requested: Vec<CiRefreshTarget>,
+    attachment: Option<SurfaceAttachment>,
 }
 
 impl Default for Controller {
@@ -150,11 +166,15 @@ impl Default for Controller {
             close_pending: false,
             instance,
             refresh_requested: Vec::new(),
+            attachment: None,
         }
     }
 }
 
 impl Controller {
+    pub fn set_attachment(&mut self, attachment: Option<SurfaceAttachment>) {
+        self.attachment = attachment;
+    }
     pub fn update(
         &mut self,
         owner: u32,
@@ -169,11 +189,17 @@ impl Controller {
         if visible {
             self.close_pending = false;
         }
+        let attachment = if visible {
+            self.attachment.clone()
+        } else {
+            None
+        };
         if self.pending.as_ref().is_some_and(|old| {
             old.visible == visible
                 && old.client_id == self.client_id
                 && &old.content == content
                 && old.coordinates == coordinates
+                && old.attachment == attachment
         }) {
             return;
         }
@@ -192,6 +218,7 @@ impl Controller {
             visible,
             content: content.clone(),
             coordinates,
+            attachment,
         });
         if self.id.is_some() || visible {
             self.send(owner, configuration);
@@ -321,6 +348,7 @@ impl Controller {
             };
             let mut config = configuration.clone();
             config.insert("role".to_owned(), "overlay".to_owned());
+            config.insert("bkpr_surface".to_owned(), "raised-joined".to_owned());
             config.insert("owner".to_owned(), owner.to_string());
             config.insert("owner_client_id".to_owned(), self.client_id.to_string());
             config.insert("popup_instance".to_owned(), self.instance.clone());
@@ -1801,6 +1829,13 @@ impl Overlay {
         } else {
             String::new()
         };
+        let presentation = SurfacePresentation {
+            attachment: state.attachment.clone(),
+            ..SurfacePresentation::default()
+        };
+        if let Ok(presentation) = serde_json::to_string(&presentation) {
+            print!("\x1b]7502;{presentation}\x07");
+        }
         print!("{OSC8_CLOSE}");
         for row in 0..rows {
             let text = if row > 0 && row + 2 == rows {
@@ -2166,6 +2201,7 @@ mod tests {
                 .with_y_fixed(2)
                 .with_width_fixed(48)
                 .with_height_fixed(8),
+            attachment: None,
         }
     }
 
@@ -3118,6 +3154,7 @@ mod tests {
                             .with_y_fixed(0)
                             .with_width_fixed(columns)
                             .with_height_fixed(9),
+                        attachment: None,
                     }),
                     ..Overlay::default()
                 };
@@ -3316,6 +3353,7 @@ mod tests {
                     .with_y_fixed(0)
                     .with_width_fixed(16)
                     .with_height_fixed(5),
+                attachment: None,
             }),
             ..Overlay::default()
         };
