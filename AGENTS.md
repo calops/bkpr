@@ -63,6 +63,8 @@ The fork polls stable Zellij releases daily and opens `update/zellij-vX.Y.Z` PRs
 
 Normal Bkpr development is `nix develop`, then `just run --session dev`. The shell supplies `just` and the pinned native runtime; the recipe builds both debug components and selects the matching WASM, including with `CARGO_TARGET_DIR`. Plain `cargo run --locked -p bkpr` builds only the launcher, so the WASI plugin must be built separately. Use `--zellij ../bkpr-zellij/target/debug/zellij` to select an incremental native build explicitly; the argument is an executable path, not a checkout directory. Use incremental Cargo artifacts for tests and iteration, not `nix build`; reserve Nix builds for explicit packaging validation.
 
+For native iteration, `nix develop .#local` skips realization of the pinned runtime. In this shell, `just run --session native-dev` incrementally builds the sibling fork through its own devshell and selects its debug binary. It preserves that checkout's toolchain, `target/` and Cargo cache; `CARGO_TARGET_DIR` continues to apply to Bkpr's launcher/plugin. `BKPR_ZELLIJ_CHECKOUT` can select another native checkout. Prefer this entry point for interactive previews.
+
 For native changes, reuse the existing fork checkout beside Bkpr and work on a retained feature branch. Keep its `target/` across branches; additional worktrees must use that same directory via `CARGO_TARGET_DIR`. In the canonical checkout:
 
 ```sh
