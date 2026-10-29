@@ -1,6 +1,6 @@
 # Remote workspaces
 
-Status: proposed design, 2026-10-29. No remote-workspace implementation is claimed by this document.
+Status: superseded architecture alternative, 2026-10-29. The pane-first mux direction replaces this session/tab-owned Zellij integration proposal. Retained as research history, not the implementation contract. See the [architecture assessment](pane-first-mux/assessment.md) and [current plan](pane-first-mux/implementation-plan.md). No remote-workspace implementation is claimed by this document.
 
 Implementation plan: [remote-workspaces-plan.md](remote-workspaces-plan.md).
 
@@ -268,4 +268,4 @@ Use isolated native sessions and private HOME/XDG/runtime roots, no live session
 | R10 | Existing local sessions and legacy ordinary attachment remain usable. Current plugin permissions, per-client Locked startup, clipboard policy and recovery guarantees remain intact. |
 | R11 | Explicit remote-session creation presents real startup/permission prompts; approve, deny and cancel have correct outcomes. No grant is synthesized and no workspace/harness command runs before readiness. Discovery/reconnect never creates a session. |
 
-The spec is ready for implementation planning; native feasibility and wire constants remain proof obligations, not verified capabilities.
+These feasibility gates belong to the superseded Zellij-integration alternative. The pane-first assessment and implementation plan linked above define the current direction.
