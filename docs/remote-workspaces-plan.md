@@ -1,6 +1,6 @@
 # Remote workspaces implementation plan
 
-Status: proposed, 2026-10-29. This plans implementation; it does not authorize bypassing the feasibility gates or claim that any native feature exists.
+Status: superseded architecture alternative, 2026-10-29. Do not execute this Zellij-specific plan for the pane-first backend. Use the [current implementation plan](pane-first-mux/implementation-plan.md); this document is retained for the earlier proposal's research and compatibility findings.
 
 Specification: [remote-workspaces-design.md](remote-workspaces-design.md).
 
