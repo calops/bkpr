@@ -356,6 +356,7 @@ impl Controller {
             let mut config = configuration.clone();
             config.insert("role".to_owned(), "focused-overlay".to_owned());
             config.insert("dim_background".to_owned(), "true".to_owned());
+            config.insert("bkpr_surface".to_owned(), "raised-regions".to_owned());
             config.insert("owner".to_owned(), owner.to_string());
             config.insert("owner_client_id".to_owned(), self.client_id.to_string());
             // Stable across opens: exact URL/config identity prevents duplicate launches.
@@ -451,6 +452,9 @@ impl Kind {
 
 fn configuration_valid(configuration: &BTreeMap<String, String>) -> bool {
     if configuration.get("role").map(String::as_str) != Some("focused-overlay")
+        || configuration
+            .get("bkpr_surface")
+            .is_some_and(|value| value != "raised-regions")
         || configuration.get("dim_background").map(String::as_str) != Some("true")
         || configuration
             .get("owner")
@@ -471,6 +475,7 @@ fn configuration_valid(configuration: &BTreeMap<String, String>) -> bool {
         // Added by native message routing, not sidebar application configuration.
         "caller_cwd",
         "dim_background",
+        "bkpr_surface",
         "owner",
         "owner_client_id",
         "focused_instance",
@@ -550,9 +555,18 @@ impl Content {
         matches!(self, Self::Finder(finder) if finder.working_clock_active())
     }
 
-    fn prepare(&mut self, kind: &Kind, rows: usize, columns: usize) -> Option<(usize, usize)> {
+    fn prepare(
+        &mut self,
+        kind: &Kind,
+        rows: usize,
+        columns: usize,
+        fancy: bool,
+    ) -> Option<(usize, usize)> {
         match self {
-            Self::Finder(finder) => finder.prepare(rows, columns),
+            Self::Finder(finder) => {
+                finder.fancy = fancy;
+                finder.prepare(rows, columns)
+            }
             Self::Form(form) => form.cursor(kind, rows, columns),
         }
     }
@@ -564,10 +578,13 @@ impl Content {
         clock: usize,
         rows: usize,
         columns: usize,
+        fancy: bool,
     ) {
         match self {
-            Self::Finder(finder) => finder.render(&state.snapshot, theme, clock, rows, columns),
-            Self::Form(form) => form.render(state, theme, rows, columns),
+            Self::Finder(finder) => {
+                finder.render(&state.snapshot, theme, clock, rows, columns, fancy)
+            }
+            Self::Form(form) => form.render(state, theme, rows, columns, fancy),
         }
     }
 }
@@ -720,7 +737,7 @@ impl Form {
         ))
     }
 
-    fn render(&self, state: &State, theme: &ui::Theme, rows: usize, columns: usize) {
+    fn render(&self, state: &State, theme: &ui::Theme, rows: usize, columns: usize, fancy: bool) {
         let border = rows >= 3 && columns >= 4;
         let layout = Self::layout(&state.kind, rows, columns);
         let width = columns.saturating_sub(layout.padding * 2);
@@ -738,7 +755,22 @@ impl Form {
             } => " Rename pane ",
             Kind::Finder => return,
         };
-        frame(rows, columns, border, title, theme, accent);
+        if fancy {
+            raised_frame(
+                rows,
+                columns,
+                title,
+                theme,
+                match &state.kind {
+                    _ if state.error.is_some() => 1,
+                    Kind::Rename { .. } => 3,
+                    Kind::Workspace => 4,
+                    _ => 2,
+                },
+            );
+        } else {
+            frame(rows, columns, border, title, theme, accent);
+        }
         if rows == 0 || layout.input_width == 0 {
             return;
         }
@@ -832,6 +864,7 @@ pub(crate) fn frame(
     theme: &ui::Theme,
     border_style: &str,
 ) {
+    print!("{}", theme.begin_graphics_frame());
     let blank = " ".repeat(columns.saturating_sub(usize::from(border) * 2));
     let lines = [0, 1, rows.saturating_sub(1)].map(|row| {
         if border {
@@ -886,6 +919,37 @@ pub(crate) fn paint(x: usize, y: usize, text: &str, theme: &ui::Theme) {
         ui::RESET
     );
 }
+
+pub(crate) fn presentation(regions: Vec<overlay::SurfaceRegion>) {
+    let mut frame = overlay::SurfacePresentation::default();
+    frame.regions = regions;
+    if let Ok(payload) = serde_json::to_string(&frame) {
+        print!("\x1b]7502;{payload}\x07");
+    }
+}
+
+fn raised_frame(rows: usize, columns: usize, title: &str, theme: &ui::Theme, accent: u8) {
+    presentation(vec![overlay::SurfaceRegion {
+        x: 0,
+        y: 0,
+        columns,
+        rows,
+        accent: Some(accent),
+    }]);
+    // Content keeps the same rows and input coordinates as the ordinary form.
+    // Its formerly empty first interior row now holds the title.
+    frame(rows, columns, false, "", theme, "");
+    paint(
+        2,
+        1,
+        &format!(
+            "{}\x1b[1m{}",
+            theme.bright,
+            ui::truncate(title.trim(), columns.saturating_sub(6))
+        ),
+        theme,
+    );
+}
 #[derive(Default)]
 pub struct Host {
     client_id: ClientId,
@@ -912,6 +976,7 @@ pub struct Host {
     cursor: Option<Option<(usize, usize)>>,
     applied_coordinates: Option<FloatingPaneCoordinates>,
     shown: Option<bool>,
+    rounded: bool,
 }
 impl Host {
     pub fn set_terminal_colors(&mut self, colors: &crate::palette::TerminalColors) -> bool {
@@ -941,6 +1006,7 @@ impl Host {
         subscribe(&[
             EventType::PermissionRequestResult,
             EventType::CustomMessage,
+            EventType::ModeUpdate,
             EventType::PaneUpdate,
             EventType::PaneClosed,
             EventType::TabUpdate,
@@ -975,6 +1041,17 @@ impl Host {
             return false;
         }
         match event {
+            Event::ModeUpdate(info) => {
+                let rounded = info.style.rounded_corners;
+                return std::mem::replace(&mut self.rounded, rounded) != rounded;
+            }
+            Event::CustomMessage(name, payload) if name == "mode_info" => {
+                let rounded = serde_json::from_str::<serde_json::Value>(&payload)
+                    .ok()
+                    .and_then(|value| value.get("style")?.get("rounded_corners")?.as_bool())
+                    .unwrap_or(false);
+                return std::mem::replace(&mut self.rounded, rounded) != rounded;
+            }
             Event::Timer(_) => {
                 let active = self.working_clock_active();
                 return self.working_clock.tick(Instant::now(), active);
@@ -1341,7 +1418,16 @@ impl Host {
             );
             return;
         }
-        let cursor = self.content.prepare(&state.kind, rows, columns);
+        let fancy = self.rounded
+            && self.theme.raised_regions()
+            && columns >= 40
+            && rows
+                >= if matches!(state.kind, Kind::Finder) {
+                    14
+                } else {
+                    8
+                };
+        let cursor = self.content.prepare(&state.kind, rows, columns, fancy);
         self.set_cursor(cursor);
         let active = self.working_clock_active();
         self.working_clock.schedule(Instant::now(), active);
@@ -1352,13 +1438,16 @@ impl Host {
             self.callback(PRESENTED, None, false, None);
             self.presented = Some(revision);
         }
-        print!("{}", self.theme.begin_graphics_frame());
+        if !fancy {
+            presentation(vec![]);
+        }
         self.content.render(
             state,
             &self.theme,
             self.working_clock.frame(),
             rows,
             columns,
+            fancy,
         );
     }
 }
@@ -1912,6 +2001,7 @@ mod tests {
             ("owner_client_id".to_owned(), "1".to_owned()),
             ("focused_instance".to_owned(), "focused:test".to_owned()),
             ("dim_background".to_owned(), "true".to_owned()),
+            ("bkpr_surface".to_owned(), "raised-regions".to_owned()),
         ])
     }
 

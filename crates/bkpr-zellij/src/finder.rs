@@ -38,9 +38,73 @@ struct Layout {
     vertical: Option<Rect>,
     horizontal: Option<Rect>,
     border: bool,
+    cards: [Rect; 3],
 }
 
 impl Layout {
+    fn raised(columns: usize, rows: usize) -> Self {
+        let body = rows - 4;
+        let (list, preview) = if columns >= 84 {
+            let split = columns * 2 / 5;
+            (
+                Rect {
+                    x: 0,
+                    y: 4,
+                    width: split,
+                    height: body,
+                },
+                Rect {
+                    x: split,
+                    y: 4,
+                    width: columns - split,
+                    height: body,
+                },
+            )
+        } else {
+            let split = (body * 2 / 5).max(4);
+            (
+                Rect {
+                    x: 0,
+                    y: 4,
+                    width: columns,
+                    height: split,
+                },
+                Rect {
+                    x: 0,
+                    y: 4 + split,
+                    width: columns,
+                    height: body - split,
+                },
+            )
+        };
+        let inset = |rect: Rect| Rect {
+            x: rect.x + 2,
+            y: rect.y + 1,
+            width: rect.width - 4,
+            height: rect.height - 2,
+        };
+        Self {
+            input: Rect {
+                x: 2,
+                y: 2,
+                width: columns - 4,
+                height: 1,
+            },
+            list: inset(list),
+            preview: inset(preview),
+            cards: [
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: columns,
+                    height: 4,
+                },
+                list,
+                preview,
+            ],
+            ..Default::default()
+        }
+    }
     fn new(columns: usize, rows: usize, compact: Compact) -> Self {
         if columns == 0 || rows == 0 {
             return Self::default();
@@ -180,6 +244,7 @@ impl Layout {
 
 #[derive(Default)]
 pub struct Finder {
+    pub(crate) fancy: bool,
     index: pane_search::Index,
     input: ui::Input,
     selected: Option<String>,
@@ -199,7 +264,11 @@ impl Finder {
     }
 
     pub(crate) fn prepare(&mut self, rows: usize, columns: usize) -> Option<(usize, usize)> {
-        self.layout = Layout::new(columns, rows, self.compact);
+        self.layout = if self.fancy {
+            Layout::raised(columns, rows)
+        } else {
+            Layout::new(columns, rows, self.compact)
+        };
         self.ensure_selection_visible();
         self.prepare_preview();
         let input = self.layout.input;
@@ -449,6 +518,7 @@ impl Finder {
         clock_frame: usize,
         rows: usize,
         columns: usize,
+        fancy: bool,
     ) {
         let preview = self.layout.preview;
         let input = self.layout.input;
@@ -462,14 +532,42 @@ impl Finder {
             self.index.results().len(),
             snapshot.panes.len()
         );
-        crate::focused::frame(
-            rows,
-            columns,
-            self.layout.border,
-            &title,
-            theme,
-            &theme.accents[6],
-        );
+        if fancy {
+            crate::focused::presentation(
+                self.layout
+                    .cards
+                    .iter()
+                    .enumerate()
+                    .map(|(index, card)| overlay::SurfaceRegion {
+                        x: card.x,
+                        y: card.y,
+                        columns: card.width,
+                        rows: card.height,
+                        accent: (index == 0).then_some(6),
+                    })
+                    .collect(),
+            );
+            crate::focused::frame(rows, columns, false, "", theme, "");
+            paint(
+                2,
+                1,
+                &format!(
+                    "{}\x1b[1m{}",
+                    theme.bright,
+                    ui::truncate(title.trim(), columns - 4)
+                ),
+                theme,
+            );
+        } else {
+            crate::focused::frame(
+                rows,
+                columns,
+                self.layout.border,
+                &title,
+                theme,
+                &theme.accents[6],
+            );
+        }
         if self.layout.border {
             paint(
                 0,
@@ -571,6 +669,39 @@ impl Finder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raised_cards_keep_content_and_cursor_inside_disjoint_regions() {
+        for rows in 14..60 {
+            for columns in 40..180 {
+                let layout = Layout::raised(columns, rows);
+                for (content, card) in [layout.input, layout.list, layout.preview]
+                    .into_iter()
+                    .zip(layout.cards)
+                {
+                    assert!(content.width > 0 && content.height > 0);
+                    assert!(
+                        content.x >= card.x + 2
+                            && content.x + content.width <= card.x + card.width - 2
+                    );
+                    assert!(
+                        content.y > card.y && content.y + content.height < card.y + card.height
+                    );
+                    assert!(card.x + card.width <= columns && card.y + card.height <= rows);
+                }
+                for (index, left) in layout.cards.iter().enumerate() {
+                    for right in layout.cards.iter().skip(index + 1) {
+                        assert!(
+                            left.x + left.width <= right.x
+                                || right.x + right.width <= left.x
+                                || left.y + left.height <= right.y
+                                || right.y + right.height <= left.y
+                        );
+                    }
+                }
+            }
+        }
+    }
     use bkpr::{Pane, Status, Workspace};
     fn snapshot() -> Snapshot {
         Snapshot {

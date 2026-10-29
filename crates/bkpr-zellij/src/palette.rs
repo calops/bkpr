@@ -12,6 +12,8 @@ pub struct TerminalColors {
     #[serde(default)]
     pub kitty_graphics: bool,
     #[serde(default)]
+    pub raised_regions: bool,
+    #[serde(default)]
     pub cell_pixels: Option<[u32; 2]>,
     pub foreground: Option<[u8; 3]>,
     pub background: Option<[u8; 3]>,
@@ -114,6 +116,9 @@ fn enables_rgb(colors: &TerminalColors) -> bool {
 }
 
 impl Theme {
+    pub fn raised_regions(&self) -> bool {
+        self.colors.raised_regions && enables_rgb(&self.colors)
+    }
     /// Cache styles when assignments arrive, not while painting names or dots.
     pub fn prepare_projects(&mut self, slots: impl Iterator<Item = usize>) {
         let required = slots.max().map_or(0, |slot| slot.saturating_add(1));

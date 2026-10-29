@@ -26,6 +26,17 @@ pub struct SurfacePresentation {
     pub accent: Option<u8>,
     #[serde(default)]
     pub attachment: Option<SurfaceAttachment>,
+    #[serde(default)]
+    pub regions: Vec<SurfaceRegion>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceRegion {
+    pub x: usize,
+    pub y: usize,
+    pub columns: usize,
+    pub rows: usize,
+    pub accent: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +55,7 @@ impl Default for SurfacePresentation {
             version: 1,
             accent: None,
             attachment: None,
+            regions: vec![],
         }
     }
 }
