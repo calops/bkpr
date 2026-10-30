@@ -6,6 +6,10 @@
 * Add `bkpr install agy` with native MCP registration, dry-run and conflict protection.
 * Prefer native active-turn steering for peer notifications: Antigravity uses native agent messages, Omp uses agent-step asides, and Claude adds tool-boundary context while retaining idle wake. Codex retains future-turn delivery.
 
+### Maintenance
+
+* Add an isolated pane-first engine development experiment and record its build recipe, runtime evidence and unresolved adoption gates. The shipping runtime remains unchanged; this isn't the full Zellij replacement.
+
 ### Breaking Changes
 
 * Relay protocol 4 adds authenticated AGY native wake outcomes. Older brokers fail closed and must be stopped explicitly after inspecting pending work; live brokers are never replaced automatically.

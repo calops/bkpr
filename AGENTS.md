@@ -1,5 +1,9 @@
 # Maintenance notes
 
+## Pane-first transition
+
+On `feat/pane-first-mux`, the approved new-runtime direction is documented in `docs/pane-first-mux/assessment.md` and `implementation-plan.md`. Isolated terminal-engine and PTY proof code may own its own panes and client views outside Zellij. Reuse maintained infrastructure dependencies and keep foreign engine integration narrow. The existing launcher/plugin path and its boundaries below remain unchanged until verified cutover. Do not replace live binaries, switch defaults, migrate live PTYs or weaken clipboard, status, context and agent-delivery authority to make a proof pass. Use the canonical checkout's shared Cargo target.
+
 ## Boundaries
 
 - `crates/bkpr` owns the native launcher, Git/CI, SSH forwarding and typed state contract. `crates/bkpr-zellij` owns WASI sidebar, finder and passive overlays. Zellij owns PTYs, input, native panes/tabs and live sessions; Bkpr owns recovery records and `bkpr resume`. Never mirror terminal output through the plugin.

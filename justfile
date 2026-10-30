@@ -27,3 +27,18 @@ run *args: build build-native
     fi
     export BKPR_PLUGIN="${CARGO_TARGET_DIR:-target}/wasm32-wasip1/debug/bkpr-zellij.wasm"
     exec cargo run --locked -p bkpr -- "$@"
+
+# Build the isolated pane-first engine proof, not the shipping launcher/plugin.
+mux-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
+    bash scripts/prepare-ghostty-vt.sh
+    export BKPR_GHOSTTY_VT_DIR="$(bash scripts/prepare-ghostty-vt.sh --print-prefix)"
+    cargo build --locked -p bkpr-mux
+
+# Run the independent proof client or daemon.
+mux-run *args: mux-build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    exec "${CARGO_TARGET_DIR:-target}/debug/bkpr-mux-proof" "$@"
