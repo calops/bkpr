@@ -122,10 +122,13 @@ updates don't repaint stationary text. Unchanged image resources and placements
 are retained. Initial attachment, resize and scene-baseline recovery still use
 complete state, and palette changes invalidate affected presentation.
 
-Scene polling supports bounded change waits and optional whole-row deltas.
-Waiting views don't occupy the connection capacity reserved for input and
-control operations. These mechanisms reduce repeated transfers and repaint work;
-they don't lower terminal fidelity or skip input.
+The TUI uses compact, lossless scene runs with shared style/link tables and
+whole-row deltas. Scene decoding happens on the snapshot worker, not the input
+loop. PTY output, controls and writer progress wake the pane worker directly.
+Waiting views don't occupy the connection capacity reserved for input/control.
+The renderer emits differential styles and skips presentations when nothing
+visible changed, without lowering fidelity or skipping input. `inspect` and
+ordinary scene requests retain readable JSON for diagnostics.
 
 ### Requests and explicit shutdown
 

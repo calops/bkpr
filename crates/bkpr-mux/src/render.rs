@@ -15,6 +15,8 @@ use termwiz::input::{InputEvent, InputParser, KeyCode, Modifiers};
 
 #[path = "render_geometry.rs"]
 mod geometry;
+#[path = "render_style.rs"]
+mod style;
 #[path = "render_updates.rs"]
 mod updates;
 
@@ -25,6 +27,8 @@ struct TextState {
     palette: Vec<[u8; 3]>,
     colors: Option<([u8; 3], [u8; 3], u64, bool)>,
     chrome: String,
+    cursor: Option<Cursor>,
+    physical_cursor_color: Option<Option<[u8; 3]>>,
 }
 
 struct GraphicsState {
@@ -261,6 +265,44 @@ fn draw(
         }
     }
     let prepared = geometry::prepare(frame, viewport)?;
+    let colors = (
+        frame.foreground,
+        frame.background,
+        host.revision,
+        host.truecolor,
+    );
+    let full = graphics.text.viewport != Some(viewport)
+        || graphics.text.colors != Some(colors)
+        || graphics.text.palette != frame.palette;
+    let text_changed =
+        full || (0..viewport.rows as usize).any(|y| frame.rows.get(y) != graphics.text.rows.get(y));
+    let chrome_changed = full || graphics.text.chrome != chrome;
+    let placements_changed = graphics.projections != prepared.placements;
+    let resources_changed = graphics
+        .image_ids
+        .keys()
+        .any(|key| !prepared.images.contains_key(key))
+        || graphics
+            .derived_ids
+            .keys()
+            .any(|key| !prepared.derived.contains(key))
+        || prepared
+            .original
+            .iter()
+            .any(|key| !graphics.image_ids.contains_key(key))
+        || prepared
+            .derived
+            .iter()
+            .any(|key| !graphics.derived_ids.contains_key(key));
+    if !text_changed
+        && !chrome_changed
+        && !placements_changed
+        && !resources_changed
+        && graphics.text.cursor.as_ref() == Some(&frame.cursor)
+    {
+        out.flush()?;
+        return Ok(());
+    }
     for (_, id) in graphics
         .image_ids
         .extract_if(|key, _| !prepared.images.contains_key(key))
@@ -273,31 +315,21 @@ fn draw(
     {
         write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
     }
-    let placements_changed = graphics.projections != prepared.placements;
     if placements_changed {
         for id in graphics.all_ids() {
             write!(out, "\x1b_Ga=d,d=i,i={id},q=2\x1b\\")?;
         }
     }
     write!(out, "\x1b[?2026h\x1b[?25l\x1b[0m")?;
-    let colors = (
-        frame.foreground,
-        frame.background,
-        host.revision,
-        host.truecolor,
-    );
-    let full = graphics.text.viewport != Some(viewport)
-        || graphics.text.colors != Some(colors)
-        || graphics.text.palette != frame.palette;
     let visible_rows = frame.rows.len().min(viewport.rows as usize);
+    let mut previous_style: Option<&Style> = None;
     for y in 0..viewport.rows as usize {
         let row = frame.rows.get(y);
         if !full && row == graphics.text.rows.get(y) {
             continue;
         }
-        write!(out, "\x1b[{};1H\x1b[0m", y + 1)?;
+        write!(out, "\x1b[{};1H", y + 1)?;
         let mut x = 0u16;
-        let mut previous_style: Option<&Style> = None;
         for cell in row.into_iter().flat_map(|row| &row.cells) {
             if x >= viewport.cols || x.saturating_add(cell.width as u16) > viewport.cols {
                 break;
@@ -307,35 +339,7 @@ fn draw(
             }
             let s = &cell.style;
             if previous_style != Some(s) {
-                write!(out, "\x1b[0m")?;
-                color(out, s.foreground, s.foreground_source, false, frame, host)?;
-                color(out, s.background, s.background_source, true, frame, host)?;
-                for (set, code) in [
-                    (s.bold, 1),
-                    (s.faint, 2),
-                    (s.italic, 3),
-                    (s.blink, 5),
-                    (s.inverse, 7),
-                    (s.invisible, 8),
-                    (s.strikethrough, 9),
-                    (s.overline, 53),
-                ] {
-                    if set {
-                        write!(out, "\x1b[{code}m")?;
-                    }
-                }
-                if s.underline > 0 {
-                    write!(out, "\x1b[4:{}m", s.underline.min(5))?;
-                    match s.underline_source {
-                        ColorSource::Default => write!(out, "\x1b[59m")?,
-                        _ if host.truecolor => write!(
-                            out,
-                            "\x1b[58;2;{};{};{}m",
-                            s.underline_color[0], s.underline_color[1], s.underline_color[2]
-                        )?,
-                        _ => {}
-                    }
-                }
+                style::transition(out, previous_style, s, frame, host)?;
                 previous_style = Some(s);
             }
             if let Some(link) = &cell.hyperlink {
@@ -357,6 +361,7 @@ fn draw(
         }
         if x < viewport.cols {
             write!(out, "\x1b[0m\x1b[K")?;
+            previous_style = None;
         }
         if let Some(row) = row {
             if let Some(previous) = graphics.text.rows.get_mut(y) {
@@ -423,7 +428,7 @@ fn draw(
         }
         write!(out, ",z={},C=1\x1b\\", p.z)?;
     }
-    if full || graphics.text.chrome != chrome {
+    if chrome_changed {
         write!(
             out,
             "\x1b[{};1H\x1b[0;7m{}\x1b[K\x1b[0m",
@@ -453,12 +458,16 @@ fn draw(
             frame.cursor.y + 1,
             frame.cursor.x + 1
         )?;
-        if let Some([r, g, b]) = frame.cursor.color {
-            write!(out, "\x1b]12;#{r:02x}{g:02x}{b:02x}\x1b\\")?;
-        } else {
-            write!(out, "\x1b]112\x1b\\")?;
+        if graphics.text.physical_cursor_color != Some(frame.cursor.color) {
+            if let Some([r, g, b]) = frame.cursor.color {
+                write!(out, "\x1b]12;#{r:02x}{g:02x}{b:02x}\x1b\\")?;
+            } else {
+                write!(out, "\x1b]112\x1b\\")?;
+            }
+            graphics.text.physical_cursor_color = Some(frame.cursor.color);
         }
     }
+    graphics.text.cursor = Some(frame.cursor.clone());
     write!(out, "\x1b[?2026l")?;
     out.flush()?;
     Ok(())
@@ -1520,12 +1529,13 @@ pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()>
             ..KeyboardPolicy::default()
         };
         let mut snapshots = updates::SnapshotPump::new(socket, &view)?;
-        let mut snapshot = snapshots.initial()?;
+        let mut packet = snapshots.initial()?;
         let mut scene_revision = 0;
         let mut scene: Option<Frame> = None;
         let mut received_images = HashMap::<ImageKey, Arc<Image>>::new();
         let mut deferred = VecDeque::<ClientEvent>::new();
         loop {
+            let snapshot = &packet.metadata;
             if let Ok(error) = error_rx.try_recv() {
                 bail!("input request failed: {error}");
             }
@@ -1540,23 +1550,9 @@ pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()>
                     .context("input queue full")?;
                 revision = 0;
             }
-            if !snapshot["frame"].is_null() {
-                let mut frame: Frame = serde_json::from_value(snapshot["frame"].take())?;
-                if !snapshot["row_delta"].is_null() {
-                    let previous = scene.as_mut().context("row delta before initial frame")?;
-                    let mut delta = snapshot["row_delta"].take();
-                    if delta["base_revision"].as_u64() != Some(scene_revision) {
-                        bail!("row delta does not match the displayed scene");
-                    }
-                    let updates: Vec<(usize, Row)> = serde_json::from_value(delta["rows"].take())?;
-                    frame.rows = std::mem::take(&mut previous.rows);
-                    for (index, row) in updates {
-                        *frame
-                            .rows
-                            .get_mut(index)
-                            .context("row delta outside scene")? = row;
-                    }
-                }
+            if let Some(update) = packet.scene.take() {
+                update.apply(&mut scene_revision, &mut scene)?;
+                let frame = scene.as_mut().context("missing decoded scene")?;
                 for image in frame.images.drain(..) {
                     received_images.insert(image.key(), image);
                 }
@@ -1573,8 +1569,6 @@ pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()>
                             .context("missing normalized image generation")
                     })
                     .collect::<Result<_>>()?;
-                scene_revision = snapshot["revision"].as_u64().unwrap_or(0);
-                scene = Some(frame);
             }
             let canonical = scene
                 .as_ref()
@@ -1979,7 +1973,7 @@ pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()>
                     },
                 }
             }
-            snapshots.update(&mut snapshot)?;
+            snapshots.update(&mut packet)?;
         }
         Ok(())
     })();

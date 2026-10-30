@@ -1,8 +1,13 @@
 use super::*;
 
+pub(super) struct Snapshot {
+    pub metadata: Value,
+    pub scene: Option<crate::scene_wire::DecodedScene>,
+}
+
 /// One in-flight request and one queued result; IPC never blocks keyboard reads.
 pub(super) struct SnapshotPump {
-    receiver: Option<std::sync::mpsc::Receiver<std::result::Result<Value, String>>>,
+    receiver: Option<std::sync::mpsc::Receiver<std::result::Result<Snapshot, String>>>,
     pub wake: std::os::unix::net::UnixStream,
     stop: Arc<std::sync::atomic::AtomicBool>,
     resize_signal: signal_hook::SigId,
@@ -22,16 +27,24 @@ impl SnapshotPump {
         let stopped = stop.clone();
         let socket = socket.to_owned();
         let mut request = json!({"op":"poll","view_id":view,"frame_after":0,
-            "resources":[],"snapshot_after":0,"wait_ms":1000,"row_deltas":true});
+            "resources":[],"snapshot_after":0,"wait_ms":1000,"scene_encoding":"compact_v1"});
         let worker = std::thread::spawn(move || {
             while !stopped.load(std::sync::atomic::Ordering::Acquire) {
-                let result =
-                    transport::checked(&socket, &request).map_err(|error| format!("{error:#}"));
+                let result = (|| -> Result<Snapshot> {
+                    let mut metadata = transport::checked(&socket, &request)?;
+                    let scene = if metadata["scene"].is_null() {
+                        None
+                    } else {
+                        Some(crate::scene_wire::decode(metadata["scene"].take())?)
+                    };
+                    Ok(Snapshot { metadata, scene })
+                })()
+                .map_err(|error| format!("{error:#}"));
                 if let Ok(snapshot) = &result {
-                    request["snapshot_after"] = snapshot["snapshot_revision"].clone();
-                    request["frame_after"] = snapshot["revision"].clone();
-                    if !snapshot["frame"].is_null() {
-                        request["resources"] = snapshot["image_refs"].clone();
+                    request["snapshot_after"] = snapshot.metadata["snapshot_revision"].clone();
+                    request["frame_after"] = snapshot.metadata["revision"].clone();
+                    if snapshot.scene.is_some() {
+                        request["resources"] = snapshot.metadata["image_refs"].clone();
                     }
                 }
                 let failed = result.is_err();
@@ -53,7 +66,7 @@ impl SnapshotPump {
             resize_signal,
         })
     }
-    pub fn initial(&self) -> Result<Value> {
+    pub fn initial(&self) -> Result<Snapshot> {
         self.receiver
             .as_ref()
             .unwrap()
@@ -61,7 +74,7 @@ impl SnapshotPump {
             .context("snapshot worker disconnected")?
             .map_err(anyhow::Error::msg)
     }
-    pub fn update(&self, snapshot: &mut Value) -> Result<()> {
+    pub fn update(&self, snapshot: &mut Snapshot) -> Result<()> {
         match self.receiver.as_ref().unwrap().try_recv() {
             Ok(result) => *snapshot = result.map_err(anyhow::Error::msg)?,
             Err(std::sync::mpsc::TryRecvError::Empty) => {}

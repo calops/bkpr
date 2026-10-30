@@ -3,6 +3,7 @@ pub mod authority;
 #[cfg(target_os = "linux")]
 mod process_tree;
 pub mod render;
+pub(crate) mod scene_wire;
 pub mod transport;
 mod writer;
 
@@ -63,6 +64,8 @@ pub enum Request {
         wait_ms: u64,
         #[serde(default)]
         row_deltas: bool,
+        #[serde(default)]
+        scene_encoding: Option<String>,
     },
     Pin {
         view_id: String,
@@ -234,7 +237,7 @@ struct Shared {
 #[derive(Clone)]
 pub struct Pane {
     shared: Arc<Shared>,
-    commands: mpsc::SyncSender<Command>,
+    commands: crossbeam_channel::Sender<Command>,
 }
 pub struct SpawnSpec {
     pub argv: Vec<String>,
@@ -264,7 +267,7 @@ impl Pane {
             changes: Arc::new(SnapshotChanges::default()),
             delta_frames: Mutex::new(BTreeMap::new()),
         });
-        let (commands, rx) = mpsc::sync_channel(64);
+        let (commands, rx) = crossbeam_channel::bounded(64);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let state = shared.clone();
         thread::Builder::new()
@@ -325,7 +328,7 @@ impl Pane {
             _ => {}
         }
         match &request {
-            Request::Inspect => return self.snapshot(None, 0, 0, &[], false),
+            Request::Inspect => return self.snapshot(None, 0, 0, &[], false, false),
             Request::Poll {
                 view_id,
                 after,
@@ -334,13 +337,27 @@ impl Pane {
                 snapshot_after,
                 wait_ms,
                 row_deltas,
+                scene_encoding,
             } => {
+                if scene_encoding
+                    .as_deref()
+                    .is_some_and(|encoding| encoding != "compact_v1")
+                {
+                    bail!("unsupported scene encoding");
+                }
                 if resources.len() > 1024 {
                     bail!("image receipt limit");
                 }
                 self.shared.authority.lock().unwrap().touch(view_id)?;
                 self.shared.changes.wait(*snapshot_after, *wait_ms);
-                return self.snapshot(Some(view_id), *after, *frame_after, resources, *row_deltas);
+                return self.snapshot(
+                    Some(view_id),
+                    *after,
+                    *frame_after,
+                    resources,
+                    *row_deltas,
+                    scene_encoding.is_some(),
+                );
             }
             Request::Detach { view_id } => self.cancel_clipboard(Some(view_id)),
             Request::Update { view_id, spec }
@@ -580,6 +597,7 @@ impl Pane {
         frame_after: u64,
         resources: &[ImageKey],
         row_deltas: bool,
+        compact_scene: bool,
     ) -> Result<Value> {
         if resources.len() > 1024 {
             bail!("image receipt limit");
@@ -611,7 +629,7 @@ impl Pane {
                 .and_then(|id| published.scroll_frames.get(id))
                 .or(published.frame.as_ref())
                 .cloned();
-            let baseline = if row_deltas
+            let baseline = if (row_deltas || compact_scene)
                 && let Some(id) = view
                 && let Some(frame) = &frame
             {
@@ -660,12 +678,28 @@ impl Pane {
             .as_ref()
             .map(|frame| frame.image_keys())
             .unwrap_or_default();
-        let (frame, row_delta) = frame_payload(
-            frame.as_deref().filter(|_| frame_after != revision),
-            baseline.as_ref(),
-            frame_after,
-            resources,
-        );
+        let changed_frame = frame.as_deref().filter(|_| frame_after != revision);
+        let (frame, row_delta, scene) = if compact_scene {
+            (
+                Value::Null,
+                None,
+                changed_frame
+                    .map(|frame| {
+                        scene_wire::encode(
+                            frame,
+                            revision,
+                            baseline.as_ref(),
+                            frame_after,
+                            resources,
+                        )
+                    })
+                    .transpose()?,
+            )
+        } else {
+            let (frame, delta) =
+                frame_payload(changed_frame, baseline.as_ref(), frame_after, resources);
+            (frame, delta, None)
+        };
         let mut snapshot = json!({
             "pane_id": self.shared.pane_id,
             "pid": pid,
@@ -693,10 +727,14 @@ impl Pane {
                 "view_timeout_ms": 10000,
                 "poll_wait_max_ms": 1000,
                 "row_deltas": true,
+                "scene_encodings": ["compact_v1"],
             },
         });
         if let Some(row_delta) = row_delta {
             snapshot["row_delta"] = row_delta;
+        }
+        if let Some(scene) = scene {
+            snapshot["scene"] = scene;
         }
         Ok(snapshot)
     }
@@ -866,7 +904,7 @@ fn pty_size(size: Size) -> PtySize {
 fn run_pane(
     spec: SpawnSpec,
     shared: Arc<Shared>,
-    commands: mpsc::Receiver<Command>,
+    commands: crossbeam_channel::Receiver<Command>,
     ready: mpsc::SyncSender<std::result::Result<(), String>>,
 ) -> Result<()> {
     let setup = (|| -> Result<_> {
@@ -925,12 +963,24 @@ fn run_pane(
         return Err(std::io::Error::last_os_error().into());
     }
     let changes = shared.changes.clone();
-    let (writer, writer_thread) =
-        writer::Queue::start(master.take_writer()?, Box::new(move || changes.notify()))?;
+    let (writer_notify, writer_events) = crossbeam_channel::bounded(1);
+    let (writer, writer_thread) = writer::Queue::start(
+        master.take_writer()?,
+        Box::new(move || {
+            changes.notify();
+            let _ = writer_notify.try_send(());
+        }),
+    )?;
     let mut writer_thread = Some(writer_thread);
     *shared.writer.lock().unwrap() = Some(writer.clone());
     let mut reader = master.try_clone_reader()?;
-    let (output_tx, output) = mpsc::sync_channel::<Vec<u8>>(64);
+    let (output_tx, output) = crossbeam_channel::bounded::<Vec<u8>>(64);
+    let reader_fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if reader_fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let reader_ready =
+        unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(reader_fd) };
     let reader_stop = ReaderStop(Arc::new(AtomicBool::new(false)));
     let reader_cancel = reader_stop.0.clone();
     let reader_thread = thread::Builder::new()
@@ -946,7 +996,20 @@ fn run_pane(
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(4))
+                        use std::os::fd::AsRawFd;
+                        let mut ready = libc::pollfd {
+                            fd: reader_ready.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        };
+                        // Only cancellation has a timer; PTY output wakes immediately.
+                        let result = unsafe { libc::poll(&mut ready, 1, 100) };
+                        if result < 0
+                            && std::io::Error::last_os_error().kind()
+                                != std::io::ErrorKind::Interrupted
+                        {
+                            break;
+                        }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
@@ -1022,6 +1085,8 @@ fn run_pane(
         let clock = Instant::now();
         let mut next_image_tick = None;
         let mut current_size = spec.size;
+        let mut pending_output = None;
+        let no_output = crossbeam_channel::never();
         loop {
             child.observe();
             let mut dirty = false;
@@ -1074,16 +1139,17 @@ fn run_pane(
                 if writer.congested() {
                     break;
                 }
-                match output.try_recv() {
+                let next = pending_output.take().map_or_else(|| output.try_recv(), Ok);
+                match next {
                     Ok(bytes) => {
                         route_effects(terminal.feed(&bytes)?, &writer, &shared)?;
                         dirty = true;
                     }
-                    Err(mpsc::TryRecvError::Disconnected) => {
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
                         eof = true;
                         break;
                     }
-                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(crossbeam_channel::TryRecvError::Empty) => break,
                 }
             }
             let now = clock.elapsed().as_millis().min(u64::MAX.into()) as u64;
@@ -1100,8 +1166,34 @@ fn run_pane(
             if dirty {
                 publish(&mut terminal, &shared)?;
             }
-            match commands.recv_timeout(Duration::from_millis(8)) {
-                Ok(command) => {
+            // Maintenance is bounded separately from readiness. Output and writer
+            // progress wake the worker instead of waiting for the command timer.
+            let mut wait = Duration::from_millis(100);
+            if let Some(remaining) = terminal.sync_output_remaining() {
+                wait = wait.min(remaining);
+            }
+            if let Some(deadline) = next_image_tick {
+                wait = wait.min(Duration::from_millis(deadline.saturating_sub(now)));
+            }
+            let readable = if eof || writer.congested() || pending_output.is_some() {
+                &no_output
+            } else {
+                &output
+            };
+            let command = crossbeam_channel::select_biased! {
+                recv(commands) -> command => Some(command),
+                recv(writer_events) -> _ => None,
+                recv(readable) -> bytes => {
+                    match bytes {
+                        Ok(bytes) => pending_output = Some(bytes),
+                        Err(_) => eof = true,
+                    }
+                    None
+                },
+                default(wait) => None,
+            };
+            match command {
+                Some(Ok(command)) => {
                     let terminate = matches!(&command.mutation, Mutation::Terminate);
                     let needs_publish = matches!(
                         &command.mutation,
@@ -1213,11 +1305,11 @@ fn run_pane(
                     }
                     let _ = command.result.send(outcome.map_err(|e| format!("{e:#}")));
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Some(Err(_)) => {
                     child.terminate()?;
                     break;
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                None => {}
             }
             if let Some(status) = child.inner.try_wait()? {
                 child.terminate()?;
@@ -1409,7 +1501,7 @@ mod snapshot_tests {
     }
 
     fn pane() -> Pane {
-        let (commands, _) = mpsc::sync_channel(1);
+        let (commands, _) = crossbeam_channel::bounded(1);
         Pane {
             shared: Arc::new(Shared {
                 authority: Mutex::new(Authority::default()),
@@ -1541,6 +1633,281 @@ mod snapshot_tests {
             frame_payload(None, Some(&baseline), 4, &[]),
             (Value::Null, None)
         );
+    }
+
+    #[test]
+    fn compact_scene_round_trips_exact_cells_styles_sources_and_resources() {
+        use bkpr_terminal::{Image, ImageLayer, PixelFormat, Placement};
+        let mut expected = frame();
+        expected.size.cols = 6;
+        let mut cells = vec![expected.rows[0].cells[0].clone(); 6];
+        for (cell, (text, width)) in cells.iter_mut().zip([
+            ("e\u{301}", 1),
+            ("👩\u{200d}💻", 2),
+            ("", 0),
+            ("ab", 1),
+            ("", 1),
+            ("\u{301}", 0),
+        ]) {
+            cell.text = text.into();
+            cell.width = width;
+        }
+        cells[0].style.foreground_source = ColorSource::Palette(7);
+        cells[1].style.background_source = ColorSource::Rgb([9, 8, 7]);
+        cells[2].style.underline_source = ColorSource::Palette(255);
+        cells[3].style.bold = true;
+        cells[3].style.italic = true;
+        cells[3].style.faint = true;
+        cells[3].style.blink = true;
+        cells[3].style.inverse = true;
+        cells[3].style.invisible = true;
+        cells[3].style.strikethrough = true;
+        cells[3].style.overline = true;
+        cells[3].style.underline = 5;
+        cells[3].style.underline_color = [1, 2, 3];
+        cells[4].hyperlink = Some("https://example.invalid/界".into());
+        cells[5].hyperlink = cells[4].hyperlink.clone();
+        expected.rows = vec![
+            Row {
+                cells: cells.clone(),
+            },
+            Row { cells },
+        ];
+        expected.palette = vec![[1, 2, 3]; 256];
+        expected.images = vec![Arc::new(Image {
+            id: 9,
+            generation: 42,
+            width: 1,
+            height: 1,
+            format: PixelFormat::Rgba,
+            pixels: vec![1, 2, 3, 4],
+        })];
+        expected.placements = vec![Placement {
+            image_id: 9,
+            generation: 42,
+            placement_id: 5,
+            col: -1,
+            row: 1,
+            offset_x: 2,
+            offset_y: 3,
+            width: 7,
+            height: 8,
+            source_x: 0,
+            source_y: 0,
+            source_width: 1,
+            source_height: 1,
+            layer: ImageLayer::BelowText,
+            z: -2,
+        }];
+        expected.alternate_screen = true;
+        expected.scrollback_total = 500;
+        expected.scrollback_offset = 42;
+        let wire = scene_wire::encode(&expected, 4, None, 0, &[]).unwrap();
+        assert_eq!(wire["hyperlinks"].as_array().unwrap().len(), 1);
+        assert_eq!(wire["styles"].as_array().unwrap().len(), 5);
+        let mut actual = None;
+        let mut revision = 0;
+        scene_wire::decode(wire)
+            .unwrap()
+            .apply(&mut revision, &mut actual)
+            .unwrap();
+        assert_eq!(revision, 4);
+        assert_eq!(actual.as_ref(), Some(&expected));
+
+        let mut changed = expected.clone();
+        changed.rows[1].cells[0].text = "changed".into();
+        changed.cursor.y = 1;
+        let baseline = (4, Arc::new(expected));
+        let wire =
+            scene_wire::encode(&changed, 5, Some(&baseline), 4, &changed.image_keys()).unwrap();
+        assert_eq!(wire["base_revision"], 4);
+        assert_eq!(wire["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(wire["frame"]["images"], json!([]));
+        scene_wire::decode(wire)
+            .unwrap()
+            .apply(&mut revision, &mut actual)
+            .unwrap();
+        // Supplied image bytes intentionally exclude acknowledged resources.
+        changed.images.clear();
+        assert_eq!(actual.as_ref(), Some(&changed));
+        let wire = scene_wire::encode(&changed, 6, Some(&baseline), 3, &[]).unwrap();
+        assert!(wire["base_revision"].is_null());
+        assert_eq!(wire["rows"].as_array().unwrap().len(), 2);
+        changed.size.cell_width += 1;
+        assert!(
+            scene_wire::encode(&changed, 6, Some(&baseline), 4, &[]).unwrap()["base_revision"]
+                .is_null()
+        );
+    }
+
+    #[test]
+    fn compact_scene_rejects_corrupt_layouts_before_consumer_mutation() {
+        let original = frame();
+        let full = scene_wire::encode(&original, 4, None, 0, &[]).unwrap();
+        let mut corruptions = Vec::new();
+        let mut value = full.clone();
+        value["rows"][0][1][0][0] = json!(999);
+        corruptions.push(value);
+        let mut value = full.clone();
+        value["rows"][0][1][0][1] = json!(0);
+        corruptions.push(value);
+        let mut value = full.clone();
+        value["rows"][0][1][0][3] = json!([[0, 1, u32::MAX]]);
+        corruptions.push(value);
+        let mut value = full.clone();
+        value["rows"][0][1][0][2] = json!("界");
+        value["rows"][0][1][0][3] = json!([[1, 1, 2]]);
+        corruptions.push(value);
+        let mut value = full.clone();
+        value["rows"][1][0] = json!(0);
+        corruptions.push(value);
+        let mut value = full.clone();
+        value["rows"].as_array_mut().unwrap().pop();
+        corruptions.push(value);
+        let mut value = full.clone();
+        value["frame"]["rows"] = json!(original.rows);
+        corruptions.push(value);
+        let mut value = full.clone();
+        value["frame"]["size"]["cols"] = json!(u16::MAX);
+        corruptions.push(value);
+        let mut value = full.clone();
+        value["version"] = json!(99);
+        corruptions.push(value);
+        let mut value = full;
+        value["base_revision"] = json!(4);
+        corruptions.push(value);
+        for value in corruptions {
+            assert!(scene_wire::decode(value).is_err());
+        }
+        let baseline = (3, Arc::new(original.clone()));
+        let delta = scene_wire::encode(&original, 4, Some(&baseline), 3, &[]).unwrap();
+        let mut actual = Some(original.clone());
+        let mut revision = 2;
+        assert!(
+            scene_wire::decode(delta.clone())
+                .unwrap()
+                .apply(&mut revision, &mut actual)
+                .is_err()
+        );
+        assert_eq!(revision, 2);
+        assert_eq!(actual.as_ref(), Some(&original));
+        revision = 3;
+        actual.as_mut().unwrap().size.cols += 1;
+        let before = actual.clone();
+        assert!(
+            scene_wire::decode(delta)
+                .unwrap()
+                .apply(&mut revision, &mut actual)
+                .is_err()
+        );
+        assert_eq!(actual, before);
+    }
+
+    #[test]
+    fn compact_poll_negotiates_and_falls_back_to_full_after_lost_baseline() {
+        let pane = pane();
+        let attached = request(
+            &pane,
+            json!({
+                "op":"attach", "size":frame().size,
+                "visible":false, "interactive":false, "input":false, "clipboard":false,
+            }),
+        );
+        let id = attached["view_id"].as_str().unwrap();
+        let first = request(
+            &pane,
+            json!({"op":"poll", "view_id":id, "scene_encoding":"compact_v1"}),
+        );
+        assert!(first["frame"].is_null());
+        assert!(first.get("row_delta").is_none());
+        let mut actual = None;
+        let mut revision = 0;
+        scene_wire::decode(first["scene"].clone())
+            .unwrap()
+            .apply(&mut revision, &mut actual)
+            .unwrap();
+        assert_eq!(actual.as_ref(), Some(&frame()));
+        let unchanged = request(
+            &pane,
+            json!({
+                "op":"poll", "view_id":id, "frame_after":1, "scene_encoding":"compact_v1",
+            }),
+        );
+        assert!(unchanged.get("scene").is_none());
+        {
+            let mut published = pane.shared.published.lock().unwrap();
+            let mut changed = frame();
+            changed.cursor.x = 1;
+            published.frame = Some(Arc::new(changed));
+            published.revision = 2;
+        }
+        let cursor_only = request(
+            &pane,
+            json!({
+                "op":"poll", "view_id":id, "frame_after":1, "scene_encoding":"compact_v1",
+            }),
+        );
+        assert_eq!(cursor_only["scene"]["rows"], json!([]));
+        scene_wire::decode(cursor_only["scene"].clone())
+            .unwrap()
+            .apply(&mut revision, &mut actual)
+            .unwrap();
+        assert_eq!(actual.unwrap().cursor.x, 1);
+        let fallback = request(
+            &pane,
+            json!({
+                "op":"poll", "view_id":id, "frame_after":1, "scene_encoding":"compact_v1",
+            }),
+        );
+        assert!(fallback["scene"]["base_revision"].is_null());
+        assert_eq!(fallback["scene"]["rows"].as_array().unwrap().len(), 2);
+        assert!(request(&pane, json!({"op":"inspect"}))["frame"]["rows"].is_array());
+        assert!(
+            pane.request(
+                serde_json::from_value(json!({
+                    "op":"poll", "view_id":id, "scene_encoding":"unknown",
+                }))
+                .unwrap()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn compact_scene_represents_large_empty_and_ascii_grids_with_bounded_runs() {
+        let mut grid = frame();
+        grid.size.cols = 240;
+        grid.size.rows = 79;
+        let mut cell = grid.rows[0].cells[0].clone();
+        cell.text.clear();
+        grid.rows = vec![
+            Row {
+                cells: vec![cell; 240]
+            };
+            79
+        ];
+        let wire = scene_wire::encode(&grid, 1, None, 0, &[]).unwrap();
+        assert_eq!(wire["styles"].as_array().unwrap().len(), 1);
+        assert_eq!(wire["rows"][0][1][0][3], json!([[0, 1, 240]]));
+        assert!(serde_json::to_vec(&wire).unwrap().len() < 10_000);
+        let mut decoded = None;
+        scene_wire::decode(wire)
+            .unwrap()
+            .apply(&mut 0, &mut decoded)
+            .unwrap();
+        assert_eq!(decoded.as_ref(), Some(&grid));
+        for row in &mut grid.rows {
+            for cell in &mut row.cells {
+                cell.text = "x".into();
+            }
+        }
+        let wire = scene_wire::encode(&grid, 2, None, 0, &[]).unwrap();
+        assert_eq!(wire["rows"][0][1][0][3], json!([]));
+        scene_wire::decode(wire)
+            .unwrap()
+            .apply(&mut 0, &mut decoded)
+            .unwrap();
+        assert_eq!(decoded.as_ref(), Some(&grid));
     }
 
     #[test]
