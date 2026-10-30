@@ -39,7 +39,7 @@ patch --batch --fuzz=0 --forward -p1 -d "$source_dir" -i "$patch_path"
 # calloc/free stubs, which can preempt Rust's libc allocation calls when linked
 # statically. Bundled SIMD dependencies use no-libcxx; baseline CPU avoids
 # requiring this build machine's optional CPU instructions on another host.
-(cd "$source_dir" && "$zig_dir/zig" build -Demit-lib-vt=true -Doptimize=ReleaseSafe -Dsimd=true -Dcpu=baseline --prefix "$prefix")
+(cd "$source_dir" && "$zig_dir/zig" build -j1 -Demit-lib-vt=true -Doptimize=ReleaseSafe -Dsimd=true -Dcpu=baseline --prefix "$prefix")
 printf '%s\n' "$revision" > "$prefix/bkpr-source-revision"
 printf '%s\n' "$source_sha" > "$prefix/bkpr-source-sha256"
 printf '%s\n' 'ReleaseSafe-simd-libc-baseline-offer-v1' > "$prefix/bkpr-build-profile"
