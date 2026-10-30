@@ -1,5 +1,16 @@
 ## Unreleased
 
+### Breaking branch replacement
+
+* `feat/pane-first-mux` replaces the previous runtime with the native `bkpr` executable from `bkpr-mux` and the pinned `bkpr-terminal` engine adapter. There is no legacy launcher, plugin, binary alias or compatibility track on this branch.
+* Remove the old host-runtime flake input, WASI build/export paths, sibling-runtime recipes and obsolete package/cache/publication automation. Nix now supplies only the default native development shell; Cargo plus the pinned engine preparation helper is the supported build path. Native Nix packaging requires a reproducible, offline engine dependency closure and runtime acceptance before package/app outputs return.
+* Expose only the implemented native daemon, TUI, request and keyboard clients. Existing workspace, agent/harness, broker, Git/CI and recovery interfaces are not available from this executable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
+* Native graphics initial-presentation gates remain unaccepted. This replacement is not production acceptance and does not modify installed applications or live sessions.
+
+## Previous implementation — unreleased historical notes
+
+The entries below record work preceding the native branch replacement. They do not describe capabilities exposed by the current executable.
+
 ### Features
 
 * Add Antigravity launch identities, MCP conversation binding, native peer wake and exact-conversation recovery.

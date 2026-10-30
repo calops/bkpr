@@ -1,14 +1,8 @@
 {
-  description = "bkpr — workspace-first native Zellij terminals and sidebar";
-
-  nixConfig = {
-    extra-substituters = [ "https://bkpr.cachix.org" ];
-    extra-trusted-public-keys = [ "bkpr.cachix.org-1:uAJ+wudjeXgYbimGGreY8LgWfk0j9JaxNBjDxQ0h18w=" ];
-  };
+  description = "bkpr — pane-first native terminal multiplexer development";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/b1b875982b17dabde9b4a37f3e229e74913e6db3";
-    bkpr-zellij.url = "github:calops/bkpr-zellij/main";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -16,12 +10,7 @@
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      bkpr-zellij,
-      rust-overlay,
-    }:
+    { nixpkgs, rust-overlay, ... }:
     let
       systems = [
         "x86_64-linux"
@@ -35,153 +24,37 @@
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
         };
-      toolchainFor = pkgs: pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
     in
     {
-      packages = forAllSystems (
-        system:
-        let
-          pkgs = pkgsFor system;
-          toolchain = toolchainFor pkgs;
-          zellij = bkpr-zellij.packages.${system}.zellij;
-          rustPlatform = pkgs.makeRustPlatform {
-            cargo = toolchain;
-            rustc = toolchain;
-          };
-          src = pkgs.lib.fileset.toSource {
-            root = ./.;
-            fileset = pkgs.lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./LICENSE
-              ./crates
-              ./integration/omp
-              ./integration/control
-            ];
-          };
-          native = rustPlatform.buildRustPackage {
-            pname = "bkpr-native";
-            version = "0.4.2";
-            inherit src;
-            cargoLock.lockFileContents = builtins.readFile ./Cargo.lock;
-            # Rust's standard-library source locations must not retain the toolchain.
-            RUSTFLAGS = "--remap-path-prefix=${toolchain}=/rust-toolchain";
-            disallowedReferences = [ toolchain ];
-            nativeCheckInputs = [ pkgs.git ];
-            cargoBuildFlags = [
-              "-p"
-              "bkpr"
-              "--bin"
-              "bkpr"
-            ];
-            cargoTestFlags = [
-              "-p"
-              "bkpr"
-            ];
-            postInstall = ''
-              install -Dm444 LICENSE "$out/share/licenses/bkpr/LICENSE"
-            '';
-            meta.license = pkgs.lib.licenses.mit;
-            meta.mainProgram = "bkpr";
-          };
-          plugin = rustPlatform.buildRustPackage {
-            pname = "bkpr-zellij";
-            version = "0.4.2";
-            inherit src;
-            cargoLock.lockFileContents = builtins.readFile ./Cargo.lock;
-            RUSTFLAGS = "--remap-path-prefix=${toolchain}=/rust-toolchain";
-            disallowedReferences = [ toolchain ];
-            buildPhase = ''
-              runHook preBuild
-              cargo build --release --locked --offline -p bkpr-zellij --target wasm32-wasip1
-              runHook postBuild
-            '';
-            doCheck = false;
-            installPhase = ''
-              runHook preInstall
-              install -Dm444 target/wasm32-wasip1/release/bkpr-zellij.wasm \
-                "$out/share/bkpr/bkpr-zellij.wasm"
-              install -Dm444 LICENSE "$out/share/licenses/bkpr/LICENSE"
-              runHook postInstall
-            '';
-            meta.license = pkgs.lib.licenses.mit;
-          };
-          product =
-            pkgs.runCommand "bkpr-0.4.2"
-              {
-                nativeBuildInputs = [ pkgs.makeWrapper ];
-                meta.mainProgram = "bkpr";
-                meta.license = pkgs.lib.licenses.mit;
-              }
-              ''
-                mkdir -p "$out/bin" "$out/share/bkpr"
-                ln -s ${plugin}/share/bkpr/bkpr-zellij.wasm "$out/share/bkpr/"
-                mkdir -p "$out/share/licenses/bkpr"
-                ln -s ${native}/share/licenses/bkpr/LICENSE "$out/share/licenses/bkpr/LICENSE"
-                makeWrapper ${native}/bin/bkpr "$out/bin/bkpr" \
-                  --set BKPR_PLUGIN ${plugin}/share/bkpr/bkpr-zellij.wasm \
-                  --set BKPR_ZELLIJ ${zellij}/bin/zellij
-              '';
-        in
-        {
-          default = product;
-          bkpr = product;
-          bkpr-native = native;
-          bkpr-zellij = plugin;
-        }
-      );
-
-      apps = forAllSystems (system: {
-        default = {
-          type = "app";
-          program = "${self.packages.${system}.bkpr}/bin/bkpr";
-          meta.description = "Launch bkpr with native Zellij terminals and its bundled sidebar";
-        };
-        bkpr = self.apps.${system}.default;
-      });
-
+      # The pinned engine preparation currently runs outside the Nix sandbox.
+      # Package/app outputs return only after its full dependency closure is
+      # available to reproducible, offline native builds.
       devShells = forAllSystems (
         system:
         let
           pkgs = pkgsFor system;
-          zellij = bkpr-zellij.packages.${system}.zellij;
-          mkDevShell =
-            localRuntime:
-            pkgs.mkShell (
-              {
-                packages = [
-                  (toolchainFor pkgs)
-                  pkgs.just
-                  pkgs.git
-                  pkgs.gh
-                  pkgs.pkg-config
-                  pkgs.xdotool
-                  pkgs.imagemagick
-                  (pkgs.python3.withPackages (ps: [ ps.pyte ]))
-                ]
-                ++ pkgs.lib.optionals (!localRuntime) [ zellij ];
-                nativeBuildInputs = [ pkgs.rustPlatform.bindgenHook ];
-                buildInputs = [
-                  pkgs.openssl
-                  pkgs.curl
-                ];
-                shellHook = ''
-                  export BKPR_PLUGIN="$PWD/target/wasm32-wasip1/debug/bkpr-zellij.wasm"
-                ''
-                + pkgs.lib.optionalString localRuntime ''
-                  export BKPR_ZELLIJ_CHECKOUT="''${BKPR_ZELLIJ_CHECKOUT:-../bkpr-zellij}"
-                  unset BKPR_ZELLIJ BKPR_ZELLIJ_VENDOR
-                '';
-              }
-              // pkgs.lib.optionalAttrs (!localRuntime) {
-                BKPR_ZELLIJ = "${zellij}/bin/zellij";
-                BKPR_ZELLIJ_VENDOR = bkpr-zellij.packages.${system}.cargo-vendor;
-              }
-            );
         in
         {
-          default = mkDevShell false;
-          local = mkDevShell true;
+          default = pkgs.mkShell {
+            packages = [
+              (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml)
+              pkgs.just
+              pkgs.git
+              pkgs.gh
+              pkgs.nodejs
+              pkgs.pkg-config
+              pkgs.curl
+              pkgs.patch
+              pkgs.gnutar
+              pkgs.xz
+              pkgs.coreutils
+              pkgs.findutils
+              pkgs.imagemagick
+              (pkgs.python3.withPackages (ps: [ ps.pyte ]))
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.xdotool ];
+            nativeBuildInputs = [ pkgs.rustPlatform.bindgenHook ];
+          };
         }
       );
 

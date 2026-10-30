@@ -1,6 +1,6 @@
 # Pane-first mux assessment
 
-Date: 2026-10-29. Status: approved architectural direction; replacement implementation and runtime feasibility remain unverified.
+Date: 2026-10-29. Status: approved architectural direction; native implementation underway, with measured limitations recorded in the engine report.
 
 ## Decision and scope
 
@@ -8,9 +8,9 @@ Bkpr should own its pane-first product model, mux control plane and client front
 
 The desired product is a backend that keeps panes alive independently of any display layout, with terminal, web and mobile clients presenting their own views. A layout may include panes from different hosts. Agent identity, execution membership and lifecycle remain backend facts, not consequences of whichever client currently displays a pane.
 
-This authorizes a direction and a focused feasibility investigation, not a claim that a replacement works. Current Bkpr remains Zellij-backed. Keep that working path during development; the eventual cutover should remove obsolete native adapters rather than establish permanent dual-backend compatibility. There is no promise to migrate live PTYs between backends.
+This branch replaces the old implementation outright. It does not keep a Zellij-backed launch path, old regression obligations or a permanent second backend. Existing installations and live sessions outside this branch are not modified. There is no live-PTY transfer promise.
 
-The next steps, dependency inventory and implementation gates are in the [implementation plan](implementation-plan.md). The earlier `remote-workspaces-design.md` and `remote-workspaces-plan.md` describe a different, session/tab-owned Zellij embedding architecture; they are not this pane-first model.
+`main` and the retained Zellij fork are starting material, not specifications. Reuse useful code, keep coherent modules where they fit, refactor or rewrite freely where a better design serves the agreed product. The [implementation plan](implementation-plan.md) records source locations, provenance, dependency decisions and current work. Superseded session/tab-owned remote-workspace proposals have been removed.
 
 ## Alternatives
 
@@ -43,7 +43,7 @@ Important constraints:
 
 - The official API is in development and may break; neither an established stable tagged ABI nor an official Rust SDK was found. That does **not** mean Rust bindings are unavailable. Community crates [`libghostty-vt`](https://crates.io/crates/libghostty-vt) and [`libghostty-vt-sys`](https://crates.io/crates/libghostty-vt-sys) provide safe wrappers and generated FFI. Published 0.2.2 lacks some callbacks, but the checked [upstream Rust revision `9ede35b`](https://github.com/Uzaaft/libghostty-rs/tree/9ede35b8ea94a55ed3608408d67e102883129f1e) already wraps clipboard reads/writes, OSC 7501 and render holds. Prefer that maintained dependency over a competing generic Bkpr Rust SDK; retain Bkpr's owned scene, lifecycle, limits and authority adapter.
 - Match the Rust bindings to their native source, not an arbitrary installed library: the checked Rust revision pins Ghostty `521cf2c` (October 21), while the initial Bkpr experiment pins `93967b7` (October 29). The remaining measured API extension is validated paste-offer identity: existing safe paste/read APIs do not expose it. Exact retained MIME contents and origin-bound cancellation need a narrow native provenance addition plus corresponding sys/safe-wrapper support, revalidated against a compatible source pair. Prefer upstream contributions, not vendoring a large wrapper or engine fork.
-- Ghostty intentionally does not implement application Sixel decoding. Kitty graphics support does not imply Sixel compatibility. Audit existing Sixel behavior before engine selection; preserve it through a maintained component and bounded integration, select a different engine, or obtain an explicit product decision before dropping support. See the [upstream discussion](https://github.com/ghostty-org/ghostty/discussions/2496).
+- Ghostty intentionally does not implement application Sixel decoding. Kitty graphics support does not imply Sixel compatibility. Current support is explicitly absent; choose a maintained codec/engine integration if the new product requires it, rather than inherit a parity obligation from the previous implementation. See the [upstream discussion](https://github.com/ghostty-org/ghostty/discussions/2496).
 - OSC 52 and Kitty OSC 5522 read/write/paste hooks are promising, but callbacks are synchronous. Prove remote permission/reply handling without stalling unrelated panes or violating callback lifetimes, including pane-local pause and timeout behavior where required. The host terminal's clipboard policy cannot be silently bypassed. See the [terminal effects API](https://libghostty.tip.ghostty.org/group__terminal.html), [OSC 7501 API addition](https://github.com/ghostty-org/ghostty/pull/14560), and [checked upstream revision](https://github.com/ghostty-org/ghostty/commit/93967b7f9478e94dcbb42125c8a90f34feb40d75).
 - libghostty-vt supplies neither a mux daemon nor complete Bkpr TUI, browser or mobile renderers. Font shaping, glyph/image delivery, selections, hit testing, IME/accessibility and terminal-client capability handling remain explicit integration concerns.
 

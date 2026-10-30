@@ -1,4 +1,4 @@
-//! Isolated, Zellij-independent engine proof for Bkpr's pane-first replacement.
+//! Native pane ownership, terminal state and independent client projections for Bkpr.
 pub mod authority;
 #[cfg(target_os = "linux")]
 mod process_tree;
@@ -229,7 +229,7 @@ impl Pane {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let state = shared.clone();
         thread::Builder::new()
-            .name("proof-pane".into())
+            .name("bkpr-pane".into())
             .spawn(move || {
                 let result = run_pane(spec, state.clone(), rx, ready_tx);
                 if let Err(error) = result {
@@ -561,15 +561,15 @@ fn prepare_home(home: &Path) -> Result<()> {
         bail!("isolated HOME must be absolute");
     }
     if home.exists()
-        && !home.join(".bkpr-mux-proof-home").is_file()
+        && !home.join(".bkpr-native-home").is_file()
         && std::fs::read_dir(home)?.next().is_some()
     {
-        bail!("refusing nonempty HOME without proof isolation marker");
+        bail!("refusing nonempty HOME without native isolation marker");
     }
     std::fs::create_dir_all(home)?;
     std::fs::write(
-        home.join(".bkpr-mux-proof-home"),
-        b"isolated engine proof\n",
+        home.join(".bkpr-native-home"),
+        b"isolated native pane runtime\n",
     )?;
     std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700))?;
     for dir in ["config", "cache", "data", "state", "runtime"] {
@@ -704,7 +704,7 @@ fn run_pane(
     let pid = child.pid;
     let fd = master
         .as_raw_fd()
-        .context("proof requires a native PTY descriptor")?;
+        .context("pane runtime requires a native PTY descriptor")?;
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -717,7 +717,7 @@ fn run_pane(
     let reader_stop = ReaderStop(Arc::new(AtomicBool::new(false)));
     let reader_cancel = reader_stop.0.clone();
     let reader_thread = thread::Builder::new()
-        .name("proof-pty-reader".into())
+        .name("bkpr-pty-reader".into())
         .spawn(move || {
             let mut buffer = [0; 16384];
             while !reader_cancel.load(Ordering::Acquire) {

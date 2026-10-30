@@ -71,7 +71,7 @@ fn valid_size(size: Size) -> Result<()> {
         || size.cell_width > 1024
         || size.cell_height > 1024
     {
-        return Err(Error("terminal size exceeds bounded proof geometry".into()));
+        return Err(Error("terminal size exceeds bounded pane geometry".into()));
     }
     Ok(())
 }

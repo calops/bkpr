@@ -1,41 +1,5 @@
 {
   "nodes": {
-    "bkpr-zellij": {
-      "inputs": {
-        "nixpkgs": "nixpkgs",
-        "rust-overlay": "rust-overlay"
-      },
-      "locked": {
-        "lastModified": 1793260564,
-        "narHash": "sha256-Z2lnCcgp84ADDMSbMyOO/fME57QmCPUh1dbTkEhWRho=",
-        "owner": "calops",
-        "repo": "bkpr-zellij",
-        "rev": "d7b40a37a63d4934054516f6f445488348075a62",
-        "type": "github"
-      },
-      "original": {
-        "owner": "calops",
-        "ref": "main",
-        "repo": "bkpr-zellij",
-        "type": "github"
-      }
-    },
-    "nixpkgs": {
-      "locked": {
-        "lastModified": 1789546076,
-        "narHash": "sha256-zVxLZiSnmaaPLwnhj7pwmqe3axBg/C6nG5JZsJMh2g4=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "b1b875982b17dabde9b4a37f3e229e74913e6db3",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "b1b875982b17dabde9b4a37f3e229e74913e6db3",
-        "type": "github"
-      }
-    },
     "nixpkgs_2": {
       "locked": {
         "lastModified": 1789546076,
@@ -54,31 +18,8 @@
     },
     "root": {
       "inputs": {
-        "bkpr-zellij": "bkpr-zellij",
         "nixpkgs": "nixpkgs_2",
         "rust-overlay": "rust-overlay_2"
-      }
-    },
-    "rust-overlay": {
-      "inputs": {
-        "nixpkgs": [
-          "bkpr-zellij",
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1791448976,
-        "narHash": "sha256-HJ4TEF3j7HmLYeEP/PtqjeiBX/6TppXB2qY53HcrWbs=",
-        "owner": "oxalica",
-        "repo": "rust-overlay",
-        "rev": "f91010a5c1b6125b715eb78a84fb5dd8fb74a2b0",
-        "type": "github"
-      },
-      "original": {
-        "owner": "oxalica",
-        "repo": "rust-overlay",
-        "rev": "f91010a5c1b6125b715eb78a84fb5dd8fb74a2b0",
-        "type": "github"
       }
     },
     "rust-overlay_2": {
