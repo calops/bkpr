@@ -2,10 +2,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "release": "node .github/scripts/tag-release.mjs"
+    "release:preview": "semantic-release --dry-run",
+    "test:release-policy": "node --test .github/scripts/release-analyzer.test.cjs"
   },
   "devDependencies": {
-    "@semantic-release/changelog": "7.0.0",
     "@semantic-release/commit-analyzer": "13.0.1",
     "@semantic-release/release-notes-generator": "14.1.0",
     "conventional-changelog-conventionalcommits": "9.3.1",

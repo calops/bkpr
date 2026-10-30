@@ -76,7 +76,7 @@ impl Queue {
         });
         let worker = queue.clone();
         let thread = thread::Builder::new()
-            .name("proof-pty-writer".into())
+            .name("bkpr-pty-writer".into())
             .spawn(move || {
                 loop {
                     let packet = {

@@ -22,7 +22,7 @@ impl Fixture {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         let socket = root.join("s");
         let home = root.join("h");
-        let daemon = Command::new(env!("CARGO_BIN_EXE_bkpr-mux-proof"))
+        let daemon = Command::new(env!("CARGO_BIN_EXE_bkpr"))
             .args(["daemon", "--socket"])
             .arg(&socket)
             .arg("--home")
@@ -73,7 +73,7 @@ impl Fixture {
     fn keyboard(&self, view: &str, bytes: &[u8]) {
         // One batch, no per-character sleeps: exact decoder -> FIFO RPC sender
         // -> bounded PTY writer path used by the physical TUI.
-        let output = Command::new(env!("CARGO_BIN_EXE_bkpr-mux-proof"))
+        let output = Command::new(env!("CARGO_BIN_EXE_bkpr"))
             .args(["keyboard", "--socket"])
             .arg(&self.socket)
             .args(["--view", view])

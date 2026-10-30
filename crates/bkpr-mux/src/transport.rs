@@ -51,7 +51,7 @@ pub fn serve(socket: &Path, pane: Pane) -> Result<()> {
         bail!("socket parent must be owned by current user and mode 0700");
     }
     let listener = UnixListener::bind(socket)
-        .context("binding private proof socket (never replaces existing sockets)")?;
+        .context("binding private pane socket (never replaces existing sockets)")?;
     let _guard = SocketGuard(socket.to_owned());
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
@@ -133,7 +133,7 @@ pub fn request(socket: &Path, value: &Value) -> Result<Value> {
     }
     let response: Value = serde_json::from_slice(&bytes)?;
     if response["version"] != PROTOCOL_VERSION {
-        bail!("unsupported proof protocol version");
+        bail!("unsupported pane protocol version");
     }
     Ok(response)
 }

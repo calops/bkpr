@@ -741,7 +741,7 @@ fn paste_offer_packet(offer: &mut Option<PasteOffer>, packet: &[u8]) -> Result<O
                     } else {
                         ClipboardLocation::Standard
                     },
-                    name: "bkpr-mux-proof".into(),
+                    name: "bkpr".into(),
                     granted: false,
                     can_remember: false,
                     paste_offer_id: None,
@@ -1611,7 +1611,7 @@ pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()>
                         }
                     } else {
                         format!(
-                            "proof {} {} | Ctrl-] detach | clipboard {} | {} | {}",
+                            "bkpr {} {} | Ctrl-] detach | clipboard {} | {} | {}",
                             &view[..8],
                             if read_only {
                                 "read-only"

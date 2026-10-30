@@ -1,8 +1,8 @@
-# Pane-first engine experiment
+# Initial pane-first engine experiment
 
 ## Decision
 
-**Not accepted for cutover.** We have a real, isolated pane engine, not the full Bkpr replacement. The experiment runs without Zellij, but the shipping launcher, workspace UI, harness integration and recovery still use the current runtime. The target remains a full replacement, not two supported backends. The [implementation plan](implementation-plan.md) keeps the phase gates; this report doesn't close all of Phase 1, platform or packaging acceptance.
+**Initial native evidence at `e9ee402`, updated for the native-only branch—not production acceptance.** The initial experiment ran independently of Zellij. This branch now removes the old runtime and makes the native application the only path; no old regression suite is required. Retained executable snapshots identify historical observations; current native verification is recorded below. Current usage is in [README](../../README.md), and the [implementation plan](implementation-plan.md) governs continued development.
 
 The blocking observation is initial visibility of a four-row RGBA Kitty image below text. Both physical consumers remain blank after five seconds despite a valid normalized scene and host parsing. A read-only debugger trace on both fresh owned Kitty 0.49.2 processes establishes the cause: the host selects non-layered rendering from zero image counts, then rebuilds four negative placements without updating that decision or scheduling another render. A host-only empty `clear_selection` causes a layered draw with the same four placements and makes both images visible. This is a host compositor defect in the exercised fixture, not a graphics acceptance pass. Image/text reorder, synchronized-output wrapping, resource-ACK gating and tracing/environment hooks were removed rather than retained as redraw, sleep or layer workarounds.
 
@@ -55,11 +55,11 @@ This isn't a commitment to maintain a second generic Ghostty SDK. Prefer the mai
 
 ## Build and try it
 
-These commands build only the isolated experiment. They don't select Zellij, alter Bkpr defaults, install harness adapters, edit profiles or make provider requests. Use the repository devshell for Rust, Clang/libclang, C build tools and download/unpack tools. Native preparation downloads pinned Ghostty and Zig archives into the shared target directory.
+The commands below use the current native executable name. They do not install harness adapters, edit profiles or make provider requests. Use the repository devshell for Rust, Clang/libclang, C build tools and download/unpack tools. Native preparation downloads pinned Ghostty and Zig archives into the shared target directory. If the shared target contains a running older `bkpr` executable, preserve it or isolate public artifact output before building.
 
 ```sh
 export CARGO_TARGET_DIR=/home/calops/projects/bkpr/target
-nix develop .#local
+nix develop
 scripts/prepare-ghostty-vt.sh
 export BKPR_GHOSTTY_VT_DIR="$(scripts/prepare-ghostty-vt.sh --print-prefix)"
 cargo build --locked -p bkpr-mux
@@ -68,7 +68,7 @@ cargo build --locked -p bkpr-mux
 proof_dir=$(mktemp -d /tmp/bkpr-engine.XXXXXX)
 chmod 700 "$proof_dir"
 printf 'Experiment directory: %s\n' "$proof_dir"
-"$CARGO_TARGET_DIR/debug/bkpr-mux-proof" daemon \
+"$CARGO_TARGET_DIR/debug/bkpr" daemon \
   --socket "$proof_dir/mux.sock" --home "$proof_dir/home" -- /bin/sh -i
 ```
 
@@ -77,14 +77,14 @@ In another terminal, set `proof_dir` to the printed directory and attach:
 ```sh
 export CARGO_TARGET_DIR=/home/calops/projects/bkpr/target
 read -r -p 'Experiment directory printed by terminal 1: ' proof_dir
-"$CARGO_TARGET_DIR/debug/bkpr-mux-proof" tui --socket "$proof_dir/mux.sock"
+"$CARGO_TARGET_DIR/debug/bkpr" tui --socket "$proof_dir/mux.sock"
 ```
 
 A second terminal can run the same command, or add `--read-only`. Clipboard policy defaults to `ask`; `--clipboard allow|deny` selects an explicit experiment policy. Ctrl-] detaches without killing the shell. Stop the owned daemon and child explicitly when finished:
 
 ```sh
-"$CARGO_TARGET_DIR/debug/bkpr-mux-proof" request --socket "$proof_dir/mux.sock" '{"op":"inspect"}'
-"$CARGO_TARGET_DIR/debug/bkpr-mux-proof" request --socket "$proof_dir/mux.sock" '{"op":"shutdown"}'
+"$CARGO_TARGET_DIR/debug/bkpr" request --socket "$proof_dir/mux.sock" '{"op":"inspect"}'
+"$CARGO_TARGET_DIR/debug/bkpr" request --socket "$proof_dir/mux.sock" '{"op":"shutdown"}'
 ```
 
 The CLI's `--help` describes typed attach/update/poll/pin/input/clipboard operations. Don't attach this proof to existing sessions or substitute a real-provider harness run for the isolated fixture.
@@ -116,26 +116,26 @@ Final integrated snapshot: `proof-final-geometry-1`, SHA-256 `355abc760e193fb793
 
 Cleanup records for the clean baseline and final API, clipboard-boundary and composed-geometry fixtures record exact process births, exact-birth-only signalling and empty survivor lists. Cleanup success doesn't turn a failed visibility assertion into a pass.
 
-## Integration verification
+## Native-only branch verification
 
-With the prepared native prefix and shared Cargo target:
+The replacement workspace contains only `bkpr-mux` and `bkpr-terminal`; the native executable is `bkpr`.
 
 | Check | Observed result |
 | --- | --- |
-| `cargo test --locked --workspace` | 750 passed, including the real-process integration and geometry/boundary regressions |
-| `cargo build --locked -p bkpr-mux` | Passed; final executable snapshot above |
-| `cargo build --locked -p bkpr-zellij --target wasm32-wasip1` | Passed; canonical plugin artifact preserved |
+| `cargo test --locked --workspace` | 56 native tests passed: 27 mux, 6 real-process integration, 1 offer-lifetime and 22 terminal-adapter |
+| `cargo build --locked -p bkpr-mux --bin bkpr` | Passed |
 | `cargo clippy --locked --workspace --all-targets -- -D warnings` | Passed |
-| `cargo clippy --locked -p bkpr-zellij --target wasm32-wasip1 -- -D warnings` | Passed |
-| Rust formatting for both new crates; `nix fmt -- --check flake.nix` | Passed |
-| `nix eval .#devShells.aarch64-darwin.local.drvPath --raw` | Passed dependency evaluation only |
+| Rust/Nix formatting and devshell evaluation | Passed; non-Linux evaluation is not a runtime proof |
+| Native daemon API smoke | Sizing/input/clipboard authority, two-view convergence, scrollback, OSC 7501, MIME reads/writes, stale-grant denial, detach survival and termination passed |
+| Two actual native TUI clients | One-pixel image, composed clipped/native geometry and explicit image deletion passed; not initial-presentation acceptance |
+| Retained release-analysis policy tests | 8 passed; separate from native runtime verification |
 
-WASI linking ran in a private Linux user/mount namespace that redirected only public artifact output while reusing canonical caches and locks. `wasi-link-check/result.json` records unchanged before/after checksums for the user's existing plugin and a separate verified output. No Nix package build was produced. These checks don't establish platform packaging, an upstream Rust/native SDK upgrade or full-product acceptance.
+Current evidence is under `/home/calops/projects/bkpr/target/smoke/native-only-reset/`: `checks/result.json`, `api/observations.json`, `tui/observations.json`, physical screenshots and exact-birth cleanup records. Both smoke fixtures have no survivors. Native verification used a private public-output view with canonical caches/locks; the unrelated currently used executable's checksum stayed unchanged. No Zellij/WASI regression checks were run for this replacement, and no native Nix application package is claimed.
 
 ## Compatibility and remaining adoption gates
 
 Only Linux x86-64 has actual build/runtime evidence here. The preparation recipe also names Linux aarch64 and macOS arm64 archives; those platforms and their packaging aren't verified by this report.
 
-Sixel is unsupported and advertised as such. Physical OSC-52-only host clipboard **reads** are also unsupported: safe child OSC 52 reads go through correlated host OSC 5522 requests. These are explicit compatibility choices to decide before cutover, not reasons to introduce another permanent backend. OSC 52 writes and the physical enhanced-paste path are separate supported observations.
+Sixel is unsupported and advertised as such. Physical OSC-52-only host clipboard **reads** are also unsupported: safe child OSC 52 reads go through correlated host OSC 5522 requests. Define the new product's supported host/capability matrix explicitly rather than inheriting old implementation parity. OSC 52 writes and the physical enhanced-paste path are separate supported observations.
 
-Acceptance still needs a host rendering fix and fresh initial-presentation evidence, closure of the unattributed positive-after-clear and startup observations, compatible upstream Rust/native adoption, platform and package closure, and the plan's later registry, layout, control, metadata, harness, recovery and endpoint-security work. The compositor trace establishes a cause, not a shipped fix. Snapshots, one-pane cleanup and SSH terminal fixtures don't stand in for those product contracts. No default runtime switch is justified by this experiment yet.
+Production acceptance still needs a host rendering fix and fresh initial-presentation evidence, closure of the unattributed positive-after-clear and startup observations, compatible upstream Rust/native adoption, platform and package closure, and the plan's registry, layout, control, metadata, harness, recovery and endpoint-security work. The compositor trace establishes a cause, not a shipped fix. Removing the old implementation does not make these observations pass, and none requires preserving the old runtime on this branch.
