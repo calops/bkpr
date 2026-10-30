@@ -1,0 +1,728 @@
+diff --git a/crates/libghostty-vt/src/kitty/graphics.rs b/crates/libghostty-vt/src/kitty/graphics.rs
+index 4ed7920..525cf07 100644
+--- a/crates/libghostty-vt/src/kitty/graphics.rs
++++ b/crates/libghostty-vt/src/kitty/graphics.rs
+@@ -993,7 +993,17 @@ impl<'t> Image<'t> {
+     /// [generation](Image::generation) changes whenever the current frame
+     /// changes, so generation-keyed caches remain coherent.
+     pub fn data(&self) -> Result<Option<&'t [u8]>> {
+-        let ptr = self.get::<*const u8>(ffi::KittyGraphicsImageData::DATA_PTR)?;
++        let mut ptr = std::mem::MaybeUninit::<*const u8>::uninit();
++        let result = unsafe {
++            ffi::ghostty_kitty_graphics_image_get(
++                self.inner.as_raw(),
++                ffi::KittyGraphicsImageData::DATA_PTR,
++                ptr.as_mut_ptr().cast(),
++            )
++        };
++        let Some(ptr) = from_optional_result_uninit(result, ptr)? else {
++            return Ok(None);
++        };
+         if ptr.is_null() {
+             return Ok(None);
+         }
+@@ -1566,20 +1576,37 @@ pub trait DecodePng: Send + 'static {
+ /// # }
+ /// ```
+ #[cfg(all(feature = "kitty-graphics", feature = "png"))]
+-#[derive(Clone, Debug, Default)]
++#[derive(Clone, Debug)]
+ // Keep the decoder constructible only through `new` and `Default`, so that
+ // it can grow internal state later without breaking callers.
+ #[non_exhaustive]
+-pub struct RustPngDecoder;
++pub struct RustPngDecoder {
++    max_decoded_bytes: usize,
++}
+ #[cfg(all(feature = "kitty-graphics", feature = "png"))]
+ impl RustPngDecoder {
+     /// Create a PNG decoder.
+     #[must_use]
+     pub const fn new() -> Self {
+-        Self
++        Self { max_decoded_bytes: usize::MAX }
++    }
++
++    /// Bound the decoded RGBA8 output before allocating or decoding pixels.
++    ///
++    /// The limit includes expansion of RGB, palette and grayscale formats to
++    /// four bytes per pixel. It is independent of the native allocator's limit.
++    /// The default is unlimited; zero rejects every nonempty image.
++    #[must_use]
++    pub const fn with_max_decoded_bytes(mut self, limit: usize) -> Self {
++        self.max_decoded_bytes = limit;
++        self
+     }
+ }
+ #[cfg(all(feature = "kitty-graphics", feature = "png"))]
++impl Default for RustPngDecoder {
++    fn default() -> Self { Self::new() }
++}
++#[cfg(all(feature = "kitty-graphics", feature = "png"))]
+ impl DecodePng for RustPngDecoder {
+     fn decode_png<'alloc>(
+         &mut self,
+@@ -1601,6 +1628,9 @@ impl DecodePng for RustPngDecoder {
+         let (width, height) = reader.info().size();
+         let pixels = (width as usize).checked_mul(height as usize)?;
+         let rgba_len = pixels.checked_mul(4)?;
++        if rgba_len > self.max_decoded_bytes {
++            return None;
++        }
+ 
+         // Allocate the output with the provided allocator *before* decoding
+         // anything. libghostty caps what the decoder may allocate, and the
+@@ -1804,7 +1834,7 @@ mod png_decoder_tests {
+     }
+ 
+     fn decode(encoded: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+-        RustPngDecoder
++        RustPngDecoder::new()
+             .decode_png(&Allocator::GLOBAL, encoded)
+             .map(|image| (image.width, image.height, image.data.to_vec()))
+     }
+@@ -1917,13 +1947,57 @@ mod png_decoder_tests {
+ 
+         let capped = Capped::new(1024 * 1024);
+         assert!(
+-            RustPngDecoder
++            RustPngDecoder::new()
+                 .decode_png(&capped.allocator(), &encoded)
+                 .is_none()
+         );
+         assert_eq!(capped.largest_request(), 16000 * 16000 * 4);
+     }
+ 
++    #[test]
++    fn output_budget_rejects_large_header_before_any_native_allocation() {
++        let mut encoded = png(png::ColorType::Rgba, png::BitDepth::Eight, &[0; 4]).encode();
++        // A small payload advertising 8192x8192 RGBA (256 MiB). Native PNG
++        // allocators may allow this even when the embedder permits only 64 MiB.
++        encoded[16..24].copy_from_slice(&[0, 0, 0x20, 0, 0, 0, 0x20, 0]);
++        let crc = crc32(&encoded[12..29]);
++        encoded[29..33].copy_from_slice(&crc.to_be_bytes());
++        let capped = Capped::new(400 * 1024 * 1024);
++        assert!(
++            RustPngDecoder::new()
++                .with_max_decoded_bytes(64 * 1024 * 1024)
++                .decode_png(&capped.allocator(), &encoded)
++                .is_none()
++        );
++        assert_eq!(capped.largest_request(), 0);
++    }
++
++    #[test]
++    fn output_budget_is_inclusive_and_counts_rgba_expansion() {
++        for (color, pixels, expected) in [
++            (png::ColorType::Rgba, &[1, 2, 3, 4][..], [1, 2, 3, 4]),
++            (png::ColorType::Grayscale, &[17][..], [17, 17, 17, 255]),
++            (png::ColorType::GrayscaleAlpha, &[17, 29][..], [17, 17, 17, 29]),
++        ] {
++            let encoded = png(color, png::BitDepth::Eight, pixels).encode();
++            let capped = Capped::new(128);
++            assert!(
++                RustPngDecoder::new()
++                    .with_max_decoded_bytes(3)
++                    .decode_png(&capped.allocator(), &encoded)
++                    .is_none()
++            );
++            assert_eq!(capped.largest_request(), 0);
++            let allocator = capped.allocator();
++            let image = RustPngDecoder::new()
++                .with_max_decoded_bytes(4)
++                .decode_png(&allocator, &encoded)
++                .expect("the exact RGBA output budget is accepted");
++            assert_eq!(&*image.data, expected);
++            assert_eq!(capped.largest_request(), 4);
++        }
++    }
++
+     fn crc32(bytes: &[u8]) -> u32 {
+         let mut crc = !0u32;
+         for &byte in bytes {
+diff --git a/crates/libghostty-vt/src/paste.rs b/crates/libghostty-vt/src/paste.rs
+index 0e2dcd1..6a7a5a9 100644
+--- a/crates/libghostty-vt/src/paste.rs
++++ b/crates/libghostty-vt/src/paste.rs
+@@ -226,6 +226,16 @@ impl Options {
+         self.inner.allow_unsafe = allow;
+         self
+     }
++
++    /// Attach an embedder-owned correlation to this paste's one-time grant.
++    ///
++    /// Zero means none. The identity is never sent to the program and is not
++    /// permission: revalidate the originating view in the clipboard callback.
++    #[must_use]
++    pub fn with_offer_id(mut self, id: u64) -> Self {
++        self.inner.offer_id = id;
++        self
++    }
+ }
+ 
+ impl Default for Options {
+diff --git a/crates/libghostty-vt/src/terminal.rs b/crates/libghostty-vt/src/terminal.rs
+index 68046d0..9160111 100644
+--- a/crates/libghostty-vt/src/terminal.rs
++++ b/crates/libghostty-vt/src/terminal.rs
+@@ -331,16 +331,17 @@ impl<'alloc: 'cb, 'cb> Terminal<'alloc, 'cb> {
+     ///
+     /// Like [`Self::vt_write`], the input is assumed to be untrusted.
+     pub fn vt_write_until_ground(&mut self, data: &[u8]) -> Result<Option<usize>> {
+-        let mut consumed = 0;
++        let mut stop = ffi::sized!(ffi::TerminalWriteStop);
+         let result = unsafe {
+-            ffi::ghostty_terminal_vt_write_until_ground(
++            ffi::ghostty_terminal_vt_write_until(
+                 self.inner.as_raw(),
+                 data.as_ptr(),
+                 data.len(),
+-                &raw mut consumed,
++                ffi::TerminalBoundary::GROUND as u32,
++                &raw mut stop,
+             )
+         };
+-        from_optional_result_with_len(result, consumed)
++        from_optional_result_with_len(result, stop.consumed)
+     }
+ 
+     /// Whether VT processing is at ground.
+@@ -2203,6 +2204,19 @@ impl<'t> ClipboardRead<'t> {
+         unsafe { crate::sized_field!(self.ptr, ffi::ClipboardRead, granted) }.unwrap_or(false)
+     }
+ 
++    /// Exact embedder offer identity from the validated one-time paste grant.
++    ///
++    /// This is correlation, not authorization. Ordinary and session grants,
++    /// invalid passwords and consumed offers return `None`. A targets-only
++    /// listing observes the identity without consuming the one-time grant.
++    #[must_use]
++    pub fn paste_offer_id(&self) -> Option<u64> {
++        // SAFETY: Only read the optional trailing field when the native sized
++        // request includes it; older request prefixes remain valid.
++        let id = unsafe { crate::sized_field!(self.ptr, ffi::ClipboardRead, paste_offer_id) }?;
++        (id != 0).then_some(id)
++    }
++
+     /// True if the program supplied a session password, so the embedder may
+     /// offer to remember the user's decision through the `remember` argument
+     /// of [`reply`](Self::reply). When false, `remember` is ignored.
+@@ -5523,9 +5537,28 @@ mod tests {
+         assert!(read.name().is_empty());
+         assert!(!read.granted());
+         assert!(!read.can_remember());
++        assert_eq!(read.paste_offer_id(), None);
+         read.reply(Ok(&[]), &[], false);
+     }
+ 
++    #[test]
++    fn clipboard_offer_identity_respects_sized_prefix() {
++        let mut raw = ffi::ClipboardRead {
++            paste_offer_id: 41,
++            ..ffi::sized!(ffi::ClipboardRead)
++        };
++        // SAFETY: raw owns the complete request for both bounded views.
++        assert_eq!(
++            unsafe { ClipboardRead::from_raw(&raw const raw) }.paste_offer_id(),
++            Some(41)
++        );
++        raw.size = std::mem::offset_of!(ffi::ClipboardRead, paste_offer_id);
++        assert_eq!(
++            unsafe { ClipboardRead::from_raw(&raw const raw) }.paste_offer_id(),
++            None
++        );
++    }
++
+     /// Bold `A`, then `B`, a space and `C` on the first row.
+     ///
+     /// Expected checksums, worked out from upstream's `xt_checksum.compute`:
+diff --git a/crates/libghostty-vt-sys/build.rs b/crates/libghostty-vt-sys/build.rs
+index d8e9dde..9f1868e 100644
+--- a/crates/libghostty-vt-sys/build.rs
++++ b/crates/libghostty-vt-sys/build.rs
+@@ -4,7 +4,7 @@ use std::process::Command;
+ 
+ /// Pinned ghostty commit. Update this to pull a newer version.
+ const GHOSTTY_REPO: &str = "https://github.com/ghostty-org/ghostty.git";
+-const GHOSTTY_COMMIT: &str = "521cf2c5d30bd48028ca61546c64e7913764073d";
++const GHOSTTY_COMMIT: &str = "93967b7f9478e94dcbb42125c8a90f34feb40d75";
+ 
+ /// File name of the static archive on Windows. Ghostty installs it under this
+ /// name for every Windows ABI so it does not collide with `ghostty-vt.lib`,
+@@ -93,6 +93,51 @@ fn main() {
+         "Wasm targets support static linking only; disable the link-dynamic feature"
+     );
+ 
++    println!("cargo:rerun-if-env-changed=GHOSTTY_INSTALL_DIR");
++    if let Some(prefix) = env::var_os("GHOSTTY_INSTALL_DIR") {
++        let prefix = PathBuf::from(prefix);
++        let revision = prefix.join("ghostty-source-revision");
++        println!("cargo:rerun-if-changed={}", revision.display());
++        assert_eq!(
++            std::fs::read_to_string(revision)
++                .expect("prepared Ghostty source revision")
++                .trim(),
++            GHOSTTY_COMMIT,
++            "installed Ghostty does not match the checked-in SDK ABI"
++        );
++        let include = prefix.join("include");
++        assert!(
++            include.join("ghostty/vt.h").is_file(),
++            "missing Ghostty headers"
++        );
++        let lib = prefix.join("lib");
++        let archive = if target.contains("windows") {
++            WINDOWS_STATIC_LIB_FILE
++        } else {
++            "libghostty-vt.a"
++        };
++        assert!(
++            matches!(link_mode, LinkMode::Static),
++            "GHOSTTY_INSTALL_DIR requires static linking"
++        );
++        assert!(
++            lib.join(archive).is_file(),
++            "missing Ghostty static archive"
++        );
++        println!("cargo:rustc-link-search=native={}", lib.display());
++        emit_static_link_lib(&target);
++        emit_include_metadata(&[include]);
++        println!(
++            "cargo:rustc-env=LIBGHOSTTY_VT_SYS_INCLUDE_DIR={}",
++            prefix.join("include").display()
++        );
++        if target.contains("linux") {
++            for library in ["m", "pthread", "dl"] {
++                println!("cargo:rustc-link-lib={library}");
++            }
++        }
++        return;
++    }
+     println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_SYS_CPU");
+     println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_SYS_OPTIMIZE");
+     println!("cargo:rerun-if-env-changed=GHOSTTY_SOURCE_DIR");
+@@ -142,6 +187,21 @@ fn build_vendored(link_mode: LinkMode, target: &str) {
+         }
+         Err(_) => fetch_ghostty(&out_dir),
+     };
++    // Sized trailing fields are kept as a separately reviewable native
++    // contribution until Ghostty merges offer correlation.
++    let patch = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
++        .join("native/clipboard-offer.patch");
++    println!("cargo:rerun-if-changed={}", patch.display());
++    let paste_header = std::fs::read_to_string(ghostty_dir.join("include/ghostty/vt/paste.h"))
++        .expect("reading pinned paste ABI");
++    if !paste_header.contains("uint64_t offer_id;") {
++        let mut apply = Command::new("patch");
++        apply
++            .args(["--batch", "--fuzz=0", "--forward", "-p1", "-i"])
++            .arg(&patch)
++            .current_dir(&ghostty_dir);
++        run(apply, "native paste-offer contribution");
++    }
+ 
+     // Build libghostty-vt via zig.
+     let install_prefix = out_dir.join("ghostty-install");
+@@ -204,6 +264,8 @@ fn build_vendored(link_mode: LinkMode, target: &str) {
+     let mut build = Command::new(zig);
+     build
+         .arg("build")
++        .arg("-j8")
++        .arg("-Dsimd=true")
+         .arg("-Demit-lib-vt=true")
+         .arg(format!("-Doptimize={optimize}"))
+         // Cargo artifacts may run on older CPUs than the build host. Without
+diff --git a/crates/libghostty-vt-sys/native/clipboard-offer.patch b/crates/libghostty-vt-sys/native/clipboard-offer.patch
+new file mode 100644
+index 0000000..bf0bab9
+--- /dev/null
++++ b/crates/libghostty-vt-sys/native/clipboard-offer.patch
+@@ -0,0 +1,206 @@
++diff --git a/include/ghostty/vt/paste.h b/include/ghostty/vt/paste.h
++index 1f4c560..7e60387 100644
++--- a/include/ghostty/vt/paste.h
+++++ b/include/ghostty/vt/paste.h
++@@ -154,6 +154,14 @@ typedef struct {
++    * with the user on GHOSTTY_REJECTED, and call again with true.
++    */
++   bool allow_unsafe;
+++
+++  /**
+++   * Optional embedder-owned identity for this paste offer. Zero means none.
+++   * For a Kitty paste event, its validated one-time grant carries this value
+++   * into GhosttyClipboardRead::paste_offer_id. The ID is never sent to the
+++   * program and does not grant permission by itself. No pointer is retained.
+++   */
+++  uint64_t offer_id;
++ } GhosttyPaste;
++ 
++ /**
++diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
++index b586556..74115df 100644
++--- a/include/ghostty/vt/terminal.h
+++++ b/include/ghostty/vt/terminal.h
++@@ -1279,6 +1279,15 @@ struct GhosttyClipboardRead {
++ 
++   /** Answer the read; see the struct documentation. */
++   GhosttyClipboardReadReplyFn reply;
+++
+++  /**
+++   * Embedder offer identity from GhosttyPaste::offer_id, only when this
+++   * request carries that paste event's validated one-time password.
+++   * Zero for normal/session grants, missing, invalid or consumed passwords.
+++   * A targets-only listing reports the identity without consuming the grant.
+++   * This is correlation, not authorization: revalidate the offer's authority.
+++   */
+++  uint64_t paste_offer_id;
++ };
++ 
++ /**
++diff --git a/src/terminal/paste.zig b/src/terminal/paste.zig
++index f062a85..b2272a6 100644
++--- a/src/terminal/paste.zig
+++++ b/src/terminal/paste.zig
++@@ -56,6 +56,9 @@ pub const Request = struct {
++     /// flow is to call with false, confirm with the user on
++     /// error.UnsafePaste, and call again with true.
++     allow_unsafe: bool = false,
+++
+++    /// Optional embedder correlation for the minted one-time paste grant.
+++    offer_id: u64 = 0,
++ };
++ 
++ /// The representations available for a paste, in the embedder's
++@@ -228,7 +231,7 @@ fn pasteKittyEvent(
++     // and revoked if the event fails to be written so a failure never
++     // leaves a grant for an event that was never sent. Using a
++     // one-time grant consumes it, which is the revocation.
++-    try kitty.grants.grant(ctx.alloc, &otp, .read, true);
+++    try kitty.grants.grantPaste(ctx.alloc, &otp, req.offer_id);
++     errdefer _ = kitty.grants.use(ctx.alloc, &otp, .read);
++ 
++     try (kitty_clipboard.PasteEvent{
++diff --git a/src/terminal/c/paste.zig b/src/terminal/c/paste.zig
++index 1ff6a42..1e2d51a 100644
++--- a/src/terminal/c/paste.zig
+++++ b/src/terminal/c/paste.zig
++@@ -32,6 +32,7 @@ pub const Request = extern struct {
++     mimes_len: usize,
++     reader: io.MimeReader,
++     allow_unsafe: bool,
+++    offer_id: u64 = 0,
++ };
++ 
++ pub fn terminal_paste(
++@@ -42,9 +43,8 @@ pub fn terminal_paste(
++     const wrapper = terminal_ orelse return .invalid_value;
++     const req = req_ orelse return .invalid_value;
++ 
++-    // Every field is required; a smaller size is a caller from a
++-    // different ABI version than any this struct has had.
++-    if (req.size < @sizeOf(Request)) return .invalid_value;
+++    // The original required prefix predates the optional trailing offer ID.
+++    if (req.size < @offsetOf(Request, "offer_id")) return .invalid_value;
++ 
++     // The handler always has a write_pty trampoline that no-ops without
++     // a C callback, so the "nothing can be written" check is ours.
++@@ -77,6 +77,7 @@ pub fn terminal_paste(
++             .read = .{ .ctx = @constCast(req), .read_fn = &readTrampoline },
++         } },
++         .allow_unsafe = req.allow_unsafe,
+++        .offer_id = if (lib.structSizedFieldFits(Request, req.size, "offer_id")) req.offer_id else 0,
++     }) catch |err| return switch (err) {
++         error.UnsafePaste => .rejected,
++         error.NoWritePty => .invalid_value,
++diff --git a/src/terminal/clipboard.zig b/src/terminal/clipboard.zig
++index 0a1c5a7..e45acac 100644
++--- a/src/terminal/clipboard.zig
+++++ b/src/terminal/clipboard.zig
++@@ -185,6 +185,10 @@ pub const Read = struct {
++     /// Result.Success.remember. When false, remember is ignored.
++     can_remember: bool,
++ 
+++    /// Embedder correlation from the matching validated one-time paste grant.
+++    /// Zero for ordinary/session grants. Never transmitted to the program.
+++    paste_offer_id: u64 = 0,
+++
++     /// Terminal-owned reply state, only valid during the callback.
++     ///
++     /// The result is delivered through a call rather than returned so
++diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
++index 5f047f4..056db19 100644
++--- a/src/terminal/c/terminal.zig
+++++ b/src/terminal/c/terminal.zig
++@@ -165,6 +165,7 @@ pub const ClipboardRead = extern struct {
++     /// Terminal-owned reply state; opaque to the embedder.
++     ctx: *const anyopaque,
++     reply: ClipboardReadReplyFn,
+++    paste_offer_id: u64 = 0,
++ };
++ 
++ /// C function pointer type for replying to a clipboard read.
++@@ -574,6 +575,7 @@ const Effects = struct {
++             .can_remember = read.can_remember,
++             .ctx = &ctx,
++             .reply = &clipboardReadReplyTrampoline,
+++            .paste_offer_id = read.paste_offer_id,
++         };
++         func(@ptrCast(wrapper), wrapper.effects.userdata, &request);
++     }
++diff --git a/src/terminal/kitty/clipboard_grants.zig b/src/terminal/kitty/clipboard_grants.zig
++index f90436d..6703ba8 100644
++--- a/src/terminal/kitty/clipboard_grants.zig
+++++ b/src/terminal/kitty/clipboard_grants.zig
++@@ -26,6 +26,7 @@ pub const Grants = struct {
++         read: bool = false,
++         write: bool = false,
++         one_time: bool = false,
+++        paste_offer_id: u64 = 0,
++     };
++ 
++     pub fn deinit(self: *Grants, alloc: Allocator) void {
++@@ -72,6 +73,21 @@ pub const Grants = struct {
++         }
++     }
++ 
+++    /// Attach embedder correlation only to a newly minted one-time paste grant.
+++    pub fn grantPaste(self: *Grants, alloc: Allocator, pw: []const u8, offer_id: u64) Allocator.Error!void {
+++        try self.grant(alloc, pw, .read, true);
+++        const idx = self.findIndex(pw) orelse return;
+++        if (self.entries.items[idx].one_time) self.entries.items[idx].paste_offer_id = offer_id;
+++    }
+++
+++    /// Inspect a validated paste password without consuming it. In particular,
+++    /// listing targets must not burn the subsequent data-read grant.
+++    pub fn pasteOffer(self: *const Grants, pw: []const u8) u64 {
+++        const idx = self.findIndex(pw) orelse return 0;
+++        const entry = self.entries.items[idx];
+++        return if (entry.one_time and entry.read) entry.paste_offer_id else 0;
+++    }
+++
++     /// Check whether pw grants the given direction. A one-time grant is
++     /// consumed by this check even when the direction doesn't match,
++     /// matching kitty's pop-on-check behavior.
++@@ -236,3 +252,22 @@ test "generateOtp: sys override supplies entropy without an Io source" {
++     const otp = try generateOtp(std.Io.failing);
++     for (otp) |c| try testing.expect(std.mem.indexOfScalar(u8, otp_alphabet, c) != null);
++ }
+++
+++test "paste offer correlation is exact and never a session grant" {
+++    const testing = std.testing;
+++    const alloc = testing.allocator;
+++    var grants: Grants = .{};
+++    defer grants.deinit(alloc);
+++    try grants.grantPaste(alloc, "first", 11);
+++    try grants.grantPaste(alloc, "second", 22);
+++    try grants.grant(alloc, "session", .read, false);
+++    try testing.expectEqual(@as(u64, 11), grants.pasteOffer("first"));
+++    try testing.expectEqual(@as(u64, 22), grants.pasteOffer("second"));
+++    try testing.expectEqual(@as(u64, 0), grants.pasteOffer("session"));
+++    try testing.expectEqual(@as(u64, 0), grants.pasteOffer("wrong"));
+++    try testing.expect(grants.use(alloc, "first", .read));
+++    try testing.expectEqual(@as(u64, 0), grants.pasteOffer("first"));
+++    try testing.expectEqual(@as(u64, 22), grants.pasteOffer("second"));
+++    try testing.expect(!grants.use(alloc, "second", .write));
+++    try testing.expectEqual(@as(u64, 0), grants.pasteOffer("second"));
+++}
++diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
++index 15ea8ae..da390ba 100644
++--- a/src/terminal/stream_terminal.zig
+++++ b/src/terminal/stream_terminal.zig
++@@ -1263,6 +1263,7 @@ pub const Handler = struct {
++         // one-time paste password on a listing would burn the grant
++         // before the follow-up data read.
++         const pw: []const u8 = if (meta.name.len > 0) meta.pw else "";
+++        const paste_offer_id = self.kitty_clipboard_grants.pasteOffer(pw);
++         const granted = !kitty_clipboard.readPromptExempt(mimes.len) and
++             self.kitty_clipboard_grants.use(alloc, pw, .read);
++ 
++@@ -1282,6 +1283,7 @@ pub const Handler = struct {
++             .name = meta.name,
++             .granted = granted,
++             .can_remember = pw.len > 0,
+++            .paste_offer_id = if (granted or kitty_clipboard.readPromptExempt(mimes.len)) paste_offer_id else 0,
++             .reply_ctx = &state,
++             .reply_fn = &KittyClipboardReadState.reply,
++         });
+diff --git a/crates/libghostty-vt-sys/src/bindings.rs b/crates/libghostty-vt-sys/src/bindings.rs
+index c6e2c28..cb31542 100644
+--- a/crates/libghostty-vt-sys/src/bindings.rs
++++ b/crates/libghostty-vt-sys/src/bindings.rs
+@@ -1,4 +1,5 @@
+ /* automatically generated by gen-bindings */
++use crate::TerminalWriteStop;
+ 
+ pub const COLOR_NAMED_BLACK: u8 = 0;
+ pub const COLOR_NAMED_RED: u8 = 1;
+@@ -2368,6 +2369,8 @@ pub struct ClipboardRead {
+     pub ctx: *const ::std::os::raw::c_void,
+     #[doc = " Answer the read; see the struct documentation."]
+     pub reply: ClipboardReadReplyFn,
++    /// Exact embedder offer correlated by a validated one-time paste password.
++    pub paste_offer_id: u64,
+ }
+ impl Default for ClipboardRead {
+     fn default() -> Self {
+@@ -2953,12 +2956,13 @@ unsafe extern "C" {
+     pub fn ghostty_terminal_vt_write(terminal: Terminal, data: *const u8, len: usize);
+ }
+ unsafe extern "C" {
+-    #[doc = " Write VT-encoded data, but only the shortest prefix needed to reach ground.\n\n Ground is when the stream isn't in the middle of any type of sequence:\n UTF-8, ESC, CSI, OSC, etc. It is the stateless point of the stream.\n\n This is useful to know because it is a point at which you can\n safely insert out-of-band VT sequences. For example, while reading\n from a pty if you want to make your own changes, you can wait until\n the pty input reaches ground, then write yours.\n\n If the stream is already at ground then this consumes nothing and returns\n GHOSTTY_SUCCESS. On success, out_consumed is the number of bytes consumed\n before reaching ground, including the byte that reaches it.\n GHOSTTY_NO_VALUE means the full slice was consumed without reaching ground.\n\n         was consumed without reaching ground, or GHOSTTY_INVALID_VALUE if\n         an argument is invalid\n"]
+-    pub fn ghostty_terminal_vt_write_until_ground(
++    /// Process until a requested parser boundary using the pinned native ABI.
++    pub fn ghostty_terminal_vt_write_until(
+         terminal: Terminal,
+         data: *const u8,
+         len: usize,
+-        out_consumed: *mut usize,
++        boundaries: u32,
++        out: *mut TerminalWriteStop,
+     ) -> Result::Type;
+ }
+ unsafe extern "C" {
+@@ -4521,6 +4525,8 @@ pub struct Paste {
+     pub reader: MimeReader,
+     #[doc = " Write text that could inject commands. Call with false, confirm\n with the user on GHOSTTY_REJECTED, and call again with true."]
+     pub allow_unsafe: bool,
++    /// Optional embedder correlation; zero means no offer identity.
++    pub offer_id: u64,
+ }
+ impl Default for Paste {
+     fn default() -> Self {
+diff --git a/crates/libghostty-vt-sys/src/boundary.rs b/crates/libghostty-vt-sys/src/boundary.rs
+new file mode 100644
+index 0000000..e1f8b17
+--- /dev/null
++++ b/crates/libghostty-vt-sys/src/boundary.rs
+@@ -0,0 +1,41 @@
++//! Parser-boundary ABI introduced by Ghostty 93967b7. Mirrors terminal.h.
++pub mod TerminalBoundary {
++    pub type Type = ::std::os::raw::c_int;
++    pub const GROUND: Type = 1;
++    pub const APC_START: Type = 1 << 1;
++    pub const APC_END: Type = 1 << 2;
++    pub const DCS_START: Type = 1 << 3;
++    pub const DCS_END: Type = 1 << 4;
++    pub const OSC_START: Type = 1 << 5;
++    pub const OSC_END: Type = 1 << 6;
++}
++pub mod TerminalStringKind {
++    pub type Type = ::std::os::raw::c_int;
++    pub const APC: Type = 0;
++    pub const DCS: Type = 1;
++    pub const OSC: Type = 2;
++}
++pub mod TerminalStringIntroducer {
++    pub type Type = ::std::os::raw::c_int;
++    pub const ESC: Type = 0;
++    pub const C1: Type = 1;
++}
++pub mod TerminalStringEnd {
++    pub type Type = ::std::os::raw::c_int;
++    pub const ST_ESC: Type = 0;
++    pub const ST_C1: Type = 1;
++    pub const CANCELLED: Type = 2;
++    pub const ABORTED: Type = 3;
++    pub const BEL: Type = 4;
++}
++#[repr(C)]
++#[derive(Debug, Default, Copy, Clone)]
++pub struct TerminalWriteStop {
++    pub size: usize,
++    pub consumed: usize,
++    pub reached: u32,
++    pub kind: TerminalStringKind::Type,
++    pub introducer: TerminalStringIntroducer::Type,
++    pub end: TerminalStringEnd::Type,
++    pub byte: u8,
++}
+diff --git a/crates/libghostty-vt-sys/src/layouts.rs b/crates/libghostty-vt-sys/src/layouts.rs
+index b2f98fa..7ae221e 100644
+--- a/crates/libghostty-vt-sys/src/layouts.rs
++++ b/crates/libghostty-vt-sys/src/layouts.rs
+@@ -708,7 +708,7 @@ mod layout_0 {
+     };
+     #[allow(clippy::unnecessary_operation, clippy::identity_op)]
+     const _: () = {
+-        ["Size of ClipboardRead"][::std::mem::size_of::<ClipboardRead>() - 80usize];
++        ["Size of ClipboardRead"][::std::mem::size_of::<ClipboardRead>() - 88usize];
+         ["Alignment of ClipboardRead"][::std::mem::align_of::<ClipboardRead>() - 8usize];
+         ["Offset of field: ClipboardRead::size"]
+             [::std::mem::offset_of!(ClipboardRead, size) - 0usize];
+@@ -730,6 +730,8 @@ mod layout_0 {
+             [::std::mem::offset_of!(ClipboardRead, ctx) - 64usize];
+         ["Offset of field: ClipboardRead::reply"]
+             [::std::mem::offset_of!(ClipboardRead, reply) - 72usize];
++        ["Offset of field: ClipboardRead::paste_offer_id"]
++            [::std::mem::offset_of!(ClipboardRead, paste_offer_id) - 80usize];
+     };
+     #[allow(clippy::unnecessary_operation, clippy::identity_op)]
+     const _: () = {
+@@ -1067,7 +1069,7 @@ mod layout_0 {
+     };
+     #[allow(clippy::unnecessary_operation, clippy::identity_op)]
+     const _: () = {
+-        ["Size of Paste"][::std::mem::size_of::<Paste>() - 56usize];
++        ["Size of Paste"][::std::mem::size_of::<Paste>() - 64usize];
+         ["Alignment of Paste"][::std::mem::align_of::<Paste>() - 8usize];
+         ["Offset of field: Paste::size"][::std::mem::offset_of!(Paste, size) - 0usize];
+         ["Offset of field: Paste::location"][::std::mem::offset_of!(Paste, location) - 8usize];
+@@ -1077,6 +1079,7 @@ mod layout_0 {
+         ["Offset of field: Paste::reader"][::std::mem::offset_of!(Paste, reader) - 32usize];
+         ["Offset of field: Paste::allow_unsafe"]
+             [::std::mem::offset_of!(Paste, allow_unsafe) - 48usize];
++        ["Offset of field: Paste::offer_id"][::std::mem::offset_of!(Paste, offer_id) - 56usize];
+     };
+ }
+ #[cfg(all(
+@@ -1659,8 +1662,8 @@ mod layout_1 {
+     };
+     #[allow(clippy::unnecessary_operation, clippy::identity_op)]
+     const _: () = {
+-        ["Size of ClipboardRead"][::std::mem::size_of::<ClipboardRead>() - 40usize];
+-        ["Alignment of ClipboardRead"][::std::mem::align_of::<ClipboardRead>() - 4usize];
++        ["Size of ClipboardRead"][::std::mem::size_of::<ClipboardRead>() - 48usize];
++        ["Alignment of ClipboardRead"][::std::mem::align_of::<ClipboardRead>() - 8usize];
+         ["Offset of field: ClipboardRead::size"]
+             [::std::mem::offset_of!(ClipboardRead, size) - 0usize];
+         ["Offset of field: ClipboardRead::location"]
+@@ -1681,6 +1684,8 @@ mod layout_1 {
+             [::std::mem::offset_of!(ClipboardRead, ctx) - 32usize];
+         ["Offset of field: ClipboardRead::reply"]
+             [::std::mem::offset_of!(ClipboardRead, reply) - 36usize];
++        ["Offset of field: ClipboardRead::paste_offer_id"]
++            [::std::mem::offset_of!(ClipboardRead, paste_offer_id) - 40usize];
+     };
+     #[allow(clippy::unnecessary_operation, clippy::identity_op)]
+     const _: () = {
+@@ -2018,8 +2023,8 @@ mod layout_1 {
+     };
+     #[allow(clippy::unnecessary_operation, clippy::identity_op)]
+     const _: () = {
+-        ["Size of Paste"][::std::mem::size_of::<Paste>() - 32usize];
+-        ["Alignment of Paste"][::std::mem::align_of::<Paste>() - 4usize];
++        ["Size of Paste"][::std::mem::size_of::<Paste>() - 40usize];
++        ["Alignment of Paste"][::std::mem::align_of::<Paste>() - 8usize];
+         ["Offset of field: Paste::size"][::std::mem::offset_of!(Paste, size) - 0usize];
+         ["Offset of field: Paste::location"][::std::mem::offset_of!(Paste, location) - 4usize];
+         ["Offset of field: Paste::source"][::std::mem::offset_of!(Paste, source) - 8usize];
+@@ -2028,5 +2033,6 @@ mod layout_1 {
+         ["Offset of field: Paste::reader"][::std::mem::offset_of!(Paste, reader) - 20usize];
+         ["Offset of field: Paste::allow_unsafe"]
+             [::std::mem::offset_of!(Paste, allow_unsafe) - 28usize];
++        ["Offset of field: Paste::offer_id"][::std::mem::offset_of!(Paste, offer_id) - 32usize];
+     };
+ }
+diff --git a/crates/libghostty-vt-sys/src/lib.rs b/crates/libghostty-vt-sys/src/lib.rs
+index 8435ecc..68d3bad 100644
+--- a/crates/libghostty-vt-sys/src/lib.rs
++++ b/crates/libghostty-vt-sys/src/lib.rs
+@@ -5,6 +5,8 @@
+ #![allow(rustdoc::all)]
+ 
+ mod bindings;
++mod boundary;
++pub use boundary::*;
+ // Generated checks select the C ABI of the compilation target, not the host
+ // that last regenerated the shared declarations.
+ mod layouts;

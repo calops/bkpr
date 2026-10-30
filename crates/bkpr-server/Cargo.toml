@@ -1,0 +1,16 @@
+[package]
+name = "bkpr-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bkprd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+bkpr-core = { path = "../bkpr-core" }
+bkpr-protocol = { path = "../bkpr-protocol" }
+serde_json.workspace = true
+clap = { version = "4", features = ["derive"] }

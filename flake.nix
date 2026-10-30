@@ -53,7 +53,6 @@
               (pkgs.python3.withPackages (ps: [ ps.pyte ]))
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.xdotool ];
-            nativeBuildInputs = [ pkgs.rustPlatform.bindgenHook ];
           };
         }
       );

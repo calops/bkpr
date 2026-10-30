@@ -2,14 +2,17 @@
 
 Bkpr is being rebuilt as a pane-first native terminal multiplexer on
 `feat/pane-first-mux`. This branch replaces the previous host runtime rather than
-maintaining a compatibility track. The executable is `bkpr`, built from the
-`bkpr-mux` Cargo package; `bkpr-terminal` adapts the pinned libghostty-vt engine.
-A daemon owns a real PTY and terminal state independently of attached TUI views.
+maintaining a compatibility track. `bkpr` is the command-line entrypoint and opens
+the terminal client by default. A separate `bkprd` daemon owns independent PTYs,
+terminal state and workspace layouts. Closing a client does not close its panes.
+The terminal adapter uses the maintained `libghostty-rs` SDK over pinned
+libghostty-vt; the [implementation plan](docs/pane-first-mux/implementation-plan.md)
+describes the seven-crate boundaries.
 
-This is development code, not a production release. The native CLI below
-is the implemented surface. Workspace/project UI, agent and harness integration,
-broker messaging, Git/CI presentation and recovery are not currently exposed by
-this executable. Earlier release notes describe the former implementation, not
+This is development code, not a production release. Workspace layouts and pane
+metadata survive daemon restarts; running processes and terminal contents do not.
+Agent/harness integration, broker messaging and Git/CI presentation are not
+currently exposed. Earlier release notes describe the former implementation, not
 features available on this branch.
 
 Current `main` and the native-terminal fork are useful starting material when a
@@ -35,9 +38,9 @@ just build
 ```
 
 There is only the default devshell. No separate sibling-runtime shell or build
-is needed. `just build` prepares the engine and builds
-`cargo build --locked -p bkpr-mux --bin bkpr`. `just run --help` builds and runs
-that same executable. All recipes respect an existing `CARGO_TARGET_DIR`.
+is needed. `just build` prepares the engine and builds both executables with
+`cargo build --locked --workspace`. `just run --help` builds and runs `bkpr`.
+All recipes respect an existing `CARGO_TARGET_DIR`.
 
 Repository Cargo commands default to eight build jobs through `.cargo/config.toml`;
 rustc coordinates its parallel code generation with Cargo's jobserver. Native
@@ -46,15 +49,15 @@ development workstation without changing optimization settings or forcing a
 rebuild with new Rust flags. It isn't a hard limit on every auxiliary OS thread.
 Keep compilation bounded on a workstation running live sessions.
 
-**Shared-artifact safety:** a normal build writes `debug/bkpr` in the selected
-Cargo target directory. If that pathname is a currently used application, do not
+**Shared-artifact safety:** a normal build writes `debug/bkpr` and `debug/bkprd` in
+the selected Cargo target directory. If either pathname is a currently used application, do not
 run `just build`, `just run` or the equivalent Cargo build against it until you
 have arranged artifact isolation. Do not replace an installed or live program
 as part of trying this branch.
 
 Without Nix, provide the pinned Rust toolchain from `rust-toolchain.toml`, Cargo,
-a C compiler, libclang for bindgen, Bash, curl, patch, tar, xz and the usual Unix
-core/find utilities. `just` is optional when using the direct commands below.
+a C linker toolchain, Bash, curl, patch, tar, xz and the usual Unix core/find
+utilities. `just` is optional when using the direct commands below.
 The preparation helper supports x86-64 Linux, ARM64 Linux and ARM64 macOS;
 this is a prerequisite-platform list, not a claim of runtime acceptance on every
 platform.
@@ -64,7 +67,8 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 mkdir -p "$CARGO_TARGET_DIR"
 bash scripts/prepare-ghostty-vt.sh
 export BKPR_GHOSTTY_VT_DIR="$(bash scripts/prepare-ghostty-vt.sh --print-prefix)"
-cargo build --locked -p bkpr-mux --bin bkpr
+export GHOSTTY_INSTALL_DIR="$BKPR_GHOSTTY_VT_DIR"
+cargo build --locked --workspace
 ```
 
 The helper downloads hash-checked Ghostty and Zig archives, applies the checked
@@ -75,100 +79,138 @@ system Ghostty installation is not a substitute.
 
 ## Native CLI
 
-Use a dedicated private runtime directory and an isolated, absolute home path.
-The daemon runs in the foreground and defaults to `/bin/sh -i` if no command is
-provided. It does not attach to an existing Bkpr session.
+After building both executables, run `bkpr` to connect to or start the local
+`bkprd` and open the terminal client:
 
-In the first terminal, after building:
+```sh
+"$CARGO_TARGET_DIR/debug/bkpr"
+```
+
+Normal launches preserve your HOME, shell profiles and environment, using the
+invocation directory. Closing the client leaves the daemon and panes running.
+`bkpr context` and `bkpr request` are headless and do not start a daemon.
+
+For an isolated preview, start the daemon explicitly in one terminal:
 
 ```sh
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 umask 077
 export BKPR_RUN="$(mktemp -d "${TMPDIR:-/tmp}/bkpr.XXXXXX")"
-mkdir "$BKPR_RUN/home"
+mkdir "$BKPR_RUN/home" "$BKPR_RUN/state"
 printf 'Runtime directory: %s\n' "$BKPR_RUN"
-"$CARGO_TARGET_DIR/debug/bkpr" daemon \
+"$CARGO_TARGET_DIR/debug/bkprd" \
   --socket "$BKPR_RUN/control.sock" \
-  --home "$BKPR_RUN/home" \
+  --state-root "$BKPR_RUN/state" \
+  --home "$BKPR_RUN/home" --cwd "$BKPR_RUN/home" \
   -- /bin/sh -i
 ```
 
-The socket parent must be owned by the current user and private (mode `0700`).
-The socket is private (`0600`); an existing socket is never replaced. Use a short
-path to stay within Unix-domain socket path limits. An isolated home avoids
-loading your normal shell configuration, but is not a filesystem or OS sandbox
-for the child command.
-
-In another terminal, set `BKPR_RUN` to the directory printed above and use the
-same Cargo target directory:
+This prints readiness and remains in the foreground; that is the daemon, not a
+hung TUI. In another terminal, set `BKPR_RUN` to the printed directory:
 
 ```sh
 "$CARGO_TARGET_DIR/debug/bkpr" tui --socket "$BKPR_RUN/control.sock"
 ```
 
-`Ctrl-]` detaches the TUI without terminating the daemon's shell. Additional
-views can attach to the same daemon. A read-only view does not request input or
-clipboard authority:
+Socket/state directories must be private and current-user-owned. The socket is
+mode `0600`; a live listener is never replaced, and one daemon exclusively owns
+each state root. Keep Unix socket paths short. Explicit `--home` selects a
+scrubbed fixture environment, not an OS/filesystem sandbox. `--bkprd PATH`
+selects the server executable when testing independently staged binaries.
+View admission is bounded to 128 per daemon and 32 per pane. Pane waits,
+registry watchers and controls have separate capacity, so admitted waiting views
+do not consume the slots reserved for input or management.
 
-```sh
-"$CARGO_TARGET_DIR/debug/bkpr" tui \
-  --socket "$BKPR_RUN/control.sock" --read-only
-```
 
-The TUI accepts `--clipboard ask|allow|deny` (default `ask`). Keep `ask` or `deny`
-unless the child command is trusted to interact with the host clipboard.
+### Workspace and pane controls
 
-Daemon geometry options are `--cols`, `--rows`, `--cell-width` and
-`--cell-height`; defaults are `80`, `24`, `8` and `16`, respectively. Interactive
-views can update terminal geometry through the native size-lease mechanism;
-input and clipboard permissions are tracked separately.
+Press `Ctrl-b`, then a command:
 
-The TUI receives scene changes independently of keyboard input. Typing repaints
-changed rows without clearing the viewport or redrawing unchanged chrome; cursor
-updates don't repaint stationary text. Unchanged image resources and placements
-are retained. Initial attachment, resize and scene-baseline recovery still use
-complete state, and palette changes invalidate affected presentation.
+| Command | Action |
+| --- | --- |
+| `c` | Create workspace and first pane |
+| `n` or `%` | Spawn a pane, split left/right |
+| `"` | Spawn a pane, split top/bottom |
+| `r` / `p` | Rename workspace / pane |
+| `w` / `o` | Choose workspace / show an existing pane |
+| `[` / `]` | Previous / next workspace |
+| Arrows / Tab | Focus direction / next pane |
+| `x` | Remove a layout leaf; keep its process running |
+| `!` | Terminate a pane, after confirmation |
+| `X` | Remove a workspace, after confirmation; keep its processes running |
+| `d` | Detach client |
+| `Ctrl-b` | Send literal Ctrl-b to the application |
 
-The TUI uses compact, lossless scene runs with shared style/link tables and
-whole-row deltas. Scene decoding happens on the snapshot worker, not the input
-loop. PTY output, controls and writer progress wake the pane worker directly.
-Waiting views don't occupy the connection capacity reserved for input/control.
-The renderer emits differential styles and skips presentations when nothing
-visible changed, without lowering fidelity or skipping input. `inspect` and
-ordinary scene requests retain readable JSON for diagnostics.
+`Ctrl-]` also detaches. Click a sidebar workspace or pane to focus it.
+Forms use Enter to apply, Esc to cancel and Ctrl-u to clear. Focus is
+client-local; showing a pane in another workspace does not change its backend
+membership. Layout removal, client detach and process termination are distinct.
+
+Attachment and management work runs in bounded background jobs. Input remains
+ordered per pane; a native callback blocked in one pane does not serialize input
+to another. Pending controls and projection-capacity failures are shown explicitly.
+Pane-local transport/input failures stop the affected lane rather than closing
+healthy panes. Ambiguous operations are reported and never automatically replayed.
+Pointer gestures remain bound to their original pane/view, including clipped
+cross-pane drags and cancellation when that projection is removed.
+
+`--read-only` denies application input and clipboard access without making the
+visible client ineligible for sizing. The latest eligible visible interactive
+view owns pane dimensions unless pinned. Daemon initial geometry options are
+`--cols`, `--rows`, `--cell-width` and `--cell-height` (defaults 100, 30, 8, 16).
+
+View attach/update/pin/detach acknowledge validated policy registration, not
+completed native rendering. Geometry reconciles asynchronously: snapshots expose
+desired `size_owner.size` separately from actual `frame.size`. A blocked native
+callback must not prevent view management or unrelated pane interaction.
+
+`--clipboard ask|allow|deny` defaults to `ask`. Keep `ask` or `deny` unless the
+child is trusted. Consent and device responses remain bound to the originating
+pane/view even if local focus changes.
+
+The client receives lossless compact scene updates on snapshot workers and
+composes panes and chrome through one framework. The renderer retains image
+resources, emits differential styles and skips unchanged presentations.
+Initialization, resize and baseline recovery still require complete state.
+This is not a scene-delta or CPU-efficiency completion claim.
 
 ### Requests and explicit shutdown
 
-`request` sends one JSON operation and prints the versioned JSON response:
+Requests use protocol version 2. Registry operations target workspaces/panes;
+terminal/view operations are explicitly scoped to a pane:
 
 ```sh
-"$CARGO_TARGET_DIR/debug/bkpr" request \
-  --socket "$BKPR_RUN/control.sock" '{"op":"inspect"}'
-"$CARGO_TARGET_DIR/debug/bkpr" request \
-  --socket "$BKPR_RUN/control.sock" '{"op":"shutdown"}'
+"$CARGO_TARGET_DIR/debug/bkpr" context --socket "$BKPR_RUN/control.sock"
+"$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
+  '{"version":2,"op":"inspect"}'
+"$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
+  '{"version":2,"op":"shutdown"}'
 ```
 
-Inspect the response's `ok` field and `error` before treating an operation as
-successful. After shutdown has completed and all views have detached, the
-private runtime directory can be removed. Do not use these commands against an
-unrelated daemon or a live installed application.
+Check `ok` and `error` before treating an operation as successful. Shutdown closes
+the listener even if cleanup/durability reports an error; an error is not a
+successful persistence acknowledgement. Never target an unrelated live daemon.
 
-The current request surface covers view attach/update/detach, scene polling,
-size pinning, input/paste/key/mouse/focus/scroll, clipboard responses, colors,
-termination and shutdown. These are development interfaces, not a compatibility
-promise. The authoritative request shapes are in
-[`crates/bkpr-mux/src/lib.rs`](crates/bkpr-mux/src/lib.rs) and view permission
-fields in [`authority.rs`](crates/bkpr-mux/src/authority.rs).
+Layouts and pane metadata survive restart, but PTYs and terminal contents do
+not. Restored panes without a live runtime are Stopped; known exit codes remain.
+The server never silently restarts their commands.
 
-For an already attached view, the keyboard client routes a physical byte array
-through the same ordered input decoder and native encoder as the TUI:
+Retired metadata can be explicitly forgotten with
+`{"version":2,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
+has stopped, every layout reference has been removed and all its views detached.
+This releases record capacity; it is not termination or automatic history pruning.
+
+The authoritative request models are in
+[`bkpr-protocol`](crates/bkpr-protocol/src/registry.rs), with
+[pane/view requests](crates/bkpr-protocol/src/lib.rs). These are development
+interfaces, not a compatibility promise. Physical keyboard diagnostics require
+both returned opaque identities:
 
 ```text
-bkpr keyboard --socket PATH --view VIEW_ID '[PHYSICAL_INPUT_BYTES]'
+bkpr keyboard --socket PATH --pane PANE_ID --view VIEW_ID '[PHYSICAL_INPUT_BYTES]'
 ```
 
-Use the daemon's returned opaque view ID. Acceptance means queued input, not
-proof that the child has processed it.
+Input acceptance means queued bytes, not proof the application processed them.
 
 ## Tests
 
@@ -178,7 +220,7 @@ Prepare the pinned engine, then run the native workspace tests:
 just test
 ```
 
-Or, with `CARGO_TARGET_DIR` and `BKPR_GHOSTTY_VT_DIR` set as above:
+Or, with `CARGO_TARGET_DIR`, `BKPR_GHOSTTY_VT_DIR` and `GHOSTTY_INSTALL_DIR` set as above:
 
 ```sh
 cargo test --locked --workspace

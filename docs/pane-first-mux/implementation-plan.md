@@ -2,7 +2,7 @@
 
 ## Direction and branch scope
 
-`feat/pane-first-mux` is a replacement branch, not a compatibility track. Its executable is the native `bkpr` application built from `bkpr-mux`; `bkpr-terminal` supplies the current source-pinned terminal adapter. The previous launcher, Zellij/WASI plugin, runtime input and release packaging are removed. Neither old tests nor feature/API parity with `main` block work on this branch.
+`feat/pane-first-mux` is a replacement branch, not a compatibility track. `bkpr` is the user entrypoint and terminal frontend; the separate `bkprd` daemon owns panes and backend state. The seven crates below replace the former combined prototype. The previous launcher, Zellij/WASI plugin, runtime input and release packaging are removed. Neither old tests nor feature/API parity with `main` block work on this branch.
 
 `main` and the retained Zellij fork are starting material, not specifications. Inspect relevant current source as a subsystem comes into scope; keep useful code immediately where it forms a coherent module, refactor poor boundaries, and replace designs where better alternatives fit. Do not retain dormant legacy trees merely to preserve them. Record provenance and applicable notices when substantial code is copied. The source ledger below identifies places to look, not mandatory implementations.
 
@@ -12,7 +12,7 @@ The [initial experiment report](engine-proof.md) records historical evidence at 
 
 ## Agreed Cargo workspace
 
-This is the agreed target structure, not the current on-disk layout. Currently `bkpr-mux` combines the executable, backend and terminal client, while `bkpr-terminal` contains the engine adapter. Split these along the boundaries below; do not introduce compatibility aliases or empty crates merely to match the diagram.
+The workspace uses these seven packages, without compatibility aliases or empty placeholder crates. The responsibilities below also identify where later agent, metadata, recovery and remote features belong; their presence in this table does not mean those features are implemented.
 
 | Package/crate | Kind | Executable | Responsibility |
 | --- | --- | --- | --- |
@@ -24,13 +24,13 @@ This is the agreed target structure, not the current on-disk layout. Currently `
 | `bkpr-protocol` | Library | — | Shared identities, requests/responses, events, capabilities, errors and terminal scene types. No frontend or backend implementation dependencies. |
 | `bkpr-terminal-engine` | Library | — | Backend terminal-emulation adapter: ingest application output, extract canonical state, encode input and expose terminal effects. Adopt compatible upstream Ghostty Rust bindings; do not maintain a parallel generic SDK. |
 
-Separate crates do not imply separate processes. `bkpr` calls the terminal client library in-process; `bkprd` runs separately. Bare `bkpr` should connect to or start the local daemon and open the TUI. Management commands remain usable without initializing terminal drawing or requiring a TTY. Closing the client does not terminate backend-owned panes. Remote hosts run their own server with the same endpoint API.
+Separate crates do not imply separate processes. `bkpr` calls the terminal client library in-process; `bkprd` runs separately. Bare `bkpr` connects to or starts the local daemon and opens the TUI. Management commands remain usable without initializing terminal drawing or requiring a TTY. Closing the client does not terminate backend-owned panes. Remote hosts will run their own server after the endpoint transport and trust contracts are implemented.
 
 The client consumes `bkpr-protocol`, not backend implementation internals. The server assembles `bkpr-core`; the core uses the terminal-engine adapter. Keep backend business logic and authoritative associated data out of the frontend. Client-local focus, viewport, device capabilities and consent presentation remain frontend concerns. Explicit integration installation acts on the machine/account where the command runs, not silently on a remote endpoint.
 
 Application UI is described once through `bkpr-tui-framework`. The framework seamlessly selects rich or plain presentation from observed capabilities and user preferences; application components do not maintain separate fancy/non-fancy implementations. Decorative graphics can fall back to characters, but meaningful unsupported content needs an honest indication. Pane scenes, sidebar, popups and decorations share geometry, clipping, layer order, hit testing, cursor policy, damage and one coordinated terminal writer. The framework presents canonical scenes; it is not another terminal emulator.
 
-Evaluate Ratatui or another maintained foundation underneath that framework. If integration creates competing render loops or conflicting text/image ownership, fix the integration or choose a lower-level foundation rather than leak the conflict into application components.
+The initial framework retains the existing terminal writer and uses a thin retained scene/widget compositor rather than introducing a second render loop. Evaluate Ratatui or another maintained widget foundation when its concrete benefit outweighs integration cost; do not create conflicting text/image ownership or leak separate fancy/plain implementations into application components.
 
 Add a GUI client only when implemented; `bkpr` may select it later without changing backend authority. Harness adapters, Git/CI, recovery and storage initially remain modules in the relevant libraries. Extract additional crates only for concrete shared consumers, independent interfaces or dependency boundaries.
 
@@ -46,7 +46,7 @@ For each substantial dependency or source port, record:
 - License/notice obligations, unsafe/FFI exposure and untrusted-input/resource bounds.
 - The measured behavior and failure cases that justify adoption, rather than an unchanged legacy implementation test.
 
-The current libghostty-vt C API is unstable. Community [`libghostty-rs`](https://github.com/Uzaaft/libghostty-rs) supplies safe/sys crates; its checked Git API already wraps clipboard reads/writes, OSC 7501, render holds and resolved Kitty images. Prefer a compatible pinned upstream Rust/native pair before production adoption. The initial adapter's generated bindings are temporary, not a commitment to a parallel SDK. Validated paste-offer provenance remains a concrete narrow upstream contribution; don't mix Rust bindings from one native ABI with an arbitrary newer/patched archive.
+The libghostty-vt C API is unstable. The adapter now consumes the maintained safe/sys SDK from [`libghostty-rs`](https://github.com/Uzaaft/libghostty-rs), pinned at `575ed6b8ceb79ffaf247ecf7e34333876b0d5be4`. Native Ghostty stays at the previously tested `93967b7f9478e94dcbb42125c8a90f34feb40d75`, rather than silently downgrading to the SDK's older native pin. The separately reviewable dependency patch updates the parser-boundary ABI, exposes validated paste-offer correlation safely, supports the exact prepared native installation, and fixes optional image-data handling. Generic native resources, encoders and callbacks belong to the SDK; Bkpr owns normalized scenes, caches, resource bounds and authority policy. [The provenance/API matrix](../../vendor/libghostty-rs/UPSTREAM.toml) records archive hashes, ABI evidence, patch scope and reproducible acquisition. This is a pinned patched dependency, not an unmodified crates.io release or a claim that the patches have landed upstream.
 
 Use `portable-pty` for OS PTY mechanics. The current `termwiz`, Crossterm and codec dependencies are infrastructure choices, not authority over product design. Evaluate a widget library for chrome only when needed. Use system OpenSSH over stdio without a transport PTY for remote endpoints; reuse host verification and selected authentication rather than inventing SSH or changing user credentials. Browser/TLS/authentication and transactional storage dependencies are chosen when their concrete contracts are implemented.
 
@@ -105,9 +105,11 @@ Define identity epochs, revision ordering, subscriptions/coalescing, resnapshot,
 
 ## Delivery sequence
 
+The local implementation now includes the seven-crate split, pinned safe SDK integration, typed version-2 control, independent PTYs, persisted workspace/layout metadata, bounded view authority and the retained-framework sidebar/forms/choosers. These are implemented portions of stages 2, 3 and 5, not completion of every requirement below. Endpoint-qualified remote references, rich metadata/harness services, execution recovery, a second independent frontend and supported-product packaging remain future work. The [engine report](engine-proof.md) separates measured acceptance from unresolved gates.
+
 ### 1. Native branch baseline
 
-Remove old runtime and build/release interfaces; make native `bkpr` the only executable path. Keep real engine/PTY/view/device behavior, relevant behavioral tests and historical evidence. Update README, project guidance and backlog without pretending unsupported old features still exist. Use only native checks; protect unrelated running programs and shared public artifact paths as an operational precaution, not a compatibility requirement.
+Remove old runtime and build/release interfaces; make native `bkpr` the user entrypoint. Keep real engine/PTY/view/device behavior, relevant behavioral tests and historical evidence. Update README, project guidance and backlog without pretending unsupported old features still exist. Use only native checks; protect unrelated running programs and shared public artifact paths as an operational precaution, not a compatibility requirement.
 
 ### 2. Engine/client correctness and dependency adoption
 
