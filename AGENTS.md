@@ -56,9 +56,11 @@ Optimize equivalent behavior autonomously. Any proposed performance compromise t
 
 ### Performance evidence
 
-For a change that can affect responsiveness or resource use, exercise the actual path with a reproducible workload. Include cold/warm startup, sustained output, many panes/views, large scrollback/images, resize bursts, slow consumers and remote latency as relevant to that change. Don't require the full matrix for unrelated edits.
+For a change that can affect responsiveness or resource use, exercise the actual path with a reproducible workload. Include cold/warm startup, sustained output, full-screen editor redraws with syntax/styles, many panes/views, large scrollback/images, resize bursts, slow consumers and remote latency as relevant. Sparse typing doesn't establish full-screen responsiveness. Compare repeated navigation and bursts at representative large dimensions, not only one settled frame. Don't require the full matrix for unrelated edits.
 
 Choose measurements that match the user-visible concern: input-to-presentation latency, time to usable UI, frame time/damage, CPU, allocation count, memory growth/peak, idle wakeups, transport bytes or round trips. Distinguish queue acceptance, parsing, frame submission and actual presentation. A protocol ACK isn't proof that pixels appeared.
+
+Physical readiness must cover the expected complete content. A stable black frame, first glyph, submitted frame or cached screenshot isn't a valid reference. Acquire immutable full-frame references after content readiness, and timestamp presentation independently of VT replay or expensive controller analysis.
 
 Record build mode, versions, workload, dimensions, environment and raw evidence. Compare equivalent configurations; don't compare a debug baseline to an optimized candidate or hide tail spikes behind averages. Establish budgets from measurements and agree meaningful product targets with the user rather than invent arbitrary guarantees. Keep controlled benchmarks separate from correctness tests; avoid flaky wall-clock assertions in the ordinary suite.
 

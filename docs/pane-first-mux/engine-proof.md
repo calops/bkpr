@@ -157,6 +157,38 @@ Evidence lives under `/home/calops/projects/bkpr/target/smoke/input-latency/`: `
 
 The verified executable is `checks-final/bkpr`, SHA-256 `1675ee87fbd315c747896b9485ebe20c45d071de0171e22ac176e0b2f1ef7922`. All 66 native tests, strict workspace/all-target Clippy, formatting and the native build passed. The shared canonical executable stayed unchanged at SHA-256 `14c1176e0718da7d3e5c72b0641317e504d08ec26bb4dc6d03f87f21536b2970`.
 
+## Full-screen editor redraw correction
+
+Sparse typing wasn't sufficient acceptance. The subsequent user report concerned actual Neovim jumps between the start and end of a large file, which changes the entire viewport. The row-delta path still expanded every changed cell into repeated JSON objects and rebuilt them on the UI thread.
+
+A 50-sample synthetic colored-grid profile separated terminal work from transport. At 240×79, native feed/extraction took about 1.14 ms; JSON expansion, serialization, parsing and reconstruction accounted for about 77 ms as a sum of individual stage medians. A fresh same-process comparison of the complete old/new scene-processing paths measured:
+
+| Grid | Old processing median | Compact processing median | Old payload | Compact payload |
+| --- | --- | --- | --- | --- |
+| 120×39 | 18.18 ms | 0.67 ms | 1,716,884 B | 16,649 B |
+| 240×79 | 94.76 ms | 2.36 ms | 6,943,844 B | 49,059 B |
+
+These processing measurements exclude IPC and physical rendering. Both use the same dev profile and assert exact decoded `Frame` equality. The earlier 77 ms and fresh 94.76 ms aren't interchangeable measurements; the direct old/new comparison is the latter run.
+
+The TUI now uses compact JSON text runs with response-local style/link tables and explicit RLE cell boundaries. Unicode, empty/zero-width cells, color provenance, hyperlinks, image receipts and metadata remain lossless. Decode/expansion happens on the bounded snapshot worker; row patches apply in place on the UI. Readable JSON remains available for inspection. Maintained `crossbeam-channel` selects ready PTY output, controls and writer progress; PTY readiness replaces the reader sleep. Timeouts serve cancellation, maintenance and actual terminal deadlines rather than gating output.
+
+The first compact candidate still emitted redundant SGR resets/backgrounds and no-change cursor transactions. At 240×80 styled redraws, it sent about 153 KB per jump versus Zellij's 101 KB. Differential styles, unchanged-presentation suppression and cursor-color tracking brought this to about 98 KB. SGR 22 resets both bold and faint; the target pair is reapplied explicitly. That property is also recorded in the retained fork source ledger. No color, style or layout fidelity was removed.
+
+Final end-to-end fixtures use real Neovim `0.13.0-nightly+c049b8f`, a 100,000-line file with 303-column lines, `nowrap`, twelve alternating `G`/`gg` jumps and a five-jump burst. Styled fixtures use RGB groups changing every 6/6/6/8 characters with bold, italic and underline. Kitty `0.49.2` renders into private Xvfb; an independent process timestamps complete-body framebuffer matches. These are sampled presentation upper bounds, not hardware display latency. Full visible text and immutable full-body RGB references must match before a frame is accepted. Bkpr before/after builds both use dev `opt-level=1`; the installed Zellij `0.45.1` executable is a runtime comparator, not an identically configured build.
+
+| Workload | Previous Bkpr emitted / presented median | Final Bkpr emitted / presented median | Zellij emitted / presented median |
+| --- | --- | --- | --- |
+| Plain 120×40 | 64.07 / 77.70 ms | 9.89 / 24.25 ms | 12.24 / 26.72 ms |
+| Plain 240×80 | 259.17 / 291.59 ms | 9.34 / 44.00 ms | 13.19 / 54.37 ms |
+| Styled 120×40 | 64.73 / 95.31 ms | 10.86 / 30.87 ms | 12.71 / 39.12 ms |
+| Styled 240×80 | 280.05 / 385.70 ms | 24.86 / 94.32 ms | 28.04 / 98.19 ms |
+
+The final styled-240 Zellij comparison ran adjacent to the final candidate. Its five-jump burst completed in 139.47 ms versus Bkpr's 136.55 ms. Final emitted maxima were 31.53 ms for Zellij and 37.39 ms for Bkpr; complete-presentation maxima were 107.04 and 106.66 ms. These observations establish comparable behavior in this fixture, not universal parity or a product-wide latency guarantee.
+
+The final sparse/graphics regression retained exact wide/combining text, colors, resize, detach/reattach and positive-z image retention/replacement/deletion. It emitted no idle bytes or full repaints; median/p95 echo was 2.61/11.48 ms and sampled presentation 13.23/21.08 ms. A failed intermediate styled reference was a stable black startup capture; the actual timeout frame matched the immutable baseline pixel-for-pixel. Reference acquisition was corrected to require expected complete content before publication, and the failed artifacts remain diagnostic evidence rather than being counted as passes.
+
+Evidence is under `/home/calops/projects/bkpr/target/smoke/editor-redraw/`: stage profiles, `stage-profiler.zip`, comparison summaries, `final-style-*` editor/sparse runs, controller archive, raw timestamped VT, framebuffer observations, pixel-diff and cleanup records. The final binary is `checks-style/bkpr`, SHA-256 `fb0fe0754c2452b128fd4707ffb7f8dba00c0a496d21c02c5d1907a26cb109f2`. All 72 native tests, strict all-target Clippy, formatting and build passed; canonical live-executable checksum stayed unchanged. This doesn't change the earlier graphics adoption gates or add production workspace/harness services.
+
 ## Compatibility and remaining adoption gates
 
 Only Linux x86-64 has actual build/runtime evidence here. The preparation recipe also names Linux aarch64 and macOS arm64 archives; those platforms and their packaging aren't verified by this report.

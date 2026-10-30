@@ -442,3 +442,105 @@ fn cursor_only_update_does_not_repaint_text_or_chrome() {
     assert!(!update.contains("\x1b[K"));
     assert!(!update.contains("\x1b[2K"));
 }
+
+#[test]
+fn differential_styles_preserve_intensity_pairs_and_color_resets() {
+    let viewport = size(8, 16);
+    let mut source = Terminal::new(viewport).unwrap();
+    let mut input = String::new();
+    for from in 0..4 {
+        for to in 0..4 {
+            for flags in [from, to] {
+                input.push_str("\x1b[22m");
+                if flags & 1 != 0 {
+                    input.push_str("\x1b[1m");
+                }
+                if flags & 2 != 0 {
+                    input.push_str("\x1b[2m");
+                }
+                input.push('x');
+            }
+        }
+    }
+    input.push_str("\x1b[0;31;44;3;4;5;7;8;9;53mQ\x1b[23;24;25;27;28;29;55mR");
+    input.push_str("\x1b[58;2;240;30;60m\x1b[4:3mU\x1b[24mN\x1b[59;4mD\x1b[0m");
+    source.feed(input.as_bytes()).unwrap();
+    let frame = source.snapshot().unwrap();
+    let host = ColorProbe {
+        truecolor: true,
+        foreground: Some(frame.foreground),
+        background: Some(frame.background),
+        palette: frame.palette.iter().copied().enumerate().collect(),
+        ..ColorProbe::default()
+    };
+    let mut physical = Terminal::new(Size {
+        rows: viewport.rows + 1,
+        ..viewport
+    })
+    .unwrap();
+    let mut graphics = GraphicsState::new(1000);
+    let mut bytes = Vec::new();
+    draw(&mut bytes, &frame, viewport, "status", &host, &mut graphics).unwrap();
+    physical.feed(&bytes).unwrap();
+    let actual = physical.snapshot().unwrap();
+    for (actual, expected) in actual.rows[0]
+        .cells
+        .iter()
+        .zip(&frame.rows[0].cells)
+        .take(37)
+    {
+        assert_eq!(actual, expected);
+    }
+    let mut repeated = Vec::new();
+    draw(
+        &mut repeated,
+        &frame,
+        viewport,
+        "status",
+        &host,
+        &mut graphics,
+    )
+    .unwrap();
+    assert!(
+        repeated.is_empty(),
+        "unchanged scene must not restart a presentation"
+    );
+}
+
+#[test]
+fn cursor_color_changed_while_hidden_is_applied_when_visible() {
+    let mut frame = frame();
+    let mut graphics = GraphicsState::new(1000);
+    frame.cursor.color = Some([12, 34, 56]);
+    draw(
+        &mut Vec::new(),
+        &frame,
+        frame.size,
+        "status",
+        &ColorProbe::default(),
+        &mut graphics,
+    )
+    .unwrap();
+    assert_eq!(graphics.text.physical_cursor_color, None);
+    frame.cursor.visible = true;
+    let mut bytes = Vec::new();
+    draw(
+        &mut bytes,
+        &frame,
+        frame.size,
+        "status",
+        &ColorProbe::default(),
+        &mut graphics,
+    )
+    .unwrap();
+    let mut physical = Terminal::new(Size {
+        rows: frame.size.rows + 1,
+        ..frame.size
+    })
+    .unwrap();
+    physical.feed(&bytes).unwrap();
+    assert_eq!(
+        physical.snapshot().unwrap().cursor.color,
+        Some([12, 34, 56])
+    );
+}
