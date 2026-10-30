@@ -353,3 +353,92 @@ fn pending_capability_retains_consent_without_leaking_dialog_key_lifecycle() {
     assert_eq!(event.key, press.key);
     assert_eq!(event.action, KeyAction::Press);
 }
+
+#[test]
+fn incremental_rows_preserve_wide_graphemes_styles_and_clear_removed_text() {
+    let viewport = size(8, 16);
+    let mut source = Terminal::new(viewport).unwrap();
+    let mut physical = Terminal::new(Size {
+        rows: viewport.rows + 1,
+        ..viewport
+    })
+    .unwrap();
+    let host = ColorProbe::default();
+    let mut graphics = GraphicsState::new(1000);
+    for input in [
+        "unchanged first row\r\n\x1b[31mwide: 界e\u{301} trailing text\x1b[0m",
+        "\x1b[2;1H\x1b[2Kshort",
+        "\x1b[2;1H界界e\u{301}\x1b[K",
+        "\x1b[2;2Hnarrow\x1b[K",
+        "\x1b[2J\x1b[H",
+    ] {
+        source.feed(input.as_bytes()).unwrap();
+        let frame = source.snapshot().unwrap();
+        let mut output = Vec::new();
+        draw(
+            &mut output,
+            &frame,
+            viewport,
+            "status",
+            &host,
+            &mut graphics,
+        )
+        .unwrap();
+        physical.feed(&output).unwrap();
+        let actual = physical.snapshot().unwrap();
+        assert!(actual.rows.len() >= frame.rows.len());
+        for (y, (actual, expected)) in actual.rows.iter().zip(&frame.rows).enumerate() {
+            assert_eq!(actual.cells.len(), expected.cells.len());
+            for (x, (actual, expected)) in actual.cells.iter().zip(&expected.cells).enumerate() {
+                let normalize = |cell: &Cell| {
+                    let mut cell = cell.clone();
+                    if cell.width > 0 && cell.text.is_empty() {
+                        cell.text.push(' ');
+                    }
+                    cell
+                };
+                assert_eq!(
+                    normalize(actual),
+                    normalize(expected),
+                    "row {y}, cell {x}, input {input:?}"
+                );
+            }
+        }
+        assert_eq!(actual.cursor, frame.cursor);
+    }
+}
+
+#[test]
+fn cursor_only_update_does_not_repaint_text_or_chrome() {
+    let viewport = size(8, 16);
+    let mut source = Terminal::new(viewport).unwrap();
+    source.feed(b"stationary text\r\nsecond row").unwrap();
+    let mut frame = source.snapshot().unwrap();
+    let mut graphics = GraphicsState::new(1000);
+    draw(
+        &mut Vec::new(),
+        &frame,
+        viewport,
+        "status",
+        &ColorProbe::default(),
+        &mut graphics,
+    )
+    .unwrap();
+    frame.cursor.x = 2;
+    let mut update = Vec::new();
+    draw(
+        &mut update,
+        &frame,
+        viewport,
+        "status",
+        &ColorProbe::default(),
+        &mut graphics,
+    )
+    .unwrap();
+    let update = String::from_utf8(update).unwrap();
+    assert!(!update.contains("stationary text"));
+    assert!(!update.contains("second row"));
+    assert!(!update.contains("status"));
+    assert!(!update.contains("\x1b[K"));
+    assert!(!update.contains("\x1b[2K"));
+}

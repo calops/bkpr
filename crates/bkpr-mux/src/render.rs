@@ -15,11 +15,24 @@ use termwiz::input::{InputEvent, InputParser, KeyCode, Modifiers};
 
 #[path = "render_geometry.rs"]
 mod geometry;
+#[path = "render_updates.rs"]
+mod updates;
+
+#[derive(Default)]
+struct TextState {
+    viewport: Option<Size>,
+    rows: Vec<Row>,
+    palette: Vec<[u8; 3]>,
+    colors: Option<([u8; 3], [u8; 3], u64, bool)>,
+    chrome: String,
+}
 
 struct GraphicsState {
     next_image: u32,
     image_ids: HashMap<ImageKey, u32>,
     derived_ids: HashMap<geometry::DerivedKey, u32>,
+    text: TextState,
+    projections: Vec<geometry::Projection>,
 }
 impl GraphicsState {
     fn new(start_id: u32) -> Self {
@@ -27,6 +40,8 @@ impl GraphicsState {
             next_image: start_id,
             image_ids: HashMap::new(),
             derived_ids: HashMap::new(),
+            text: TextState::default(),
+            projections: Vec::new(),
         }
     }
     fn allocate(&mut self) -> Result<u32> {
@@ -59,7 +74,7 @@ impl Drop for TerminalGuard {
         }
         let _ = write!(
             out,
-            "\x1b[0m\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?1049l"
+            "\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?1049l"
         );
         let _ = out.flush();
         let _ = crossterm::terminal::disable_raw_mode();
@@ -258,20 +273,32 @@ fn draw(
     {
         write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
     }
-    for id in graphics.all_ids() {
-        write!(out, "\x1b_Ga=d,d=i,i={id},q=2\x1b\\")?;
+    let placements_changed = graphics.projections != prepared.placements;
+    if placements_changed {
+        for id in graphics.all_ids() {
+            write!(out, "\x1b_Ga=d,d=i,i={id},q=2\x1b\\")?;
+        }
     }
-    write!(out, "\x1b[?25l\x1b[0m")?;
-    // ED2 also destroys Kitty image resources. EL2 clears only text, so
-    // retained generation receipts remain valid across text-only repaints.
-    for row in 0..=viewport.rows {
-        write!(out, "\x1b[{};1H\x1b[2K", row + 1)?;
-    }
+    write!(out, "\x1b[?2026h\x1b[?25l\x1b[0m")?;
+    let colors = (
+        frame.foreground,
+        frame.background,
+        host.revision,
+        host.truecolor,
+    );
+    let full = graphics.text.viewport != Some(viewport)
+        || graphics.text.colors != Some(colors)
+        || graphics.text.palette != frame.palette;
     let visible_rows = frame.rows.len().min(viewport.rows as usize);
-    for (y, row) in frame.rows.iter().take(visible_rows).enumerate() {
+    for y in 0..viewport.rows as usize {
+        let row = frame.rows.get(y);
+        if !full && row == graphics.text.rows.get(y) {
+            continue;
+        }
+        write!(out, "\x1b[{};1H\x1b[0m", y + 1)?;
         let mut x = 0u16;
         let mut previous_style: Option<&Style> = None;
-        for cell in &row.cells {
+        for cell in row.into_iter().flat_map(|row| &row.cells) {
             if x >= viewport.cols || x.saturating_add(cell.width as u16) > viewport.cols {
                 break;
             }
@@ -279,7 +306,6 @@ fn draw(
                 continue;
             }
             let s = &cell.style;
-            write!(out, "\x1b[{};{}H", y + 1, x + 1)?;
             if previous_style != Some(s) {
                 write!(out, "\x1b[0m")?;
                 color(out, s.foreground, s.foreground_source, false, frame, host)?;
@@ -329,6 +355,16 @@ fn draw(
             }
             x = x.saturating_add(cell.width as u16);
         }
+        if x < viewport.cols {
+            write!(out, "\x1b[0m\x1b[K")?;
+        }
+        if let Some(row) = row {
+            if let Some(previous) = graphics.text.rows.get_mut(y) {
+                previous.clone_from(row);
+            } else {
+                graphics.text.rows.push(row.clone());
+            }
+        }
     }
     for image in &frame.images {
         if !prepared.original.contains(&image.key())
@@ -347,7 +383,7 @@ fn draw(
             &image.pixels,
         )?;
     }
-    for p in &prepared.placements {
+    for p in prepared.placements.iter().filter(|_| placements_changed) {
         let id = if let Some(key) = p.derived {
             if let Some(id) = graphics.derived_ids.get(&key) {
                 *id
@@ -387,15 +423,24 @@ fn draw(
         }
         write!(out, ",z={},C=1\x1b\\", p.z)?;
     }
-    write!(
-        out,
-        "\x1b[{};1H\x1b[0;7m{}\x1b[K\x1b[0m",
-        viewport.rows + 1,
-        safe_text(chrome)
-            .chars()
-            .take(viewport.cols as usize)
-            .collect::<String>()
-    )?;
+    if full || graphics.text.chrome != chrome {
+        write!(
+            out,
+            "\x1b[{};1H\x1b[0;7m{}\x1b[K\x1b[0m",
+            viewport.rows + 1,
+            safe_text(chrome)
+                .chars()
+                .take(viewport.cols as usize)
+                .collect::<String>()
+        )?;
+        graphics.text.chrome.clear();
+        graphics.text.chrome.push_str(chrome);
+    }
+    graphics.text.rows.truncate(visible_rows);
+    graphics.text.viewport = Some(viewport);
+    graphics.text.colors = Some(colors);
+    graphics.text.palette.clone_from(&frame.palette);
+    graphics.projections = prepared.placements;
     if frame.cursor.visible && frame.cursor.x < viewport.cols && frame.cursor.y < viewport.rows {
         let shape = match frame.cursor.shape {
             CursorShape::Block | CursorShape::Hollow => 2,
@@ -414,6 +459,7 @@ fn draw(
             write!(out, "\x1b]112\x1b\\")?;
         }
     }
+    write!(out, "\x1b[?2026l")?;
     out.flush()?;
     Ok(())
 }
@@ -1473,10 +1519,11 @@ pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()>
             read_only,
             ..KeyboardPolicy::default()
         };
+        let mut snapshots = updates::SnapshotPump::new(socket, &view)?;
+        let mut snapshot = snapshots.initial()?;
         let mut scene_revision = 0;
         let mut scene: Option<Frame> = None;
         let mut received_images = HashMap::<ImageKey, Arc<Image>>::new();
-        let mut known_resources = Vec::<ImageKey>::new();
         let mut deferred = VecDeque::<ClientEvent>::new();
         loop {
             if let Ok(error) = error_rx.try_recv() {
@@ -1493,16 +1540,28 @@ pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()>
                     .context("input queue full")?;
                 revision = 0;
             }
-            let snapshot = transport::checked(
-                socket,
-                &json!({"op":"poll","view_id":view,"frame_after":scene_revision,"resources":known_resources}),
-            )?;
             if !snapshot["frame"].is_null() {
-                let mut frame: Frame = serde_json::from_value(snapshot["frame"].clone())?;
+                let mut frame: Frame = serde_json::from_value(snapshot["frame"].take())?;
+                if !snapshot["row_delta"].is_null() {
+                    let previous = scene.as_mut().context("row delta before initial frame")?;
+                    let mut delta = snapshot["row_delta"].take();
+                    if delta["base_revision"].as_u64() != Some(scene_revision) {
+                        bail!("row delta does not match the displayed scene");
+                    }
+                    let updates: Vec<(usize, Row)> = serde_json::from_value(delta["rows"].take())?;
+                    frame.rows = std::mem::take(&mut previous.rows);
+                    for (index, row) in updates {
+                        *frame
+                            .rows
+                            .get_mut(index)
+                            .context("row delta outside scene")? = row;
+                    }
+                }
                 for image in frame.images.drain(..) {
                     received_images.insert(image.key(), image);
                 }
-                known_resources = serde_json::from_value(snapshot["image_refs"].clone())?;
+                let known_resources: Vec<ImageKey> =
+                    serde_json::from_value(snapshot["image_refs"].clone())?;
                 let retained = known_resources.iter().copied().collect::<HashSet<_>>();
                 received_images.retain(|key, _| retained.contains(key));
                 frame.images = known_resources
@@ -1644,14 +1703,35 @@ pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()>
             ) {
                 break;
             }
-            let mut fd = libc::pollfd {
-                fd: libc::STDIN_FILENO,
-                events: libc::POLLIN,
-                revents: 0,
+            use std::os::fd::AsRawFd;
+            let mut fds = [
+                libc::pollfd {
+                    fd: libc::STDIN_FILENO,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: snapshots.wake.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let escape_wait = Duration::from_millis(50).saturating_sub(last_input.elapsed());
+            let timeout = if escape_wait.is_zero() {
+                1000
+            } else {
+                escape_wait.as_millis().max(1) as i32
             };
-            let available = unsafe { libc::poll(&mut fd, 1, 30) };
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
+            if ready < 0
+                && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            snapshots.drain_wakeup();
+            let available = fds[0].revents & (libc::POLLIN | libc::POLLHUP) != 0;
             let mut bytes = [0u8; 8192];
-            let parts = if available > 0 {
+            let parts = if available {
                 let n = std::io::stdin().read(&mut bytes)?;
                 if n == 0 {
                     break;
@@ -1663,7 +1743,7 @@ pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()>
             } else {
                 Vec::new()
             };
-            let mut incoming = VecDeque::from(decode_input(&mut parser, parts, available > 0));
+            let mut incoming = VecDeque::from(decode_input(&mut parser, parts, available));
             loop {
                 let paste_pending = paste_offer.is_some()
                     || consent
@@ -1899,6 +1979,7 @@ pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()>
                     },
                 }
             }
+            snapshots.update(&mut snapshot)?;
         }
         Ok(())
     })();
