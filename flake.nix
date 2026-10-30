@@ -155,9 +155,12 @@
                   pkgs.git
                   pkgs.gh
                   pkgs.pkg-config
+                  pkgs.xdotool
+                  pkgs.imagemagick
                   (pkgs.python3.withPackages (ps: [ ps.pyte ]))
                 ]
                 ++ pkgs.lib.optionals (!localRuntime) [ zellij ];
+                nativeBuildInputs = [ pkgs.rustPlatform.bindgenHook ];
                 buildInputs = [
                   pkgs.openssl
                   pkgs.curl

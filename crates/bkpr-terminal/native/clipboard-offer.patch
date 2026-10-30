@@ -1,0 +1,206 @@
+diff --git a/include/ghostty/vt/paste.h b/include/ghostty/vt/paste.h
+index 1f4c560..7e60387 100644
+--- a/include/ghostty/vt/paste.h
++++ b/include/ghostty/vt/paste.h
+@@ -154,6 +154,14 @@ typedef struct {
+    * with the user on GHOSTTY_REJECTED, and call again with true.
+    */
+   bool allow_unsafe;
++
++  /**
++   * Optional embedder-owned identity for this paste offer. Zero means none.
++   * For a Kitty paste event, its validated one-time grant carries this value
++   * into GhosttyClipboardRead::paste_offer_id. The ID is never sent to the
++   * program and does not grant permission by itself. No pointer is retained.
++   */
++  uint64_t offer_id;
+ } GhosttyPaste;
+ 
+ /**
+diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
+index b586556..74115df 100644
+--- a/include/ghostty/vt/terminal.h
++++ b/include/ghostty/vt/terminal.h
+@@ -1279,6 +1279,15 @@ struct GhosttyClipboardRead {
+ 
+   /** Answer the read; see the struct documentation. */
+   GhosttyClipboardReadReplyFn reply;
++
++  /**
++   * Embedder offer identity from GhosttyPaste::offer_id, only when this
++   * request carries that paste event's validated one-time password.
++   * Zero for normal/session grants, missing, invalid or consumed passwords.
++   * A targets-only listing reports the identity without consuming the grant.
++   * This is correlation, not authorization: revalidate the offer's authority.
++   */
++  uint64_t paste_offer_id;
+ };
+ 
+ /**
+diff --git a/src/terminal/paste.zig b/src/terminal/paste.zig
+index f062a85..b2272a6 100644
+--- a/src/terminal/paste.zig
++++ b/src/terminal/paste.zig
+@@ -56,6 +56,9 @@ pub const Request = struct {
+     /// flow is to call with false, confirm with the user on
+     /// error.UnsafePaste, and call again with true.
+     allow_unsafe: bool = false,
++
++    /// Optional embedder correlation for the minted one-time paste grant.
++    offer_id: u64 = 0,
+ };
+ 
+ /// The representations available for a paste, in the embedder's
+@@ -228,7 +231,7 @@ fn pasteKittyEvent(
+     // and revoked if the event fails to be written so a failure never
+     // leaves a grant for an event that was never sent. Using a
+     // one-time grant consumes it, which is the revocation.
+-    try kitty.grants.grant(ctx.alloc, &otp, .read, true);
++    try kitty.grants.grantPaste(ctx.alloc, &otp, req.offer_id);
+     errdefer _ = kitty.grants.use(ctx.alloc, &otp, .read);
+ 
+     try (kitty_clipboard.PasteEvent{
+diff --git a/src/terminal/c/paste.zig b/src/terminal/c/paste.zig
+index 1ff6a42..1e2d51a 100644
+--- a/src/terminal/c/paste.zig
++++ b/src/terminal/c/paste.zig
+@@ -32,6 +32,7 @@ pub const Request = extern struct {
+     mimes_len: usize,
+     reader: io.MimeReader,
+     allow_unsafe: bool,
++    offer_id: u64 = 0,
+ };
+ 
+ pub fn terminal_paste(
+@@ -42,9 +43,8 @@ pub fn terminal_paste(
+     const wrapper = terminal_ orelse return .invalid_value;
+     const req = req_ orelse return .invalid_value;
+ 
+-    // Every field is required; a smaller size is a caller from a
+-    // different ABI version than any this struct has had.
+-    if (req.size < @sizeOf(Request)) return .invalid_value;
++    // The original required prefix predates the optional trailing offer ID.
++    if (req.size < @offsetOf(Request, "offer_id")) return .invalid_value;
+ 
+     // The handler always has a write_pty trampoline that no-ops without
+     // a C callback, so the "nothing can be written" check is ours.
+@@ -77,6 +77,7 @@ pub fn terminal_paste(
+             .read = .{ .ctx = @constCast(req), .read_fn = &readTrampoline },
+         } },
+         .allow_unsafe = req.allow_unsafe,
++        .offer_id = if (lib.structSizedFieldFits(Request, req.size, "offer_id")) req.offer_id else 0,
+     }) catch |err| return switch (err) {
+         error.UnsafePaste => .rejected,
+         error.NoWritePty => .invalid_value,
+diff --git a/src/terminal/clipboard.zig b/src/terminal/clipboard.zig
+index 0a1c5a7..e45acac 100644
+--- a/src/terminal/clipboard.zig
++++ b/src/terminal/clipboard.zig
+@@ -185,6 +185,10 @@ pub const Read = struct {
+     /// Result.Success.remember. When false, remember is ignored.
+     can_remember: bool,
+ 
++    /// Embedder correlation from the matching validated one-time paste grant.
++    /// Zero for ordinary/session grants. Never transmitted to the program.
++    paste_offer_id: u64 = 0,
++
+     /// Terminal-owned reply state, only valid during the callback.
+     ///
+     /// The result is delivered through a call rather than returned so
+diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
+index 5f047f4..056db19 100644
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -165,6 +165,7 @@ pub const ClipboardRead = extern struct {
+     /// Terminal-owned reply state; opaque to the embedder.
+     ctx: *const anyopaque,
+     reply: ClipboardReadReplyFn,
++    paste_offer_id: u64 = 0,
+ };
+ 
+ /// C function pointer type for replying to a clipboard read.
+@@ -574,6 +575,7 @@ const Effects = struct {
+             .can_remember = read.can_remember,
+             .ctx = &ctx,
+             .reply = &clipboardReadReplyTrampoline,
++            .paste_offer_id = read.paste_offer_id,
+         };
+         func(@ptrCast(wrapper), wrapper.effects.userdata, &request);
+     }
+diff --git a/src/terminal/kitty/clipboard_grants.zig b/src/terminal/kitty/clipboard_grants.zig
+index f90436d..6703ba8 100644
+--- a/src/terminal/kitty/clipboard_grants.zig
++++ b/src/terminal/kitty/clipboard_grants.zig
+@@ -26,6 +26,7 @@ pub const Grants = struct {
+         read: bool = false,
+         write: bool = false,
+         one_time: bool = false,
++        paste_offer_id: u64 = 0,
+     };
+ 
+     pub fn deinit(self: *Grants, alloc: Allocator) void {
+@@ -72,6 +73,21 @@ pub const Grants = struct {
+         }
+     }
+ 
++    /// Attach embedder correlation only to a newly minted one-time paste grant.
++    pub fn grantPaste(self: *Grants, alloc: Allocator, pw: []const u8, offer_id: u64) Allocator.Error!void {
++        try self.grant(alloc, pw, .read, true);
++        const idx = self.findIndex(pw) orelse return;
++        if (self.entries.items[idx].one_time) self.entries.items[idx].paste_offer_id = offer_id;
++    }
++
++    /// Inspect a validated paste password without consuming it. In particular,
++    /// listing targets must not burn the subsequent data-read grant.
++    pub fn pasteOffer(self: *const Grants, pw: []const u8) u64 {
++        const idx = self.findIndex(pw) orelse return 0;
++        const entry = self.entries.items[idx];
++        return if (entry.one_time and entry.read) entry.paste_offer_id else 0;
++    }
++
+     /// Check whether pw grants the given direction. A one-time grant is
+     /// consumed by this check even when the direction doesn't match,
+     /// matching kitty's pop-on-check behavior.
+@@ -236,3 +252,22 @@ test "generateOtp: sys override supplies entropy without an Io source" {
+     const otp = try generateOtp(std.Io.failing);
+     for (otp) |c| try testing.expect(std.mem.indexOfScalar(u8, otp_alphabet, c) != null);
+ }
++
++test "paste offer correlation is exact and never a session grant" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    var grants: Grants = .{};
++    defer grants.deinit(alloc);
++    try grants.grantPaste(alloc, "first", 11);
++    try grants.grantPaste(alloc, "second", 22);
++    try grants.grant(alloc, "session", .read, false);
++    try testing.expectEqual(@as(u64, 11), grants.pasteOffer("first"));
++    try testing.expectEqual(@as(u64, 22), grants.pasteOffer("second"));
++    try testing.expectEqual(@as(u64, 0), grants.pasteOffer("session"));
++    try testing.expectEqual(@as(u64, 0), grants.pasteOffer("wrong"));
++    try testing.expect(grants.use(alloc, "first", .read));
++    try testing.expectEqual(@as(u64, 0), grants.pasteOffer("first"));
++    try testing.expectEqual(@as(u64, 22), grants.pasteOffer("second"));
++    try testing.expect(!grants.use(alloc, "second", .write));
++    try testing.expectEqual(@as(u64, 0), grants.pasteOffer("second"));
++}
+diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
+index 15ea8ae..da390ba 100644
+--- a/src/terminal/stream_terminal.zig
++++ b/src/terminal/stream_terminal.zig
+@@ -1263,6 +1263,7 @@ pub const Handler = struct {
+         // one-time paste password on a listing would burn the grant
+         // before the follow-up data read.
+         const pw: []const u8 = if (meta.name.len > 0) meta.pw else "";
++        const paste_offer_id = self.kitty_clipboard_grants.pasteOffer(pw);
+         const granted = !kitty_clipboard.readPromptExempt(mimes.len) and
+             self.kitty_clipboard_grants.use(alloc, pw, .read);
+ 
+@@ -1282,6 +1283,7 @@ pub const Handler = struct {
+             .name = meta.name,
+             .granted = granted,
+             .can_remember = pw.len > 0,
++            .paste_offer_id = if (granted or kitty_clipboard.readPromptExempt(mimes.len)) paste_offer_id else 0,
+             .reply_ctx = &state,
+             .reply_fn = &KittyClipboardReadState.reply,
+         });

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/bkpr", "crates/bkpr-zellij"]
+members = ["crates/bkpr", "crates/bkpr-zellij", "crates/bkpr-terminal", "crates/bkpr-mux"]
 default-members = ["crates/bkpr"]
 resolver = "2"
 

@@ -375,7 +375,7 @@ The broker wire protocol is version 4. New clients fail closed against older bro
 
 ## Develop
 
-The Rust workspace contains the native launcher/metadata helper in `crates/bkpr` and the WASI sidebar/plugin in `crates/bkpr-zellij`. Zellij owns application PTYs; a session-wide plugin owns workspace metadata, with one native helper for Git and shared CI requests.
+The shipping runtime uses the native launcher/metadata helper in `crates/bkpr` and the WASI sidebar/plugin in `crates/bkpr-zellij`. Zellij still owns its application PTYs; a session-wide plugin owns workspace metadata, with one native helper for Git and shared CI requests. The isolated `crates/bkpr-terminal` and `crates/bkpr-mux` experiment builds without Zellij. Its [engine proof report](docs/pane-first-mux/engine-proof.md) records build/try-it commands, retained evidence and the unresolved image-visibility gate. It isn't the full application cutover or a permanent optional backend.
 
 Automatic releases remain in **0.x**. Breaking changes increment the minor version; the publisher rejects any computed nonzero major before changing release metadata or tags. A move to 1.0 requires a deliberate release-policy update.
 
@@ -411,6 +411,9 @@ continue to override the development defaults.
 
 ```sh
 # In the devshell:
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
+scripts/prepare-ghostty-vt.sh
+export BKPR_GHOSTTY_VT_DIR="$(scripts/prepare-ghostty-vt.sh --print-prefix)"
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo clippy --locked -p bkpr-zellij --target wasm32-wasip1 -- -D warnings
@@ -418,6 +421,8 @@ cargo clippy --locked -p bkpr-zellij --target wasm32-wasip1 -- -D warnings
 # Packaging validation, not the inner development loop:
 nix build .#bkpr
 ```
+
+The workspace checks include the experimental native terminal crate and need the prepared prefix above. To build only the Zellij-independent proof, use `cargo build --locked -p bkpr-mux` with the same environment. Native preparation doesn't change the shipping runtime or user profiles.
 
 `bkpr-native` and `bkpr-zellij` are also exposed as separate Nix package outputs. Development overrides are `BKPR_ZELLIJ` / `--zellij` and `BKPR_PLUGIN` / `--plugin`. The fork exposes its own native package and devshell; Bkpr's release CI builds and caches the pinned dependency. Stable maintenance contracts and the native feature-branch workflow are in [AGENTS.md](AGENTS.md).
 
