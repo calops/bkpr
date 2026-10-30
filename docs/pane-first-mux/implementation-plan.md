@@ -10,6 +10,31 @@ The product model remains pane-first: a pane owns a process/PTY and canonical te
 
 The [initial experiment report](engine-proof.md) records historical evidence at `e9ee402`. It is not production acceptance. The native compositor, initial-presentation and startup-input observations still require closure; deleting Zellij is not permission to label them passing. Backend, metadata and agent work need not stop while independent host/rendering investigations proceed.
 
+## Agreed Cargo workspace
+
+This is the agreed target structure, not the current on-disk layout. Currently `bkpr-mux` combines the executable, backend and terminal client, while `bkpr-terminal` contains the engine adapter. Split these along the boundaries below; do not introduce compatibility aliases or empty crates merely to match the diagram.
+
+| Package/crate | Kind | Executable | Responsibility |
+| --- | --- | --- | --- |
+| `bkpr` | Executable package | `bkpr` | User entrypoint, frontend selection/bootstrap and utilities such as harness launch commands and explicit integration installation. Opens the terminal client by default. |
+| `bkpr-client` | Library | — | Bkpr-specific terminal application: workspace/sidebar/popup content, navigation, interactions and daemon communication. |
+| `bkpr-tui-framework` | Library | — | Reusable drawing/composition framework: terminal scene surfaces and widgets, layout, decorations, clipping, layers, hit testing, damage, graphics-resource lifetime and coordinated terminal output. |
+| `bkpr-server` | Executable package | `bkprd` | Daemon startup, configuration and orchestration of backend services. |
+| `bkpr-core` | Library | — | Backend pane/process lifecycle, multiplexing, workspace/layout registry, harnesses, agent communication, Git/CI and project metadata, persistence/recovery and authority. |
+| `bkpr-protocol` | Library | — | Shared identities, requests/responses, events, capabilities, errors and terminal scene types. No frontend or backend implementation dependencies. |
+| `bkpr-terminal-engine` | Library | — | Backend terminal-emulation adapter: ingest application output, extract canonical state, encode input and expose terminal effects. Adopt compatible upstream Ghostty Rust bindings; do not maintain a parallel generic SDK. |
+
+Separate crates do not imply separate processes. `bkpr` calls the terminal client library in-process; `bkprd` runs separately. Bare `bkpr` should connect to or start the local daemon and open the TUI. Management commands remain usable without initializing terminal drawing or requiring a TTY. Closing the client does not terminate backend-owned panes. Remote hosts run their own server with the same endpoint API.
+
+The client consumes `bkpr-protocol`, not backend implementation internals. The server assembles `bkpr-core`; the core uses the terminal-engine adapter. Keep backend business logic and authoritative associated data out of the frontend. Client-local focus, viewport, device capabilities and consent presentation remain frontend concerns. Explicit integration installation acts on the machine/account where the command runs, not silently on a remote endpoint.
+
+Application UI is described once through `bkpr-tui-framework`. The framework seamlessly selects rich or plain presentation from observed capabilities and user preferences; application components do not maintain separate fancy/non-fancy implementations. Decorative graphics can fall back to characters, but meaningful unsupported content needs an honest indication. Pane scenes, sidebar, popups and decorations share geometry, clipping, layer order, hit testing, cursor policy, damage and one coordinated terminal writer. The framework presents canonical scenes; it is not another terminal emulator.
+
+Evaluate Ratatui or another maintained foundation underneath that framework. If integration creates competing render loops or conflicting text/image ownership, fix the integration or choose a lower-level foundation rather than leak the conflict into application components.
+
+Add a GUI client only when implemented; `bkpr` may select it later without changing backend authority. Harness adapters, Git/CI, recovery and storage initially remain modules in the relevant libraries. Extract additional crates only for concrete shared consumers, independent interfaces or dependency boundaries.
+
+
 ## Reuse and design decisions
 
 Prefer maintained libraries for terminal state/input encoding, PTYs, codecs, networking/authentication, widgets and storage. Own Bkpr's agent/harness behavior, lifecycle, control, metadata and permission policies. Copy a small useful algorithm when that is simpler than importing an application; do not add another terminal parser or mux authority beneath the canonical engine.
