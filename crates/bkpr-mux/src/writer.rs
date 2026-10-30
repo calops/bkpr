@@ -41,6 +41,7 @@ pub struct Snapshot {
 pub struct Queue {
     state: Mutex<State>,
     wake: Condvar,
+    changed: Box<dyn Fn() + Send + Sync>,
 }
 pub struct Worker {
     queue: Arc<Queue>,
@@ -61,7 +62,10 @@ impl Drop for Worker {
     }
 }
 impl Queue {
-    pub fn start(mut output: Box<dyn Write + Send>) -> Result<(Arc<Self>, Worker)> {
+    pub fn start(
+        mut output: Box<dyn Write + Send>,
+        changed: Box<dyn Fn() + Send + Sync>,
+    ) -> Result<(Arc<Self>, Worker)> {
         let queue = Arc::new(Self {
             state: Mutex::new(State {
                 queue: VecDeque::new(),
@@ -73,6 +77,7 @@ impl Queue {
                 error: None,
             }),
             wake: Condvar::new(),
+            changed,
         });
         let worker = queue.clone();
         let thread = thread::Builder::new()
@@ -111,6 +116,8 @@ impl Queue {
                                     receipt.state = "writing";
                                     receipt.written = written;
                                 }
+                                drop(state);
+                                (worker.changed)();
                             }
                             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
                                 continue;
@@ -138,7 +145,10 @@ impl Queue {
                         receipt.state = outcome;
                         receipt.written = written;
                     }
-                    if state.stopping {
+                    let stopping = state.stopping;
+                    drop(state);
+                    (worker.changed)();
+                    if stopping {
                         break;
                     }
                 }
@@ -150,6 +160,8 @@ impl Queue {
                         receipt.state = "cancelled";
                     }
                 }
+                drop(state);
+                (worker.changed)();
             })?;
         Ok((
             queue.clone(),
@@ -163,6 +175,8 @@ impl Queue {
         let mut state = self.state.lock().unwrap();
         state.error = Some(error);
         state.stopping = true;
+        drop(state);
+        (self.changed)();
         self.wake.notify_all();
     }
     pub fn enqueue(&self, bytes: Vec<u8>, internal: bool) -> Result<u64> {
@@ -203,13 +217,21 @@ impl Queue {
         });
         state.queue.push_back(Packet { id, bytes });
         self.wake.notify_one();
+        drop(state);
+        (self.changed)();
         Ok(id)
     }
     pub fn congested(&self) -> bool {
         self.state.lock().unwrap().bytes >= USER_BYTES
     }
     pub fn stop(&self) {
-        self.state.lock().unwrap().stopping = true;
+        let mut state = self.state.lock().unwrap();
+        if state.stopping {
+            return;
+        }
+        state.stopping = true;
+        drop(state);
+        (self.changed)();
         self.wake.notify_all();
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -221,5 +243,70 @@ impl Queue {
             stopped: state.stopping,
             error: state.error.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn receipt_completion_and_stop_notify_without_holding_writer_state() {
+        let (changed, changes) = mpsc::channel();
+        let (queue, worker) = Queue::start(
+            Box::new(std::io::sink()),
+            Box::new(move || {
+                let _ = changed.send(());
+            }),
+        )
+        .unwrap();
+        let id = queue.enqueue(b"input".to_vec(), false).unwrap();
+        loop {
+            let snapshot = queue.snapshot();
+            if snapshot
+                .receipts
+                .iter()
+                .any(|receipt| receipt.id == id && receipt.state == "written")
+            {
+                assert_eq!(snapshot.queued_bytes, 0);
+                assert_eq!(snapshot.active, 0);
+                break;
+            }
+            changes.recv_timeout(Duration::from_secs(3)).unwrap();
+        }
+        worker.join().unwrap();
+        assert!(queue.snapshot().stopped);
+        assert!(changes.try_recv().is_ok());
+    }
+
+    struct BrokenWriter;
+    impl Write for BrokenWriter {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn asynchronous_writer_fault_notifies_snapshot_consumers() {
+        let (changed, changes) = mpsc::channel();
+        let (queue, worker) = Queue::start(
+            Box::new(BrokenWriter),
+            Box::new(move || {
+                let _ = changed.send(());
+            }),
+        )
+        .unwrap();
+        queue.enqueue(b"input".to_vec(), false).unwrap();
+        while queue.snapshot().error.is_none() {
+            changes.recv_timeout(Duration::from_secs(3)).unwrap();
+        }
+        worker.join().unwrap();
+        let snapshot = queue.snapshot();
+        assert!(snapshot.stopped);
+        assert_eq!(snapshot.receipts[0].state, "failed");
     }
 }

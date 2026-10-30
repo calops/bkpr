@@ -21,7 +21,7 @@ pub(super) struct DerivedKey {
     pub height: u32,
     pub visible: Rect,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Projection {
     pub image: ImageKey,
     pub derived: Option<DerivedKey>,

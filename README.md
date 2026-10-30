@@ -116,6 +116,17 @@ Daemon geometry options are `--cols`, `--rows`, `--cell-width` and
 views can update terminal geometry through the native size-lease mechanism;
 input and clipboard permissions are tracked separately.
 
+The TUI receives scene changes independently of keyboard input. Typing repaints
+changed rows without clearing the viewport or redrawing unchanged chrome; cursor
+updates don't repaint stationary text. Unchanged image resources and placements
+are retained. Initial attachment, resize and scene-baseline recovery still use
+complete state, and palette changes invalidate affected presentation.
+
+Scene polling supports bounded change waits and optional whole-row deltas.
+Waiting views don't occupy the connection capacity reserved for input and
+control operations. These mechanisms reduce repeated transfers and repaint work;
+they don't lower terminal fidelity or skip input.
+
 ### Requests and explicit shutdown
 
 `request` sends one JSON operation and prints the versioned JSON response:

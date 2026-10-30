@@ -20,7 +20,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -57,6 +57,12 @@ pub enum Request {
         frame_after: u64,
         #[serde(default)]
         resources: Vec<ImageKey>,
+        #[serde(default)]
+        snapshot_after: u64,
+        #[serde(default)]
+        wait_ms: u64,
+        #[serde(default)]
+        row_deltas: bool,
     },
     Pin {
         view_id: String,
@@ -184,6 +190,35 @@ struct Command {
     mutation: Mutation,
     result: mpsc::SyncSender<std::result::Result<Option<u64>, String>>,
 }
+#[derive(Default)]
+struct SnapshotChanges {
+    revision: Mutex<u64>,
+    wake: Condvar,
+}
+impl SnapshotChanges {
+    fn revision(&self) -> u64 {
+        *self.revision.lock().unwrap()
+    }
+    fn notify(&self) {
+        let mut revision = self.revision.lock().unwrap();
+        *revision = revision.wrapping_add(1);
+        self.wake.notify_all();
+    }
+    fn wait(&self, after: u64, wait_ms: u64) {
+        if wait_ms == 0 {
+            return;
+        }
+        let revision = self.revision.lock().unwrap();
+        let _ = self
+            .wake
+            .wait_timeout_while(
+                revision,
+                Duration::from_millis(wait_ms.min(1000)),
+                |revision| *revision == after,
+            )
+            .unwrap();
+    }
+}
 struct Shared {
     authority: Mutex<Authority>,
     published: Mutex<Published>,
@@ -193,6 +228,8 @@ struct Shared {
     pane_id: String,
     writer: Mutex<Option<Arc<writer::Queue>>>,
     paste: Mutex<PasteGrants>,
+    changes: Arc<SnapshotChanges>,
+    delta_frames: Mutex<BTreeMap<String, (u64, Arc<Frame>)>>,
 }
 #[derive(Clone)]
 pub struct Pane {
@@ -224,6 +261,8 @@ impl Pane {
             pane_id: Uuid::new_v4().to_string(),
             writer: Mutex::new(None),
             paste: Mutex::new(PasteGrants::default()),
+            changes: Arc::new(SnapshotChanges::default()),
+            delta_frames: Mutex::new(BTreeMap::new()),
         });
         let (commands, rx) = mpsc::sync_channel(64);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -236,6 +275,8 @@ impl Pane {
                     let mut p = state.published.lock().unwrap();
                     p.lifecycle = "fault".into();
                     p.error = Some(format!("{error:#}"));
+                    drop(p);
+                    state.changes.notify();
                 }
             })?;
         ready_rx
@@ -264,6 +305,8 @@ impl Pane {
             && let Some(wait) = pending.take()
         {
             let _ = wait.response.try_send(ClipboardResponse::denied());
+            drop(pending);
+            self.shared.changes.notify();
         }
     }
     pub fn request(&self, request: Request) -> Result<Value> {
@@ -282,13 +325,23 @@ impl Pane {
             _ => {}
         }
         match &request {
-            Request::Inspect => return self.snapshot(None, 0, 0, &[]),
+            Request::Inspect => return self.snapshot(None, 0, 0, &[], false),
             Request::Poll {
                 view_id,
                 after,
                 frame_after,
                 resources,
-            } => return self.snapshot(Some(view_id), *after, *frame_after, resources),
+                snapshot_after,
+                wait_ms,
+                row_deltas,
+            } => {
+                if resources.len() > 1024 {
+                    bail!("image receipt limit");
+                }
+                self.shared.authority.lock().unwrap().touch(view_id)?;
+                self.shared.changes.wait(*snapshot_after, *wait_ms);
+                return self.snapshot(Some(view_id), *after, *frame_after, resources, *row_deltas);
+            }
             Request::Detach { view_id } => self.cancel_clipboard(Some(view_id)),
             Request::Update { view_id, spec }
                 if !spec.clipboard || !spec.visible || !spec.interactive =>
@@ -329,26 +382,26 @@ impl Pane {
                 bail!("clipboard grant mismatch");
             }
             let wait = pending.take().unwrap();
-            wait.response
+            let result = wait
+                .response
                 .try_send(response)
-                .context("clipboard request expired")?;
+                .context("clipboard request expired");
+            drop(pending);
+            drop(authority);
+            self.shared.changes.notify();
+            result?;
             return Ok(json!({"accepted":true}));
         }
         let _serial = self.shared.requests.lock().unwrap();
         match request {
-            Request::Inspect => self.snapshot(None, 0, 0, &[]),
-            Request::Poll {
-                view_id,
-                after,
-                frame_after,
-                resources,
-            } => self.snapshot(Some(&view_id), after, frame_after, &resources),
+            Request::Inspect | Request::Poll { .. } => unreachable!(),
             Request::Attach { spec } => {
                 let (id, size) = {
                     let mut a = self.shared.authority.lock().unwrap();
                     let id = a.attach(spec)?;
                     (id, a.owner().map(|(_, size)| size))
                 };
+                self.shared.changes.notify();
                 if let Some(size) = size {
                     self.command(Mutation::Resize(size))?;
                 }
@@ -363,6 +416,7 @@ impl Pane {
                     a.update(&view_id, spec)?;
                     a.owner().map(|(_, size)| size)
                 };
+                self.shared.changes.notify();
                 if let Some(size) = size {
                     self.command(Mutation::Resize(size))?;
                 }
@@ -375,6 +429,8 @@ impl Pane {
                     a.detach(&view_id)?;
                     a.owner().map(|(_, size)| size)
                 };
+                self.shared.delta_frames.lock().unwrap().remove(&view_id);
+                self.shared.changes.notify();
                 if let Some(size) = size {
                     self.command(Mutation::Resize(size))?;
                 }
@@ -386,6 +442,7 @@ impl Pane {
                     a.pin(&view_id, size)?;
                     a.owner().map(|(_, size)| size)
                 };
+                self.shared.changes.notify();
                 if let Some(size) = size {
                     self.command(Mutation::Resize(size))?;
                 }
@@ -459,6 +516,7 @@ impl Pane {
                         .min(100_000);
                     view.last_seen = Instant::now();
                 }
+                self.shared.changes.notify();
                 self.command(Mutation::Refresh)?;
                 Ok(json!({"scrolled":true}))
             }
@@ -509,6 +567,7 @@ impl Pane {
                 ) {
                     self.command(Mutation::Terminate)?;
                 }
+                self.shared.changes.notify();
                 Ok(json!({"shutdown":true}))
             }
             Request::Clipboard { .. } => unreachable!(),
@@ -520,27 +579,179 @@ impl Pane {
         after: u64,
         frame_after: u64,
         resources: &[ImageKey],
+        row_deltas: bool,
     ) -> Result<Value> {
         if resources.len() > 1024 {
             bail!("image receipt limit");
         }
-        let mut a = self.shared.authority.lock().unwrap();
-        if let Some(id) = view {
-            a.touch(id)?;
+        // Capture the token before the state: concurrent updates can cause an
+        // extra response, but can never be hidden behind a newer change token.
+        let snapshot_revision = self.shared.changes.revision();
+        let (
+            size_owner,
+            lease_generation,
+            views,
+            frame,
+            baseline,
+            revision,
+            pid,
+            lifecycle,
+            exit_code,
+            error,
+            status,
+            events,
+            event_sequence,
+        ) = {
+            let mut authority = self.shared.authority.lock().unwrap();
+            if let Some(id) = view {
+                authority.touch(id)?;
+            }
+            let published = self.shared.published.lock().unwrap();
+            let frame = view
+                .and_then(|id| published.scroll_frames.get(id))
+                .or(published.frame.as_ref())
+                .cloned();
+            let baseline = if row_deltas
+                && let Some(id) = view
+                && let Some(frame) = &frame
+            {
+                self.shared
+                    .delta_frames
+                    .lock()
+                    .unwrap()
+                    .insert(id.to_owned(), (published.revision, frame.clone()))
+            } else {
+                None
+            };
+            (
+                authority.owner().map(|(id, size)| (id.to_owned(), size)),
+                authority.generation,
+                authority.views.values().cloned().collect::<Vec<_>>(),
+                frame,
+                baseline,
+                published.revision,
+                published.pid,
+                published.lifecycle.clone(),
+                published.exit_code,
+                published.error.clone(),
+                published.status.clone(),
+                published
+                    .events
+                    .iter()
+                    .filter(|event| event.sequence > after)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                published.event_sequence,
+            )
+        };
+        let (clipboard, clipboard_pending) = {
+            let pending = self.shared.clipboard.lock().unwrap();
+            (
+                pending
+                    .as_ref()
+                    .filter(|wait| view == Some(wait.info.view_id.as_str()))
+                    .map(|wait| wait.info.clone()),
+                pending.is_some(),
+            )
+        };
+        let writer = self.shared.writer.lock().unwrap().clone();
+        let writer = writer.as_ref().map(|writer| writer.snapshot());
+        let image_refs = frame
+            .as_ref()
+            .map(|frame| frame.image_keys())
+            .unwrap_or_default();
+        let (frame, row_delta) = frame_payload(
+            frame.as_deref().filter(|_| frame_after != revision),
+            baseline.as_ref(),
+            frame_after,
+            resources,
+        );
+        let mut snapshot = json!({
+            "pane_id": self.shared.pane_id,
+            "pid": pid,
+            "revision": revision,
+            "snapshot_revision": snapshot_revision,
+            "frame": frame,
+            "image_refs": image_refs,
+            "resource_protocol": 1,
+            "writer": writer,
+            "lifecycle": lifecycle,
+            "exit_code": exit_code,
+            "error": error,
+            "program_status": status,
+            "events": events,
+            "event_sequence": event_sequence,
+            "size_owner": size_owner.map(|(id, size)| json!({"view_id": id, "size": size})),
+            "lease_generation": lease_generation,
+            "views": views,
+            "clipboard": clipboard,
+            "clipboard_pending": clipboard_pending,
+            "capabilities": {
+                "sixel": false,
+                "normalized_frames": true,
+                "clipboard_timeout_ms": CLIPBOARD_TIMEOUT.as_millis(),
+                "view_timeout_ms": 10000,
+                "poll_wait_max_ms": 1000,
+                "row_deltas": true,
+            },
+        });
+        if let Some(row_delta) = row_delta {
+            snapshot["row_delta"] = row_delta;
         }
-        let p = self.shared.published.lock().unwrap();
-        let clipboard = self.shared.clipboard.lock().unwrap();
-        let frame = view
-            .and_then(|id| p.scroll_frames.get(id))
-            .or(p.frame.as_ref());
-        let image_refs = frame.map(|frame| frame.image_keys()).unwrap_or_default();
-        let frame = frame
-            .filter(|_| frame_after != p.revision)
-            .map(|frame| frame.wire(resources));
-        Ok(
-            json!({"pane_id":self.shared.pane_id,"pid":p.pid,"revision":p.revision,"frame":frame,"image_refs":image_refs,"resource_protocol":1,"writer":self.shared.writer.lock().unwrap().as_ref().map(|w|w.snapshot()),"lifecycle":p.lifecycle,"exit_code":p.exit_code,"error":p.error,"program_status":p.status,"events":p.events.iter().filter(|e| e.sequence > after).collect::<Vec<_>>(),"event_sequence":p.event_sequence,"size_owner":a.owner().map(|(id,size)|json!({"view_id":id,"size":size})),"lease_generation":a.generation,"views":a.views.values().collect::<Vec<_>>(),"clipboard":clipboard.as_ref().filter(|w|view == Some(w.info.view_id.as_str())).map(|w|&w.info),"clipboard_pending":clipboard.is_some(),"capabilities":{"sixel":false,"normalized_frames":true,"clipboard_timeout_ms":CLIPBOARD_TIMEOUT.as_millis(),"view_timeout_ms":10000}}),
-        )
+        Ok(snapshot)
     }
+}
+fn frame_payload(
+    frame: Option<&Frame>,
+    baseline: Option<&(u64, Arc<Frame>)>,
+    frame_after: u64,
+    resources: &[ImageKey],
+) -> (Value, Option<Value>) {
+    let Some(frame) = frame else {
+        return (Value::Null, None);
+    };
+    let Some((base_revision, baseline)) = baseline.filter(|(revision, baseline)| {
+        *revision == frame_after
+            && baseline.size == frame.size
+            && baseline.rows.len() == frame.rows.len()
+    }) else {
+        return (json!(frame.wire(resources)), None);
+    };
+    let rows = frame
+        .rows
+        .iter()
+        .zip(&baseline.rows)
+        .enumerate()
+        .filter(|(_, (row, previous))| row != previous)
+        .map(|(index, (row, _))| (index, row))
+        .collect::<Vec<_>>();
+    let known = resources
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let images = frame
+        .images
+        .iter()
+        .filter(|image| !known.contains(&image.key()))
+        .collect::<Vec<_>>();
+    // Keep metadata complete; only unchanged rows and receipted resources are
+    // omitted. Whole-row replacement preserves wide and combining cell groups.
+    (
+        json!({
+            "size": frame.size,
+            "rows": [],
+            "cursor": frame.cursor,
+            "foreground": frame.foreground,
+            "background": frame.background,
+            "palette": frame.palette,
+            "images": images,
+            "placements": frame.placements,
+            "alternate_screen": frame.alternate_screen,
+            "scrollback_total": frame.scrollback_total,
+            "scrollback_offset": frame.scrollback_offset,
+        }),
+        Some(json!({"base_revision": base_revision, "rows": rows})),
+    )
 }
 fn revoke_paste(shared: &Shared, view: Option<&str>) {
     let mut grants = shared.paste.lock().unwrap();
@@ -612,6 +823,8 @@ fn publish(terminal: &mut Terminal, shared: &Shared) -> Result<()> {
     p.scroll_frames = frames;
     p.status = terminal.program_status();
     p.revision += 1;
+    drop(p);
+    shared.changes.notify();
     Ok(())
 }
 fn route_effects(effects: Vec<Effect>, writer: &writer::Queue, shared: &Shared) -> Result<()> {
@@ -632,6 +845,8 @@ fn route_effects(effects: Vec<Effect>, writer: &writer::Queue, shared: &Shared) 
                 if p.events.len() > 128 {
                     p.events.pop_front();
                 }
+                drop(p);
+                shared.changes.notify();
             }
         }
     }
@@ -709,7 +924,9 @@ fn run_pane(
     if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
         return Err(std::io::Error::last_os_error().into());
     }
-    let (writer, writer_thread) = writer::Queue::start(master.take_writer()?)?;
+    let changes = shared.changes.clone();
+    let (writer, writer_thread) =
+        writer::Queue::start(master.take_writer()?, Box::new(move || changes.notify()))?;
     let mut writer_thread = Some(writer_thread);
     *shared.writer.lock().unwrap() = Some(writer.clone());
     let mut reader = master.try_clone_reader()?;
@@ -775,6 +992,7 @@ fn run_pane(
             response: tx,
         });
         drop(authority);
+        clipboard_state.changes.notify();
         let response = rx
             .recv_timeout(CLIPBOARD_TIMEOUT)
             .unwrap_or_else(|_| ClipboardResponse::denied());
@@ -784,6 +1002,8 @@ fn run_pane(
             .is_some_and(|p| p.info.request_id == request_id)
         {
             *pending = None;
+            drop(pending);
+            clipboard_state.changes.notify();
         }
         response
     }));
@@ -794,6 +1014,7 @@ fn run_pane(
         p.frame = Some(Arc::new(terminal.snapshot()?));
         p.revision += 1;
     }
+    shared.changes.notify();
     let _ = ready.send(Ok(()));
     let mut termination_reply = None;
     let result = (|| -> Result<()> {
@@ -816,6 +1037,7 @@ fn run_pane(
             };
             for view in &stale {
                 revoke_paste(&shared, Some(view));
+                shared.delta_frames.lock().unwrap().remove(view);
             }
             {
                 let mut grants = shared.paste.lock().unwrap();
@@ -836,6 +1058,7 @@ fn run_pane(
                 }
             }
             if !stale.is_empty() {
+                shared.changes.notify();
                 if let Some(size) = size
                     && size != current_size
                 {
@@ -983,6 +1206,7 @@ fn run_pane(
                         terminal.program_exited();
                         publish(&mut terminal, &shared)?;
                         shared.published.lock().unwrap().lifecycle = "terminating".into();
+                        shared.changes.notify();
                         termination_reply =
                             Some((command.result, outcome.map_err(|e| format!("{e:#}"))));
                         break;
@@ -1000,9 +1224,16 @@ fn run_pane(
                 terminal.program_exited();
                 let complete = eof && terminal.sync_output_remaining().is_none();
                 let mut p = shared.published.lock().unwrap();
+                let lifecycle = if complete { "exited" } else { "draining" };
+                let status_changed =
+                    p.exit_code != Some(status.exit_code()) || p.lifecycle != lifecycle;
                 p.status = terminal.program_status();
                 p.exit_code = Some(status.exit_code());
-                p.lifecycle = if complete { "exited" } else { "draining" }.into();
+                p.lifecycle = lifecycle.into();
+                drop(p);
+                if status_changed {
+                    shared.changes.notify();
+                }
                 if complete {
                     break;
                 }
@@ -1022,6 +1253,7 @@ fn run_pane(
     let _ = reader_thread.join();
     if let Some((reply, outcome)) = termination_reply {
         shared.published.lock().unwrap().lifecycle = "terminated".into();
+        shared.changes.notify();
         let _ = reply.send(outcome);
     }
     result.and(cleanup)
@@ -1113,3 +1345,253 @@ impl Drop for OwnedChild {
 
 #[cfg(test)]
 mod lifecycle_tests;
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use bkpr_terminal::{Cell, ColorSource, Cursor, CursorShape, Row, Style};
+
+    fn frame() -> Frame {
+        let cell = Cell {
+            text: "a".into(),
+            width: 1,
+            style: Style {
+                foreground: [255; 3],
+                background: [0; 3],
+                underline_color: [255; 3],
+                foreground_source: ColorSource::Default,
+                background_source: ColorSource::Default,
+                underline_source: ColorSource::Default,
+                bold: false,
+                italic: false,
+                faint: false,
+                blink: false,
+                inverse: false,
+                invisible: false,
+                strikethrough: false,
+                overline: false,
+                underline: 0,
+            },
+            hyperlink: None,
+        };
+        Frame {
+            size: Size {
+                cols: 2,
+                rows: 2,
+                cell_width: 8,
+                cell_height: 16,
+            },
+            rows: vec![
+                Row {
+                    cells: vec![cell.clone(), cell.clone()],
+                },
+                Row {
+                    cells: vec![cell.clone(), cell],
+                },
+            ],
+            cursor: Cursor {
+                x: 0,
+                y: 0,
+                visible: true,
+                blinking: false,
+                shape: CursorShape::Block,
+                color: None,
+            },
+            foreground: [255; 3],
+            background: [0; 3],
+            palette: Vec::new(),
+            images: Vec::new(),
+            placements: Vec::new(),
+            alternate_screen: false,
+            scrollback_total: 2,
+            scrollback_offset: 0,
+        }
+    }
+
+    fn pane() -> Pane {
+        let (commands, _) = mpsc::sync_channel(1);
+        Pane {
+            shared: Arc::new(Shared {
+                authority: Mutex::new(Authority::default()),
+                published: Mutex::new(Published {
+                    frame: Some(Arc::new(frame())),
+                    revision: 1,
+                    lifecycle: "exited".into(),
+                    ..Published::default()
+                }),
+                clipboard: Mutex::new(None),
+                requests: Mutex::new(()),
+                pane_id: "test-pane".into(),
+                writer: Mutex::new(None),
+                paste: Mutex::new(PasteGrants::default()),
+                changes: Arc::new(SnapshotChanges::default()),
+                delta_frames: Mutex::new(BTreeMap::new()),
+            }),
+            commands,
+        }
+    }
+
+    fn request(pane: &Pane, request: Value) -> Value {
+        pane.request(serde_json::from_value(request).unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn default_poll_is_one_shot_and_delta_baselines_follow_views() {
+        let pane = pane();
+        let attached = request(
+            &pane,
+            json!({
+                "op": "attach", "size": frame().size,
+                "visible": false, "interactive": false, "input": false, "clipboard": false,
+            }),
+        );
+        let id = attached["view_id"].as_str().unwrap();
+        let first = request(&pane, json!({"op":"poll", "view_id":id, "row_deltas":true}));
+        assert_eq!(first["frame"]["rows"].as_array().unwrap().len(), 2);
+        assert!(first.get("row_delta").is_none());
+        let token = first["snapshot_revision"].as_u64().unwrap();
+        let unchanged = request(
+            &pane,
+            json!({
+                "op":"poll", "view_id":id, "snapshot_after":token, "frame_after":1,
+            }),
+        );
+        assert_eq!(unchanged["snapshot_revision"], token);
+        assert!(unchanged["frame"].is_null());
+        assert!(unchanged.get("row_delta").is_none());
+
+        let mut changed = frame();
+        changed.rows[1].cells[0].text = "界".into();
+        changed.rows[1].cells[0].width = 2;
+        changed.rows[1].cells[1].text.clear();
+        changed.rows[1].cells[1].width = 0;
+        {
+            let mut published = pane.shared.published.lock().unwrap();
+            published.frame = Some(Arc::new(changed));
+            published.revision = 2;
+        }
+        pane.shared.changes.notify();
+        let delta = request(
+            &pane,
+            json!({
+                "op":"poll", "view_id":id, "frame_after":1, "row_deltas":true,
+            }),
+        );
+        assert_eq!(delta["frame"]["rows"], json!([]));
+        assert_eq!(delta["row_delta"]["base_revision"], 1);
+        assert_eq!(delta["row_delta"]["rows"][0][0], 1);
+        assert_eq!(delta["row_delta"]["rows"][0][1]["cells"][0]["text"], "界");
+        let full = request(&pane, json!({"op":"poll", "view_id":id, "frame_after":1}));
+        assert!(full.get("row_delta").is_none());
+        assert_eq!(full["frame"]["rows"].as_array().unwrap().len(), 2);
+        request(&pane, json!({"op":"detach", "view_id":id}));
+        assert!(pane.shared.delta_frames.lock().unwrap().is_empty());
+        assert!(
+            pane.request(
+                serde_json::from_value(json!({
+                    "op":"poll", "view_id":id, "wait_ms":1000,
+                }))
+                .unwrap()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn deltas_reconstruct_exact_frames_and_fall_back_without_matching_baseline() {
+        let base = Arc::new(frame());
+        let mut current = (*base).clone();
+        current.rows[1].cells[0].text = "e\u{301}".into();
+        current.cursor.y = 1;
+        let baseline = (4, base.clone());
+        let (mut metadata, delta) = frame_payload(Some(&current), Some(&baseline), 4, &[]);
+        let delta = delta.unwrap();
+        metadata["rows"] = json!(base.rows);
+        for change in delta["rows"].as_array().unwrap() {
+            metadata["rows"][change[0].as_u64().unwrap() as usize] = change[1].clone();
+        }
+        assert_eq!(metadata, json!(current.wire(&[])));
+        let (_, cursor_only) = frame_payload(
+            Some(&current),
+            Some(&(5, Arc::new(current.clone()))),
+            5,
+            &[],
+        );
+        assert_eq!(cursor_only.unwrap()["rows"], json!([]));
+        assert!(
+            frame_payload(Some(&current), Some(&baseline), 3, &[])
+                .1
+                .is_none()
+        );
+        current.size.cols += 1;
+        assert!(
+            frame_payload(Some(&current), Some(&baseline), 4, &[])
+                .1
+                .is_none()
+        );
+        current.size = base.size;
+        current.rows.pop();
+        assert!(
+            frame_payload(Some(&current), Some(&baseline), 4, &[])
+                .1
+                .is_none()
+        );
+        assert_eq!(
+            frame_payload(None, Some(&baseline), 4, &[]),
+            (Value::Null, None)
+        );
+    }
+
+    #[test]
+    fn change_wait_handles_notification_before_or_after_wait_registration() {
+        let changes = Arc::new(SnapshotChanges::default());
+        let after = changes.revision();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let waiter = {
+            let changes = changes.clone();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                changes.wait(after, u64::MAX);
+                changes.revision()
+            })
+        };
+        barrier.wait();
+        changes.notify();
+        assert_ne!(waiter.join().unwrap(), after);
+        changes.wait(after, 1000);
+        changes.wait(changes.revision(), 1);
+    }
+
+    #[test]
+    fn clipboard_clear_and_shutdown_publish_control_changes_without_a_new_frame() {
+        let pane = pane();
+        let (response, result) = mpsc::sync_channel(1);
+        let info = ClipboardPending {
+            request_id: "request".into(),
+            view_id: "view".into(),
+            request: ClipboardRequest {
+                operation: bkpr_terminal::ClipboardOperation::Read {
+                    mimes: Vec::new(),
+                    list: false,
+                },
+                location: ClipboardLocation::Standard,
+                name: String::new(),
+                granted: false,
+                can_remember: false,
+                paste_offer_id: None,
+            },
+        };
+        *pane.shared.clipboard.lock().unwrap() = Some(ClipboardWait { info, response });
+        let before = pane.shared.changes.revision();
+        pane.cancel_clipboard(None);
+        assert_ne!(pane.shared.changes.revision(), before);
+        assert!(pane.shared.clipboard.lock().unwrap().is_none());
+        assert!(result.try_recv().is_ok());
+        let before = pane.shared.changes.revision();
+        request(&pane, json!({"op":"shutdown"}));
+        assert_ne!(pane.shared.changes.revision(), before);
+        assert_eq!(pane.shared.published.lock().unwrap().revision, 1);
+    }
+}
