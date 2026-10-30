@@ -39,6 +39,13 @@ is needed. `just build` prepares the engine and builds
 `cargo build --locked -p bkpr-mux --bin bkpr`. `just run --help` builds and runs
 that same executable. All recipes respect an existing `CARGO_TARGET_DIR`.
 
+Repository Cargo commands default to one build job through `.cargo/config.toml`;
+rustc coordinates its parallel code generation with Cargo's jobserver. Native
+engine preparation also uses `zig build -j1`. This limits concurrent compilation
+without changing optimization settings or forcing a rebuild with new Rust flags.
+It isn't a promise that compiler processes have only one OS thread. Avoid
+overriding the job limit on a workstation running live sessions.
+
 **Shared-artifact safety:** a normal build writes `debug/bkpr` in the selected
 Cargo target directory. If that pathname is a currently used application, do not
 run `just build`, `just run` or the equivalent Cargo build against it until you

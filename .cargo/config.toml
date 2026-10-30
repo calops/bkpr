@@ -1,0 +1,3 @@
+[build]
+# Keep builds usable on a workstation shared with live panes and agents.
+jobs = 1
