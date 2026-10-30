@@ -10,19 +10,19 @@ Review also found two independent renderer defects: ordering within `BelowBackgr
 
 ## Implemented boundary
 
-[`bkpr-terminal`](../../crates/bkpr-terminal/src/lib.rs) owns an experimental Rust adapter around official libghostty-vt. The native engine parses child output, owns terminal state and encodes keys, mouse, focus and paste. Bkpr extracts typed cells, colors, cursor, modes, hyperlinks, resolved image resources and placements into its [scene model](../../crates/bkpr-terminal/src/model.rs). It exposes OSC 7501 status as semantic events, not title heuristics. Held native render resources don't escape into clients. Clipboard effects cross an explicit policy boundary; child escape strings aren't replayed as trusted host commands.
+[`bkpr-terminal-engine`](../../crates/bkpr-terminal-engine/src/lib.rs) adapts the maintained safe Rust SDK over official libghostty-vt. The native engine parses child output, owns terminal state and encodes keys, mouse, focus and paste. Bkpr extracts typed cells, colors, cursor, modes, hyperlinks, resolved image resources and placements into its [protocol scene model](../../crates/bkpr-protocol/src/model.rs). OSC 7501 supplies semantic status; titles are not status. Held native resources do not escape into clients, and child escape strings are not replayed as trusted host commands.
 
-[`bkpr-mux`](../../crates/bkpr-mux/src/lib.rs) starts an actual `portable-pty` child behind a separate daemon. It supplies an isolated HOME/XDG environment and owns the PTY independently of attached views. The [TUI projection](../../crates/bkpr-mux/src/render.rs) attaches over IPC, renders normalized scenes and detaches with Ctrl-]. Closing the last view doesn't terminate the child. Explicit termination and shutdown are separate operations. The bounded writer queue and ordered physical-input decoder distinguish queue acceptance from child processing; unknown input delivery isn't blindly replayed.
+[`bkpr-core`](../../crates/bkpr-core/src/lib.rs) owns independent `portable-pty` runtimes and a durable workspace/layout registry, assembled by `bkprd`. Normal execution preserves user HOME/profiles; explicit fixture homes scrub inherited credentials. [`bkpr-client`](../../crates/bkpr-client/src/lib.rs) consumes protocol scenes through the [unified composition framework](../../crates/bkpr-tui-framework/src/lib.rs). Views and layouts do not own process lifetime. Queue acceptance is distinct from child processing; ambiguous input is not blindly replayed.
 
-The [authority model](../../crates/bkpr-mux/src/authority.rs) keeps view identity, visibility, interactivity, input permission and clipboard permission separate. The latest eligible visible interactive view controls PTY size unless an eligible view pins it. A different authorized view can supply clipboard access. Read-only input is denied; hidden views aren't size owners. Each view has independent scrollback. Opaque view IDs expire after ten seconds without activity; clipboard requests time out after five seconds. Stale grants and detached views fail closed.
+The [authority model](../../crates/bkpr-core/src/authority.rs) separates view identity, visibility, interactivity, input and clipboard permission. Latest eligible visible interactive view controls PTY size unless pinned. Read-only input is independent of sizing eligibility. Clipboard authority and each view's scrollback are separate. View leases expire after ten seconds; clipboard requests time out after five seconds. Stale grants and detached views fail closed.
 
-The Linux daemon is a **one-pane, process-isolated subreaper**. Its [process cleanup](../../crates/bkpr-mux/src/process_tree.rs) is not a generic multi-pane process registry or a safe cleanup primitive for an arbitrary shared application process. The current library shape doesn't establish multi-pane production lifetime semantics.
+Linux [process cleanup](../../crates/bkpr-core/src/process_tree.rs) is scoped to a pane's birth-verified PTY session and observed descendants, not every orphan adopted by the shared daemon. It observes the session before reaping its leader. Deliberately detached services are not an OS-container containment promise. The earlier one-pane experiment used process-wide adoption; that mechanism is not appropriate for a shared multi-pane server.
 
 ### IPC and resources
 
-The [private Unix-socket transport](../../crates/bkpr-mux/src/transport.rs) uses protocol-v1 JSON responses and rejects incompatible response versions. It requires a current-user-owned private parent directory, creates a mode-0600 socket and never replaces an existing socket. Requests and responses have aggregate size limits; connection count and I/O time are bounded. These are local same-user experiment boundaries, not authenticated remote endpoint enrollment or production network framing.
+The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses protocol-v2 typed registry operations and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. Request/response and admission limits are bounded, with control capacity reserved independently of long polls. These remain same-user local boundaries, not authenticated remote enrollment or production network framing.
 
-Clients poll bounded full snapshots and semantic events. They report retained image receipts keyed by image ID **and generation**, so immutable image bytes can be omitted while placements and scene state still change. Generation-aware caches prevent reused IDs from referring to stale pixels. This isn't a production scene-delta protocol, persistent pane state or restart recovery. Polling, JSON/base64 resource transfer and whole-scene repaint costs still need production evaluation.
+Clients receive compact lossless scene runs and whole-row deltas on snapshot workers. Image receipts include ID and generation, avoiding stale pixels or needless retransmission. Workspace/pane metadata and revisioned layouts persist; terminal contents and processes do not. Restored records without runtimes are explicitly Stopped. A full scene-delta protocol and sustained-animation CPU reduction remain separate work.
 
 ### Experiment limits
 
@@ -30,7 +30,7 @@ Clients poll bounded full snapshots and semantic events. They report retained im
 | --- | --- |
 | One input, paste or supplied clipboard payload | 1 MiB of data; larger payloads are rejected before dispatch |
 | PTY writer | 2 MiB user budget, 4 MiB total queue |
-| Local IPC | 8 MiB request, 96 MiB response, 32 concurrent connections |
+| Local IPC | 8 MiB request, 96 MiB response; separate pane-wait, registry-wait and control admission budgets |
 | Canonical image resources accepted by the TUI | 8192 pixels per dimension, 64 MiB aggregate |
 | TUI projection working set | 128 MiB preflight budget for canonical images, visible derived tiles and planning metadata |
 
@@ -44,50 +44,18 @@ The reproducible prerequisite is [`scripts/prepare-ghostty-vt.sh`](../../scripts
 - Source archive SHA-256: `af551aa496cf54ff734e11563d45fe2c49739ee754d1740d1ac984a67a42dc70`.
 - Zig: `0.17.0`, with platform archive hashes in the script.
 - Build profile: `ReleaseSafe-simd-libc-baseline-offer-v1`, using `-Demit-lib-vt=true -Doptimize=ReleaseSafe -Dsimd=true -Dcpu=baseline`.
-- Exact-source [clipboard patch](../../crates/bkpr-terminal/native/clipboard-offer.patch) SHA-256: `196b39997c6552d9158f763555a72784aae2dbf4fa61aa500554bfd07e28d32c`.
+- Exact-source [clipboard patch](../../vendor/libghostty-rs/crates/libghostty-vt-sys/native/clipboard-offer.patch) SHA-256: `196b39997c6552d9158f763555a72784aae2dbf4fa61aa500554bfd07e28d32c`.
 - Exercised native prefix: `/home/calops/projects/bkpr/target/ghostty-vt-93967b7`. Its provenance stamps and `bkpr-files.sha256` bind the headers and static library to the source/profile/patch.
 
-The supported SIMD build links libc. The tested `-Dsimd=false` build brought weak allocator stubs that preempted Rust's libc allocation calls when statically linked; it isn't the recipe used here. The script restores archive-owned source/toolchain files and applies the exact patch with zero fuzz. [`build.rs`](../../crates/bkpr-terminal/build.rs) consumes the prepared prefix and generates experimental bindings.
+The supported SIMD build links libc. The tested `-Dsimd=false` build brought weak allocator stubs that preempted Rust's libc allocation calls when statically linked; it is not the recipe used here. The script restores archive-owned source/toolchain files and applies the native patch with zero fuzz. The [engine build check](../../crates/bkpr-terminal-engine/build.rs) verifies the exact prepared installation; generic FFI ownership and checked declarations belong to the upstream SDK.
 
 The patch exposes an optional paste `offer_id` and a read's `paste_offer_id` after native one-time-password validation. A boolean saying that a read was granted isn't enough: Bkpr must bind the read to the exact physical paste offer and its originating live view, not whichever clipboard contents happen to exist later. The retained SSH PNG fixture changes the host clipboard before the child reads, yet returns the original offered image.
 
-This isn't a commitment to maintain a second generic Ghostty SDK. Prefer the maintained upstream safe/sys pair from [`Uzaaft/libghostty-rs`](https://github.com/Uzaaft/libghostty-rs), with compatible Rust and native source pins. Published `0.2.2` lacks some required wrappers; Git `9ede35b8ea94a55ed3608408d67e102883129f1e` already wraps clipboard read/write, OSC 7501, render holds and resolved Kitty images. Its native pin `521cf2c` is older than this experiment's `93967b7`; mixing the two ABIs isn't valid. The concrete remaining upstream contribution is validated paste-offer provenance. Keep Bkpr's scenes, quotas, authority and status policies; replace redundant generic FFI wrappers before production adoption. The C API remains unstable.
+The safe/sys SDK is pinned at [`575ed6b8ceb79ffaf247ecf7e34333876b0d5be4`](https://github.com/Uzaaft/libghostty-rs/tree/575ed6b8ceb79ffaf247ecf7e34333876b0d5be4), with a reproducible separately reviewable patch. Native stays at the tested `93967b7` rather than downgrading to the SDK's older `521cf2c`; parser-boundary declarations are updated together. Safe paste-offer correlation, exact prebuilt-native linking, optional image-data handling and pre-allocation PNG output budgets are documented in [UPSTREAM.toml](../../vendor/libghostty-rs/UPSTREAM.toml). Bkpr no longer owns a parallel generic FFI wrapper or bindgen step. The C API remains unstable, and these local dependency patches are not claimed upstream.
 
 ## Build and try it
 
-The commands below use the current native executable name. They do not install harness adapters, edit profiles or make provider requests. Use the repository devshell for Rust, Clang/libclang, C build tools and download/unpack tools. Native preparation downloads pinned Ghostty and Zig archives into the shared target directory. If the shared target contains a running older `bkpr` executable, preserve it or isolate public artifact output before building.
-
-```sh
-export CARGO_TARGET_DIR=/home/calops/projects/bkpr/target
-nix develop
-scripts/prepare-ghostty-vt.sh
-export BKPR_GHOSTTY_VT_DIR="$(scripts/prepare-ghostty-vt.sh --print-prefix)"
-cargo build --locked -p bkpr-mux
-
-# Terminal 1: choose a fresh private experiment directory.
-proof_dir=$(mktemp -d /tmp/bkpr-engine.XXXXXX)
-chmod 700 "$proof_dir"
-printf 'Experiment directory: %s\n' "$proof_dir"
-"$CARGO_TARGET_DIR/debug/bkpr" daemon \
-  --socket "$proof_dir/mux.sock" --home "$proof_dir/home" -- /bin/sh -i
-```
-
-In another terminal, set `proof_dir` to the printed directory and attach:
-
-```sh
-export CARGO_TARGET_DIR=/home/calops/projects/bkpr/target
-read -r -p 'Experiment directory printed by terminal 1: ' proof_dir
-"$CARGO_TARGET_DIR/debug/bkpr" tui --socket "$proof_dir/mux.sock"
-```
-
-A second terminal can run the same command, or add `--read-only`. Clipboard policy defaults to `ask`; `--clipboard allow|deny` selects an explicit experiment policy. Ctrl-] detaches without killing the shell. Stop the owned daemon and child explicitly when finished:
-
-```sh
-"$CARGO_TARGET_DIR/debug/bkpr" request --socket "$proof_dir/mux.sock" '{"op":"inspect"}'
-"$CARGO_TARGET_DIR/debug/bkpr" request --socket "$proof_dir/mux.sock" '{"op":"shutdown"}'
-```
-
-The CLI's `--help` describes typed attach/update/poll/pin/input/clipboard operations. Don't attach this proof to existing sessions or substitute a real-provider harness run for the isolated fixture.
+Use the current [README build and native CLI instructions](../../README.md#native-cli), which build both `bkpr` and `bkprd`. They describe default normal-profile execution and an explicit private fixture environment. Protect canonical live executable outputs when sharing Cargo caches. The historical measurements below identify their own binaries and must not be read as acceptance of later code.
 
 ## Retained observations
 
@@ -116,9 +84,9 @@ Final integrated snapshot: `proof-final-geometry-1`, SHA-256 `355abc760e193fb793
 
 Cleanup records for the clean baseline and final API, clipboard-boundary and composed-geometry fixtures record exact process births, exact-birth-only signalling and empty survivor lists. Cleanup success doesn't turn a failed visibility assertion into a pass.
 
-## Native-only cutover verification
+## Historical native-only cutover verification
 
-The replacement workspace contains only `bkpr-mux` and `bkpr-terminal`; the native executable is `bkpr`.
+At the initial cutover, the workspace contained `bkpr-mux` and `bkpr-terminal` and produced one `bkpr` executable. The seven-crate workspace has since replaced that structure. The following results describe the retained initial-cutover binaries, not the current workspace build.
 
 | Check | Observed result |
 | --- | --- |
@@ -195,4 +163,72 @@ Only Linux x86-64 has actual build/runtime evidence here. The preparation recipe
 
 Sixel is unsupported and advertised as such. Physical OSC-52-only host clipboard **reads** are also unsupported: safe child OSC 52 reads go through correlated host OSC 5522 requests. Define the new product's supported host/capability matrix explicitly rather than inheriting old implementation parity. OSC 52 writes and the physical enhanced-paste path are separate supported observations.
 
-Production acceptance still needs a host rendering fix and fresh initial-presentation evidence, closure of the unattributed positive-after-clear and startup observations, compatible upstream Rust/native adoption, platform and package closure, and the plan's registry, layout, control, metadata, harness, recovery and endpoint-security work. The compositor trace establishes a cause, not a shipped fix. Removing the old implementation does not make these observations pass, and none requires preserving the old runtime on this branch.
+Production acceptance still needs a host rendering fix and fresh initial-presentation evidence, closure of the unattributed positive-after-clear and startup observations, compatible upstream Rust/native adoption, platform and package closure, and the plan's remaining metadata, harness, execution-recovery, authenticated-endpoint and independently implemented frontend work. The local registry, layout documents, typed control and TUI are implemented portions of that plan, not those remaining services. The compositor trace establishes a cause, not a shipped fix. Removing the old implementation does not make these observations pass, and none requires preserving the old runtime on this branch.
+
+## Seven-crate SDK and local workspace cutover
+
+The active implementation now builds `bkpr` and `bkprd` from the seven packages in the implementation plan. Generic terminal ownership, encoders, iterators and callbacks use the pinned safe/sys SDK pair; Bkpr retains canonical scenes, bounds, caches and authority. The reproducible SDK patch and native revision are recorded in [UPSTREAM.toml](../../vendor/libghostty-rs/UPSTREAM.toml). The local PNG contribution rejects oversized RGBA output before allocating the output buffer; grayscale and alpha remain supported.
+
+The backend owns independent PTYs, workspace membership and revisioned layout documents. Removing a layout reference, moving a projection or disconnecting a client does not terminate a process. Metadata persists atomically under an exclusive state-root lease. Restarted records are explicitly stopped, not recovered executions or restored terminal contents. Failed storage commits poison subsequent commit paths; explicit shutdown still cleans up.
+
+Native callback isolation required more than multiple backend panes. A real pending clipboard callback showed that the original single client input worker serialized Alpha's focus-out ahead of Beta's input. The client now uses bounded pane-local FIFO lanes, independently admitted clipboard responses and policy changes, and asynchronous attachment/management jobs. Hidden views revoke sizing/device eligibility without waiting behind native input, then drain accepted input and complete ordered retirement. Unknown transport/native outcomes stop only the affected lane and are never replayed. Registry and selection completions cannot replace newer state.
+
+Physical mouse testing also reproduced a routing bug: Alpha received `ESC[<0;20;2M`, but dragging over Beta delivered `ESC[<32;20;2M` to Beta. Pointer capture now binds the complete lifecycle to its original pane/view, clips to actual pane geometry and completes accepted gestures before retiring that projection. Bounded release escrow preserves ordering when normal admission or an enhanced-paste barrier is occupied.
+
+### Verification
+
+| Check | Observed result |
+| --- | --- |
+| Locked native workspace tests | 158 passed; one ignored entry is the subprocess fixture invoked by its passing parent regression |
+| Independently reacquired patched SDK tests | 111 safe-crate and 3 sys-crate tests passed, including ABI, offer provenance and pre-allocation PNG bounds |
+| Workspace debug/release builds, all-target strict Clippy, Rust formatting | Passed |
+| Nix formatter and preparation-helper shell syntax | Passed; actual development-shell execution is Linux x86-64 evidence, not cross-platform packaging |
+| Real daemon API | Independent membership/projection, stale CAS rejection, actual shell output, detach survival, termination and honest metadata-only restart passed |
+| Actual Kitty clients | Splits, workspace creation, rename cancellation/focus restoration, existing-pane projection, layout-only removal, pointer navigation, independent resize and default-client daemon bootstrap passed |
+| Native callback with physical unrelated input | Beta's physical shell command completed while Alpha's original clipboard request remained pending; the original request then delivered exact bytes including NUL, newline and `ff` to the actual raw PTY consumer |
+| Physical gestures | Cross-pane press/drag/release stayed in Alpha, Beta received no unmatched events, and hiding the pressed projection completed its original release before detach |
+| Physical graphics | Two panes reused native image ID 41 with independent red/blue pixels; deletion cleared both. This is AboveText evidence, not closure of the historical BelowText gate |
+
+Evidence root: `/home/calops/projects/bkpr/target/smoke/workspace-cutover/`. Final coordinated records are `checks/result.json` and `release/result.json`; API evidence is in `api-release/`. Complete optimized-release terminal acceptance is `ui-1024809207520082/`, including screenshots, raw VT, origin-bound clipboard bytes, gesture logs and empty-survivor cleanup. The failing old mouse reproduction is retained separately in `ui-1020666531141315/`. The earlier global-input stall and its syscall trace are in `ui-1010976333603051/`.
+
+One intermediate bootstrap fixture typed as soon as the daemon socket appeared, before the new client's attachment was ready. The UI reported that input was not dispatched; the resulting command lost its prefix. The final fixture waits for the client-consumed attachment's visible promotion before typing. Socket creation alone is not input readiness.
+
+The verified release client is SHA-256 `bc750e1fcf1d87f7de045c76d4c4a44ef5353c746c2d2f2c98214ad7d3091770`; server is `9f0e152b5b3c2c3a3cfdb9fe17ad248fce40405e1125e2f8558deffc24168e8f`. Builds used eight Cargo jobs and an explicit CPU affinity of 0–7, with the existing native prefix and shared Cargo caches.
+
+### Artifact-isolation incident
+
+An initial verification helper used automatic recursive temporary-directory cleanup around a bind alias. After an `EBUSY` unmount failure, that cleanup traversed the still-mounted alias and deleted the shared `target/debug` cache. The original public `debug/bkpr` was recovered from its still-running executable image, verified at SHA-256 `14c1176e0718da7d3e5c72b0641317e504d08ec26bb4dc6d03f87f21536b2970`, and restored exactly. Source and release artifacts were unaffected; running executable images were not changed. The debug cache was lost and only subsequently repopulated as needed—not preserved unchanged.
+
+The repaired helper never recursively deletes alias/output directories. Failed unmounts leave owned directories for inspection; successful cleanup only unlinks owned files/symlinks and removes empty directories. Forced-unmount-failure proof is retained in `guard-fault-result.json`. Final debug and release records compare the public executables found immediately before and after each namespace build, preserving them as found rather than restoring an older checksum over later independent changes.
+
+### Release performance with the actual sidebar
+
+The comparison keeps the real Neovim pane at 120×39 or 240×79 cells. The old standalone client uses a 120×40 or 240×80 window; the new client retains its real 24-column sidebar and header, using 144×41 or 264×81. Both are release builds against the same native engine. These are private Kitty/Xvfb software-framebuffer measurements, not hardware-display latency or a universal parity claim.
+
+The first full-UI candidate repainted static sidebar cells whenever a terminal row changed. One allocation-free physical-glyph damage span per changed row now skips unchanged prefixes/suffixes, preserves complete old/new wide glyphs and clears only the damaged remainder. Geometry/palette invalidation still redraws fully. No graphics, style, hyperlink, Unicode or input fidelity was removed.
+
+| Workload | Old emitted median | New emitted median | Old presented median | New presented median | Old / new presented p95 |
+| --- | --- | --- | --- | --- | --- |
+| Plain 120×39 pane | 9.20 ms | 10.52 ms | 23.51 ms | 24.62 ms | 25.02 / 27.05 ms |
+| Styled 120×39 pane | 11.66 ms | 12.08 ms | 32.92 ms | 33.21 ms | 40.24 / 44.28 ms |
+| Plain 240×79 pane | 8.66 ms | 10.24 ms | 43.10 ms | 47.46 ms | 49.70 / 52.45 ms |
+| Styled 240×79 pane | 23.01 ms | 22.42 ms | 89.91 ms | 94.69 ms | 106.19 / 102.65 ms |
+
+All 184 complete-body checks across old/new runs passed. Twelve cross-run full-body reference comparisons had zero different pixels. At styled 240, the first full-UI candidate emitted 102,408.5 median bytes per jump; cell-span damage reduces that to 94,474, below the old standalone client's 97,958. Its emitted/presented medians improve from 25.99/101.02 ms before spans to 22.42/94.69 ms. Small-window emission varies by roughly a millisecond and large-window sampled presentation remains slower than the smaller old window; this is not reported as strict parity.
+
+Actual `cmatrix 2.0 -u 1` uses a 240×79 pane, three-second warmup and ten-second capture, twice per mode. Table values are medians across those two runs; CPU sums only mux processes, excluding cmatrix, Kitty, Xvfb and observer processes. Summed RSS double-counts shared pages and is not PSS. Distinct sampled body pixel states are not exact completed/dropped frames or physical FPS.
+
+| Runtime | Outer window | Mux CPU, cores | Summed RSS | Sampled body changes/s |
+| --- | --- | --- | --- | --- |
+| Old standalone Bkpr | 240×80 | 1.47 | 46.24 MiB | 60.33 |
+| New Bkpr + bkprd, real sidebar | 264×81 | 1.52 | 54.92 MiB | 52.44 |
+| Installed Zellij | 240×81 | 0.17 | 112.51 MiB | 61.88 |
+| Old Bkpr, pinned pane in larger window | 264×81 | 1.57 | 43.45 MiB | 39.79 |
+
+The equal-outer-window control genuinely pins the old pane at 240×79 before enlarging its window, keeps its no-input/no-clipboard sizing lease alive and confirms actual consumer geometry. It also introduces blank padding and the old renderer's associated clear/reset behavior, so it is not a pure isolation of host raster size. It establishes that outer-window/projection geometry materially affects this software fixture; it does not prove that every cadence difference is caused by Kitty. Source burst rates stay near 89/s. Final new-client maximum sampled gaps were 35.38 and 35.20 ms; no supported capability or update fidelity was disabled to obtain them.
+
+The CPU-efficiency gap to Zellij remains explicitly deferred in TODO. The new UI has measurable larger-window presentation and two-process memory costs; there is no claim that the architecture cutover solved sustained-animation efficiency. Future profiling should separate native extraction, encoding, composition and physical drawing rather than silently throttle animation.
+
+Evidence: `performance/editor/comparison-final.json`, content-addressed `*-candidate-bc750e1fcf1d/` runs, `performance/animation/comparison.json`, `performance/animation-equal-window/`, immutable old/full-UI binaries and `comparison-before-cell-spans.json` in both workload directories. Baselines remain SHA-256 `e75528a281d9e127e8a39dfaff96c9c3f04c7e6a2b3f2849cc6b507b92c97fb4`; earlier measured candidates are retained separately. No compilation or other owned heavy workload ran during performance captures.
+
+Reproducible verification/controller sources are retained in `controllers-final.zip` (22 source files, archive CRC checked). Owned HOME/XDG/socket fixtures and exact-born runtime processes were cleaned; all six final performance cleanup records and the final physical UI record have empty survivor lists. The controllers are evidence tooling, not installed product commands.

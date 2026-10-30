@@ -3,6 +3,7 @@
 set -euo pipefail
 revision=93967b7f9478e94dcbb42125c8a90f34feb40d75
 source_sha=af551aa496cf54ff734e11563d45fe2c49739ee754d1740d1ac984a67a42dc70
+patch_sha=196b39997c6552d9158f763555a72784aae2dbf4fa61aa500554bfd07e28d32c
 root=${CARGO_TARGET_DIR:?Set CARGO_TARGET_DIR to the shared canonical target directory}
 root=$(realpath "$root")
 case "$(uname -s)-$(uname -m)" in
@@ -16,7 +17,38 @@ if [[ ${1:-} == --print-prefix && $# == 1 ]]; then
   printf '%s\n' "$prefix"
   exit 0
 fi
-if [[ $# != 0 ]]; then printf 'Usage: %s [--print-prefix]\n' "$0" >&2; exit 1; fi
+if [[ ${1:-} == --reuse && $# == 1 ]]; then
+  # Reuse only the exact prepared native prerequisite. In particular, adding
+  # SDK metadata never blesses edited headers, archives or provenance stamps.
+  [[ $(< "$prefix/bkpr-source-revision") == "$revision" ]]
+  [[ $(< "$prefix/bkpr-source-sha256") == "$source_sha" ]]
+  [[ $(< "$prefix/bkpr-source-patch-sha256") == "$patch_sha" ]]
+  [[ $(< "$prefix/bkpr-build-profile") == ReleaseSafe-simd-libc-baseline-offer-v1 ]]
+  found_library=false
+  found_header=false
+  while IFS= read -r line; do
+    [[ $line =~ ^[0-9a-f]{64}[[:space:]][[:space:]] ]]
+    name=${line:66}
+    [[ $name != /* && $name != *..* ]]
+    case "$name" in
+      lib/libghostty-vt.a) found_library=true ;;
+      include/ghostty/vt.h) found_header=true ;;
+      include/*) ;;
+      *) printf 'Unexpected native manifest path: %s\n' "$name" >&2; exit 1 ;;
+    esac
+  done < "$prefix/bkpr-files.sha256"
+  [[ $found_library == true && $found_header == true ]]
+  (cd "$prefix" && sha256sum --check --status bkpr-files.sha256)
+  if [[ -e "$prefix/ghostty-source-revision" ]]; then
+    [[ $(< "$prefix/ghostty-source-revision") == "$revision" ]]
+  else
+    printf '%s\n' "$revision" > "$prefix/ghostty-source-revision"
+  fi
+  printf 'export BKPR_GHOSTTY_VT_DIR=%q\n' "$prefix"
+  printf 'export GHOSTTY_INSTALL_DIR=%q\n' "$prefix"
+  exit 0
+fi
+if [[ $# != 0 ]]; then printf 'Usage: %s [--print-prefix | --reuse]\n' "$0" >&2; exit 1; fi
 mkdir -p "$root"
 fetch() {
   local url=$1 path=$2 sha=$3
@@ -31,8 +63,7 @@ zig_dir="$root/zig-$platform-0.17.0"
 # or toolchain under target must not be silently blessed as the pinned input.
 tar -xzf "$root/ghostty-93967b7.tar.gz" -C "$root"
 tar -xJf "$root/zig-0.17.0-$platform.tar.xz" -C "$root"
-patch_path=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../crates/bkpr-terminal/native/clipboard-offer.patch")
-patch_sha=196b39997c6552d9158f763555a72784aae2dbf4fa61aa500554bfd07e28d32c
+patch_path=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../vendor/libghostty-rs/crates/libghostty-vt-sys/native/clipboard-offer.patch")
 printf '%s  %s\n' "$patch_sha" "$patch_path" | sha256sum --check --status
 patch --batch --fuzz=0 --forward -p1 -d "$source_dir" -i "$patch_path"
 # The official SIMD build links libc. The no-libc build includes Wuffs' weak
@@ -41,8 +72,10 @@ patch --batch --fuzz=0 --forward -p1 -d "$source_dir" -i "$patch_path"
 # requiring this build machine's optional CPU instructions on another host.
 (cd "$source_dir" && "$zig_dir/zig" build -j8 -Demit-lib-vt=true -Doptimize=ReleaseSafe -Dsimd=true -Dcpu=baseline --prefix "$prefix")
 printf '%s\n' "$revision" > "$prefix/bkpr-source-revision"
+printf '%s\n' "$revision" > "$prefix/ghostty-source-revision"
 printf '%s\n' "$source_sha" > "$prefix/bkpr-source-sha256"
 printf '%s\n' 'ReleaseSafe-simd-libc-baseline-offer-v1' > "$prefix/bkpr-build-profile"
 printf '%s\n' "$patch_sha" > "$prefix/bkpr-source-patch-sha256"
 (cd "$prefix" && find include -type f -print0 | sort -z | xargs -0 sha256sum; cd "$prefix" && sha256sum lib/libghostty-vt.a) > "$prefix/bkpr-files.sha256"
 printf 'export BKPR_GHOSTTY_VT_DIR=%q\n' "$prefix"
+printf 'export GHOSTTY_INSTALL_DIR=%q\n' "$prefix"

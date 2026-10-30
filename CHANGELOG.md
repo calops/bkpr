@@ -2,10 +2,19 @@
 
 ### Breaking branch replacement
 
-* `feat/pane-first-mux` replaces the previous runtime with the native `bkpr` executable from `bkpr-mux` and the pinned `bkpr-terminal` engine adapter. There is no legacy launcher, plugin, binary alias or compatibility track on this branch.
+* `feat/pane-first-mux` replaces the previous runtime with seven focused crates: `bkpr`, `bkpr-client`, `bkpr-tui-framework`, `bkpr-server` (the `bkprd` executable), `bkpr-core`, `bkpr-protocol` and `bkpr-terminal-engine`. There is no legacy launcher, plugin, binary alias or compatibility track on this branch.
 * Remove the old host-runtime flake input, WASI build/export paths, sibling-runtime recipes and obsolete package/cache/publication automation. Nix now supplies only the default native development shell; Cargo plus the pinned engine preparation helper is the supported build path. Native Nix packaging requires a reproducible, offline engine dependency closure and runtime acceptance before package/app outputs return.
-* Expose only the implemented native daemon, TUI, request and keyboard clients. Existing workspace, agent/harness, broker, Git/CI and recovery interfaces are not available from this executable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
+* Expose the native daemon, TUI, typed version-2 control protocol and keyboard client. Backend-owned workspaces and split layouts reference independent panes; closing a projection or detaching a client does not terminate its process. Workspace/layout metadata persists, but process and terminal-content recovery is not implemented. Agent/harness, broker and Git/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
 * Native graphics initial-presentation gates remain unaccepted. This replacement is not production acceptance and does not modify installed applications or live sessions.
+
+### Native workspace implementation
+
+* Bare `bkpr` connects to or starts `bkprd` and opens the TUI. One retained framework composes the sidebar, terminal projections, forms and choosers, including physical pointer hit testing and per-pane graphics namespaces.
+* Use a pinned, source-auditable `libghostty-rs` SDK snapshot for generic terminal ownership and encoders. Local SDK patches preserve the tested native revision, clipboard-offer provenance and a pre-allocation decoded-image budget; exact build provenance remains verified.
+* Separate size policy, input and clipboard authority. Register sizing-policy changes without waiting for blocked native work; bound pane/view/control admission and preserve FIFO ordering for accepted input.
+* Dispatch attachment/management work asynchronously and isolate native input per pane, with reserved device-response admission and explicit unknown-outcome handling. Keep complete pointer gestures bound to their original pane/view through cross-pane dragging, backpressure and projection retirement.
+* Paint bounded changed-cell spans rather than whole composed rows, avoiding redundant static sidebar output while preserving wide/combining text, styles, links, erasure, graphics and cursor behavior.
+* Keep sustained-animation CPU efficiency explicitly deferred; no frame throttling or fidelity reduction is introduced to conceal it.
 
 ## Previous implementation — unreleased historical notes
 

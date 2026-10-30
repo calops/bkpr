@@ -6,7 +6,7 @@ This branch replaces the previous Bkpr implementation. It isn't a compatibility 
 
 `main` and the retained `calops/bkpr-zellij` fork are starting material, not specifications. Inspect their relevant current code when a subsystem comes into scope. Reuse coherent useful pieces, refactor weak boundaries and replace designs where better ones fit. Keeping useful code immediately is fine; retaining disconnected legacy trees isn't. Record source revision/path and preserve applicable license notices when copying substantial code, including Zellij's MIT notice.
 
-Use maintained dependencies for terminal emulation, PTYs, codecs, networking/authentication, storage and UI infrastructure. Own Bkpr's agent/harness behavior, lifecycle, metadata and authority policies. Don't maintain a parallel generic SDK when an upstream library fits. Contribute narrow reusable gaps upstream where practical. The current generated Ghostty bindings are experimental; the target is a compatible upstream Rust/native binding pair, not permanent binding ownership.
+Use maintained dependencies for terminal emulation, PTYs, codecs, networking/authentication, storage and UI infrastructure. Own Bkpr's agent/harness behavior, lifecycle, metadata and authority policies. Don't maintain a parallel generic SDK when an upstream library fits. The engine adapter uses the pinned `libghostty-rs` safe/sys pair in `vendor/libghostty-rs`; `UPSTREAM.toml` records its exact native ABI and separable dependency patch. Contribute narrow reusable gaps upstream where practical. Updates must reproduce the dependency patch and pass SDK plus product acceptance; never mix arbitrary system Ghostty with the checked Rust declarations.
 
 The implementation plan and source ledger are in `docs/pane-first-mux/implementation-plan.md`. Historical experiments record evidence, not production acceptance. Distinguish implemented behavior, agreed design and unresolved decisions.
 
@@ -14,7 +14,7 @@ The implementation plan and source ledger are in `docs/pane-first-mux/implementa
 
 The backend owns independent panes, their processes/PTYs, canonical terminal state and associated authoritative data. Layout/session documents reference endpoint-qualified panes; displaying a pane doesn't own its lifetime or change its backend workspace membership. TUI, GUI, browser and mobile clients may project the same state differently. A mobile view may show one pane without sidebar chrome.
 
-The agreed target workspace is below. It isn't the current on-disk layout: `bkpr-mux` still combines roles, and `bkpr-terminal` contains the initial adapter. Extract working components, not empty crates or compatibility aliases.
+The workspace uses these seven packages. Keep implementation boundaries real, without empty crates, compatibility aliases or old combined prototype trees. Some responsibilities describe future domains, not features already exposed by the current executables.
 
 | Package/crate | Kind | Responsibility |
 | --- | --- | --- |

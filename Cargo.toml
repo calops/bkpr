@@ -1,6 +1,15 @@
 [workspace]
-members = ["crates/bkpr-terminal", "crates/bkpr-mux"]
-default-members = ["crates/bkpr-mux"]
+members = [
+    "crates/bkpr",
+    "crates/bkpr-client",
+    "crates/bkpr-tui-framework",
+    "crates/bkpr-server",
+    "crates/bkpr-core",
+    "crates/bkpr-protocol",
+    "crates/bkpr-terminal-engine",
+]
+default-members = ["crates/bkpr", "crates/bkpr-server"]
+exclude = ["vendor/libghostty-rs"]
 resolver = "2"
 
 [workspace.package]
