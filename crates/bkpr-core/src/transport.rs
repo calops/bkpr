@@ -3,8 +3,8 @@ use anyhow::{Context, Result, bail};
 #[cfg(test)]
 use bkpr_protocol::MAX_CONTROL_CONNECTIONS;
 use bkpr_protocol::{
-    MAX_CONNECTIONS, MAX_REGISTRY_WATCHERS, MAX_WAITING_PANE_POLLS, Operation, PROTOCOL_VERSION,
-    PaneRequest, Request,
+    AgentRequest, MAX_AGENT_SUBSCRIBERS, MAX_CONNECTIONS, MAX_REGISTRY_WATCHERS,
+    MAX_WAITING_PANE_POLLS, Operation, PROTOCOL_VERSION, PaneRequest, Request,
 };
 use serde_json::json;
 use std::{
@@ -39,6 +39,7 @@ fn waiting_slot(
     operation: &Operation,
     panes: &Arc<AtomicUsize>,
     registry: &Arc<AtomicUsize>,
+    agents: &Arc<AtomicUsize>,
 ) -> Result<Option<ConnectionSlot>> {
     match operation {
         Operation::Pane {
@@ -51,6 +52,13 @@ fn waiting_slot(
         Operation::Wait { wait_ms, .. } if *wait_ms > 0 => Ok(Some(
             ConnectionSlot::take(registry, MAX_REGISTRY_WATCHERS)
                 .context("registry watcher limit")?,
+        )),
+        Operation::Agent {
+            request: AgentRequest::ReceiverSubscribe { wait_ms, .. },
+            ..
+        } if *wait_ms > 0 => Ok(Some(
+            ConnectionSlot::take(agents, MAX_AGENT_SUBSCRIBERS)
+                .context("agent subscriber limit")?,
         )),
         _ => Ok(None),
     }
@@ -180,6 +188,7 @@ impl BoundSocket {
         let active = Arc::new(AtomicUsize::new(0));
         let waiting_panes = Arc::new(AtomicUsize::new(0));
         let waiting_registry = Arc::new(AtomicUsize::new(0));
+        let waiting_agents = Arc::new(AtomicUsize::new(0));
         let (wake_read, wake_write) = UnixStream::pair()?;
         wake_write.set_nonblocking(true)?;
         let wake_write = Arc::new(wake_write);
@@ -210,6 +219,7 @@ impl BoundSocket {
                     let shutdown = shutdown.clone();
                     let waiting_panes = waiting_panes.clone();
                     let waiting_registry = waiting_registry.clone();
+                    let waiting_agents = waiting_agents.clone();
                     let wake_write = wake_write.clone();
                     thread::Builder::new()
                     .name("bkpr-control".into())
@@ -218,6 +228,7 @@ impl BoundSocket {
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
                     let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
                     let mut stop = false;
+                    let mut subscription = None;
                     let result = (|| -> Result<_> {
                         let mut bytes = Vec::new();
                         BufReader::new((&mut stream).take(MAX_REQUEST + 1))
@@ -226,14 +237,31 @@ impl BoundSocket {
                             bail!("request size limit");
                         }
                         let request: Request = serde_json::from_slice(&bytes)?;
-                        let _waiting = waiting_slot(&request.operation, &waiting_panes, &waiting_registry)?;
+                        let _waiting = waiting_slot(&request.operation, &waiting_panes, &waiting_registry, &waiting_agents)?;
+                        let requested_subscription = match &request.operation {
+                            Operation::Agent {
+                                launch_id,
+                                request: AgentRequest::ReceiverSubscribe { receiver_id, .. },
+                                ..
+                            } => Some((launch_id.clone(), receiver_id.clone())),
+                            _ => None,
+                        };
                         stop = request.version == PROTOCOL_VERSION && matches!(&request.operation, Operation::Shutdown);
-                        let result = if matches!(&request.operation, Operation::HarnessBegin { .. } | Operation::HarnessEvent { .. } | Operation::HarnessContext { .. }) {
+                        let result = if matches!(&request.operation, Operation::HarnessBegin { .. } | Operation::HarnessEvent { .. } | Operation::HarnessContext { .. } | Operation::Agent { .. }) {
                             let peer = authenticated_peer(&stream)?;
-                            registry.request_authenticated(request, &peer)?
+                            registry.request_authenticated_cancellable(request, &peer, &|| peer_connected(&stream))?
                         } else {
                             registry.request(request)?
                         };
+                        subscription = requested_subscription.and_then(|(launch_id, receiver_id)| {
+                            let notification = result.get("notification")?;
+                            Some((
+                                launch_id,
+                                receiver_id,
+                                notification.get("notification_id")?.as_str()?.to_owned(),
+                                notification.get("generation")?.as_u64()?,
+                            ))
+                        });
                         Ok(result)
                     })();
                     let response = match result {
@@ -251,8 +279,14 @@ impl BoundSocket {
                     } else {
                         serde_json::to_vec(&json!({"version":PROTOCOL_VERSION,"ok":false,"error":"aggregate scene wire limit exceeded after dispatch; outcome unknown, do not replay"})).unwrap()
                     };
-                    let _ = stream.write_all(&bytes);
-                    let _ = stream.write_all(b"\n");
+                    let sent = stream.write_all(&bytes).and_then(|()| stream.write_all(b"\n"));
+                    if sent.is_err()
+                        && let Some((launch_id, receiver_id, notification_id, generation)) = subscription
+                    {
+                        let _ = registry.agent_subscription_disconnected(
+                            &launch_id, &receiver_id, &notification_id, generation,
+                        );
+                    }
                     // A valid explicit shutdown closes the daemon even when owned cleanup
                     // reports an error. Keep the error response, not a poisoned listener.
                     if stop {
@@ -268,6 +302,39 @@ impl BoundSocket {
         }
         registry.shutdown()
     }
+}
+
+fn peer_connected(stream: &UnixStream) -> bool {
+    let mut descriptor = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
+    if result < 0 {
+        return std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
+    }
+    if descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+        return false;
+    }
+    if descriptor.revents & libc::POLLIN != 0 {
+        let mut byte = 0_u8;
+        let count = unsafe {
+            libc::recv(
+                stream.as_raw_fd(),
+                (&mut byte as *mut u8).cast(),
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        return count > 0
+            || (count < 0
+                && matches!(
+                    std::io::Error::last_os_error().kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ));
+    }
+    true
 }
 
 #[cfg(target_os = "linux")]
@@ -463,6 +530,7 @@ mod tests {
         let active = Arc::new(AtomicUsize::new(0));
         let waiting_panes = Arc::new(AtomicUsize::new(0));
         let waiting_registry = Arc::new(AtomicUsize::new(0));
+        let waiting_agents = Arc::new(AtomicUsize::new(0));
         let poll = Operation::Pane {
             pane_id: "pane".into(),
             request: PaneRequest::Poll {
@@ -484,28 +552,62 @@ mod tests {
             .map(|_| {
                 (
                     ConnectionSlot::take(&active, MAX_CONNECTIONS).unwrap(),
-                    waiting_slot(&poll, &waiting_panes, &waiting_registry).unwrap(),
+                    waiting_slot(&poll, &waiting_panes, &waiting_registry, &waiting_agents)
+                        .unwrap(),
                 )
             })
             .collect::<Vec<_>>();
-        assert!(waiting_slot(&poll, &waiting_panes, &waiting_registry).is_err());
+        assert!(waiting_slot(&poll, &waiting_panes, &waiting_registry, &waiting_agents).is_err());
         let watchers = (0..MAX_REGISTRY_WATCHERS)
             .map(|_| {
                 (
                     ConnectionSlot::take(&active, MAX_CONNECTIONS).unwrap(),
-                    waiting_slot(&watch, &waiting_panes, &waiting_registry).unwrap(),
+                    waiting_slot(&watch, &waiting_panes, &waiting_registry, &waiting_agents)
+                        .unwrap(),
                 )
             })
             .collect::<Vec<_>>();
-        assert!(waiting_slot(&watch, &waiting_panes, &waiting_registry).is_err());
+        assert!(waiting_slot(&watch, &waiting_panes, &waiting_registry, &waiting_agents).is_err());
+        let subscribe = Operation::Agent {
+            launch_id: "launch".into(),
+            token: "private".into(),
+            request: AgentRequest::ReceiverSubscribe {
+                receiver_id: "receiver".into(),
+                wait_ms: 1000,
+            },
+        };
+        let subscribers = (0..MAX_AGENT_SUBSCRIBERS)
+            .map(|_| {
+                (
+                    ConnectionSlot::take(&active, MAX_CONNECTIONS).unwrap(),
+                    waiting_slot(
+                        &subscribe,
+                        &waiting_panes,
+                        &waiting_registry,
+                        &waiting_agents,
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            waiting_slot(
+                &subscribe,
+                &waiting_panes,
+                &waiting_registry,
+                &waiting_agents
+            )
+            .is_err()
+        );
         let controls = (0..MAX_CONTROL_CONNECTIONS)
             .map(|_| ConnectionSlot::take(&active, MAX_CONNECTIONS).unwrap())
             .collect::<Vec<_>>();
         assert!(ConnectionSlot::take(&active, MAX_CONNECTIONS).is_none());
-        drop((controls, watchers, polls));
+        drop((controls, subscribers, watchers, polls));
         assert_eq!(active.load(Ordering::Acquire), 0);
         assert_eq!(waiting_panes.load(Ordering::Acquire), 0);
         assert_eq!(waiting_registry.load(Ordering::Acquire), 0);
+        assert_eq!(waiting_agents.load(Ordering::Acquire), 0);
     }
 
     #[test]

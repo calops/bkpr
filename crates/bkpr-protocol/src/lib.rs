@@ -1,4 +1,6 @@
 //! Canonical terminal scenes and versioned backend registry protocol.
+mod agent;
+pub use agent::*;
 mod harness;
 pub use harness::*;
 mod model;
@@ -27,8 +29,11 @@ pub const MAX_REGISTRY_WATCHERS: usize = 32;
 // Every successful Attach owns one daemon-global view slot, including retired scenes.
 pub const MAX_WAITING_PANE_POLLS: usize = MAX_ADMITTED_VIEWS;
 pub const MAX_CONTROL_CONNECTIONS: usize = 32;
-pub const MAX_CONNECTIONS: usize =
-    MAX_WAITING_PANE_POLLS + MAX_REGISTRY_WATCHERS + MAX_CONTROL_CONNECTIONS;
+pub const MAX_AGENT_SUBSCRIBERS: usize = 32;
+pub const MAX_CONNECTIONS: usize = MAX_WAITING_PANE_POLLS
+    + MAX_REGISTRY_WATCHERS
+    + MAX_CONTROL_CONNECTIONS
+    + MAX_AGENT_SUBSCRIBERS;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ViewSpec {
     pub size: Size,

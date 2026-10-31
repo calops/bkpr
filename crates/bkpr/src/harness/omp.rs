@@ -203,6 +203,10 @@ fn extension_package() -> Result<TempDir> {
     write_private(&directory.path().join("package.json"),
         br#"{"name":"bkpr-native-capture","private":true,"type":"module","omp":{"extensions":["index.ts"]}}"#)?;
     write_private(&directory.path().join("index.ts"), EXTENSION.as_bytes())?;
+    write_private(
+        &directory.path().join("tools.json"),
+        &serde_json::to_vec(&super::agent::tools())?,
+    )?;
     Ok(directory)
 }
 

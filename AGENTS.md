@@ -88,6 +88,8 @@ Use terminal-default colors and confirmed per-client capabilities, not a fixed t
 - Authenticate managed capture from the connected process's OS identity, birth and verified pane ancestry, not claimed environment IDs or PIDs. A live native conversation binding is not semantic harness status or communication readiness. Revoke exited/replaced authority, hide background facts and reject delayed callbacks from retired launches.
 - Process observations use a shared off-path sampler; status-only events must not scan processes, clone full scenes/registries or open hidden views. Use a fresh ownership barrier before reaping a pane root. Live recognition, status and capture grants do not belong in durable layout records.
 - Inspect fixture command entrypoints before running them: user-profile wrappers may fetch credentials or source host-global shell configuration despite isolated HOME/XDG. Use verified native executables and private supported configuration, never approval caches or automatic consent.
+- Agent subscriptions have their own bounded transport admission and cancellation; idle cancellation checks must not repeat process ancestry scans or walk retained message histories. Readiness belongs to the current receiver generation, not any old waiter from the same launch.
+- Preserve durable wake outcomes independently of read/ack/expiry and recipient retirement. Native APIs returning void do not establish queue acceptance. Authenticate originating relay clients as well as the supervisor; a copied same-user relay token alone is not launch authority.
 
 These are product constraints, not an obligation to copy old APIs, storage formats, schedulers or implementation tests. Improve designs without confusing observations, authority and presentation.
 

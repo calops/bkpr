@@ -13,9 +13,13 @@ use serde::Deserialize;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde_json::{Value, json};
 
+use super::agent;
 use super::{Capture, passthrough, resolve, run_managed, scrub};
+#[path = "agy_receiver.rs"]
+mod native_receiver;
 
 const MAX_FRAME: usize = 1024 * 1024;
+const MAX_RESPONSE: usize = 16 * 1024 * 1024;
 const MAX_CONFIG: u64 = 16 * 1024 * 1024;
 const ROOT_METADATA: &str = "antigravity.google/root_conversation_id";
 
@@ -346,11 +350,26 @@ fn live_context(capture: &Capture) -> Result<Value> {
     Ok(context)
 }
 
+fn bootstrap(capture: &Capture) -> Result<String> {
+    let program = capture
+        .program
+        .to_str()
+        .context("AGY receiver path is not UTF-8")?;
+    let command = format!("'{}' capture agy-receiver", program.replace('\'', "'\\''"));
+    Ok(format!(
+        "First call Bkpr whoami to bind this launch from authoritative root-conversation metadata. If native receiver readiness is false, bootstrap once for this root using AGY's native run_command tool with CommandLine={}, IsDaemon:true, under ordinary native approvals. Never type this command into a terminal. Do not start another receiver while one is ready. The native child alone retains its local language-server credentials and sends only opaque inbox pointers through SendAgentMessage, including during active turns. Binding, active subscription, native acceptance, reading, explicit processed acknowledgement and semantic status are separate facts.",
+        serde_json::to_string(&command)?,
+    ))
+}
+
 fn tools() -> Value {
-    json!({"tools":[
-        {"name":"whoami","description":"Bind this managed launch from authoritative AGY root-conversation metadata and return its actual authenticated Bkpr identity and live pane/workspace context. Does not provide peer messaging or imply semantic status.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"context","description":"Return this authenticated AGY launch's actual live Bkpr pane/workspace context, after binding the authoritative root metadata.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}
-    ]})
+    let mut tools = agent::tools();
+    tools.as_array_mut().expect("common native tool array").push(json!({
+        "name":"context",
+        "description":"Return this authenticated AGY launch's live Bkpr context after binding authoritative root-conversation metadata.",
+        "inputSchema":{"type":"object","properties":{},"additionalProperties":false}
+    }));
+    json!({"tools":tools})
 }
 
 fn tool_result(result: Result<Value>) -> Value {
@@ -386,7 +405,10 @@ fn read_frame(input: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
 
 fn write_frame(output: &mut impl Write, value: &Value) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
-    ensure!(bytes.len() < MAX_FRAME, "MCP response exceeds frame limit");
+    ensure!(
+        bytes.len() < MAX_RESPONSE,
+        "MCP response exceeds frame limit"
+    );
     output.write_all(&bytes)?;
     output.write_all(b"\n")?;
     output.flush()?;
@@ -463,7 +485,7 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write, capture: &Capture) -
                 json!({"jsonrpc":"2.0","id":id,"result":{
                     "protocolVersion":version,"capabilities":{"tools":{}},
                     "serverInfo":{"name":"bkpr","version":env!("CARGO_PKG_VERSION")},
-                    "instructions":"First call Bkpr whoami to bind this managed launch using authoritative AGY root-conversation tool metadata. Bkpr only supplies authenticated identity/context here; MCP connection, conversation binding and native OSC 7501 semantic status are separate facts. No peer messaging or receiver is advertised."
+                    "instructions":bootstrap(capture)?
                 }})
             }
             "ping" if initialized => json!({"jsonrpc":"2.0","id":id,"result":{}}),
@@ -475,19 +497,33 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write, capture: &Capture) -
                     let name = message["params"]["name"]
                         .as_str()
                         .context("missing tool name")?;
-                    ensure!(
-                        matches!(name, "whoami" | "context"),
-                        "unknown Bkpr context tool"
-                    );
-                    if let Some(arguments) = message["params"].get("arguments") {
+                    let arguments = message["params"]
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    // Obtain readiness before any user mutation: a later diagnostic failure must
+                    // never hide a durable send's successful result.
+                    let identity = agent::call(capture, "whoami", json!({}))?;
+                    let instructions = bootstrap(capture)?;
+                    let mut value = if name == "context" {
                         ensure!(
-                            arguments
-                                .as_object()
-                                .is_some_and(|arguments| arguments.is_empty()),
-                            "context tools accept no arguments"
+                            arguments.as_object().is_some_and(|value| value.is_empty()),
+                            "context accepts no arguments"
                         );
+                        live_context(capture)?
+                    } else if name == "whoami" {
+                        ensure!(
+                            arguments.as_object().is_some_and(|value| value.is_empty()),
+                            "whoami accepts no arguments"
+                        );
+                        identity.clone()
+                    } else {
+                        agent::call(capture, name, arguments)?
+                    };
+                    if identity["readiness"]["can_notify"] != true {
+                        value["native_receiver_instructions"] = json!(instructions);
                     }
-                    live_context(capture)
+                    Ok(value)
                 })();
                 json!({"jsonrpc":"2.0","id":id,"result":tool_result(result)})
             }
@@ -506,6 +542,11 @@ pub(super) fn mcp() -> Result<i32> {
     let capture = Capture::from_environment()?;
     serve(&mut io::stdin().lock(), &mut io::stdout().lock(), &capture)?;
     Ok(0)
+}
+
+pub(super) fn receiver(arguments: Vec<OsString>) -> Result<i32> {
+    ensure!(arguments.is_empty(), "usage: bkpr capture agy-receiver");
+    native_receiver::run()
 }
 
 // serde_json normally accepts duplicate keys. Refuse ambiguous identity/configuration inputs.
@@ -575,7 +616,7 @@ impl<'de> Deserialize<'de> for StrictValue {
         deserializer.deserialize_any(StrictVisitor)
     }
 }
-fn strict_json(bytes: &[u8]) -> Result<Value> {
+pub(super) fn strict_json(bytes: &[u8]) -> Result<Value> {
     Ok(serde_json::from_slice::<StrictValue>(bytes)?.0)
 }
 
@@ -615,6 +656,32 @@ mod tests {
         assert!(strict_json(br#"{"params":{"x":1,"x":2}}"#).is_err());
         assert!(strict_json(br#"{"x":1}{}"#).is_err());
         assert!(read_frame(&mut &b""[..]).unwrap().is_none());
+    }
+
+    #[test]
+    fn full_escaped_inbox_page_fits_the_actual_mcp_response_budget() -> Result<()> {
+        let messages: Vec<_> = (0..10)
+            .map(|index| {
+                json!({
+                    "id":format!("opaque-{index}"), "text":"\u{0001}".repeat(64 * 1024),
+                })
+            })
+            .collect();
+        let inbox = json!({"messages":messages, "has_more":false});
+        let response = json!({"jsonrpc":"2.0","id":1,"result":tool_result(Ok(inbox.clone()))});
+        let mut wire = Vec::new();
+        write_frame(&mut wire, &response)?;
+        assert!(wire.len() > MAX_FRAME);
+        assert!(wire.len() <= MAX_RESPONSE);
+        let received: Value = serde_json::from_slice(&wire)?;
+        assert_eq!(received["result"]["structuredContent"], inbox);
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                received["result"]["content"][0]["text"].as_str().unwrap()
+            )?,
+            inbox
+        );
+        Ok(())
     }
 
     #[test]

@@ -8,7 +8,7 @@
 
 * `feat/pane-first-mux` replaces the previous runtime with seven focused crates: `bkpr`, `bkpr-client`, `bkpr-tui-framework`, `bkpr-server` (the `bkprd` executable), `bkpr-core`, `bkpr-protocol` and `bkpr-terminal-engine`. There is no legacy launcher, plugin, binary alias or compatibility track on this branch.
 * Remove the old host-runtime flake input, WASI build/export paths, sibling-runtime recipes and obsolete package/cache/publication automation. Nix now supplies only the default native development shell; Cargo plus the pinned engine preparation helper is the supported build path. Native Nix packaging requires a reproducible, offline engine dependency closure and runtime acceptance before package/app outputs return.
-* Expose the native daemon, TUI, typed version-2 control protocol and keyboard client. Backend-owned workspaces and split layouts reference independent panes; closing a projection or detaching a client does not terminate its process. Workspace/layout metadata persists, but process and terminal-content recovery is not implemented. Broker and Git/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
+* Expose the native daemon, TUI, typed version-2 control protocol and keyboard client. Backend-owned workspaces and split layouts reference independent panes; closing a projection or detaching a client does not terminate its process. Workspace/layout metadata persists, but process and terminal-content recovery is not implemented. Git/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
 * Native graphics initial-presentation gates remain unaccepted. This replacement is not production acceptance and does not modify installed applications or live sessions.
 
 ### Native workspace implementation
@@ -26,7 +26,15 @@
 * Show recognition, managed binding and genuine OSC 7501 status separately in sidebar/header/chooser content. Preserve user names; clear stale facts on replacement, shell return and exit; retain a live launch across foreground/background transitions. Push hidden-pane status without opening terminal views.
 * Add explicit `bkpr install agy` and dry-run with conflict protection and native-CLI preservation of unrelated settings. Normal launches do not rewrite harness configuration or approve native onboarding.
 * Share process sampling outside input/render paths and global state locks; use fresh exit-ownership barriers before reaping. Preserve non-UTF-8 Unix directories over the control protocol without corrupting registry state. Keep capture capabilities and live associations out of durable layout records.
-* Stage the matching `bkpr` utility with pane wrappers and honor the pane's inherited socket for headless context/control. Keep remote endpoints, durable messaging, harness recovery and the sustained-animation CPU-efficiency work deferred.
+* Stage the matching `bkpr` utility with pane wrappers and honor the pane's inherited socket for headless context/control. Keep remote endpoints, harness recovery and the sustained-animation CPU-efficiency work deferred.
+
+### Native agent communication
+
+* Add backend-owned launch context, titles, scoped discovery, durable send/inbox/processed acknowledgement and metadata-only outbox tools. Enforce exact sender-scoped idempotency, receiver-only access, live execution membership and canonical repository scope.
+* Persist private messages and receipts without authentication grants. Retain unacknowledged bodies for seven days after persisted recipient retirement, purge bodies at their deadline, preserve receipt/wake history and retire old authority on restart. Suspend all commits after durable-store failure and report ambiguous commits truthfully.
+* Integrate native Omp tools/asides, Claude tool-boundary and idle hooks, Codex exact-thread future-turn queue and Antigravity native receiver tools. Preserve existing MCP registrations with launch-local namespaces; no persistent installation changes outside explicit opt-in and no PTY peer delivery.
+* Distinguish native binding, helper registration and actual subscribed readiness. Coalesce opaque notifications, guard outcomes by exact receiver/generation and never blindly replay ambiguous delivery. An unobservable native offer remains unknown, distinct from inbox read and processed acknowledgement.
+* Reserve independent receiver admission, support caller-owned cancellable transport and block idle receivers on push notifications rather than fast polling. Use maintained native filesystem notifications for Claude hook coordination.
 
 ## Previous implementation — unreleased historical notes
 

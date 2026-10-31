@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 libc = "0.2"
 parking_lot = "0.12"
+notify = "8"
 serde.workspace = true
 signal-hook = "0.3"
 tempfile = "3"
