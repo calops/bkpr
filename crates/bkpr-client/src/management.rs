@@ -1,7 +1,4 @@
-use crate::{
-    controller::{remove_leaf, split_leaf},
-    transport,
-};
+use crate::{controller::split_leaf, transport};
 use anyhow::{Context, Result};
 use bkpr_protocol::*;
 use std::path::Path;
@@ -18,10 +15,6 @@ pub(crate) enum Command {
     Create {
         name: String,
         spec: PaneSpawnSpec,
-    },
-    Close {
-        pane: String,
-        workspace: Option<Workspace>,
     },
 }
 
@@ -75,38 +68,6 @@ pub(crate) fn execute(socket: &Path, command: Command) -> Result<Completion> {
                 spawn(socket, workspace, "", Axis::Horizontal, spec)
             })()
             .context("workspace creation already succeeded; the created workspace was not removed")
-        }
-        Command::Close { pane, workspace } => {
-            let terminated = request(
-                socket,
-                Operation::PaneTerminate {
-                    pane_id: pane.clone(),
-                },
-                "pane termination",
-            )?;
-            let registry = if let Some(workspace) = workspace {
-                (|| -> Result<RegistrySnapshot> {
-                    let updated = request(
-                        socket,
-                        Operation::LayoutUpdate {
-                            workspace_id: workspace.id.clone(),
-                            expected_revision: workspace.revision,
-                            layout: remove_leaf(workspace.layout, &pane),
-                        },
-                        "layout update",
-                    )?;
-                    updated.registry.workspaces.iter().find(|entry| entry.id == workspace.id)
-                        .context("layout update response omitted target workspace from registry")
-                        .map_err(transport::mark_outcome_unknown)?;
-                    Ok(updated.registry)
-                })().context("pane termination already succeeded; removing its layout leaf was not confirmed")?
-            } else {
-                terminated.registry
-            };
-            Ok(Completion {
-                registry,
-                selection: None,
-            })
         }
     }
 }
@@ -407,40 +368,6 @@ mod tests {
     }
 
     #[test]
-    fn close_uses_captured_layout_and_revision_not_termination_snapshot() {
-        let captured = split(Axis::Vertical, 450, leaf("old"), leaf("other"));
-        let replies = vec![
-            success(
-                registry(50, workspace(99, Some(leaf("old"))), &["old", "other"]),
-                Some("old"),
-                None,
-            ),
-            success(
-                registry(51, workspace(8, Some(leaf("other"))), &["old", "other"]),
-                None,
-                None,
-            ),
-        ];
-        let (result, requests) = scripted(
-            replies,
-            Command::Close {
-                pane: "old".into(),
-                workspace: Some(workspace(7, Some(captured))),
-            },
-        );
-        let completion = result.unwrap();
-        assert_eq!(requests.len(), 2);
-        assert!(
-            matches!(&requests[0].operation, Operation::PaneTerminate { pane_id } if pane_id == "old")
-        );
-        assert!(matches!(&requests[1].operation, Operation::LayoutUpdate {
-            workspace_id, expected_revision: 7, layout: Some(layout)
-        } if workspace_id == "workspace" && layout == &leaf("other")));
-        assert_eq!(completion.registry.revision, 51);
-        assert!(completion.selection.is_none());
-    }
-
-    #[test]
     fn failed_or_lost_placement_keeps_created_pane_and_never_replays() {
         for (reply, unknown) in [(rejection("revision conflict"), false), (None, true)] {
             let (result, requests) = scripted(
@@ -470,38 +397,6 @@ mod tests {
             assert!(matches!(
                 &requests[1].operation,
                 Operation::LayoutUpdate { .. }
-            ));
-        }
-    }
-
-    #[test]
-    fn failed_or_lost_close_layout_keeps_termination_context_without_replay() {
-        for (reply, unknown) in [(rejection("revision conflict"), false), (None, true)] {
-            let (result, requests) = scripted(
-                vec![
-                    success(
-                        registry(20, workspace(7, Some(leaf("old"))), &["old"]),
-                        Some("old"),
-                        None,
-                    ),
-                    reply,
-                ],
-                Command::Close {
-                    pane: "old".into(),
-                    workspace: Some(workspace(7, Some(leaf("old")))),
-                },
-            );
-            let error = result.unwrap_err();
-            assert!(format!("{error:#}").contains("pane termination already succeeded"));
-            assert_eq!(transport::outcome_unknown(&error), unknown, "{error:#}");
-            assert_eq!(requests.len(), 2);
-            assert!(matches!(
-                &requests[1].operation,
-                Operation::LayoutUpdate {
-                    layout: None,
-                    expected_revision: 7,
-                    ..
-                }
             ));
         }
     }
@@ -652,11 +547,10 @@ mod tests {
                 "workspace creation",
             ),
             (
-                Command::Close {
-                    pane: "old".into(),
-                    workspace: Some(workspace(7, None)),
-                },
-                "pane termination",
+                Command::Single(Operation::PaneTerminate {
+                    pane_id: "old".into(),
+                }),
+                "operation",
             ),
         ] {
             let malformed = Some(Response {
@@ -683,45 +577,29 @@ mod tests {
 
     #[test]
     fn layout_response_omissions_keep_partial_success_context() {
-        for close in [false, true] {
-            let mut incomplete = registry(30, workspace(9, Some(leaf("new"))), &["old", "new"]);
-            incomplete.workspaces.clear();
-            let (command, prior, expected) = if close {
-                (
-                    Command::Close {
-                        pane: "old".into(),
-                        workspace: Some(workspace(7, Some(leaf("old")))),
-                    },
-                    success(
-                        registry(20, workspace(7, Some(leaf("old"))), &["old"]),
-                        Some("old"),
-                        None,
-                    ),
-                    "pane termination already succeeded",
-                )
-            } else {
-                (
-                    spawn_command(workspace(7, Some(leaf("old")))),
-                    success(
-                        registry(20, workspace(8, Some(leaf("old"))), &["old", "new"]),
-                        Some("new"),
-                        None,
-                    ),
-                    "pane creation already succeeded",
-                )
-            };
-            let (result, requests) =
-                scripted(vec![prior, success(incomplete, None, None)], command);
-            let error = result.unwrap_err();
-            let message = format!("{error:#}");
-            assert!(message.contains(expected), "{message}");
-            assert!(
-                message.contains("layout update response omitted target workspace"),
-                "{message}"
-            );
-            assert!(transport::outcome_unknown(&error), "{message}");
-            assert_eq!(requests.len(), 2);
-        }
+        let mut incomplete = registry(30, workspace(9, Some(leaf("new"))), &["old", "new"]);
+        incomplete.workspaces.clear();
+        let prior = success(
+            registry(20, workspace(8, Some(leaf("old"))), &["old", "new"]),
+            Some("new"),
+            None,
+        );
+        let (result, requests) = scripted(
+            vec![prior, success(incomplete, None, None)],
+            spawn_command(workspace(7, Some(leaf("old")))),
+        );
+        let error = result.unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("pane creation already succeeded"),
+            "{message}"
+        );
+        assert!(
+            message.contains("layout update response omitted target workspace"),
+            "{message}"
+        );
+        assert!(transport::outcome_unknown(&error), "{message}");
+        assert_eq!(requests.len(), 2);
     }
 
     #[test]
@@ -732,10 +610,9 @@ mod tests {
                 name: "fresh".into(),
                 spec: spec(),
             },
-            Command::Close {
-                pane: "old".into(),
-                workspace: Some(workspace(7, Some(leaf("old")))),
-            },
+            Command::Single(Operation::PaneTerminate {
+                pane_id: "old".into(),
+            }),
         ] {
             let (result, requests) = scripted(vec![None], command);
             let error = result.unwrap_err();

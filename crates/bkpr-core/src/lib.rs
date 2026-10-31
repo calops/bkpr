@@ -94,9 +94,49 @@ enum Mutation {
     Refresh,
     Terminate,
 }
+enum CommandOutcome {
+    Applied(Option<u64>),
+    Completed,
+}
+impl CommandOutcome {
+    fn response(self) -> Value {
+        match self {
+            Self::Applied(id) => {
+                json!({"accepted":true,"write_id":id,"semantics":"queued_once_no_replay"})
+            }
+            Self::Completed => {
+                json!({"accepted":false,"write_id":null,"semantics":"execution_completed"})
+            }
+        }
+    }
+}
+type CommandResult = std::result::Result<CommandOutcome, String>;
 struct Command {
     mutation: Mutation,
-    result: mpsc::SyncSender<std::result::Result<Option<u64>, String>>,
+    result: mpsc::SyncSender<CommandResult>,
+}
+fn completed_command(published: &Published, mutation: &Mutation) -> CommandResult {
+    if published.lifecycle == "fault" {
+        return Err(published
+            .error
+            .clone()
+            .unwrap_or_else(|| "pane execution faulted".into()));
+    }
+    if matches!(
+        published.lifecycle.as_str(),
+        "draining" | "exited" | "terminated"
+    ) {
+        if matches!(mutation, Mutation::Terminate | Mutation::Focus(_))
+            || matches!(mutation, Mutation::Mouse(event)
+                if event.action == bkpr_protocol::MouseAction::Release)
+            || matches!(mutation, Mutation::Key(event)
+                if event.action == bkpr_protocol::KeyAction::Release)
+        {
+            return Ok(CommandOutcome::Completed);
+        }
+        return Err("pane execution has completed; input was not accepted".into());
+    }
+    Err("pane worker stopped without a completed execution".into())
 }
 #[derive(Default)]
 struct SnapshotChanges {
@@ -138,6 +178,8 @@ struct Shared {
     clipboard: Mutex<Option<ClipboardWait>>,
     // Preserve native/input command FIFO without blocking view-policy acceptance.
     requests: Mutex<()>,
+    // Submission and final queue retirement are atomic; never hold while awaiting a reply.
+    command_gate: Mutex<()>,
     view_policy: Mutex<()>,
     pane_id: String,
     writer: Mutex<Option<Arc<writer::Queue>>>,
@@ -195,6 +237,7 @@ impl Pane {
             published: Mutex::new(Published::default()),
             clipboard: Mutex::new(None),
             requests: Mutex::new(()),
+            command_gate: Mutex::new(()),
             view_policy: Mutex::new(()),
             pane_id,
             writer: Mutex::new(None),
@@ -214,15 +257,38 @@ impl Pane {
         thread::Builder::new()
             .name("bkpr-pane".into())
             .spawn(move || {
-                let result = run_pane(spec, state.clone(), rx, resize_events, ready_tx);
-                if let Err(error) = result {
-                    let mut p = state.published.lock().unwrap();
-                    p.lifecycle = "fault".into();
-                    p.error = Some(format!("{error:#}"));
-                    drop(p);
-                    state.changes.notify();
+                let mut termination_reply = None;
+                let result = run_pane(
+                    spec,
+                    state.clone(),
+                    &rx,
+                    resize_events,
+                    ready_tx,
+                    &mut termination_reply,
+                );
+                let _gate = state.command_gate.lock().unwrap();
+                let mut published = state.published.lock().unwrap();
+                if let Err(error) = &result {
+                    published.lifecycle = "fault".into();
+                    published.error = Some(format!("{error:#}"));
+                } else if termination_reply.is_some() {
+                    published.lifecycle = "terminated".into();
                 }
                 state.finished.store(true, Ordering::Release);
+                if let Some(reply) = termination_reply {
+                    let _ = reply.send(
+                        result
+                            .map(|()| CommandOutcome::Applied(None))
+                            .map_err(|error| format!("{error:#}")),
+                    );
+                }
+                for command in rx.try_iter() {
+                    let _ = command
+                        .result
+                        .send(completed_command(&published, &command.mutation));
+                }
+                drop(published);
+                drop(_gate);
                 state.changes.notify();
                 let notify = state.on_finish.lock().unwrap().clone();
                 if let Some(notify) = notify {
@@ -235,14 +301,24 @@ impl Pane {
             .map_err(anyhow::Error::msg)?;
         Ok(Self { shared, commands })
     }
-    fn command(&self, mutation: Mutation) -> Result<Option<u64>> {
+    fn command(&self, mutation: Mutation) -> Result<CommandOutcome> {
         let (tx, rx) = mpsc::sync_channel(1);
-        self.commands
-            .try_send(Command {
-                mutation,
-                result: tx,
-            })
-            .map_err(|_| anyhow::anyhow!("pane command queue full or closed"))?;
+        {
+            let _gate = self.shared.command_gate.lock().unwrap();
+            let published = self.shared.published.lock().unwrap();
+            if self.shared.finished.load(Ordering::Acquire)
+                || (published.lifecycle != "running" && !matches!(&mutation, Mutation::Terminate))
+            {
+                return completed_command(&published, &mutation).map_err(anyhow::Error::msg);
+            }
+            drop(published);
+            self.commands
+                .try_send(Command {
+                    mutation,
+                    result: tx,
+                })
+                .map_err(|_| anyhow::anyhow!("pane command queue full or closed"))?;
+        }
         rx.recv_timeout(Duration::from_secs(8))
             .context("pane command timed out; outcome unknown, do not retry input")?
             .map_err(anyhow::Error::msg)
@@ -422,16 +498,14 @@ impl Pane {
                 if data.len() > MAX_INPUT_BYTES {
                     bail!("input payload limit");
                 }
-                let id = self.command(Mutation::Raw(data))?;
-                Ok(json!({"accepted":true,"write_id":id,"semantics":"queued_once_no_replay"}))
+                Ok(self.command(Mutation::Raw(data))?.response())
             }
             Request::Paste { view_id, data } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
                 if data.len() > MAX_INPUT_BYTES {
                     bail!("input payload limit");
                 }
-                let id = self.command(Mutation::Paste(data))?;
-                Ok(json!({"accepted":true,"write_id":id,"semantics":"queued_once_no_replay"}))
+                Ok(self.command(Mutation::Paste(data))?.response())
             }
             Request::PasteContents {
                 view_id,
@@ -452,28 +526,26 @@ impl Pane {
                 {
                     bail!("paste payload limits");
                 }
-                let id = self.command(Mutation::PasteContents(
-                    view_id,
-                    contents,
-                    location,
-                    allow_unsafe,
-                ))?;
-                Ok(json!({"accepted":true,"write_id":id,"semantics":"queued_once_no_replay"}))
+                Ok(self
+                    .command(Mutation::PasteContents(
+                        view_id,
+                        contents,
+                        location,
+                        allow_unsafe,
+                    ))?
+                    .response())
             }
             Request::Key { view_id, event } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
-                let id = self.command(Mutation::Key(event))?;
-                Ok(json!({"accepted":true,"write_id":id,"semantics":"queued_once_no_replay"}))
+                Ok(self.command(Mutation::Key(event))?.response())
             }
             Request::Mouse { view_id, event } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
-                let id = self.command(Mutation::Mouse(event))?;
-                Ok(json!({"accepted":true,"write_id":id,"semantics":"queued_once_no_replay"}))
+                Ok(self.command(Mutation::Mouse(event))?.response())
             }
             Request::Focus { view_id, focused } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
-                let id = self.command(Mutation::Focus(focused))?;
-                Ok(json!({"accepted":true,"write_id":id,"semantics":"queued_once_no_replay"}))
+                Ok(self.command(Mutation::Focus(focused))?.response())
             }
             Request::Scroll { view_id, delta } => {
                 {
@@ -525,19 +597,20 @@ impl Pane {
             Request::Terminate { view_id } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
                 self.cancel_clipboard(None);
-                self.command(Mutation::Terminate)?;
-                Ok(json!({"terminated":true}))
+                let completed = matches!(
+                    self.command(Mutation::Terminate)?,
+                    CommandOutcome::Completed
+                );
+                Ok(json!({"terminated":!completed,"already_completed":completed}))
             }
             Request::Shutdown => {
                 self.cancel_clipboard(None);
-                if matches!(
-                    self.shared.published.lock().unwrap().lifecycle.as_str(),
-                    "running" | "draining"
-                ) {
-                    self.command(Mutation::Terminate)?;
-                }
+                let completed = matches!(
+                    self.command(Mutation::Terminate)?,
+                    CommandOutcome::Completed
+                );
                 self.shared.changes.notify();
-                Ok(json!({"shutdown":true}))
+                Ok(json!({"shutdown":true,"already_completed":completed}))
             }
             Request::Clipboard { .. } => unreachable!(),
         }
@@ -897,9 +970,10 @@ fn reconcile_size(
 fn run_pane(
     spec: SpawnSpec,
     shared: Arc<Shared>,
-    commands: crossbeam_channel::Receiver<Command>,
+    commands: &crossbeam_channel::Receiver<Command>,
     resize_events: crossbeam_channel::Receiver<()>,
     ready: mpsc::SyncSender<std::result::Result<(), String>>,
+    termination_reply: &mut Option<mpsc::SyncSender<CommandResult>>,
 ) -> Result<()> {
     let setup = (|| -> Result<_> {
         let pair = native_pty_system().openpty(pty_size(spec.size))?;
@@ -1081,7 +1155,6 @@ fn run_pane(
     }
     shared.changes.notify();
     let _ = ready.send(Ok(()));
-    let mut termination_reply = None;
     let result = (|| -> Result<()> {
         let mut eof = false;
         let clock = Instant::now();
@@ -1202,7 +1275,52 @@ fn run_pane(
             };
             match command {
                 Some(Ok(command)) => {
-                    let terminate = matches!(&command.mutation, Mutation::Terminate);
+                    if matches!(&command.mutation, Mutation::Terminate) {
+                        *termination_reply = Some(command.result);
+                        writer.stop();
+                        child.terminate()?;
+                        let status = child
+                            .try_wait()?
+                            .context("terminated child has no exit status")?;
+                        terminal.program_exited();
+                        publish(&mut terminal, &shared)?;
+                        let mut published = shared.published.lock().unwrap();
+                        published.exit_code = Some(status.exit_code());
+                        published.lifecycle = "terminating".into();
+                        drop(published);
+                        shared.changes.notify();
+                        break;
+                    }
+                    // Observe execution exit before accepting native input, not only
+                    // at the end of the turn after it could have reached a dead PTY.
+                    let status = match child.try_wait().and_then(|status| {
+                        if status.is_some() {
+                            child.terminate()?;
+                        }
+                        Ok(status)
+                    }) {
+                        Ok(status) => status,
+                        Err(error) => {
+                            let _ = command.result.send(Err(format!("{error:#}")));
+                            return Err(error);
+                        }
+                    };
+                    if let Some(status) = status {
+                        terminal.program_exited();
+                        let mut published = shared.published.lock().unwrap();
+                        published.exit_code = Some(status.exit_code());
+                        published.status = terminal.program_status();
+                        let complete = eof && terminal.sync_output_remaining().is_none();
+                        published.lifecycle = if complete { "exited" } else { "draining" }.into();
+                        let outcome = completed_command(&published, &command.mutation);
+                        drop(published);
+                        shared.changes.notify();
+                        let _ = command.result.send(outcome);
+                        if complete {
+                            break;
+                        }
+                        continue;
+                    }
                     let needs_publish = matches!(
                         &command.mutation,
                         Mutation::Colors { .. } | Mutation::Refresh
@@ -1294,18 +1412,11 @@ fn run_pane(
                         }
                         Ok(write_id)
                     })();
-                    if terminate {
-                        writer.stop();
-                        child.terminate()?;
-                        terminal.program_exited();
-                        publish(&mut terminal, &shared)?;
-                        shared.published.lock().unwrap().lifecycle = "terminating".into();
-                        shared.changes.notify();
-                        termination_reply =
-                            Some((command.result, outcome.map_err(|e| format!("{e:#}"))));
-                        break;
-                    }
-                    let _ = command.result.send(outcome.map_err(|e| format!("{e:#}")));
+                    let _ = command.result.send(
+                        outcome
+                            .map(CommandOutcome::Applied)
+                            .map_err(|error| format!("{error:#}")),
+                    );
                 }
                 Some(Err(_)) => {
                     child.terminate()?;
@@ -1345,11 +1456,6 @@ fn run_pane(
         let _ = handle.join();
     }
     let _ = reader_thread.join();
-    if let Some((reply, outcome)) = termination_reply {
-        shared.published.lock().unwrap().lifecycle = "terminated".into();
-        shared.changes.notify();
-        let _ = reply.send(outcome);
-    }
     result.and(cleanup)
 }
 struct ReaderStop(Arc<AtomicBool>);
@@ -1553,6 +1659,7 @@ mod snapshot_tests {
                 }),
                 clipboard: Mutex::new(None),
                 requests: Mutex::new(()),
+                command_gate: Mutex::new(()),
                 view_policy: Mutex::new(()),
                 pane_id: "test-pane".into(),
                 writer: Mutex::new(None),

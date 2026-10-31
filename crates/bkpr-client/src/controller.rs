@@ -366,7 +366,10 @@ pub fn chrome(
             let mut visible = Vec::new();
             leaves(workspace.layout.as_ref(), &mut visible);
             for pane in &registry.panes {
-                if pane.workspace_id.as_ref() != Some(&workspace.id) && !visible.contains(&pane.id)
+                let projected = visible.contains(&pane.id);
+                if !projected
+                    && (pane.status == PaneStatus::Exited
+                        || pane.workspace_id.as_ref() != Some(&workspace.id))
                 {
                     continue;
                 }
@@ -375,7 +378,7 @@ pub fn chrome(
                     "  {} {}",
                     if focused {
                         "●"
-                    } else if visible.contains(&pane.id) {
+                    } else if projected {
                         "·"
                     } else {
                         "◌"
@@ -576,5 +579,73 @@ mod tests {
         state.focused = None;
         state.cancel();
         assert_eq!(state.focused.as_deref(), Some("pane"));
+    }
+    #[test]
+    fn sidebar_omits_closed_records_but_keeps_faults_and_explicit_history_projections() {
+        let panes = [
+            ("closed", "Closed shell", PaneStatus::Exited),
+            ("live", "Live shell", PaneStatus::Running),
+            ("fault", "Faulted shell", PaneStatus::Stopped),
+            ("history", "Retained scene", PaneStatus::Exited),
+        ]
+        .into_iter()
+        .map(|(id, title, status)| PaneInfo {
+            id: id.into(),
+            workspace_id: Some("work".into()),
+            title: title.into(),
+            status,
+            exit_code: None,
+            cwd: "/".into(),
+            home: "/".into(),
+            isolated_environment: true,
+        })
+        .collect();
+        let registry = RegistrySnapshot {
+            revision: 1,
+            workspaces: vec![Workspace {
+                id: "work".into(),
+                name: "Work".into(),
+                revision: 1,
+                layout: Some(leaf("history")),
+            }],
+            panes,
+        };
+        let size = Size {
+            cols: 100,
+            rows: 24,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let mut surface = UiSurface::new(size);
+        let hit = chrome(
+            &mut surface,
+            size,
+            &Controller::new(&registry),
+            &registry,
+            &[],
+            false,
+            |_| None,
+        );
+        let displayed: String = surface
+            .frame
+            .rows
+            .iter()
+            .flat_map(|row| &row.cells)
+            .map(|cell| cell.text.as_str())
+            .collect();
+        assert!(!displayed.contains("Closed shell"));
+        for title in ["Live shell", "Faulted shell", "Retained scene"] {
+            assert!(displayed.contains(title));
+        }
+        assert!(
+            !hit.iter()
+                .any(|(target, _)| matches!(target, SidebarTarget::Pane(id) if id == "closed"))
+        );
+        for expected in ["live", "fault", "history"] {
+            assert!(
+                hit.iter()
+                    .any(|(target, _)| matches!(target, SidebarTarget::Pane(id) if id == expected))
+            );
+        }
     }
 }

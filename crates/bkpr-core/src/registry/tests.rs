@@ -442,7 +442,7 @@ fn pane_wait_and_blocked_pane_serialization_do_not_lock_registry_controls() {
 }
 
 #[test]
-fn natural_exit_wakes_registry_wait_and_layout_metadata_remains() {
+fn natural_exit_wakes_registry_wait_and_execution_metadata_remains() {
     let fixture = Fixture::new();
     let registry = &fixture.registry;
     let mut launch = spec(&fixture.home("short"));
@@ -614,3 +614,6 @@ mod view_budget_tests;
 
 #[path = "resize_tests.rs"]
 mod resize_tests;
+
+#[path = "completion_tests.rs"]
+mod completion_tests;

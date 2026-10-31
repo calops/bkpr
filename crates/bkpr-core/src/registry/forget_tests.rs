@@ -56,7 +56,7 @@ fn forget_requires_retirement_no_layout_references_and_never_touches_running_pan
         registry,
         Operation::WorkspaceRemove {
             workspace_id: a,
-            expected_revision: 2,
+            expected_revision: 3,
         },
     );
     assert!(
