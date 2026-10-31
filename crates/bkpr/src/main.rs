@@ -1,3 +1,5 @@
+mod harness;
+
 use anyhow::{Context, Result, bail};
 use bkpr_client::{LocalPaths, Options};
 use bkpr_protocol::{Request, Size};
@@ -11,10 +13,16 @@ const HELP: &str = r#"Bkpr — persistent pane workspaces
   bkpr context [--socket PATH]
   bkpr request [--socket PATH] 'VERSIONED_TYPED_JSON_REQUEST'
   bkpr keyboard --socket PATH --pane PANE_ID --view VIEW_ID '[PHYSICAL_BYTES]'
+  bkpr run HARNESS [--] ARGS...
+  bkpr install agy
 
 Bare bkpr connects or starts local bkprd, then opens the workspace TUI.
-The daemon and pane processes survive detach and client exit. `request` and
-`context` are headless and do not start a daemon. Server: bkprd --help.
+The daemon and pane processes survive detach and client exit. Utilities do not
+initialize the TUI; `request` and `context` do not start a daemon.
+`run` preserves native arguments and captures supported interactive harnesses in
+an authenticated Bkpr pane. Recognized generic harnesses run without capture.
+`install agy` explicitly registers the launch-scoped context/capture MCP server.
+Server: bkprd --help.
 --home explicitly selects isolated fixture child environment; the normal default
 preserves your HOME, environment and shell profiles in the invocation directory.
 
@@ -40,6 +48,11 @@ fn absolute(path: PathBuf) -> Result<PathBuf> {
     }
 }
 fn main() -> Result<()> {
+    let mut native_args = std::env::args_os();
+    let program = native_args.next().context("missing executable name")?;
+    if let Some(code) = harness::dispatch(&program, native_args.collect())? {
+        harness::terminate(code);
+    }
     let mut args = std::env::args().skip(1).peekable();
     if matches!(
         args.peek().map(String::as_str),
@@ -61,6 +74,9 @@ fn main() -> Result<()> {
         bail!("unknown command {command}; use --help");
     }
     let mut paths = LocalPaths::defaults()?;
+    if let Some(socket) = std::env::var_os("BKPR_SOCKET") {
+        paths.socket = absolute(PathBuf::from(socket))?;
+    }
     let mut options = Options::inherited()?;
     let mut server = None;
     let mut pane = None;

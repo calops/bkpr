@@ -6,6 +6,12 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+libc = "0.2"
+parking_lot = "0.12"
+serde.workspace = true
+signal-hook = "0.3"
+tempfile = "3"
+toml = "0.9"
 serde_json.workspace = true
 bkpr-client = { path = "../bkpr-client" }
 bkpr-protocol = { path = "../bkpr-protocol" }

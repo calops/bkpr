@@ -14,6 +14,9 @@ struct Cli {
     /// Explicit metadata root; exclusive daemon ownership, no terminal contents.
     #[arg(long)]
     state_root: PathBuf,
+    /// Bkpr utility executable used by private automatic harness wrappers.
+    #[arg(long)]
+    bkpr: Option<PathBuf>,
     /// An explicit fixture home scrubs inherited credentials/environment.
     /// Omit for the real user's normal environment and profiles.
     #[arg(long)]
@@ -43,6 +46,12 @@ fn run(cli: Cli) -> Result<()> {
     ensure!(cli.socket.is_absolute(), "socket must be absolute");
     let registry = Registry::open(&cli.state_root)?;
     let result = (|| -> Result<()> {
+        let listener = transport::bind(&cli.socket)?;
+        let executable = match cli.bkpr {
+            Some(executable) => executable,
+            None => std::env::current_exe()?.with_file_name("bkpr"),
+        };
+        registry.configure_harnesses(&cli.socket, &executable)?;
         if registry.is_fresh() && !cli.argv.is_empty() {
             let isolated_environment = cli.home.is_some();
             let home = cli
@@ -75,7 +84,7 @@ fn run(cli: Cli) -> Result<()> {
                 },
             }))?;
         }
-        transport::serve(&cli.socket, registry.clone())
+        listener.serve(registry.clone())
     })();
     // Even startup/bind failures must tear down only the children this daemon owns.
     let cleanup = registry.shutdown();

@@ -109,10 +109,11 @@ pub fn ensure_server(
     }
     private_directory(paths.socket.parent().context("socket needs parent")?)?;
     private_directory(&paths.state_root)?;
+    let bkpr = std::env::current_exe().context("locating bkpr for managed harness launches")?;
     let server = if let Some(binary) = binary {
         binary.to_owned()
     } else {
-        let sibling = std::env::current_exe()?.with_file_name("bkprd");
+        let sibling = bkpr.with_file_name("bkprd");
         if sibling.is_file() {
             sibling
         } else {
@@ -133,6 +134,8 @@ pub fn ensure_server(
         .arg(&paths.socket)
         .arg("--state-root")
         .arg(&paths.state_root)
+        .arg("--bkpr")
+        .arg(&bkpr)
         .arg("--cwd")
         .arg(&options.cwd)
         .arg("--cols")

@@ -11,9 +11,10 @@ describes the seven-crate boundaries.
 
 This is development code, not a production release. Workspace layouts and pane
 metadata survive daemon restarts; running processes and terminal contents do not.
-Agent/harness integration, broker messaging and Git/CI presentation are not
-currently exposed. Earlier release notes describe the former implementation, not
-features available on this branch.
+Foreground harness recognition, managed native conversation capture and OSC 7501
+status are available in the TUI. Broker messaging, Git/CI presentation and harness
+recovery selection are not implemented yet. Earlier release notes describe the
+former implementation, not features available on this branch.
 
 Current `main` and the native-terminal fork are useful starting material when a
 domain comes into scope, not frozen specifications or compatibility obligations.
@@ -88,7 +89,8 @@ After building both executables, run `bkpr` to connect to or start the local
 
 Normal launches preserve your HOME, shell profiles and environment, using the
 invocation directory. Closing the client leaves the daemon and panes running.
-`bkpr context` and `bkpr request` are headless and do not start a daemon.
+`bkpr context` and `bkpr request` are headless and do not start a daemon. Inside a
+managed pane they default to its `BKPR_SOCKET`; an explicit `--socket` overrides it.
 
 For an isolated preview, start the daemon explicitly in one terminal:
 
@@ -116,10 +118,73 @@ Socket/state directories must be private and current-user-owned. The socket is
 mode `0600`; a live listener is never replaced, and one daemon exclusively owns
 each state root. Keep Unix socket paths short. Explicit `--home` selects a
 scrubbed fixture environment, not an OS/filesystem sandbox. `--bkprd PATH`
-selects the server executable when testing independently staged binaries.
+selects the server executable; `bkprd --bkpr PATH` selects the matching utility
+and harness wrappers when testing independently staged binaries.
 View admission is bounded to 128 per daemon and 32 per pane. Pane waits,
 registry watchers and controls have separate capacity, so admitted waiting views
 do not consume the slots reserved for input or management.
+
+### Harness capture
+
+Managed shells receive private PATH wrappers, without edits to shell profiles or
+the harnesses' persistent configuration. Use ordinary commands, or launch explicitly:
+
+```sh
+claude
+codex
+omp
+bkpr run codex -- resume
+bkpr run omp -- --help
+```
+
+`bkpr run HARNESS [--] ARGS...` preserves native arguments and exit behavior.
+Claude, Codex, Omp and Antigravity have managed conversation adapters:
+
+| Harness | Native binding mechanism |
+| --- | --- |
+| Claude | Launch-local hooks capture the native session ID. |
+| Codex | A private app-server transport binds the response to the TUI's own start, resume, fork or picker selection, before the first prompt. |
+| Omp | A launch-local extension captures the native session manager ID and session transitions. |
+| Antigravity | Its MCP request metadata supplies the root conversation ID. Registration alone is not binding or readiness. |
+
+Antigravity requires explicit installation on the account where it runs:
+
+```sh
+bkpr install agy --dry-run
+bkpr install agy
+```
+
+Installation uses Antigravity's own CLI, preserves unrelated settings and refuses
+conflicting registrations. Normal launches never install it automatically.
+The MCP adapter currently exposes capture/context, not peer communication.
+
+OpenCode, Cursor Agent, Copilot, Aider, Cline and Goose are recognition-only.
+`bkpr run cursor` selects `cursor-agent`, never the Cursor GUI. Native help,
+version and noninteractive modes run without capture credentials. Modes that
+cannot safely use an adapter retain native behavior rather than silently changing
+their configuration: examples include Codex custom remote/profile/local-only
+startup options and Claude file-based settings. Such launches can remain
+recognition-only.
+
+The sidebar distinguishes recognized, managed-unbound, bound and capture-error
+states without replacing user pane names. Semantic status is a separate OSC 7501
+fact: `.` idle, `~` working, `+` done, `?` blocked, `!` error. Ordinary programs
+never acquire harness badges merely by setting a title. The pane chooser
+(`Ctrl-b o`) shows the native conversation ID, foreground directory and capture
+diagnostics. Backgrounding a job hides its foreground identity; resuming it can
+restore the same live binding. Returning to the shell or replacing/exiting a
+launch clears stale facts.
+
+Capture grants are private, launch-scoped and not persisted. Layout recovery
+does not yet restore harness associations. Process recognition and foreground
+directories are sampled off the input/render path; OSC summaries are pushed even
+for panes with no active view. Linux managed capture requires kernel peer-PIDFD
+support and fails closed when unavailable. macOS capture is not runtime-verified.
+
+Wrappers depend on their PATH entry surviving shell/direnv changes; they do not
+rewrite those environments to force interception. Explicit `bkpr run` remains
+available through the matching executable. Native first-run trust, account and
+terms prompts remain the user's responsibility; Bkpr does not approve them.
 
 
 ### Workspace and pane controls

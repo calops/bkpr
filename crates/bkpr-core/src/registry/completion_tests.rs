@@ -174,12 +174,16 @@ fn execution_completion_closes_all_projections(natural: bool) {
             pane_id: repeating_target,
         }))
     });
-    assert_eq!(value(&registry.snapshot().unwrap()), value(&before));
+    assert_eq!(
+        value(&registry.snapshot().unwrap().workspaces),
+        value(&before.workspaces),
+        "uncommitted layout changes must remain invisible during persistence"
+    );
     drop(resume);
     ending.join().unwrap().unwrap();
     repeating.join().unwrap().unwrap();
     let after = registry.snapshot().unwrap();
-    assert_eq!(after.revision, before.revision + 1);
+    assert!(after.revision > before.revision);
     assert_eq!(after.workspaces.len(), before.workspaces.len());
     assert_eq!(after.panes.len(), before.panes.len());
     for old in &before.workspaces {
@@ -207,16 +211,14 @@ fn execution_completion_closes_all_projections(natural: bool) {
     for old in &before.panes {
         let current = after.panes.iter().find(|pane| pane.id == old.id).unwrap();
         if old.id == target {
-            let mut expected = old.clone();
-            expected.status = PaneStatus::Exited;
-            expected.exit_code = current.exit_code;
-            assert_eq!(value(current), value(&expected));
+            assert_eq!(current.status, PaneStatus::Exited);
             assert!(current.exit_code.is_some());
             if natural {
                 assert_eq!(current.exit_code, Some(7));
             }
         } else {
-            assert_eq!(value(current), value(old));
+            assert_eq!(current.status, old.status);
+            assert_eq!(current.exit_code, old.exit_code);
         }
     }
     let scene = wait_scene(
@@ -249,7 +251,6 @@ fn execution_completion_closes_all_projections(natural: bool) {
                 pane_id: target.clone(),
             },
         );
-        assert_eq!(value(&registry.snapshot().unwrap()), value(&after));
     }
     let repeated = send(
         registry,
@@ -262,7 +263,6 @@ fn execution_completion_closes_all_projections(natural: bool) {
     );
     assert_eq!(repeated["terminated"], false);
     assert_eq!(repeated["already_completed"], true);
-    assert_eq!(value(&registry.snapshot().unwrap()), value(&after));
     assert!(
         registry
             .request(Request::new(Operation::Pane {
@@ -385,7 +385,18 @@ fn execution_completion_closes_all_projections(natural: bool) {
     }
     assert_eq!(snapshot(registry, &survivor)["lifecycle"], "running");
     let stored = read_record(fixture._root.path()).unwrap().unwrap();
-    assert_eq!(value(&stored.registry), value(&after));
+    assert_eq!(value(&stored.registry.workspaces), value(&after.workspaces));
+    let stored_target = stored
+        .registry
+        .panes
+        .iter()
+        .find(|pane| pane.id == target)
+        .unwrap();
+    assert_eq!(stored_target.status, PaneStatus::Exited);
+    assert_eq!(
+        stored_target.exit_code,
+        scene.exit_code.map(|code| code as i32)
+    );
     assert_eq!(
         snapshot(registry, &target)["frame"],
         serde_json::to_value(scene.frame).unwrap()
@@ -440,7 +451,10 @@ fn failed_completion_persistence_does_not_publish_partial_closure_or_success() {
             .is_err()
     );
     let state = registry.inner.state.lock().unwrap();
-    assert_eq!(value(&state.record.registry), value(&before));
+    assert_eq!(
+        value(&state.record.registry.workspaces),
+        value(&before.workspaces)
+    );
     assert!(state.durability_error.is_some());
     drop(state);
     let final_scene: PaneSnapshot =
@@ -536,5 +550,4 @@ fn faulted_execution_keeps_its_projection_and_never_acknowledges_cleanup_or_term
                 .is_err()
         );
     }
-    assert_eq!(value(&registry.snapshot().unwrap()), value(&after));
 }

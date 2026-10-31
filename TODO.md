@@ -2,11 +2,13 @@
 
 The native replacement branch is governed by the [implementation plan](docs/pane-first-mux/implementation-plan.md). `main` and the Zellij fork are starting code, not immutable designs or regression suites. Reuse, refactor or rewrite relevant pieces when their domain comes into scope.
 
-Current priority is TUI feature parity with `main`, starting with harness capture. Browser/web, GUI and mobile frontends are deferred; an independent frontend proof must not block restoring the TUI's product functionality.
+Current priority is TUI feature parity with `main`. Native harness capture is implemented; remaining genuine-native acceptance gates are listed below. Browser/web, GUI and mobile frontends are deferred; an independent frontend proof must not block restoring the TUI's product functionality.
 
 - [ ] Complete the pane-first backend and independent clients: durable pane identities/lifecycle, revisioned layout documents, backend workspace membership, view/size/input/clipboard authority, typed control, rich metadata and agent/harness services. Use maintained infrastructure libraries and small source ports rather than importing a whole mux. The initial [engine experiment](docs/pane-first-mux/engine-proof.md) records measured behavior and unresolved rendering/input observations, not full product acceptance.
 
-- [ ] Restore automatic harness capture and TUI identity/status end to end: foreground harness/CWD recognition in ordinary panes, managed launch-scoped identity, exact native conversation binding, and independent OSC 7501 semantic status. Reuse or redesign main's supported launchers and installed adapters without requiring different everyday commands or rewriting user settings. Preserve explicit launch, resume/fork/noninteractive behavior and recognition-only launches; clear live capture on process replacement/exit without losing recovery metadata. Publish typed backend facts and verify genuine harness TUIs with isolated local fixtures. This is the next implementation slice, not functionality already supplied by the terminal status parser.
+- [x] Implement native foreground harness/CWD recognition, authenticated launch-scoped identity, exact conversation adapters and separate OSC 7501 TUI status. Restore private ordinary-command wrappers and `bkpr run`, preserve native options/settings and recognition-only modes, and clear stale live facts on replacement, backgrounding, shell return and exit. Real isolated Omp/Codex fresh/explicit/resume/fork paths, Codex picker, concurrent physical panes, hidden status and authority/failure boundaries are exercised. Capture facts are not durable recovery associations.
+
+- [ ] Close the remaining genuine-native capture acceptance gates without bypassing native approval: Claude 2.1.312's offline first-run service preflight currently exits before hooks; Antigravity 1.4.8's Terms/Data Use prompt remains unapproved, so its actual root-MCP callback is unverified. Native Antigravity installation preserves unrelated configuration. Retain exact evidence and limits in [the engine report](docs/pane-first-mux/engine-proof.md).
 
 - [x] Replace Bkpr's generic Ghostty FFI ownership with pinned upstream `libghostty-rs` safe/sys crates and a reviewed compatible native ABI. Keep Bkpr's scenes, bounds, caches and authority policy; record the reproducible local dependency patch and exact native provenance.
 
@@ -26,7 +28,7 @@ Current priority is TUI feature parity with `main`, starting with harness captur
 
 - [ ] Design recovery selection and harness resume behavior against the new registry. A picker should distinguish live panes from recoverable executions. Investigate whether harnesses already restore model/permission/launch flags before persisting them. Reuse useful main recovery/adapter code, but do not inherit its session IDs, KDL schema or native-owner model as authority.
 
-- [ ] Implement harness launch/context and peer communication against the new backend. Inspect main's real Claude/Codex/Omp/Antigravity integrations before choosing reuse versus rewrite. Bind genuine conversations, preserve truthful readiness and durable delivery/processed acknowledgement, and never type notifications into PTYs. Test startup, active/idle turns, crashes, store failures and installation conflicts with isolated fake local providers.
+- [ ] Implement remaining harness context/discovery and peer communication against the new backend. Reuse or redesign main's relevant services; native launch/context capture is now implemented, not a replacement for messaging. Preserve truthful readiness, durable delivery/processed acknowledgement and native steering; never type notifications into PTYs. Test startup, active/idle turns, crashes, store failures and installation conflicts with isolated fake local providers.
 
 - [ ] Design SSH agent forwarding separately from input, size and clipboard ownership. Reuse useful lease/generation and raw Unix-path work from main; make selected-client/upstream policy explicit. Do not mutate user SSH/Git configuration to hide routing or authorization failures.
 
@@ -36,6 +38,6 @@ Current priority is TUI feature parity with `main`, starting with harness captur
 
 - [ ] Profile new-client popup presentation before optimizing it. Measure damage, placement, visibility and readiness across keyboard/pointer handoffs; don't carry old plugin/native round trips into the new design unnecessarily.
 
-- [ ] Revisit integration across direnv/environment transitions when harness launch is implemented. Main's wrapper-free installer and explicit launch paths are useful starting points; avoid rewriting shell behavior or direnv's saved environment as a workaround.
+- [ ] Revisit integration across shell/direnv environment transitions. Current private-PATH wrappers work only while their PATH entry survives; main's wrapper-free installer and explicit launch paths are useful starting points. Avoid rewriting shell profiles or direnv's saved environment as a workaround.
 
 - [ ] Restore release/package publication only after reproducible offline engine/toolchain acquisition, dependency/license review and supported-platform native verification. No legacy runtime artifacts or no-op success workflows.

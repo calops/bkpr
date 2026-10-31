@@ -248,3 +248,59 @@ Verification: 163 native workspace tests and 114 independently reacquired SDK te
 Evidence remains under `target/smoke/workspace-cutover/`: `shell-exit-checks/result.json`, `shell-exit-release/result.json`, final physical scenario `shell-exit-1045639412059341/`, broader terminal scenario `ui-1045643374959965/`, API scenario `api-shell-exit-release/`, and `shell-exit-controllers.zip`. Final runtime fixtures have empty survivor lists. Build jobs and CPU affinity remain limited to eight, and the existing canonical/public preview executables were not replaced.
 
 The new release is staged separately in `shell-exit-release/`: client SHA-256 `62873a0bb796af868eeee0322b981170ca1730d047fe666c577e27980f90e766`, server `3b459ba41c94b1862a948e6aa990f387a9782556baa5513d1f2a27a614a2177e`. Start a fresh daemon to exercise the changed backend lifecycle; attaching a new client does not upgrade an already-running daemon.
+
+## Native harness capture
+
+The native implementation now separates foreground process/CWD recognition, authenticated managed launch identity, native conversation binding and OSC 7501 semantic status. Core owns authority, lifecycle and status selection; the client displays typed facts. User pane names remain unchanged. Ordinary private-PATH wrappers and `bkpr run` share the same adapters; explicit Antigravity installation is the only persistent harness-configuration mutation.
+
+Capture authentication uses the socket peer's OS identity and birth, selected Bkpr executable and verified pane ancestry. Linux requires `SO_PEERPIDFD`; unsupported kernels fail managed capture closed rather than trusting an environment PID. Native conversation sources must match the launch kind; replacement generations and retirement prevent delayed callbacks from reviving exited launches. Background jobs retain private live authority but do not masquerade as foreground harnesses.
+
+One shared process sampler performs off-path observations at a 200 ms foreground deadline. Reaper observations use its cache; final Linux root-exit handling obtains a fresh ownership barrier before reaping, including stopped jobs in other process groups. Status-only wakes coalesce and select changed metadata without process scans, hidden-view admission or full-scene/registry copies. Transition invalidation prevents stale OSC facts from reappearing after shell return; a managed waiter's first verified native child preserves genuine startup OSC instead of discarding it.
+
+`PaneInfo` carries foreground CWD, harness identity/binding and the selected OSC summary. `PaneSnapshot.program_identity` lets clients reject mismatched facts across independent stream pumps. UTF-8 paths retain their JSON string representation; non-UTF-8 Unix paths round-trip as `{"unix_bytes":[...]}`. Live capture grants, recognition, native associations and OSC summaries are excluded from durable layout records. Historical associations and execution recovery are still future work.
+
+### Exercised acceptance and native prerequisites
+
+Evidence root: `/home/calops/projects/bkpr/target/smoke/harness-capture/`.
+
+| Check | Observed result |
+| --- | --- |
+| Locked native workspace tests | 225 passed; five ignored entries are subprocess helpers exercised by passing parent regressions |
+| Strict workspace/all-target Clippy and Rust formatting | Passed; final record `checks/result.json` |
+| Optimized release build | Passed with eight jobs and affinity 0–7; `release/result.json`; canonical public executables unchanged |
+| Real Omp 18.13.2 | Ordinary and explicit launch bind exact native extension IDs before prompts; concurrent launches, native resume/fork, replacement/exit and stale actual capabilities passed; one loopback fake-provider request |
+| Real Codex 0.165.0 | Before-prompt IDs corroborated through the actual owned app-server; native resume/fork/picker, concurrent launches and replacement/exit passed; native children have no capture token; two loopback requests |
+| Real Claude 2.1.312 | Native first-run connectivity preflight exits before hooks in the offline namespace, despite a local gateway and disabled nonessential traffic; native hook/ID acceptance remains blocked |
+| Real Antigravity 1.4.8 | Actual `bkpr install agy` and native CLI preserve unrelated settings and unknown fields; native Terms/Data Use remains unapproved, so genuine root-MCP binding is unverified; two loopback requests |
+| Actual Kitty TUI | Concurrent independent panes, ordinary/explicit launch, exact native-ID details, genuine OSC markers, generic-program exclusion, hidden status with zero views, non-UTF-8 CWD, suspend/foreground, shell return, matching utility/socket, user names and eight-row chooser passed |
+
+The real-harness matrix is `native/native-acceptance-summary-20261031.json`, with native executable and candidate hashes alongside it. Omp's private fixture uses source-supported `startup.setupWizard:false` and a custom local provider, not seeded authentication/approval state. Codex's intentional local HTTP rejections create native resumable state. Its proxy keeps capabilities private: native stale-launch checks did not recover an actual retired token; actual-token rejection is separately exercised by the Omp/backend fixtures. Claude and Antigravity limits are native prerequisites, not silently passing cases. No native Terms, trust, API-key or tool approvals were granted, and no external provider was reached. [Claude's environment reference](https://code.claude.com/docs/en/env-vars.md) and [upstream preflight report](https://github.com/anthropics/claude-code/issues/81611) did not supply a supported offline preflight opt-out.
+
+Physical release evidence is `ui-1076638967104205/`, including actual screenshots, raw VT, observations and empty-survivor cleanup. Its named synthetic executable exercises the real Bkpr authentication/PTY/OSC/control path; it is not substituted for genuine harness-ID evidence. Boundary regressions also cover wrong peers/sources, nested or indeterminate runtimes, stale births, callback/transport bounds, correlation/reconnect ordering and failure closure.
+
+The verified release client is SHA-256 `49ee03e62a3da8f2c46e11030fb9799e1672b32dff3cef45effe8957ed9d2b27`; server is `5fc1eb48b865b6ff8501f859817098659b1e258363dbe8c300af5e20f871cbb9`. The `checks/` executable snapshots are an earlier debug build, not the release candidate; its final record verifies the current tests/lints, not those snapshots' runtime acceptance. Native engine revision and SDK are unchanged. macOS capture has source-level implementation but no runtime evidence here.
+
+### Responsiveness and remaining efficiency work
+
+The comparison uses the previous shell-closure release and this capture release, both with the real sidebar. Styled Neovim has the same 240×79 pane in a 264×81 window, twelve settled jumps and six five-jump bursts per build. Complete body pixels match the immutable cross-run oracles; emitted median bytes remain 94,474. Independent framebuffer sampling observes software presentation, not hardware-display latency. No compilation or other owned heavy fixture ran during measurement.
+
+| Metric | Previous release | Capture release |
+| --- | --- | --- |
+| Settled jump emitted median / maximum | 27.01 / 33.29 ms | 26.62 / 33.34 ms |
+| Settled jump sampled presentation median / maximum | 123.04 / 140.05 ms | 115.56 / 146.19 ms |
+| Five-jump burst emitted median / maximum | 70.63 / 82.40 ms | 67.28 / 90.65 ms |
+| Five-jump burst sampled presentation median / maximum | 151.09 / 172.43 ms | 162.89 / 177.85 ms |
+| Eight idle panes, daemon CPU cores | 0.502 | 0.052 |
+| Eight idle panes, daemon RSS | 29,376 KiB | 30,140 KiB |
+
+Idle CPU is one five-second procfs user+system sample after a two-second warmup, without clients/providers; it demonstrates the shared sampler's reduction, not a solved sustained-animation CPU gap. Settled emission is similar, while sampled presentation and burst tails vary; no universal speedup or strict latency-parity claim follows from this pair. Raw records, geometry, hashes and empty-survivor cleanup are retained in `performance/comparison.json`, `performance/editor-{before,capture}/` and `idle-1076880544092944/`. No fidelity or update-rate reduction was introduced.
+
+### Fixture corrections and safety
+
+An initial one-millisecond XTest key burst produced wrong case/quotes. The direct control `direct-keys-1076569173726844/` requests the same Kitty CSI-u flags without any Bkpr process: the host wire itself reports Shift and uppercase associated text for `printf`. At ten milliseconds it reports the intended text. The physical controller now uses that demonstrated driver interval; no product keyboard behavior was changed or suppressed. This does not retrospectively attribute earlier unrelated startup observations.
+
+Early Omp version/noninteractive probes selected the user's profile wrapper before inspection. It attempted 1Password credential lookups and returned only failure diagnostics; no credential values were returned or retained. All subsequent runs use inspected package entrypoints/direct native executables. Isolated HOME/network namespaces do not sandbox absolute credential paths or local sockets. This incident and exact scope are retained in the native manifest.
+
+The initial Bash fixture also sourced host-global `/etc/bashrc` and `/etc/profile`, whose generated environment overwrites PATH and discovers an SSH-agent socket. Source-supported `NOSYSBASHRC=1` now excludes that host fixture configuration, without reinjecting PATH or modifying user profiles. Ordinary product interception still depends on the private PATH entry surviving shell/direnv changes; the explicit launch path remains available and wrapper-free integration stays in TODO.
+
+Owned runtime roots/processes were cleaned with exact-birth checks; all final native, physical and performance records report no survivors. Controller sources are retained in `controllers.zip`, with CRC verification. This capture work does not supply broker delivery, Git/CI, recovery selection, remote endpoints or closure of historical graphics adoption gates.

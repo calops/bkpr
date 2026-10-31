@@ -183,6 +183,9 @@ mod tests {
                     status: PaneStatus::Running,
                     exit_code: None,
                     cwd: "/tmp".into(),
+                    foreground_cwd: None,
+                    harness: None,
+                    harness_status: None,
                     home: "/tmp".into(),
                     isolated_environment: false,
                 })

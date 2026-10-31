@@ -16,6 +16,9 @@ pub struct PaneSnapshot {
     pub exit_code: Option<u32>,
     pub error: Option<String>,
     pub program_status: Vec<ProgramStatus>,
+    /// Birth-bound foreground identity which owns these OSC records, not generic process status.
+    #[serde(default)]
+    pub program_identity: Option<ProcessIdentity>,
     pub events: Vec<Event>,
     pub event_sequence: u64,
     /// Current desired lease; not an acknowledgement that the native frame was resized.
