@@ -1,5 +1,8 @@
 //! Canonical terminal scenes and versioned backend registry protocol.
+mod harness;
+pub use harness::*;
 mod model;
+pub mod path_wire;
 pub use model::*;
 mod registry;
 pub mod scene_wire;

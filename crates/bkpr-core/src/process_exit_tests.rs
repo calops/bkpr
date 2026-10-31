@@ -165,7 +165,7 @@ fn quick_root_exit_reaps_stopped_other_pgrp_without_touching_parallel_pane() {
         pid: Some(root_pid),
         cleaned: false,
         last_observed: Instant::now(),
-        tree: Some(process_tree::Tree::new(root_pid, false)),
+        tree: Some(process_tree::Tree::new(root_pid, false).unwrap()),
         exit_observed: false,
     };
     // Deterministically create the job after Tree::new; deliberately perform no timer

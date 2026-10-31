@@ -185,6 +185,9 @@ fn invalid_post_spawn_layout_is_rejected_before_child_setup_or_exec() {
                     exit_code: None,
                     cwd: fixture._root.path().into(),
                     home: fixture._root.path().into(),
+                    foreground_cwd: None,
+                    harness: None,
+                    harness_status: None,
                     isolated_environment: false,
                 });
             }

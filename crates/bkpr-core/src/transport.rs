@@ -100,8 +100,15 @@ impl Drop for SocketLease {
         let _ = fs2::FileExt::unlock(&self.0);
     }
 }
-/// One bounded snapshot per request; waiting viewers hold no engine locks.
-pub fn serve(socket: &Path, registry: Registry) -> Result<()> {
+/// A bound listener may queue initial-wrapper requests before pane startup commits.
+pub struct BoundSocket {
+    listener: UnixListener,
+    socket: PathBuf,
+    _guard: SocketGuard,
+    _lease: SocketLease,
+}
+/// Bind ownership and listening independently of starting request dispatch.
+pub fn bind(socket: &Path) -> Result<BoundSocket> {
     let parent = socket.parent().context("socket needs parent directory")?;
     if !parent.exists() {
         std::fs::DirBuilder::new()
@@ -147,45 +154,64 @@ pub fn serve(socket: &Path, registry: Registry) -> Result<()> {
         }
     }
     let listener = UnixListener::bind(socket).context("binding private registry socket")?;
-    let _guard = SocketGuard(socket.to_owned());
+    let guard = SocketGuard(socket.to_owned());
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let active = Arc::new(AtomicUsize::new(0));
-    let waiting_panes = Arc::new(AtomicUsize::new(0));
-    let waiting_registry = Arc::new(AtomicUsize::new(0));
-    let (wake_read, wake_write) = UnixStream::pair()?;
-    wake_write.set_nonblocking(true)?;
-    let wake_write = Arc::new(wake_write);
-    let mut signals = SignalRegistrations::default();
-    for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
-        signals
-            .0
-            .push(signal_hook::flag::register(signal, shutdown.clone())?);
-        signals.0.push(signal_hook::low_level::pipe::register(
-            signal,
-            wake_write.try_clone()?,
-        )?);
-    }
-    println!(
-        "{}",
-        json!({"version":PROTOCOL_VERSION,"ready":true,"socket":socket})
-    );
-    while !shutdown.load(Ordering::Acquire) {
-        if !wait_for_accept(&listener, &wake_read, &shutdown)? {
-            break;
+    Ok(BoundSocket {
+        listener,
+        socket: socket.to_owned(),
+        _guard: guard,
+        _lease,
+    })
+}
+/// Convenience for existing library consumers which do not bootstrap a first pane.
+pub fn serve(socket: &Path, registry: Registry) -> Result<()> {
+    bind(socket)?.serve(registry)
+}
+impl BoundSocket {
+    pub fn serve(self, registry: Registry) -> Result<()> {
+        let Self {
+            listener,
+            socket,
+            _guard,
+            _lease,
+        } = self;
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let active = Arc::new(AtomicUsize::new(0));
+        let waiting_panes = Arc::new(AtomicUsize::new(0));
+        let waiting_registry = Arc::new(AtomicUsize::new(0));
+        let (wake_read, wake_write) = UnixStream::pair()?;
+        wake_write.set_nonblocking(true)?;
+        let wake_write = Arc::new(wake_write);
+        let mut signals = SignalRegistrations::default();
+        for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
+            signals
+                .0
+                .push(signal_hook::flag::register(signal, shutdown.clone())?);
+            signals.0.push(signal_hook::low_level::pipe::register(
+                signal,
+                wake_write.try_clone()?,
+            )?);
         }
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                let Some(slot) = ConnectionSlot::take(&active, MAX_CONNECTIONS) else {
-                    continue;
-                };
-                let registry = registry.clone();
-                let shutdown = shutdown.clone();
-                let waiting_panes = waiting_panes.clone();
-                let waiting_registry = waiting_registry.clone();
-                let wake_write = wake_write.clone();
-                thread::Builder::new()
+        println!(
+            "{}",
+            json!({"version":PROTOCOL_VERSION,"ready":true,"socket":bkpr_protocol::path_wire::WirePath(&socket)})
+        );
+        while !shutdown.load(Ordering::Acquire) {
+            if !wait_for_accept(&listener, &wake_read, &shutdown)? {
+                break;
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let Some(slot) = ConnectionSlot::take(&active, MAX_CONNECTIONS) else {
+                        continue;
+                    };
+                    let registry = registry.clone();
+                    let shutdown = shutdown.clone();
+                    let waiting_panes = waiting_panes.clone();
+                    let waiting_registry = waiting_registry.clone();
+                    let wake_write = wake_write.clone();
+                    thread::Builder::new()
                     .name("bkpr-control".into())
                     .spawn(move || {
                     let _slot = slot;
@@ -202,7 +228,12 @@ pub fn serve(socket: &Path, registry: Registry) -> Result<()> {
                         let request: Request = serde_json::from_slice(&bytes)?;
                         let _waiting = waiting_slot(&request.operation, &waiting_panes, &waiting_registry)?;
                         stop = request.version == PROTOCOL_VERSION && matches!(&request.operation, Operation::Shutdown);
-                        let result = registry.request(request)?;
+                        let result = if matches!(&request.operation, Operation::HarnessBegin { .. } | Operation::HarnessEvent { .. } | Operation::HarnessContext { .. }) {
+                            let peer = authenticated_peer(&stream)?;
+                            registry.request_authenticated(request, &peer)?
+                        } else {
+                            registry.request(request)?
+                        };
                         Ok(result)
                     })();
                     let response = match result {
@@ -229,13 +260,146 @@ pub fn serve(socket: &Path, registry: Registry) -> Result<()> {
                         let _ = (&*wake_write).write_all(b"\0");
                     }
                 })?;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e.into()),
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e.into()),
         }
+        registry.shutdown()
     }
-    registry.shutdown()
+}
+
+#[cfg(target_os = "linux")]
+fn authenticated_peer(stream: &UnixStream) -> Result<crate::harness::Peer> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let mut credential: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credential as *mut libc::ucred).cast(),
+            &mut length,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context("Unix peer credentials");
+    }
+    anyhow::ensure!(
+        length as usize == std::mem::size_of::<libc::ucred>()
+            && credential.uid == unsafe { libc::geteuid() },
+        "invalid Unix peer credentials"
+    );
+    // SO_PEERPIDFD pins the *socket's original peer*, not a possibly recycled claimed PID.
+    // Older kernels fail closed for capture rather than silently weakening birth provenance.
+    let mut fd = -1_i32;
+    let mut length = std::mem::size_of::<i32>() as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            77,
+            (&mut fd as *mut i32).cast(),
+            &mut length,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error())
+            .context("birth-bound Unix peer authentication requires SO_PEERPIDFD");
+    }
+    anyhow::ensure!(
+        fd >= 0 && length as usize == std::mem::size_of::<i32>(),
+        "invalid Unix peer pidfd"
+    );
+    let pidfd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let process = crate::harness_process::process(credential.pid)?.context("Unix peer exited")?;
+    let mut poll = libc::pollfd {
+        fd: pidfd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut poll, 1, 0) };
+    anyhow::ensure!(
+        result == 0 && poll.revents == 0,
+        "Unix socket peer exited or changed birth"
+    );
+    Ok(crate::harness::Peer {
+        pid: credential.pid,
+        uid: credential.uid,
+        birth: process.identity,
+    })
+}
+#[cfg(target_os = "macos")]
+fn authenticated_peer(stream: &UnixStream) -> Result<crate::harness::Peer> {
+    // LOCAL_PEERTOKEN includes the kernel PID version. Match PROC_PIDUNIQIDENTIFIERINFO
+    // as well as the microsecond birth read, so a recycled peer PID cannot lend authority.
+    let mut token = [0_u32; 8];
+    let mut size = std::mem::size_of_val(&token) as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            0,
+            6,
+            token.as_mut_ptr().cast(),
+            &mut size,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context("Darwin Unix peer audit token");
+    }
+    anyhow::ensure!(
+        size as usize == std::mem::size_of_val(&token) && token[1] == unsafe { libc::geteuid() },
+        "foreign Darwin Unix peer"
+    );
+    #[repr(C)]
+    // xnu bsd/sys/proc_info_private.h: this API structure is exactly 56 bytes.
+    struct Unique {
+        uuid: [u8; 16],
+        unique: u64,
+        parent_unique: u64,
+        version: i32,
+        original_parent_version: i32,
+        reserved2: u64,
+        reserved3: u64,
+    }
+    #[link(name = "proc")]
+    unsafe extern "C" {
+        fn proc_pidinfo(
+            pid: i32,
+            flavor: i32,
+            arg: u64,
+            buffer: *mut libc::c_void,
+            bytes: i32,
+        ) -> i32;
+    }
+    let process =
+        crate::harness_process::process(token[5] as i32)?.context("Darwin Unix peer exited")?;
+    let mut unique: Unique = unsafe { std::mem::zeroed() };
+    let bytes = std::mem::size_of::<Unique>();
+    let count = unsafe {
+        proc_pidinfo(
+            process.pid,
+            17,
+            0,
+            (&mut unique as *mut Unique).cast(),
+            bytes as i32,
+        )
+    };
+    anyhow::ensure!(
+        count as usize == bytes && unique.version as u32 == token[7],
+        "Darwin Unix peer PID version changed"
+    );
+    Ok(crate::harness::Peer {
+        pid: process.pid,
+        uid: token[1],
+        birth: process.identity,
+    })
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn authenticated_peer(_: &UnixStream) -> Result<crate::harness::Peer> {
+    bail!("birth-bound Unix peer authentication unsupported")
 }
 fn wait_for_accept(
     listener: &UnixListener,

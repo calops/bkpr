@@ -4,6 +4,8 @@ pub mod authority;
 mod process_tree;
 use bkpr_protocol::scene_wire;
 mod environment;
+mod harness;
+mod harness_process;
 pub mod registry;
 pub mod transport;
 mod writer;
@@ -57,6 +59,7 @@ struct Published {
     event_sequence: u64,
     scroll_frames: BTreeMap<String, Arc<Frame>>,
     status: Vec<ProgramStatus>,
+    program_identity: Option<bkpr_protocol::ProcessIdentity>,
     lifecycle: String,
     exit_code: Option<u32>,
     error: Option<String>,
@@ -68,6 +71,7 @@ impl Default for Published {
             frame: None,
             scroll_frames: BTreeMap::new(),
             status: Vec::new(),
+            program_identity: None,
             revision: 0,
             events: VecDeque::new(),
             event_sequence: 0,
@@ -190,8 +194,21 @@ struct Shared {
     forgotten: AtomicBool,
     on_finish: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     resize_wake: crossbeam_channel::Sender<()>,
+    root: Mutex<Option<harness_process::Process>>,
+    spawn_environment: Option<harness::SpawnEnvironment>,
+    status_reset: AtomicBool,
+    status_dirty: AtomicBool,
+    status_wake: Option<crossbeam_channel::Sender<()>>,
     #[cfg(test)]
     resize_barrier: Mutex<Option<Arc<ResizeBarrier>>>,
+}
+impl Shared {
+    fn notify_status_changed(&self) {
+        self.status_dirty.store(true, Ordering::Release);
+        if let Some(wake) = &self.status_wake {
+            let _ = wake.try_send(());
+        }
+    }
 }
 #[derive(Clone)]
 pub struct Pane {
@@ -208,12 +225,14 @@ pub struct SpawnSpec {
 }
 impl Pane {
     pub fn spawn(spec: SpawnSpec) -> Result<Self> {
-        Self::spawn_with_id(spec, Uuid::new_v4().to_string(), Arc::default())
+        Self::spawn_with_id(spec, Uuid::new_v4().to_string(), Arc::default(), None, None)
     }
     fn spawn_with_id(
         spec: SpawnSpec,
         pane_id: String,
         view_budget: Arc<authority::ViewBudget>,
+        spawn_environment: Option<harness::SpawnEnvironment>,
+        status_wake: Option<crossbeam_channel::Sender<()>>,
     ) -> Result<Self> {
         valid_size(spec.size)?;
         if spec.argv.is_empty() {
@@ -248,6 +267,11 @@ impl Pane {
             forgotten: AtomicBool::new(false),
             on_finish: Mutex::new(None),
             resize_wake,
+            root: Mutex::new(None),
+            spawn_environment,
+            status_reset: AtomicBool::new(false),
+            status_dirty: AtomicBool::new(false),
+            status_wake,
             #[cfg(test)]
             resize_barrier: Mutex::new(None),
         });
@@ -642,6 +666,7 @@ impl Pane {
             exit_code,
             error,
             status,
+            program_identity,
             events,
             event_sequence,
         ) = {
@@ -682,6 +707,7 @@ impl Pane {
                 published.exit_code,
                 published.error.clone(),
                 published.status.clone(),
+                published.program_identity.clone(),
                 published
                     .events
                     .iter()
@@ -742,6 +768,7 @@ impl Pane {
             "exit_code": exit_code,
             "error": error,
             "program_status": status,
+            "program_identity": program_identity,
             "events": events,
             "event_sequence": event_sequence,
             "size_owner": size_owner.map(|(id, size)| json!({"view_id": id, "size": size})),
@@ -886,11 +913,19 @@ fn publish(terminal: &mut Terminal, shared: &Shared) -> Result<()> {
         }
     }
     let mut p = shared.published.lock().unwrap();
+    if shared.status_reset.swap(false, Ordering::AcqRel) {
+        terminal.clear_program_status();
+    }
     p.frame = Some(frame);
     p.scroll_frames = frames;
-    p.status = terminal.program_status();
+    let status = terminal.program_status();
+    let status_changed = p.status != status;
+    p.status = status;
     p.revision += 1;
     drop(p);
+    if status_changed {
+        shared.notify_status_changed();
+    }
     shared.changes.notify();
     Ok(())
 }
@@ -1000,17 +1035,32 @@ fn run_pane(
             environment::strip_parent_context(&mut cmd);
         }
         cmd.env("BKPR_PANE_ID", &shared.pane_id);
+        if let Some(environment) = &shared.spawn_environment {
+            cmd.env("BKPR_SOCKET", &environment.socket);
+            cmd.env("BKPR_HARNESS_WRAPPER_DIR", &environment.wrappers);
+            let mut paths = vec![environment.wrappers.clone()];
+            paths.extend(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
+            ));
+            cmd.env("PATH", std::env::join_paths(paths)?);
+        }
         cmd.env("HOME", &spec.home);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         // SHELL describes the user's shell, not arbitrary argv[0] (eg. an editor).
         cmd.cwd(&spec.cwd);
         let terminal = Terminal::new(spec.size)?;
+        #[cfg(target_os = "linux")]
+        let _process_observation = harness_process::ObservationLease::acquire()?;
         let raw_child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
         let pid = raw_child.process_id();
+        *shared.root.lock().unwrap() =
+            pid.and_then(|pid| harness_process::process(pid as i32).ok().flatten());
         #[cfg(target_os = "linux")]
-        let tree = pid.map(|pid| process_tree::Tree::new(pid, spec.isolated_process));
+        let tree = pid
+            .map(|pid| process_tree::Tree::new(pid, spec.isolated_process))
+            .transpose()?;
         let child = OwnedChild {
             pid,
             inner: raw_child,
@@ -1217,6 +1267,9 @@ fn run_pane(
                 let next = pending_output.take().map_or_else(|| output.try_recv(), Ok);
                 match next {
                     Ok(bytes) => {
+                        if shared.status_reset.swap(false, Ordering::AcqRel) {
+                            terminal.clear_program_status();
+                        }
                         route_effects(terminal.feed(&bytes)?, &writer, &shared)?;
                         dirty = true;
                     }
@@ -1309,11 +1362,16 @@ fn run_pane(
                         terminal.program_exited();
                         let mut published = shared.published.lock().unwrap();
                         published.exit_code = Some(status.exit_code());
-                        published.status = terminal.program_status();
+                        let program_status = terminal.program_status();
+                        let status_changed = published.status != program_status;
+                        published.status = program_status;
                         let complete = eof && terminal.sync_output_remaining().is_none();
                         published.lifecycle = if complete { "exited" } else { "draining" }.into();
                         let outcome = completed_command(&published, &command.mutation);
                         drop(published);
+                        if status_changed {
+                            shared.notify_status_changed();
+                        }
                         shared.changes.notify();
                         let _ = command.result.send(outcome);
                         if complete {
@@ -1432,10 +1490,15 @@ fn run_pane(
                 let lifecycle = if complete { "exited" } else { "draining" };
                 let status_changed =
                     p.exit_code != Some(status.exit_code()) || p.lifecycle != lifecycle;
-                p.status = terminal.program_status();
+                let program_status = terminal.program_status();
+                let program_status_changed = p.status != program_status;
+                p.status = program_status;
                 p.exit_code = Some(status.exit_code());
                 p.lifecycle = lifecycle.into();
                 drop(p);
+                if program_status_changed {
+                    shared.notify_status_changed();
+                }
                 if status_changed {
                     shared.changes.notify();
                 }
@@ -1503,7 +1566,7 @@ impl OwnedChild {
                 return Ok(None);
             }
             if let Some(tree) = self.tree.as_mut() {
-                tree.observe();
+                tree.observe_exit()?;
             }
             self.exit_observed = true;
         }
@@ -1670,6 +1733,11 @@ mod snapshot_tests {
                 forgotten: AtomicBool::new(false),
                 on_finish: Mutex::new(None),
                 resize_wake: crossbeam_channel::bounded(1).0,
+                root: Mutex::new(None),
+                spawn_environment: None,
+                status_reset: AtomicBool::new(false),
+                status_dirty: AtomicBool::new(false),
+                status_wake: None,
                 resize_barrier: Mutex::new(None),
             }),
             commands,

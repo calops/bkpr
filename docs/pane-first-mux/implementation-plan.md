@@ -70,6 +70,13 @@ Repository `calops/bkpr`, inspected main `9ad93bd809f8fb0dbd0c28bcbc267a682a2143
 
 No disconnected copies of these domains are retained just to make them compile. When a domain is implemented, select useful code and tests against the new requirements; discarded mechanisms do not create regression obligations.
 
+The native capture implementation revisited this same main revision before porting:
+
+- Process recognizers and option-aware runtime entrypoint checks now live in `bkpr-core::harness_process`. A shared sampler replaces per-pane process walks; verified births, PTY ancestry and OS-authenticated connections establish authority independently of recognition.
+- The Claude hook, Omp extension, Codex startup classifier/selection proxy and Antigravity root-MCP metadata mechanisms were adapted into `bkpr/src/harness` and `integration/omp/index.ts`. The former broker, native-owner publication, extension receiver/wake and Zellij rendezvous are not retained.
+- Launch-local hooks/assets and explicit Antigravity installation preserve native settings and unsupported-mode behavior. Core owns bounded launch grants, conversation generations, foreground lifecycle and status selection; the client only presents typed facts.
+
+
 ### Native fork source
 
 Repository `calops/bkpr-zellij`, inspected main `d7b40a37a63d4934054516f6f445488348075a62`. MIT license, copyright 2020 Zellij contributors; preserve the notice for substantial copies. The sibling checkout contains user work and is read-only for this replacement task.
@@ -105,21 +112,23 @@ Define identity epochs, revision ordering, subscriptions/coalescing, resnapshot,
 
 ## Delivery sequence
 
-The local implementation now includes the seven-crate split, pinned safe SDK integration, typed version-2 control, independent PTYs, persisted workspace/layout metadata, bounded view authority and the retained-framework sidebar/forms/choosers. These are implemented portions of stages 2, 3 and 5, not completion of every requirement below. Endpoint-qualified remote references, rich metadata/harness services, execution recovery, a second independent frontend and supported-product packaging remain future work. The [engine report](engine-proof.md) separates measured acceptance from unresolved gates.
+The local implementation now includes the seven-crate split, pinned safe SDK integration, typed version-2 control, independent PTYs, persisted workspace/layout metadata, bounded view authority, the retained-framework sidebar/forms/choosers and native harness capture. These are implemented portions of stages 2–5, not completion of every requirement below. Endpoint-qualified remote references, remaining rich metadata/agent services, execution recovery, a second independent frontend and supported-product packaging remain future work. The [engine report](engine-proof.md) separates measured acceptance from unresolved gates.
 
-### Current priority: TUI parity and harness capture
+### Current priority: TUI parity after harness capture
 
 Restore the user-facing capabilities of current `main` in the native TUI before implementing another frontend. Functional parity is the target, not preservation of old interfaces, native-owner publication or Zellij/plugin plumbing. Web, GUI and mobile work is deferred and does not gate TUI progress.
 
-The next implementation slice is harness capture end to end:
+The harness-capture slice is implemented:
 
-- Recognize supported foreground harness jobs started in ordinary managed shells, with process-birth/PTY ownership and foreground CWD evidence. Recognition must not depend on terminal titles or fabricate semantic status.
-- Restore the explicit launch path and ordinary-command integration paths against a backend-owned, launch-scoped identity. Preserve arguments, profiles, fresh/resume/fork/noninteractive semantics and unrelated user settings; recognition-only programs do not inherit relay credentials.
-- Bind actual native harness conversations through their supported hooks, extensions or native protocols, not guessed latest sessions, titles or repositories. Inspect main's `agent.rs`, `harness.rs`, installed adapters and Claude/Codex/Omp/Antigravity launchers before choosing reusable code versus redesign.
-- Publish typed recognition, launch/binding and OSC 7501 status facts separately to the TUI. The current engine's status parser and `program_status` snapshot field are prerequisites, not existing harness capture or sidebar integration.
-- Handle harness replacement, foreground/background transitions and return to the shell without stale identity/readiness, killing the enclosing shell or doing process scans on the UI thread. Verify real harness TUIs against isolated local fixtures without provider calls.
+- Supported foreground harnesses and CWDs are recognized from process-birth/PTY evidence. Titles do not supply identity or semantic status.
+- Ordinary private-PATH wrappers and `bkpr run` use backend-owned launch identities. Native arguments, fresh/resume/fork/noninteractive behavior and unrelated settings remain authoritative; incompatible modes retain native execution without capture credentials.
+- Claude hooks, an Omp extension, a response-correlated Codex app-server proxy and Antigravity root-MCP metadata bind exact native conversations. Hook/extension/connection presence is not communication readiness.
+- Recognition, managed binding and genuine OSC 7501 status are separate protocol facts. Sidebar/header/chooser content preserves user names. Hidden-pane status is pushed without view admission or full-scene copying.
+- Shared off-path process observations, generation checks and fresh exit-ownership barriers handle replacement, foreground/background transitions and shell return. Live grants, status and recognition are excluded from durable layout records.
 
-Follow with the remaining context/discovery/communication tools, Git/CI/project presentation, recovery/resume and TUI workflow parity. Keep the existing deferred CPU-efficiency work visible; no fidelity or responsiveness compromise is implied by this ordering.
+Real Omp and Codex TUIs have isolated fresh/explicit/resume/fork acceptance, plus Codex picker selection. Claude's native first-run connectivity preflight prevents hooks in the offline fixture; Antigravity's Terms/Data Use prompt remains unapproved, so its genuine root-MCP callback is still an acceptance gate. Native Antigravity installation/configuration preservation and adapter/authentication boundaries have separate exercised evidence. These limits do not imply full harness or production parity.
+
+Next: remaining context/discovery/communication tools, Git/CI/project presentation, recovery/resume and TUI workflow parity. Historical harness associations belong to the execution-recovery design, not the current layout file. Keep the deferred CPU-efficiency work visible; no fidelity or responsiveness compromise is implied by this ordering.
 
 ### 1. Native branch baseline
 

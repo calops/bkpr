@@ -1,6 +1,7 @@
 //! Backend-owned workspace intent. Persisted metadata is not PTY recovery.
 //! Atomic tempfile/fsync/rename follows main's recovery.rs, without its session/KDL assumptions.
 use crate::{Pane, SpawnSpec};
+mod capture;
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::*;
 use fs2::FileExt;
@@ -24,6 +25,55 @@ struct Record {
     version: u32,
     registry: RegistrySnapshot,
 }
+// Persistence is an explicit intent whitelist, not serialization of live facts.
+// Borrow the record: a metadata write need not copy every foreground observation.
+#[derive(Serialize)]
+struct DurableRecord<'a> {
+    version: u32,
+    registry: DurableRegistry<'a>,
+}
+#[derive(Serialize)]
+struct DurableRegistry<'a> {
+    revision: u64,
+    workspaces: &'a [Workspace],
+    panes: DurablePanes<'a>,
+}
+struct DurablePanes<'a>(&'a [PaneInfo]);
+#[derive(Serialize)]
+struct DurablePane<'a> {
+    id: &'a str,
+    workspace_id: &'a Option<String>,
+    title: &'a str,
+    status: PaneStatus,
+    exit_code: Option<i32>,
+    #[serde(with = "bkpr_protocol::path_wire")]
+    cwd: &'a Path,
+    #[serde(with = "bkpr_protocol::path_wire")]
+    home: &'a Path,
+    isolated_environment: bool,
+}
+impl Serialize for DurablePanes<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for pane in self.0 {
+            sequence.serialize_element(&DurablePane {
+                id: &pane.id,
+                workspace_id: &pane.workspace_id,
+                title: &pane.title,
+                status: pane.status,
+                exit_code: pane.exit_code,
+                cwd: &pane.cwd,
+                home: &pane.home,
+                isolated_environment: pane.isolated_environment,
+            })?;
+        }
+        sequence.end()
+    }
+}
 struct State {
     record: Record,
     live: BTreeMap<String, Pane>,
@@ -38,6 +88,11 @@ struct Inner {
     // Serialize durable writers, never pane I/O. Lock order: transaction, then state.
     transaction: Mutex<()>,
     view_budget: Arc<crate::authority::ViewBudget>,
+    captures: Mutex<crate::harness::Captures>,
+    spawn_environment: Mutex<Option<crate::harness::SpawnEnvironment>>,
+    observer_started: std::sync::atomic::AtomicBool,
+    status_wake: crossbeam_channel::Sender<()>,
+    status_events: crossbeam_channel::Receiver<()>,
     changed: Condvar,
     _lease: Lease,
     #[cfg(test)]
@@ -106,6 +161,12 @@ impl Registry {
         validate_record(&record)?;
         let mut stopped = false;
         for pane in &mut record.registry.panes {
+            stopped |= pane.foreground_cwd.is_some()
+                || pane.harness.is_some()
+                || pane.harness_status.is_some();
+            pane.foreground_cwd = None;
+            pane.harness = None;
+            pane.harness_status = None;
             if pane.status != PaneStatus::Stopped {
                 // No persisted pane has a terminal handle after daemon restart.
                 // Retain a known historical exit code, but never advertise an attachable scene.
@@ -122,7 +183,8 @@ impl Registry {
         if stopped || fresh {
             persist(root, &record)?;
         }
-        Ok(Self {
+        let (status_wake, status_events) = crossbeam_channel::bounded(1);
+        let registry = Self {
             inner: Arc::new(Inner {
                 root: root.to_owned(),
                 state: Mutex::new(State {
@@ -135,6 +197,11 @@ impl Registry {
                 }),
                 transaction: Mutex::new(()),
                 view_budget: Arc::default(),
+                captures: Mutex::new(crate::harness::Captures::default()),
+                spawn_environment: Mutex::new(None),
+                observer_started: std::sync::atomic::AtomicBool::new(false),
+                status_wake,
+                status_events,
                 changed: Condvar::new(),
                 _lease: lease,
                 #[cfg(test)]
@@ -143,7 +210,8 @@ impl Registry {
                 persist_barrier: Mutex::new(None),
             }),
             fresh,
-        })
+        };
+        Ok(registry)
     }
     pub fn is_fresh(&self) -> bool {
         self.fresh
@@ -193,6 +261,11 @@ impl Registry {
         );
         match request.operation {
             Operation::Inspect => Ok(json!({"registry":self.snapshot()?})),
+            Operation::HarnessBegin { .. }
+            | Operation::HarnessEvent { .. }
+            | Operation::HarnessContext { .. } => {
+                bail!("capture operations require OS-authenticated transport")
+            }
             Operation::Wait { after, wait_ms } => {
                 let state = self.inner.state.lock().unwrap();
                 healthy(&state)?;
@@ -367,6 +440,9 @@ impl Registry {
             exit_code: None,
             cwd: spec.cwd.clone(),
             home: spec.home.clone(),
+            foreground_cwd: None,
+            harness: None,
+            harness_status: None,
             isolated_environment: spec.isolated_environment,
         };
         {
@@ -421,6 +497,7 @@ impl Registry {
                     .context("spawn test barrier was not released")?;
             }
         }
+        self.start_observer()?;
         // PTY startup, child exec and initial snapshot never run under the registry lock.
         let spawned = Pane::spawn_with_id(
             SpawnSpec {
@@ -433,6 +510,8 @@ impl Registry {
             },
             id.clone(),
             self.inner.view_budget.clone(),
+            self.inner.spawn_environment.lock().unwrap().clone(),
+            Some(self.inner.status_wake.clone()),
         );
         let pane = spawned?;
         let result = (|| -> Result<RegistrySnapshot> {
@@ -595,6 +674,16 @@ impl Registry {
             };
             (status, p.exit_code.map(|code| code as i32))
         };
+        self.inner.captures.lock().unwrap().retire_pane(id);
+        {
+            let mut published = pane.shared.published.lock().unwrap();
+            published.status.clear();
+            published.program_identity = None;
+            pane.shared
+                .status_reset
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        pane.shared.changes.notify();
         let _transaction = self.inner.transaction.lock().unwrap();
         let mut next = {
             let state = self.inner.state.lock().unwrap();
@@ -610,6 +699,9 @@ impl Registry {
         }
         info.status = status;
         info.exit_code = exit_code;
+        info.foreground_cwd = None;
+        info.harness = None;
+        info.harness_status = None;
         if status == PaneStatus::Exited {
             for workspace in &mut next.registry.workspaces {
                 if workspace
@@ -636,6 +728,7 @@ impl Registry {
             let _transaction = self.inner.transaction.lock().unwrap();
             let mut state = self.inner.state.lock().unwrap();
             state.closing = true;
+            self.inner.captures.lock().unwrap().launches.clear();
             self.inner.changed.notify_all();
             state.live.values().cloned().collect::<Vec<_>>()
         };
@@ -911,7 +1004,15 @@ fn read_record(root: &Path) -> Result<Option<Record>> {
 }
 fn persist(root: &Path, record: &Record) -> Result<()> {
     let mut temporary = tempfile::NamedTempFile::new_in(root)?;
-    serde_json::to_writer(temporary.as_file_mut(), record)?;
+    let durable = DurableRecord {
+        version: record.version,
+        registry: DurableRegistry {
+            revision: record.registry.revision,
+            workspaces: &record.registry.workspaces,
+            panes: DurablePanes(&record.registry.panes),
+        },
+    };
+    serde_json::to_writer(temporary.as_file_mut(), &durable)?;
     temporary.as_file_mut().flush()?;
     ensure!(
         temporary.as_file().metadata()?.len() <= MAX_RECORD,

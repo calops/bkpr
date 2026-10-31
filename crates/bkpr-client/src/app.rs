@@ -2511,12 +2511,15 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             }
             let workspace_hits = chrome(
                 &mut chrome_surface,
-                size,
-                &app.state,
-                &app.registry,
-                &rects,
-                app.colors.truecolor,
+                crate::controller::ChromeContext {
+                    size,
+                    state: &app.state,
+                    registry: &app.registry,
+                    rects: &rects,
+                    rgb: app.colors.truecolor,
+                },
                 |pane| app.badge(pane),
+                |pane| app.views.get(pane).map(|view| &view.metadata),
             );
             native_colors(&mut chrome_surface.frame, &app.colors);
             placeholders.retain(|id, _| {
@@ -2542,7 +2545,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 text(frame, 0, 0, &app.placeholder(id), false);
             }
             let popup = if let Some(form) = &app.state.form {
-                modal(&mut popup_surface, size, form, &app.registry);
+                modal(&mut popup_surface, size, form, &app.registry, |pane| {
+                    app.views.get(pane).map(|view| &view.metadata)
+                });
                 true
             } else if app
                 .consent
@@ -3139,6 +3144,9 @@ mod tests {
             status: PaneStatus::Running,
             exit_code: None,
             cwd: app.options.cwd.clone(),
+            foreground_cwd: None,
+            harness: None,
+            harness_status: None,
             home: app.options.home.clone(),
             isolated_environment: true,
         });
@@ -3155,6 +3163,7 @@ mod tests {
             exit_code: None,
             error: None,
             program_status: Vec::new(),
+            program_identity: None,
             events: Vec::new(),
             event_sequence: 0,
             size_owner: None,
@@ -3310,6 +3319,9 @@ mod tests {
                 status: PaneStatus::Running,
                 exit_code: None,
                 cwd: app.options.cwd.clone(),
+                foreground_cwd: None,
+                harness: None,
+                harness_status: None,
                 home: app.options.home.clone(),
                 isolated_environment: true,
             })
@@ -3325,11 +3337,14 @@ mod tests {
         let mut surface = UiSurface::new(size);
         let workspace_hits = chrome(
             &mut surface,
-            size,
-            &app.state,
-            &app.registry,
-            &rects,
-            true,
+            crate::controller::ChromeContext {
+                size,
+                state: &app.state,
+                registry: &app.registry,
+                rects: &rects,
+                rgb: true,
+            },
+            |_| None,
             |_| None,
         );
         assert!(workspace_hits.iter().any(|(target, row)| *row == 5

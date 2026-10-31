@@ -1,4 +1,4 @@
-use crate::{PROTOCOL_VERSION, PaneRequest, Size};
+use crate::{CaptureEvent, HarnessInfo, HarnessKind, PROTOCOL_VERSION, PaneRequest, Size};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -16,10 +16,22 @@ impl Request {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Operation {
     Inspect,
+    HarnessBegin {
+        kind: HarnessKind,
+    },
+    HarnessEvent {
+        launch_id: String,
+        token: String,
+        event: CaptureEvent,
+    },
+    HarnessContext {
+        launch_id: String,
+        token: String,
+    },
     WorkspaceCreate {
         name: String,
     },
@@ -63,10 +75,21 @@ pub enum Operation {
     },
     Shutdown,
 }
+impl std::fmt::Debug for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut value = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
+        if let Some(token) = value.get_mut("token") {
+            *token = serde_json::Value::String("[REDACTED]".into());
+        }
+        std::fmt::Debug::fmt(&value, f)
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaneSpawnSpec {
     pub argv: Vec<String>,
+    #[serde(with = "crate::path_wire")]
     pub cwd: PathBuf,
+    #[serde(with = "crate::path_wire")]
     pub home: PathBuf,
     pub size: Size,
     #[serde(default)]
@@ -114,7 +137,17 @@ pub struct PaneInfo {
     pub title: String,
     pub status: PaneStatus,
     pub exit_code: Option<i32>,
+    #[serde(with = "crate::path_wire")]
     pub cwd: PathBuf,
+    /// Observed live foreground facts; never adopted from durable metadata.
+    #[serde(default, with = "crate::path_wire::optional")]
+    pub foreground_cwd: Option<PathBuf>,
+    #[serde(default)]
+    pub harness: Option<HarnessInfo>,
+    /// Backend-selected, identity-scoped OSC fact, including when no view is attached.
+    #[serde(default)]
+    pub harness_status: Option<crate::ProgramStatus>,
+    #[serde(with = "crate::path_wire")]
     pub home: PathBuf,
     pub isolated_environment: bool,
 }

@@ -83,6 +83,10 @@ impl Terminal {
     pub fn program_status(&self) -> Vec<ProgramStatus> {
         self.callbacks.borrow().status.snapshot()
     }
+    /// A foreground execution change invalidates every record, including completed results.
+    pub fn clear_program_status(&mut self) {
+        self.callbacks.borrow_mut().status.records.clear();
+    }
     /// Call when the PTY child exits. Terminal output alone never implies exit.
     pub fn program_exited(&mut self) {
         self.callbacks.borrow_mut().status.prompt_or_exit();

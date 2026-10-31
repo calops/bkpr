@@ -162,6 +162,9 @@ fn explicit_forget_releases_record_capacity_without_automatic_pruning() {
                     exit_code: None,
                     cwd: fixture._root.path().into(),
                     home: fixture._root.path().into(),
+                    foreground_cwd: None,
+                    harness: None,
+                    harness_status: None,
                     isolated_environment: false,
                 });
             }
