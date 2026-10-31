@@ -3,6 +3,7 @@
 ### Fixes
 
 * Close completed shell/process projections atomically across workspace layouts and remove their unprojected records from the live sidebar, including Ctrl-D and explicit pane termination. Preserve exit metadata and final scenes, keep faults visible, and distinguish trailing key/pointer/focus cleanup from real input after execution ends. Remove the obsolete client-side termination/layout-update sequence.
+* Route Omp tools through the shared launch-local MCP server and include communication guidance as a private package skill. Remove Omp-specific tool registration/schema conversion; keep the extension for native conversation binding and step-boundary notifications.
 
 ### Breaking branch replacement
 
@@ -32,7 +33,7 @@
 
 * Add backend-owned launch context, titles, scoped discovery, durable send/inbox/processed acknowledgement and metadata-only outbox tools. Enforce exact sender-scoped idempotency, receiver-only access, live execution membership and canonical repository scope.
 * Persist private messages and receipts without authentication grants. Retain unacknowledged bodies for seven days after persisted recipient retirement, purge bodies at their deadline, preserve receipt/wake history and retire old authority on restart. Suspend all commits after durable-store failure and report ambiguous commits truthfully.
-* Integrate native Omp tools/asides, Claude tool-boundary and idle hooks, Codex exact-thread future-turn queue and Antigravity native receiver tools. Preserve existing MCP registrations with launch-local namespaces; no persistent installation changes outside explicit opt-in and no PTY peer delivery.
+* Integrate shared MCP tools with native Omp asides, Claude tool-boundary and idle hooks, Codex exact-thread future-turn queue and Antigravity native receiver tools. Preserve existing MCP registrations with launch-local namespaces; no persistent installation changes outside explicit opt-in and no PTY peer delivery.
 * Distinguish native binding, helper registration and actual subscribed readiness. Coalesce opaque notifications, guard outcomes by exact receiver/generation and never blindly replay ambiguous delivery. An unobservable native offer remains unknown, distinct from inbox read and processed acknowledgement.
 * Reserve independent receiver admission, support caller-owned cancellable transport and block idle receivers on push notifications rather than fast polling. Use maintained native filesystem notifications for Claude hook coordination.
 
