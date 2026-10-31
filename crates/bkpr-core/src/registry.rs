@@ -3,6 +3,7 @@
 use crate::{Pane, SpawnSpec};
 mod agents;
 mod capture;
+mod project;
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::*;
 use fs2::FileExt;
@@ -95,6 +96,10 @@ struct Inner {
     observer_started: std::sync::atomic::AtomicBool,
     status_wake: crossbeam_channel::Sender<()>,
     status_events: crossbeam_channel::Receiver<()>,
+    project_wake: crossbeam_channel::Sender<()>,
+    project_cancel: Arc<std::sync::atomic::AtomicBool>,
+    project_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    public_handles: std::sync::atomic::AtomicUsize,
     changed: Condvar,
     _lease: Lease,
     #[cfg(test)]
@@ -104,6 +109,9 @@ struct Inner {
 }
 impl Drop for Inner {
     fn drop(&mut self) {
+        self.project_cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+        let _ = self.project_wake.try_send(());
         // The retention worker owns only Agents, not the registry lease. Drain its
         // writer and close admission before releasing ownership of the durable root.
         let _ = self.agents.shutdown();
@@ -134,10 +142,39 @@ impl Drop for SpawnReservation {
         self.inner.changed.notify_all();
     }
 }
-#[derive(Clone)]
 pub struct Registry {
     inner: Arc<Inner>,
     fresh: bool,
+    lifecycle_owner: bool,
+}
+impl Clone for Registry {
+    fn clone(&self) -> Self {
+        if self.lifecycle_owner {
+            self.inner
+                .public_handles
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Self {
+            inner: self.inner.clone(),
+            fresh: self.fresh,
+            lifecycle_owner: self.lifecycle_owner,
+        }
+    }
+}
+impl Drop for Registry {
+    fn drop(&mut self) {
+        if self.lifecycle_owner
+            && self
+                .inner
+                .public_handles
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+                == 1
+        {
+            // A worker's temporary Inner reference is not an owner of the state
+            // root. Join while this last public handle still retains the lease.
+            self.stop_projects();
+        }
+    }
 }
 
 impl Registry {
@@ -172,10 +209,12 @@ impl Registry {
         for pane in &mut record.registry.panes {
             stopped |= pane.foreground_cwd.is_some()
                 || pane.harness.is_some()
-                || pane.harness_status.is_some();
+                || pane.harness_status.is_some()
+                || pane.project.is_some();
             pane.foreground_cwd = None;
             pane.harness = None;
             pane.harness_status = None;
+            pane.project = None;
             if pane.status != PaneStatus::Stopped {
                 // No persisted pane has a terminal handle after daemon restart.
                 // Retain a known historical exit code, but never advertise an attachable scene.
@@ -193,6 +232,7 @@ impl Registry {
             persist(root, &record)?;
         }
         let (status_wake, status_events) = crossbeam_channel::bounded(1);
+        let (project_wake, project_events) = crossbeam_channel::bounded(1);
         let agents = Arc::new(agents::Agents::open(root)?);
         let registry = Self {
             inner: Arc::new(Inner {
@@ -213,6 +253,10 @@ impl Registry {
                 observer_started: std::sync::atomic::AtomicBool::new(false),
                 status_wake,
                 status_events,
+                project_wake,
+                project_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                project_worker: Mutex::new(None),
+                public_handles: std::sync::atomic::AtomicUsize::new(1),
                 changed: Condvar::new(),
                 _lease: lease,
                 #[cfg(test)]
@@ -221,8 +265,10 @@ impl Registry {
                 persist_barrier: Mutex::new(None),
             }),
             fresh,
+            lifecycle_owner: true,
         };
         registry.start_agent_maintenance()?;
+        registry.start_projects(project_events)?;
         Ok(registry)
     }
     pub fn is_fresh(&self) -> bool {
@@ -456,6 +502,7 @@ impl Registry {
             foreground_cwd: None,
             harness: None,
             harness_status: None,
+            project: Some(project::loading(&spec.cwd)),
             isolated_environment: spec.isolated_environment,
         };
         {
@@ -551,6 +598,7 @@ impl Registry {
                 let registry = Registry {
                     inner,
                     fresh: false,
+                    lifecycle_owner: false,
                 };
                 // A persistence failure poisons further operations; never report durable success.
                 let _ = registry.record_completion(&notify_id);
@@ -716,6 +764,7 @@ impl Registry {
         info.foreground_cwd = None;
         info.harness = None;
         info.harness_status = None;
+        info.project = None;
         if status == PaneStatus::Exited {
             for workspace in &mut next.registry.workspaces {
                 if workspace
@@ -748,6 +797,7 @@ impl Registry {
             self.inner.changed.notify_all();
             state.live.values().cloned().collect::<Vec<_>>()
         };
+        self.stop_projects();
         let mut first_error = agent_shutdown.err();
         for pane in panes {
             if let Err(error) = pane.request(PaneRequest::Shutdown)
@@ -1071,6 +1121,7 @@ fn commit(
     state.record = next;
     publish(&mut state);
     inner.changed.notify_all();
+    let _ = inner.project_wake.try_send(());
     Ok(state.record.registry.clone())
 }
 

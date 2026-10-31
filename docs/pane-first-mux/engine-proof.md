@@ -354,3 +354,39 @@ The extension retains only native binding, receiver lifecycle and generation-gua
 Final optimized client SHA-256: `6390c2a7db7200bcbca7334ce3a28b867661c044c9f9cf496ce7185bcf4ad4e4`; server unchanged. `target/smoke/omp-mcp/acceptance-summary.json` and `native-1099030751027925/active-mcp-proof.json` record genuine Omp 18.13.2 launches through both ordinary managed shell and explicit `bkpr run omp`. Both advertise unique MCP namespaces and all seven tools; the obsolete direct routes are absent. Actual provider context reads the communication skill and shared send schema, then executes MCP discovery/send/whoami, observes an active-turn opaque aside, and executes MCP inbox read/processed acknowledgement/outbox. Wake remains truthfully unknown.
 
 Private preexisting MCP/skill/config/model fixtures remain byte-identical. Unrelated MCP subprocesses observe no capture credentials. Fourteen loopback provider requests include two native auxiliary skill-description compression calls; zero external providers, approvals bypassed or owned process survivors. Fixture corrections distinguish those auxiliary calls and the implemented seven-tool surface from unimplemented workspace controls. Coordinated workspace tests (261 passing, six ignored), strict all-target Clippy and rustfmt pass. Canonical debug/release executables remain unchanged; controllers and check runner are archived under `target/smoke/omp-mcp/`.
+
+## Local project metadata
+
+The backend owns transient foreground-CWD project snapshots: canonical common Git identity, independent worktree root/Git directory/branch/HEAD, staged and unstaged file/line/binary summaries, untracked file counts and whole-tree committed HEAD-versus-merge-base totals. An unavailable explicit base remains unknown, with no fallback to guessed main; unborn and detached HEADs remain distinct. These snapshots are neither forge/CI results nor persisted recovery facts.
+
+One off-path coordinator shares cached results across panes in the same canonical worktree. Maintained `notify` and `ignore` supply native filesystem events and ignore-aware watch planning, including tracked parents, new directories, Git metadata, configuration/excludes files and repository initialization. Bounded/coalesced invalidations publish loading/error state; covered results are never represented as ready after known watch loss. Input/render/control paths do not spawn Git. Shared authenticated `whoami` and detailed discovery consume these same facts; repository scope now requires ready cached common-Git identity instead of request-time Git discovery.
+
+TUI headers/sidebar annotate project/worktree/branch without changing execution membership or names. **Ctrl-b, then i** opens focused project details; arrows scroll wrapped content, Enter/Esc return focus. Details distinguish current values, stale values, unavailable bases and errors.
+
+Git commands have three-second child and ten-second ingestion deadlines, bounded input and 16 MiB per output stream, process-group kill/reap on timeout/cancellation and sanitized `GIT_*` overrides. Fsmonitor, external diff and textconv are disabled. Preflight rejects tracked executable clean/process filters rather than calculating semantically different raw counts; even clean filtered worktrees can report this limitation. This is not a sandbox against hostile concurrent configuration/attribute changes. Watch planning admits at most 32,768 resources per project and 65,536 native watches daemon-wide; failures are explicit errors with bounded repair backoff, not a normal recurring Git poll. Filesystem syscalls themselves are not preemptible by the cooperative walk deadline. One serial worker means slow repositories can delay other metadata collection, not application input.
+
+### Corrections found during integration
+
+The discovery/watch-install gap now rebuilds coverage as well as statistics when new watches are installed; current counts alone cannot validate stale watch coverage. Public registry ownership is tracked separately from temporary worker references so dropping the last public handle cancels/joins the project worker before releasing ownership. Existing restart acceptance remains strict.
+
+Git test fixtures originally used the repository as HOME; isolated pane initialization legitimately created `.bkpr-native-home`, contaminating untracked counts. Separate fixture HOME/repository directories preserve the original exact assertions. The physical slow-Git fixture initially lost Nix coreutils multicall dispatch by resolving the `sleep` symlink to `coreutils`; it now preserves the executable's basename. Its output oracle also crops the application pane before checking a standalone output line, rather than including adjacent sidebar text. These fixture corrections do not change product input or Git counts.
+
+### Final release acceptance
+
+Evidence root: `target/smoke/projects/`. Optimized client SHA-256 `d49e02135b739c1bdf8aff9883502873debc2031c13af8a1444ab4840f533bba`; server `cad146d8908b16966e931a3e9dfba28a8d495800f5852e2b5b46fee85bcedbf2`. Coordinated locked workspace build/tests, strict all-target Clippy and formatting pass: **275 tests passed, six ignored**. Canonical public debug/release executables remain unchanged.
+
+| Exercised behavior | Final evidence |
+|---|---|
+| Real main/feature/linked worktrees, shared common identity and independent HEADs; staged/unstaged/untracked watch updates; explicit unavailable base; commits, detach, init/unborn; rapid foreground CWD convergence; executable filter rejected without running its marker | `git-1102339436168798/result.json` |
+| Actual authenticated synthetic native launches: identity/detailed discovery match backend project snapshots, compact discovery excludes details, canonical repository scope | `agent-project-1102339482083534/result.json` |
+| Actual Kitty focused project details and completed physical shell output while a real Git subprocess remains blocked; screenshots visually inspected | `physical-1102339575495339/` |
+| Eight idle panes sharing one real repository, matched previous/new release without overlapping compilation or workload fixtures | `idle-1102369977535817/result.json` |
+
+| Five-second idle sample | Previous release | Project release |
+|---|---:|---:|
+| Daemon CPU seconds | 0.31 | 0.30 |
+| Reaped child CPU seconds | 0.00 | 0.00 |
+| Daemon CPU cores | 0.062 | 0.060 |
+| Daemon RSS KiB | 30,024 | 33,484 |
+
+These are single short procfs samples after warmup, not a universal speedup or sustained-redraw claim. The physical controller's output timing includes deliberate per-key driver spacing and is not application input latency. Final runtime cleanup records have no owned survivors; controller sources are archived with retained evidence. No external providers, live user sessions or persistent user configuration participated. Forge/PR/CI and recovery remain separate pending work.

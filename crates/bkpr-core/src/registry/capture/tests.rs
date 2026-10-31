@@ -538,6 +538,7 @@ fn restored_foreground_facts_are_stripped_and_metadata_writes_do_not_persist_the
         cwd: fixture.home.clone(),
         home: fixture.home.clone(),
         isolated_environment: true,
+        project: None,
         harness_status: Some(ProgramStatus {
             state: "working".into(),
             kind: None,
