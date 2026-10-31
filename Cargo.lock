@@ -195,6 +195,7 @@ dependencies = [
  "bkpr-protocol",
  "clap",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

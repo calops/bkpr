@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use bkpr_core::{registry::Registry, transport};
-use bkpr_protocol::{Operation, PaneSpawnSpec, Request, Size};
+use bkpr_protocol::{PaneSpawnSpec, Size};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -32,7 +32,8 @@ struct Cli {
     cell_width: u32,
     #[arg(long, default_value_t = 16)]
     cell_height: u32,
-    /// Bootstrap a first workspace/pane only on a new metadata root.
+    /// Start current argv in a new workspace when no execution is still running.
+    /// Historical workspace layouts and pane records are never replayed or replaced.
     #[arg(last = true)]
     argv: Vec<String>,
 }
@@ -52,37 +53,26 @@ fn run(cli: Cli) -> Result<()> {
             None => std::env::current_exe()?.with_file_name("bkpr"),
         };
         registry.configure_harnesses(&cli.socket, &executable)?;
-        if registry.is_fresh() && !cli.argv.is_empty() {
+        if !cli.argv.is_empty() {
             let isolated_environment = cli.home.is_some();
             let home = cli
                 .home
                 .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
                 .context("HOME is unavailable; supply --home")?;
             let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
-            let created = registry.request(Request::new(Operation::WorkspaceCreate {
-                name: "Main".into(),
-            }))?;
-            let workspace_id = created["workspace_id"]
-                .as_str()
-                .context("missing created workspace id")?
-                .to_owned();
-            registry.request(Request::new(Operation::PaneSpawn {
-                workspace_id: Some(workspace_id),
-                expected_revision: Some(1),
-                spec: PaneSpawnSpec {
-                    argv: cli.argv,
-                    cwd,
-                    home,
-                    isolated_environment,
-                    title: None,
-                    size: Size {
-                        cols: cli.cols,
-                        rows: cli.rows,
-                        cell_width: cli.cell_width,
-                        cell_height: cli.cell_height,
-                    },
+            registry.bootstrap(PaneSpawnSpec {
+                argv: cli.argv,
+                cwd,
+                home,
+                isolated_environment,
+                title: None,
+                size: Size {
+                    cols: cli.cols,
+                    rows: cli.rows,
+                    cell_width: cli.cell_width,
+                    cell_height: cli.cell_height,
                 },
-            }))?;
+            })?;
         }
         listener.serve(registry.clone())
     })();

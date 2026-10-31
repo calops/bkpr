@@ -12,6 +12,12 @@ pub(crate) enum Command {
         axis: Axis,
         spec: PaneSpawnSpec,
     },
+    Reopen {
+        workspace_id: String,
+        expected_revision: u64,
+        pane_id: String,
+        spec: PaneSpawnSpec,
+    },
     Create {
         name: String,
         spec: PaneSpawnSpec,
@@ -47,6 +53,53 @@ pub(crate) fn execute(socket: &Path, command: Command) -> Result<Completion> {
             axis,
             spec,
         } => spawn(socket, workspace, &target, axis, spec),
+        Command::Reopen {
+            workspace_id,
+            expected_revision,
+            pane_id,
+            spec,
+        } => {
+            let replaced = request(socket, Operation::PaneReopen {
+                workspace_id: workspace_id.clone(),
+                expected_revision,
+                pane_id: pane_id.clone(),
+                spec,
+            }, "new shell replacement")
+                .context("new shell replacement was not confirmed; no retry was attempted. If the retained directory is unavailable, use Ctrl-b R and explicitly choose the client current directory")?;
+            let pane = replaced
+                .pane_id
+                .context("new shell replacement response omitted pane_id")
+                .map_err(transport::mark_outcome_unknown)?;
+            let workspace = replaced
+                .registry
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == workspace_id)
+                .context("new shell replacement response omitted target workspace")
+                .map_err(transport::mark_outcome_unknown)?;
+            let mut projected = Vec::new();
+            crate::controller::leaves(workspace.layout.as_ref(), &mut projected);
+            if pane == pane_id
+                || !projected.contains(&pane)
+                || projected.contains(&pane_id)
+                || !replaced
+                    .registry
+                    .panes
+                    .iter()
+                    .any(|entry| entry.id == pane && entry.status == PaneStatus::Running)
+            {
+                return Err(transport::mark_outcome_unknown(anyhow::anyhow!(
+                    "new shell replacement succeeded but returned inconsistent pane identity or layout; do not replay"
+                )));
+            }
+            Ok(Completion {
+                registry: replaced.registry,
+                selection: Some(Selection {
+                    workspace: workspace_id,
+                    pane,
+                }),
+            })
+        }
         Command::Create { name, spec } => {
             let created = request(
                 socket,
@@ -307,6 +360,63 @@ mod tests {
             spec: spec(),
         }
     }
+    fn reopen_command() -> Command {
+        Command::Reopen {
+            workspace_id: "workspace".into(),
+            expected_revision: 7,
+            pane_id: "old".into(),
+            spec: spec(),
+        }
+    }
+
+    #[test]
+    fn reopen_is_one_atomic_request_with_new_selection_and_explicit_spawn_spec() {
+        let mut snapshot = registry(20, workspace(8, Some(leaf("new"))), &["old", "new"]);
+        snapshot.panes[0].status = PaneStatus::Stopped;
+        let (result, requests) =
+            scripted(vec![success(snapshot, Some("new"), None)], reopen_command());
+        let completed = result.unwrap();
+        let selection = completed.selection.unwrap();
+        assert_eq!(selection.workspace, "workspace");
+        assert_eq!(selection.pane, "new");
+        assert_eq!(completed.registry.panes[0].status, PaneStatus::Stopped);
+        assert_eq!(requests.len(), 1);
+        match &requests[0].operation {
+            Operation::PaneReopen {
+                workspace_id,
+                expected_revision,
+                pane_id,
+                spec: requested,
+            } => {
+                assert_eq!(workspace_id, "workspace");
+                assert_eq!(*expected_revision, 7);
+                assert_eq!(pane_id, "old");
+                assert_eq!(requested.argv, spec().argv);
+                assert_eq!(requested.cwd, spec().cwd);
+                assert_eq!(requested.home, spec().home);
+                assert_eq!(requested.isolated_environment, spec().isolated_environment);
+            }
+            other => panic!("unexpected replacement request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejected_and_ambiguous_reopen_never_send_layout_changes_or_retry() {
+        for (reply, unknown) in [
+            (rejection("revision changed"), false),
+            (rejection("directory missing"), false),
+            (None, true),
+        ] {
+            let (result, requests) = scripted(vec![reply], reopen_command());
+            let error = result.unwrap_err();
+            assert_eq!(transport::outcome_unknown(&error), unknown);
+            assert_eq!(requests.len(), 1);
+            assert!(matches!(
+                requests[0].operation,
+                Operation::PaneReopen { .. }
+            ));
+        }
+    }
 
     #[test]
     fn spawn_uses_captured_layout_and_cas_then_returned_workspace_revision() {
@@ -543,6 +653,7 @@ mod tests {
     fn malformed_success_reports_completed_mutation_without_replay() {
         for (command, phase) in [
             (spawn_command(workspace(7, None)), "pane creation"),
+            (reopen_command(), "new shell replacement"),
             (
                 Command::Create {
                     name: "fresh".into(),
@@ -610,6 +721,7 @@ mod tests {
     fn lost_first_mutation_reply_stops_without_claiming_creation_succeeded() {
         for command in [
             spawn_command(workspace(7, Some(leaf("old")))),
+            reopen_command(),
             Command::Create {
                 name: "fresh".into(),
                 spec: spec(),

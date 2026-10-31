@@ -93,6 +93,15 @@ invocation directory. Closing the client leaves the daemon and panes running.
 `bkpr context` and `bkpr request` are headless and do not start a daemon. Inside a
 managed pane they default to its `BKPR_SOCKET`; an explicit `--socket` overrides it.
 
+Starting a new daemon with `bkpr` supplies the current client's configured shell.
+If loaded metadata has no running execution, it creates a fresh workspace named
+`Main` (or `Main 2`, `Main 3`, …) and a usable shell without changing historical
+layouts or replaying recorded commands. Starting `bkprd` directly without argv
+after `--` is headless: it never creates a bootstrap process. Attaching to an
+existing daemon never creates panes or resets layouts or another client's focus.
+The TUI initially prefers a workspace with a running projected pane; historical
+workspaces remain explicitly selectable.
+
 For an isolated preview, start the daemon explicitly in one terminal:
 
 ```sh
@@ -281,6 +290,7 @@ Press `Ctrl-b`, then a command:
 | `c` | Create workspace and first pane |
 | `n` or `%` | Spawn a pane, split left/right |
 | `"` | Spawn a pane, split top/bottom |
+| `R` (uppercase) | Confirm a new configured shell in the focused unavailable pane's layout position |
 | `r` / `p` | Rename workspace / pane |
 | `w` / `o` | Choose workspace / show an existing pane |
 | `i` | Inspect focused pane's local project/Git snapshot (arrows scroll) |
@@ -296,6 +306,28 @@ Press `Ctrl-b`, then a command:
 Forms use Enter to apply, Esc to cancel and Ctrl-u to clear. Focus is
 client-local; showing a pane in another workspace does not change its backend
 membership. Layout removal, client detach and process termination are distinct.
+
+`Ctrl-b R` opens **Open a new shell here** only for a stopped or exited execution;
+it never kills or restarts a live pane. Enter confirms and Esc cancels without
+mutation. The default directory is an available foreground-CWD observation,
+otherwise the pane's recorded creation directory. Foreground observations are
+transient and are not restored after daemon restart. The confirmation shows the
+actual target path. Use Up/Down in the confirmation to explicitly
+choose the current client's invocation directory instead. A missing retained
+directory is an error, not a silent fallback; reopen the confirmation and choose
+that alternative. The new shell uses the current client's shell argv, HOME and
+environment policy, not the old command or launch authority.
+
+Replacement updates only the selected workspace, with a captured layout revision.
+The old pane record and any projections in other workspaces remain unchanged.
+Failure leaves the old layout intact; an ambiguous result is never automatically
+retried. Changing selection while work is pending does not pull focus back.
+Read-only clients cannot create or replace executions. Stopped records have no
+restorable terminal scene; exited scenes are inspectable only while retained by
+the same daemon. This is safe fresh execution, not process/harness resumption or
+durable terminal-history recovery.
+Compact sidebar `[S]` / `[E]` badges mean stopped / exited and preserve space for
+the user-assigned pane title; headers and the chooser show the full state.
 
 When a pane's root process exits normally, including shell `exit` or Ctrl-D,
 the backend removes its references from every workspace layout and collapses

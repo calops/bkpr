@@ -1,6 +1,6 @@
 use super::*;
 
-struct ResumeSpawn(Option<std::sync::mpsc::SyncSender<()>>);
+pub(super) struct ResumeSpawn(pub(super) Option<std::sync::mpsc::SyncSender<()>>);
 impl Drop for ResumeSpawn {
     fn drop(&mut self) {
         if let Some(sender) = self.0.take() {
@@ -8,7 +8,7 @@ impl Drop for ResumeSpawn {
         }
     }
 }
-fn sentinel_spec(home: &Path) -> PaneSpawnSpec {
+pub(super) fn sentinel_spec(home: &Path) -> PaneSpawnSpec {
     let mut launch = spec(home);
     launch.argv = vec![
         "/bin/sh".into(),
@@ -17,7 +17,7 @@ fn sentinel_spec(home: &Path) -> PaneSpawnSpec {
     ];
     launch
 }
-fn wait_for_sentinel(home: &Path) {
+pub(super) fn wait_for_sentinel(home: &Path) {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         if fs::read(home.join("executed")).ok().as_deref() == Some(b"executed") {

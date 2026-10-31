@@ -54,6 +54,14 @@ pub enum Operation {
         expected_revision: Option<u64>,
         spec: PaneSpawnSpec,
     },
+    /// Start a new execution in place of an unavailable leaf in one workspace.
+    /// The old pane record and every other workspace projection remain unchanged.
+    PaneReopen {
+        workspace_id: String,
+        expected_revision: u64,
+        pane_id: String,
+        spec: PaneSpawnSpec,
+    },
     PaneTerminate {
         pane_id: String,
     },

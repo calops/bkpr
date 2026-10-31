@@ -136,7 +136,7 @@ Launch context, scoped discovery and durable peer communication are implemented 
 
 Local repository/worktree identity, branch/HEAD, working-tree summaries, committed merge-base totals, focused TUI details and shared MCP context are now implemented. Foreground CWD and event invalidation drive off-path collection; coverage failures and executable-filter preflight rejection remain explicit, never fabricated zero totals.
 
-Next: forge/PR/CI metadata, recovery/resume and remaining TUI workflow parity. Historical harness associations belong to the execution-recovery design, not the current layout file. Keep the deferred CPU-efficiency work visible; no fidelity or responsiveness compromise is implied by this ordering.
+Main-branch parity remains the goal; progression follows daily TUI usability, not a metadata checklist. First finish launch/restart and pane/workspace lifecycle, then close concrete navigation, splits/resizing, scrollback, selection/copy/paste, finder/action discovery and shortcut/focus gaps through actual terminal use. Shared control capabilities and harness recovery follow the usable workflows they expose. Forge/PR/CI enrichment and remote endpoints are later work, not the next feature. Historical harness associations belong to execution recovery, not the layout file. Keep performance and the deferred sustained-output CPU work visible throughout.
 
 ### 1. Native branch baseline
 
@@ -154,19 +154,19 @@ Implement durable independently owned panes, explicit termination, backend works
 
 Persist layout and metadata intent atomically. Keep desired attachment distinct from transient disconnect. Terminal history persistence is a separate opt-in product feature, not an accidental recovery record containing secrets.
 
-### 4. Control, metadata and agent services
+### 4. Core TUI parity
 
-Inspect current Bkpr main before working on each domain. Reuse or rewrite its process recognition, Git/provider caching, broker, harness adapters and recovery against the new model. No old command/schema/storage layout is mandatory.
+Make normal launch, shell exit, workspace/pane creation, detach/reattach and daemon restart coherent before adding decorative metadata. A restored layout is not a running execution: offer explicit replacement/recovery, never silently replay old commands. Preserve historical intent while putting a usable shell first on a normal fresh-daemon launch.
 
-Backend facts retain provenance: OSC 7501 semantic status, independent title/CWD/process observations, canonical worktree identity, actual checked remote/PR commit, selected provider account and explicit loading/error state. Frontend annotations cannot overwrite them. No Git fetch or provider call per redraw.
+Exercise frontend-owned navigation/chrome, splits and resizing, scrollback, selection/copy/paste, links, finder/action discovery, forms and focus restoration in the actual terminal. Inspect main/fork implementations as each domain comes into scope; reuse or redesign useful pieces rather than treating old APIs as requirements. Cursor, pointer and focus ownership are client-specific. This is the current delivery priority.
 
-Agent identities must be authenticated, launch-scoped and bound to genuine native harness conversation IDs. Registration is not readiness. Distinguish accepted delivery, wake, read and processed ack; guard asynchronous outcomes by generation and fail closed on durable storage failure. Prefer harness-native active-turn steering, use future-turn delivery where necessary, never PTY typing or blind ambiguous replay. Recovery creates fresh authority and doesn't adopt an exited launch's inbox. Explicit installations preserve unrelated user settings.
+An independently implemented browser or narrow client remains a future acceptance check for additional frontend products, not a prerequisite for TUI parity. When that work resumes, it must consume the canonical protocol, handle resource/delta lifetime and reconnect, and coexist with an active TUI. Screenshots, hard-coded mocks or ANSI replay do not establish independent frontend support.
 
-### 5. Full TUI and independent projection
+### 5. Shared control, recovery and metadata completion
 
-Implement frontend-owned navigation/chrome, splits, finder/palette, metadata, forms, overlays, selection and links against the same scene/control model. Redesign input ergonomics rather than recreate Zellij modes by default. Cursor, pointer and focus ownership are client-specific.
+Expose implemented workflows through one shared MCP API across harnesses. Restore harness recovery against the new execution model with explicit actions and fresh launch authority, not an exited launch's inbox. Native wake acceptance, reading and processed acknowledgement retain separate provenance; never use PTY typing or blind ambiguous replay for peer delivery. Explicit installations preserve unrelated settings.
 
-An independently implemented browser or narrow client remains a future acceptance check for additional frontend products, not the next step or a prerequisite for TUI parity. When that work resumes, it must consume the canonical protocol, handle resource/delta lifetime and reconnect, and coexist with an active TUI. Screenshots, hard-coded mocks or ANSI replay do not establish independent frontend support.
+Restore remaining project/forge/CI enrichment after core TUI workflows, preserving canonical worktree identity, actual checked remote/PR commits, selected provider account, batching/backoff and honest loading/error states. No Git fetch or provider call per redraw. Main's relevant Git/provider, recovery and agent code remains starting material, not a mandatory schema/storage design.
 
 ### 6. Authenticated remote endpoints
 

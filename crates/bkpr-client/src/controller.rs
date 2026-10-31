@@ -8,6 +8,13 @@ pub enum FormKind {
     RenameWorkspace,
     RenamePane,
     TerminatePane,
+    ReopenPane {
+        workspace_id: String,
+        expected_revision: u64,
+        pane_id: String,
+        selection_epoch: u64,
+        cwd: std::path::PathBuf,
+    },
     RemoveWorkspace,
     ChooseWorkspace,
     ChoosePane,
@@ -32,7 +39,7 @@ pub struct Controller {
 impl Controller {
     pub fn new(registry: &RegistrySnapshot) -> Self {
         let mut state = Self {
-            workspace: registry.workspaces.first().map(|w| w.id.clone()),
+            workspace: initial_workspace(registry).map(|w| w.id.clone()),
             focused: None,
             remembered: HashMap::new(),
             prefix: false,
@@ -51,7 +58,7 @@ impl Controller {
     }
     pub fn reconcile(&mut self, registry: &RegistrySnapshot) {
         if self.current(registry).is_none() {
-            self.workspace = registry.workspaces.first().map(|w| w.id.clone());
+            self.workspace = initial_workspace(registry).map(|w| w.id.clone());
             self.focused = None;
         }
         let mut ids = Vec::new();
@@ -59,13 +66,22 @@ impl Controller {
             leaves(w.layout.as_ref(), &mut ids);
         }
         if !self.focused.as_ref().is_some_and(|id| ids.contains(id)) {
-            self.focused = self
-                .workspace
-                .as_ref()
-                .and_then(|w| self.remembered.get(w))
-                .filter(|id| ids.contains(id))
-                .cloned()
-                .or_else(|| ids.first().cloned());
+            self.focused =
+                self.workspace
+                    .as_ref()
+                    .and_then(|w| self.remembered.get(w))
+                    .filter(|id| ids.contains(id))
+                    .cloned()
+                    .or_else(|| {
+                        ids.iter()
+                            .find(|id| {
+                                registry.panes.iter().any(|pane| {
+                                    pane.id == **id && pane.status == PaneStatus::Running
+                                })
+                            })
+                            .cloned()
+                    })
+                    .or_else(|| ids.first().cloned());
         }
     }
     pub fn focus(&mut self, pane: String) {
@@ -121,6 +137,28 @@ impl Controller {
         }
     }
 }
+fn initial_workspace(registry: &RegistrySnapshot) -> Option<&Workspace> {
+    registry
+        .workspaces
+        .iter()
+        .find(|workspace| has_running_projection(workspace.layout.as_ref(), registry))
+        .or_else(|| registry.workspaces.first())
+}
+
+fn has_running_projection(layout: Option<&LayoutNode>, registry: &RegistrySnapshot) -> bool {
+    match layout {
+        Some(LayoutNode::Leaf { pane_id }) => registry
+            .panes
+            .iter()
+            .any(|pane| pane.id == *pane_id && pane.status == PaneStatus::Running),
+        Some(LayoutNode::Split { first, second, .. }) => {
+            has_running_projection(Some(first), registry)
+                || has_running_projection(Some(second), registry)
+        }
+        None => false,
+    }
+}
+
 pub fn leaves(layout: Option<&LayoutNode>, result: &mut Vec<String>) {
     match layout {
         Some(LayoutNode::Leaf { pane_id }) => result.push(pane_id.clone()),
@@ -342,7 +380,29 @@ fn harness_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>) -> Option<Str
     }
     Some(label)
 }
+fn execution_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>) -> &'static str {
+    match pane.status {
+        PaneStatus::Running => "live",
+        PaneStatus::Stopped => "stopped / unavailable",
+        PaneStatus::Exited if snapshot.is_some_and(|snapshot| snapshot.error.is_none()) => {
+            "exited / retained scene"
+        }
+        PaneStatus::Exited => "exited / scene not loaded",
+    }
+}
+
 fn sidebar_pane_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>, width: usize) -> String {
+    if pane.status != PaneStatus::Running {
+        let state = if pane.status == PaneStatus::Stopped {
+            "S"
+        } else {
+            "E"
+        };
+        return format!(
+            "{} [{state}]",
+            clipped(&pane.title, width.saturating_sub(4))
+        );
+    }
     let Some(harness) = recognized_harness(pane, snapshot) else {
         return pane.title.clone();
     };
@@ -669,12 +729,12 @@ pub fn chrome<'a>(
             .map(|p| {
                 let identity = harness_label(p, snapshot(id));
                 format!(
-                    "{} [{}{:?}]{}",
+                    "{} [{}{}]{}",
                     p.title,
                     identity
                         .map(|label| format!("{label} / "))
                         .unwrap_or_default(),
-                    p.status,
+                    execution_label(p, snapshot(id)),
                     p.project
                         .as_ref()
                         .map(|project| format!(" | {}", project_label(project)))
@@ -761,11 +821,12 @@ pub fn modal<'a>(
     };
     let width = size.cols - x;
     let mut cursor = None;
-    let title = match form.kind {
+    let title = match &form.kind {
         FormKind::CreateWorkspace => "Create workspace",
         FormKind::RenameWorkspace => "Rename workspace",
         FormKind::RenamePane => "Rename pane",
         FormKind::TerminatePane => "Terminate focused pane and its owned processes? Type yes",
+        FormKind::ReopenPane { .. } => "Open a new shell here",
         FormKind::RemoveWorkspace => "Remove workspace layout only (panes survive)? Type yes",
         FormKind::ChooseWorkspace => "Switch workspace (arrows / Enter)",
         FormKind::ChoosePane => "Show existing pane (membership unchanged)",
@@ -785,6 +846,43 @@ pub fn modal<'a>(
                 false,
             ));
         }
+    } else if let FormKind::ReopenPane { cwd, .. } = &form.kind {
+        lines.push(line(
+            x,
+            y.saturating_add(2),
+            width,
+            "A fresh shell replaces this layout leaf; the old record remains.",
+            false,
+        ));
+        lines.push(line(
+            x,
+            y.saturating_add(3),
+            width,
+            format!(
+                "{} Retained directory: {}",
+                if form.selection == 0 { "▸" } else { " " },
+                cwd.display()
+            ),
+            form.selection == 0,
+        ));
+        lines.push(line(
+            x,
+            y.saturating_add(4),
+            width,
+            format!(
+                "{} Client current directory: {}",
+                if form.selection == 1 { "▸" } else { " " },
+                form.value
+            ),
+            form.selection == 1,
+        ));
+        lines.push(line(
+            x,
+            y.saturating_add(5),
+            width,
+            "↑/↓ choose directory · no old program or conversation is resumed",
+            false,
+        ));
     } else if matches!(form.kind, FormKind::ChooseWorkspace | FormKind::ChoosePane) {
         let labels = if form.kind == FormKind::ChooseWorkspace {
             registry
@@ -798,9 +896,9 @@ pub fn modal<'a>(
                 .iter()
                 .map(|p| {
                     format!(
-                        "{} [{:?}] {}{}",
+                        "{} [{}] {}{}",
                         p.title,
-                        p.status,
+                        execution_label(p, snapshot(&p.id)),
                         p.workspace_id
                             .as_ref()
                             .and_then(|id| registry.workspaces.iter().find(|w| w.id == *id))
@@ -947,6 +1045,47 @@ mod tests {
     fn leaf(id: &str) -> LayoutNode {
         LayoutNode::Leaf { pane_id: id.into() }
     }
+    #[test]
+    fn startup_prefers_live_projected_execution_and_keeps_explicit_history_selection() {
+        let (mut stopped, _) = capture_fixture();
+        stopped.id = "stopped".into();
+        stopped.status = PaneStatus::Stopped;
+        let mut live = stopped.clone();
+        live.id = "live".into();
+        live.status = PaneStatus::Running;
+        let mut registry = RegistrySnapshot {
+            revision: 1,
+            workspaces: vec![
+                Workspace {
+                    id: "history".into(),
+                    name: "History".into(),
+                    revision: 1,
+                    layout: Some(leaf("stopped")),
+                },
+                Workspace {
+                    id: "current".into(),
+                    name: "Current".into(),
+                    revision: 1,
+                    layout: split_leaf(Some(leaf("stopped")), "stopped", "live", Axis::Horizontal),
+                },
+            ],
+            panes: vec![stopped, live],
+        };
+        let mut state = Controller::new(&registry);
+        assert_eq!(state.workspace.as_deref(), Some("current"));
+        assert_eq!(state.focused.as_deref(), Some("live"));
+        state.switch("history".into(), &registry);
+        state.reconcile(&registry);
+        assert_eq!(state.workspace.as_deref(), Some("history"));
+        assert_eq!(state.focused.as_deref(), Some("stopped"));
+
+        // Registry ownership alone is not a usable projection.
+        registry.workspaces[1].layout = None;
+        let state = Controller::new(&registry);
+        assert_eq!(state.workspace.as_deref(), Some("history"));
+        assert_eq!(state.focused.as_deref(), Some("stopped"));
+    }
+
     #[test]
     fn remove_layout_never_describes_termination() {
         let tree = split_leaf(Some(leaf("a")), "a", "b", Axis::Horizontal);

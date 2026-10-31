@@ -625,3 +625,6 @@ mod resize_tests;
 
 #[path = "completion_tests.rs"]
 mod completion_tests;
+
+#[path = "reopen_tests.rs"]
+mod reopen_tests;

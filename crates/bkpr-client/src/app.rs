@@ -283,10 +283,13 @@ impl App<'_> {
         let changes_selection = selection.is_some()
             || matches!(
                 &command,
-                management::Command::Spawn { .. } | management::Command::Create { .. }
+                management::Command::Spawn { .. }
+                    | management::Command::Create { .. }
+                    | management::Command::Reopen { .. }
             );
         let scope = match &command {
             management::Command::Spawn { workspace, .. } => format!("workspace:{}", workspace.id),
+            management::Command::Reopen { workspace_id, .. } => format!("workspace:{workspace_id}"),
             management::Command::Create { .. } => "create".into(),
             management::Command::Single(operation) => match operation {
                 Operation::WorkspaceRename { workspace_id, .. }
@@ -321,34 +324,46 @@ impl App<'_> {
     fn operation(&mut self, operation: Operation) -> Result<()> {
         self.manage(management::Command::Single(operation), None)
     }
+    fn accept_management(
+        &mut self,
+        result: management::Completion,
+        intent: Option<ManagementIntent>,
+    ) {
+        if result.registry.revision >= self.registry.revision {
+            self.registry = result.registry;
+            self.state.reconcile(&self.registry);
+        }
+        if let Some(intent) = intent
+            && intent.epoch == self.selection_epoch
+            && self.state.form.is_none()
+            && let Some(selection) = intent.selection.or(result.selection)
+            && let Some(workspace) = self
+                .registry
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == selection.workspace)
+        {
+            let mut projected = Vec::new();
+            leaves(workspace.layout.as_ref(), &mut projected);
+            if projected.contains(&selection.pane)
+                && self
+                    .registry
+                    .panes
+                    .iter()
+                    .any(|pane| pane.id == selection.pane)
+            {
+                self.state.switch(selection.workspace, &self.registry);
+                self.state.focus(selection.pane);
+                self.state.reconcile(&self.registry);
+            }
+        }
+    }
     fn complete_background(&mut self) -> Result<()> {
         for completion in self.jobs.latest()? {
             let intent = self.management.remove(&completion.key);
             match completion.result {
                 Ok(Background::Management(result)) => {
-                    if result.registry.revision >= self.registry.revision {
-                        self.registry = result.registry;
-                        self.state.reconcile(&self.registry);
-                    }
-                    if let Some(intent) = intent
-                        && intent.epoch == self.selection_epoch
-                        && self.state.form.is_none()
-                        && let Some(selection) = intent.selection.or(result.selection)
-                        && self
-                            .registry
-                            .workspaces
-                            .iter()
-                            .any(|workspace| workspace.id == selection.workspace)
-                        && self
-                            .registry
-                            .panes
-                            .iter()
-                            .any(|pane| pane.id == selection.pane)
-                    {
-                        self.state.switch(selection.workspace, &self.registry);
-                        self.state.focus(selection.pane);
-                        self.state.reconcile(&self.registry);
-                    }
+                    self.accept_management(result, intent);
                     self.state.status = format!("{} completed", completion.key);
                 }
                 Ok(Background::Attached { pane, attached }) => {
@@ -738,6 +753,27 @@ impl App<'_> {
         {
             return failure.to_string();
         }
+        match self
+            .registry
+            .panes
+            .iter()
+            .find(|info| info.id == pane)
+            .map(|info| &info.status)
+        {
+            None | Some(PaneStatus::Stopped) => {
+                if self.options.read_only {
+                    return "Execution unavailable. Read-only client cannot open a new shell or change this layout.".into();
+                }
+                return "Execution unavailable. Ctrl-b R opens a new shell here after confirmation; Ctrl-b n splits a new pane.".into();
+            }
+            Some(PaneStatus::Exited) => {
+                if self.options.read_only {
+                    return "Execution exited; any retained scene is read-only. This client cannot open a new shell.".into();
+                }
+                return "Execution exited; any retained scene is read-only. Ctrl-b R opens a new shell here after confirmation.".into();
+            }
+            Some(PaneStatus::Running) => {}
+        }
         if self
             .views
             .get(pane)
@@ -753,15 +789,6 @@ impl App<'_> {
                     "Shared view capacity ({MAX_ADMITTED_VIEWS}) reached; this pane is unprojected. Remove displayed leaves or detach another client."
                 )
             };
-        }
-        if self
-            .registry
-            .panes
-            .iter()
-            .find(|info| info.id == pane)
-            .is_none_or(|info| info.status == PaneStatus::Stopped)
-        {
-            return "Execution unavailable. Ctrl-b n creates a new pane.".into();
         }
         "Attaching pane; waiting for its initial scene or a background worker slot.".into()
     }
@@ -779,6 +806,25 @@ impl App<'_> {
             }
             if failures[1].as_ref().is_some_and(|failure| failure.stopped) {
                 return Some("CLIPBOARD ERROR");
+            }
+        }
+        if let Some(info) = self.registry.panes.iter().find(|info| info.id == pane) {
+            match info.status {
+                PaneStatus::Stopped => return Some("STOPPED"),
+                PaneStatus::Exited => {
+                    return Some(
+                        if self
+                            .views
+                            .get(pane)
+                            .is_some_and(|view| view.frame.is_some())
+                        {
+                            "EXITED SCENE"
+                        } else {
+                            "EXITED"
+                        },
+                    );
+                }
+                PaneStatus::Running => {}
             }
         }
         match self.views.get(pane) {
@@ -1133,6 +1179,39 @@ impl App<'_> {
         {
             self.notified_focus = focused;
         }
+        Ok(())
+    }
+    fn confirm_reopen(&mut self) -> Result<()> {
+        if self.options.read_only {
+            bail!("read-only client cannot open a new shell");
+        }
+        let workspace = self.state.current(&self.registry).context("no workspace")?;
+        let pane_id = self.state.focused.as_ref().context("no focused pane")?;
+        let pane = self
+            .registry
+            .panes
+            .iter()
+            .find(|pane| pane.id == *pane_id)
+            .context("focused pane record is unavailable")?;
+        if pane.status == PaneStatus::Running {
+            bail!("focused execution is still live; opening a new shell cannot replace it");
+        }
+        let mut projected = Vec::new();
+        leaves(workspace.layout.as_ref(), &mut projected);
+        if !projected.contains(pane_id) {
+            bail!("focused pane is no longer in this workspace");
+        }
+        self.selection_epoch = self.selection_epoch.wrapping_add(1);
+        self.state.open(
+            FormKind::ReopenPane {
+                workspace_id: workspace.id.clone(),
+                expected_revision: workspace.revision,
+                pane_id: pane_id.clone(),
+                selection_epoch: self.selection_epoch,
+                cwd: pane.foreground_cwd.as_ref().unwrap_or(&pane.cwd).clone(),
+            },
+            self.options.cwd.display().to_string(),
+        );
         Ok(())
     }
     fn spawn(&mut self, size: Size, axis: Axis) -> Result<()> {
@@ -1556,6 +1635,51 @@ impl App<'_> {
         self.state.focused = form.restore;
         match form.kind {
             FormKind::ProjectDetails => {}
+            FormKind::ReopenPane {
+                workspace_id,
+                expected_revision,
+                pane_id,
+                selection_epoch,
+                cwd,
+            } => {
+                if self.options.read_only {
+                    bail!("read-only client cannot open a new shell");
+                }
+                if selection_epoch != self.selection_epoch
+                    || self.state.workspace.as_ref() != Some(&workspace_id)
+                    || self.state.focused.as_ref() != Some(&pane_id)
+                {
+                    bail!("selection changed while confirming the new shell; reopen confirmation");
+                }
+                if self
+                    .registry
+                    .panes
+                    .iter()
+                    .any(|pane| pane.id == pane_id && pane.status == PaneStatus::Running)
+                {
+                    bail!("focused execution is still live; it was not replaced");
+                }
+                self.manage(
+                    management::Command::Reopen {
+                        workspace_id,
+                        expected_revision,
+                        pane_id,
+                        spec: PaneSpawnSpec {
+                            argv: self.options.shell.clone(),
+                            cwd: if form.selection == 1 {
+                                self.options.cwd.clone()
+                            } else {
+                                cwd
+                            },
+                            home: self.options.home.clone(),
+                            size,
+                            title: None,
+                            isolated_environment: self.options.isolated_environment,
+                        },
+                    },
+                    None,
+                )?;
+            }
             FormKind::ChooseWorkspace => {
                 if let Some(workspace) = self.registry.workspaces.get(form.selection) {
                     self.switch(workspace.id.clone());
@@ -1787,10 +1911,21 @@ impl App<'_> {
                     self.state.reconcile(&self.registry);
                 }
                 "Enter" => self.apply_form(size)?,
-                "Backspace" => {
+                "Backspace"
+                    if !matches!(
+                        self.state.form.as_ref().unwrap().kind,
+                        FormKind::ReopenPane { .. }
+                    ) =>
+                {
                     self.state.form.as_mut().unwrap().value.pop();
                 }
-                "KeyU" if event.modifiers & 2 != 0 => {
+                "KeyU"
+                    if event.modifiers & 2 != 0
+                        && !matches!(
+                            self.state.form.as_ref().unwrap().kind,
+                            FormKind::ReopenPane { .. }
+                        ) =>
+                {
                     self.state.form.as_mut().unwrap().value.clear()
                 }
                 "ArrowDown" | "ArrowUp" => {
@@ -1809,6 +1944,7 @@ impl App<'_> {
                     let n = match form.kind {
                         FormKind::ChooseWorkspace => self.registry.workspaces.len(),
                         FormKind::ChoosePane => self.registry.panes.len(),
+                        FormKind::ReopenPane { .. } => 2,
                         _ => 0,
                     };
                     if n > 0 {
@@ -1827,6 +1963,7 @@ impl App<'_> {
                             FormKind::ChooseWorkspace
                                 | FormKind::ChoosePane
                                 | FormKind::ProjectDetails
+                                | FormKind::ReopenPane { .. }
                         ) && form.value.len() + event.text.len() <= 1024
                         {
                             form.value.push_str(&safe_text(&event.text));
@@ -1899,6 +2036,7 @@ impl App<'_> {
                 ("X", _) => self.state.open(FormKind::RemoveWorkspace, String::new()),
                 ("w", _) => self.state.open(FormKind::ChooseWorkspace, String::new()),
                 ("o", _) => self.state.open(FormKind::ChoosePane, String::new()),
+                ("R", _) => self.confirm_reopen()?,
                 ("n", _) | ("%", _) => self.spawn(size, Axis::Horizontal)?,
                 ("\"", _) => self.spawn(size, Axis::Vertical)?,
                 ("x", _) => {
@@ -1978,9 +2116,7 @@ impl App<'_> {
                                 .map(ToString::to_string)
                         })
                     })
-                    .unwrap_or_else(|| {
-                        format!("pane {pane} view is attaching or retiring; input not dispatched")
-                    });
+                    .unwrap_or_else(|| self.placeholder(pane));
             }
         }
         Ok(false)
@@ -2734,6 +2870,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                                 FormKind::ChooseWorkspace
                                     | FormKind::ChoosePane
                                     | FormKind::ProjectDetails
+                                    | FormKind::ReopenPane { .. }
                             ) && form.value.len() + text.len() <= 1024
                             {
                                 form.value.push_str(&safe_text(&text));
@@ -2935,7 +3072,7 @@ fn detach_view(socket: &Path, pane: &str, attached: &Attached, focus_out: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn fixture() -> (App<'static>, updates::Capture) {
+    fn fixture<'a>() -> (App<'a>, updates::Capture) {
         let registry = RegistrySnapshot {
             revision: 0,
             workspaces: Vec::new(),
@@ -3125,6 +3262,246 @@ mod tests {
         assert!(received.try_recv().is_err());
         assert!(!app.state.suppressed.contains("KeyY"));
     }
+    fn unavailable_fixture(app: &mut App<'_>) {
+        attach_fixture(app);
+        app.views.clear();
+        app.notified_focus = None;
+        app.registry.panes[0].status = PaneStatus::Stopped;
+        app.registry.panes[0].workspace_id = Some("history".into());
+        app.registry.panes[0].cwd = "/recorded/cwd".into();
+        app.registry.panes[0].foreground_cwd = Some("/observed/cwd".into());
+        app.registry.panes[0].home = "/retired/home".into();
+        app.registry.panes[0].isolated_environment = false;
+        app.registry.workspaces.push(Workspace {
+            id: "history".into(),
+            name: "History".into(),
+            revision: 7,
+            layout: Some(LayoutNode::Leaf {
+                pane_id: "focused-pane".into(),
+            }),
+        });
+        app.state = Controller::new(&app.registry);
+    }
+
+    fn reopen_key(app: &mut App<'_>) -> Result<bool> {
+        app.state.prefix = true;
+        let mut event = key("KeyR");
+        event.text = "R".into();
+        event.modifiers = 1;
+        app.key(event, &mut Vec::new(), size(), &[])
+    }
+
+    #[test]
+    fn unavailable_confirmation_cancel_never_spawns_or_attaches_and_live_keys_still_flow() {
+        let (mut app, received) = fixture();
+        unavailable_fixture(&mut app);
+        let before = serde_json::to_value(&app.registry).unwrap();
+        app.sync_views(size(), &app.rects(size())).unwrap();
+        assert_eq!(app.attach_slots, 0);
+        assert!(!app.jobs.contains("attach:focused-pane"));
+        assert!(app.active().is_none());
+        reopen_key(&mut app).unwrap();
+        assert!(matches!(
+            app.state.form.as_ref().unwrap().kind,
+            FormKind::ReopenPane { .. }
+        ));
+        assert!(app.management.is_empty());
+        app.key(key("Escape"), &mut Vec::new(), size(), &[])
+            .unwrap();
+        assert!(app.state.form.is_none());
+        assert_eq!(serde_json::to_value(&app.registry).unwrap(), before);
+        assert!(received.try_recv().is_err());
+        app.options.read_only = true;
+        assert!(reopen_key(&mut app).is_err());
+        assert!(app.state.form.is_none());
+        assert!(app.management.is_empty());
+
+        let (mut live, received) = fixture();
+        attach_fixture(&mut live);
+        assert!(reopen_key(&mut live).is_err());
+        assert!(live.state.form.is_none());
+        for name in ["Enter", "Escape"] {
+            live.key(key(name), &mut Vec::new(), size(), &[]).unwrap();
+            assert!(matches!(received.try_recv().unwrap(), Operation::Pane {
+                request: PaneRequest::Key { event, .. }, ..
+            } if event.key == name));
+        }
+    }
+
+    #[test]
+    fn confirmed_reopen_uses_client_shell_policy_and_explicit_directory_on_background_lane() {
+        use std::{
+            io::{BufRead, BufReader},
+            os::unix::net::UnixListener,
+            thread,
+        };
+        for (use_client_cwd, has_foreground_cwd) in [(false, true), (false, false), (true, true)] {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("reopen.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let (mut app, received) = fixture();
+            app.socket = &socket;
+            unavailable_fixture(&mut app);
+            if !has_foreground_cwd {
+                app.registry.panes[0].foreground_cwd = None;
+            }
+            app.options.shell = vec!["/client/configured-shell".into(), "--interactive".into()];
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                BufReader::new(&mut stream)
+                    .read_until(b'\n', &mut bytes)
+                    .unwrap();
+                let request: Request = serde_json::from_slice(&bytes).unwrap();
+                writeln!(
+                    stream,
+                    "{}",
+                    serde_json::to_string(&Response {
+                        version: PROTOCOL_VERSION,
+                        ok: false,
+                        result: None,
+                        error: Some("fixture rejected spawn".into()),
+                    })
+                    .unwrap()
+                )
+                .unwrap();
+                request
+            });
+            let before = serde_json::to_value(&app.registry).unwrap();
+            reopen_key(&mut app).unwrap();
+            if use_client_cwd {
+                app.key(key("ArrowDown"), &mut Vec::new(), size(), &[])
+                    .unwrap();
+            }
+            // A newer registry observation must not silently replace the
+            // revision that the user confirmed.
+            app.registry.workspaces[0].revision = 9;
+            app.key(key("Enter"), &mut Vec::new(), size(), &[]).unwrap();
+            assert!(app.state.form.is_none());
+            assert!(app.jobs.contains("manage:workspace:history"));
+            assert_eq!(
+                app.registry.workspaces[0].layout.as_ref(),
+                Some(&LayoutNode::Leaf {
+                    pane_id: "focused-pane".into()
+                })
+            );
+            let request = server.join().unwrap();
+            let jobs = std::mem::replace(&mut app.jobs, jobs::Jobs::new(1).unwrap());
+            let completions = jobs.finish().unwrap();
+            assert_eq!(completions.len(), 1);
+            assert!(completions[0].result.is_err());
+            match request.operation {
+                Operation::PaneReopen {
+                    workspace_id,
+                    expected_revision,
+                    pane_id,
+                    spec,
+                } => {
+                    assert_eq!(workspace_id, "history");
+                    assert_eq!(expected_revision, 7);
+                    assert_eq!(pane_id, "focused-pane");
+                    assert_eq!(spec.argv, app.options.shell);
+                    assert_eq!(spec.home, app.options.home);
+                    assert_eq!(spec.isolated_environment, app.options.isolated_environment);
+                    assert_eq!(
+                        spec.cwd,
+                        if use_client_cwd {
+                            app.options.cwd.clone()
+                        } else if has_foreground_cwd {
+                            PathBuf::from("/observed/cwd")
+                        } else {
+                            PathBuf::from("/recorded/cwd")
+                        }
+                    );
+                }
+                other => panic!("unexpected replacement operation: {other:?}"),
+            }
+            app.registry.workspaces[0].revision = 7;
+            assert_eq!(serde_json::to_value(&app.registry).unwrap(), before);
+            assert!(received.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn changed_selection_and_read_only_transition_reject_confirmation_before_mutation() {
+        for read_only in [false, true] {
+            let (mut app, received) = fixture();
+            unavailable_fixture(&mut app);
+            reopen_key(&mut app).unwrap();
+            if read_only {
+                app.options.read_only = true;
+            } else {
+                app.focus("focused-pane".into());
+            }
+            assert!(app.apply_form(size()).is_err());
+            assert!(app.management.is_empty());
+            assert!(!app.jobs.contains("manage:workspace:history"));
+            assert!(received.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn delayed_reopen_completion_never_steals_newer_selection_or_focuses_unprojected_record() {
+        for (epoch_changed, still_projected) in [(true, true), (false, false), (false, true)] {
+            let (mut app, _) = fixture();
+            unavailable_fixture(&mut app);
+            let mut neighbor = app.registry.panes[0].clone();
+            neighbor.id = "neighbor".into();
+            neighbor.status = PaneStatus::Running;
+            app.registry.panes.push(neighbor);
+            app.registry.workspaces[0].layout = split_leaf(
+                app.registry.workspaces[0].layout.take(),
+                "focused-pane",
+                "neighbor",
+                Axis::Horizontal,
+            );
+            let mut snapshot = app.registry.clone();
+            let mut replacement = snapshot.panes[0].clone();
+            replacement.id = "new-execution".into();
+            replacement.status = PaneStatus::Running;
+            snapshot.panes.push(replacement);
+            snapshot.revision += 1;
+            if still_projected {
+                snapshot.workspaces[0].layout = split_leaf(
+                    snapshot.workspaces[0].layout.take(),
+                    "focused-pane",
+                    "new-execution",
+                    Axis::Horizontal,
+                );
+            }
+            let intent = ManagementIntent {
+                epoch: app.selection_epoch,
+                selection: None,
+            };
+            if epoch_changed {
+                app.focus("neighbor".into());
+            }
+            app.accept_management(
+                management::Completion {
+                    registry: snapshot,
+                    selection: Some(management::Selection {
+                        workspace: "history".into(),
+                        pane: "new-execution".into(),
+                    }),
+                },
+                Some(intent),
+            );
+            assert_eq!(
+                app.state.focused.as_deref(),
+                Some(if epoch_changed {
+                    "neighbor"
+                } else if still_projected {
+                    "new-execution"
+                } else {
+                    "focused-pane"
+                })
+            );
+        }
+    }
+
     #[test]
     fn read_only_split_is_rejected_without_sending_mutation() {
         let (mut app, received) = fixture();
@@ -4157,12 +4534,26 @@ mod tests {
         }
     }
     #[test]
-    fn permanent_view_capacity_is_explicitly_unprojected_not_loading() {
-        let (mut app, _) = fixture();
+    fn exhausted_view_capacity_does_not_admit_or_charge_another_attachment() {
+        let (mut app, received) = fixture();
+        attach_fixture(&mut app);
+        app.views.clear();
+        app.notified_focus = None;
         app.attach_slots = MAX_ADMITTED_VIEWS;
-        let status = app.placeholder("retained-pane");
-        assert!(status.contains("capacity") && status.contains("unprojected"));
-        assert!(!status.contains("Attaching"));
-        assert_eq!(app.badge("retained-pane"), Some("UNPROJECTED"));
+        let rects = vec![(
+            "focused-pane".into(),
+            Rect {
+                x: 0,
+                y: 0,
+                width: size().cols,
+                height: size().rows,
+            },
+        )];
+        app.sync_views(size(), &rects).unwrap();
+        assert_eq!(app.attach_slots, MAX_ADMITTED_VIEWS);
+        assert!(!app.jobs.contains("attach:focused-pane"));
+        assert!(!app.views.contains_key("focused-pane"));
+        assert!(app.active().is_none());
+        assert!(received.try_recv().is_err());
     }
 }
