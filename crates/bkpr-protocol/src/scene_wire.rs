@@ -154,6 +154,7 @@ pub fn encode(
             .collect(),
         placements: frame.placements.clone(),
         alternate_screen: frame.alternate_screen,
+        mouse_reporting: frame.mouse_reporting,
         scrollback_total: frame.scrollback_total,
         scrollback_offset: frame.scrollback_offset,
     };

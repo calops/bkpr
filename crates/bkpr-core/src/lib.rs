@@ -95,7 +95,10 @@ enum Mutation {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Focus(bool),
-    Refresh,
+    Scroll {
+        view_id: String,
+        delta: i64,
+    },
     Terminate,
 }
 enum CommandOutcome {
@@ -572,17 +575,14 @@ impl Pane {
                 Ok(self.command(Mutation::Focus(focused))?.response())
             }
             Request::Scroll { view_id, delta } => {
-                {
-                    let mut a = self.shared.authority.lock().unwrap();
-                    let view = a.views.get_mut(&view_id).context("stale view")?;
-                    view.scrollback_offset = view
-                        .scrollback_offset
-                        .saturating_add_signed(delta)
-                        .min(100_000);
-                    view.last_seen = Instant::now();
-                }
-                self.shared.changes.notify();
-                self.command(Mutation::Refresh)?;
+                self.shared
+                    .authority
+                    .lock()
+                    .unwrap()
+                    .views
+                    .get(&view_id)
+                    .context("stale view")?;
+                self.command(Mutation::Scroll { view_id, delta })?;
                 Ok(json!({"scrolled":true}))
             }
             Request::Colors {
@@ -779,6 +779,7 @@ impl Pane {
             "capabilities": {
                 "sixel": false,
                 "normalized_frames": true,
+                "native_mouse_reporting": true,
                 "clipboard_timeout_ms": CLIPBOARD_TIMEOUT.as_millis(),
                 "view_timeout_ms": 10000,
                 "poll_wait_max_ms": 1000,
@@ -841,6 +842,7 @@ fn frame_payload(
             "images": images,
             "placements": frame.placements,
             "alternate_screen": frame.alternate_screen,
+            "mouse_reporting": frame.mouse_reporting,
             "scrollback_total": frame.scrollback_total,
             "scrollback_offset": frame.scrollback_offset,
         }),
@@ -884,30 +886,26 @@ fn prepare_home(home: &Path) -> Result<()> {
     Ok(())
 }
 fn publish(terminal: &mut Terminal, shared: &Shared) -> Result<()> {
-    let views = shared
-        .authority
-        .lock()
-        .unwrap()
-        .views
-        .values()
-        .map(|v| (v.id.clone(), v.scrollback_offset))
-        .collect::<Vec<_>>();
+    let views = {
+        let authority = shared.authority.lock().unwrap();
+        terminal.retain_scrollback_views(|view| authority.views.contains_key(view));
+        authority.views.keys().cloned().collect::<Vec<_>>()
+    };
     let frame = Arc::new(terminal.snapshot()?);
     let mut cache = BTreeMap::new();
     cache.insert(0, frame.clone());
     let mut frames = BTreeMap::new();
-    for (id, offset) in &views {
-        if !cache.contains_key(offset) {
-            cache.insert(*offset, Arc::new(terminal.read_scrollback(*offset)?));
+    for id in &views {
+        let offset = terminal.view_scrollback_offset(id)?;
+        if let std::collections::btree_map::Entry::Vacant(entry) = cache.entry(offset) {
+            entry.insert(Arc::new(terminal.read_scrollback(offset)?));
         }
-        frames.insert(id.clone(), cache[offset].clone());
+        frames.insert(id.clone(), cache[&offset].clone());
     }
     {
         let mut authority = shared.authority.lock().unwrap();
-        for (id, requested) in views {
-            if let Some(view) = authority.views.get_mut(&id)
-                && view.scrollback_offset == requested
-            {
+        for id in views {
+            if let Some(view) = authority.views.get_mut(&id) {
                 view.scrollback_offset = frames[&id].scrollback_offset;
             }
         }
@@ -1381,7 +1379,7 @@ fn run_pane(
                     }
                     let needs_publish = matches!(
                         &command.mutation,
-                        Mutation::Colors { .. } | Mutation::Refresh
+                        Mutation::Colors { .. } | Mutation::Scroll { .. }
                     );
                     let outcome = (|| -> Result<Option<u64>> {
                         let mut write_id = None;
@@ -1461,7 +1459,13 @@ fn run_pane(
                                     write_id = Some(writer.enqueue(bytes, false)?);
                                 }
                             }
-                            Mutation::Refresh => {}
+                            Mutation::Scroll { view_id, delta } => {
+                                let mut authority = shared.authority.lock().unwrap();
+                                let view =
+                                    authority.views.get_mut(&view_id).context("stale view")?;
+                                view.scrollback_offset = terminal.scroll_view(&view_id, delta)?;
+                                view.last_seen = Instant::now();
+                            }
                             Mutation::Terminate => {}
                         }
                         route_effects(terminal.drain_effects()?, &writer, &shared)?;
@@ -1704,6 +1708,7 @@ mod snapshot_tests {
             images: Vec::new(),
             placements: Vec::new(),
             alternate_screen: false,
+            mouse_reporting: false,
             scrollback_total: 2,
             scrollback_offset: 0,
         }
@@ -1921,6 +1926,7 @@ mod snapshot_tests {
             z: -2,
         }];
         expected.alternate_screen = true;
+        expected.mouse_reporting = true;
         expected.scrollback_total = 500;
         expected.scrollback_offset = 42;
         let wire = scene_wire::encode(&expected, 4, None, 0, &[]).unwrap();

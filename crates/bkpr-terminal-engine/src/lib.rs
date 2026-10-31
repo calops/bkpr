@@ -71,6 +71,7 @@ pub struct Terminal {
     size: Size,
     mouse_buttons: u16,
     last_offer_id: u64,
+    history: HashMap<String, sdk::screen::TrackedGridRef>,
 }
 impl Terminal {
     pub fn new(size: Size) -> Result<Self> {
@@ -110,6 +111,7 @@ impl Terminal {
             size,
             mouse_buttons: 0,
             last_offer_id: 0,
+            history: HashMap::new(),
         };
         this.resize(size)?;
         Ok(this)
@@ -158,6 +160,11 @@ impl Terminal {
             return Err(Error("feed chunk exceeds 1 MiB".into()));
         }
         self.native.vt_write(bytes);
+        // Alternate screens have no primary-screen history projection. Do not
+        // resurrect a stale inspection position when the application returns.
+        if self.native.active_screen()? == sdk::screen::Screen::Alternate {
+            self.history.clear();
+        }
         if self.native.vt_processing_error()? || self.callbacks.borrow().failed {
             return Err(Error(
                 "terminal processing or callback resource limit failed".into(),
@@ -196,12 +203,74 @@ impl Terminal {
             state.held_frame = None;
         }
         if let Some(frame) = &self.callbacks.borrow().held_frame {
-            return Ok(frame.clone());
+            let mut frame = frame.clone();
+            // Input policy follows current native modes even while rendering
+            // is held. The immutable held scene itself remains untouched.
+            frame.mouse_reporting = self.native.is_mouse_tracking()?;
+            frame.alternate_screen = self.native.active_screen()? == sdk::screen::Screen::Alternate;
+            return Ok(frame);
         }
         self.render.borrow_mut().capture(&self.native, self.size)
     }
-    /// Read history without stealing the canonical viewport or a held frame.
+    /// Move one attached view through native history without changing PTY input
+    /// or the canonical live viewport. Extremes mean live/oldest respectively.
+    pub fn scroll_view(&mut self, view_id: &str, delta: i64) -> Result<u64> {
+        if delta == i64::MIN {
+            self.history.remove(view_id);
+            return Ok(0);
+        }
+        if self.native.active_screen()? == sdk::screen::Screen::Alternate {
+            return Err(Error("scrollback unavailable on alternate screen".into()));
+        }
+        let scrollbar = self.native.scrollbar()?;
+        let oldest = scrollbar.total.saturating_sub(scrollbar.len);
+        let offset = self
+            .view_scrollback_offset(view_id)?
+            .saturating_add_signed(delta)
+            .min(oldest);
+        if offset == 0 {
+            self.history.remove(view_id);
+        } else {
+            let point = sdk::terminal::Point::Screen(sdk::terminal::PointCoordinate {
+                x: 0,
+                y: u32::try_from(oldest - offset)
+                    .map_err(|_| Error("history row overflow".into()))?,
+            });
+            if let Some(anchor) = self.history.get_mut(view_id) {
+                anchor.set(&mut self.native, point)?;
+            } else {
+                self.history
+                    .insert(view_id.to_owned(), self.native.track_grid_ref(point)?);
+            }
+        }
+        Ok(offset)
+    }
+    /// Resolve a bounded native pin after output, pruning or resize/reflow.
+    /// If retention removed its row, inspection clamps to oldest retained data.
+    pub fn view_scrollback_offset(&self, view_id: &str) -> Result<u64> {
+        if self.native.active_screen()? == sdk::screen::Screen::Alternate {
+            return Ok(0);
+        }
+        let Some(anchor) = self.history.get(view_id) else {
+            return Ok(0);
+        };
+        let scrollbar = self.native.scrollbar()?;
+        let oldest = scrollbar.total.saturating_sub(scrollbar.len);
+        let row = anchor
+            .point(sdk::terminal::PointSpace::Screen)?
+            .map_or(0, |point| u64::from(point.y));
+        Ok(oldest.saturating_sub(row))
+    }
+    /// Drop native pins with their detached views; never retain terminal text.
+    pub fn retain_scrollback_views(&mut self, mut attached: impl FnMut(&str) -> bool) {
+        self.history.retain(|view, _| attached(view));
+    }
+    /// Inspect current native data, independently of the published render hold,
+    /// without stealing the canonical viewport or mutating the held frame.
     pub fn read_scrollback(&mut self, offset: u64) -> Result<Frame> {
+        if offset == 0 || self.native.active_screen()? == sdk::screen::Screen::Alternate {
+            return self.render.borrow_mut().capture(&self.native, self.size);
+        }
         let scrollbar = self.native.scrollbar()?;
         let row = usize::try_from(
             scrollbar
@@ -210,22 +279,23 @@ impl Terminal {
                 .saturating_sub(offset),
         )
         .map_err(|_| Error("scroll offset overflow".into()))?;
-        // Independent native render state is necessary: updating it consumes
-        // terminal dirty flags. Recreate the canonical renderer after restoring.
-        let mut history = render::Resources::new()?;
-        history.image_cache = self.render.borrow().image_cache.clone();
+        // The same reusable native render state follows this temporary viewport.
+        // Restoring the viewport dirties its rows for the next live extraction;
+        // no second renderer, scrollback copy or image-cache clone is needed.
         self.native
             .scroll_viewport(sdk::terminal::ScrollViewport::Row(row));
-        let result = history.capture(&self.native, self.size);
+        let mut result = self.render.borrow_mut().capture(&self.native, self.size);
         let restore = if scrollbar.offset + scrollbar.len >= scrollbar.total {
             sdk::terminal::ScrollViewport::Bottom
         } else {
             sdk::terminal::ScrollViewport::Row(scrollbar.offset as usize)
         };
         self.native.scroll_viewport(restore);
-        let mut resources = self.render.borrow_mut();
-        resources.image_cache.extend(history.image_cache);
-        resources.invalidate()?;
+        if let Ok(frame) = &mut result
+            && frame.scrollback_offset > 0
+        {
+            frame.cursor.visible = false;
+        }
         result
     }
     pub fn sync_output_remaining(&self) -> Option<std::time::Duration> {

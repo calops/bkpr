@@ -23,6 +23,12 @@
 * Paint bounded changed-cell spans rather than whole composed rows, avoiding redundant static sidebar output while preserving wide/combining text, styles, links, erasure, graphics and cursor behavior.
 * Keep sustained-animation CPU efficiency explicitly deferred; no frame throttling or fidelity reduction is introduced to conceal it.
 
+### Native scrollback navigation
+
+* Add attachment-local TUI history navigation: `Shift+PageUp`, `Shift+PageDown` and `Ctrl-b s`; arrows move rows, PageUp/PageDown move overlapping visible pages, Home reaches oldest retained rows, and Esc/Enter/End return live. Keep existing workspace shortcuts unchanged, show history offset and a live-return hint, hide the application cursor, and block unintended typing/paste while inspecting.
+* Route vertical wheel input using exact native mouse-reporting and primary/alternate-screen facts. Shift+wheel explicitly navigates history; ordinary wheel retains application ownership when reporting is enabled, the alternate screen is active, or the daemon has not advertised exact-mode support. Alternate-screen history reports unavailable instead of exposing the primary buffer.
+* Anchor each view in bounded native in-memory history while output continues, without copying full history per key or changing another client's view. Preserve accepted key/pointer releases, paste FIFO and clipboard grants; allow read-only inspection. Projection retirement, workspace switch or detach starts a later view live; no selection/copy/search or persistent terminal-history recovery is added.
+
 ### Native harness capture
 
 * Recognize foreground harnesses and directories, authenticate backend-owned launch identities and bind native Claude, Codex, Omp and Antigravity conversations through their own hooks, extensions or protocols. Restore ordinary-command wrappers and `bkpr run`, preserve native argument/exit behavior, and keep recognition-only and incompatible startup modes credential-free.

@@ -18,6 +18,9 @@ pub struct Frame {
     pub images: Vec<std::sync::Arc<Image>>,
     pub placements: Vec<Placement>,
     pub alternate_screen: bool,
+    /// Whether the application has enabled native mouse tracking.
+    #[serde(default)]
+    pub mouse_reporting: bool,
     /// Total retained rows, including the active visible grid.
     pub scrollback_total: u64,
     /// Distance above live output in rows. Zero is live; larger values are
@@ -72,7 +75,7 @@ impl Serialize for FrameWire<'_> {
             }
         }
         let frame = self.frame;
-        let mut output = serializer.serialize_struct("Frame", 11)?;
+        let mut output = serializer.serialize_struct("Frame", 12)?;
         output.serialize_field("size", &frame.size)?;
         output.serialize_field("rows", &frame.rows)?;
         output.serialize_field("cursor", &frame.cursor)?;
@@ -88,6 +91,7 @@ impl Serialize for FrameWire<'_> {
         )?;
         output.serialize_field("placements", &frame.placements)?;
         output.serialize_field("alternate_screen", &frame.alternate_screen)?;
+        output.serialize_field("mouse_reporting", &frame.mouse_reporting)?;
         output.serialize_field("scrollback_total", &frame.scrollback_total)?;
         output.serialize_field("scrollback_offset", &frame.scrollback_offset)?;
         output.end()

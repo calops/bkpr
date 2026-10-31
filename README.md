@@ -294,13 +294,14 @@ Press `Ctrl-b`, then a command:
 | `r` / `p` | Rename workspace / pane |
 | `w` / `o` | Choose workspace / show an existing pane |
 | `i` | Inspect focused pane's local project/Git snapshot (arrows scroll) |
+| `s` | Enter focused pane's scrollback and page upward |
 | `[` / `]` | Previous / next workspace |
 | Arrows / Tab | Focus direction / next pane |
 | `x` | Remove a layout leaf; keep its process running |
 | `!` | Terminate a pane, after confirmation |
 | `X` | Remove a workspace, after confirmation; keep its processes running |
 | `d` | Detach client |
-| `Ctrl-b` | Send literal Ctrl-b to the application |
+| `Ctrl-b` | Send literal Ctrl-b to the application (live mode only) |
 
 `Ctrl-]` also detaches. Click a sidebar workspace or pane to focus it.
 Forms use Enter to apply, Esc to cancel and Ctrl-u to clear. Focus is
@@ -364,6 +365,53 @@ composes panes and chrome through one framework. The renderer retains image
 resources, emits differential styles and skips unchanged presentations.
 Initialization, resize and baseline recovery still require complete state.
 This is not a scene-delta or CPU-efficiency completion claim.
+
+### Scrollback navigation
+
+Press `Shift+PageUp` or `Ctrl-b s` to enter history and page upward.
+`Shift+PageDown` enters history and pages toward live output. In history:
+
+| Key | Action |
+| --- | --- |
+| Up / Down | Older / newer by one row |
+| PageUp / PageDown | Older / newer by one visible page, with one row of overlap |
+| Home | Oldest retained history |
+| Esc / Enter / End | Return to current live output and leave history |
+
+The pane header and focused status line show `HISTORY` and the authoritative
+row offset from live output, followed by native retained rows (including the
+visible grid). The
+application cursor is hidden while inspecting history, including explicit mode
+at offset zero. Ordinary typing, literal Ctrl-b forwarding and paste do not
+reach the application in this mode; return live explicitly before typing.
+Existing `Ctrl-b [` / `Ctrl-b ]` workspace navigation and pane-focus commands
+remain unchanged. Already accepted key/pointer releases and clipboard transfers
+still complete for their original view in input order.
+
+Vertical wheel steps move three rows. `Shift+wheel` explicitly navigates history,
+even when the application has enabled mouse reporting. An unmodified vertical
+wheel navigates history only on the primary screen when native mouse reporting
+is disabled; otherwise it retains the application's native wheel input. This
+uses the terminal engine's current modes, not an application-name guess.
+Automatic wheel interception also requires the daemon's exact-mode capability;
+an unknown mode preserves native application routing rather than guessing from
+a missing field. Start a fresh matching daemon when previewing staged binaries:
+attaching a new client does not upgrade a previously running server.
+History navigation is unavailable on the alternate screen and reports that
+limitation rather than displaying the primary buffer over a full-screen app.
+
+Inspection belongs to one attachment/view: switching focus between existing
+pane views preserves their independent positions; another client remains live
+unless it navigates its own view. Read-only clients may inspect history without
+an application-input or clipboard grant. New output continues while inspecting,
+and the backend anchors the visible history until retention discards it; resize
+reflows that native anchor. Returning live shows current output. Detaching,
+retiring a projection or switching workspaces retires its view, so a later
+attachment starts live. The engine is configured for 10,000 lines and 16 MiB of
+native in-memory scrollback; page-granular retention can discard older rows
+together. Navigation clamps to the oldest retained row. This is not a saved
+session or disk-backed transcript. Selection, copy and search
+are not implemented by this navigation step.
 
 ### Requests and explicit shutdown
 

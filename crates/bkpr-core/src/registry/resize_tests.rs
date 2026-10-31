@@ -479,3 +479,215 @@ fn enhanced_paste_never_combines_permissions_from_different_policy_versions() {
         "an unauthorized paste reached the actual shell"
     );
 }
+
+fn history_text(frame: &bkpr_protocol::Frame) -> String {
+    frame
+        .rows
+        .iter()
+        .map(|row| {
+            row.cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn wait_history_frame(
+    registry: &Registry,
+    pane_id: &str,
+    view_id: &str,
+    ready: impl Fn(&bkpr_protocol::Frame) -> bool,
+) -> bkpr_protocol::Frame {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(frame) = poll(registry, pane_id, view_id).frame
+            && ready(&frame)
+        {
+            return frame;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "history frame never became ready"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn native_history_is_per_view_read_only_anchored_and_clamped() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let home = fixture.home("history");
+    let pane_id = spawn_shell(
+        registry,
+        &home,
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "i=0; while [ \"$i\" -lt 80 ]; do printf 'ROW-%04d\\n' \"$i\"; i=$((i+1)); done; printf 'LIVE-READY\\n'; while [ ! -f more ]; do sleep 0.01; done; while [ \"$i\" -lt 120 ]; do printf 'ROW-%04d\\n' \"$i\"; i=$((i+1)); done; printf 'LIVE-UPDATED\\n'; exec sleep 60".into(),
+        ],
+    );
+    let owner = view(registry, &pane_id, 80);
+    let reader = pane_request(
+        registry,
+        &pane_id,
+        PaneRequest::Attach {
+            spec: policy_spec(80),
+        },
+    )
+    .unwrap()["view_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    wait_history_frame(registry, &pane_id, &owner, |frame| {
+        history_text(frame).contains("LIVE-READY")
+    });
+    assert!(
+        pane_request(
+            registry,
+            &pane_id,
+            PaneRequest::Input {
+                view_id: reader.clone(),
+                data: b"forbidden".to_vec(),
+            },
+        )
+        .is_err()
+    );
+    pane_request(
+        registry,
+        &pane_id,
+        PaneRequest::Scroll {
+            view_id: reader.clone(),
+            delta: 30,
+        },
+    )
+    .unwrap();
+    let before = poll(registry, &pane_id, &reader).frame.unwrap();
+    assert_eq!(before.scrollback_offset, 30);
+    assert!(!before.cursor.visible);
+    assert_eq!(
+        poll(registry, &pane_id, &owner)
+            .frame
+            .unwrap()
+            .scrollback_offset,
+        0
+    );
+    fs::write(home.join("more"), b"more").unwrap();
+    wait_history_frame(registry, &pane_id, &owner, |frame| {
+        history_text(frame).contains("LIVE-UPDATED")
+    });
+    let after = poll(registry, &pane_id, &reader).frame.unwrap();
+    assert_eq!(history_text(&after), history_text(&before));
+    assert!(after.scrollback_offset > before.scrollback_offset);
+    pane_request(
+        registry,
+        &pane_id,
+        PaneRequest::Scroll {
+            view_id: reader.clone(),
+            delta: i64::MAX,
+        },
+    )
+    .unwrap();
+    let oldest = poll(registry, &pane_id, &reader).frame.unwrap();
+    assert_eq!(
+        oldest.scrollback_offset,
+        oldest.scrollback_total - u64::from(oldest.size.rows)
+    );
+    assert!(history_text(&oldest).contains("ROW-0000"));
+    pane_request(
+        registry,
+        &pane_id,
+        PaneRequest::Scroll {
+            view_id: reader.clone(),
+            delta: i64::MIN,
+        },
+    )
+    .unwrap();
+    let live = poll(registry, &pane_id, &reader).frame.unwrap();
+    assert_eq!(live.scrollback_offset, 0);
+    assert!(history_text(&live).contains("LIVE-UPDATED"));
+    pane_request(
+        registry,
+        &pane_id,
+        PaneRequest::Scroll {
+            view_id: reader.clone(),
+            delta: 10,
+        },
+    )
+    .unwrap();
+    pane_request(registry, &pane_id, PaneRequest::Detach { view_id: reader }).unwrap();
+    let replacement = view(registry, &pane_id, 80);
+    assert_eq!(
+        poll(registry, &pane_id, &replacement)
+            .frame
+            .unwrap()
+            .scrollback_offset,
+        0
+    );
+}
+
+#[test]
+fn alternate_screen_rejects_primary_history_and_reports_native_mouse_tracking() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let home = fixture.home("alternate-history");
+    let pane_id = spawn_shell(
+        registry,
+        &home,
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "i=0; while [ \"$i\" -lt 60 ]; do printf 'PRIMARY-%04d\\n' \"$i\"; i=$((i+1)); done; printf 'PRIMARY-READY\\n'; while [ ! -f alternate ]; do sleep 0.01; done; printf '\\033[?1049h\\033[?1000h\\033[?1006hALTERNATE-READY'; while [ ! -f primary ]; do sleep 0.01; done; printf '\\033[?1000l\\033[?1049lRETURNED'; exec sleep 60".into(),
+        ],
+    );
+    let owner = view(registry, &pane_id, 80);
+    wait_history_frame(registry, &pane_id, &owner, |frame| {
+        history_text(frame).contains("PRIMARY-READY")
+    });
+    pane_request(
+        registry,
+        &pane_id,
+        PaneRequest::Scroll {
+            view_id: owner.clone(),
+            delta: 20,
+        },
+    )
+    .unwrap();
+    fs::write(home.join("alternate"), b"alternate").unwrap();
+    let alternate = wait_history_frame(registry, &pane_id, &owner, |frame| {
+        frame.alternate_screen && history_text(frame).contains("ALTERNATE-READY")
+    });
+    assert!(alternate.mouse_reporting);
+    assert_eq!(alternate.scrollback_offset, 0);
+    assert!(
+        pane_request(
+            registry,
+            &pane_id,
+            PaneRequest::Scroll {
+                view_id: owner.clone(),
+                delta: i64::MAX,
+            },
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("alternate screen")
+    );
+    pane_request(
+        registry,
+        &pane_id,
+        PaneRequest::Scroll {
+            view_id: owner.clone(),
+            delta: i64::MIN,
+        },
+    )
+    .unwrap();
+    assert!(!history_text(&poll(registry, &pane_id, &owner).frame.unwrap()).contains("PRIMARY"));
+    fs::write(home.join("primary"), b"primary").unwrap();
+    let primary = wait_history_frame(registry, &pane_id, &owner, |frame| {
+        !frame.alternate_screen && history_text(frame).contains("RETURNED")
+    });
+    assert!(!primary.mouse_reporting);
+    assert_eq!(primary.scrollback_offset, 0);
+}
