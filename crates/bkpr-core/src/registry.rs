@@ -128,6 +128,87 @@ impl Drop for Lease {
         let _ = FileExt::unlock(&self.0);
     }
 }
+enum SpawnTarget {
+    Append {
+        workspace_id: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    Reopen {
+        workspace_id: String,
+        expected_revision: u64,
+        pane_id: String,
+    },
+    Bootstrap {
+        workspace_id: String,
+    },
+}
+impl SpawnTarget {
+    fn workspace_id(&self) -> Option<&str> {
+        match self {
+            Self::Append { workspace_id, .. } => workspace_id.as_deref(),
+            Self::Reopen { workspace_id, .. } | Self::Bootstrap { workspace_id } => {
+                Some(workspace_id)
+            }
+        }
+    }
+    fn check(&self, state: &State) -> Result<()> {
+        match self {
+            Self::Append {
+                workspace_id,
+                expected_revision,
+            } => check_spawn_workspace(
+                &state.record.registry,
+                workspace_id.as_deref(),
+                *expected_revision,
+            ),
+            Self::Reopen {
+                workspace_id,
+                expected_revision,
+                pane_id,
+            } => {
+                check_spawn_workspace(
+                    &state.record.registry,
+                    Some(workspace_id),
+                    Some(*expected_revision),
+                )?;
+                let pane = state
+                    .record
+                    .registry
+                    .panes
+                    .iter()
+                    .find(|pane| &pane.id == pane_id)
+                    .context("unknown pane")?;
+                ensure!(
+                    pane.status != PaneStatus::Running
+                        && state.live.get(pane_id).is_none_or(|pane| pane
+                            .shared
+                            .finished
+                            .load(std::sync::atomic::Ordering::Acquire)),
+                    "cannot reopen a live pane; open a new pane instead"
+                );
+                ensure!(
+                    state
+                        .record
+                        .registry
+                        .workspaces
+                        .iter()
+                        .find(|workspace| &workspace.id == workspace_id)
+                        .and_then(|workspace| workspace.layout.as_ref())
+                        .is_some_and(|layout| layout_references(layout, pane_id)),
+                    "workspace layout does not reference pane"
+                );
+                Ok(())
+            }
+            Self::Bootstrap { .. } => {
+                ensure!(
+                    state.record.registry.workspaces.len() < MAX_WORKSPACES,
+                    "workspace limit"
+                );
+                Ok(())
+            }
+        }
+    }
+}
 struct SpawnReservation {
     inner: Arc<Inner>,
     workspace_id: Option<String>,
@@ -409,7 +490,26 @@ impl Registry {
                 workspace_id,
                 expected_revision,
                 spec,
-            } => self.spawn(workspace_id, expected_revision, spec),
+            } => self.spawn(
+                SpawnTarget::Append {
+                    workspace_id,
+                    expected_revision,
+                },
+                spec,
+            ),
+            Operation::PaneReopen {
+                workspace_id,
+                expected_revision,
+                pane_id,
+                spec,
+            } => self.spawn(
+                SpawnTarget::Reopen {
+                    workspace_id,
+                    expected_revision,
+                    pane_id,
+                },
+                spec,
+            ),
             Operation::PaneForget { pane_id } => self.forget(&pane_id),
             Operation::PaneRename { pane_id, title } => {
                 valid_name(&title)?;
@@ -469,12 +569,17 @@ impl Registry {
             }
         }
     }
-    fn spawn(
-        &self,
-        workspace_id: Option<String>,
-        expected_revision: Option<u64>,
-        spec: PaneSpawnSpec,
-    ) -> Result<Value> {
+    /// Cold-daemon bootstrap only: supplied current argv, never persisted commands.
+    /// A running execution makes this a no-op; metadata-only state is preserved.
+    pub fn bootstrap(&self, spec: PaneSpawnSpec) -> Result<Value> {
+        self.spawn(
+            SpawnTarget::Bootstrap {
+                workspace_id: Uuid::new_v4().to_string(),
+            },
+            spec,
+        )
+    }
+    fn spawn(&self, target: SpawnTarget, spec: PaneSpawnSpec) -> Result<Value> {
         valid_size(spec.size)?;
         ensure!(
             !spec.argv.is_empty()
@@ -490,6 +595,7 @@ impl Registry {
                 .into_owned()
         });
         valid_name(&title)?;
+        let workspace_id = target.workspace_id().map(str::to_owned);
         let id = Uuid::new_v4().to_string();
         let info = PaneInfo {
             id: id.clone(),
@@ -510,6 +616,19 @@ impl Registry {
             let mut state = self.inner.state.lock().unwrap();
             healthy(&state)?;
             ensure!(!state.closing, "daemon is shutting down");
+            if matches!(target, SpawnTarget::Bootstrap { .. })
+                && state.record.registry.panes.iter().any(|pane| {
+                    pane.status == PaneStatus::Running
+                        && state.live.get(&pane.id).is_some_and(|pane| {
+                            !pane
+                                .shared
+                                .finished
+                                .load(std::sync::atomic::Ordering::Acquire)
+                        })
+                })
+            {
+                return Ok(json!({"registry":state.record.registry}));
+            }
             let running = state
                 .record
                 .registry
@@ -522,16 +641,12 @@ impl Registry {
                     && running + state.spawning < MAX_LIVE_PANES,
                 "pane limit"
             );
-            check_spawn_workspace(
-                &state.record.registry,
-                workspace_id.as_deref(),
-                expected_revision,
-            )?;
+            target.check(&state)?;
             if let Some(workspace_id) = &workspace_id {
                 workspace_available(&state, workspace_id)?;
             }
-            // Validate the exact appended layout and revisions before argv can execute.
-            append_pane_record(state.record.clone(), info.clone())?;
+            // Validate the exact layout and revisions before argv can execute.
+            spawn_record(state.record.clone(), info.clone(), &target)?;
             if let Some(workspace_id) = &workspace_id {
                 state.spawn_workspaces.insert(workspace_id.clone());
             }
@@ -558,6 +673,7 @@ impl Registry {
             }
         }
         self.start_observer()?;
+        let environment = self.inner.spawn_environment.lock().unwrap().clone();
         // PTY startup, child exec and initial snapshot never run under the registry lock.
         let spawned = Pane::spawn_with_id(
             SpawnSpec {
@@ -570,7 +686,7 @@ impl Registry {
             },
             id.clone(),
             self.inner.view_budget.clone(),
-            self.inner.spawn_environment.lock().unwrap().clone(),
+            environment,
             Some(self.inner.status_wake.clone()),
         );
         let pane = spawned?;
@@ -580,9 +696,10 @@ impl Registry {
                 let state = self.inner.state.lock().unwrap();
                 healthy(&state)?;
                 ensure!(!state.closing, "daemon is shutting down");
+                target.check(&state)?;
                 state.record.clone()
             };
-            let next = append_pane_record(current, info)?;
+            let next = spawn_record(current, info, &target)?;
             commit(&self.inner, next, |state| {
                 state.live.insert(id.clone(), pane.clone());
             })
@@ -612,7 +729,11 @@ impl Registry {
         {
             callback();
         }
-        Ok(json!({"registry":registry,"pane_id":id}))
+        if matches!(target, SpawnTarget::Bootstrap { .. }) {
+            Ok(json!({"registry":registry,"pane_id":id,"workspace_id":workspace_id}))
+        } else {
+            Ok(json!({"registry":registry,"pane_id":id}))
+        }
     }
     fn expire_retired_views(&self) -> Result<()> {
         // Live workers expire their own leases. Completed workers no longer run a
@@ -747,10 +868,10 @@ impl Registry {
         }
         pane.shared.changes.notify();
         let _transaction = self.inner.transaction.lock().unwrap();
-        let mut next = {
+        let (mut next, closing) = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
-            state.record.clone()
+            (state.record.clone(), state.closing)
         };
         let Some(info) = next.registry.panes.iter_mut().find(|pane| pane.id == id) else {
             // A concurrent successful PaneForget may retire an already-completed handle.
@@ -765,7 +886,9 @@ impl Registry {
         info.harness = None;
         info.harness_status = None;
         info.project = None;
-        if status == PaneStatus::Exited {
+        // Daemon teardown ends executions, not the user's saved layout intent.
+        // Only an ordinary pane exit or explicit pane termination closes projections.
+        if status == PaneStatus::Exited && !closing {
             for workspace in &mut next.registry.workspaces {
                 if workspace
                     .layout
@@ -788,7 +911,6 @@ impl Registry {
         Ok(())
     }
     pub fn shutdown(&self) -> Result<()> {
-        let agent_shutdown = self.inner.agents.shutdown();
         let panes = {
             let _transaction = self.inner.transaction.lock().unwrap();
             let mut state = self.inner.state.lock().unwrap();
@@ -797,6 +919,7 @@ impl Registry {
             self.inner.changed.notify_all();
             state.live.values().cloned().collect::<Vec<_>>()
         };
+        let agent_shutdown = self.inner.agents.shutdown();
         self.stop_projects();
         let mut first_error = agent_shutdown.err();
         for pane in panes {
@@ -872,7 +995,32 @@ fn remove_layout_pane(layout: LayoutNode, pane_id: &str) -> Option<LayoutNode> {
         },
     }
 }
-fn append_pane_record(mut next: Record, info: PaneInfo) -> Result<Record> {
+fn spawn_record(mut next: Record, info: PaneInfo, target: &SpawnTarget) -> Result<Record> {
+    if let SpawnTarget::Bootstrap { workspace_id } = target {
+        let mut suffix = 1;
+        let name = loop {
+            let name = if suffix == 1 {
+                "Main".to_owned()
+            } else {
+                format!("Main {suffix}")
+            };
+            if next
+                .registry
+                .workspaces
+                .iter()
+                .all(|workspace| workspace.name != name)
+            {
+                break name;
+            }
+            suffix += 1;
+        };
+        next.registry.workspaces.push(Workspace {
+            id: workspace_id.clone(),
+            name,
+            revision: 1,
+            layout: None,
+        });
+    }
     if let Some(workspace_id) = &info.workspace_id {
         let workspace = next
             .registry
@@ -880,24 +1028,45 @@ fn append_pane_record(mut next: Record, info: PaneInfo) -> Result<Record> {
             .iter_mut()
             .find(|workspace| &workspace.id == workspace_id)
             .context("unknown workspace")?;
-        let leaf = LayoutNode::Leaf {
-            pane_id: info.id.clone(),
-        };
-        workspace.layout = Some(match workspace.layout.take() {
-            None => leaf,
-            Some(first) => LayoutNode::Split {
-                axis: Axis::Horizontal,
-                ratio: 500,
-                first: Box::new(first),
-                second: Box::new(leaf),
-            },
-        });
+        if let SpawnTarget::Reopen { pane_id, .. } = target {
+            let layout = workspace
+                .layout
+                .as_mut()
+                .context("workspace layout does not reference pane")?;
+            replace_layout_pane(layout, pane_id, &info.id);
+        } else {
+            let leaf = LayoutNode::Leaf {
+                pane_id: info.id.clone(),
+            };
+            workspace.layout = Some(match workspace.layout.take() {
+                None => leaf,
+                Some(first) => LayoutNode::Split {
+                    axis: Axis::Horizontal,
+                    ratio: 500,
+                    first: Box::new(first),
+                    second: Box::new(leaf),
+                },
+            });
+        }
         workspace.revision = next_revision(workspace.revision)?;
     }
     next.registry.panes.push(info);
     next.registry.revision = next_revision(next.registry.revision)?;
     validate_record(&next)?;
     Ok(next)
+}
+fn replace_layout_pane(layout: &mut LayoutNode, old: &str, new: &str) {
+    match layout {
+        LayoutNode::Leaf { pane_id } => {
+            if pane_id == old {
+                *pane_id = new.to_owned();
+            }
+        }
+        LayoutNode::Split { first, second, .. } => {
+            replace_layout_pane(first, old, new);
+            replace_layout_pane(second, old, new);
+        }
+    }
 }
 fn workspace<'a>(
     r: &'a mut RegistrySnapshot,

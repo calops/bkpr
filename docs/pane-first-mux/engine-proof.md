@@ -390,3 +390,22 @@ Evidence root: `target/smoke/projects/`. Optimized client SHA-256 `d49e02135b739
 | Daemon RSS KiB | 30,024 | 33,484 |
 
 These are single short procfs samples after warmup, not a universal speedup or sustained-redraw claim. The physical controller's output timing includes deliberate per-key driver spacing and is not application input latency. Final runtime cleanup records have no owned survivors; controller sources are archived with retained evidence. No external providers, live user sessions or persistent user configuration participated. Forge/PR/CI and recovery remain separate pending work.
+
+## Usable TUI startup and pane lifecycle
+
+Main-branch parity remains the goal, ordered by daily TUI usability rather than a metadata checklist. This slice addresses normal launch, unavailable executions, explicit shell replacement and restart; it does not implement full harness recovery or move remote endpoints ahead of local TUI workflows.
+
+A new daemon with explicit current bootstrap argv creates a uniquely named fresh workspace and usable execution when no live running executions remain, even with retained metadata. Historical layouts/records are preserved, not replayed or overwritten. Headless startup without argv does not execute anything. Attaching to an existing daemon does not bootstrap another shell; initial client selection prefers a live projected execution while explicit historical selection remains possible.
+
+**Ctrl-b, then uppercase R** confirms opening a new configured shell in an unavailable pane's selected workspace slot. The confirmation makes directory choice explicit; it never silently falls back or resumes the old program. `pane_reopen` validates the old execution, selected leaf and workspace revision, reserves the target workspace, spawns outside registry locks, and atomically commits a fresh pane ID through the existing spawn pipeline. Failure retains the old layout and cleans up the newly owned child. Other workspace projections and the old historical record remain unchanged. Live execution and read-only client requests are rejected.
+
+Graceful shutdown now closes admission before teardown and preserves acknowledged layout intent while stopping owned executions. Natural pane exit and explicit termination still remove their projections. Integration runtime found that the previous normal completion path erased layouts during shutdown itself; this was fixed in production, not hidden by changing the fixture to crash-only shutdown.
+
+Final optimized client SHA-256 `d1ede47ff26ca1be01ff67ea3d38ae194747998868d60c17455a5a964e2654d6`; server `f9eaecd22c6b1b52f7d01b1f5ded9e7dfcdc517d5c9952714fc470d7e31a37fd`. Locked coordinated workspace build/tests, strict all-target Clippy and formatting pass: **295 tests passed, six ignored**. Four real-daemon startup integration tests include graceful layout preservation and fresh-ID reopening. Canonical public binaries remain unchanged.
+
+Evidence under `target/smoke/lifecycle/`:
+
+- `api-1104214537157914/`: actual headless fresh/restart does not spawn; live/stale/invalid-directory requests reject without changing old layouts; successful replacement changes only the selected workspace, retains history and uses a fresh execution ID.
+- `physical-1104214530794830/`: actual Kitty startup selects a usable shell alongside retained history; replacement confirmation cancels without mutation, explicit confirmation accepts shell input, read-only reopening is denied, detach/reattach preserves executions, natural shell exit removes its layout slot, and the TUI itself automatically starts a usable daemon from retained state. A persisted marker proves the old startup command was never replayed. Screenshots were visually inspected.
+
+All final owned-runtime cleanup records report no survivors. Controller sources are archived with retained evidence; no user sessions, persistent settings, real providers or native approvals participated. No new latency/CPU improvement is claimed: the changed lifecycle path was exercised through actual input/output, not inferred from tests or queue acceptance. Full harness resume, retained terminal contents and remaining core TUI workflows remain separate work.

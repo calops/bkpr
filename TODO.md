@@ -2,9 +2,13 @@
 
 The native replacement branch is governed by the [implementation plan](docs/pane-first-mux/implementation-plan.md). `main` and the Zellij fork are starting code, not immutable designs or regression suites. Reuse, refactor or rewrite relevant pieces when their domain comes into scope.
 
-Current priority is TUI feature parity with `main`. Native harness capture is implemented; remaining genuine-native acceptance gates are listed below. Browser/web, GUI and mobile frontends are deferred; an independent frontend proof must not block restoring the TUI's product functionality.
+Current priority is usable TUI feature parity with `main`, in a coherent order: launch/restart and pane/workspace lifecycle first, then navigation, splits/resizing, scrollback, selection/copy/paste and action discovery. Shared control and harness recovery should expose usable workflows. Forge/PR/CI enrichment and remote endpoints come later, not next. Browser/web, GUI and mobile frontends remain deferred; independent frontend proof must not block TUI functionality.
 
 - [ ] Complete the pane-first backend and independent clients: durable pane identities/lifecycle, revisioned layout documents, backend workspace membership, view/size/input/clipboard authority, typed control, rich metadata and agent/harness services. Use maintained infrastructure libraries and small source ports rather than importing a whole mux. The initial [engine experiment](docs/pane-first-mux/engine-proof.md) records measured behavior and unresolved rendering/input observations, not full product acceptance.
+
+- [x] Make fresh-daemon startup with retained metadata open a usable current shell without replaying old commands; preserve history/layout intent across graceful shutdown, prefer live initial selection and provide confirmed `Ctrl-b R` shell replacement for unavailable panes. Explicit replacement preserves other workspace projections and uses fresh authority. Detach/reattach and normal exit are exercised through the actual TUI.
+
+- [ ] Close remaining core TUI usability gaps before forge/CI or remote endpoints: navigation and split/resize ergonomics, scrollback, selection/copy/paste, shortcut/action discovery and focus restoration. Inspect main/fork code for each domain, verify actual terminal behavior and keep performance constraints intact. Do not treat lifecycle replacement as full harness recovery.
 
 - [x] Implement native foreground harness/CWD recognition, authenticated launch-scoped identity, exact conversation adapters and separate OSC 7501 TUI status. Restore private ordinary-command wrappers and `bkpr run`, preserve native options/settings and recognition-only modes, and clear stale live facts on replacement, backgrounding, shell return and exit. Real isolated Omp/Codex fresh/explicit/resume/fork paths, Codex picker, concurrent physical panes, hidden status and authority/failure boundaries are exercised. Capture facts are not durable recovery associations.
 
