@@ -165,6 +165,7 @@ fn explicit_forget_releases_record_capacity_without_automatic_pruning() {
                     foreground_cwd: None,
                     harness: None,
                     harness_status: None,
+                    project: None,
                     isolated_environment: false,
                 });
             }

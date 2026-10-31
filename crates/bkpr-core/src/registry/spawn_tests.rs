@@ -188,6 +188,7 @@ fn invalid_post_spawn_layout_is_rejected_before_child_setup_or_exec() {
                     foreground_cwd: None,
                     harness: None,
                     harness_status: None,
+                    project: None,
                     isolated_environment: false,
                 });
             }

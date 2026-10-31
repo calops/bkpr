@@ -152,6 +152,9 @@ pub struct PaneInfo {
     /// Backend-selected, identity-scoped OSC fact, including when no view is attached.
     #[serde(default)]
     pub harness_status: Option<crate::ProgramStatus>,
+    /// Live backend cache result for the effective foreground CWD; never restored.
+    #[serde(default)]
+    pub project: Option<crate::ProjectSnapshot>,
     #[serde(with = "crate::path_wire")]
     pub home: PathBuf,
     pub isolated_environment: bool,

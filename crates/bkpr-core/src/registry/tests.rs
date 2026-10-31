@@ -172,6 +172,7 @@ fn restart_marks_lost_executions_stopped_without_content_or_token_recovery() {
                 foreground_cwd: None,
                 harness: None,
                 harness_status: None,
+                project: None,
                 isolated_environment: false,
             });
             r.workspaces[0].layout = Some(LayoutNode::Leaf {
@@ -565,6 +566,7 @@ fn restarted_exited_pane_is_stopped_with_historical_exit_code_but_no_scene() {
                 foreground_cwd: None,
                 harness: None,
                 harness_status: None,
+                project: None,
                 isolated_environment: false,
             });
             r.workspaces[0].layout = Some(LayoutNode::Leaf {

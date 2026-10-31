@@ -533,7 +533,15 @@ fn public(
     receiver: Option<&Receiver>,
     subscribers: usize,
 ) -> Value {
-    json!({"agent_id":fact.launch_id,"launch_id":fact.launch_id,"harness":agent.harness.as_str(),"title":agent.title,"session_id":fact.session_id,"pane_id":fact.pane.id,"pane_name":fact.pane.title,"workspace_id":fact.pane.workspace_id,"workspace_name":fact.workspace_name,"cwd":fact.cwd.as_deref().map(path_wire::WirePath),"attached":fact.active,"status":fact.pane.harness_status,"notification_ready":receiver.is_some() && subscribers > 0,"readiness":{"can_notify":receiver.is_some() && subscribers > 0},"receiver_mode":receiver.map(|r| r.mode)})
+    let mut value = json!({"agent_id":fact.launch_id,"launch_id":fact.launch_id,"harness":agent.harness.as_str(),"title":agent.title,"session_id":fact.session_id,"pane_id":fact.pane.id,"pane_name":fact.pane.title,"workspace_id":fact.pane.workspace_id,"workspace_name":fact.workspace_name,"cwd":fact.cwd.as_deref().map(path_wire::WirePath),"attached":fact.active,"status":fact.pane.harness_status,"notification_ready":receiver.is_some() && subscribers > 0,"readiness":{"can_notify":receiver.is_some() && subscribers > 0},"receiver_mode":receiver.map(|r| r.mode)});
+    value["project"] = serde_json::to_value(
+        fact.pane
+            .project
+            .as_ref()
+            .filter(|project| fact.active && fact.cwd.as_ref() == Some(&project.cwd)),
+    )
+    .expect("serializable project snapshot");
+    value
 }
 fn cursor_start(
     messages: &[&Message],
@@ -638,20 +646,9 @@ impl Registry {
             .collect::<Vec<_>>();
         let mut observed = Vec::with_capacity(launches.len());
         let table = proc::fresh_snapshot()?;
-        let mut repositories = BTreeMap::<PathBuf, Option<PathBuf>>::new();
         for launch in launches {
             if let Ok((active, cwd)) = super::capture::foreground_context_in(&launch, &table) {
-                let repository = if resolve_repository {
-                    cwd.as_ref().and_then(|cwd| {
-                        repositories
-                            .entry(cwd.clone())
-                            .or_insert_with(|| repository_identity(cwd))
-                            .clone()
-                    })
-                } else {
-                    None
-                };
-                observed.push((launch, active, cwd, repository));
+                observed.push((launch, active, cwd));
             }
         }
         let state = self.inner.state.lock().unwrap();
@@ -659,7 +656,7 @@ impl Registry {
         ensure!(!state.closing, "daemon shutting down");
         Ok(observed
             .into_iter()
-            .filter_map(|(launch, active, cwd, repository)| {
+            .filter_map(|(launch, active, cwd)| {
                 let pane = state
                     .record
                     .registry
@@ -667,6 +664,19 @@ impl Registry {
                     .iter()
                     .find(|p| p.id == launch.grant.pane_id && p.status == PaneStatus::Running)?
                     .clone();
+                let repository = resolve_repository
+                    .then(|| {
+                        pane.project
+                            .as_ref()
+                            .filter(|project| {
+                                active
+                                    && project.state == ProjectState::Ready
+                                    && cwd.as_ref() == Some(&project.cwd)
+                            })
+                            .and_then(|project| project.repository.as_ref())
+                            .map(|repository| repository.common_dir.clone())
+                    })
+                    .flatten();
                 let workspace_name = pane
                     .workspace_id
                     .as_ref()
@@ -1332,32 +1342,6 @@ fn next_maintenance(store: &Store) -> Option<u64> {
         .map(|at| at.saturating_add(30000))
         .min();
     expiry.into_iter().chain(notification).min()
-}
-
-fn repository_identity(cwd: &Path) -> Option<PathBuf> {
-    let mut command = std::process::Command::new("git");
-    // Repository identity must not be redirected by daemon startup environment.
-    for (key, _) in std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("GIT_"))
-    {
-        command.env_remove(key);
-    }
-    let output = command
-        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .current_dir(cwd)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    use std::os::unix::ffi::OsStringExt;
-    let mut bytes = output.stdout;
-    if bytes.last() == Some(&b'\n') {
-        bytes.pop();
-    }
-    fs::canonicalize(PathBuf::from(std::ffi::OsString::from_vec(bytes))).ok()
 }
 
 #[cfg(all(test, target_os = "linux"))]

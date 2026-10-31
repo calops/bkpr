@@ -186,6 +186,7 @@ mod tests {
                     foreground_cwd: None,
                     harness: None,
                     harness_status: None,
+                    project: None,
                     home: "/tmp".into(),
                     isolated_environment: false,
                 })

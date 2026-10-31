@@ -13,9 +13,9 @@ This is development code, not a production release. Workspace layouts and pane
 metadata survive daemon restarts; running processes and terminal contents do not.
 Foreground harness recognition, managed native conversation capture and OSC 7501
 status are available in the TUI, together with launch-scoped context, discovery
-and durable peer communication. Git/CI presentation and harness recovery selection
-are not implemented yet. Earlier release notes describe the former implementation,
-not features available on this branch.
+and durable peer communication. Local Git/project snapshots are available; forge/CI
+metadata and harness recovery selection are not implemented yet. Earlier release
+notes describe the former implementation, not features available on this branch.
 
 Current `main` and the native-terminal fork are useful starting material when a
 domain comes into scope, not frozen specifications or compatibility obligations.
@@ -239,6 +239,37 @@ carry opaque inbox pointers; model processing is established only by explicit
 read/processed-ack facts. Ordinary shell and terminal input remain independent of
 waiting receivers.
 
+### Local projects and Git
+
+Pane headers and sidebar annotations show the foreground directory's project,
+worktree and local branch without changing pane names or workspace membership.
+Press `Ctrl-b i` for the focused pane's project inspector; arrows scroll through
+wrapped details, and Enter or Esc closes it and returns focus. This also works
+on narrow terminals without a sidebar.
+
+The inspector shows the observed CWD, worktree root, common/worktree Git
+directories, local HEAD, staged and unstaged file/line/binary totals and untracked
+file count. Committed totals compare HEAD directly with a suitable local merge
+base, not a sum of commits. An unavailable base or total is **unknown**, not zero;
+detached and unborn HEADs remain distinct. This is local Git data, not a PR diff,
+remote branch check or CI result. Bkpr does not fetch merely to display it.
+
+A preflight rejects tracked paths selecting configured executable Git `clean` or
+`process` filters with an explicit statistics error, rather than silently
+changing their content semantics. This also affects clean working trees because
+determining dirtiness may invoke a filter. Previously known values remain labeled
+stale. Fsmonitor, external diff and textconv are disabled for metadata commands.
+This is not an adversarial repository sandbox: configuration and attributes can
+change concurrently with the preflight and Git commands.
+
+The backend publishes cached snapshots outside input/render work. Loading,
+non-repository and error states are explicit; any retained repository values
+during loading/error are labeled stale. These live snapshots are not restored as
+current facts after daemon restart. Authenticated `whoami` and detailed agent
+discovery include the same backend project snapshot when it matches that launch's
+live foreground CWD; compact discovery omits it. Repository-scoped discovery and
+messaging require a ready canonical common-Git-directory identity.
+
 
 
 ### Workspace and pane controls
@@ -252,6 +283,7 @@ Press `Ctrl-b`, then a command:
 | `"` | Spawn a pane, split top/bottom |
 | `r` / `p` | Rename workspace / pane |
 | `w` / `o` | Choose workspace / show an existing pane |
+| `i` | Inspect focused pane's local project/Git snapshot (arrows scroll) |
 | `[` / `]` | Previous / next workspace |
 | Arrows / Tab | Focus direction / next pane |
 | `x` | Remove a layout leaf; keep its process running |

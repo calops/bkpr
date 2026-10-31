@@ -11,6 +11,7 @@ pub enum FormKind {
     RemoveWorkspace,
     ChooseWorkspace,
     ChoosePane,
+    ProjectDetails,
 }
 #[derive(Clone, Debug)]
 pub struct Form {
@@ -365,6 +366,98 @@ fn sidebar_pane_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>, width: u
     format!("{} {identity}", clipped(&pane.title, title_width))
 }
 
+fn project_label(project: &ProjectSnapshot) -> String {
+    let state = match project.state {
+        ProjectState::Loading => "loading",
+        ProjectState::Error => "error",
+        ProjectState::NotRepository => "not a repository",
+        ProjectState::Ready => "",
+    };
+    let Some(repository) = &project.repository else {
+        return format!("Git: {state}");
+    };
+    let branch = repository
+        .branch
+        .as_deref()
+        .unwrap_or(if repository.head_sha.is_some() {
+            "detached"
+        } else {
+            "unborn"
+        });
+    let worktree = repository
+        .root
+        .file_name()
+        .unwrap_or(repository.root.as_os_str())
+        .to_string_lossy();
+    let suffix = if state.is_empty() {
+        String::new()
+    } else {
+        format!(" / {state}; stale")
+    };
+    if worktree == repository.name {
+        format!("{} / {branch}{suffix}", repository.name)
+    } else {
+        format!("{} / {worktree} / {branch}{suffix}", repository.name)
+    }
+}
+
+fn change_label(summary: &ChangeSummary) -> String {
+    format!(
+        "{} files +{} -{} ({} binary)",
+        summary.files, summary.insertions, summary.deletions, summary.binary_files
+    )
+}
+
+fn project_details(project: Option<&ProjectSnapshot>) -> Vec<String> {
+    let Some(project) = project else {
+        return vec!["Project: awaiting foreground directory".into()];
+    };
+    let mut lines = vec![
+        format!("CWD: {}", project.cwd.display()),
+        format!("Project: {}", project_label(project)),
+    ];
+    if let Some(error) = &project.error {
+        lines.push(format!("Git error: {error}"));
+    }
+    if let Some(repository) = &project.repository {
+        lines.extend([
+            format!("Worktree: {}", repository.root.display()),
+            format!("Common Git directory: {}", repository.common_dir.display()),
+            format!("Worktree Git directory: {}", repository.git_dir.display()),
+            format!(
+                "HEAD: {}",
+                repository
+                    .head_sha
+                    .as_deref()
+                    .unwrap_or("unborn / unavailable")
+            ),
+            format!("Staged: {}", change_label(&repository.staged)),
+            format!("Unstaged: {}", change_label(&repository.unstaged)),
+            format!("Untracked: {} files", repository.untracked_files),
+            format!(
+                "Base ref: {}",
+                repository.base_ref.as_deref().unwrap_or("unknown")
+            ),
+            format!(
+                "Merge base: {}",
+                repository.base_sha.as_deref().unwrap_or("unknown")
+            ),
+            format!(
+                "Committed HEAD vs merge base: {}",
+                repository
+                    .committed
+                    .as_ref()
+                    .map(change_label)
+                    .unwrap_or_else(|| "unknown (no suitable local base)".into())
+            ),
+        ]);
+        if project.state != ProjectState::Ready {
+            lines.push("Repository values above are last-known, not a ready result.".into());
+        }
+    }
+    lines
+}
+
 fn pane_details(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(harness) = recognized_harness(pane, snapshot) {
@@ -539,6 +632,13 @@ pub fn chrome<'a>(
                     sidebar_pane_label(pane, snapshot(&pane.id), label_width)
                 );
                 entries.push((SidebarTarget::Pane(pane.id.clone()), label, focused));
+                if let Some(project) = &pane.project {
+                    entries.push((
+                        SidebarTarget::Pane(pane.id.clone()),
+                        format!("    {}", project_label(project)),
+                        false,
+                    ));
+                }
             }
         }
     }
@@ -569,12 +669,16 @@ pub fn chrome<'a>(
             .map(|p| {
                 let identity = harness_label(p, snapshot(id));
                 format!(
-                    "{} [{}{:?}]",
+                    "{} [{}{:?}]{}",
                     p.title,
                     identity
                         .map(|label| format!("{label} / "))
                         .unwrap_or_default(),
-                    p.status
+                    p.status,
+                    p.project
+                        .as_ref()
+                        .map(|project| format!(" | {}", project_label(project)))
+                        .unwrap_or_default()
                 )
             })
             .unwrap_or_else(|| "Lost pane".into());
@@ -601,7 +705,7 @@ pub fn chrome<'a>(
         ));
     }
     let status = if state.prefix {
-        "Ctrl-b: c workspace  n pane  % / \" split  r/p rename  x unlayout  ! close  w/o choose  d detach".into()
+        "Ctrl-b: i project  c workspace  n pane  % / \" split  r/p rename  x unlayout  ! close  w/o choose  d detach".into()
     } else if !state.status.is_empty() {
         state.status.clone()
     } else {
@@ -624,6 +728,24 @@ pub fn chrome<'a>(
     surface.paint(size, lines, None);
     hit
 }
+pub(crate) fn project_detail_lines(
+    size: Size,
+    form: &Form,
+    registry: &RegistrySnapshot,
+) -> Vec<String> {
+    let width = size.cols - (size.cols / 8).min(8);
+    let details = form
+        .restore
+        .as_ref()
+        .and_then(|id| registry.panes.iter().find(|pane| &pane.id == id))
+        .map(|pane| project_details(pane.project.as_ref()))
+        .unwrap_or_else(|| vec!["Focused pane is unavailable".into()]);
+    details
+        .iter()
+        .flat_map(|detail| wrapped(detail, width as usize))
+        .collect()
+}
+
 pub fn modal<'a>(
     surface: &mut UiSurface,
     size: Size,
@@ -632,7 +754,11 @@ pub fn modal<'a>(
     snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
 ) {
     let x = (size.cols / 8).min(8);
-    let y = (size.rows / 3).min(size.rows.saturating_sub(1));
+    let y = if form.kind == FormKind::ProjectDetails {
+        1.min(size.rows.saturating_sub(1))
+    } else {
+        (size.rows / 3).min(size.rows.saturating_sub(1))
+    };
     let width = size.cols - x;
     let mut cursor = None;
     let title = match form.kind {
@@ -643,9 +769,23 @@ pub fn modal<'a>(
         FormKind::RemoveWorkspace => "Remove workspace layout only (panes survive)? Type yes",
         FormKind::ChooseWorkspace => "Switch workspace (arrows / Enter)",
         FormKind::ChoosePane => "Show existing pane (membership unchanged)",
+        FormKind::ProjectDetails => "Focused project (arrows scroll)",
     };
     let mut lines = vec![line(x, y, width, title, true)];
-    if matches!(form.kind, FormKind::ChooseWorkspace | FormKind::ChoosePane) {
+    if form.kind == FormKind::ProjectDetails {
+        let details = project_detail_lines(size, form, registry);
+        let available = size.rows.saturating_sub(y.saturating_add(4)) as usize;
+        let offset = form.selection.min(details.len().saturating_sub(1));
+        for (index, detail) in details.iter().skip(offset).take(available).enumerate() {
+            lines.push(line(
+                x,
+                y.saturating_add(2).saturating_add(index as u16),
+                width,
+                detail,
+                false,
+            ));
+        }
+    } else if matches!(form.kind, FormKind::ChooseWorkspace | FormKind::ChoosePane) {
         let labels = if form.kind == FormKind::ChooseWorkspace {
             registry
                 .workspaces
@@ -735,7 +875,11 @@ pub fn modal<'a>(
         x,
         size.rows.saturating_sub(2),
         width,
-        "Enter apply · Esc cancel (returns focus to pane)",
+        if form.kind == FormKind::ProjectDetails {
+            "↑/↓ scroll · Enter / Esc close"
+        } else {
+            "Enter apply · Esc cancel (returns focus to pane)"
+        },
         false,
     ));
     surface.paint(size, lines, cursor);
@@ -743,6 +887,62 @@ pub fn modal<'a>(
 
 #[cfg(test)]
 mod tests {
+    fn project_fixture() -> ProjectSnapshot {
+        ProjectSnapshot {
+            cwd: "/repo/linked/日本語".into(),
+            state: ProjectState::Ready,
+            repository: Some(RepositoryInfo {
+                name: "repo".into(),
+                root: "/repo/linked".into(),
+                common_dir: "/repo/.git".into(),
+                git_dir: "/repo/.git/worktrees/linked".into(),
+                branch: Some("feature/日本語".into()),
+                head_sha: Some("123456789abcdef".into()),
+                staged: ChangeSummary {
+                    files: 2,
+                    insertions: 13,
+                    deletions: 7,
+                    binary_files: 1,
+                },
+                unstaged: ChangeSummary::default(),
+                untracked_files: 3,
+                base_ref: None,
+                base_sha: None,
+                committed: None,
+            }),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn narrow_project_inspector_keeps_wrapped_details_accessible() {
+        let (mut pane, snapshot) = capture_fixture();
+        pane.project = Some(project_fixture());
+        let registry = capture_registry(&pane);
+        let size = Size {
+            cols: 23,
+            rows: 10,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let mut surface = UiSurface::new(size);
+        let mut form = Form {
+            kind: FormKind::ProjectDetails,
+            value: String::new(),
+            selection: 0,
+            restore: Some(pane.id.clone()),
+        };
+        let details = project_detail_lines(size, &form, &registry);
+        let width = size.cols - (size.cols / 8).min(8);
+        for (index, detail) in details.iter().enumerate() {
+            assert!(unicode_width::UnicodeWidthStr::width(detail.as_str()) <= width as usize);
+            form.selection = index;
+            modal(&mut surface, size, &form, &registry, |_| Some(&snapshot));
+            assert!(painted_text(&surface).contains(detail));
+            assert!(!surface.frame.cursor.visible);
+        }
+    }
+
     use super::*;
     fn leaf(id: &str) -> LayoutNode {
         LayoutNode::Leaf { pane_id: id.into() }
@@ -802,6 +1002,7 @@ mod tests {
             foreground_cwd: None,
             harness: None,
             harness_status: None,
+            project: None,
             home: "/".into(),
             isolated_environment: true,
         })
@@ -874,6 +1075,7 @@ mod tests {
                 managed: None,
             }),
             harness_status: None,
+            project: None,
             home: "/home/fixture".into(),
             isolated_environment: true,
         };

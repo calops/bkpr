@@ -37,6 +37,7 @@ fn context(id: &str, workspace: Option<&str>) -> ContextFact {
             foreground_cwd: None,
             harness: None,
             harness_status: None,
+            project: None,
             home: PathBuf::from("/"),
             isolated_environment: false,
         },
@@ -892,71 +893,6 @@ fn conversation_rebind_wins_over_receiver_registration_waiting_on_writer() {
     drop(writer);
     assert!(worker.join().unwrap().is_err());
     registry.shutdown().unwrap();
-}
-
-#[test]
-fn repository_identity_follows_live_directory_and_unifies_linked_worktrees() {
-    fn git(cwd: &Path, args: &[&std::ffi::OsStr]) {
-        let mut command = std::process::Command::new("git");
-        for (key, _) in
-            std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("GIT_"))
-        {
-            command.env_remove(key);
-        }
-        let status = command
-            .current_dir(cwd)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .args([
-                "-c",
-                "init.templateDir=",
-                "-c",
-                "user.name=Fixture",
-                "-c",
-                "user.email=fixture@example.invalid",
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "core.fsmonitor=false",
-            ])
-            .args(args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap();
-        assert!(status.success());
-    }
-    let directory = tempfile::tempdir().unwrap();
-    let first = directory.path().join("first");
-    let second = directory.path().join("second");
-    let linked = directory.path().join("linked");
-    fs::create_dir(&first).unwrap();
-    fs::create_dir(&second).unwrap();
-    git(&first, &["init".as_ref()]);
-    git(
-        &first,
-        &[
-            "commit".as_ref(),
-            "--allow-empty".as_ref(),
-            "-m".as_ref(),
-            "fixture".as_ref(),
-        ],
-    );
-    git(
-        &first,
-        &[
-            "worktree".as_ref(),
-            "add".as_ref(),
-            "--detach".as_ref(),
-            linked.as_os_str(),
-        ],
-    );
-    git(&second, &["init".as_ref()]);
-    assert_eq!(repository_identity(&first), repository_identity(&linked));
-    assert_ne!(repository_identity(&first), repository_identity(&second));
-    assert!(repository_identity(directory.path()).is_none());
 }
 
 #[test]

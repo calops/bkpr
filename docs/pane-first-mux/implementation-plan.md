@@ -78,6 +78,8 @@ The native capture implementation revisited this same main revision before porti
 
 The native agent service revisited `relay.rs`, `relay_tests.rs`, Claude/Omp delivery adapters and `agy_receiver.rs` at that main revision. Its private store now belongs to `bkpr-core::registry::agents`, authenticated operations use the native control dispatcher, and launch-local CLI adapters expose shared tool schemas. Native wake, read and processed acknowledgement retain separate provenance; no old broker process, legacy store migration or Zellij context publication is retained. The Codex relay's narrow socket-peer provenance port follows current core birth/ancestry checks rather than trusting a copied token. Generic filesystem events use maintained `notify` 8.2; Bkpr owns hook coordination and outcome policy.
 
+Local project metadata revisits `project.rs` and `project_watch.rs` at main `9ad93bd`. Base precedence, whole-tree merge-base comparisons and NUL-delimited statistics inform `bkpr-core::registry::project`; the old CI/helper/native-session delivery architecture is not retained. Maintained `notify` and `ignore` provide filesystem events and ignore-aware traversal. Canonical-worktree caches and transient pane snapshots replace request-time Git discovery, including repository-scoped agent discovery.
+
 
 ### Native fork source
 
@@ -132,7 +134,9 @@ Real Omp and Codex TUIs have isolated fresh/explicit/resume/fork acceptance, plu
 
 Launch context, scoped discovery and durable peer communication are implemented against the new backend through shared MCP tools. Omp's extension supplies native binding/asides, not a separate tool implementation; its private package supplies MCP configuration and communication guidance. Claude tool-boundary/idle hooks, Codex exact-thread future-turn queue and Antigravity native receiver integrate without PTY peer input. Backend storage preserves exact idempotency and receipts, authenticates launch/receiver generations and suspends commits after durable failure. Installation, native binding and subscription readiness remain distinct. Actual acceptance and native prerequisites are recorded in the engine report, not inferred from source completion.
 
-Next: Git/CI/project presentation, recovery/resume and remaining TUI workflow parity. Historical harness associations belong to the execution-recovery design, not the current layout file. Keep the deferred CPU-efficiency work visible; no fidelity or responsiveness compromise is implied by this ordering.
+Local repository/worktree identity, branch/HEAD, working-tree summaries, committed merge-base totals, focused TUI details and shared MCP context are now implemented. Foreground CWD and event invalidation drive off-path collection; coverage failures and executable-filter preflight rejection remain explicit, never fabricated zero totals.
+
+Next: forge/PR/CI metadata, recovery/resume and remaining TUI workflow parity. Historical harness associations belong to the execution-recovery design, not the current layout file. Keep the deferred CPU-efficiency work visible; no fidelity or responsiveness compromise is implied by this ordering.
 
 ### 1. Native branch baseline
 

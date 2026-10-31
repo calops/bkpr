@@ -391,10 +391,19 @@ impl Registry {
                 info.harness_status = summary.cloned();
             }
         }
+        let project_cwd = cwd.as_deref().unwrap_or(&info.cwd);
+        if info
+            .project
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.cwd != project_cwd)
+        {
+            info.project = Some(super::project::loading(project_cwd));
+        }
         info.foreground_cwd = cwd;
         info.harness = harness;
         state.record.registry.revision = next_revision(state.record.registry.revision)?;
         self.inner.changed.notify_all();
+        let _ = self.inner.project_wake.try_send(());
         Ok(())
     }
     pub(super) fn start_observer(&self) -> Result<()> {
@@ -425,6 +434,7 @@ impl Registry {
                     let registry = Registry {
                         inner,
                         fresh: false,
+                        lifecycle_owner: false,
                     };
                     {
                         let state = registry.inner.state.lock().unwrap();

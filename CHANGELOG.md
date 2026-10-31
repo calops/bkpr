@@ -9,7 +9,7 @@
 
 * `feat/pane-first-mux` replaces the previous runtime with seven focused crates: `bkpr`, `bkpr-client`, `bkpr-tui-framework`, `bkpr-server` (the `bkprd` executable), `bkpr-core`, `bkpr-protocol` and `bkpr-terminal-engine`. There is no legacy launcher, plugin, binary alias or compatibility track on this branch.
 * Remove the old host-runtime flake input, WASI build/export paths, sibling-runtime recipes and obsolete package/cache/publication automation. Nix now supplies only the default native development shell; Cargo plus the pinned engine preparation helper is the supported build path. Native Nix packaging requires a reproducible, offline engine dependency closure and runtime acceptance before package/app outputs return.
-* Expose the native daemon, TUI, typed version-2 control protocol and keyboard client. Backend-owned workspaces and split layouts reference independent panes; closing a projection or detaching a client does not terminate its process. Workspace/layout metadata persists, but process and terminal-content recovery is not implemented. Git/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
+* Expose the native daemon, TUI, typed version-2 control protocol and keyboard client. Backend-owned workspaces and split layouts reference independent panes; closing a projection or detaching a client does not terminate its process. Workspace/layout metadata persists, but process and terminal-content recovery is not implemented. Forge/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
 * Native graphics initial-presentation gates remain unaccepted. This replacement is not production acceptance and does not modify installed applications or live sessions.
 
 ### Native workspace implementation
@@ -36,6 +36,13 @@
 * Integrate shared MCP tools with native Omp asides, Claude tool-boundary and idle hooks, Codex exact-thread future-turn queue and Antigravity native receiver tools. Preserve existing MCP registrations with launch-local namespaces; no persistent installation changes outside explicit opt-in and no PTY peer delivery.
 * Distinguish native binding, helper registration and actual subscribed readiness. Coalesce opaque notifications, guard outcomes by exact receiver/generation and never blindly replay ambiguous delivery. An unobservable native offer remains unknown, distinct from inbox read and processed acknowledgement.
 * Reserve independent receiver admission, support caller-owned cancellable transport and block idle receivers on push notifications rather than fast polling. Use maintained native filesystem notifications for Claude hook coordination.
+
+### Native local projects
+
+* Publish transient backend-owned local project/Git snapshots for pane directories, with independent worktree HEADs and shared canonical repository identity. Keep Git work off input/render paths and expose loading, non-repository, error and unknown-base states instead of fabricating ready/zero results.
+* Annotate pane headers/sidebar with project, worktree and branch; add `Ctrl-b i` focused project details with Unicode wrapping and arrow scrolling. Show local staged/unstaged/untracked data and whole HEAD-versus-merge-base committed totals without renaming panes or reclassifying workspaces.
+* Include the same cached project facts in authenticated `whoami` and detailed discovery. Resolve repository scope from ready backend snapshots rather than launching Git during agent requests. Forge/CI metadata, PR-target diffs and process/harness recovery remain unavailable.
+* Preflight-reject tracked paths selecting configured executable Git `clean`/`process` filters, including clean working trees where dirtiness checks could invoke them. Report an explicit statistics error and label retained values stale rather than silently alter filter semantics. Disable fsmonitor, external diff and textconv for metadata commands; this is not an adversarial repository sandbox against concurrent configuration/attribute changes.
 
 ## Previous implementation — unreleased historical notes
 

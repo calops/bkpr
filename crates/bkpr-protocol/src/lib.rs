@@ -6,6 +6,8 @@ pub use harness::*;
 mod model;
 pub mod path_wire;
 pub use model::*;
+mod project;
+pub use project::*;
 mod registry;
 pub mod scene_wire;
 pub use registry::*;

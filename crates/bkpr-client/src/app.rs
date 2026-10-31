@@ -1555,6 +1555,7 @@ impl App<'_> {
         };
         self.state.focused = form.restore;
         match form.kind {
+            FormKind::ProjectDetails => {}
             FormKind::ChooseWorkspace => {
                 if let Some(workspace) = self.registry.workspaces.get(form.selection) {
                     self.switch(workspace.id.clone());
@@ -1794,6 +1795,17 @@ impl App<'_> {
                 }
                 "ArrowDown" | "ArrowUp" => {
                     let form = self.state.form.as_mut().unwrap();
+                    if form.kind == FormKind::ProjectDetails {
+                        let last = project_detail_lines(size, form, &self.registry)
+                            .len()
+                            .saturating_sub(1);
+                        form.selection = if event.key == "ArrowDown" {
+                            form.selection.saturating_add(1).min(last)
+                        } else {
+                            form.selection.saturating_sub(1)
+                        };
+                        return Ok(false);
+                    }
                     let n = match form.kind {
                         FormKind::ChooseWorkspace => self.registry.workspaces.len(),
                         FormKind::ChoosePane => self.registry.panes.len(),
@@ -1810,8 +1822,12 @@ impl App<'_> {
                 _ => {
                     if event.modifiers & 6 == 0 {
                         let form = self.state.form.as_mut().unwrap();
-                        if !matches!(form.kind, FormKind::ChooseWorkspace | FormKind::ChoosePane)
-                            && form.value.len() + event.text.len() <= 1024
+                        if !matches!(
+                            form.kind,
+                            FormKind::ChooseWorkspace
+                                | FormKind::ChoosePane
+                                | FormKind::ProjectDetails
+                        ) && form.value.len() + event.text.len() <= 1024
                         {
                             form.value.push_str(&safe_text(&event.text));
                         }
@@ -1861,6 +1877,7 @@ impl App<'_> {
             self.state.status.clear();
             match (event.text.as_str(), event.key.as_str()) {
                 ("d", _) => return Ok(true),
+                ("i", _) => self.state.open(FormKind::ProjectDetails, String::new()),
                 ("c", _) => self.state.open(FormKind::CreateWorkspace, String::new()),
                 ("r", _) => {
                     if let Some(workspace) = self.state.current(&self.registry) {
@@ -2714,7 +2731,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                         if let Some(form) = app.state.form.as_mut() {
                             if !matches!(
                                 form.kind,
-                                FormKind::ChooseWorkspace | FormKind::ChoosePane
+                                FormKind::ChooseWorkspace
+                                    | FormKind::ChoosePane
+                                    | FormKind::ProjectDetails
                             ) && form.value.len() + text.len() <= 1024
                             {
                                 form.value.push_str(&safe_text(&text));
@@ -3147,6 +3166,7 @@ mod tests {
             foreground_cwd: None,
             harness: None,
             harness_status: None,
+            project: None,
             home: app.options.home.clone(),
             isolated_environment: true,
         });
@@ -3322,6 +3342,7 @@ mod tests {
                 foreground_cwd: None,
                 harness: None,
                 harness_status: None,
+                project: None,
                 home: app.options.home.clone(),
                 isolated_environment: true,
             })
