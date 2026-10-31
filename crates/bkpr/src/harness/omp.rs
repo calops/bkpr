@@ -1,4 +1,4 @@
-//! A private, launch-local Omp extension. No persistent settings or MCP servers.
+//! Launch-local Omp MCP, guidance and native binding/notification extension.
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{IsTerminal, Write};
@@ -194,7 +194,7 @@ fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
         .context("write Omp capture package asset")
 }
 
-fn extension_package() -> Result<TempDir> {
+fn extension_package(capture: &Capture) -> Result<TempDir> {
     let directory = tempfile::Builder::new()
         .prefix("bkpr-omp-")
         .tempdir()
@@ -203,9 +203,30 @@ fn extension_package() -> Result<TempDir> {
     write_private(&directory.path().join("package.json"),
         br#"{"name":"bkpr-native-capture","private":true,"type":"module","omp":{"extensions":["index.ts"]}}"#)?;
     write_private(&directory.path().join("index.ts"), EXTENSION.as_bytes())?;
+    let server = format!("bkpr_{}", capture.grant.launch_id.replace('-', ""));
+    let config = serde_json::json!({"mcpServers":{(server):{
+        "type":"stdio",
+        "command":capture.program,
+        "args":["capture","mcp","--harness","omp"],
+        "env":{
+            "BKPR_CAPTURE_LAUNCH_ID":capture.grant.launch_id,
+            "BKPR_CAPTURE_TOKEN":capture.grant.token,
+            "BKPR_CAPTURE_HARNESS":"omp",
+            "BKPR_CAPTURE_PROGRAM":capture.program,
+            "BKPR_SOCKET":capture.socket,
+            "BKPR_PANE_ID":capture.grant.pane_id
+        }
+    }}});
     write_private(
-        &directory.path().join("tools.json"),
-        &serde_json::to_vec(&super::agent::tools())?,
+        &directory.path().join("mcp.json"),
+        &serde_json::to_vec(&config)?,
+    )?;
+    // Native --no-skills/explicit skill selection governs package discovery too.
+    let skill = directory.path().join("skills/bkpr-control");
+    fs::create_dir_all(&skill)?;
+    write_private(
+        &skill.join("SKILL.md"),
+        include_bytes!("../../../../integration/omp/SKILL.md"),
     )?;
     Ok(directory)
 }
@@ -220,8 +241,8 @@ pub(super) fn launch(executable: PathBuf, arguments: Vec<OsString>) -> Result<i3
         );
         return passthrough(&executable, arguments);
     }
-    let package = extension_package()?;
     let capture = Capture::begin(HarnessKind::Omp)?;
+    let package = extension_package(&capture)?;
     let mut command = Command::new(executable);
     scrub(&mut command);
     capture.apply(&mut command);

@@ -1,9 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from '@oh-my-pi/pi-coding-agent';
-import { Type, type TSchema } from '@sinclair/typebox';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const MAX_FRAME = 1024 * 1024;
 const MAX_RESPONSE = 8 * 1024 * 1024;
@@ -22,7 +18,7 @@ function pointer(value: unknown): Pointer {
   return { notification_id: item.notification_id, generation: item.generation, session_id: item.session_id };
 }
 
-/** Native tools + step-boundary asides. Never paste peer text into a terminal. */
+/** Native binding and step-boundary asides; shared tools live in MCP. */
 export default function bkpr(pi: ExtensionAPI): void {
   const program = process.env.BKPR_CAPTURE_PROGRAM;
   const managed = process.env.BKPR_CAPTURE_HARNESS === 'omp';
@@ -96,51 +92,6 @@ export default function bkpr(pi: ExtensionAPI): void {
     if (Buffer.byteLength(encoded) > MAX_FRAME) return Promise.reject(new Error('native callback request exceeds limit'));
     return callback(['capture', 'agent', '--stdin'], encoded, signal);
   };
-
-  // Convert the shared public JSON schemas through Omp's maintained TypeBox shim.
-  const schema = (input: unknown): TSchema => {
-    const value = object(input);
-    if (Array.isArray(value.enum) && value.enum.every(item => typeof item === 'string')) {
-      return Type.Union(value.enum.map(item => Type.Literal(item)));
-    }
-    const number = (name: string): number | undefined => typeof value[name] === 'number' ? value[name] : undefined;
-    if (value.type === 'object') {
-      const properties: Record<string, TSchema> = {};
-      const required = Array.isArray(value.required) ? value.required : [];
-      for (const [name, child] of Object.entries(object(value.properties ?? {}))) {
-        const property = schema(child);
-        properties[name] = required.includes(name) ? property : Type.Optional(property);
-      }
-      return Type.Object(properties, { additionalProperties: false });
-    }
-    if (value.type === 'array') return Type.Array(schema(value.items), { maxItems: number('maxItems') });
-    if (value.type === 'integer') return Type.Integer({ minimum: number('minimum'), maximum: number('maximum') });
-    if (value.type === 'boolean') return Type.Boolean();
-    if (value.type === 'string') return Type.String({ minLength: number('minLength'), maxLength: number('maxLength') });
-    throw new Error('unsupported shared tool schema');
-  };
-  const asset: unknown = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'tools.json'), 'utf8'));
-  if (!Array.isArray(asset)) throw new Error('invalid shared tool definitions');
-  const tools = asset.map(value => {
-    const item = object(value);
-    if (typeof item.name !== 'string' || typeof item.description !== 'string') throw new Error('invalid shared tool definition');
-    return { name: item.name, description: item.description, inputSchema: schema(item.inputSchema) };
-  });
-  for (const tool of tools) {
-    pi.registerTool({
-      name: tool.name,
-      label: `Bkpr ${tool.name}`,
-      description: tool.description,
-      parameters: tool.inputSchema,
-      async execute(_id, args, signal, _update, ctx) {
-        if (ctx.agent.kind !== 'main' || disposed) throw new Error('Bkpr tools belong only to this live root launch');
-        await bind(ctx);
-        if (!boundSessionId) throw new Error('native conversation binding is unavailable');
-        const result = await request({ ...object(args), method: tool.name }, signal);
-        return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
-      },
-    });
-  }
 
   const stopReceiver = (): void => {
     epoch += 1;
