@@ -93,7 +93,7 @@ Zellij-specific parts require replacement or adaptation: native plugin/WASI inte
 
 The main engineering risk is not basic PTY spawning. It is preserving terminal fidelity and authority boundaries across multiple clients while replacing a mature mux's lifecycle, recovery and platform integration. Graphics, asynchronous remote clipboard permissions, Unicode/reflow, interactive resize, disconnect/reconnect consistency and per-client rendering are substantive product work. Source availability and a successful library build do not prove these properties.
 
-A focused proof must demonstrate the following before committing to broad migration:
+The original assessment proposed the following proof criteria. Current delivery sequencing prioritizes TUI/harness parity with `main`; independently implemented frontends and multi-endpoint proofs gate those future capabilities, not restoration of the local TUI.
 
 1. **Durable ownership:** a real process/PTY survives view removal and client disconnect; explicit terminate ends it. Removing one view cannot terminate a pane still referenced elsewhere.
 2. **Independent projections:** two clients display the same canonical pane, and one layout references panes on two endpoints. A narrow single-pane projection does not rewrite another client's layout or execution membership.
@@ -104,4 +104,4 @@ A focused proof must demonstrate the following before committing to broad migrat
 7. **Agent semantics:** a real managed launch remains correctly bound/discoverable as views move, non-reporting status stays unknown, and messaging still distinguishes durable receipt, native wake, read and processed acknowledgement. No terminal-input substitute is introduced for peer messaging.
 8. **Bounded ownership:** exact dependency pins, licensing/build integration and the amount of necessary engine patching are recorded. A requirement for broad ongoing engine modifications is a decision point, not hidden scaffolding.
 
-These are acceptance requirements for future work, not exercised results. The proof should isolate failures so the decision can be revisited before migrating every frontend and adapter. The approved boundary is Bkpr-owned product/control-plane plus reused terminal/PTY infrastructure; the terminal-library choice remains conditional on that evidence.
+These are capability acceptance requirements, not verification results from this assessment or a requirement to stop TUI migration until every future capability exists. The proof should isolate failures so individual design decisions can be revisited. The approved boundary is Bkpr-owned product/control-plane plus reused terminal/PTY infrastructure; the terminal-library choice remains conditional on relevant evidence.

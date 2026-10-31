@@ -2,7 +2,11 @@
 
 The native replacement branch is governed by the [implementation plan](docs/pane-first-mux/implementation-plan.md). `main` and the Zellij fork are starting code, not immutable designs or regression suites. Reuse, refactor or rewrite relevant pieces when their domain comes into scope.
 
+Current priority is TUI feature parity with `main`, starting with harness capture. Browser/web, GUI and mobile frontends are deferred; an independent frontend proof must not block restoring the TUI's product functionality.
+
 - [ ] Complete the pane-first backend and independent clients: durable pane identities/lifecycle, revisioned layout documents, backend workspace membership, view/size/input/clipboard authority, typed control, rich metadata and agent/harness services. Use maintained infrastructure libraries and small source ports rather than importing a whole mux. The initial [engine experiment](docs/pane-first-mux/engine-proof.md) records measured behavior and unresolved rendering/input observations, not full product acceptance.
+
+- [ ] Restore automatic harness capture and TUI identity/status end to end: foreground harness/CWD recognition in ordinary panes, managed launch-scoped identity, exact native conversation binding, and independent OSC 7501 semantic status. Reuse or redesign main's supported launchers and installed adapters without requiring different everyday commands or rewriting user settings. Preserve explicit launch, resume/fork/noninteractive behavior and recognition-only launches; clear live capture on process replacement/exit without losing recovery metadata. Publish typed backend facts and verify genuine harness TUIs with isolated local fixtures. This is the next implementation slice, not functionality already supplied by the terminal status parser.
 
 - [x] Replace Bkpr's generic Ghostty FFI ownership with pinned upstream `libghostty-rs` safe/sys crates and a reviewed compatible native ABI. Keep Bkpr's scenes, bounds, caches and authority policy; record the reproducible local dependency patch and exact native provenance.
 
