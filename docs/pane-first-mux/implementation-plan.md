@@ -2,7 +2,7 @@
 
 ## Direction and branch scope
 
-`feat/pane-first-mux` is a replacement branch, not a compatibility track. `bkpr` is the user entrypoint and terminal frontend; the separate `bkprd` daemon owns panes and backend state. The seven crates below replace the former combined prototype. The previous launcher, Zellij/WASI plugin, runtime input and release packaging are removed. Neither old tests nor feature/API parity with `main` block work on this branch.
+`feat/pane-first-mux` is a replacement branch, not a compatibility track. `bkpr` is the user entrypoint and terminal frontend; the separate `bkprd` daemon owns panes and backend state. The seven crates below replace the former combined prototype. The previous launcher, Zellij/WASI plugin, runtime input and release packaging are removed. Old APIs and implementation tests are not compatibility requirements; restoring user-visible TUI and harness capabilities from `main` is the current delivery priority.
 
 `main` and the retained Zellij fork are starting material, not specifications. Inspect relevant current source as a subsystem comes into scope; keep useful code immediately where it forms a coherent module, refactor poor boundaries, and replace designs where better alternatives fit. Do not retain dormant legacy trees merely to preserve them. Record provenance and applicable notices when substantial code is copied. The source ledger below identifies places to look, not mandatory implementations.
 
@@ -107,6 +107,20 @@ Define identity epochs, revision ordering, subscriptions/coalescing, resnapshot,
 
 The local implementation now includes the seven-crate split, pinned safe SDK integration, typed version-2 control, independent PTYs, persisted workspace/layout metadata, bounded view authority and the retained-framework sidebar/forms/choosers. These are implemented portions of stages 2, 3 and 5, not completion of every requirement below. Endpoint-qualified remote references, rich metadata/harness services, execution recovery, a second independent frontend and supported-product packaging remain future work. The [engine report](engine-proof.md) separates measured acceptance from unresolved gates.
 
+### Current priority: TUI parity and harness capture
+
+Restore the user-facing capabilities of current `main` in the native TUI before implementing another frontend. Functional parity is the target, not preservation of old interfaces, native-owner publication or Zellij/plugin plumbing. Web, GUI and mobile work is deferred and does not gate TUI progress.
+
+The next implementation slice is harness capture end to end:
+
+- Recognize supported foreground harness jobs started in ordinary managed shells, with process-birth/PTY ownership and foreground CWD evidence. Recognition must not depend on terminal titles or fabricate semantic status.
+- Restore the explicit launch path and ordinary-command integration paths against a backend-owned, launch-scoped identity. Preserve arguments, profiles, fresh/resume/fork/noninteractive semantics and unrelated user settings; recognition-only programs do not inherit relay credentials.
+- Bind actual native harness conversations through their supported hooks, extensions or native protocols, not guessed latest sessions, titles or repositories. Inspect main's `agent.rs`, `harness.rs`, installed adapters and Claude/Codex/Omp/Antigravity launchers before choosing reusable code versus redesign.
+- Publish typed recognition, launch/binding and OSC 7501 status facts separately to the TUI. The current engine's status parser and `program_status` snapshot field are prerequisites, not existing harness capture or sidebar integration.
+- Handle harness replacement, foreground/background transitions and return to the shell without stale identity/readiness, killing the enclosing shell or doing process scans on the UI thread. Verify real harness TUIs against isolated local fixtures without provider calls.
+
+Follow with the remaining context/discovery/communication tools, Git/CI/project presentation, recovery/resume and TUI workflow parity. Keep the existing deferred CPU-efficiency work visible; no fidelity or responsiveness compromise is implied by this ordering.
+
 ### 1. Native branch baseline
 
 Remove old runtime and build/release interfaces; make native `bkpr` the user entrypoint. Keep real engine/PTY/view/device behavior, relevant behavioral tests and historical evidence. Update README, project guidance and backlog without pretending unsupported old features still exist. Use only native checks; protect unrelated running programs and shared public artifact paths as an operational precaution, not a compatibility requirement.
@@ -135,7 +149,7 @@ Agent identities must be authenticated, launch-scoped and bound to genuine nativ
 
 Implement frontend-owned navigation/chrome, splits, finder/palette, metadata, forms, overlays, selection and links against the same scene/control model. Redesign input ergonomics rather than recreate Zellij modes by default. Cursor, pointer and focus ownership are client-specific.
 
-Build a second independently running projection early. A browser or narrow single-pane consumer must render a live terminal from the canonical protocol, handle resource/delta lifetime and reconnect, and coexist with an active TUI. Screenshots, hard-coded mocks or ANSI replay don't establish independent frontend support.
+An independently implemented browser or narrow client remains a future acceptance check for additional frontend products, not the next step or a prerequisite for TUI parity. When that work resumes, it must consume the canonical protocol, handle resource/delta lifetime and reconnect, and coexist with an active TUI. Screenshots, hard-coded mocks or ANSI replay do not establish independent frontend support.
 
 ### 6. Authenticated remote endpoints
 
