@@ -160,6 +160,8 @@ Make normal launch, shell exit, workspace/pane creation, detach/reattach and dae
 
 Exercise frontend-owned navigation/chrome, splits and resizing, scrollback, selection/copy/paste, links, finder/action discovery, forms and focus restoration in the actual terminal. Inspect main/fork implementations as each domain comes into scope; reuse or redesign useful pieces rather than treating old APIs as requirements. Cursor, pointer and focus ownership are client-specific. This is the current delivery priority.
 
+Launch/restart shell replacement and per-view scrollback navigation now have actual terminal acceptance. Scrollback reuses the maintained SDK's native tracked-grid references; it does not copy the retained buffer or add another parser. Exact native mouse mode plus capability advertisement separates application input from local history gestures. Selection/copy/search, further ergonomics and full harness recovery remain distinct pending slices. Complete and report each agreed slice before advancing to another.
+
 An independently implemented browser or narrow client remains a future acceptance check for additional frontend products, not a prerequisite for TUI parity. When that work resumes, it must consume the canonical protocol, handle resource/delta lifetime and reconnect, and coexist with an active TUI. Screenshots, hard-coded mocks or ANSI replay do not establish independent frontend support.
 
 ### 5. Shared control, recovery and metadata completion

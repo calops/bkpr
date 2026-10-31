@@ -26,6 +26,7 @@ fn frame() -> Frame {
         images: Vec::new(),
         placements: Vec::new(),
         alternate_screen: false,
+        mouse_reporting: false,
         scrollback_total: 0,
         scrollback_offset: 0,
     }

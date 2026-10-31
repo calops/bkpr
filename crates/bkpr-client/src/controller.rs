@@ -648,6 +648,7 @@ pub fn chrome<'a>(
     context: ChromeContext<'_>,
     pane_status: impl Fn(&str) -> Option<&'static str>,
     snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
+    history: impl Fn(&str) -> Option<(u64, u64)>,
 ) -> Vec<(SidebarTarget, u16)> {
     let ChromeContext {
         size,
@@ -747,6 +748,11 @@ pub fn chrome<'a>(
         } else {
             title
         };
+        let title = if let Some((offset, total)) = history(id) {
+            format!("[HISTORY -{offset}/{total}] {title}")
+        } else {
+            title
+        };
         let title = format!(
             " {} {}",
             if state.focused.as_ref() == Some(id) {
@@ -765,7 +771,16 @@ pub fn chrome<'a>(
         ));
     }
     let status = if state.prefix {
-        "Ctrl-b: i project  c workspace  n pane  % / \" split  r/p rename  x unlayout  ! close  w/o choose  d detach".into()
+        "Ctrl-b: s history  i project  c workspace  n pane  % / \" split  r/p rename  x unlayout  ! close  w/o choose  d detach".into()
+    } else if let Some((offset, total)) = state.focused.as_deref().and_then(&history) {
+        format!(
+            "HISTORY -{offset}/{total} | Esc/Enter/End live | ↑/↓ line  PgUp/PgDn page  Home oldest{}",
+            if state.status.is_empty() {
+                String::new()
+            } else {
+                format!(" | {}", state.status)
+            }
+        )
     } else if !state.status.is_empty() {
         state.status.clone()
     } else {
@@ -1174,6 +1189,7 @@ mod tests {
             },
             |_| None,
             |_| None,
+            |_| None,
         );
         let displayed: String = surface
             .frame
@@ -1245,6 +1261,7 @@ mod tests {
             capabilities: PaneCapabilities {
                 sixel: false,
                 normalized_frames: true,
+                native_mouse_reporting: true,
                 clipboard_timeout_ms: 5000,
                 view_timeout_ms: 5000,
                 poll_wait_max_ms: 1000,
@@ -1314,6 +1331,7 @@ mod tests {
             },
             |_| None,
             |_| Some(snapshot),
+            |_| None,
         )
     }
 
@@ -1448,6 +1466,7 @@ mod tests {
             },
             |_| None,
             |_| None,
+            |_| None,
         );
         assert!(
             hits.iter()
@@ -1465,6 +1484,7 @@ mod tests {
                 rects: &[],
                 rgb: false,
             },
+            |_| None,
             |_| None,
             |_| None,
         );

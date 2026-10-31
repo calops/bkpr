@@ -109,6 +109,126 @@ fn scrollback_read_restores_live_view_and_resize_reflows() {
 }
 
 #[test]
+fn view_history_pins_follow_output_reflow_and_retention_without_moving_live() {
+    let mut term = terminal();
+    for i in 0..60 {
+        term.feed(format!("line-{i:04}-abcdefghijkl\r\n").as_bytes())
+            .unwrap();
+    }
+    assert_eq!(term.scroll_view("reader", 12).unwrap(), 12);
+    assert_eq!(term.view_scrollback_offset("other").unwrap(), 0);
+    let offset = term.view_scrollback_offset("reader").unwrap();
+    let before = term.read_scrollback(offset).unwrap();
+    let top = before.rows[0]
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect::<String>();
+    assert!(!before.cursor.visible);
+    for i in 60..70 {
+        term.feed(format!("line-{i:04}-abcdefghijkl\r\n").as_bytes())
+            .unwrap();
+    }
+    let offset = term.view_scrollback_offset("reader").unwrap();
+    assert!(offset > 12);
+    assert_eq!(text(&term.read_scrollback(offset).unwrap()), text(&before));
+    assert_eq!(term.snapshot().unwrap().scrollback_offset, 0);
+    term.resize(Size {
+        cols: 10,
+        rows: 6,
+        ..size()
+    })
+    .unwrap();
+    let offset = term.view_scrollback_offset("reader").unwrap();
+    let reflowed = term.read_scrollback(offset).unwrap();
+    let prefix = top.trim_end().chars().take(10).collect::<String>();
+    assert!(text(&reflowed).starts_with(&prefix));
+    assert_eq!(term.snapshot().unwrap().scrollback_offset, 0);
+    assert_eq!(term.scroll_view("other", i64::MAX).unwrap(), {
+        let live = term.snapshot().unwrap();
+        live.scrollback_total - u64::from(live.size.rows)
+    });
+    assert_eq!(term.scroll_view("reader", i64::MIN).unwrap(), 0);
+    assert_eq!(term.view_scrollback_offset("reader").unwrap(), 0);
+    // Retention prunes native pages while the second view remains anchored.
+    for i in 0..12_000 {
+        term.feed(format!("retained-{i:05}\r\n").as_bytes())
+            .unwrap();
+    }
+    let live = term.snapshot().unwrap();
+    let offset = term.view_scrollback_offset("other").unwrap();
+    assert!(offset > 0);
+    assert!(offset <= live.scrollback_total - u64::from(live.size.rows));
+    assert!(!text(&term.read_scrollback(offset).unwrap()).contains("line-0000"));
+    term.retain_scrollback_views(|view| view == "reader");
+    assert_eq!(term.view_scrollback_offset("other").unwrap(), 0);
+}
+
+#[test]
+fn history_reads_preserve_synchronized_live_frame_and_latest_release() {
+    let mut term = terminal();
+    for i in 0..30 {
+        term.feed(format!("line-{i:02}\r\n").as_bytes()).unwrap();
+    }
+    let live = term.snapshot().unwrap();
+    term.feed(b"\x1b[?2026h\x1b[?1000h\x1b[HHELD").unwrap();
+    term.scroll_view("reader", 8).unwrap();
+    let history = term
+        .read_scrollback(term.view_scrollback_offset("reader").unwrap())
+        .unwrap();
+    assert!(history.scrollback_offset > 0);
+    assert_eq!(text(&term.snapshot().unwrap()), text(&live));
+    assert!(term.snapshot().unwrap().mouse_reporting);
+    assert_eq!(term.snapshot().unwrap().scrollback_offset, 0);
+    term.feed(b"\x1b[?2026l").unwrap();
+    assert!(text(&term.snapshot().unwrap()).contains("HELD"));
+    assert_eq!(term.snapshot().unwrap().scrollback_offset, 0);
+}
+
+#[test]
+fn exact_native_mouse_mode_and_alternate_screen_bound_history_policy() {
+    let mut term = terminal();
+    let wheel = MouseEvent {
+        x: 0.0,
+        y: 0.0,
+        modifiers: 0,
+        action: MouseAction::Press,
+        button: MouseButton::WheelUp,
+    };
+    assert!(!term.snapshot().unwrap().mouse_reporting);
+    assert!(term.encode_mouse(&wheel).unwrap().is_empty());
+    // Encoding mode alone is not mouse tracking.
+    term.feed(b"\x1b[?1006h").unwrap();
+    assert!(!term.snapshot().unwrap().mouse_reporting);
+    for mode in [9, 1000, 1002, 1003] {
+        term.feed(format!("\x1b[?{mode}h").as_bytes()).unwrap();
+        assert!(term.snapshot().unwrap().mouse_reporting);
+        let encoded = term.encode_mouse(&wheel).unwrap();
+        if mode != 9 {
+            assert_eq!(encoded, b"\x1b[<64;1;1M");
+        }
+        term.feed(format!("\x1b[?{mode}l").as_bytes()).unwrap();
+        assert!(!term.snapshot().unwrap().mouse_reporting);
+    }
+    for i in 0..30 {
+        term.feed(format!("line-{i:02}\r\n").as_bytes()).unwrap();
+    }
+    term.scroll_view("reader", 8).unwrap();
+    term.feed(b"\x1b[?1049hALT\x1b[?1000h").unwrap();
+    let alternate = term.snapshot().unwrap();
+    assert!(alternate.alternate_screen && alternate.mouse_reporting);
+    assert!(term.scroll_view("reader", 1).is_err());
+    assert_eq!(term.scroll_view("reader", i64::MIN).unwrap(), 0);
+    let no_primary_history = term.read_scrollback(u64::MAX).unwrap();
+    assert!(no_primary_history.alternate_screen);
+    assert_eq!(no_primary_history.scrollback_offset, 0);
+    assert!(text(&no_primary_history).contains("ALT"));
+    assert_eq!(term.encode_mouse(&wheel).unwrap(), b"\x1b[<64;1;1M");
+    term.feed(b"\x1b[?1049l").unwrap();
+    assert_eq!(term.view_scrollback_offset("reader").unwrap(), 0);
+}
+
+#[test]
 fn native_modes_drive_key_mouse_focus_and_safe_paste() {
     let mut term = terminal();
     let up = KeyEvent {
@@ -167,6 +287,51 @@ fn kitty_pixels_are_shared_owned_and_deletion_removes_placements() {
     assert!(term.snapshot().unwrap().placements.is_empty());
     drop(term);
     assert_eq!(frame.images[0].pixels, [255, 0, 0, 255]);
+}
+
+#[test]
+fn history_navigation_reuses_live_image_generations_and_render_state() {
+    use base64::Engine;
+    let mut term = terminal();
+    for i in 0..30 {
+        term.feed(format!("row-{i:02}\r\n").as_bytes()).unwrap();
+    }
+    for id in 1..=4 {
+        let pixels = [id as u8, 100, 200, 255].repeat(256 * 256);
+        let payload = base64::engine::general_purpose::STANDARD.encode(&pixels);
+        term.feed(
+            format!(
+                "\x1b[1;{}H\x1b_Ga=T,f=32,i={id},s=256,v=256,c=1,r=1,q=2;{payload}\x1b\\",
+                id * 2
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    }
+    let live = term.snapshot().unwrap();
+    assert_eq!(live.images.len(), 4);
+    for offset in [5, 10, 15, 20] {
+        let history = term.read_scrollback(offset).unwrap();
+        assert!(history.images.is_empty());
+        let current = term.snapshot().unwrap();
+        assert_eq!(text(&current), text(&live));
+        assert_eq!(current.placements, live.placements);
+        for image in &live.images {
+            let current = current
+                .images
+                .iter()
+                .find(|next| next.id == image.id)
+                .unwrap();
+            assert!(Arc::ptr_eq(image, current));
+            assert_eq!(image.pixels.len(), 256 * 256 * 4);
+        }
+    }
+    let pixels = Arc::downgrade(&live.images[0]);
+    drop(live);
+    assert!(
+        pixels.upgrade().is_none(),
+        "cache retained unprojected pixels"
+    );
 }
 
 #[test]

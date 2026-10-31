@@ -76,6 +76,9 @@ pub struct WriteReceipt {
 pub struct PaneCapabilities {
     pub sixel: bool,
     pub normalized_frames: bool,
+    /// Frame mouse-reporting facts come from the native terminal, not defaults.
+    #[serde(default)]
+    pub native_mouse_reporting: bool,
     pub clipboard_timeout_ms: u64,
     pub view_timeout_ms: u64,
     pub poll_wait_max_ms: u64,

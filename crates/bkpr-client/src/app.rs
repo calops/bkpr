@@ -21,6 +21,8 @@ use termwiz::input::{InputEvent, InputParser, Modifiers, MouseButtons};
 mod jobs;
 #[path = "management.rs"]
 mod management;
+#[path = "scrollback.rs"]
+mod scrollback;
 
 enum Background {
     Management(management::Completion),
@@ -120,6 +122,7 @@ struct Attached {
     metadata: PaneSnapshot,
     clipboard_id: Option<String>,
     frame: Option<Frame>,
+    history: bool,
     revision: u64,
     images: HashMap<ImageKey, Arc<Image>>,
     seeded: u64,
@@ -176,6 +179,9 @@ impl Attached {
     fn scene(&mut self, update: scene_wire::DecodedScene) -> Result<()> {
         update.apply(&mut self.revision, &mut self.frame)?;
         let frame = self.frame.as_mut().context("decoded scene missing")?;
+        if frame.alternate_screen {
+            self.history = false;
+        }
         for image in frame.images.drain(..) {
             self.images.insert(image.key(), image);
         }
@@ -657,7 +663,8 @@ impl App<'_> {
             PaneRequest::Key { view_id, .. }
             | PaneRequest::Paste { view_id, .. }
             | PaneRequest::Mouse { view_id, .. }
-            | PaneRequest::Focus { view_id, .. } => {
+            | PaneRequest::Focus { view_id, .. }
+            | PaneRequest::Scroll { view_id, .. } => {
                 target.is_some_and(|(pane, view)| pane == id && view_id == view)
             }
             _ => false,
@@ -1591,6 +1598,10 @@ impl App<'_> {
                 });
             }
             Ok(None) if !listing && self.paste_offer.is_some() => {
+                if self.focused_history() {
+                    self.paste_offer = None;
+                    return Ok(());
+                }
                 self.paste_target = self.active();
                 if self.paste_target.is_none() {
                     self.paste_offer = None;
@@ -1799,7 +1810,7 @@ impl App<'_> {
         size: Size,
         rects: &[(String, Rect)],
     ) -> Result<bool> {
-        let local = self.state.prefix || self.state.form.is_some();
+        let local = self.state.prefix || self.state.form.is_some() || self.focused_history();
         match self.key(event, out, size, rects) {
             Err(error) if error.downcast_ref::<updates::InputRejected>().is_some() => {
                 self.scope_input_result(Err(error))?;
@@ -1978,6 +1989,7 @@ impl App<'_> {
             if self.state.prefix {
                 self.state.prefix = false;
                 if !self.options.read_only
+                    && !self.focused_history()
                     && let Some((pane, view)) = self.active()
                 {
                     for action in [KeyAction::Press, KeyAction::Release] {
@@ -2014,6 +2026,7 @@ impl App<'_> {
             self.state.status.clear();
             match (event.text.as_str(), event.key.as_str()) {
                 ("d", _) => return Ok(true),
+                ("s", _) => self.enter_history(rects)?,
                 ("i", _) => self.state.open(FormKind::ProjectDetails, String::new()),
                 ("c", _) => self.state.open(FormKind::CreateWorkspace, String::new()),
                 ("r", _) => {
@@ -2080,6 +2093,9 @@ impl App<'_> {
                 (_, "Escape") => {}
                 _ => self.state.status = "Unknown Ctrl-b command; press Ctrl-b for bindings".into(),
             };
+            return Ok(false);
+        }
+        if self.history_key(&event, rects)? {
             return Ok(false);
         }
         if !self.options.read_only {
@@ -2242,13 +2258,7 @@ impl App<'_> {
         let rect = content(*rect);
         if rect.width == 0
             || rect.height == 0
-            || self.options.read_only
             || (origin.is_none() && !rect.contains(mouse.x, mouse.y))
-            || !self
-                .registry
-                .panes
-                .iter()
-                .any(|info| info.id == *pane && info.status == PaneStatus::Running)
         {
             return Ok(());
         }
@@ -2261,6 +2271,36 @@ impl App<'_> {
         let Some(frame) = attached.frame.as_ref() else {
             return Ok(());
         };
+        let vertical = matches!(button, MouseButton::WheelUp | MouseButton::WheelDown);
+        let shifted = mouse.modifiers.contains(Modifiers::SHIFT);
+        if vertical
+            && (shifted
+                || attached.metadata.capabilities.native_mouse_reporting
+                    && !frame.mouse_reporting
+                    && !frame.alternate_screen)
+        {
+            let delta = if button == MouseButton::WheelUp {
+                3
+            } else {
+                -3
+            };
+            let enter = shifted || delta > 0 || self.history(pane).is_some();
+            return self.scroll_history(pane, delta, enter);
+        }
+        // Historical cells cannot start a new application gesture. Complete
+        // accepted releases and preserve application-owned wheel reporting.
+        if self.options.read_only
+            || (!wheel
+                && self.history(pane).is_some()
+                && !(origin.is_some() && action == MouseAction::Release))
+            || !self
+                .registry
+                .panes
+                .iter()
+                .any(|info| info.id == *pane && info.status == PaneStatus::Running)
+        {
+            return Ok(());
+        }
         // A pinned or asynchronously resizing native pane can be smaller than
         // its client rectangle. Complete captured gestures at the last actual
         // native cell rather than losing their release in the letterbox.
@@ -2468,6 +2508,7 @@ fn attach(socket: &Path, pane: &str, mut spec: ViewSpec) -> Result<Attached> {
         metadata,
         clipboard_id,
         frame: None,
+        history: false,
         revision: 0,
         images: HashMap::new(),
         seeded: 0,
@@ -2673,6 +2714,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 },
                 |pane| app.badge(pane),
                 |pane| app.views.get(pane).map(|view| &view.metadata),
+                |pane| app.history(pane),
             );
             native_colors(&mut chrome_surface.frame, &app.colors);
             placeholders.retain(|id, _| {
@@ -2756,6 +2798,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                         focused: !popup
                             && app.state.focused.as_ref() == Some(id)
                             && app.input_enabled(id)
+                            && app.history(id).is_none()
                             && app
                                 .registry
                                 .panes
@@ -2864,33 +2907,8 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                         }
                     }
                     ClientEvent::Legacy(InputEvent::Paste(text)) => {
-                        if let Some(form) = app.state.form.as_mut() {
-                            if !matches!(
-                                form.kind,
-                                FormKind::ChooseWorkspace
-                                    | FormKind::ChoosePane
-                                    | FormKind::ProjectDetails
-                                    | FormKind::ReopenPane { .. }
-                            ) && form.value.len() + text.len() <= 1024
-                            {
-                                form.value.push_str(&safe_text(&text));
-                            }
-                        } else if !app
-                            .consent
-                            .as_ref()
-                            .is_some_and(|c| !c.state.allowed && !c.state.sent)
-                            && !app.options.read_only
-                            && let Some((pane, view)) = app.active()
-                        {
-                            let result = app.enqueue(
-                                &pane,
-                                PaneRequest::Paste {
-                                    view_id: view,
-                                    data: text.into_bytes(),
-                                },
-                            );
-                            app.scope_input_result(result)?;
-                        }
+                        let result = app.paste(text);
+                        app.scope_input_result(result)?;
                     }
                     ClientEvent::Legacy(InputEvent::Mouse(mouse)) => {
                         if let Err(error) = app.mouse(mouse, size, &rects, &workspace_hits, &hits) {
@@ -3571,6 +3589,7 @@ mod tests {
             capabilities: PaneCapabilities {
                 sixel: false,
                 normalized_frames: true,
+                native_mouse_reporting: true,
                 clipboard_timeout_ms: 5000,
                 view_timeout_ms: 5000,
                 poll_wait_max_ms: 1000,
@@ -3589,6 +3608,7 @@ mod tests {
                 metadata,
                 clipboard_id: None,
                 frame: Some(blank(size())),
+                history: false,
                 revision: 1,
                 images: HashMap::new(),
                 seeded: 0,
@@ -3742,6 +3762,7 @@ mod tests {
                 rects: &rects,
                 rgb: true,
             },
+            |_| None,
             |_| None,
             |_| None,
         );
@@ -4555,5 +4576,325 @@ mod tests {
         assert!(!app.views.contains_key("focused-pane"));
         assert!(app.active().is_none());
         assert!(received.try_recv().is_err());
+    }
+    fn scroll(capture: &updates::Capture, pane: &str, view: &str) -> i64 {
+        match capture
+            .try_recv()
+            .expect("expected admitted history navigation")
+        {
+            Operation::Pane {
+                pane_id,
+                request: PaneRequest::Scroll { view_id, delta },
+            } => {
+                assert_eq!(pane_id, pane);
+                assert_eq!(view_id, view);
+                delta
+            }
+            other => panic!("history navigation dispatched application input: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn physical_history_keys_block_typing_and_paste_until_an_explicit_live_return() {
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .frame
+            .as_mut()
+            .unwrap()
+            .scrollback_total = 400;
+
+        physical_keys(&mut app, b"\x1b[5;2~").unwrap();
+        assert!(scroll(&capture, "focused-pane", "focused-view") > 0);
+        assert!(app.focused_history());
+        physical_keys(&mut app, b"x\x02\x02").unwrap();
+        app.paste("paste sentinel".into()).unwrap();
+        app.paste_reply(b"5522;type=read:status=OK:pw=cHc=;")
+            .unwrap();
+        app.paste_reply(b"5522;type=read:status=DATA:pw=cHc=:mime=Lg==;dGV4dC9wbGFpbg==")
+            .unwrap();
+        app.paste_reply(b"5522;type=read:status=DONE:pw=cHc=;")
+            .unwrap();
+        assert!(app.paste_offer.is_none() && app.paste_target.is_none());
+        assert!(app.consent.is_none());
+        assert!(
+            capture.try_recv().is_err(),
+            "history typing/paste leaked to the application"
+        );
+
+        for (name, expected) in [("ArrowUp", 1), ("ArrowDown", -1), ("Home", i64::MAX)] {
+            app.key(key(name), &mut Vec::new(), size(), &[]).unwrap();
+            assert_eq!(scroll(&capture, "focused-pane", "focused-view"), expected);
+        }
+        app.key(key("End"), &mut Vec::new(), size(), &[]).unwrap();
+        assert_eq!(scroll(&capture, "focused-pane", "focused-view"), i64::MIN);
+        assert!(!app.focused_history());
+        physical_keys(&mut app, b"x").unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+        pane_id, request: PaneRequest::Key { event, .. }
+    } if pane_id == "focused-pane" && event.text == "x"));
+    }
+
+    #[test]
+    fn all_live_return_keys_consume_their_lifecycle_without_an_application_enter_or_escape() {
+        for name in ["Escape", "Enter", "End"] {
+            let (mut app, capture) = fixture();
+            attach_fixture(&mut app);
+            app.enter_history(&[]).unwrap();
+            scroll(&capture, "focused-pane", "focused-view");
+            let event = key(name);
+            app.key(event.clone(), &mut Vec::new(), size(), &[])
+                .unwrap();
+            assert_eq!(scroll(&capture, "focused-pane", "focused-view"), i64::MIN);
+            for action in [KeyAction::Repeat, KeyAction::Release] {
+                app.key(
+                    KeyEvent {
+                        action,
+                        ..event.clone()
+                    },
+                    &mut Vec::new(),
+                    size(),
+                    &[],
+                )
+                .unwrap();
+            }
+            assert!(!app.focused_history());
+            assert!(capture.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn history_is_view_local_and_held_application_keys_still_release_at_their_origin() {
+        let (mut app, capture) = fixture();
+        let _pointer = PointerFixture::new(&mut app);
+        app.key(key("KeyA"), &mut Vec::new(), size(), &[]).unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+        request: PaneRequest::Key { event, .. }, ..
+    } if event.action == KeyAction::Press));
+        app.enter_history(&[]).unwrap();
+        scroll(&capture, "focused-pane", "focused-view");
+        app.key(
+            KeyEvent {
+                action: KeyAction::Repeat,
+                ..key("KeyA")
+            },
+            &mut Vec::new(),
+            size(),
+            &[],
+        )
+        .unwrap();
+        assert!(capture.try_recv().is_err());
+        app.state.focused = Some("beta".into());
+        app.notified_focus = Some(("beta".into(), "beta-view".into()));
+        app.key(
+            KeyEvent {
+                action: KeyAction::Repeat,
+                ..key("KeyA")
+            },
+            &mut Vec::new(),
+            size(),
+            &[],
+        )
+        .unwrap();
+        assert!(
+            capture.try_recv().is_err(),
+            "focus change leaked a held repeat into the historical view"
+        );
+        app.key(
+            KeyEvent {
+                action: KeyAction::Release,
+                ..key("KeyA")
+            },
+            &mut Vec::new(),
+            size(),
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+        pane_id, request: PaneRequest::Key { view_id, event }
+    } if pane_id == "focused-pane" && view_id == "focused-view" && event.action == KeyAction::Release));
+        assert!(!app.focused_history());
+        app.key(key("KeyZ"), &mut Vec::new(), size(), &[]).unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+        pane_id, request: PaneRequest::Key { .. }
+    } if pane_id == "beta"));
+        app.state.focused = Some("focused-pane".into());
+        assert!(app.focused_history());
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .frame
+            .as_mut()
+            .unwrap()
+            .scrollback_offset = 12;
+        app.key(key("End"), &mut Vec::new(), size(), &[]).unwrap();
+        scroll(&capture, "focused-pane", "focused-view");
+        app.key(key("KeyQ"), &mut Vec::new(), size(), &[]).unwrap();
+        assert!(
+            capture.try_recv().is_err(),
+            "stale historical frame accepted typing"
+        );
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .frame
+            .as_mut()
+            .unwrap()
+            .scrollback_offset = 0;
+        assert!(!app.focused_history());
+    }
+
+    #[test]
+    fn read_only_views_can_navigate_but_never_deliver_application_input() {
+        let (mut app, capture) = fixture();
+        app.options.read_only = true;
+        attach_fixture(&mut app);
+        physical_keys(&mut app, b"\x02s").unwrap();
+        assert!(scroll(&capture, "focused-pane", "focused-view") > 0);
+        physical_keys(&mut app, b"\x1b[6;2~").unwrap();
+        assert!(scroll(&capture, "focused-pane", "focused-view") < 0);
+        physical_keys(&mut app, b"typing\r").unwrap();
+        assert_eq!(scroll(&capture, "focused-pane", "focused-view"), i64::MIN);
+        app.paste("blocked".into()).unwrap();
+        assert!(capture.try_recv().is_err());
+        assert!(!app.views["focused-pane"].spec.input);
+    }
+
+    #[test]
+    fn existing_workspace_shortcuts_remain_available_while_a_view_inspects_history() {
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        app.registry.workspaces = ["first", "second"]
+            .into_iter()
+            .map(|id| Workspace {
+                id: id.into(),
+                name: id.into(),
+                revision: 1,
+                layout: Some(LayoutNode::Leaf {
+                    pane_id: "focused-pane".into(),
+                }),
+            })
+            .collect();
+        app.state.workspace = Some("first".into());
+        app.enter_history(&[]).unwrap();
+        scroll(&capture, "focused-pane", "focused-view");
+        physical_keys(&mut app, b"\x02]").unwrap();
+        assert_eq!(app.state.workspace.as_deref(), Some("second"));
+        physical_keys(&mut app, b"\x02[").unwrap();
+        assert_eq!(app.state.workspace.as_deref(), Some("first"));
+        assert!(capture.try_recv().is_err());
+    }
+
+    #[test]
+    fn physical_wheels_follow_exact_native_mouse_ownership_and_shift_override() {
+        let (mut app, capture) = fixture();
+        let pointer = PointerFixture::new(&mut app);
+        let alpha = content(pointer.rects[0].1);
+        pointer.send(&mut app, 64, alpha.x + 2, alpha.y + 2, false);
+        assert_eq!(scroll(&capture, "focused-pane", "focused-view"), 3);
+
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .frame
+            .as_mut()
+            .unwrap()
+            .mouse_reporting = true;
+        pointer.send(&mut app, 64, alpha.x + 2, alpha.y + 2, false);
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+        request: PaneRequest::Mouse { event, .. }, ..
+    } if event.button == MouseButton::WheelUp && event.modifiers == 0));
+        pointer.send(&mut app, 68, alpha.x + 2, alpha.y + 2, false);
+        assert_eq!(scroll(&capture, "focused-pane", "focused-view"), 3);
+        assert!(capture.try_recv().is_err());
+
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .frame
+            .as_mut()
+            .unwrap()
+            .alternate_screen = true;
+        pointer.send(&mut app, 65, alpha.x + 2, alpha.y + 2, false);
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+        request: PaneRequest::Mouse { event, .. }, ..
+    } if event.button == MouseButton::WheelDown && event.modifiers == 0));
+        pointer.send(&mut app, 68, alpha.x + 2, alpha.y + 2, false);
+        physical_keys(&mut app, b"\x1b[5;2~").unwrap();
+        assert!(!app.focused_history());
+        assert!(!app.state.status.is_empty());
+        assert!(
+            capture.try_recv().is_err(),
+            "alternate screen exposed primary history"
+        );
+    }
+
+    #[test]
+    fn unknown_native_mouse_ownership_never_intercepts_an_ordinary_wheel() {
+        let (mut app, capture) = fixture();
+        let pointer = PointerFixture::new(&mut app);
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .metadata
+            .capabilities
+            .native_mouse_reporting = false;
+        let alpha = content(pointer.rects[0].1);
+        pointer.send(&mut app, 64, alpha.x + 2, alpha.y + 2, false);
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+        request: PaneRequest::Mouse { event, .. }, ..
+    } if event.button == MouseButton::WheelUp && event.modifiers == 0));
+        assert!(!app.focused_history());
+        pointer.send(&mut app, 68, alpha.x + 2, alpha.y + 2, false);
+        assert_eq!(scroll(&capture, "focused-pane", "focused-view"), 3);
+        assert!(capture.try_recv().is_err());
+    }
+
+    #[test]
+    fn read_only_wheel_history_needs_no_application_mouse_input_grant() {
+        let (mut app, capture) = fixture();
+        app.options.read_only = true;
+        let pointer = PointerFixture::new(&mut app);
+        assert!(!app.views["focused-pane"].spec.input);
+        let alpha = content(pointer.rects[0].1);
+        pointer.send(&mut app, 64, alpha.x + 2, alpha.y + 2, false);
+        assert_eq!(scroll(&capture, "focused-pane", "focused-view"), 3);
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .frame
+            .as_mut()
+            .unwrap()
+            .mouse_reporting = true;
+        pointer.send(&mut app, 64, alpha.x + 2, alpha.y + 2, false);
+        assert!(capture.try_recv().is_err());
+        pointer.send(&mut app, 68, alpha.x + 2, alpha.y + 2, false);
+        assert_eq!(scroll(&capture, "focused-pane", "focused-view"), 3);
+    }
+
+    #[test]
+    fn history_navigation_preserves_accepted_pointer_release_and_paste_suffix_fifo() {
+        let (mut app, capture) = fixture();
+        let pointer = PointerFixture::new(&mut app);
+        let alpha = content(pointer.rects[0].1);
+        pointer.send(&mut app, 0, alpha.x + 2, alpha.y + 2, false);
+        assert_eq!(captured_mouse(&capture).len(), 1);
+        app.paste_reply(b"5522;type=read:status=OK:pw=cHc=;")
+            .unwrap();
+        app.enter_history(&[]).unwrap();
+        pointer.send(&mut app, 0, alpha.x + 2, alpha.y + 2, true);
+        physical_keys(&mut app, b"blocked").unwrap();
+        assert!(capture.try_recv().is_err());
+        app.paste_reply(b"5522;type=read:status=DONE:pw=cHc=;")
+            .unwrap();
+        assert!(scroll(&capture, "focused-pane", "focused-view") > 0);
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+        request: PaneRequest::Mouse { event, .. }, ..
+    } if event.action == MouseAction::Release));
+        assert!(capture.try_recv().is_err());
+        assert!(app.pointer_capture.is_none());
+        assert!(app.pressed_pointers.borrow().is_empty());
     }
 }

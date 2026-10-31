@@ -26,14 +26,14 @@ fn resolve(color: StyleColor, colors: &native::Colors, fallback: [u8; 3]) -> [u8
         StyleColor::Rgb(color) => rgb(color),
     }
 }
-/// SDK-owned reusable extraction state; only Bkpr's immutable image cache is
-/// retained across snapshots. Pixel buffers are captured once per generation.
+/// SDK-owned reusable extraction state. Immutable scenes own image pixels;
+/// weak generation receipts reuse those buffers without retaining hidden data.
 pub(super) struct Resources {
     state: sdk::RenderState<'static>,
     rows: native::RowIterator<'static>,
     cells: native::CellIterator<'static>,
     images: native::ImageIterator<'static>,
-    pub image_cache: HashMap<(u32, u64), Arc<Image>>,
+    image_cache: HashMap<(u32, u64), std::sync::Weak<Image>>,
 }
 impl Resources {
     pub fn new() -> Result<Self> {
@@ -44,10 +44,6 @@ impl Resources {
             images: native::ImageIterator::new()?,
             image_cache: HashMap::new(),
         })
-    }
-    pub fn invalidate(&mut self) -> Result<()> {
-        self.state = sdk::RenderState::new()?;
-        Ok(())
     }
     pub fn capture(
         &mut self,
@@ -141,12 +137,18 @@ impl Resources {
             let generation = placement.image_generation()?;
             let key = (id, generation);
             if seen.insert(key) {
-                if let Some(image) = self.image_cache.get(&key) {
-                    images.push(Arc::clone(image));
+                if let Some(image) = self
+                    .image_cache
+                    .get(&key)
+                    .and_then(std::sync::Weak::upgrade)
+                {
+                    images.push(image);
                 } else if let Some(image) = read_image(&graphics, id, generation)? {
                     let image = Arc::new(image);
-                    self.image_cache.insert(key, Arc::clone(&image));
+                    self.image_cache.insert(key, Arc::downgrade(&image));
                     images.push(image);
+                } else {
+                    self.image_cache.remove(&key);
                 }
             }
             if !self.image_cache.contains_key(&key) {
@@ -174,7 +176,11 @@ impl Resources {
                 z: placement.z()?,
             });
         }
-        self.image_cache.retain(|key, _| seen.contains(key));
+        // Never extend a generation's pixel lifetime beyond actual live,
+        // history or held scenes. Old published frames remain alive during
+        // extraction, so their resources can be shared with the replacement.
+        self.image_cache
+            .retain(|_, image| image.strong_count() != 0);
         let scrollbar = terminal.scrollbar()?;
         let frame = Frame {
             size,
@@ -198,6 +204,7 @@ impl Resources {
             images,
             placements,
             alternate_screen: terminal.active_screen()? == sdk::screen::Screen::Alternate,
+            mouse_reporting: terminal.is_mouse_tracking()?,
             scrollback_total: scrollbar.total,
             scrollback_offset: scrollbar
                 .total

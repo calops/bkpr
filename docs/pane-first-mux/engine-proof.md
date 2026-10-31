@@ -409,3 +409,30 @@ Evidence under `target/smoke/lifecycle/`:
 - `physical-1104214530794830/`: actual Kitty startup selects a usable shell alongside retained history; replacement confirmation cancels without mutation, explicit confirmation accepts shell input, read-only reopening is denied, detach/reattach preserves executions, natural shell exit removes its layout slot, and the TUI itself automatically starts a usable daemon from retained state. A persisted marker proves the old startup command was never replayed. Screenshots were visually inspected.
 
 All final owned-runtime cleanup records report no survivors. Controller sources are archived with retained evidence; no user sessions, persistent settings, real providers or native approvals participated. No new latency/CPU improvement is claimed: the changed lifecycle path was exercised through actual input/output, not inferred from tests or queue acceptance. Full harness resume, retained terminal contents and remaining core TUI workflows remain separate work.
+
+## Per-view TUI scrollback
+
+This bounded step adds history navigation only, not selection, copying, search or persisted transcripts. Shift+PageUp and Ctrl-b s enter history; arrows move by row, PageUp/PageDown by page, Home reaches oldest retained history, and Esc/Enter/End return live. Explicit history mode blocks new application typing and paste while preserving already-accepted releases and transfer FIFO. Read-only views can inspect history.
+
+Native tracked-grid references anchor each inspecting view across new output, pruning and resize/reflow without copying the terminal's retained buffer. Other views stay live and independent. The header/footer expose the authoritative offset and native retained-row total (including the visible grid); historical cursors are hidden. View retirement/detach/workspace switching ends that inspection, so a new attachment starts live. Native scrollback remains bounded by the configured 10,000-line/16 MiB page-granular retention, not an exact durable line-count guarantee.
+
+Ordinary vertical wheel events navigate primary-screen history only with confirmed native mouse-mode capability and reporting disabled. Mouse-aware applications retain native wheel input; Shift+wheel is the explicit history override. Unknown mode capability leaves ordinary application routing unchanged. Alternate-screen history is explicitly unavailable instead of exposing the primary buffer behind the application.
+
+History capture reuses native rendering and weak image receipts shared by actual scene-owned `Arc` resources. Cache entries do not extend decoded-pixel lifetime beyond real scenes; expired weak entries prune each capture. This avoids retaining an extra copy of the native 64 MiB graphics store. Native regressions require identical image Arcs and placements across repeated live/history viewports and verify final scene-drop release.
+
+Integration caught a zero-offset history shortcut incorrectly using the immutable published hold snapshot instead of current raw native inspection. It was fixed without changing the existing held-render regression. The physical fixture also needed to raise the intended X11 window: keyboard focus alone left an overlapping second client receiving the wheel. Early occluded black screenshots are not presentation evidence; final captures expose the window and check populated pane rows before visual inspection.
+
+Final release client SHA-256 `54c89495f30b8612748138d47b223eac9d22ccad56b9f19141f7ece3e3c09c83`; server `8f1a4161f0887ad7833d7b730a7f583e451443be167ae570e11813d98b67ed2a`. Coordinated locked build/tests, strict all-target Clippy and formatting pass: **310 tests passed, six ignored**. Canonical public executables remain unchanged.
+
+`target/smoke/scrollback/physical-1106457003783737/` records real Kitty clients against a raw-terminal fixture that logs every application-input byte. One client remains anchored on older numbered rows while another displays new output. History typing/navigation emits no application bytes; native mouse-aware wheel input is exactly `ESC [ <64;21;16M`, while Shift+wheel emits no application input. Read-only oldest-history navigation and explicit alternate-screen refusal pass. Exposed screenshots of full history/live bodies and the alternate-screen boundary were visually inspected.
+
+`images-1106481753134238/` compares the previous and new release with five 256×256 RGB images, two views and five live/history targets. All five complete viewport hashes (rows, ordered placements and resource-reference sets) match across releases and remain immutable across cycles. There are 65 measured samples after two warm cycles:
+
+| Matched image-history control workload | Previous release | Scrollback release |
+|---|---:|---:|
+| Median control/full-frame round trip | 91.09 ms | 87.73 ms |
+| Maximum control/full-frame round trip | 100.99 ms | 98.47 ms |
+| Daemon RSS before samples | 16,156 KiB | 16,940 KiB |
+| Daemon RSS after samples | 17,192 KiB | 17,928 KiB |
+
+This deliberately serializes full image-bearing frames after control requests; it is not the compact TUI transport, physical input latency, allocation count or a general speedup claim. It shows no observed regression in this bounded comparison, with identical content. Compilation and other owned workload fixtures were stopped during measurement. Final owned runtimes report no survivors; controller sources and useful evidence are retained in the smoke archive. No live sessions, real providers or persistent user configuration were used.
