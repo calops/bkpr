@@ -288,10 +288,6 @@ impl App<'_> {
         let scope = match &command {
             management::Command::Spawn { workspace, .. } => format!("workspace:{}", workspace.id),
             management::Command::Create { .. } => "create".into(),
-            management::Command::Close { pane, workspace } => workspace
-                .as_ref()
-                .map(|workspace| format!("workspace:{}", workspace.id))
-                .unwrap_or_else(|| format!("pane:{pane}")),
             management::Command::Single(operation) => match operation {
                 Operation::WorkspaceRename { workspace_id, .. }
                 | Operation::WorkspaceRemove { workspace_id, .. }
@@ -670,9 +666,22 @@ impl App<'_> {
             self.input.send(operation)
         }
     }
+    fn execution_completed(&self, pane: &str) -> bool {
+        self.registry
+            .panes
+            .iter()
+            .any(|info| info.id == pane && info.status == PaneStatus::Exited)
+            || self.views.get(pane).is_some_and(|attached| {
+                attached.metadata.error.is_none()
+                    && matches!(
+                        attached.metadata.lifecycle.as_str(),
+                        "exited" | "terminated"
+                    )
+            })
+    }
     fn active(&self) -> Option<(String, String)> {
         let id = self.state.focused.as_ref()?;
-        if !self.input_enabled(id) {
+        if !self.input_enabled(id) || self.execution_completed(id) {
             return None;
         }
         if !self
@@ -817,7 +826,13 @@ impl App<'_> {
         let target = (pane.to_owned(), attached.view.clone());
         self.cancel_pointer(pane, &target.1);
         let cancellation = self.flush_pointer_releases();
-        let focus_out = !self.options.read_only
+        let completed = self.execution_completed(pane);
+        if completed {
+            // No execution remains to receive a previously deferred focus-out.
+            self.views.get_mut(pane).unwrap().retirement_focus_out = false;
+        }
+        let focus_out = !completed
+            && !self.options.read_only
             && (self.notified_focus.as_ref() == Some(&target)
                 || self.focus_out_pending.contains(&target));
         if wait_policy && self.device_busy(pane, &target.1) {
@@ -1089,6 +1104,7 @@ impl App<'_> {
         for (pane, view) in pending {
             if !self.views.contains_key(&pane)
                 || self.options.read_only
+                || self.execution_completed(&pane)
                 || self
                     .views
                     .get(&pane)
@@ -1597,14 +1613,9 @@ impl App<'_> {
                     if self.options.read_only {
                         bail!("read-only client cannot terminate panes");
                     }
-                    let pane = self.state.focused.clone().context("no focused pane")?;
-                    self.manage(
-                        management::Command::Close {
-                            pane,
-                            workspace: self.state.current(&self.registry).cloned(),
-                        },
-                        None,
-                    )?;
+                    self.operation(Operation::PaneTerminate {
+                        pane_id: self.state.focused.clone().context("no focused pane")?,
+                    })?;
                 }
             }
             FormKind::RemoveWorkspace => {
@@ -1693,6 +1704,7 @@ impl App<'_> {
         }
         if event.action == KeyAction::Release {
             if let Some((pane, view)) = self.held.remove(&event.key)
+                && !self.execution_completed(&pane)
                 && self
                     .views
                     .get(&pane)
@@ -3623,6 +3635,87 @@ mod tests {
         );
         assert_eq!(events[64].2.action, MouseAction::Release);
         assert!(app.pressed_pointers.borrow().is_empty());
+    }
+    #[test]
+    fn completed_shell_key_release_is_not_forwarded_to_dead_or_new_execution() {
+        for snapshot_first in [false, true] {
+            let (mut app, capture) = fixture();
+            let _pointer = PointerFixture::new(&mut app);
+            let mut exit = key("KeyD");
+            exit.modifiers = 2;
+            app.key(exit.clone(), &mut Vec::new(), size(), &[]).unwrap();
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                pane_id, request: PaneRequest::Key { event, .. },
+            } if pane_id == "focused-pane" && event.action == KeyAction::Press));
+            if snapshot_first {
+                app.views
+                    .get_mut("focused-pane")
+                    .unwrap()
+                    .metadata
+                    .lifecycle = "exited".into();
+            } else {
+                app.registry.panes[0].status = PaneStatus::Exited;
+            }
+            app.state.focused = Some("beta".into());
+            exit.action = KeyAction::Release;
+            app.key(exit, &mut Vec::new(), size(), &[]).unwrap();
+            assert!(capture.try_recv().is_err());
+            assert!(!app.held.contains_key("KeyD"));
+            assert!(app.state.status.is_empty());
+            assert!(app.input_failures.is_empty());
+            app.key(key("KeyA"), &mut Vec::new(), size(), &[]).unwrap();
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                pane_id, request: PaneRequest::Focus { focused: true, .. },
+            } if pane_id == "beta"));
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                pane_id, request: PaneRequest::Key { event, .. },
+            } if pane_id == "beta" && event.action == KeyAction::Press));
+            assert!(capture.try_recv().is_err());
+        }
+    }
+    #[test]
+    fn completed_shell_retirement_discards_pending_focus_but_detaches_and_keeps_peer_input() {
+        for snapshot_first in [false, true] {
+            let (mut app, capture) = fixture();
+            let _pointer = PointerFixture::new(&mut app);
+            // Completion can arrive after retirement captured a running focus.
+            app.retire_view("focused-pane", true).unwrap();
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                request: PaneRequest::Update { spec, .. }, ..
+            } if !spec.visible && !spec.interactive && !spec.clipboard));
+            if snapshot_first {
+                app.views
+                    .get_mut("focused-pane")
+                    .unwrap()
+                    .metadata
+                    .lifecycle = "exited".into();
+            } else {
+                app.registry.panes[0].status = PaneStatus::Exited;
+            }
+            app.focus_out_pending
+                .insert(("focused-pane".into(), "focused-view".into()));
+            app.notify_focus().unwrap();
+            assert!(capture.try_recv().is_err());
+            app.retire_view("focused-pane", true).unwrap();
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                pane_id, request: PaneRequest::Detach { view_id },
+            } if pane_id == "focused-pane" && view_id == "focused-view"));
+            app.reap_retiring().unwrap();
+            assert!(app.retiring.is_empty());
+            assert_eq!(app.unconfirmed_views, 0);
+            assert!(app.state.status.is_empty());
+            assert!(app.input_failures.is_empty());
+            assert!(app.view_failures.is_empty());
+            app.state.focused = Some("beta".into());
+            app.key(key("KeyA"), &mut Vec::new(), size(), &[]).unwrap();
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                pane_id, request: PaneRequest::Focus { focused: true, .. },
+            } if pane_id == "beta"));
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                pane_id, request: PaneRequest::Key { .. },
+            } if pane_id == "beta"));
+            assert!(capture.try_recv().is_err());
+        }
     }
     #[test]
     fn retiring_pressed_view_queues_original_release_before_focus_and_detach() {

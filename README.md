@@ -146,6 +146,14 @@ Forms use Enter to apply, Esc to cancel and Ctrl-u to clear. Focus is
 client-local; showing a pane in another workspace does not change its backend
 membership. Layout removal, client detach and process termination are distinct.
 
+When a pane's root process exits normally, including shell `exit` or Ctrl-D,
+the backend removes its references from every workspace layout and collapses
+only the affected split paths. Explicit termination performs the same closure.
+The pane's exit record and final in-memory scene remain available by ID; faults
+remain visible for diagnosis. Completed, unprojected records are omitted from the
+live sidebar; explicitly showing a retained scene still works. Closing one shell
+never terminates neighboring panes.
+
 Attachment and management work runs in bounded background jobs. Input remains
 ordered per pane; a native callback blocked in one pane does not serialize input
 to another. Pending controls and projection-capacity failures are shown explicitly.

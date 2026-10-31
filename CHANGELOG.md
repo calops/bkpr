@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Fixes
+
+* Close completed shell/process projections atomically across workspace layouts and remove their unprojected records from the live sidebar, including Ctrl-D and explicit pane termination. Preserve exit metadata and final scenes, keep faults visible, and distinguish trailing key/pointer/focus cleanup from real input after execution ends. Remove the obsolete client-side termination/layout-update sequence.
+
 ### Breaking branch replacement
 
 * `feat/pane-first-mux` replaces the previous runtime with seven focused crates: `bkpr`, `bkpr-client`, `bkpr-tui-framework`, `bkpr-server` (the `bkprd` executable), `bkpr-core`, `bkpr-protocol` and `bkpr-terminal-engine`. There is no legacy launcher, plugin, binary alias or compatibility track on this branch.

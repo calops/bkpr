@@ -587,17 +587,13 @@ impl Registry {
         };
         let (status, exit_code) = {
             let p = pane.shared.published.lock().unwrap();
-            if matches!(p.lifecycle.as_str(), "starting" | "running" | "draining") {
-                return Ok(());
-            }
-            (
-                if p.lifecycle == "fault" {
-                    PaneStatus::Stopped
-                } else {
-                    PaneStatus::Exited
-                },
-                p.exit_code.map(|code| code as i32),
-            )
+            let status = match p.lifecycle.as_str() {
+                "exited" | "terminated" => PaneStatus::Exited,
+                // Faults keep their projections visible for inspection.
+                "fault" => PaneStatus::Stopped,
+                _ => return Ok(()),
+            };
+            (status, p.exit_code.map(|code| code as i32))
         };
         let _transaction = self.inner.transaction.lock().unwrap();
         let mut next = {
@@ -614,7 +610,23 @@ impl Registry {
         }
         info.status = status;
         info.exit_code = exit_code;
+        if status == PaneStatus::Exited {
+            for workspace in &mut next.registry.workspaces {
+                if workspace
+                    .layout
+                    .as_ref()
+                    .is_some_and(|layout| layout_references(layout, id))
+                {
+                    workspace.layout = workspace
+                        .layout
+                        .take()
+                        .and_then(|layout| remove_layout_pane(layout, id));
+                    workspace.revision = next_revision(workspace.revision)?;
+                }
+            }
+        }
         next.registry.revision = next_revision(next.registry.revision)?;
+        validate_record(&next)?;
         commit(&self.inner, next, |_| {})?;
         // Keep the final in-memory scene readable until daemon shutdown; no pixels go to disk.
         Ok(())
@@ -675,6 +687,30 @@ fn layout_references(layout: &LayoutNode, pane_id: &str) -> bool {
         LayoutNode::Split { first, second, .. } => {
             layout_references(first, pane_id) || layout_references(second, pane_id)
         }
+    }
+}
+fn remove_layout_pane(layout: LayoutNode, pane_id: &str) -> Option<LayoutNode> {
+    match layout {
+        LayoutNode::Leaf { pane_id: leaf } => {
+            (leaf != pane_id).then_some(LayoutNode::Leaf { pane_id: leaf })
+        }
+        LayoutNode::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => match (
+            remove_layout_pane(*first, pane_id),
+            remove_layout_pane(*second, pane_id),
+        ) {
+            (Some(first), Some(second)) => Some(LayoutNode::Split {
+                axis,
+                ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            }),
+            (first, second) => first.or(second),
+        },
     }
 }
 fn append_pane_record(mut next: Record, info: PaneInfo) -> Result<Record> {
