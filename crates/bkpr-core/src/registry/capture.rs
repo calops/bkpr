@@ -30,18 +30,41 @@ impl Registry {
         *configured = Some(environment);
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn request_authenticated(&self, request: Request, peer: &Peer) -> Result<Value> {
+        self.request_authenticated_cancellable(request, peer, &|| true)
+    }
+    pub(crate) fn request_authenticated_cancellable(
+        &self,
+        request: Request,
+        peer: &Peer,
+        is_connected: &dyn Fn() -> bool,
+    ) -> Result<Value> {
         ensure!(
             request.version == PROTOCOL_VERSION,
             "unsupported protocol version"
         );
         match request.operation {
+            Operation::Agent {
+                launch_id,
+                token,
+                request,
+            } => {
+                let launch = self
+                    .inner
+                    .captures
+                    .lock()
+                    .unwrap()
+                    .lookup(&launch_id, &token)?;
+                self.agent_request(launch, peer, request, is_connected)
+            }
             Operation::HarnessBegin { kind } => self.begin_capture(peer, kind),
             Operation::HarnessEvent {
                 launch_id,
                 token,
                 event,
             } => {
+                self.inner.agents.check_health()?;
                 let launch = self
                     .inner
                     .captures
@@ -50,11 +73,10 @@ impl Registry {
                     .lookup(&launch_id, &token)?;
                 harness::validate_callback(peer, &launch)?;
                 self.capture_pane(&launch.grant.pane_id)?;
-                self.inner
-                    .captures
-                    .lock()
-                    .unwrap()
-                    .event(&launch_id, &token, event)?;
+                if matches!(event, CaptureEvent::End) {
+                    self.agent_retire(std::slice::from_ref(&launch_id))?;
+                }
+                self.agent_capture_event(&launch_id, &token, event)?;
                 self.publish_capture_change(&launch)?;
                 Ok(json!({"accepted":true}))
             }
@@ -92,7 +114,7 @@ impl Registry {
             operation => self.request(Request::new(operation)),
         }
     }
-    fn capture_pane(&self, pane_id: &str) -> Result<Pane> {
+    pub(super) fn capture_pane(&self, pane_id: &str) -> Result<Pane> {
         let state = self.inner.state.lock().unwrap();
         healthy(&state)?;
         ensure!(!state.closing, "daemon is shutting down");
@@ -116,6 +138,7 @@ impl Registry {
         Ok(pane.clone())
     }
     fn begin_capture(&self, peer: &Peer, kind: HarnessKind) -> Result<Value> {
+        self.inner.agents.check_health()?;
         ensure!(kind.is_managed(), "harness is recognition-only");
         let environment = self
             .inner
@@ -174,6 +197,21 @@ impl Registry {
             .unwrap()
             .lookup(&grant.launch_id, &grant.token)?
             .managed;
+        let launch = self
+            .inner
+            .captures
+            .lock()
+            .unwrap()
+            .lookup(&grant.launch_id, &grant.token)?;
+        if let Err(error) = self.agent_register(&launch, &cwd) {
+            self.inner
+                .captures
+                .lock()
+                .unwrap()
+                .launches
+                .remove(&grant.launch_id);
+            return Err(error);
+        }
         if let Err(error) = self.publish_facts(
             &id,
             &pane,
@@ -193,6 +231,7 @@ impl Registry {
                 .unwrap()
                 .launches
                 .remove(&grant.launch_id);
+            let _ = self.agent_retire(std::slice::from_ref(&grant.launch_id));
             return Err(error);
         }
         Ok(serde_json::to_value(grant)?)
@@ -506,6 +545,10 @@ impl Registry {
             }
         }
         if !stale.is_empty() {
+            if self.agent_retire(&stale).is_err() {
+                // The durable service is failed closed. Volatile capture authority must
+                // still disappear even when exit observation cannot be committed.
+            }
             let mut captures = self.inner.captures.lock().unwrap();
             if captures.version != version {
                 return;
@@ -618,13 +661,19 @@ mod tests;
 
 fn foreground_context(launch: &Launch) -> Result<(bool, Option<PathBuf>)> {
     let table = proc::fresh_snapshot()?;
+    foreground_context_in(launch, &table)
+}
+pub(super) fn foreground_context_in(
+    launch: &Launch,
+    table: &HashMap<i32, Process>,
+) -> Result<(bool, Option<PathBuf>)> {
     let pane_root = table
         .get(&launch.pane_root.pid)
         .filter(|p| p.identity == launch.pane_root.identity)
         .context("pane root exited")?;
     let mut selected: Option<(usize, &Process, HarnessKind)> = None;
     for candidate in table.values().filter(|p| proc::foreground(p, pane_root)) {
-        let Some(chain) = proc::lineage(candidate, pane_root, &table) else {
+        let Some(chain) = proc::lineage(candidate, pane_root, table) else {
             continue;
         };
         let Some(kind) = proc::kind(candidate.pid)? else {
@@ -638,7 +687,7 @@ fn foreground_context(launch: &Launch) -> Result<(bool, Option<PathBuf>)> {
         }
     }
     let process = if let Some((_, candidate, kind)) = selected {
-        let chain = proc::lineage(candidate, &launch.root, &table);
+        let chain = proc::lineage(candidate, &launch.root, table);
         if kind != launch.grant.kind
             || !chain.as_ref().is_some_and(|chain| {
                 chain
@@ -662,7 +711,7 @@ fn foreground_context(launch: &Launch) -> Result<(bool, Option<PathBuf>)> {
     };
     let cwd = proc::cwd(process.pid)?;
     ensure!(
-        proc::lineage(process, pane_root, &table).is_some_and(|chain| proc::live(&chain)),
+        proc::lineage(process, pane_root, table).is_some_and(|chain| proc::live(&chain)),
         "foreground context changed during observation"
     );
     Ok((true, cwd))

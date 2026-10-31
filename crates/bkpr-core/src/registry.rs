@@ -1,6 +1,7 @@
 //! Backend-owned workspace intent. Persisted metadata is not PTY recovery.
 //! Atomic tempfile/fsync/rename follows main's recovery.rs, without its session/KDL assumptions.
 use crate::{Pane, SpawnSpec};
+mod agents;
 mod capture;
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::*;
@@ -89,6 +90,7 @@ struct Inner {
     transaction: Mutex<()>,
     view_budget: Arc<crate::authority::ViewBudget>,
     captures: Mutex<crate::harness::Captures>,
+    agents: Arc<agents::Agents>,
     spawn_environment: Mutex<Option<crate::harness::SpawnEnvironment>>,
     observer_started: std::sync::atomic::AtomicBool,
     status_wake: crossbeam_channel::Sender<()>,
@@ -99,6 +101,13 @@ struct Inner {
     spawn_barrier: Mutex<Option<Arc<SpawnBarrier>>>,
     #[cfg(test)]
     persist_barrier: Mutex<Option<Arc<SpawnBarrier>>>,
+}
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // The retention worker owns only Agents, not the registry lease. Drain its
+        // writer and close admission before releasing ownership of the durable root.
+        let _ = self.agents.shutdown();
+    }
 }
 #[cfg(test)]
 struct SpawnBarrier {
@@ -184,6 +193,7 @@ impl Registry {
             persist(root, &record)?;
         }
         let (status_wake, status_events) = crossbeam_channel::bounded(1);
+        let agents = Arc::new(agents::Agents::open(root)?);
         let registry = Self {
             inner: Arc::new(Inner {
                 root: root.to_owned(),
@@ -198,6 +208,7 @@ impl Registry {
                 transaction: Mutex::new(()),
                 view_budget: Arc::default(),
                 captures: Mutex::new(crate::harness::Captures::default()),
+                agents,
                 spawn_environment: Mutex::new(None),
                 observer_started: std::sync::atomic::AtomicBool::new(false),
                 status_wake,
@@ -211,6 +222,7 @@ impl Registry {
             }),
             fresh,
         };
+        registry.start_agent_maintenance()?;
         Ok(registry)
     }
     pub fn is_fresh(&self) -> bool {
@@ -263,7 +275,8 @@ impl Registry {
             Operation::Inspect => Ok(json!({"registry":self.snapshot()?})),
             Operation::HarnessBegin { .. }
             | Operation::HarnessEvent { .. }
-            | Operation::HarnessContext { .. } => {
+            | Operation::HarnessContext { .. }
+            | Operation::Agent { .. } => {
                 bail!("capture operations require OS-authenticated transport")
             }
             Operation::Wait { after, wait_ms } => {
@@ -675,6 +688,7 @@ impl Registry {
             (status, p.exit_code.map(|code| code as i32))
         };
         self.inner.captures.lock().unwrap().retire_pane(id);
+        let agent_retirement = self.inner.agents.retire_pane(id);
         {
             let mut published = pane.shared.published.lock().unwrap();
             published.status.clear();
@@ -721,9 +735,11 @@ impl Registry {
         validate_record(&next)?;
         commit(&self.inner, next, |_| {})?;
         // Keep the final in-memory scene readable until daemon shutdown; no pixels go to disk.
+        agent_retirement?;
         Ok(())
     }
     pub fn shutdown(&self) -> Result<()> {
+        let agent_shutdown = self.inner.agents.shutdown();
         let panes = {
             let _transaction = self.inner.transaction.lock().unwrap();
             let mut state = self.inner.state.lock().unwrap();
@@ -732,7 +748,7 @@ impl Registry {
             self.inner.changed.notify_all();
             state.live.values().cloned().collect::<Vec<_>>()
         };
-        let mut first_error = None;
+        let mut first_error = agent_shutdown.err();
         for pane in panes {
             if let Err(error) = pane.request(PaneRequest::Shutdown)
                 && first_error.is_none()

@@ -32,6 +32,11 @@ pub enum Operation {
         launch_id: String,
         token: String,
     },
+    Agent {
+        launch_id: String,
+        token: String,
+        request: crate::AgentRequest,
+    },
     WorkspaceCreate {
         name: String,
     },

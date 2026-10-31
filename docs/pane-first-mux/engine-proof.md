@@ -304,3 +304,43 @@ Early Omp version/noninteractive probes selected the user's profile wrapper befo
 The initial Bash fixture also sourced host-global `/etc/bashrc` and `/etc/profile`, whose generated environment overwrites PATH and discovers an SSH-agent socket. Source-supported `NOSYSBASHRC=1` now excludes that host fixture configuration, without reinjecting PATH or modifying user profiles. Ordinary product interception still depends on the private PATH entry surviving shell/direnv changes; the explicit launch path remains available and wrapper-free integration stays in TODO.
 
 Owned runtime roots/processes were cleaned with exact-birth checks; all final native, physical and performance records report no survivors. Controller sources are retained in `controllers.zip`, with CRC verification. This capture work does not supply broker delivery, Git/CI, recovery selection, remote endpoints or closure of historical graphics adoption gates.
+
+## Native agent communication
+
+The daemon now owns launch-scoped context, discovery, titles and durable peer messages. Seven tools expose identity, discovery, send, inbox read, processed acknowledgement and body-free outbox receipts. Workspace scope uses execution membership; repository scope uses canonical common Git identity, never a guessed CWD association. Session/all currently mean this daemon, not remote endpoints.
+
+Authority combines private launch capabilities with verified process birth and live ancestry. Codex relay requests additionally verify the original kernel peer rather than trusting copied relay credentials. Private atomic storage preserves exact sender-scoped idempotency and receipts, retains unacknowledged bodies for seven days after persisted recipient retirement, and suspends all commits/callbacks after durable-store failure. Restart does not let a new launch adopt old authority or inboxes. Retained historical records do not imply a shipped historical inspection endpoint.
+
+Native binding, live receiver identity, subscription readiness, wake acceptance, reading and processed acknowledgement are separate. Notifications carry opaque pointers, never peer bodies or PTY input. Receiver replacement/rebinding retires old generations without blindly replaying ambiguous effects. Omp's void `sendMessage` cannot prove native acceptance: its receipt stays `unknown` even when a particular observed turn subsequently reads and acknowledges the message. Claude idle re-wake offers have the same truthful uncertainty.
+
+### Runtime evidence and limits
+
+Evidence root: `target/smoke/native-agent/`. Final optimized binaries: `release/bkpr` SHA-256 `552e919af9bf6e02a3f41f8b15364053e686d24a3cceca913ca2e77b96d141d9`; `release/bkprd` SHA-256 `3ed4d8d38875c57d4199072efcbbebb74256b69986aee1458cda5b5f3534794a`. Canonical installed/build-output runtime artifacts were preserved through private mount-namespace builds sharing the existing Cargo caches.
+
+| Path exercised | Observed result | Evidence |
+|---|---|---|
+| Two genuine Omp 18.13.2 conversations | Native discovery/send; opaque aside in recipient model context during an active turn; actual inbox read and processed acknowledgement; sender outbox independently observes both timestamps. Eight loopback provider requests, no external provider. | `omp-active-1081655947137793/active-proof.json` |
+| Genuine Codex 0.165.0 | Before-prompt exact-thread binding; send while first turn held; native future-turn queue accepted; next turn starts automatically and its actual provider input contains only the opaque pointer. Message remains unread/unacknowledged. | `codex-queue-1081677301400578/queue-proof.json` |
+| AGY receiver and metadata MCP | Actual daemon/OS-authenticated synthetic root, descendant receiver and loopback `SendAgentMessage`; wrong conversation rejects; distinct acceptance/read/ack; complete 8,524,467-byte escaped page. This is helper proof, not genuine AGY app acceptance. | `agy-helper-1081677305686033/helper-proof.json` |
+| Claude hooks/watcher | Actual authenticated synthetic parent and native helpers exercise tool-boundary context, idle re-wake, historical outcomes after read, new-arrival races, retirement and UTF-8 limits. Runtime caught and fixed missing `0700` on the coordination directory. Not genuine Claude host consumption. | `claude-hook-1081294190426037/result.json` |
+| Actual MCP wire | Ten maximum-size escaped bodies round-trip in an 8,524,359-byte frame; initialization, typed cancellation, duplicate IDs, eight-worker limit, invalid/foreign OS peers, 32 subscriptions and control-capacity recovery. | `mcp-1081825385820797/result.json` |
+| Actual Kitty TUI | Completed ordinary shell command and management form remain interactive while an authenticated peer subscription is pending. Screenshot inspected, not merely a command-echo assertion. | `physical-1081696705217542/` |
+| Durable API | Exact retries, conflicting idempotency rejection, inbox read/ack and separate body-free sender receipts. | `api-1081655887146689/result.json` |
+
+Genuine Codex MCP function execution reaches a native approval prompt, left unapproved (`codex-delivery-1081489677577433/`). Genuine AGY Terms/native receiver approval remain unaccepted. Claude's offline startup limitation was independently reproduced without Bkpr in the preceding capture investigation. No persistent approval settings were changed, real model services contacted or fixture peer notices typed into PTYs.
+
+The first release physical run incorrectly accepted the marker in echoed input; visual inspection found malformed case/quotes. That run (`physical-1081655913756111/`) is invalidated, not evidence of completed shell input. The corrected oracle requires a standalone output line in both backend and physical terminal; the final run uses 25 ms XTest spacing. This changes only fixture driving, not product keyboard behavior.
+
+### Efficiency and remaining bounds
+
+The backend reserves subscriptions independently from general controls, uses cancellable long waits, and avoids per-second process/store scans for idle waiters. No empty-read/duplicate-ack persistence rewrites. Bodies are shared in memory rather than cloned for each transactional snapshot.
+
+| Five-second idle sample | Panes | Pending authenticated subscriptions | Daemon CPU seconds | CPU cores | RSS KiB |
+|---|---:|---:|---:|---:|---:|
+| Previous capture release | 8 | 0 | 0.27 | 0.054 | 30,012 |
+| Communication release | 8 | 0 | 0.26 | 0.052 | 30,932 |
+| Communication release, subscription capacity | 17 | 32 | 0.32 | 0.064 | — |
+
+These short procfs samples (`idle-1081762707738047/`, final MCP record above) show no observed idle regression, not a sustained-animation or redraw performance claim. The known sustained-output CPU-efficiency work remains open. Explicit repository-scope Git lookup is outside UI/global locks but currently has no subprocess duration/output budget. Durable JSON transactions rewrite the bounded store (128 MiB); receipt growth and large-store throughput are not benchmarked. These limits are not disguised as universal bounded-latency guarantees.
+
+Final coordinated checks: locked workspace build/tests, all-target Clippy with warnings denied and rustfmt passed; 261 tests passed, six platform/fixture tests remain explicitly ignored. Final smoke roots report no owned process survivors. Fifteen owned controller/fixture sources are retained in CRC-verified `controllers.zip` and `controllers-manifest.json`; temporary source files were removed after archival. Builds use eight jobs on CPUs 0–7, runtime fixtures CPUs 8–15; idle measurements ran without overlapping builds or native workload fixtures.

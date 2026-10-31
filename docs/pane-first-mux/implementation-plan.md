@@ -76,6 +76,8 @@ The native capture implementation revisited this same main revision before porti
 - The Claude hook, Omp extension, Codex startup classifier/selection proxy and Antigravity root-MCP metadata mechanisms were adapted into `bkpr/src/harness` and `integration/omp/index.ts`. The former broker, native-owner publication, extension receiver/wake and Zellij rendezvous are not retained.
 - Launch-local hooks/assets and explicit Antigravity installation preserve native settings and unsupported-mode behavior. Core owns bounded launch grants, conversation generations, foreground lifecycle and status selection; the client only presents typed facts.
 
+The native agent service revisited `relay.rs`, `relay_tests.rs`, Claude/Omp delivery adapters and `agy_receiver.rs` at that main revision. Its private store now belongs to `bkpr-core::registry::agents`, authenticated operations use the native control dispatcher, and launch-local CLI adapters expose shared tool schemas. Native wake, read and processed acknowledgement retain separate provenance; no old broker process, legacy store migration or Zellij context publication is retained. The Codex relay's narrow socket-peer provenance port follows current core birth/ancestry checks rather than trusting a copied token. Generic filesystem events use maintained `notify` 8.2; Bkpr owns hook coordination and outcome policy.
+
 
 ### Native fork source
 
@@ -128,7 +130,9 @@ The harness-capture slice is implemented:
 
 Real Omp and Codex TUIs have isolated fresh/explicit/resume/fork acceptance, plus Codex picker selection. Claude's native first-run connectivity preflight prevents hooks in the offline fixture; Antigravity's Terms/Data Use prompt remains unapproved, so its genuine root-MCP callback is still an acceptance gate. Native Antigravity installation/configuration preservation and adapter/authentication boundaries have separate exercised evidence. These limits do not imply full harness or production parity.
 
-Next: remaining context/discovery/communication tools, Git/CI/project presentation, recovery/resume and TUI workflow parity. Historical harness associations belong to the execution-recovery design, not the current layout file. Keep the deferred CPU-efficiency work visible; no fidelity or responsiveness compromise is implied by this ordering.
+Launch context, scoped discovery and durable peer communication are implemented against the new backend. Omp native tools/asides, Claude tool-boundary/idle hooks, Codex exact-thread future-turn queue and Antigravity native receiver integrate without PTY peer input. Backend storage preserves exact idempotency and receipts, authenticates launch/receiver generations and suspends commits after durable failure. Installation, native binding and subscription readiness remain distinct. Actual acceptance and native prerequisites are recorded in the engine report, not inferred from source completion.
+
+Next: Git/CI/project presentation, recovery/resume and remaining TUI workflow parity. Historical harness associations belong to the execution-recovery design, not the current layout file. Keep the deferred CPU-efficiency work visible; no fidelity or responsiveness compromise is implied by this ordering.
 
 ### 1. Native branch baseline
 

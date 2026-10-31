@@ -18,6 +18,8 @@ use anyhow::{Context, Result, bail};
 use bkpr_protocol::{ConversationSource, HarnessKind};
 
 use super::{Capture, exit_code, passthrough, scrub};
+#[path = "codex_agent.rs"]
+mod agent;
 #[path = "codex_startup.rs"]
 mod startup;
 
@@ -297,6 +299,20 @@ fn managed(
         .prefix("bkpr-codex-")
         .tempdir_in("/tmp")?;
     fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700))?;
+    let relay = agent::Relay::start(capture, runtime.path())?;
+    // A fresh backend launch namespace preserves every configured MCP server, including
+    // an existing `bkpr` entry. This is an ephemeral CLI override, never a settings write.
+    let server_name = format!("bkpr_{}", capture.grant.launch_id.replace('-', ""));
+    let mcp = format!(
+        "mcp_servers.{}={{command={},args=[\"capture\",\"mcp\",\"--harness\",\"codex\"],env_vars=[\"BKPR_AGENT_RELAY_SOCKET\",\"BKPR_AGENT_RELAY_TOKEN\"],enabled=true}}",
+        server_name,
+        serde_json::to_string(
+            capture
+                .program
+                .to_str()
+                .context("Codex MCP program path is not UTF-8")?
+        )?,
+    );
     let socket = runtime.path().join("server.sock");
     let endpoint = format!(
         "unix://{}",
@@ -326,6 +342,9 @@ fn managed(
     command
         .args(["app-server", "--listen", &endpoint])
         .args(&plan.overrides)
+        .args(["-c", &mcp])
+        .env("BKPR_AGENT_RELAY_SOCKET", &relay.socket)
+        .env("BKPR_AGENT_RELAY_TOKEN", &relay.token)
         .current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
@@ -355,7 +374,7 @@ fn managed(
         if let Some(status) = server.0.try_wait()? {
             bail!(
                 "Codex app-server exited ({status}): {}",
-                startup_log(&log_path)
+                startup_log(&log_path, &relay.token)
             );
         }
         if UnixStream::connect(&socket).is_ok() {
@@ -364,12 +383,13 @@ fn managed(
         if Instant::now() >= deadline {
             bail!(
                 "Codex app-server did not open its socket: {}",
-                startup_log(&log_path)
+                startup_log(&log_path, &relay.token)
             );
         }
         thread::sleep(Duration::from_millis(25));
     }
     validate_endpoint(&socket)?;
+    let receiver = agent::Receiver::start(capture, executable, &endpoint, server.0.id());
     let proxy_socket = runtime.path().join("tui.sock");
     let listener = UnixListener::bind(&proxy_socket).context("open private Codex TUI transport")?;
     let tui_endpoint = format!(
@@ -406,9 +426,11 @@ fn managed(
                 "thread/fork" => ConversationSource::CodexFork,
                 _ => bail!("unexpected Codex selection method"),
             };
-            capture
-                .bind(source, id)
-                .context("bind TUI-selected Codex native thread before response")
+            receiver.select(id, || {
+                capture
+                    .bind(source, id)
+                    .context("bind TUI-selected Codex native thread before response")
+            })
         },
     );
     let signal = cancelled.load(Ordering::Acquire);
@@ -418,13 +440,18 @@ fn managed(
     Ok(exit_code(status?))
 }
 
-fn startup_log(path: &Path) -> String {
+fn startup_log(path: &Path, relay_token: &str) -> String {
     use std::io::Read;
     let mut bytes = Vec::new();
     if let Ok(file) = fs::File::open(path) {
-        let _ = file.take(16 * 1024).read_to_end(&mut bytes);
+        // Read past the output boundary so a credential straddling it is redacted whole.
+        let _ = file
+            .take((16 * 1024 + relay_token.len()) as u64)
+            .read_to_end(&mut bytes);
     }
-    String::from_utf8_lossy(&bytes).into_owned()
+    let mut text = String::from_utf8_lossy(&bytes).replace(relay_token, "[REDACTED]");
+    text.truncate(text.floor_char_boundary(16 * 1024));
+    text
 }
 
 fn validate_endpoint(socket: &Path) -> Result<()> {
@@ -458,6 +485,20 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn native_startup_diagnostics_redact_relay_credentials_before_bounding_output() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("server.log");
+        let token = "independent-private-relay-credential";
+        fs::write(&path, format!("native error: {token}"))?;
+        assert_eq!(startup_log(&path, token), "native error: [REDACTED]");
+        fs::write(&path, format!("{}{token}", "x".repeat(16 * 1024 - 4)))?;
+        let diagnostic = startup_log(&path, token);
+        assert!(diagnostic.len() <= 16 * 1024);
+        assert!(!diagnostic.contains("inde"));
+        Ok(())
     }
 
     #[test]

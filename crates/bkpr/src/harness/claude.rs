@@ -1,6 +1,7 @@
 //! Launch-local native conversation hooks; Claude alone produces semantic status.
 use std::ffi::OsString;
 use std::io::{IsTerminal, Read};
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -8,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use bkpr_protocol::{ConversationSource, HarnessKind};
 use serde_json::{Value, json};
 
-use super::{Capture, passthrough, run_managed, scrub};
+use super::{Capture, claude_inbox, passthrough, run_managed, scrub};
 
 const MAX_CALLBACK_BYTES: u64 = 1024 * 1024;
 
@@ -189,7 +190,14 @@ fn compose(settings: &mut Value, program: &str) -> Result<()> {
         .as_object_mut()
         .context("Claude hooks must be an object")?;
     let command = format!("'{}' capture claude-hook", program.replace('\'', "'\\''"));
-    for event in ["SessionStart", "UserPromptSubmit"] {
+    for event in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "Stop",
+        "StopFailure",
+    ] {
         hooks
             .entry(event)
             .or_insert_with(|| json!([]))
@@ -198,6 +206,11 @@ fn compose(settings: &mut Value, program: &str) -> Result<()> {
             .push(json!({
                 "hooks": [{"type": "command", "command": command, "timeout": 5}]
             }));
+    }
+    for event in ["SessionStart", "UserPromptSubmit", "Stop"] {
+        hooks.entry(event).or_insert_with(|| json!([])).as_array_mut()
+            .with_context(|| format!("Claude {event} hooks must be an array"))?
+            .push(json!({"hooks":[{"type":"command","command":format!("'{}' capture claude-wait", program.replace('\'', "'\\''")),"asyncRewake":true,"timeout":86400}]}));
     }
     Ok(())
 }
@@ -235,7 +248,7 @@ pub(super) fn launch(executable: PathBuf, mut arguments: Vec<OsString>) -> Resul
         );
         return passthrough(&executable, arguments);
     };
-    // Prepare everything fallible before creating a backend launch grant.
+    // Compose native settings before obtaining the launch-scoped grant.
     let program = std::env::current_exe().context("locate Claude capture callback")?;
     compose(
         &mut settings,
@@ -244,12 +257,30 @@ pub(super) fn launch(executable: PathBuf, mut arguments: Vec<OsString>) -> Resul
             .context("Claude callback path is not UTF-8")?,
     )?;
     supplement(&mut arguments, plan, settings)?;
+    let inbox = tempfile::Builder::new().prefix("bkpr-claude-").tempdir()?;
+    std::fs::set_permissions(inbox.path(), std::fs::Permissions::from_mode(0o700))?;
     let capture = Capture::begin(HarnessKind::Claude)?;
+    // A launch-unique namespace cannot replace a user's configured `bkpr` server.
+    let server_name = format!("bkpr_{}", capture.grant.launch_id.replace('-', ""));
+    let insertion = arguments
+        .iter()
+        .position(|argument| argument == "--")
+        .unwrap_or(arguments.len());
+    let server = serde_json::to_string(
+        &json!({"mcpServers":{(server_name.clone()):{"type":"stdio","command":program,"args":["capture","mcp","--harness","claude"]}}}),
+    )?;
+    arguments.splice(
+        insertion..insertion,
+        [OsString::from("--mcp-config"), OsString::from(server)],
+    );
     let mut command = Command::new(executable);
     scrub(&mut command);
     capture.apply(&mut command);
+    command.env("BKPR_CLAUDE_INBOX_DIR", inbox.path());
     command.args(arguments);
-    run_managed(&mut command, &capture)
+    let result = run_managed(&mut command, &capture);
+    drop(inbox);
+    result
 }
 
 fn root_session(value: &Value) -> Result<Option<&str>> {
@@ -259,7 +290,14 @@ fn root_session(value: &Value) -> Result<Option<&str>> {
     }
     if !matches!(
         value.get("hook_event_name").and_then(Value::as_str),
-        Some("SessionStart" | "UserPromptSubmit")
+        Some(
+            "SessionStart"
+                | "UserPromptSubmit"
+                | "PostToolUse"
+                | "PostToolUseFailure"
+                | "Stop"
+                | "StopFailure"
+        )
     ) {
         bail!("unexpected Claude capture hook event");
     }
@@ -302,10 +340,34 @@ pub(super) fn hook() -> Result<()> {
         let Some(id) = root_session(&value)? else {
             return Ok(());
         };
-        capture.bind(ConversationSource::ClaudeHook, id)
+        if matches!(
+            value["hook_event_name"].as_str(),
+            Some("SessionStart" | "UserPromptSubmit")
+        ) {
+            capture.bind(ConversationSource::ClaudeHook, id)?;
+        }
+        claude_inbox::hook(&capture, &value, id, &mut std::io::stdout().lock())
     })();
     if let Err(error) = &result {
         let _ = capture.error(&format!("Claude conversation capture failed: {error:#}"));
+    }
+    result
+}
+
+pub(super) fn wait() -> Result<i32> {
+    let capture = Capture::from_environment()?;
+    if capture.grant.kind != HarnessKind::Claude {
+        bail!("Claude waiter does not belong to Claude");
+    }
+    let result = (|| {
+        let value = callback_input(std::io::stdin().lock())?;
+        let Some(id) = root_session(&value)? else {
+            return Ok(0);
+        };
+        claude_inbox::wait(&capture, &value, id)
+    })();
+    if let Err(error) = &result {
+        let _ = capture.error(&format!("Claude inbox notification unavailable: {error:#}"));
     }
     result
 }
@@ -333,7 +395,7 @@ mod tests {
         compose(&mut merged, "/tmp/with ' quote/bkpr").unwrap();
         assert_eq!(merged["permissions"], original["permissions"]);
         assert_eq!(merged["env"], original["env"]);
-        assert_eq!(merged["hooks"]["Stop"], original["hooks"]["Stop"]);
+        assert_eq!(merged["hooks"]["Stop"][0], original["hooks"]["Stop"][0]);
         for event in ["SessionStart", "UserPromptSubmit"] {
             assert_eq!(merged["hooks"][event][0], original["hooks"][event][0]);
         }
@@ -386,7 +448,7 @@ mod tests {
             None
         );
         for value in [
-            json!({"hook_event_name":"Stop", "session_id":"id"}),
+            json!({"hook_event_name":"Notification", "session_id":"id"}),
             json!({"hook_event_name":"SessionStart", "session_id":"bad\u{1b}id"}),
             json!({"hook_event_name":"SessionStart", "session_id":"x".repeat(129)}),
             json!({"hook_event_name":"SessionStart", "session_id":""}),

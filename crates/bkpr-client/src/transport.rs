@@ -31,17 +31,23 @@ pub fn request(socket: &Path, request: &Request) -> Result<Response> {
         .with_context(|| format!("connecting to {}", socket.display()))?;
     stream.set_read_timeout(Some(Duration::from_secs(15)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    // Once writing starts, even an incomplete/invalid reply cannot prove whether
-    // a mutation executed. Keep that fact typed through all caller contexts.
+    request_stream(&mut stream, request)
+}
+
+/// A caller-owned connection allows cancellation by shutting down a cloned socket.
+/// Configure read/write deadlines before dispatch; no request is replayed.
+pub fn request_stream(stream: &mut UnixStream, request: &Request) -> Result<Response> {
+    // A missing or invalid reply cannot establish whether a mutation executed.
+    // Keep that uncertainty typed through caller error contexts.
     let response = (|| -> Result<Response> {
         {
-            let mut writer = std::io::BufWriter::new(&mut stream);
+            let mut writer = std::io::BufWriter::new(&mut *stream);
             serde_json::to_writer(&mut writer, request)?;
             writer.write_all(b"\n")?;
             writer.flush()?;
         }
         let mut bytes = Vec::new();
-        BufReader::new(stream.take(96 * 1024 * 1024 + 1)).read_until(b'\n', &mut bytes)?;
+        BufReader::new((&mut *stream).take(96 * 1024 * 1024 + 1)).read_until(b'\n', &mut bytes)?;
         if bytes.len() > 96 * 1024 * 1024 {
             bail!("server response exceeds scene limit");
         }
@@ -63,6 +69,15 @@ pub fn request(socket: &Path, request: &Request) -> Result<Response> {
 }
 pub fn checked(socket: &Path, operation: Operation) -> Result<Value> {
     let response = request(socket, &Request::new(operation))?;
+    checked_response(response)
+}
+
+/// Dispatch once on a connection whose lifetime and deadlines the caller owns.
+pub fn checked_stream(stream: &mut UnixStream, operation: Operation) -> Result<Value> {
+    checked_response(request_stream(stream, &Request::new(operation))?)
+}
+
+fn checked_response(response: Response) -> Result<Value> {
     if !response.ok {
         let message = response.error.expect("validated rejection has an error");
         let ambiguous = message.contains("outcome unknown");

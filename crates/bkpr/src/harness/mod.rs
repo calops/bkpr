@@ -1,6 +1,8 @@
 //! Launch-local capture and recursion-safe native harness execution.
+pub(super) mod agent;
 mod agy;
 mod claude;
+mod claude_inbox;
 mod codex;
 mod omp;
 
@@ -127,14 +129,33 @@ fn capture_command(arguments: Vec<OsString>) -> Result<i32> {
             Capture::from_environment()?.bind(source, &id)?;
             Ok(0)
         }
-        Some(command) if command == "mcp" => {
-            if arguments.next().as_deref() != Some(OsStr::new("--harness"))
-                || arguments.next().as_deref() != Some(OsStr::new("agy"))
-                || arguments.next().is_some()
-            {
-                bail!("usage: bkpr capture mcp --harness agy");
+        Some(command) if command == "agent" => agent::cli(arguments.collect()),
+        Some(command) if command == "agent-subscribe" => agent::subscribe(arguments.collect()),
+        Some(command) if command == "claude-wait" => {
+            if arguments.next().is_some() {
+                bail!("capture claude-wait accepts no arguments");
             }
-            agy::mcp()
+            claude::wait()
+        }
+        Some(command) if command == "agy-receiver" => agy::receiver(arguments.collect()),
+        Some(command) if command == "mcp" => {
+            if arguments.next().as_deref() != Some(OsStr::new("--harness")) {
+                bail!("usage: bkpr capture mcp --harness HARNESS");
+            }
+            let kind = arguments
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .and_then(|value| HarnessKind::from_command(&value))
+                .filter(|kind| kind.is_managed())
+                .context("invalid MCP harness")?;
+            if arguments.next().is_some() {
+                bail!("unexpected MCP argument");
+            }
+            if kind == HarnessKind::Agy {
+                agy::mcp()
+            } else {
+                agent::mcp(kind)
+            }
         }
         _ => bail!("unknown internal capture command"),
     }
@@ -271,6 +292,7 @@ fn private_environment(name: &OsStr) -> bool {
         b"ANTIGRAVITY_LS_ADDRESS" | b"ANTIGRAVITY_CSRF_TOKEN" | b"ANTIGRAVITY_CONVERSATION_ID"
     ) || [
         b"BKPR_CAPTURE_".as_slice(),
+        b"BKPR_AGENT_",
         b"BKPR_RELAY_",
         b"BKPR_CODEX_",
         b"BKPR_OMP_",
@@ -383,7 +405,7 @@ impl Capture {
             .env("BKPR_PANE_ID", &self.grant.pane_id);
     }
 
-    fn request(&self, operation: Operation) -> Result<serde_json::Value> {
+    pub(super) fn request(&self, operation: Operation) -> Result<serde_json::Value> {
         bkpr_client::transport::checked(&self.socket, operation).map_err(|error| {
             anyhow::anyhow!(
                 "{}",
@@ -865,6 +887,49 @@ mod tests {
         assert_eq!(
             exit_code(ExitStatus::from_raw(libc::SIGTERM)),
             -libc::SIGTERM
+        );
+    }
+
+    #[test]
+    #[ignore = "subprocess inherited-capability boundary fixture"]
+    fn recognition_environment_fixture() {
+        for name in [
+            "BKPR_AGENT_RELAY_TOKEN",
+            "BKPR_AGENT_RELAY_SOCKET",
+            "BKPR_CAPTURE_TOKEN",
+            "BKPR_CAPTURE_LAUNCH_ID",
+        ] {
+            assert!(
+                env::var_os(name).is_none(),
+                "inherited parent capability: {name}"
+            );
+        }
+        assert_eq!(env::var("BKPR_SOCKET").unwrap(), "/private/backend.sock");
+        assert_eq!(env::var("BKPR_PANE_ID").unwrap(), "recognized-pane");
+    }
+
+    #[test]
+    fn recognition_children_do_not_inherit_capture_or_agent_relay_authority() {
+        let mut command = Command::new(env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "--ignored",
+                "harness::tests::recognition_environment_fixture",
+                "--nocapture",
+            ])
+            .env("BKPR_AGENT_RELAY_TOKEN", "parent-private-relay-token")
+            .env("BKPR_AGENT_RELAY_SOCKET", "/private/parent-agent.sock")
+            .env("BKPR_CAPTURE_TOKEN", "parent-private-capture-token")
+            .env("BKPR_CAPTURE_LAUNCH_ID", "parent-launch")
+            .env("BKPR_SOCKET", "/private/backend.sock")
+            .env("BKPR_PANE_ID", "recognized-pane");
+        scrub(&mut command);
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }
