@@ -4,7 +4,8 @@ set -euo pipefail
 revision=93967b7f9478e94dcbb42125c8a90f34feb40d75
 source_sha=af551aa496cf54ff734e11563d45fe2c49739ee754d1740d1ac984a67a42dc70
 patch_sha=196b39997c6552d9158f763555a72784aae2dbf4fa61aa500554bfd07e28d32c
-root=${CARGO_TARGET_DIR:?Set CARGO_TARGET_DIR to the shared canonical target directory}
+repo=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
+root=${CARGO_TARGET_DIR:-"$repo/target"}
 root=$(realpath "$root")
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) platform=x86_64-linux; zig_sha=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026 ;;

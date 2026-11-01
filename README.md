@@ -33,8 +33,8 @@ flake provides a **native-only development shell**, not a packaged application:
 
 ```sh
 nix develop
-# Keep an existing shared CARGO_TARGET_DIR; otherwise use this checkout's target.
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
+# Use this worktree's own cache, independent of main's build artifacts.
+export CARGO_TARGET_DIR="$PWD/target"
 just build
 "$CARGO_TARGET_DIR/debug/bkpr" --help
 ```
@@ -42,7 +42,8 @@ just build
 There is only the default devshell. No separate sibling-runtime shell or build
 is needed. `just build` prepares the engine and builds both executables with
 `cargo build --locked --workspace`. `just run --help` builds and runs `bkpr`.
-All recipes respect an existing `CARGO_TARGET_DIR`.
+All recipes respect an explicit `CARGO_TARGET_DIR`; use this worktree's local
+`target/`, not the main checkout's cache.
 
 Repository Cargo commands default to eight build jobs through `.cargo/config.toml`;
 rustc coordinates its parallel code generation with Cargo's jobserver. Native
@@ -65,7 +66,7 @@ this is a prerequisite-platform list, not a claim of runtime acceptance on every
 platform.
 
 ```sh
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
+export CARGO_TARGET_DIR="$PWD/target"
 mkdir -p "$CARGO_TARGET_DIR"
 bash scripts/prepare-ghostty-vt.sh
 export BKPR_GHOSTTY_VT_DIR="$(bash scripts/prepare-ghostty-vt.sh --print-prefix)"
@@ -105,7 +106,7 @@ workspaces remain explicitly selectable.
 For an isolated preview, start the daemon explicitly in one terminal:
 
 ```sh
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
+export CARGO_TARGET_DIR="$PWD/target"
 umask 077
 export BKPR_RUN="$(mktemp -d "${TMPDIR:-/tmp}/bkpr.XXXXXX")"
 mkdir "$BKPR_RUN/home" "$BKPR_RUN/state"

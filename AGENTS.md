@@ -10,6 +10,8 @@ The near-term delivery priority is usable TUI feature parity with `main`, in a c
 
 Use maintained dependencies for terminal emulation, PTYs, codecs, networking/authentication, storage and UI infrastructure. Own Bkpr's agent/harness behavior, lifecycle, metadata and authority policies. Don't maintain a parallel generic SDK when an upstream library fits. The engine adapter uses the pinned `libghostty-rs` safe/sys pair in `vendor/libghostty-rs`; `UPSTREAM.toml` records its exact native ABI and separable dependency patch. Contribute narrow reusable gaps upstream where practical. Updates must reproduce the dependency patch and pass SDK plus product acceptance; never mix arbitrary system Ghostty with the checked Rust declarations.
 
+Before sizeable custom implementation, proactively inspect existing dependencies and research well-maintained, widely used crates addressing the problem. Compare actual feature coverage, maintenance, licensing and performance/architecture fit before choosing to build. Reuse suitable components even when Bkpr-specific integration remains; lack of a complete drop-in is not grounds to recreate a subsystem. Prefer contributing narrow reusable gaps upstream. Trivial glue may stay internal. Record the dependency decision and evidence with the work; don't present generic terminal/UI machinery as necessarily product-owned.
+
 The implementation plan and source ledger are in `docs/pane-first-mux/implementation-plan.md`. Historical experiments record evidence, not production acceptance. Distinguish implemented behavior, agreed design and unresolved decisions.
 
 ## Architecture and crate boundaries
@@ -97,7 +99,7 @@ These are product constraints, not an obligation to copy old APIs, storage forma
 
 Use `nix develop`, incremental Cargo artifacts and the native instructions in README. No Zellij/WASI build or deleted implementation's regression suite is required. Run coordinated native checks after related edits: workspace tests, all-target strict Clippy, formatting and an actual changed-path smoke. Documentation-only changes don't require rebuilding the runtime.
 
-Reuse the existing worktree and canonical shared Cargo target. Don't create per-feature caches or discard incremental artifacts. Changes here must not mutate `main`, sibling checkouts, installed programs or running user sessions. Protect live canonical executable paths with a private public-output view sharing caches/locks, or a known-good immutable executable outside build output. This is operational safety, not a compatibility architecture.
+Use this worktree's own `target/` for Cargo artifacts and native prerequisites. Don't share `main`'s Cargo target or discard incremental artifacts. Keep builds bounded to eight jobs rather than consuming every host core. Changes here must not mutate `main`, sibling checkouts, installed programs or running user sessions. Preserve a known-good executable outside build output when a live fixture needs it; shared-cache public-output isolation is no longer required. This is operational safety, not a compatibility architecture.
 
 Fixtures use isolated HOME/XDG, private sockets, explicit owned process identities and fake local providers. Never call real model/provider services, change user profiles, auto-grant approvals or operate on live sessions for smoke tests. Verify affected input, pointer, resize, focus, cursor, graphics and clipboard behavior on the actual terminal surface. Retain useful evidence under `target/smoke/`; clean up owned processes and temporary files.
 

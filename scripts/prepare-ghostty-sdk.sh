@@ -7,7 +7,7 @@ revision=575ed6b8ceb79ffaf247ecf7e34333876b0d5be4
 source_sha=fc16a84c73ec9783ce078e2c2d24a64b7e03e7d11039694f06a66e9865d2eeb8
 patch_sha=408430a41477570f80ebf0b8e216f8150a6e2839ba88783df58d600c919002c6
 repo=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
-cache=${CARGO_TARGET_DIR:?Set CARGO_TARGET_DIR to the shared canonical target directory}
+cache=${CARGO_TARGET_DIR:-"$repo/target"}
 mkdir -p "$cache"
 cache=$(realpath "$cache")
 output=$(realpath -m "$1")
