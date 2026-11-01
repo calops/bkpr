@@ -12,6 +12,10 @@
 * Expose the native daemon, TUI, typed version-2 control protocol and keyboard client. Backend-owned workspaces and split layouts reference independent panes; closing a projection or detaching a client does not terminate its process. Workspace/layout metadata persists, but process and terminal-content recovery is not implemented. Forge/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
 * Native graphics initial-presentation gates remain unaccepted. This replacement is not production acceptance and does not modify installed applications or live sessions.
 
+### Development
+
+* Use the pane-first worktree's own incremental Cargo target and native prerequisite directory instead of sharing main's cache. Preparation helpers default to that local target; builds remain limited to eight jobs. Research maintained, widely used dependencies before sizeable custom implementation.
+
 ### Native workspace implementation
 
 * Bare `bkpr` connects to or starts `bkprd` and opens the TUI. One retained framework composes the sidebar, terminal projections, forms and choosers, including physical pointer hit testing and per-pane graphics namespaces.
