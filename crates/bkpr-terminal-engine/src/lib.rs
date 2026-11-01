@@ -5,6 +5,7 @@ mod callbacks;
 mod input;
 mod offers;
 mod render;
+mod selection;
 mod status;
 use bkpr_protocol::*;
 use libghostty_vt as sdk;
@@ -72,6 +73,7 @@ pub struct Terminal {
     mouse_buttons: u16,
     last_offer_id: u64,
     history: HashMap<String, sdk::screen::TrackedGridRef>,
+    selections: selection::Selections,
 }
 impl Terminal {
     pub fn new(size: Size) -> Result<Self> {
@@ -112,6 +114,7 @@ impl Terminal {
             mouse_buttons: 0,
             last_offer_id: 0,
             history: HashMap::new(),
+            selections: selection::Selections::new()?,
         };
         this.resize(size)?;
         Ok(this)
@@ -153,6 +156,7 @@ impl Terminal {
             return Err(error.into());
         }
         self.size = size;
+        self.selections.reconcile(&self.native)?;
         Ok(())
     }
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Effect>> {
@@ -160,6 +164,7 @@ impl Terminal {
             return Err(Error("feed chunk exceeds 1 MiB".into()));
         }
         self.native.vt_write(bytes);
+        self.selections.reconcile(&self.native)?;
         // Alternate screens have no primary-screen history projection. Do not
         // resurrect a stale inspection position when the application returns.
         if self.native.active_screen()? == sdk::screen::Screen::Alternate {
@@ -264,6 +269,7 @@ impl Terminal {
     /// Drop native pins with their detached views; never retain terminal text.
     pub fn retain_scrollback_views(&mut self, mut attached: impl FnMut(&str) -> bool) {
         self.history.retain(|view, _| attached(view));
+        self.selections.retain(&self.native, attached);
     }
     /// Inspect current native data, independently of the published render hold,
     /// without stealing the canonical viewport or mutating the held frame.
@@ -306,5 +312,10 @@ impl Terminal {
     }
     pub fn tick_images(&mut self, now_ms: u64) -> Result<Option<u64>> {
         Ok(self.native.kitty_graphics_animation_tick(now_ms)?)
+    }
+}
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        self.clear_view_selections();
     }
 }

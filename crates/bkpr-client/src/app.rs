@@ -23,6 +23,8 @@ mod jobs;
 mod management;
 #[path = "scrollback.rs"]
 mod scrollback;
+#[path = "selection.rs"]
+mod selection;
 
 enum Background {
     Management(management::Completion),
@@ -69,6 +71,7 @@ struct PointerOrigin {
 enum PointerCapture {
     Ui,
     Pane(Arc<PointerOrigin>),
+    Selection(Arc<PointerOrigin>),
 }
 struct PressedPointer {
     origin: Arc<PointerOrigin>,
@@ -258,6 +261,7 @@ struct App<'a> {
     last_button: MouseButton,
     pointer_capture: Option<PointerCapture>,
     pressed_pointers: RefCell<Vec<PressedPointer>>,
+    terminal_selection: selection::State,
     notified_focus: Option<(String, String)>,
     focus_out_pending: HashSet<(String, String)>,
     lease_pending: HashSet<String>,
@@ -586,6 +590,7 @@ impl App<'_> {
         Ok(())
     }
     fn cancel_pointer(&mut self, pane: &str, view: &str) {
+        self.cancel_selection(pane, view);
         if matches!(&self.pointer_capture, Some(PointerCapture::Pane(origin))
             if origin.pane == pane && origin.view == view)
         {
@@ -1912,6 +1917,7 @@ impl App<'_> {
             return Ok(false);
         }
         if self.state.form.is_some() {
+            self.selection_focus_lost();
             if event.action == KeyAction::Release {
                 return Ok(false);
             }
@@ -1992,6 +1998,9 @@ impl App<'_> {
                     && !self.focused_history()
                     && let Some((pane, view)) = self.active()
                 {
+                    if self.selection_active(&pane) {
+                        self.clear_selection(&pane)?;
+                    }
                     for action in [KeyAction::Press, KeyAction::Release] {
                         self.enqueue(
                             &pane,
@@ -2027,6 +2036,7 @@ impl App<'_> {
             match (event.text.as_str(), event.key.as_str()) {
                 ("d", _) => return Ok(true),
                 ("s", _) => self.enter_history(rects)?,
+                ("y", _) => self.copy_focused_selection()?,
                 ("i", _) => self.state.open(FormKind::ProjectDetails, String::new()),
                 ("c", _) => self.state.open(FormKind::CreateWorkspace, String::new()),
                 ("r", _) => {
@@ -2093,6 +2103,12 @@ impl App<'_> {
                 (_, "Escape") => {}
                 _ => self.state.status = "Unknown Ctrl-b command; press Ctrl-b for bindings".into(),
             };
+            if self.state.form.is_some() {
+                self.selection_focus_lost();
+            }
+            return Ok(false);
+        }
+        if self.selection_key(&event)? {
             return Ok(false);
         }
         if self.history_key(&event, rects)? {
@@ -2196,6 +2212,18 @@ impl App<'_> {
                 self.pointer_capture = Some(PointerCapture::Ui);
             }
         }
+        if !wheel && let Some(PointerCapture::Selection(origin)) = &captured {
+            if let Some((_, rect)) = rects.iter().find(|(pane, _)| pane == &origin.pane) {
+                let action = if action == MouseAction::Release {
+                    SelectionAction::Release
+                } else {
+                    SelectionAction::Drag
+                };
+                return self.select_pointer(origin.clone(), action, mouse, content(*rect));
+            }
+            self.cancel_selection(&origin.pane, &origin.view);
+            return Ok(());
+        }
         let origin = if wheel {
             None
         } else {
@@ -2287,6 +2315,19 @@ impl App<'_> {
             let enter = shifted || delta > 0 || self.history(pane).is_some();
             return self.scroll_history(pane, delta, enter);
         }
+        if !wheel
+            && event_button == MouseButton::Left
+            && action == MouseAction::Press
+            && (shifted
+                || self.history(pane).is_some()
+                || attached.metadata.capabilities.native_mouse_reporting && !frame.mouse_reporting)
+        {
+            let origin = Arc::new(PointerOrigin {
+                pane: pane.clone(),
+                view: attached.view.clone(),
+            });
+            return self.select_pointer(origin, SelectionAction::Press, mouse, rect);
+        }
         // Historical cells cannot start a new application gesture. Complete
         // accepted releases and preserve application-owned wheel reporting.
         if self.options.read_only
@@ -2323,23 +2364,13 @@ impl App<'_> {
             return Ok(());
         };
         let view = &attached.view;
-        let mut modifiers = 0;
-        for (flag, bit) in [
-            (Modifiers::SHIFT, 1),
-            (Modifiers::CTRL, 2),
-            (Modifiers::ALT, 4),
-            (Modifiers::SUPER, 8),
-        ] {
-            if mouse.modifiers.contains(flag) {
-                modifiers |= bit;
-            }
-        }
+        let modifiers = selection::mouse_modifiers(mouse.modifiers);
         let event = MouseEvent {
             x,
             y,
             button: event_button,
             action,
-            modifiers,
+            modifiers: u16::from(modifiers),
         };
         let deferred = self
             .barrier_target()
@@ -2427,6 +2458,9 @@ impl App<'_> {
         }
         if response.starts_with(b"focus;") {
             self.host_focused = response == b"focus;in";
+            if !self.host_focused {
+                self.selection_focus_lost();
+            }
             if self.host_focused
                 && let Some((pane, _)) = self.active()
             {
@@ -2597,6 +2631,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         last_button: MouseButton::None,
         pointer_capture: None,
         pressed_pointers: RefCell::new(Vec::new()),
+        terminal_selection: selection::State::default(),
         notified_focus: None,
         focus_out_pending: HashSet::new(),
         lease_pending: HashSet::new(),
@@ -2636,6 +2671,8 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             app.reap_responses();
             let pointer_release = app.flush_pointer_releases();
             app.scope_input_result(pointer_release)?;
+            let selection_release = app.flush_selection_release();
+            app.scope_input_result(selection_release)?;
             app.complete_background()?;
             if let Some(registry) = registry_pump.latest()?
                 && registry.revision >= app.registry.revision
@@ -2647,6 +2684,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             let rects = app.rects(size);
             app.sync_views(size, &rects)?;
             app.poll_views();
+            let tick = app.selection_tick();
+            app.scope_input_result(tick)?;
+            app.selection_clipboard(&mut out)?;
             let color_revision = app.colors.revision;
             if color_revision > 0
                 && let (Some(foreground), Some(background)) =
@@ -2778,6 +2818,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     height: size.rows,
                 },
                 frame: &chrome_surface.frame,
+                selection: &[],
                 focused: false,
             }];
             for (id, rect) in &rects {
@@ -2795,6 +2836,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                         id,
                         rect,
                         frame,
+                        selection: app.selection_spans(id),
                         focused: !popup
                             && app.state.focused.as_ref() == Some(id)
                             && app.input_enabled(id)
@@ -2817,6 +2859,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                         height: size.rows,
                     },
                     frame: &popup_surface.frame,
+                    selection: &[],
                     focused: true,
                 });
             }
@@ -2866,6 +2909,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             } else {
                 escape.as_millis().max(1) as i32
             };
+            let timeout = app.selection_timeout(timeout);
             let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
             if ready < 0
                 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
@@ -3135,6 +3179,7 @@ mod tests {
                 last_button: MouseButton::None,
                 pointer_capture: None,
                 pressed_pointers: RefCell::new(Vec::new()),
+                terminal_selection: selection::State::default(),
                 notified_focus: None,
                 focus_out_pending: HashSet::new(),
                 lease_pending: HashSet::new(),
@@ -3585,6 +3630,7 @@ mod tests {
             lease_generation: 0,
             views: Vec::new(),
             clipboard: None,
+            selection: None,
             clipboard_pending: false,
             capabilities: PaneCapabilities {
                 sixel: false,
@@ -3785,6 +3831,7 @@ mod tests {
                     height: size.rows,
                 },
                 frame: &surface.frame,
+                selection: &[],
                 focused: false,
             }],
         };
@@ -3813,6 +3860,11 @@ mod tests {
         fn new(app: &mut App<'_>) -> Self {
             attach_fixture(app);
             attach_named_fixture(app, "beta", "beta-view");
+            // This fixture exercises application-owned pointer lifecycles;
+            // selection cases explicitly opt out of native mouse reporting.
+            for view in app.views.values_mut() {
+                view.frame.as_mut().unwrap().mouse_reporting = true;
+            }
             app.state.focused = Some("focused-pane".into());
             app.notified_focus = Some(("focused-pane".into(), "focused-view".into()));
             let size = Size {
@@ -3842,6 +3894,7 @@ mod tests {
                     height: size.rows,
                 },
                 frame: &frame,
+                selection: &[],
                 focused: false,
             }];
             for (pane, rect) in &rects {
@@ -3849,6 +3902,7 @@ mod tests {
                     id: pane,
                     rect: content(*rect),
                     frame: &frame,
+                    selection: &[],
                     focused: false,
                 });
             }
@@ -3902,8 +3956,8 @@ mod tests {
         let pointer = PointerFixture::new(&mut app);
         let alpha = content(pointer.rects[0].1);
         let beta = content(pointer.rects[1].1);
-        pointer.send(&mut app, 4, alpha.x + 2, alpha.y + 2, false);
-        pointer.send(&mut app, 36, beta.x + 2, beta.y + 2, false);
+        pointer.send(&mut app, 8, alpha.x + 2, alpha.y + 2, false);
+        pointer.send(&mut app, 40, beta.x + 2, beta.y + 2, false);
         let events = captured_mouse(&capture);
         assert_eq!(events.len(), 2);
         assert!(
@@ -3917,12 +3971,12 @@ mod tests {
         assert_eq!(events[1].2.x.to_bits(), edge.0.to_bits());
         assert_eq!(events[1].2.y.to_bits(), edge.1.to_bits());
         assert_eq!(app.state.focused.as_deref(), Some("focused-pane"));
-        pointer.send(&mut app, 4, beta.x + 2, beta.y + 2, true);
+        pointer.send(&mut app, 8, beta.x + 2, beta.y + 2, true);
         let released = captured_mouse(&capture);
         assert_eq!(released.len(), 1);
         assert_eq!(released[0].0, "focused-pane");
         assert_eq!(released[0].2.action, MouseAction::Release);
-        assert_eq!(released[0].2.modifiers, 1);
+        assert_eq!(released[0].2.modifiers, 4);
         assert_eq!(released[0].2.x.to_bits(), edge.0.to_bits());
         assert!(app.pressed_pointers.borrow().is_empty());
         assert!(app.pointer_capture.is_none());
@@ -3939,6 +3993,13 @@ mod tests {
             ..size()
         };
         app.views.get_mut("focused-pane").unwrap().frame = Some(blank(actual));
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .frame
+            .as_mut()
+            .unwrap()
+            .mouse_reporting = true;
         pointer.send(&mut app, 0, alpha.x + 2, alpha.y + 2, false);
         pointer.send(&mut app, 32, beta.x + 2, beta.y + 2, false);
         pointer.send(&mut app, 0, beta.x + 2, beta.y + 2, true);
@@ -4157,7 +4218,7 @@ mod tests {
         let pointer = PointerFixture::new(&mut app);
         let alpha = content(pointer.rects[0].1);
         let beta = content(pointer.rects[1].1);
-        pointer.send(&mut app, 4, alpha.x + 2, alpha.y + 2, false);
+        pointer.send(&mut app, 8, alpha.x + 2, alpha.y + 2, false);
         let press = captured_mouse(&capture).pop().unwrap().2;
         app.retire_view("focused-pane", true).unwrap();
         assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
@@ -4186,7 +4247,7 @@ mod tests {
             }
         ));
         app.reap_retiring().unwrap();
-        pointer.send(&mut app, 4, beta.x + 2, beta.y + 2, true);
+        pointer.send(&mut app, 8, beta.x + 2, beta.y + 2, true);
         assert!(
             capture.try_recv().is_err(),
             "physical release leaked to newly visible pane"
@@ -4791,6 +4852,13 @@ mod tests {
     fn physical_wheels_follow_exact_native_mouse_ownership_and_shift_override() {
         let (mut app, capture) = fixture();
         let pointer = PointerFixture::new(&mut app);
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .frame
+            .as_mut()
+            .unwrap()
+            .mouse_reporting = false;
         let alpha = content(pointer.rects[0].1);
         pointer.send(&mut app, 64, alpha.x + 2, alpha.y + 2, false);
         assert_eq!(scroll(&capture, "focused-pane", "focused-view"), 3);
@@ -4857,6 +4925,13 @@ mod tests {
         let (mut app, capture) = fixture();
         app.options.read_only = true;
         let pointer = PointerFixture::new(&mut app);
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .frame
+            .as_mut()
+            .unwrap()
+            .mouse_reporting = false;
         assert!(!app.views["focused-pane"].spec.input);
         let alpha = content(pointer.rects[0].1);
         pointer.send(&mut app, 64, alpha.x + 2, alpha.y + 2, false);
@@ -4896,5 +4971,405 @@ mod tests {
         assert!(capture.try_recv().is_err());
         assert!(app.pointer_capture.is_none());
         assert!(app.pressed_pointers.borrow().is_empty());
+    }
+
+    fn selected_metadata() -> SelectionSnapshot {
+        SelectionSnapshot {
+            active: true,
+            dragging: false,
+            rectangle: false,
+            autoscroll: 0,
+            spans: vec![SelectionSpan {
+                row: 0,
+                start: 0,
+                end: 2,
+            }],
+        }
+    }
+    fn copy_contents(data: Vec<u8>) -> serde_json::Value {
+        serde_json::json!({
+            "copied": true,
+            "contents": [ClipboardContent { mime: "text/plain".into(), data }],
+        })
+    }
+
+    #[test]
+    fn local_selection_respects_application_mouse_unknown_capability_and_shift_override() {
+        for (known, reporting, shifted, history, read_only, selected) in [
+            (true, true, false, false, false, false),
+            (true, true, true, false, false, true),
+            (false, false, false, false, false, false),
+            (false, false, true, false, false, true),
+            (true, false, false, false, false, true),
+            (true, true, false, true, false, true),
+            (true, false, false, false, true, true),
+            (true, true, false, false, true, false),
+        ] {
+            let (mut app, capture) = fixture();
+            app.options.read_only = read_only;
+            app.options.clipboard_policy = "deny".into();
+            let pointer = PointerFixture::new(&mut app);
+            let attached = app.views.get_mut("focused-pane").unwrap();
+            attached.metadata.capabilities.native_mouse_reporting = known;
+            attached.frame.as_mut().unwrap().mouse_reporting = reporting;
+            attached.history = history;
+            let alpha = content(pointer.rects[0].1);
+            let button = if shifted { 4 } else { 0 };
+            pointer.send(&mut app, button, alpha.x + 2, alpha.y + 2, false);
+            assert_eq!(
+                matches!(app.pointer_capture, Some(PointerCapture::Selection(_))),
+                selected
+            );
+            assert_eq!(
+                !app.pressed_pointers.borrow().is_empty(),
+                !selected && !read_only
+            );
+            pointer.send(&mut app, button, alpha.x + 3, alpha.y + 2, true);
+            let application = captured_mouse(&capture);
+            assert_eq!(!application.is_empty(), !selected && !read_only);
+            assert!(app.pointer_capture.is_none());
+            assert!(app.pressed_pointers.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn read_only_selection_crosses_panes_and_chrome_without_retargeting_and_exports_exact_bytes() {
+        let (mut app, capture) = fixture();
+        app.options.read_only = true;
+        let pointer = PointerFixture::new(&mut app);
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .frame
+            .as_mut()
+            .unwrap()
+            .mouse_reporting = false;
+        let alpha = content(pointer.rects[0].1);
+        let beta = content(pointer.rects[1].1);
+        let source_rows = app.views["focused-pane"]
+            .frame
+            .as_ref()
+            .unwrap()
+            .rows
+            .as_ptr();
+        pointer.send(&mut app, 8, alpha.x + 2, alpha.y + 2, false);
+        pointer.send(&mut app, 40, beta.x + 2, beta.y + 2, false);
+        pointer.send(&mut app, 8, 0, 0, true);
+        for _ in 0..3 {
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                pane_id, request: PaneRequest::Select { view_id, .. },
+            } if pane_id == "focused-pane" && view_id == "focused-view"));
+        }
+        assert!(
+            matches!(capture.respond(copy_contents("é\n".as_bytes().to_vec())), Operation::Pane {
+            pane_id, request: PaneRequest::CopySelection { view_id },
+        } if pane_id == "focused-pane" && view_id == "focused-view")
+        );
+        let mut out = Vec::new();
+        app.selection_clipboard(&mut out).unwrap();
+        assert_eq!(out, b"\x1b]52;c;w6kK\x1b\\");
+        assert!(app.state.status.contains("sent to host"));
+        assert!(!app.views["focused-pane"].spec.input);
+        assert!(!app.views["focused-pane"].spec.clipboard);
+        assert_eq!(app.state.focused.as_deref(), Some("focused-pane"));
+        assert!(app.pressed_pointers.borrow().is_empty());
+        assert!(app.pointer_capture.is_none());
+        assert_eq!(
+            app.views["focused-pane"]
+                .frame
+                .as_ref()
+                .unwrap()
+                .rows
+                .as_ptr(),
+            source_rows
+        );
+        assert!(capture.try_recv().is_err());
+    }
+
+    #[test]
+    fn delayed_copy_cannot_export_after_clear_new_selection_focus_roundtrip_or_view_retirement() {
+        for change in 0..6 {
+            let (mut app, capture) = fixture();
+            let pointer = PointerFixture::new(&mut app);
+            app.views
+                .get_mut("focused-pane")
+                .unwrap()
+                .metadata
+                .selection = Some(selected_metadata());
+            app.copy_focused_selection().unwrap();
+            match change {
+                0 => app.clear_selection("focused-pane").unwrap(),
+                1 => {
+                    app.focus("beta".into());
+                    app.focus("focused-pane".into());
+                }
+                2 => app.retire_view("focused-pane", false).unwrap(),
+                3 => app.views.get_mut("focused-pane").unwrap().view = "replacement-view".into(),
+                4 => {
+                    let alpha = content(pointer.rects[0].1);
+                    pointer.send(&mut app, 4, alpha.x + 1, alpha.y + 1, false);
+                }
+                5 => app.selection_focus_lost(),
+                _ => unreachable!(),
+            }
+            capture.respond(copy_contents(b"stale".to_vec()));
+            let mut out = Vec::new();
+            app.selection_clipboard(&mut out).unwrap();
+            assert!(
+                out.is_empty(),
+                "stale selection exported for lifecycle change {change}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_policy_empty_and_oversized_results_do_not_write_host_clipboard() {
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        app.options.clipboard_policy = "deny".into();
+        app.copy_focused_selection().unwrap();
+        assert!(capture.try_recv().is_err());
+        assert!(app.state.status.contains("denied"));
+        app.options.clipboard_policy = "ask".into();
+        for value in [
+            serde_json::json!({"copied":false, "contents":[]}),
+            copy_contents(vec![b'x'; MAX_INPUT_BYTES + 1]),
+        ] {
+            app.copy_focused_selection().unwrap();
+            capture.respond(value);
+            let mut out = Vec::new();
+            app.selection_clipboard(&mut out).unwrap();
+            assert!(out.is_empty());
+        }
+        assert!(app.state.status.contains("payload limit"));
+        assert!(app.input_failures.is_empty());
+    }
+
+    #[test]
+    fn selection_escape_is_local_normal_typing_clears_and_held_releases_keep_origin() {
+        let (mut app, capture) = fixture();
+        let _pointer = PointerFixture::new(&mut app);
+        app.key(key("KeyA"), &mut Vec::new(), size(), &[]).unwrap();
+        assert!(matches!(
+            capture.try_recv().unwrap(),
+            Operation::Pane {
+                request: PaneRequest::Key { .. },
+                ..
+            }
+        ));
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .metadata
+            .selection = Some(selected_metadata());
+        app.key(key("Escape"), &mut Vec::new(), size(), &[])
+            .unwrap();
+        assert!(app.selection_spans("focused-pane").is_empty());
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            request: PaneRequest::Select { event, .. }, ..
+        } if event.action == SelectionAction::Clear));
+        for action in [KeyAction::Repeat, KeyAction::Release] {
+            let mut escape = key("Escape");
+            escape.action = action;
+            app.key(escape, &mut Vec::new(), size(), &[]).unwrap();
+        }
+        assert!(
+            capture.try_recv().is_err(),
+            "selection Escape leaked into application"
+        );
+        app.focus("beta".into());
+        let mut release = key("KeyA");
+        release.action = KeyAction::Release;
+        app.key(release, &mut Vec::new(), size(), &[]).unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { event, .. },
+        } if pane_id == "focused-pane" && event.action == KeyAction::Release));
+        app.views.get_mut("beta").unwrap().metadata.selection = Some(selected_metadata());
+        app.notified_focus = Some(("beta".into(), "beta-view".into()));
+        app.key(key("KeyQ"), &mut Vec::new(), size(), &[]).unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            request: PaneRequest::Select { event, .. }, ..
+        } if event.action == SelectionAction::Clear));
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { .. },
+        } if pane_id == "beta"));
+    }
+
+    #[test]
+    fn history_selection_clear_does_not_exit_history_or_release_suppressed_typing() {
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        let view = app.views.get_mut("focused-pane").unwrap();
+        view.history = true;
+        view.metadata.selection = Some(selected_metadata());
+        app.key(key("KeyQ"), &mut Vec::new(), size(), &[]).unwrap();
+        assert!(capture.try_recv().is_err());
+        app.key(key("Escape"), &mut Vec::new(), size(), &[])
+            .unwrap();
+        assert!(app.focused_history());
+        assert!(matches!(
+            capture.try_recv().unwrap(),
+            Operation::Pane {
+                request: PaneRequest::Select { .. },
+                ..
+            }
+        ));
+        assert!(capture.try_recv().is_err());
+        app.key(key("Escape"), &mut Vec::new(), size(), &[])
+            .unwrap();
+        assert_eq!(scroll(&capture, "focused-pane", "focused-view"), i64::MIN);
+    }
+
+    #[test]
+    fn autoscroll_deadline_exists_only_for_an_active_native_edge_drag() {
+        let (mut app, capture) = fixture();
+        app.options.clipboard_policy = "deny".into();
+        let pointer = PointerFixture::new(&mut app);
+        let alpha = content(pointer.rects[0].1);
+        pointer.send(&mut app, 4, alpha.x + 2, alpha.y + 2, false);
+        app.selection_tick().unwrap();
+        assert_eq!(app.selection_timeout(1000), 1000);
+        let mut selection = selected_metadata();
+        selection.dragging = true;
+        selection.autoscroll = -1;
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .metadata
+            .selection = Some(selection);
+        app.selection_tick().unwrap();
+        assert!(app.selection_timeout(1000) <= 15);
+        pointer.send(&mut app, 4, 0, 0, true);
+        app.selection_tick().unwrap();
+        assert_eq!(app.selection_timeout(1000), 1000);
+        while capture.try_recv().is_ok() {}
+    }
+
+    #[test]
+    fn locally_rejected_selection_release_waits_for_capacity_once_and_stops_edge_ticks() {
+        let (mut app, capture) = fixture();
+        app.options.read_only = true;
+        app.options.clipboard_policy = "deny".into();
+        let pointer = PointerFixture::new(&mut app);
+        let alpha = content(pointer.rects[0].1);
+        pointer.send(&mut app, 4, alpha.x + 2, alpha.y + 2, false);
+        capture.try_recv().unwrap();
+        let mut held = (0..2048)
+            .map(|_| {
+                app.input
+                    .reserve(Operation::Pane {
+                        pane_id: "busy".into(),
+                        request: PaneRequest::Key {
+                            view_id: "busy-view".into(),
+                            event: key("KeyA"),
+                        },
+                    })
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert!(pointer.try_send(&mut app, 4, 0, 0, true).is_err());
+        assert!(app.pointer_capture.is_none());
+        assert_eq!(app.selection_timeout(1000), 1000);
+        assert!(capture.try_recv().is_err());
+        held.pop();
+        app.flush_selection_release().unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Select { view_id, event },
+        } if pane_id == "focused-pane" && view_id == "focused-view" && event.action == SelectionAction::Release));
+        app.flush_selection_release().unwrap();
+        assert!(capture.try_recv().is_err());
+        assert!(app.pressed_pointers.borrow().is_empty());
+    }
+
+    #[test]
+    fn clipboard_output_failure_is_unknown_not_reported_as_success_or_replayed() {
+        struct BrokenHost;
+        impl Write for BrokenHost {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "fixture host closed",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        app.copy_focused_selection().unwrap();
+        capture.respond(copy_contents(b"exact bytes".to_vec()));
+        let error = app.selection_clipboard(&mut BrokenHost).unwrap_err();
+        assert!(error.to_string().contains("outcome unknown"));
+        assert!(!app.state.status.contains("sent to host"));
+        let mut next = Vec::new();
+        app.selection_clipboard(&mut next).unwrap();
+        assert!(next.is_empty());
+        assert!(capture.try_recv().is_err());
+    }
+
+    #[test]
+    fn focus_retirement_stops_edge_drag_without_export_or_late_release_in_another_pane() {
+        let (mut app, capture) = fixture();
+        let pointer = PointerFixture::new(&mut app);
+        let alpha = content(pointer.rects[0].1);
+        let beta = content(pointer.rects[1].1);
+        pointer.send(&mut app, 4, alpha.x + 2, alpha.y + 2, false);
+        capture.try_recv().unwrap();
+        let mut selection = selected_metadata();
+        selection.dragging = true;
+        selection.autoscroll = 1;
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .metadata
+            .selection = Some(selection);
+        app.selection_tick().unwrap();
+        assert!(app.selection_timeout(1000) <= 15);
+        app.selection_focus_lost();
+        app.flush_selection_release().unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Select { event, .. },
+        } if pane_id == "focused-pane" && event.action == SelectionAction::Release));
+        assert_eq!(app.selection_timeout(1000), 1000);
+        pointer.send(&mut app, 4, beta.x + 2, beta.y + 2, true);
+        let mut out = Vec::new();
+        app.selection_clipboard(&mut out).unwrap();
+        assert!(out.is_empty());
+        assert!(
+            capture.try_recv().is_err(),
+            "retired selection release reached a different pane"
+        );
+        assert!(app.pointer_capture.is_none());
+    }
+
+    #[test]
+    fn selection_cannot_start_in_letterbox_but_captured_drag_keeps_outside_coordinates() {
+        let (mut app, capture) = fixture();
+        app.options.read_only = true;
+        app.options.clipboard_policy = "deny".into();
+        let pointer = PointerFixture::new(&mut app);
+        let alpha = content(pointer.rects[0].1);
+        let native = Size {
+            cols: 10,
+            rows: 6,
+            ..size()
+        };
+        app.views.get_mut("focused-pane").unwrap().frame = Some(blank(native));
+        pointer.send(&mut app, 4, alpha.x + 12, alpha.y + 2, false);
+        pointer.send(&mut app, 4, alpha.x + 12, alpha.y + 2, true);
+        assert!(capture.try_recv().is_err());
+        pointer.send(&mut app, 4, alpha.x + 2, alpha.y + 2, false);
+        capture.try_recv().unwrap();
+        pointer.send(&mut app, 36, alpha.x + 12, alpha.y + 8, false);
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            request: PaneRequest::Select { event, .. }, ..
+        } if event.action == SelectionAction::Drag && event.x > f32::from(native.cols) && event.y > f32::from(native.rows)));
+        pointer.send(&mut app, 4, 0, 0, true);
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            request: PaneRequest::Select { event, .. }, ..
+        } if event.action == SelectionAction::Release && event.x < 0.0 && event.y < 0.0));
+        assert!(app.pointer_capture.is_none());
+        assert!(capture.try_recv().is_err());
     }
 }

@@ -99,6 +99,15 @@ Rendering, image clipping/damage, cursor/focus, client surfaces, terminal capabi
 
 Fork behavior tests are useful evidence and bug examples, not an immutable suite or a requirement to duplicate old types, IDs, byte order or scheduling. Rasterized recessed/raised frames remain optional source material for future chrome rather than an immediate renderer dependency.
 
+### Selection/copy dependency decision
+
+The pinned `libghostty-rs` SDK supplies reusable selection gestures, native word/line expansion, tracked endpoints, explicit selection formatting and incremental search. A compiled integration probe against the retained native revision verifies those interaction primitives; its evidence is in worktree-local `target/smoke/terminal-reuse-audit/`. Reuse these APIs rather than copying generic terminal selection algorithms from Zellij. Bkpr owns view identity/lifetime, projection spans, input routing and authorized clipboard export.
+
+The closest wrapper, `ratatui-ghostty` 0.2.0 at `65f98749210163158607d1ad2c22e0f35715fbee`, was inspected at its source and public API. It supplies local-terminal rendering/input/session helpers, not selection/copy/search, and depends on SDK `^0.1.1` instead of this branch's `0.2.1`. Its widget needs a native `Terminal` in the UI and performs full-grid conversion; adopting it does not remove this integration work while preserving daemon-owned canonical scenes. No wrapper benchmark or universal performance comparison is claimed. `tui-term` uses a different `vt100` backend; `alacritty_terminal` offers interaction primitives as another engine, not a Ghostty layer.
+
+Main `9ad93bd`'s launcher leaves selection policy to native Zellij. Fork `d7b40a37`'s `zellij-server/src/lib.rs` defaults copy-on-select to true; `tab/mouse_handler.rs::execute_end_selection` retains origin-pane release and copies nonempty selections. These are interaction starting points, not a reason to copy the fork's terminal grid, selection algorithms or shared-client state. Existing `begin_clipboard` framing remains the host export path; terminal permissions remain authoritative.
+
+
 ## Contracts to make concrete
 
 | Boundary | Responsibilities |
@@ -160,7 +169,7 @@ Make normal launch, shell exit, workspace/pane creation, detach/reattach and dae
 
 Exercise frontend-owned navigation/chrome, splits and resizing, scrollback, selection/copy/paste, links, finder/action discovery, forms and focus restoration in the actual terminal. Inspect main/fork implementations as each domain comes into scope; reuse or redesign useful pieces rather than treating old APIs as requirements. Cursor, pointer and focus ownership are client-specific. This is the current delivery priority.
 
-Launch/restart shell replacement and per-view scrollback navigation now have actual terminal acceptance. Scrollback reuses the maintained SDK's native tracked-grid references; it does not copy the retained buffer or add another parser. Exact native mouse mode plus capability advertisement separates application input from local history gestures. Selection/copy/search, further ergonomics and full harness recovery remain distinct pending slices. Complete and report each agreed slice before advancing to another.
+Launch/restart shell replacement, per-view scrollback and terminal selection/copy now have actual terminal acceptance. Native tracked-grid references and reusable gesture/formatter APIs supply generic terminal behavior; the framework adds borrowed view-local highlight spans without modifying canonical scenes. Exact native mouse facts separate application input from local inspection. Visibility epochs, not sizing activity, bind inspection lifetime. Terminal search, further ergonomics and full harness recovery remain distinct pending slices. Complete and report each agreed slice before advancing to another.
 
 An independently implemented browser or narrow client remains a future acceptance check for additional frontend products, not a prerequisite for TUI parity. When that work resumes, it must consume the canonical protocol, handle resource/delta lifetime and reconnect, and coexist with an active TUI. Screenshots, hard-coded mocks or ANSI replay do not establish independent frontend support.
 

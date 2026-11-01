@@ -105,6 +105,8 @@ Fixtures use isolated HOME/XDG, private sockets, explicit owned process identiti
 
 Keep procfs, verified Linux process-birth and subreaper helpers/tests Linux-only. Don't weaken production ownership checks for portability. Use private fixture roots, no process-global environment mutation, and nonblocking PTY reads rather than assumptions about portable byte counts.
 
+In shared-process library tests, use `SpawnSpec::isolated_process = false`. The true mode grants a dedicated single-pane owner all of its adopted children; using it in a parallel test host can kill or reap another fixture's processes. Reserve it for an explicitly isolated subprocess fixture.
+
 Tests should catch consumer-visible behavior, boundaries, state transitions and failure cases. Don't pin source text, incidental defaults, copied values or wrapper forwarding. Remove obsolete mechanism tests rather than rewriting the architecture to satisfy them.
 
 ## Commits and releases

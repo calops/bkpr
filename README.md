@@ -296,6 +296,7 @@ Press `Ctrl-b`, then a command:
 | `w` / `o` | Choose workspace / show an existing pane |
 | `i` | Inspect focused pane's local project/Git snapshot (arrows scroll) |
 | `s` | Enter focused pane's scrollback and page upward |
+| `y` | Copy the focused view's terminal selection to the host clipboard |
 | `[` / `]` | Previous / next workspace |
 | Arrows / Tab | Focus direction / next pane |
 | `x` | Remove a layout leaf; keep its process running |
@@ -347,10 +348,12 @@ healthy panes. Ambiguous operations are reported and never automatically replaye
 Pointer gestures remain bound to their original pane/view, including clipped
 cross-pane drags and cancellation when that projection is removed.
 
-`--read-only` denies application input and clipboard access without making the
-visible client ineligible for sizing. The latest eligible visible interactive
-view owns pane dimensions unless pinned. Daemon initial geometry options are
-`--cols`, `--rows`, `--cell-width` and `--cell-height` (defaults 100, 30, 8, 16).
+`--read-only` denies application input and application-initiated clipboard access
+without making the visible client ineligible for sizing. Local selection and
+explicit user copy remain available unless `--clipboard deny` blocks export.
+The latest eligible visible interactive view owns pane dimensions unless pinned.
+Daemon initial geometry options are `--cols`, `--rows`, `--cell-width` and
+`--cell-height` (defaults 100, 30, 8, 16).
 
 View attach/update/pin/detach acknowledge validated policy registration, not
 completed native rendering. Geometry reconciles asynchronously: snapshots expose
@@ -411,8 +414,42 @@ retiring a projection or switching workspaces retires its view, so a later
 attachment starts live. The engine is configured for 10,000 lines and 16 MiB of
 native in-memory scrollback; page-granular retention can discard older rows
 together. Navigation clamps to the oldest retained row. This is not a saved
-session or disk-backed transcript. Selection, copy and search
-are not implemented by this navigation step.
+session or disk-backed transcript. Terminal search remains separate work.
+
+### Selection and copy
+
+Left-drag selects when the application has mouse reporting disabled, or while
+this view is inspecting history. Double-click selects a word; triple-click
+selects a line. Hold Alt during a drag for a rectangular selection. Dragging
+beyond the top/bottom edge scrolls only the originating view through native
+history; crossing another pane or the sidebar never retargets the gesture.
+
+Mouse-aware applications retain ordinary clicks and drags. Shift+left-drag
+explicitly overrides them **if the host terminal forwards that gesture**.
+Some terminals, including default Kitty configurations, reserve Shift+left for
+their own selection before Bkpr can receive it. Bkpr does not rewrite terminal
+settings. On the primary screen, `Ctrl-b s` enters local history inspection as
+another way to select without sending mouse input to the application.
+
+Releasing a nonempty selection sends its plain text to the standard host
+clipboard. `Ctrl-b y` copies it again. Explicit user selection authorizes this
+export without an application clipboard-consent prompt; `--clipboard deny`
+prevents it. The existing terminal clipboard transport also works over a terminal
+connection such as SSH, subject to the host's permissions. A **sent** status is
+not proof the host accepted or stored the text.
+
+Esc clears the selection without sending that Escape to the application. In
+history, a subsequent Esc returns live; ordinary live typing clears the
+selection and continues normally. Unicode, soft-wrap joining, reversed ranges
+and rectangular text extraction use Ghostty's native selection formatter.
+Copies over 1 MiB are rejected rather than truncated.
+
+Selection belongs to one attached view and doesn't modify canonical terminal
+frames, another client's highlights or application input. New output and resize
+follow native tracked endpoints. Screen changes, discarded endpoints,
+hidden/retired views and pane completion invalidate the selection. A sizing
+lease update alone does not. Delayed copy results after a new gesture, focus
+change or retirement are discarded instead of writing stale text.
 
 ### Requests and explicit shutdown
 

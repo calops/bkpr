@@ -7,6 +7,7 @@ mod environment;
 mod harness;
 mod harness_process;
 pub mod registry;
+mod selection;
 pub mod transport;
 mod writer;
 
@@ -16,7 +17,7 @@ use authority::Authority;
 use bkpr_protocol::ViewSpec;
 use bkpr_protocol::{
     ClipboardContent, ClipboardLocation, ClipboardPending, ClipboardResponse, Effect, Event, Frame,
-    ImageKey, KeyEvent, MouseEvent, ProgramStatus, Size,
+    ImageKey, KeyEvent, MouseEvent, ProgramStatus, SelectionEvent, SelectionSnapshot, Size,
 };
 use bkpr_protocol::{MAX_INPUT_BYTES, PaneRequest as Request, valid_size};
 use bkpr_terminal_engine::Terminal;
@@ -58,6 +59,7 @@ struct Published {
     events: VecDeque<Event>,
     event_sequence: u64,
     scroll_frames: BTreeMap<String, Arc<Frame>>,
+    selections: BTreeMap<String, (u64, SelectionSnapshot)>,
     status: Vec<ProgramStatus>,
     program_identity: Option<bkpr_protocol::ProcessIdentity>,
     lifecycle: String,
@@ -70,6 +72,7 @@ impl Default for Published {
         Self {
             frame: None,
             scroll_frames: BTreeMap::new(),
+            selections: BTreeMap::new(),
             status: Vec::new(),
             program_identity: None,
             revision: 0,
@@ -99,11 +102,21 @@ enum Mutation {
         view_id: String,
         delta: i64,
     },
+    Select {
+        view_id: String,
+        inspection_epoch: u64,
+        event: SelectionEvent,
+    },
+    CopySelection {
+        view_id: String,
+        inspection_epoch: u64,
+    },
     Terminate,
 }
 enum CommandOutcome {
     Applied(Option<u64>),
     Completed,
+    Copied(Option<Vec<u8>>),
 }
 impl CommandOutcome {
     fn response(self) -> Value {
@@ -114,6 +127,10 @@ impl CommandOutcome {
             Self::Completed => {
                 json!({"accepted":false,"write_id":null,"semantics":"execution_completed"})
             }
+            Self::Copied(bytes) => match bytes {
+                Some(data) => json!({"copied":true,"contents":[{"mime":"text/plain","data":data}]}),
+                None => json!({"copied":false,"contents":[]}),
+            },
         }
     }
 }
@@ -193,6 +210,7 @@ struct Shared {
     paste: Mutex<PasteGrants>,
     changes: Arc<SnapshotChanges>,
     delta_frames: Mutex<BTreeMap<String, (u64, Arc<Frame>)>>,
+    selection_revoked: Mutex<std::collections::BTreeSet<String>>,
     finished: AtomicBool,
     forgotten: AtomicBool,
     on_finish: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -266,6 +284,7 @@ impl Pane {
             paste: Mutex::new(PasteGrants::default()),
             changes: Arc::new(SnapshotChanges::default()),
             delta_frames: Mutex::new(BTreeMap::new()),
+            selection_revoked: Mutex::new(Default::default()),
             finished: AtomicBool::new(false),
             forgotten: AtomicBool::new(false),
             on_finish: Mutex::new(None),
@@ -295,6 +314,7 @@ impl Pane {
                 );
                 let _gate = state.command_gate.lock().unwrap();
                 let mut published = state.published.lock().unwrap();
+                published.selections.clear();
                 if let Err(error) = &result {
                     published.lifecycle = "fault".into();
                     published.error = Some(format!("{error:#}"));
@@ -494,17 +514,40 @@ impl Pane {
                 Ok(json!({"view_id":id,"pane_id":self.shared.pane_id}))
             }
             Request::Update { view_id, spec } => {
-                self.shared
-                    .authority
-                    .lock()
-                    .unwrap()
-                    .update(&view_id, spec)?;
+                let hidden = !spec.visible;
+                let mut authority = self.shared.authority.lock().unwrap();
+                authority.update(&view_id, spec)?;
+                if hidden {
+                    self.shared
+                        .selection_revoked
+                        .lock()
+                        .unwrap()
+                        .insert(view_id.clone());
+                    self.shared
+                        .published
+                        .lock()
+                        .unwrap()
+                        .selections
+                        .remove(&view_id);
+                }
+                drop(authority);
                 self.shared.changes.notify();
                 let _ = self.shared.resize_wake.try_send(());
                 Ok(json!({"updated":true}))
             }
             Request::Detach { view_id } => {
                 self.shared.authority.lock().unwrap().detach(&view_id)?;
+                self.shared
+                    .selection_revoked
+                    .lock()
+                    .unwrap()
+                    .remove(&view_id);
+                self.shared
+                    .published
+                    .lock()
+                    .unwrap()
+                    .selections
+                    .remove(&view_id);
                 self.shared.delta_frames.lock().unwrap().remove(&view_id);
                 self.shared.changes.notify();
                 let _ = self.shared.resize_wake.try_send(());
@@ -584,6 +627,28 @@ impl Pane {
                     .context("stale view")?;
                 self.command(Mutation::Scroll { view_id, delta })?;
                 Ok(json!({"scrolled":true}))
+            }
+            Request::Select { view_id, event } => {
+                let inspection_epoch = selection::visible(&self.shared, &view_id, None)?;
+                self.command(Mutation::Select {
+                    view_id,
+                    inspection_epoch,
+                    event,
+                })?;
+                Ok(json!({"selected":true}))
+            }
+            Request::CopySelection { view_id } => {
+                let inspection_epoch = selection::visible(&self.shared, &view_id, None)?;
+                let response = self
+                    .command(Mutation::CopySelection {
+                        view_id: view_id.clone(),
+                        inspection_epoch,
+                    })?
+                    .response();
+                // Native formatting is pane-local and does not block policy
+                // acceptance. Reject results whose originating policy retired.
+                selection::visible(&self.shared, &view_id, Some(inspection_epoch))?;
+                Ok(response)
             }
             Request::Colors {
                 view_id,
@@ -669,6 +734,7 @@ impl Pane {
             program_identity,
             events,
             event_sequence,
+            selection,
         ) = {
             let mut authority = self.shared.authority.lock().unwrap();
             if let Some(id) = view {
@@ -715,6 +781,19 @@ impl Pane {
                     .cloned()
                     .collect::<Vec<_>>(),
                 published.event_sequence,
+                view.and_then(|id| {
+                    authority
+                        .views
+                        .get(id)
+                        .filter(|view| view.spec.visible)
+                        .and_then(|view| {
+                            published
+                                .selections
+                                .get(id)
+                                .filter(|(epoch, _)| *epoch == view.inspection_epoch)
+                                .map(|(_, selection)| selection.clone())
+                        })
+                }),
             )
         };
         let (clipboard, clipboard_pending) = {
@@ -776,6 +855,7 @@ impl Pane {
             "views": views,
             "clipboard": clipboard,
             "clipboard_pending": clipboard_pending,
+            "selection": selection,
             "capabilities": {
                 "sixel": false,
                 "normalized_frames": true,
@@ -902,6 +982,7 @@ fn publish(terminal: &mut Terminal, shared: &Shared) -> Result<()> {
         }
         frames.insert(id.clone(), cache[&offset].clone());
     }
+    let selections = selection::snapshots(terminal, shared)?;
     {
         let mut authority = shared.authority.lock().unwrap();
         for id in views {
@@ -916,6 +997,7 @@ fn publish(terminal: &mut Terminal, shared: &Shared) -> Result<()> {
     }
     p.frame = Some(frame);
     p.scroll_frames = frames;
+    p.selections = selections;
     let status = terminal.program_status();
     let status_changed = p.status != status;
     p.status = status;
@@ -1225,6 +1307,7 @@ fn run_pane(
             };
             for view in &stale {
                 revoke_paste(&shared, Some(view));
+                shared.selection_revoked.lock().unwrap().remove(view);
                 shared.delta_frames.lock().unwrap().remove(view);
             }
             {
@@ -1338,6 +1421,7 @@ fn run_pane(
                         let mut published = shared.published.lock().unwrap();
                         published.exit_code = Some(status.exit_code());
                         published.lifecycle = "terminating".into();
+                        published.selections.clear();
                         drop(published);
                         shared.changes.notify();
                         break;
@@ -1365,6 +1449,7 @@ fn run_pane(
                         published.status = program_status;
                         let complete = eof && terminal.sync_output_remaining().is_none();
                         published.lifecycle = if complete { "exited" } else { "draining" }.into();
+                        published.selections.clear();
                         let outcome = completed_command(&published, &command.mutation);
                         drop(published);
                         if status_changed {
@@ -1381,7 +1466,7 @@ fn run_pane(
                         &command.mutation,
                         Mutation::Colors { .. } | Mutation::Scroll { .. }
                     );
-                    let outcome = (|| -> Result<Option<u64>> {
+                    let outcome = (|| -> Result<CommandOutcome> {
                         let mut write_id = None;
                         match command.mutation {
                             Mutation::Colors {
@@ -1466,19 +1551,50 @@ fn run_pane(
                                 view.scrollback_offset = terminal.scroll_view(&view_id, delta)?;
                                 view.last_seen = Instant::now();
                             }
+                            Mutation::Select {
+                                view_id,
+                                inspection_epoch,
+                                event,
+                            } => {
+                                let authority = shared.authority.lock().unwrap();
+                                selection::visible_record(
+                                    &authority,
+                                    &view_id,
+                                    Some(inspection_epoch),
+                                )?;
+                                selection::retire(&mut terminal, &shared, &authority);
+                                let moved = terminal.select_view(&view_id, event)?;
+                                drop(authority);
+                                if moved {
+                                    publish(&mut terminal, &shared)?;
+                                } else {
+                                    selection::publish(&mut terminal, &shared, &view_id)?;
+                                }
+                            }
+                            Mutation::CopySelection {
+                                view_id,
+                                inspection_epoch,
+                            } => {
+                                selection::visible(&shared, &view_id, Some(inspection_epoch))?;
+                                {
+                                    let authority = shared.authority.lock().unwrap();
+                                    selection::retire(&mut terminal, &shared, &authority);
+                                }
+                                let copied = terminal.copy_view_selection(&view_id)?;
+                                selection::visible(&shared, &view_id, Some(inspection_epoch))?;
+                                return Ok(CommandOutcome::Copied(copied));
+                            }
                             Mutation::Terminate => {}
                         }
                         route_effects(terminal.drain_effects()?, &writer, &shared)?;
                         if needs_publish {
                             publish(&mut terminal, &shared)?;
                         }
-                        Ok(write_id)
+                        Ok(CommandOutcome::Applied(write_id))
                     })();
-                    let _ = command.result.send(
-                        outcome
-                            .map(CommandOutcome::Applied)
-                            .map_err(|error| format!("{error:#}")),
-                    );
+                    let _ = command
+                        .result
+                        .send(outcome.map_err(|error| format!("{error:#}")));
                 }
                 Some(Err(_)) => {
                     child.terminate()?;
@@ -1499,6 +1615,7 @@ fn run_pane(
                 p.status = program_status;
                 p.exit_code = Some(status.exit_code());
                 p.lifecycle = lifecycle.into();
+                p.selections.clear();
                 drop(p);
                 if program_status_changed {
                     shared.notify_status_changed();
@@ -1734,6 +1851,7 @@ mod snapshot_tests {
                 paste: Mutex::new(PasteGrants::default()),
                 changes: Arc::new(SnapshotChanges::default()),
                 delta_frames: Mutex::new(BTreeMap::new()),
+                selection_revoked: Mutex::new(Default::default()),
                 finished: AtomicBool::new(true),
                 forgotten: AtomicBool::new(false),
                 on_finish: Mutex::new(None),

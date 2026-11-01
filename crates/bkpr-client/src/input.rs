@@ -51,7 +51,10 @@ pub(crate) fn cleanup(request: &PaneRequest) -> bool {
             if !spec.visible && !spec.interactive && !spec.clipboard)
         || matches!(request, PaneRequest::Mouse { event, .. }
             if event.action == bkpr_protocol::MouseAction::Release)
+        || matches!(request, PaneRequest::Select { event, .. }
+            if matches!(event.action, bkpr_protocol::SelectionAction::Release | bkpr_protocol::SelectionAction::Clear))
 }
+pub(crate) type ResponseReceipt = mpsc::Receiver<Result<serde_json::Value, String>>;
 pub(crate) type Receipt = mpsc::Receiver<Result<(), String>>;
 
 #[derive(Debug, Default)]
@@ -124,6 +127,8 @@ fn payload_bytes(pane: &str, request: &PaneRequest) -> usize {
         | PaneRequest::Paste { view_id, .. }
         | PaneRequest::PasteContents { view_id, .. }
         | PaneRequest::Key { view_id, .. }
+        | PaneRequest::Select { view_id, .. }
+        | PaneRequest::CopySelection { view_id }
         | PaneRequest::Mouse { view_id, .. }
         | PaneRequest::Focus { view_id, .. }
         | PaneRequest::Scroll { view_id, .. }
@@ -194,6 +199,8 @@ impl InputFailure {
             PaneRequest::Paste { view_id, .. } => ("paste", Some(view_id)),
             PaneRequest::PasteContents { view_id, .. } => ("paste_contents", Some(view_id)),
             PaneRequest::Key { view_id, .. } => ("key", Some(view_id)),
+            PaneRequest::Select { view_id, .. } => ("select", Some(view_id)),
+            PaneRequest::CopySelection { view_id } => ("copy_selection", Some(view_id)),
             PaneRequest::Mouse { view_id, .. } => ("mouse", Some(view_id)),
             PaneRequest::Focus { view_id, .. } => ("focus", Some(view_id)),
             PaneRequest::Scroll { view_id, .. } => ("scroll", Some(view_id)),
@@ -279,15 +286,34 @@ impl ReservedInput {
 }
 pub(crate) struct DeviceReservation(ReservedInput);
 #[derive(Debug)]
+enum Completion {
+    Receipt(mpsc::SyncSender<Result<(), String>>),
+    Response(mpsc::SyncSender<Result<serde_json::Value, String>>),
+}
+impl Completion {
+    fn finish(self, result: Result<serde_json::Value, String>) {
+        match self {
+            Self::Receipt(done) => {
+                let _ = done.send(result.map(|_| ()));
+            }
+            Self::Response(done) => {
+                let _ = done.send(result);
+            }
+        }
+    }
+}
+#[derive(Debug)]
 struct QueuedInput {
     reserved: ReservedInput,
-    done: Option<mpsc::SyncSender<Result<(), String>>>,
+    done: Option<Completion>,
 }
 struct Lane {
     sender: mpsc::Sender<QueuedInput>,
     pending: Arc<AtomicUsize>,
     retiring: bool,
     failure: Arc<Mutex<Option<LaneFailure>>>,
+    // Coalesce nonfatal inspection rejections without poisoning PTY delivery.
+    notice: Arc<Mutex<Option<InputFailure>>>,
     worker: thread::JoinHandle<()>,
 }
 #[derive(Default)]
@@ -369,12 +395,14 @@ impl InputPump {
             reported: true,
         })));
         let failed = failure.clone();
+        let notice = Arc::new(Mutex::new(None));
+        let noticed = notice.clone();
         let wake = self.notify.clone();
         let worker = thread::Builder::new().name("bkpr-pane-input".into()).spawn(move || {
             while let Ok(job) = receiver.recv() {
                 let QueuedInput { reserved, done } = job;
                 let ReservedInput { operation, before, permit } = reserved;
-                let mut completed = Ok(());
+                let mut completed = Ok(serde_json::Value::Null);
                 for operation in before.into_iter().chain(std::iter::once(operation)) {
                     let cleanup = matches!(&operation, Operation::Pane { request, .. } if cleanup(request));
                     let blocked = {
@@ -391,12 +419,21 @@ impl InputPump {
                         continue;
                     }
                     let colors = matches!(&operation, Operation::Pane { request: PaneRequest::Colors { .. }, .. });
+                    let copy = matches!(&operation, Operation::Pane { request: PaneRequest::CopySelection { .. }, .. });
+                    let select = matches!(&operation, Operation::Pane { request: PaneRequest::Select { .. }, .. });
                     let mut context = InputFailure::context(&operation);
-                    let result = transport::checked(&socket, operation).map(|_| ());
+                    let result = transport::checked(&socket, operation);
                     if let Err(error) = &result {
                         let expected_owner_rejection = colors && !transport::outcome_unknown(error)
                             && error.root_cause().to_string() == "only current size owner may seed terminal colors";
-                        if !expected_owner_rejection {
+                        let expected_inspection_rejection = (copy || select) && !transport::outcome_unknown(error);
+                        if expected_inspection_rejection {
+                            if select {
+                                context.error = format!("{error:#}");
+                                *noticed.lock().unwrap() = Some(context);
+                                notify(&wake);
+                            }
+                        } else if !expected_owner_rejection {
                             context.stopped = true;
                             context.error = format!("{error:#}");
                             context.unknown_outcome = transport::outcome_unknown(error);
@@ -414,7 +451,7 @@ impl InputPump {
                     completed = result.map_err(|error| format!("{error:#}"));
                 }
                 drop(permit);
-                if let Some(done) = done { let _ = done.send(completed); }
+                if let Some(done) = done { done.finish(completed); }
                 // Local capacity deferrals must wake on every settled job, not
                 // wait for an unrelated frame or the UI's long poll timeout.
                 notify(&wake);
@@ -425,6 +462,7 @@ impl InputPump {
             pending,
             retiring: false,
             failure,
+            notice,
             worker,
         })
     }
@@ -496,11 +534,7 @@ impl InputPump {
     pub fn reserve(&self, operation: Operation) -> Result<ReservedInput> {
         self.reserve_before(operation, None)
     }
-    fn dispatch(
-        &self,
-        mut reserved: ReservedInput,
-        done: Option<mpsc::SyncSender<Result<(), String>>>,
-    ) -> Result<()> {
+    fn dispatch(&self, mut reserved: ReservedInput, done: Option<Completion>) -> Result<()> {
         #[cfg(test)]
         if let Some((sender, pending)) = &self.capture {
             reserved.permit.attach(pending);
@@ -543,11 +577,7 @@ impl InputPump {
             })?;
         Ok(())
     }
-    fn submit(
-        &self,
-        operation: Operation,
-        done: Option<mpsc::SyncSender<Result<(), String>>>,
-    ) -> Result<()> {
+    fn submit(&self, operation: Operation, done: Option<Completion>) -> Result<()> {
         self.dispatch(self.reserve(operation)?, done)
     }
     pub fn send(&self, operation: Operation) -> Result<()> {
@@ -555,6 +585,13 @@ impl InputPump {
     }
     pub fn send_reserved(&self, reserved: ReservedInput) -> Result<()> {
         self.dispatch(reserved, None)
+    }
+    /// Response-producing inspections share the command FIFO with selection
+    /// release. They are dispatched once; an ambiguous transport is not replayed.
+    pub fn response(&self, operation: Operation) -> Result<ResponseReceipt> {
+        let (done, receipt) = mpsc::sync_channel(1);
+        self.submit(operation, Some(Completion::Response(done)))?;
+        Ok(receipt)
     }
     /// Keep a physical device response owned by the UI when local admission
     /// fails. Never query the device again merely because its reply queue is full.
@@ -575,7 +612,7 @@ impl InputPump {
     pub fn send_owned(&self, operation: &mut Option<Operation>) -> Result<Receipt> {
         let reserved = self.reserve_owned(operation)?;
         let (done, receipt) = mpsc::sync_channel(1);
-        self.dispatch(reserved, Some(done))?;
+        self.dispatch(reserved, Some(Completion::Receipt(done)))?;
         Ok(receipt)
     }
     pub fn reserve_response(
@@ -632,7 +669,7 @@ impl InputPump {
         reserved.permit.budget.state.lock().unwrap().bytes -= unused;
         reserved.permit.bytes = actual;
         let (done, receipt) = mpsc::sync_channel(1);
-        self.dispatch(reserved, Some(done))?;
+        self.dispatch(reserved, Some(Completion::Receipt(done)))?;
         Ok(receipt)
     }
     pub fn policy(&self, pane: &str, view: &str, spec: bkpr_protocol::ViewSpec) -> Result<Receipt> {
@@ -645,7 +682,7 @@ impl InputPump {
                     spec,
                 },
             },
-            Some(done),
+            Some(Completion::Receipt(done)),
         )?;
         Ok(receipt)
     }
@@ -665,7 +702,7 @@ impl InputPump {
         });
         let reserved = self.reserve_before(operation, before)?;
         let (done, received) = mpsc::sync_channel(1);
-        self.dispatch(reserved, Some(done))?;
+        self.dispatch(reserved, Some(Completion::Receipt(done)))?;
         Ok(received)
     }
     fn reap(&self) -> Result<()> {
@@ -721,6 +758,9 @@ impl InputPump {
                     .into_iter()
                     .flatten()
                 {
+                    if let Some(notice) = lane.notice.lock().unwrap().take() {
+                        failures.push(notice);
+                    }
                     if let Some(state) = lane.failure.lock().unwrap().as_mut()
                         && !state.reported
                     {
@@ -744,13 +784,13 @@ impl InputPump {
                 .flatten()
             {
                 drop(lane.sender);
-                workers.push((lane.worker, lane.failure));
+                workers.push((lane.worker, lane.failure, lane.notice));
             }
         }
         // All workers are already draining concurrently; never gate one pane's
         // dispatch on joining another pane's blocked native operation.
         let mut failure = None;
-        for (worker, state) in workers {
+        for (worker, state, notice) in workers {
             if worker.join().is_err() && failure.is_none() {
                 failure = Some(anyhow::anyhow!("pane input worker failed"));
             }
@@ -759,6 +799,11 @@ impl InputPump {
                 && failure.is_none()
             {
                 failure = Some(anyhow::anyhow!(state.failure.to_string()));
+            }
+            if let Some(notice) = notice.lock().unwrap().take()
+                && failure.is_none()
+            {
+                failure = Some(anyhow::anyhow!(notice.to_string()));
             }
         }
         if let Some(failure) = failure {
@@ -802,9 +847,17 @@ impl Capture {
         } = reserved;
         drop(permit);
         if let Some(done) = done {
-            let _ = done.send(Ok(()));
+            done.finish(Ok(serde_json::Value::Null));
         }
         Ok(operation)
+    }
+    pub fn respond(&self, value: serde_json::Value) -> Operation {
+        let job = self.receiver.try_recv().unwrap();
+        assert!(job.reserved.before.is_none());
+        if let Some(done) = job.done {
+            done.finish(Ok(value));
+        }
+        job.reserved.operation
     }
 }
 
@@ -961,7 +1014,9 @@ mod tests {
         let retired = input.retire("alpha", "alpha-view", false).unwrap();
         input.send(key("beta", "KeyA")).unwrap();
         let (beta_done, beta_completed) = mpsc::sync_channel(1);
-        input.submit(key("beta", "Enter"), Some(beta_done)).unwrap();
+        input
+            .submit(key("beta", "Enter"), Some(Completion::Receipt(beta_done)))
+            .unwrap();
         for name in ["KeyA", "Enter"] {
             assert!(
                 matches!(received.recv_timeout(Duration::from_secs(2)).unwrap(),
@@ -1145,7 +1200,9 @@ mod tests {
         input.send(key("alpha", "KeyB")).unwrap();
         let retired = input.retire("alpha", "alpha-view", false).unwrap();
         let (done, completed) = mpsc::sync_channel(1);
-        input.submit(key("beta", "Enter"), Some(done)).unwrap();
+        input
+            .submit(key("beta", "Enter"), Some(Completion::Receipt(done)))
+            .unwrap();
         assert!(
             matches!(received.recv_timeout(Duration::from_secs(2)).unwrap(),
             Operation::Pane { pane_id, .. } if pane_id == "beta")
@@ -1179,7 +1236,9 @@ mod tests {
                 .unknown_outcome
         );
         let (done, completed) = mpsc::sync_channel(1);
-        input.submit(key("beta", "KeyB"), Some(done)).unwrap();
+        input
+            .submit(key("beta", "KeyB"), Some(Completion::Receipt(done)))
+            .unwrap();
         assert!(
             matches!(received.recv_timeout(Duration::from_secs(2)).unwrap(),
             Operation::Pane { pane_id, .. } if pane_id == "beta")
@@ -1309,5 +1368,231 @@ mod tests {
         assert_eq!(input.device_budget.state.lock().unwrap().bytes, 0);
         assert_eq!(input.policy_budget.state.lock().unwrap().requests, 0);
         input.finish().unwrap();
+    }
+
+    #[test]
+    fn rejected_selection_copy_reports_error_without_stopping_later_application_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut bytes = Vec::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_until(b'\n', &mut bytes)
+                    .unwrap();
+                let request: Request = serde_json::from_slice(&bytes).unwrap();
+                if index == 0 {
+                    assert!(matches!(
+                        request.operation,
+                        Operation::Pane {
+                            request: PaneRequest::CopySelection { .. },
+                            ..
+                        }
+                    ));
+                } else {
+                    assert!(matches!(
+                        request.operation,
+                        Operation::Pane {
+                            request: PaneRequest::Key { .. },
+                            ..
+                        }
+                    ));
+                }
+                let response = Response {
+                    version: PROTOCOL_VERSION,
+                    ok: index != 0,
+                    result: (index != 0).then(|| serde_json::json!({"accepted":true})),
+                    error: (index == 0).then(|| "selection exceeds copy payload limit".into()),
+                };
+                let mut bytes = serde_json::to_vec(&response).unwrap();
+                bytes.push(b'\n');
+                stream.write_all(&bytes).unwrap();
+            }
+        });
+        let input = InputPump::new(&path).unwrap();
+        let copy = input
+            .response(Operation::Pane {
+                pane_id: "alpha".into(),
+                request: PaneRequest::CopySelection {
+                    view_id: "alpha-view".into(),
+                },
+            })
+            .unwrap();
+        let mut typed = Some(key("alpha", "KeyA"));
+        let typed = input.send_owned(&mut typed).unwrap();
+        assert!(
+            copy.recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap_err()
+                .contains("payload limit")
+        );
+        typed.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        assert!(input.check().unwrap().is_empty());
+        input.finish().unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn ambiguous_copy_transport_is_not_replayed_and_preserves_command_lane_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let (received, copy_seen) = mpsc::sync_channel(1);
+        let (close, closed) = mpsc::sync_channel(1);
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut bytes = Vec::new();
+            let mut reader = BufReader::new(stream);
+            reader.read_until(b'\n', &mut bytes).unwrap();
+            let request: Request = serde_json::from_slice(&bytes).unwrap();
+            assert!(matches!(
+                request.operation,
+                Operation::Pane {
+                    request: PaneRequest::CopySelection { .. },
+                    ..
+                }
+            ));
+            received.send(()).unwrap();
+            closed.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let input = InputPump::new(&path).unwrap();
+        let copy = input
+            .response(Operation::Pane {
+                pane_id: "alpha".into(),
+                request: PaneRequest::CopySelection {
+                    view_id: "alpha-view".into(),
+                },
+            })
+            .unwrap();
+        copy_seen.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut typed = Some(key("alpha", "KeyA"));
+        let typed = input.send_owned(&mut typed).unwrap();
+        close.send(()).unwrap();
+        assert!(copy.recv_timeout(Duration::from_secs(5)).unwrap().is_err());
+        assert!(typed.recv_timeout(Duration::from_secs(5)).unwrap().is_err());
+        let failures = input.check().unwrap();
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].stopped && failures[0].unknown_outcome);
+        assert_eq!(failures[0].not_dispatched, 1);
+        input.finish().unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn rejected_selection_reports_notice_without_blocking_key_lifecycle_or_later_admission() {
+        use bkpr_protocol::{SelectionAction, SelectionEvent};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = thread::spawn(move || {
+            let mut keys = Vec::new();
+            for index in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_until(b'\n', &mut bytes)
+                    .unwrap();
+                let request: Request = serde_json::from_slice(&bytes).unwrap();
+                if index == 0 {
+                    assert!(matches!(
+                        request.operation,
+                        Operation::Pane {
+                            request: PaneRequest::Select { .. },
+                            ..
+                        }
+                    ));
+                } else {
+                    let Operation::Pane {
+                        request: PaneRequest::Key { event, .. },
+                        ..
+                    } = request.operation
+                    else {
+                        panic!("selection rejection prevented the expected key lifecycle");
+                    };
+                    keys.push((event.key, event.action));
+                }
+                let response = Response {
+                    version: PROTOCOL_VERSION,
+                    ok: index != 0,
+                    result: (index != 0).then(|| serde_json::json!({"accepted":true})),
+                    error: (index == 0).then(|| "selection view is no longer visible".into()),
+                };
+                let mut bytes = serde_json::to_vec(&response).unwrap();
+                bytes.push(b'\n');
+                stream.write_all(&bytes).unwrap();
+            }
+            keys
+        });
+        let input = InputPump::new(&path).unwrap();
+        // Ordinary selection has no response receipt: its backend rejection
+        // must still reach the UI, without becoming an application-input stop.
+        input
+            .send(Operation::Pane {
+                pane_id: "alpha".into(),
+                request: PaneRequest::Select {
+                    view_id: "alpha-view".into(),
+                    event: SelectionEvent {
+                        action: SelectionAction::Press,
+                        x: 2.5,
+                        y: 1.5,
+                        modifiers: 0,
+                        time_ms: 100,
+                    },
+                },
+            })
+            .unwrap();
+        let mut pressed = Some(key("alpha", "KeyA"));
+        let pressed = input.send_owned(&mut pressed).unwrap();
+        let mut released = key("alpha", "KeyA");
+        let Operation::Pane {
+            request: PaneRequest::Key { event, .. },
+            ..
+        } = &mut released
+        else {
+            unreachable!();
+        };
+        event.action = KeyAction::Release;
+        let mut released = Some(released);
+        let released = input.send_owned(&mut released).unwrap();
+        pressed
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        released
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        let failures = input.check().unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].operation, "select");
+        assert!(!failures[0].stopped && !failures[0].unknown_outcome);
+        assert_eq!(failures[0].not_dispatched, 0);
+        assert!(failures[0].error.contains("no longer visible"));
+        assert!(
+            input.check().unwrap().is_empty(),
+            "notice was reported twice"
+        );
+        let mut later = Some(key("alpha", "KeyB"));
+        input
+            .send_owned(&mut later)
+            .unwrap()
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        input.finish().unwrap();
+        assert_eq!(
+            server.join().unwrap(),
+            [
+                ("KeyA".into(), KeyAction::Press),
+                ("KeyA".into(), KeyAction::Release),
+                ("KeyB".into(), KeyAction::Press),
+            ]
+        );
     }
 }

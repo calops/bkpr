@@ -90,6 +90,7 @@ impl Terminal {
     /// Call when the PTY child exits. Terminal output alone never implies exit.
     pub fn program_exited(&mut self) {
         self.callbacks.borrow_mut().status.prompt_or_exit();
+        self.clear_view_selections();
     }
     /// Call when an authorized interactive viewer has actually seen results.
     pub fn mark_status_seen(&mut self) {

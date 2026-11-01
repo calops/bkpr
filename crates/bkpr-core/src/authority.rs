@@ -14,6 +14,9 @@ pub struct ViewRecord {
     pub id: String,
     pub spec: ViewSpec,
     pub activity: u64,
+    /// Inspection lifetime changes only when visibility is revoked/restored;
+    /// sizing activity and independent capability updates do not retire a drag.
+    pub(crate) inspection_epoch: u64,
     pub scrollback_offset: u64,
     _slot: ViewSlot,
     pub last_seen: Instant,
@@ -110,6 +113,7 @@ impl Authority {
                 id: id.clone(),
                 spec,
                 activity: self.clock,
+                inspection_epoch: 1,
                 scrollback_offset: 0,
                 last_seen: Instant::now(),
                 _slot: slot,
@@ -124,6 +128,12 @@ impl Authority {
             .views
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("stale view"))?;
+        if view.spec.visible != spec.visible {
+            view.inspection_epoch = view
+                .inspection_epoch
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("view inspection epoch exhausted"))?;
+        }
         self.clock += 1;
         view.spec = spec;
         view.activity = self.clock;

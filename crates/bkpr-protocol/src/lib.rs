@@ -130,6 +130,14 @@ pub enum PaneRequest {
         view_id: String,
         delta: i64,
     },
+    /// View-local inspection; never injects PTY input or acquires an input grant.
+    Select {
+        view_id: String,
+        event: SelectionEvent,
+    },
+    CopySelection {
+        view_id: String,
+    },
     Clipboard {
         view_id: String,
         request_id: String,
@@ -146,4 +154,26 @@ pub enum PaneRequest {
         view_id: String,
     },
     Shutdown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionAction {
+    Press,
+    Drag,
+    Release,
+    Clear,
+    Tick,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SelectionEvent {
+    pub action: SelectionAction,
+    /// Pane-content-relative cell coordinates, including fractional/outside positions.
+    pub x: f32,
+    pub y: f32,
+    /// Shift=1, Ctrl=2, Alt=4 (rectangle), Super=8.
+    pub modifiers: u8,
+    /// Client monotonic elapsed milliseconds, used only for repeat-click semantics.
+    pub time_ms: u64,
 }
