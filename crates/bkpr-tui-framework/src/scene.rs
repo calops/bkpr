@@ -26,6 +26,8 @@ pub struct Surface<'a> {
     pub id: &'a str,
     pub rect: Rect,
     pub frame: &'a Frame,
+    /// Sorted, one-span-per-row view-local highlighting, outside the canonical delta baseline.
+    pub selection: &'a [SelectionSpan],
     pub focused: bool,
 }
 pub struct Scene<'a> {
@@ -417,6 +419,8 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect]) {
         let left = clip.x - r.x;
         let right = left + clip.width;
         for y in clip.y..clip.y + clip.height {
+            let selection = surface.selection.binary_search_by_key(&(y - r.y), |span| span.row)
+                .ok().map(|index| &surface.selection[index]);
             let target = &mut canvas.rows[y as usize].cells;
             let mut x = 0u16;
             for cell in surface
@@ -435,7 +439,10 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect]) {
                 }
                 if end > left && x < right {
                     if x >= left && end <= right {
-                        let style = effective_style(&cell.style, surface.frame);
+                        let mut style = effective_style(&cell.style, surface.frame);
+                        if selection.is_some_and(|span| span.start < end && span.end > x) {
+                            style.inverse = !style.inverse;
+                        }
                         copy_cell(&mut target[(r.x + x) as usize], cell, &style);
                         for tail in x + 1..end {
                             let destination = &mut target[(r.x + tail) as usize];
@@ -459,7 +466,11 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect]) {
                 x = end;
             }
             for column in x.max(left)..right {
-                copy_cell(&mut target[(r.x + column) as usize], blank, &blank_style);
+                let mut style = blank_style.clone();
+                if selection.is_some_and(|span| span.start <= column && span.end > column) {
+                    style.inverse = !style.inverse;
+                }
+                copy_cell(&mut target[(r.x + column) as usize], blank, &style);
             }
         }
     }
@@ -646,6 +657,7 @@ mod scene_tests {
                         height: 10,
                     },
                     frame: &frame,
+                    selection: &[],
                     focused: true,
                 },
                 Surface {
@@ -657,6 +669,7 @@ mod scene_tests {
                         height: 4,
                     },
                     frame: &frame,
+                    selection: &[],
                     focused: false,
                 },
             ],
@@ -742,6 +755,7 @@ mod scene_tests {
                         height: 3,
                     },
                     frame: &left,
+                    selection: &[],
                     focused: false,
                 },
                 Surface {
@@ -753,6 +767,7 @@ mod scene_tests {
                         height: 3,
                     },
                     frame: &right,
+                    selection: &[],
                     focused: true,
                 },
             ],
@@ -792,6 +807,7 @@ mod scene_tests {
                     height: 3,
                 },
                 frame: &frame,
+                selection: &[],
                 focused: true,
             }],
         };
@@ -942,6 +958,7 @@ mod scene_tests {
                         height: 1,
                     },
                     frame: &a,
+                    selection: &[],
                     focused: false,
                 },
                 Surface {
@@ -953,6 +970,7 @@ mod scene_tests {
                         height: 1,
                     },
                     frame: &b,
+                    selection: &[],
                     focused: false,
                 },
             ],
@@ -987,5 +1005,85 @@ mod scene_tests {
         ] {
             assert!(bytes.contains(sgr), "{sgr}");
         }
+    }
+
+    #[test]
+    fn selection_overlay_preserves_canonical_wide_combining_styles_images_and_other_views() {
+        let size = Size { cols: 12, rows: 2, cell_width: 8, cell_height: 16 };
+        let local = Size { cols: 6, ..size };
+        let mut source = blank(local);
+        text(&mut source, 0, 0, "界e\u{301}!", false);
+        source.foreground = [15, 25, 35];
+        source.background = [45, 55, 65];
+        source.palette[1] = [200, 20, 10];
+        source.rows[0].cells[0].style.foreground_source = ColorSource::Palette(1);
+        source.rows[0].cells[0].style.bold = true;
+        source.rows[0].cells[0].hyperlink = Some("https://example.invalid/".into());
+        source.rows[0].cells[2].style.inverse = true;
+        source.rows[0].cells[2].style.italic = true;
+        source.rows[0].cells[2].style.underline = 2;
+        source.rows[0].cells[2].style.strikethrough = true;
+        source.images.push(Arc::new(Image {
+            id: 7, generation: 1, width: 8, height: 16, format: PixelFormat::Rgba,
+            pixels: [255, 0, 0, 255].repeat(8 * 16),
+        }));
+        source.placements.push(Placement {
+            image_id: 7, generation: 1, placement_id: 1, col: 4, row: 1,
+            offset_x: 0, offset_y: 0, width: 8, height: 16,
+            source_x: 0, source_y: 0, source_width: 8, source_height: 16,
+            layer: ImageLayer::BelowText, z: 0,
+        });
+        let canonical_rows = source.rows.clone();
+        let canonical_cells = source.rows[0].cells.as_ptr();
+        let pixels = source.images[0].pixels.as_ptr();
+        let mut scene = Scene {
+            size,
+            surfaces: vec![
+                Surface {
+                    id: "selected-view", rect: Rect { x: 0, y: 0, width: 6, height: 2 },
+                    frame: &source, selection: &[], focused: false,
+                },
+                Surface {
+                    id: "other-view", rect: Rect { x: 6, y: 0, width: 6, height: 2 },
+                    frame: &source, selection: &[], focused: false,
+                },
+            ],
+        };
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        let canvas_cells = renderer.canvas.as_ref().unwrap().rows[0].cells.as_ptr();
+        let spans = [SelectionSpan { row: 0, start: 1, end: 3 }];
+        scene.surfaces[0].selection = &spans;
+        let mut damage = Vec::new();
+        renderer.render(&mut damage, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        assert!(!damage.is_empty());
+        let canvas = renderer.canvas.as_ref().unwrap();
+        assert_eq!(canvas.rows[0].cells.as_ptr(), canvas_cells);
+        assert_eq!(canvas.rows[0].cells[0].text, "界");
+        assert_eq!(canvas.rows[0].cells[0].width, 2);
+        assert_eq!(canvas.rows[0].cells[1].width, 0);
+        assert_eq!(canvas.rows[0].cells[2].text, "e\u{301}");
+        for column in [0, 2] {
+            let mut expected = effective_style(&source.rows[0].cells[column].style, &source);
+            expected.inverse = !expected.inverse;
+            assert_eq!(canvas.rows[0].cells[column].style, expected);
+            assert_eq!(canvas.rows[0].cells[column + 6].style,
+                effective_style(&source.rows[0].cells[column].style, &source));
+        }
+        assert_eq!(canvas.rows[0].cells[0].style, canvas.rows[0].cells[1].style);
+        assert_eq!(canvas.rows[0].cells[0].hyperlink, source.rows[0].cells[0].hyperlink);
+        assert_eq!(source.rows, canonical_rows);
+        assert_eq!(source.rows[0].cells.as_ptr(), canonical_cells);
+        assert_eq!(source.images[0].pixels.as_ptr(), pixels);
+        assert_eq!(renderer.aliases.len(), 2);
+        assert_eq!(terminal.graphics.image_ids.len(), 2);
+        let mut unchanged = Vec::new();
+        renderer.render(&mut unchanged, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        assert!(unchanged.is_empty());
+        scene.surfaces[0].selection = &[];
+        renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        assert_eq!(renderer.canvas.as_ref().unwrap().rows[0].cells[0].style,
+            effective_style(&source.rows[0].cells[0].style, &source));
     }
 }

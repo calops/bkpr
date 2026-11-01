@@ -33,6 +33,9 @@ pub struct PaneSnapshot {
     /// Versioned compact scene; decode using scene_wire::decode before applying it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<serde_json::Value>,
+    /// View-local metadata, independent of canonical scene revisions and resources.
+    #[serde(default)]
+    pub selection: Option<SelectionSnapshot>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Event {
@@ -94,4 +97,23 @@ pub struct RowDelta {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AttachResult {
     pub view_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectionSnapshot {
+    pub active: bool,
+    pub dragging: bool,
+    pub rectangle: bool,
+    /// Sorted by row, with at most one nonempty, nonoverlapping span per visible row.
+    pub spans: Vec<SelectionSpan>,
+    /// -1=up, 0=none, 1=down. Only meaningful during an active drag.
+    pub autoscroll: i8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectionSpan {
+    pub row: u16,
+    pub start: u16,
+    /// Exclusive endpoint, bounded by the visible terminal columns.
+    pub end: u16,
 }

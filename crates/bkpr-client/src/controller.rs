@@ -771,10 +771,10 @@ pub fn chrome<'a>(
         ));
     }
     let status = if state.prefix {
-        "Ctrl-b: s history  i project  c workspace  n pane  % / \" split  r/p rename  x unlayout  ! close  w/o choose  d detach".into()
+        "Ctrl-b: s history  y copy  i project  c workspace  n pane  % / \" split  r/p rename  x unlayout  ! close  w/o choose  d detach".into()
     } else if let Some((offset, total)) = state.focused.as_deref().and_then(&history) {
         format!(
-            "HISTORY -{offset}/{total} | Esc/Enter/End live | ↑/↓ line  PgUp/PgDn page  Home oldest{}",
+            "HISTORY -{offset}/{total} | drag select/copy  Ctrl-b y copy | Esc clear/live  ↑/↓ line  PgUp/PgDn page  Home oldest{}",
             if state.status.is_empty() {
                 String::new()
             } else {
@@ -785,7 +785,7 @@ pub fn chrome<'a>(
         state.status.clone()
     } else {
         format!(
-            "Ctrl-b commands  Ctrl-] detach | {}",
+            "Ctrl-b commands  drag select/copy  Shift overrides app mouse  Ctrl-] detach | {}",
             if rgb {
                 "RGB confirmed"
             } else {
@@ -1257,6 +1257,7 @@ mod tests {
             lease_generation: 0,
             views: Vec::new(),
             clipboard: None,
+            selection: None,
             clipboard_pending: false,
             capabilities: PaneCapabilities {
                 sixel: false,

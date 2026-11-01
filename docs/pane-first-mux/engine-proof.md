@@ -55,7 +55,7 @@ The safe/sys SDK is pinned at [`575ed6b8ceb79ffaf247ecf7e34333876b0d5be4`](https
 
 ## Build and try it
 
-Use the current [README build and native CLI instructions](../../README.md#native-cli), which build both `bkpr` and `bkprd`. They describe default normal-profile execution and an explicit private fixture environment. Protect canonical live executable outputs when sharing Cargo caches. The historical measurements below identify their own binaries and must not be read as acceptance of later code.
+Use the current [README build and native CLI instructions](../../README.md#native-cli), which build both `bkpr` and `bkprd`. They describe default normal-profile execution and an explicit private fixture environment. Current work uses this feature worktree's own `target/` and bounded eight-job builds, not main's Cargo cache. The historical measurements below identify their own binaries and must not be read as acceptance of later code.
 
 ## Retained observations
 
@@ -436,3 +436,36 @@ Final release client SHA-256 `54c89495f30b8612748138d47b223eac9d22ccad56b9f19141
 | Daemon RSS after samples | 17,192 KiB | 17,928 KiB |
 
 This deliberately serializes full image-bearing frames after control requests; it is not the compact TUI transport, physical input latency, allocation count or a general speedup claim. It shows no observed regression in this bounded comparison, with identical content. Compilation and other owned workload fixtures were stopped during measurement. Final owned runtimes report no survivors; controller sources and useful evidence are retained in the smoke archive. No live sessions, real providers or persistent user configuration were used.
+
+## Per-view terminal selection and copy
+
+Selection/copy reuses the pinned SDK's native gestures, word/line expansion, tracked endpoints and explicit formatter. No second terminal parser, generic selection algorithm or additional runtime dependency was introduced. The existing framework applies borrowed row spans at composition time; canonical frames, compact/delta baselines and image resources are not mutated to highlight a selection.
+
+Ordinary left selection respects confirmed native application mouse ownership; Shift explicitly overrides only when the host forwards it. Alt selects rectangles. Completed selections and `Ctrl-b y` use existing plain-text clipboard framing, with client deny, host permissions, bounded extraction and origin/generation/focus guards. Read-only inspection may select/copy without acquiring PTY input or application clipboard grants. Native edge ticks run only for an active captured gesture and move that view's history, not another client's viewport.
+
+### Corrections found during integration
+
+A physical click exposed a real authority race: focusing a pane refreshes its sizing lease, so a queued selection stamped with sizing activity could be rejected and stop the input lane. A separate visibility epoch now survives same-visible sizing/capability updates while hide/show/detach still invalidate stale work. Known inspection rejection reports a non-stopping notice; unknown transport retains the existing stop/no-replay boundary. Actual-worker and client transport regressions cover both paths.
+
+The new in-process core fixture initially enabled dedicated single-pane ownership. Its cleanup adopted other parallel tests' children, causing premature pane exits, missing project state and `ECHILD`. The fixture now uses the shared-process mode, matching existing lifecycle tests; production reaping was not weakened. The full parallel workspace suite passes with that correction.
+
+Fixture corrections also kept native semantics intact. The retained fork's cell selection is half-open, and the SDK's exact half-cell boundary similarly excludes the endpoint cell; an end-to-end native coordinate probe established the correct mouse endpoint instead of replacing library behavior. The direct-terminal pixel oracle continues to require exactly the desired selected characters. X11 keyboard focus alone did not expose an occluded window; raising the intended window fixed event delivery after the third client opened. No product workaround or host-setting rewrite was added for either fixture issue.
+
+### Exercised release acceptance
+
+Evidence is worktree-local `target/smoke/selection/`. The previous release fails to produce selection after a physical drag in `physical-1121273027795832/`, after both complete unselected TUI bodies match the direct-terminal reference. Final release evidence is `physical-1123471623181119/`: the complete 684×612 pane body matches an independently rendered direct Kitty reference before and during selection, while the other client remains unselected. Actual isolated X11 clipboard bytes verify drag/copy-again, word/line/Unicode/rectangle selection, read-only copy, the complete native application mouse press/motion/release versus forwarded Shift override, selected history across output, active edge autoscroll, deny policy, cross-pane capture and retirement without stale export or redirected release.
+
+Default Kitty reserves Shift+left for its own selection. Only the owned fixture processes remove those Shift mouse mappings to exercise forwarded override events; ordinary selection, clipboard permissions and persistent host configuration are unchanged. This does not claim that Bkpr can receive a host-consumed gesture.
+
+`api-1122767938040172/result.json` records actual native extraction, view isolation, output/resize anchors, hide/detach denial, per-view autoscroll and metadata-only dragging. The bounded 60×20 native-pane control workload uses 57 selection-motion samples with no compilation or other owned workload running:
+
+| Measure | Observed |
+| --- | ---: |
+| Median Select RPC round trip | 0.034907 ms |
+| P95 Select RPC round trip | 0.054375 ms |
+| Largest unchanged-scene poll response | 1,354 bytes |
+| Motion samples replacing/advancing the canonical frame | 0 |
+
+These are local control timings, not physical presentation latency, a large-editor benchmark or a sustained-animation CPU improvement. The separately tracked CPU-efficiency work remains open.
+
+Final optimized client SHA-256: `0ed8fdf3434030bad304f9e0eba7d561f4e6da072813b94a4e3fa5e50072b0e9`; server: `9d4fdfdff8ddee2c8f8501815d52c012c0349f2b585f942afebea64a761cfdbd`. Locked workspace tests pass: 337 tests, six explicitly ignored subprocess fixtures. Strict all-target Clippy passes. Native SDK/revision and dependency patches are unchanged. Useful controllers and provenance are archived alongside the evidence; owned process cleanup reports no survivors. No live sessions, provider calls, user profiles or persistent third-party settings participated.

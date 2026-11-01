@@ -145,5 +145,5 @@ mod input;
 pub(crate) use input::Capture;
 pub(crate) use input::{
     DeviceReservation, InputFailure, InputLane, InputPump, InputRejected, Receipt, ReservedInput,
-    cleanup,
+    ResponseReceipt, cleanup,
 };

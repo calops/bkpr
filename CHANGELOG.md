@@ -33,6 +33,12 @@
 * Route vertical wheel input using exact native mouse-reporting and primary/alternate-screen facts. Shift+wheel explicitly navigates history; ordinary wheel retains application ownership when reporting is enabled, the alternate screen is active, or the daemon has not advertised exact-mode support. Alternate-screen history reports unavailable instead of exposing the primary buffer.
 * Anchor each view in bounded native in-memory history while output continues, without copying full history per key or changing another client's view. Preserve accepted key/pointer releases, paste FIFO and clipboard grants; allow read-only inspection. Projection retirement, workspace switch or detach starts a later view live; no selection/copy/search or persistent terminal-history recovery is added.
 
+### Native selection and copy
+
+* Add per-view drag, double-click word, triple-click line and Alt-rectangle selection using Ghostty's maintained gesture and formatter APIs. Track history endpoints across output/resize and keep edge autoscroll, highlights and pointer capture local to the originating view.
+* Copy completed selections on release and with `Ctrl-b y` through existing terminal clipboard framing. Permit read-only inspection/copy, respect client deny and host permissions, reject oversized copies rather than truncating, and discard stale exports after focus/selection/view retirement.
+* Publish selection-only changes as bounded view annotations without cloning/resending canonical scenes. Separate visibility epochs from sizing activity so focus/lease updates do not reject queued selection. Report known selection rejection without stopping application input; ambiguous transport remains non-replayable.
+
 ### Native harness capture
 
 * Recognize foreground harnesses and directories, authenticate backend-owned launch identities and bind native Claude, Codex, Omp and Antigravity conversations through their own hooks, extensions or protocols. Restore ordinary-command wrappers and `bkpr run`, preserve native argument/exit behavior, and keep recognition-only and incompatible startup modes credential-free.
