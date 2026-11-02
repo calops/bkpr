@@ -469,3 +469,25 @@ Default Kitty reserves Shift+left for its own selection. Only the owned fixture 
 These are local control timings, not physical presentation latency, a large-editor benchmark or a sustained-animation CPU improvement. The separately tracked CPU-efficiency work remains open.
 
 Final optimized client SHA-256: `0ed8fdf3434030bad304f9e0eba7d561f4e6da072813b94a4e3fa5e50072b0e9`; server: `9d4fdfdff8ddee2c8f8501815d52c012c0349f2b585f942afebea64a761cfdbd`. Locked workspace tests pass: 337 tests, six explicitly ignored subprocess fixtures. Strict all-target Clippy passes. Native SDK/revision and dependency patches are unchanged. Useful controllers and provenance are archived alongside the evidence; owned process cleanup reports no survivors. No live sessions, provider calls, user profiles or persistent third-party settings participated.
+
+## Tiled-pane resizing
+
+Keyboard mode (`Ctrl-b e`, arrows, Shift-arrows, Enter/Esc) and physical left-drag dividers now resize the existing backend layout. One shared ratio partition drives pane geometry, real one-cell gutters, hit testing and pointer/keyboard conversion. Ratatui's `kasuari` constraint layout and Taffy's CSS layout were inspected before implementation; neither removes the view/capture/revision work without adding another layout model. Main `9ad93bd` delegates native resizing; fork `d7b40a37`'s native grid/stack solver isn't copied. The existing termwiz decoder, retained framework, bounded jobs and `LayoutUpdate` supply the infrastructure. No dependency, SDK/native patch or server change was required.
+
+Only one exact-revision update may be in flight. Raw motion retains a single latest coordinate pair; the next layout is materialized after admission or acknowledgement, not cloned per superseded motion. Release retains its final point. Own publication before reply is valid; another revision/layout in the same workspace retires the gesture. Unrelated workspaces don't cancel it. Rejection, inconsistent success and lost response never rebase or replay pending intent. Focus, workspace, modal and terminal-geometry changes consume the gesture's tail without redirecting it into application input. Stopping doesn't roll back an accepted update.
+
+### Actual release acceptance
+
+Worktree-local evidence is `target/smoke/resizing/`. Baseline `physical-1219360391273187/` shows the prior optimized release leaves ratios unchanged and routes the would-be resize arrow to the native application. Final `physical-1219971745143659/` runs actual Kitty/Xvfb windows with XTest keyboard/pointer events and raw native C fixtures. Fixtures enable application mouse reporting, log exact received bytes and record their actual PTY dimensions after `SIGWINCH`.
+
+The nested three-pane layout exercises horizontal and vertical keyboard movement, physical column/row dragging, read-only observation, minimum-column clamps, no-op boundary movement, focus/modal/terminal-size retirement, foreign-layout rejection, unrelated-workspace progress and ordinary typing after completion. Every pane body at five checkpoints matches an independent direct-Kitty fixture's complete pixel reference, not a blank/first-glyph readiness check. All control/drag stages preserve application input bytes; typing resumes afterward.
+
+| Burst/checkpoint measure | Observed |
+| --- | ---: |
+| Injected motion samples in one terminal batch | 80 |
+| Committed workspace revisions for that burst | 2 |
+| Complete pane bodies matching direct-terminal references | 15 |
+
+The burst uses owned Kitty's byte-transparent `send-text` to exercise one input batch; physical XTest dragging is verified separately. Counts establish bounded/coalesced mutation behavior, not input-to-presentation latency, a full-screen editor comparison or improvement to the deferred sustained-animation CPU problem. Tiny windows can collapse a second subtree; projection never rewrites the stored ratio. Beyond 1,000 usable cells on an axis, thousandths ratios can quantize movement to larger cell steps.
+
+Locked workspace tests pass: 355 tests, six explicitly ignored subprocess fixtures. Strict all-target Clippy and formatting pass. Optimized client SHA-256: `3ef4ea69bf4b9ffca58b8f6c71f7a431c3b0e2aaf7ae8b325c6c38d57ecc1e66`; server: `9d4fdfdff8ddee2c8f8501815d52c012c0349f2b585f942afebea64a761cfdbd` (unchanged). Builds use the local target with eight jobs on CPUs 0–7; the actual-terminal fixture uses CPUs 8–15, with no compilation in flight. Controllers/provenance are archived beside the evidence. Owned cleanup reports no survivors; no live sessions, model/provider services, real clipboard, user profiles or persistent host settings participated.

@@ -107,6 +107,12 @@ The closest wrapper, `ratatui-ghostty` 0.2.0 at `65f98749210163158607d1ad2c22e0f
 
 Main `9ad93bd`'s launcher leaves selection policy to native Zellij. Fork `d7b40a37`'s `zellij-server/src/lib.rs` defaults copy-on-select to true; `tab/mouse_handler.rs::execute_end_selection` retains origin-pane release and copies nonempty selections. These are interaction starting points, not a reason to copy the fork's terminal grid, selection algorithms or shared-client state. Existing `begin_clipboard` framing remains the host export path; terminal permissions remain authoritative.
 
+### Split-resizing dependency decision
+
+[Ratatui's layout module](https://docs.rs/ratatui/latest/ratatui/layout/index.html) supplies general constraints through `kasuari`; [Taffy](https://docs.rs/taffy/latest/taffy/) supplies CSS flex/grid/block layout. Neither supplies pointer capture, exact workspace revisions or stale-gesture ownership. The existing binary ratio tree needs simple partition/inverse arithmetic, not another tree or solver. Keep termwiz input, retained framework drawing, bounded background jobs and `LayoutUpdate`; no new runtime dependency is added for this slice.
+
+Main `9ad93bd` delegates native resizing. Fork `d7b40a37`'s `zellij-server/src/panes/tiled_panes/pane_resizer.rs` solves constraints over native pane grids/stacks; `resize_feedback.rs` derives native border feedback. Those ownership models don't fit independent pane projections, so no source is copied. Native `tiling` now shares real-gutter partitioning between projection, drawing and interaction. The source review and actual-terminal proof live in worktree-local `target/smoke/resizing/`.
+
 
 ## Contracts to make concrete
 
@@ -169,7 +175,7 @@ Make normal launch, shell exit, workspace/pane creation, detach/reattach and dae
 
 Exercise frontend-owned navigation/chrome, splits and resizing, scrollback, selection/copy/paste, links, finder/action discovery, forms and focus restoration in the actual terminal. Inspect main/fork implementations as each domain comes into scope; reuse or redesign useful pieces rather than treating old APIs as requirements. Cursor, pointer and focus ownership are client-specific. This is the current delivery priority.
 
-Launch/restart shell replacement, per-view scrollback and terminal selection/copy now have actual terminal acceptance. Native tracked-grid references and reusable gesture/formatter APIs supply generic terminal behavior; the framework adds borrowed view-local highlight spans without modifying canonical scenes. Exact native mouse facts separate application input from local inspection. Visibility epochs, not sizing activity, bind inspection lifetime. Terminal search, further ergonomics and full harness recovery remain distinct pending slices. Complete and report each agreed slice before advancing to another.
+Launch/restart shell replacement, per-view scrollback, terminal selection/copy and tiled-pane resizing now have actual terminal acceptance. Native tracked-grid references and reusable gesture/formatter APIs supply generic terminal behavior; the framework adds borrowed view-local highlight spans without modifying canonical scenes. Exact native mouse facts separate application input from local inspection. Visibility epochs, not sizing activity, bind inspection lifetime. Resizing reuses revisioned backend layout updates, with one in-flight commit and coalesced pointer intent; stale or ambiguous gestures never rebase themselves. Terminal search, further ergonomics and full harness recovery remain distinct pending slices. Complete and report each agreed slice before advancing to another.
 
 An independently implemented browser or narrow client remains a future acceptance check for additional frontend products, not a prerequisite for TUI parity. When that work resumes, it must consume the canonical protocol, handle resource/delta lifetime and reconnect, and coexist with an active TUI. Screenshots, hard-coded mocks or ANSI replay do not establish independent frontend support.
 

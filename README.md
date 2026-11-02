@@ -291,6 +291,7 @@ Press `Ctrl-b`, then a command:
 | `c` | Create workspace and first pane |
 | `n` or `%` | Spawn a pane, split left/right |
 | `"` | Spawn a pane, split top/bottom |
+| `e` | Enter keyboard split-resize mode |
 | `R` (uppercase) | Confirm a new configured shell in the focused unavailable pane's layout position |
 | `r` / `p` | Rename workspace / pane |
 | `w` / `o` | Choose workspace / show an existing pane |
@@ -369,6 +370,31 @@ composes panes and chrome through one framework. The renderer retains image
 resources, emits differential styles and skips unchanged presentations.
 Initialization, resize and baseline recovery still require complete state.
 This is not a scene-delta or CPU-efficiency completion claim.
+
+### Resizing panes
+
+Press `Ctrl-b e` to enter resize mode. Arrows move the focused pane's nearest
+containing divider on that axis by one cell in the arrow's screen direction.
+Hold Shift for five cells; held arrows repeat. Enter or Esc finishes. These keys
+do not reach the application. Existing `Ctrl-b` arrow commands still change focus.
+
+Left-drag a divider to resize directly, even when the application uses the mouse.
+Each split reserves one actual divider column or row outside application cells.
+The drag stays captured through crossing panes or the sidebar and through release.
+Movement clamps to useful subtree sizes where space permits. Very small windows
+can hide a split's second subtree without removing panes or changing saved ratios;
+expanding the window projects it again. Extremely wide layouts can move in larger
+steps because saved ratios use thousandths.
+
+Accepted changes update the backend-owned layout and other clients' projections,
+not pane membership or process lifetime. Read-only clients can observe but cannot
+resize. Only one layout update is in flight; newer pointer positions coalesce and
+the final release position is retained until its update completes.
+
+Focus loss, a popup, a workspace/focus change, changed terminal geometry or a
+foreign update to this workspace stops the remaining gesture. Rejected or
+ambiguous updates are not rebased or replayed. Stopping doesn't undo accepted
+changes, and an already accepted update may still finish.
 
 ### Scrollback navigation
 

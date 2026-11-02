@@ -21,6 +21,8 @@ use termwiz::input::{InputEvent, InputParser, Modifiers, MouseButtons};
 mod jobs;
 #[path = "management.rs"]
 mod management;
+#[path = "resizing.rs"]
+mod resizing;
 #[path = "scrollback.rs"]
 mod scrollback;
 #[path = "selection.rs"]
@@ -28,6 +30,7 @@ mod selection;
 
 enum Background {
     Management(management::Completion),
+    Resize(management::Completion),
     Attached {
         pane: String,
         attached: Box<Attached>,
@@ -70,6 +73,7 @@ struct PointerOrigin {
 #[derive(Clone)]
 enum PointerCapture {
     Ui,
+    Resize,
     Pane(Arc<PointerOrigin>),
     Selection(Arc<PointerOrigin>),
 }
@@ -262,6 +266,7 @@ struct App<'a> {
     pointer_capture: Option<PointerCapture>,
     pressed_pointers: RefCell<Vec<PressedPointer>>,
     terminal_selection: selection::State,
+    resizing: resizing::State,
     notified_focus: Option<(String, String)>,
     focus_out_pending: HashSet<(String, String)>,
     lease_pending: HashSet<String>,
@@ -269,11 +274,17 @@ struct App<'a> {
 }
 impl App<'_> {
     fn focus(&mut self, pane: String) {
+        if self.state.focused.as_ref() != Some(&pane) {
+            self.retire_resize("pane focus changed");
+        }
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
         self.state.focus(pane);
         self.select_current_lease();
     }
     fn switch(&mut self, workspace: String) {
+        if self.state.workspace.as_ref() != Some(&workspace) {
+            self.retire_resize("workspace focus changed");
+        }
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
         self.state.switch(workspace, &self.registry);
         self.select_current_lease();
@@ -340,6 +351,7 @@ impl App<'_> {
         intent: Option<ManagementIntent>,
     ) {
         if result.registry.revision >= self.registry.revision {
+            self.observe_resize(&result.registry);
             self.registry = result.registry;
             self.state.reconcile(&self.registry);
         }
@@ -370,12 +382,21 @@ impl App<'_> {
     }
     fn complete_background(&mut self) -> Result<()> {
         for completion in self.jobs.latest()? {
+            if self.owns_resize_job(&completion.key) {
+                let result = completion.result.and_then(|background| match background {
+                    Background::Resize(result) => Ok(result),
+                    _ => bail!("resize job returned an unrelated completion"),
+                });
+                self.complete_resize(result);
+                continue;
+            }
             let intent = self.management.remove(&completion.key);
             match completion.result {
                 Ok(Background::Management(result)) => {
                     self.accept_management(result, intent);
                     self.state.status = format!("{} completed", completion.key);
                 }
+                Ok(Background::Resize(_)) => bail!("resize completion lost its captured intent"),
                 Ok(Background::Attached { pane, attached }) => {
                     self.attach_slots -= 1;
                     if self.views.contains_key(&pane) || attached.retirement_requested {
@@ -1815,7 +1836,10 @@ impl App<'_> {
         size: Size,
         rects: &[(String, Rect)],
     ) -> Result<bool> {
-        let local = self.state.prefix || self.state.form.is_some() || self.focused_history();
+        let local = self.state.prefix
+            || self.state.form.is_some()
+            || self.focused_history()
+            || self.resize_capturing();
         match self.key(event, out, size, rects) {
             Err(error) if error.downcast_ref::<updates::InputRejected>().is_some() => {
                 self.scope_input_result(Err(error))?;
@@ -1837,7 +1861,16 @@ impl App<'_> {
     ) -> Result<bool> {
         match event.action {
             KeyAction::Release if self.state.suppressed.remove(&event.key) => return Ok(false),
-            KeyAction::Repeat if self.state.suppressed.contains(&event.key) => return Ok(false),
+            KeyAction::Repeat
+                if self.state.suppressed.contains(&event.key)
+                    && !(self.resize_capturing()
+                        && matches!(
+                            event.key.as_str(),
+                            "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown"
+                        )) =>
+            {
+                return Ok(false);
+            }
             KeyAction::Press => {
                 self.state.suppressed.remove(&event.key);
             }
@@ -1859,6 +1892,17 @@ impl App<'_> {
                     },
                 )?;
             }
+            return Ok(false);
+        }
+        let was_resizing = self.resize_capturing();
+        self.validate_resize(size);
+        if was_resizing && !self.resize_capturing() {
+            if !self.held.contains_key(&event.key) {
+                self.state.suppressed.insert(event.key);
+            }
+            return Ok(false);
+        }
+        if self.resize_key(&event, size)? {
             return Ok(false);
         }
         if self.state.prefix {
@@ -2036,6 +2080,7 @@ impl App<'_> {
             match (event.text.as_str(), event.key.as_str()) {
                 ("d", _) => return Ok(true),
                 ("s", _) => self.enter_history(rects)?,
+                ("e", _) => self.begin_keyboard_resize(size)?,
                 ("y", _) => self.copy_focused_selection()?,
                 ("i", _) => self.state.open(FormKind::ProjectDetails, String::new()),
                 ("c", _) => self.state.open(FormKind::CreateWorkspace, String::new()),
@@ -2083,16 +2128,19 @@ impl App<'_> {
                             .into();
                 }
                 ("[", _) => {
+                    self.retire_resize("workspace focus changed");
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_workspace(&self.registry, -1);
                     self.select_current_lease();
                 }
                 ("]", _) => {
+                    self.retire_resize("workspace focus changed");
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_workspace(&self.registry, 1);
                     self.select_current_lease();
                 }
                 (_, "Tab") => {
+                    self.retire_resize("pane focus changed");
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_pane(&self.registry);
                     self.select_current_lease();
@@ -2104,6 +2152,7 @@ impl App<'_> {
                 _ => self.state.status = "Unknown Ctrl-b command; press Ctrl-b for bindings".into(),
             };
             if self.state.form.is_some() {
+                self.retire_resize("modal opened");
                 self.selection_focus_lost();
             }
             return Ok(false);
@@ -2161,6 +2210,7 @@ impl App<'_> {
         workspace_hits: &[(SidebarTarget, u16)],
         hits: &HitMap,
     ) -> Result<()> {
+        self.validate_resize(size);
         let button = if mouse.mouse_buttons.contains(MouseButtons::VERT_WHEEL) {
             if mouse.mouse_buttons.contains(MouseButtons::WHEEL_POSITIVE) {
                 MouseButton::WheelUp
@@ -2212,6 +2262,12 @@ impl App<'_> {
                 self.pointer_capture = Some(PointerCapture::Ui);
             }
         }
+        if matches!(&captured, Some(PointerCapture::Resize)) {
+            if !wheel {
+                self.resize_pointer(mouse.x, mouse.y, action == MouseAction::Release)?;
+            }
+            return Ok(());
+        }
         if !wheel && let Some(PointerCapture::Selection(origin)) = &captured {
             if let Some((_, rect)) = rects.iter().find(|(pane, _)| pane == &origin.pane) {
                 let action = if action == MouseAction::Release {
@@ -2243,6 +2299,13 @@ impl App<'_> {
         // Complete an already accepted native gesture even if a modal acquired
         // focus afterward; never start a native gesture through a modal.
         if modal && !(origin.is_some() && action == MouseAction::Release) {
+            return Ok(());
+        }
+        if origin.is_none()
+            && button == MouseButton::Left
+            && action == MouseAction::Press
+            && self.begin_divider_resize(size, mouse.x, mouse.y)?
+        {
             return Ok(());
         }
         if origin.is_none()
@@ -2459,6 +2522,7 @@ impl App<'_> {
         if response.starts_with(b"focus;") {
             self.host_focused = response == b"focus;in";
             if !self.host_focused {
+                self.retire_resize("terminal focus lost");
                 self.selection_focus_lost();
             }
             if self.host_focused
@@ -2472,6 +2536,7 @@ impl App<'_> {
         self.colors.feed(response);
         if self.consent.is_none()
             && self.state.form.is_none()
+            && (!self.resize_capturing() || self.paste_offer.is_some())
             && !self.options.read_only
             && self.options.clipboard_policy != "deny"
         {
@@ -2632,6 +2697,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         pointer_capture: None,
         pressed_pointers: RefCell::new(Vec::new()),
         terminal_selection: selection::State::default(),
+        resizing: resizing::State::default(),
         notified_focus: None,
         focus_out_pending: HashSet::new(),
         lease_pending: HashSet::new(),
@@ -2677,10 +2743,12 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             if let Some(registry) = registry_pump.latest()?
                 && registry.revision >= app.registry.revision
             {
+                app.observe_resize(&registry);
                 app.registry = registry;
                 app.state.reconcile(&app.registry);
             }
             let size = dimensions()?;
+            app.validate_resize(size);
             let rects = app.rects(size);
             app.sync_views(size, &rects)?;
             app.poll_views();
@@ -2727,6 +2795,8 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             }
             let clipboard = app.clipboard(&mut out);
             app.scope_input_result(clipboard)?;
+            app.validate_resize(size);
+            app.flush_resize()?;
             if app
                 .paste_offer
                 .as_ref()
@@ -2743,6 +2813,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 let result = app.finish_consent(ClipboardResponse::denied());
                 app.scope_input_result(result)?;
             }
+            app.resize_hint();
             let workspace_hits = chrome(
                 &mut chrome_surface,
                 crate::controller::ChromeContext {
@@ -2917,7 +2988,20 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 return Err(std::io::Error::last_os_error().into());
             }
             let mut resized = [0u8; 64];
-            while matches!(resize_read.read(&mut resized),Ok(n)if n>0) {}
+            let mut geometry_changed = false;
+            while matches!(resize_read.read(&mut resized),Ok(n)if n>0) {
+                geometry_changed = true;
+            }
+            let input_size = if geometry_changed {
+                dimensions()?
+            } else {
+                size
+            };
+            if geometry_changed {
+                app.retire_resize("terminal geometry changed");
+            }
+            let resized_rects = (input_size != size).then(|| app.rects(input_size));
+            let input_rects = resized_rects.as_deref().unwrap_or(&rects);
             let available = fds[0].revents & (libc::POLLIN | libc::POLLHUP) != 0;
             let mut bytes = [0u8; 8192];
             let parts = if available {
@@ -2937,7 +3021,12 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 match event {
                     ClientEvent::Reply(response) => {
                         if let Some(key) = response.strip_prefix(b"key;") {
-                            if app.dispatch_key(kitty_key(key)?, &mut out, size, &rects)? {
+                            if app.dispatch_key(
+                                kitty_key(key)?,
+                                &mut out,
+                                input_size,
+                                input_rects,
+                            )? {
                                 return Ok(());
                             }
                         } else {
@@ -2946,16 +3035,20 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                         }
                     }
                     ClientEvent::Legacy(InputEvent::Key(key)) => {
-                        if app.dispatch_key(key_event(key), &mut out, size, &rects)? {
+                        if app.dispatch_key(key_event(key), &mut out, input_size, input_rects)? {
                             return Ok(());
                         }
                     }
                     ClientEvent::Legacy(InputEvent::Paste(text)) => {
-                        let result = app.paste(text);
-                        app.scope_input_result(result)?;
+                        if !app.resize_capturing() {
+                            let result = app.paste(text);
+                            app.scope_input_result(result)?;
+                        }
                     }
                     ClientEvent::Legacy(InputEvent::Mouse(mouse)) => {
-                        if let Err(error) = app.mouse(mouse, size, &rects, &workspace_hits, &hits) {
+                        if let Err(error) =
+                            app.mouse(mouse, input_size, input_rects, &workspace_hits, &hits)
+                        {
                             if error.downcast_ref::<updates::InputRejected>().is_some() {
                                 app.scope_input_result(Err(error))?;
                             } else {
@@ -2969,6 +3062,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         }
         Ok(())
     })();
+    app.retire_resize("client detached");
     let mut cleanup = Ok(());
     while app.consent.is_some() {
         let finished = app.finish_consent(ClipboardResponse::denied());
@@ -3034,7 +3128,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                             detach_view(socket, &pane, &attached, false),
                         );
                     }
-                    Ok(Background::Management(_)) => {}
+                    Ok(Background::Management(_) | Background::Resize(_)) => {}
                     Err(error) => {
                         accumulate_cleanup(&mut cleanup, Err(error.context(completion.key)))
                     }
@@ -3180,6 +3274,7 @@ mod tests {
                 pointer_capture: None,
                 pressed_pointers: RefCell::new(Vec::new()),
                 terminal_selection: selection::State::default(),
+                resizing: resizing::State::default(),
                 notified_focus: None,
                 focus_out_pending: HashSet::new(),
                 lease_pending: HashSet::new(),
@@ -5371,5 +5466,448 @@ mod tests {
         } if event.action == SelectionAction::Release && event.x < 0.0 && event.y < 0.0));
         assert!(app.pointer_capture.is_none());
         assert!(capture.try_recv().is_err());
+    }
+
+    fn resize_fixture(app: &mut App<'_>) -> PointerFixture {
+        let mut pointer = PointerFixture::new(app);
+        app.registry.workspaces = vec![
+            Workspace {
+                id: "resize".into(),
+                name: "resize".into(),
+                revision: 7,
+                layout: Some(LayoutNode::Split {
+                    axis: Axis::Horizontal,
+                    ratio: 500,
+                    first: Box::new(LayoutNode::Leaf {
+                        pane_id: "focused-pane".into(),
+                    }),
+                    second: Box::new(LayoutNode::Leaf {
+                        pane_id: "beta".into(),
+                    }),
+                }),
+            },
+            Workspace {
+                id: "other".into(),
+                name: "other".into(),
+                revision: 2,
+                layout: None,
+            },
+        ];
+        app.state.workspace = Some("resize".into());
+        pointer.rects = app.rects(pointer.size);
+        pointer
+    }
+
+    fn resize_divider(app: &App<'_>, size: Size) -> Rect {
+        let mut splits = Vec::new();
+        crate::tiling::dividers(
+            app.registry.workspaces[0].layout.as_ref(),
+            screen_geometry(size).1,
+            &mut splits,
+        );
+        splits[0].divider
+    }
+
+    fn read_resize_request(stream: &mut std::os::unix::net::UnixStream) -> Operation {
+        use std::io::{BufRead, BufReader};
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        BufReader::new(stream)
+            .read_until(b'\n', &mut bytes)
+            .unwrap();
+        serde_json::from_slice::<Request>(&bytes).unwrap().operation
+    }
+
+    fn accept_resize_request(registry: &mut RegistrySnapshot, operation: &Operation) {
+        let Operation::LayoutUpdate {
+            workspace_id,
+            expected_revision,
+            layout,
+        } = operation
+        else {
+            panic!("expected resize layout mutation");
+        };
+        let workspace = registry
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == *workspace_id)
+            .unwrap();
+        assert_eq!(workspace.revision, *expected_revision);
+        workspace.revision += 1;
+        workspace.layout = layout.clone();
+        registry.revision += 1;
+    }
+
+    fn resize_reply(stream: &mut std::os::unix::net::UnixStream, registry: &RegistrySnapshot) {
+        writeln!(
+            stream,
+            "{}",
+            serde_json::to_string(&Response {
+                version: PROTOCOL_VERSION,
+                ok: true,
+                result: Some(
+                    serde_json::to_value(RegistryResult {
+                        registry: registry.clone(),
+                        pane_id: None,
+                        workspace_id: None,
+                    })
+                    .unwrap(),
+                ),
+                error: None,
+            })
+            .unwrap()
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resize_coalesces_keyboard_repeats_and_captured_sidebar_release_after_inflight_commit() {
+        use std::{os::unix::net::UnixListener, thread};
+        for drag in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("resize.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let (mut app, capture) = fixture();
+            app.socket = &socket;
+            let pointer = resize_fixture(&mut app);
+            let initial = resize_divider(&app, pointer.size);
+            let mut registry = app.registry.clone();
+            let (observed, requests) = mpsc::channel();
+            let (release, blocked) = mpsc::channel();
+            let server = thread::spawn(move || {
+                for index in 0..2 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let operation = read_resize_request(&mut stream);
+                    observed.send(operation.clone()).unwrap();
+                    if index == 0 {
+                        blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+                    }
+                    accept_resize_request(&mut registry, &operation);
+                    resize_reply(&mut stream, &registry);
+                }
+            });
+            if drag {
+                pointer.send(&mut app, 0, initial.x, 3, false);
+                pointer.send(&mut app, 32, initial.x + 3, 3, false);
+            } else {
+                app.state.prefix = true;
+                let mut enter = key("KeyE");
+                enter.text = "e".into();
+                app.key(enter, &mut Vec::new(), pointer.size, &pointer.rects)
+                    .unwrap();
+                app.key(
+                    key("ArrowRight"),
+                    &mut Vec::new(),
+                    pointer.size,
+                    &pointer.rects,
+                )
+                .unwrap();
+            }
+            let first = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(matches!(
+                first,
+                Operation::LayoutUpdate {
+                    expected_revision: 7,
+                    ..
+                }
+            ));
+            if drag {
+                pointer.send(&mut app, 32, initial.x + 8, 5, false);
+                // The release itself supplies the final desired point, even
+                // outside the tile area and while the first CAS is blocked.
+                pointer.send(&mut app, 0, 0, 5, true);
+                assert!(app.pointer_capture.is_none());
+            } else {
+                let mut shifted = key("ArrowRight");
+                shifted.modifiers = 1;
+                app.key(
+                    shifted.clone(),
+                    &mut Vec::new(),
+                    pointer.size,
+                    &pointer.rects,
+                )
+                .unwrap();
+                shifted.action = KeyAction::Repeat;
+                app.key(shifted, &mut Vec::new(), pointer.size, &pointer.rects)
+                    .unwrap();
+                app.key(key("Enter"), &mut Vec::new(), pointer.size, &pointer.rects)
+                    .unwrap();
+                for action in [KeyAction::Repeat, KeyAction::Release] {
+                    let mut tail = key("ArrowRight");
+                    tail.modifiers = 1;
+                    tail.action = action;
+                    app.key(tail, &mut Vec::new(), pointer.size, &pointer.rects)
+                        .unwrap();
+                }
+            }
+            assert!(!app.resize_capturing());
+            assert!(
+                requests.try_recv().is_err(),
+                "raw motion submitted another CAS"
+            );
+            release.send(()).unwrap();
+            wait_background(&mut app, "manage:workspace:resize");
+            app.validate_resize(pointer.size);
+            app.flush_resize().unwrap();
+            let second = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(matches!(
+                second,
+                Operation::LayoutUpdate {
+                    expected_revision: 8,
+                    ..
+                }
+            ));
+            wait_background(&mut app, "manage:workspace:resize");
+            server.join().unwrap();
+            assert_eq!(app.registry.workspaces[0].revision, 9);
+            let final_divider = resize_divider(&app, pointer.size);
+            assert_eq!(
+                final_divider.x,
+                if drag {
+                    screen_geometry(pointer.size).1.x + 1
+                } else {
+                    initial.x + 11
+                }
+            );
+            assert_eq!(app.state.focused.as_deref(), Some("focused-pane"));
+            assert_eq!(app.state.status, "Resize finished");
+            assert!(
+                capture.try_recv().is_err(),
+                "resize input leaked to an application"
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_unknown_and_inconsistent_resize_results_never_rebase_pending_intent() {
+        use std::{os::unix::net::UnixListener, thread};
+        for outcome in ["conflict", "lost", "inconsistent"] {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("resize.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let (mut app, capture) = fixture();
+            app.socket = &socket;
+            let pointer = resize_fixture(&mut app);
+            let before = app.registry.workspaces[0].layout.clone();
+            let mut registry = app.registry.clone();
+            let (accepted, dispatched) = mpsc::channel();
+            let (release, blocked) = mpsc::channel();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let operation = read_resize_request(&mut stream);
+                accepted.send(()).unwrap();
+                blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+                match outcome {
+                    "conflict" => {
+                        writeln!(
+                            stream,
+                            "{}",
+                            serde_json::to_string(&Response {
+                                version: PROTOCOL_VERSION,
+                                ok: false,
+                                result: None,
+                                error: Some("workspace revision conflict".into()),
+                            })
+                            .unwrap()
+                        )
+                        .unwrap();
+                    }
+                    "inconsistent" => {
+                        registry.workspaces[0].revision += 1;
+                        registry.revision += 1;
+                        resize_reply(&mut stream, &registry);
+                    }
+                    "lost" => accept_resize_request(&mut registry, &operation),
+                    _ => unreachable!(),
+                }
+            });
+            app.begin_keyboard_resize(pointer.size).unwrap();
+            app.key(
+                key("ArrowRight"),
+                &mut Vec::new(),
+                pointer.size,
+                &pointer.rects,
+            )
+            .unwrap();
+            dispatched.recv_timeout(Duration::from_secs(5)).unwrap();
+            app.key(
+                key("ArrowRight"),
+                &mut Vec::new(),
+                pointer.size,
+                &pointer.rects,
+            )
+            .unwrap();
+            app.key(key("Enter"), &mut Vec::new(), pointer.size, &pointer.rects)
+                .unwrap();
+            release.send(()).unwrap();
+            wait_background(&mut app, "manage:workspace:resize");
+            server.join().unwrap();
+            app.flush_resize().unwrap();
+            assert!(!app.jobs.contains("manage:workspace:resize"));
+            assert!(!app.resize_capturing());
+            assert_eq!(app.registry.workspaces[0].layout, before);
+            assert!(app.state.status.contains("not replayed"));
+            assert_eq!(
+                app.state.status.contains("outcome unknown"),
+                outcome != "conflict"
+            );
+            assert!(capture.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn resize_retirement_consumes_pointer_tail_and_preserves_accepted_app_key_release() {
+        for reason in [
+            "focus",
+            "workspace",
+            "geometry",
+            "modal",
+            "modal-prefix",
+            "host",
+            "read-only",
+        ] {
+            let (mut app, capture) = fixture();
+            let pointer = resize_fixture(&mut app);
+            app.key(key("KeyA"), &mut Vec::new(), pointer.size, &pointer.rects)
+                .unwrap();
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                pane_id, request: PaneRequest::Key { event, .. }
+            } if pane_id == "focused-pane" && event.action == KeyAction::Press));
+            let divider = resize_divider(&app, pointer.size);
+            pointer.send(&mut app, 0, divider.x, 3, false);
+            assert!(matches!(app.pointer_capture, Some(PointerCapture::Resize)));
+            let mut new_size = pointer.size;
+            match reason {
+                "focus" => app.focus("beta".into()),
+                "workspace" => app.switch("other".into()),
+                "geometry" => new_size.cols += 1,
+                "modal" => app.state.open(FormKind::ChoosePane, String::new()),
+                "modal-prefix" => {
+                    let mut prefix = key("KeyB");
+                    prefix.modifiers = 2;
+                    app.key(prefix, &mut Vec::new(), pointer.size, &pointer.rects)
+                        .unwrap();
+                    let mut rename = key("KeyR");
+                    rename.text = "r".into();
+                    app.key(rename, &mut Vec::new(), pointer.size, &pointer.rects)
+                        .unwrap();
+                    assert!(app.state.form.is_some());
+                }
+                "host" => app.host_focused = false,
+                "read-only" => app.options.read_only = true,
+                _ => unreachable!(),
+            }
+            app.validate_resize(new_size);
+            assert!(!app.resize_capturing(), "{reason}");
+            assert!(matches!(app.pointer_capture, Some(PointerCapture::Ui)));
+            pointer.send(&mut app, 32, divider.x + 5, 3, false);
+            pointer.send(&mut app, 0, pointer.size.cols - 1, 5, true);
+            let mut release = key("KeyA");
+            release.action = KeyAction::Release;
+            app.key(release, &mut Vec::new(), new_size, &pointer.rects)
+                .unwrap();
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                pane_id, request: PaneRequest::Key { event, .. }
+            } if pane_id == "focused-pane" && event.action == KeyAction::Release));
+            assert!(capture.try_recv().is_err(), "{reason}: pointer tail leaked");
+            assert!(!app.jobs.contains("manage:workspace:resize"));
+        }
+    }
+
+    #[test]
+    fn resize_read_only_modal_and_no_matching_axis_do_not_admit_layout_mutations() {
+        let (mut app, capture) = fixture();
+        let pointer = resize_fixture(&mut app);
+        let divider = resize_divider(&app, pointer.size);
+        app.options.read_only = true;
+        app.state.prefix = true;
+        let mut enter = key("KeyE");
+        enter.text = "e".into();
+        app.dispatch_key(enter, &mut Vec::new(), pointer.size, &pointer.rects)
+            .unwrap();
+        assert!(app.state.status.contains("read-only"));
+        assert!(pointer.try_send(&mut app, 0, divider.x, 3, false).is_err());
+        pointer.send(&mut app, 0, divider.x, 3, true);
+        app.options.read_only = false;
+        app.state.open(FormKind::ChoosePane, String::new());
+        pointer.send(&mut app, 0, divider.x, 3, false);
+        pointer.send(&mut app, 0, divider.x + 8, 3, true);
+        assert!(!app.resize_capturing());
+        app.state.cancel();
+        app.state.reconcile(&app.registry);
+        pointer.send(&mut app, 0, divider.x, 3, false);
+        pointer.send(&mut app, 0, divider.x, 3, true);
+        assert!(!app.jobs.contains("manage:workspace:resize"));
+        app.begin_keyboard_resize(pointer.size).unwrap();
+        app.key(
+            key("ArrowUp"),
+            &mut Vec::new(),
+            pointer.size,
+            &pointer.rects,
+        )
+        .unwrap();
+        app.resize_hint();
+        assert!(app.state.status.contains("no matching divider"));
+        app.key(key("Escape"), &mut Vec::new(), pointer.size, &pointer.rects)
+            .unwrap();
+        assert_eq!(app.state.status, "Resize finished");
+        assert!(!app.jobs.contains("manage:workspace:resize"));
+        assert!(capture.try_recv().is_err());
+    }
+
+    #[test]
+    fn resize_registry_observation_preserves_other_workspaces_and_retires_foreign_target_updates() {
+        let (mut app, capture) = fixture();
+        let pointer = resize_fixture(&mut app);
+        app.begin_keyboard_resize(pointer.size).unwrap();
+        let mut unrelated = app.registry.clone();
+        unrelated.revision += 1;
+        unrelated.workspaces[1].revision += 1;
+        unrelated.workspaces[1].name = "renamed elsewhere".into();
+        app.observe_resize(&unrelated);
+        app.registry = unrelated;
+        app.validate_resize(pointer.size);
+        assert!(app.resize_capturing());
+        let mut foreign = app.registry.clone();
+        foreign.revision += 1;
+        foreign.workspaces[0].revision += 1;
+        if let Some(LayoutNode::Split { ratio, .. }) = &mut foreign.workspaces[0].layout {
+            *ratio = 700;
+        }
+        app.observe_resize(&foreign);
+        app.registry = foreign;
+        app.validate_resize(pointer.size);
+        assert!(!app.resize_capturing());
+        assert!(app.state.status.contains("workspace changed elsewhere"));
+        assert!(!app.jobs.contains("manage:workspace:resize"));
+        assert!(capture.try_recv().is_err());
+    }
+
+    #[test]
+    fn native_pointer_release_keeps_original_app_view_while_keyboard_resize_captures_keys() {
+        let (mut app, capture) = fixture();
+        let pointer = resize_fixture(&mut app);
+        let alpha = content(pointer.rects[0].1);
+        let beta = content(pointer.rects[1].1);
+        pointer.send(&mut app, 0, alpha.x + 2, 3, false);
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Mouse { view_id, event }
+        } if pane_id == "focused-pane" && view_id == "focused-view"
+            && event.action == MouseAction::Press));
+        app.begin_keyboard_resize(pointer.size).unwrap();
+        app.key(key("KeyZ"), &mut Vec::new(), pointer.size, &pointer.rects)
+            .unwrap();
+        pointer.send(&mut app, 0, beta.x + 2, 3, true);
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Mouse { view_id, event }
+        } if pane_id == "focused-pane" && view_id == "focused-view"
+            && event.action == MouseAction::Release));
+        assert!(app.resize_capturing());
+        app.key(key("Escape"), &mut Vec::new(), pointer.size, &pointer.rects)
+            .unwrap();
+        assert!(capture.try_recv().is_err());
+        assert!(app.held.is_empty());
     }
 }
