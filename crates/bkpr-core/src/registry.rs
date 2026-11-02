@@ -99,6 +99,9 @@ struct Inner {
     captures: Mutex<crate::harness::Captures>,
     agents: Arc<agents::Agents>,
     spawn_environment: Mutex<Option<crate::harness::SpawnEnvironment>>,
+    ssh_agent: Mutex<Option<Arc<crate::ssh_agent::Relay>>>,
+    ssh_agent_sequence: std::sync::atomic::AtomicU64,
+    ssh_agent_selected: Mutex<Option<String>>,
     observer_started: std::sync::atomic::AtomicBool,
     session_end: std::sync::atomic::AtomicBool,
     session_end_waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -123,6 +126,9 @@ impl Drop for Inner {
         // The retention worker owns only Agents, not the registry lease. Drain its
         // writer and close admission before releasing ownership of the durable root.
         let _ = self.agents.shutdown();
+        if let Some(relay) = self.ssh_agent.get_mut().unwrap().take() {
+            let _ = relay.shutdown();
+        }
     }
 }
 #[cfg(test)]
@@ -414,6 +420,9 @@ impl Registry {
                 captures: Mutex::new(crate::harness::Captures::default()),
                 agents,
                 spawn_environment: Mutex::new(None),
+                ssh_agent: Mutex::new(None),
+                ssh_agent_sequence: std::sync::atomic::AtomicU64::new(0),
+                ssh_agent_selected: Mutex::new(None),
                 observer_started: std::sync::atomic::AtomicBool::new(false),
                 session_end: std::sync::atomic::AtomicBool::new(false),
                 session_end_waker: Mutex::new(None),
@@ -912,6 +921,13 @@ impl Registry {
         }
         self.start_observer()?;
         let environment = self.inner.spawn_environment.lock().unwrap().clone();
+        let ssh_agent_socket = self
+            .inner
+            .ssh_agent
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|relay| relay.socket().to_owned());
         // PTY startup, child exec and initial snapshot never run under the registry lock.
         let spawned = Pane::spawn_with_id(
             SpawnSpec {
@@ -930,6 +946,7 @@ impl Registry {
                 self.inner.session.session_id.clone(),
                 self.inner.session.name.clone(),
             )),
+            ssh_agent_socket,
         );
         let pane = spawned?;
         let result = (|| -> Result<RegistrySnapshot> {
@@ -1357,8 +1374,10 @@ impl Registry {
         };
         self.detach_all_clients("shutdown");
         let agent_shutdown = self.inner.agents.shutdown();
+        let forwarding = self.inner.ssh_agent.lock().unwrap().clone();
+        let forwarding_shutdown = forwarding.map(|relay| relay.shutdown()).transpose();
         self.stop_projects();
-        let mut first_error = agent_shutdown.err();
+        let mut first_error = agent_shutdown.err().or_else(|| forwarding_shutdown.err());
         for pane in panes {
             if let Err(error) = pane.request(PaneRequest::Shutdown)
                 && first_error.is_none()

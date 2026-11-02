@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
+    ffi::OsString,
     io::{Read, Write},
     net::Shutdown,
     os::{
@@ -181,6 +182,20 @@ struct RegistrationReply {
     session: SessionInfo,
 }
 
+fn capture_agent_socket(value: Option<OsString>) -> Result<Option<PathBuf>> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(value);
+    Ok(Some(if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .context("reading client invocation directory for SSH agent source")?
+            .join(path)
+    }))
+}
+
 /// Owns the sole lifetime stream. Dropping this object revokes every endpoint
 /// clone and closes the stream, even when workers still retain endpoints.
 pub struct RegisteredClient {
@@ -189,10 +204,16 @@ pub struct RegisteredClient {
     lifetime: Option<UnixStream>,
     pending: Vec<u8>,
     activation_attempted: bool,
+    agent_socket: Option<PathBuf>,
 }
 
 impl RegisteredClient {
     pub fn register(socket: &Path) -> Result<Self> {
+        let agent_socket = capture_agent_socket(std::env::var_os("SSH_AUTH_SOCK"))?;
+        Self::register_with_agent_socket(socket, agent_socket)
+    }
+
+    fn register_with_agent_socket(socket: &Path, agent_socket: Option<PathBuf>) -> Result<Self> {
         let session: SessionReply =
             serde_json::from_value(super::checked(socket, Operation::SessionInfo)?)
                 .context("decoding server session identity")?;
@@ -240,6 +261,7 @@ impl RegisteredClient {
             lifetime: Some(lifetime),
             pending: Vec::new(),
             activation_attempted: false,
+            agent_socket,
         })
     }
 
@@ -265,9 +287,10 @@ impl RegisteredClient {
             !self.consume_lifecycle()?,
             "client detached before activation"
         );
-        let value = self
-            .endpoint
-            .checked(Operation::ClientActivate { detach_others })?;
+        let value = self.endpoint.checked(Operation::ClientActivate {
+            detach_others,
+            agent_socket: self.agent_socket.take(),
+        })?;
         ensure!(
             value.get("activated").and_then(Value::as_bool) == Some(true)
                 && value
@@ -406,6 +429,24 @@ mod tests {
         thread,
     };
 
+    #[test]
+    fn source_capture_resolves_relative_raw_paths_and_preserves_intentional_absence() {
+        use std::os::unix::ffi::OsStringExt;
+        assert_eq!(capture_agent_socket(None).unwrap(), None);
+        assert_eq!(capture_agent_socket(Some(OsString::new())).unwrap(), None);
+        let relative = OsString::from_vec(b"agent-\xff.sock".to_vec());
+        let captured = capture_agent_socket(Some(relative.clone())).unwrap();
+        assert_eq!(
+            captured,
+            Some(std::env::current_dir().unwrap().join(relative))
+        );
+        let absolute = OsString::from_vec(b"/private/agent-\xfe.sock".to_vec());
+        assert_eq!(
+            capture_agent_socket(Some(absolute.clone())).unwrap(),
+            Some(PathBuf::from(absolute))
+        );
+    }
+
     fn session() -> SessionInfo {
         SessionInfo {
             name: "../exact session 🐈".into(),
@@ -485,7 +526,7 @@ mod tests {
             // accidentally swallowing the coalesced lifecycle event.
             finished.recv_timeout(Duration::from_secs(3)).unwrap();
         });
-        let mut client = RegisteredClient::register(&socket).unwrap();
+        let mut client = RegisteredClient::register_with_agent_socket(&socket, None).unwrap();
         let endpoint = client.endpoint().clone();
         assert_eq!(client.session(), &session());
         assert!(client.consume_lifecycle().unwrap());
@@ -510,46 +551,56 @@ mod tests {
                 matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
             );
         });
-        assert!(RegisteredClient::register(&socket).is_err());
+        assert!(RegisteredClient::register_with_agent_socket(&socket, None).is_err());
         server.join().unwrap();
     }
 
     #[test]
-    fn activation_is_wrapped_and_never_replayed_after_success() {
-        let (finish, finished) = mpsc::channel();
-        let (_directory, socket, server) = fixture(move |mut lifetime, listener| {
-            lifetime
-                .write_all(&response(registration(session())))
-                .unwrap();
-            let (mut control, _) = listener.accept().unwrap();
-            let Operation::Client { authority, request } = read_request(&mut control).operation
-            else {
-                panic!("managed activation must carry explicit authority");
-            };
-            assert!(authority.client_id == "attachment" && authority.token == "test-only-secret");
-            assert!(matches!(
-                *request,
-                Operation::ClientActivate {
-                    detach_others: true
-                }
-            ));
-            control
-                .write_all(&response(
-                    serde_json::json!({"activated":true,"already_active":false}),
-                ))
-                .unwrap();
-            finished.recv_timeout(Duration::from_secs(3)).unwrap();
-            listener.set_nonblocking(true).unwrap();
-            assert!(
-                matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
-            );
-        });
-        let mut client = RegisteredClient::register(&socket).unwrap();
-        assert!(!client.consume_lifecycle().unwrap());
-        client.activate_once(true).unwrap();
-        assert!(client.activate_once(true).is_err());
-        finish.send(()).unwrap();
-        server.join().unwrap();
+    fn activation_publishes_source_or_absence_once_under_authority() {
+        use std::os::unix::ffi::OsStringExt;
+        let raw_path = PathBuf::from(OsString::from_vec(b"/private/agent-\xff.sock".to_vec()));
+        for source in [None, Some(raw_path)] {
+            let expected_source = source.clone();
+            let (finish, finished) = mpsc::channel();
+            let (_directory, socket, server) = fixture(move |mut lifetime, listener| {
+                lifetime
+                    .write_all(&response(registration(session())))
+                    .unwrap();
+                let (mut control, _) = listener.accept().unwrap();
+                let Operation::Client { authority, request } = read_request(&mut control).operation
+                else {
+                    panic!("managed activation must carry explicit authority");
+                };
+                assert!(
+                    authority.client_id == "attachment" && authority.token == "test-only-secret"
+                );
+                let Operation::ClientActivate {
+                    detach_others,
+                    agent_socket,
+                } = *request
+                else {
+                    panic!("expected activation");
+                };
+                assert!(detach_others);
+                assert_eq!(agent_socket, expected_source);
+                control
+                    .write_all(&response(
+                        serde_json::json!({"activated":true,"already_active":false}),
+                    ))
+                    .unwrap();
+                finished.recv_timeout(Duration::from_secs(3)).unwrap();
+                listener.set_nonblocking(true).unwrap();
+                assert!(
+                    matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+                );
+            });
+            let mut client = RegisteredClient::register_with_agent_socket(&socket, source).unwrap();
+            assert!(!client.consume_lifecycle().unwrap());
+            client.activate_once(true).unwrap();
+            assert!(client.activate_once(true).is_err());
+            finish.send(()).unwrap();
+            server.join().unwrap();
+        }
     }
 
     #[test]
@@ -571,7 +622,7 @@ mod tests {
                 matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
             );
         });
-        let mut client = RegisteredClient::register(&socket).unwrap();
+        let mut client = RegisteredClient::register_with_agent_socket(&socket, None).unwrap();
         let error = client.activate_once(true).unwrap_err();
         assert!(super::super::outcome_unknown(&error));
         assert!(client.activate_once(true).is_err());
@@ -604,7 +655,7 @@ mod tests {
                 matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
             );
         });
-        let mut client = RegisteredClient::register(&socket).unwrap();
+        let mut client = RegisteredClient::register_with_agent_socket(&socket, None).unwrap();
         let endpoint = client.endpoint().clone();
         let worker_endpoint = endpoint.clone();
         let worker = thread::spawn(move || worker_endpoint.checked(Operation::Inspect));
@@ -636,7 +687,7 @@ mod tests {
                 matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
             );
         });
-        let client = RegisteredClient::register(&socket).unwrap();
+        let client = RegisteredClient::register_with_agent_socket(&socket, None).unwrap();
         let endpoint = client.endpoint().clone();
         drop(client);
         assert!(endpoint.checked(Operation::Inspect).is_err());

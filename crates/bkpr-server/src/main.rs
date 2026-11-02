@@ -56,6 +56,7 @@ fn run(cli: Cli) -> Result<()> {
             None => std::env::current_exe()?.with_file_name("bkpr"),
         };
         registry.configure_harnesses(&cli.socket, &executable)?;
+        registry.configure_agent_forwarding(&cli.socket)?;
         if !cli.argv.is_empty() {
             let isolated_environment = cli.home.is_some();
             let home = cli

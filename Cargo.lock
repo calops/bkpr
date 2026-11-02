@@ -183,6 +183,7 @@ dependencies = [
  "fs2",
  "ignore",
  "libc",
+ "mio",
  "notify",
  "portable-pty",
  "serde",

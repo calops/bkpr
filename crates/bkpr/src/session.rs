@@ -62,11 +62,12 @@ impl Roots {
         validate_name(name)?;
         let hash = name_hash(name);
         let socket = self.runtime.join(&hash).join("s");
-        // Leave room for the trailing NUL in sockaddr_un.sun_path on Linux/macOS.
+        // Both control and its `.agent` companion need a trailing NUL in
+        // sockaddr_un.sun_path on Linux/macOS.
         use std::os::unix::ffi::OsStrExt;
         ensure!(
-            socket.as_os_str().as_bytes().len() < 104,
-            "session socket path is too long; select a shorter XDG_RUNTIME_DIR"
+            socket.as_os_str().as_bytes().len() + ".agent".len() < 104,
+            "session control/agent socket paths are too long; select a shorter XDG_RUNTIME_DIR"
         );
         Ok(LocalPaths {
             socket,
@@ -715,6 +716,17 @@ mod tests {
             .unwrap();
             stream.write_all(b"\n").unwrap();
         })
+    }
+
+    #[test]
+    fn named_paths_reserve_portable_space_for_the_agent_companion() {
+        for (runtime_bytes, accepted) in [(30, true), (31, false)] {
+            let roots = Roots {
+                runtime: PathBuf::from(format!("/{}", "r".repeat(runtime_bytes - 1))),
+                state: PathBuf::from("/unused"),
+            };
+            assert_eq!(roots.named("agent-budget").is_ok(), accepted);
+        }
     }
 
     #[test]

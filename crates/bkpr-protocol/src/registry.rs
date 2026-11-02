@@ -30,9 +30,12 @@ pub enum Operation {
         authority: crate::ClientAuthority,
         request: Box<Operation>,
     },
-    /// One-shot readiness; repeated activation never repeats takeover.
+    /// One-shot readiness and source publication; repeated activation changes neither.
     ClientActivate {
         detach_others: bool,
+        /// Launch-local source; explicit absence disables forwarding for this attachment.
+        #[serde(with = "crate::path_wire::optional")]
+        agent_socket: Option<PathBuf>,
     },
     ClientDetach,
     Inspect,
@@ -131,7 +134,7 @@ impl std::fmt::Debug for Operation {
             match value {
                 serde_json::Value::Object(fields) => {
                     for (key, value) in fields {
-                        if key == "token" {
+                        if key == "token" || key == "agent_socket" {
                             *value = serde_json::Value::String("[REDACTED]".into());
                         } else {
                             redact(value);

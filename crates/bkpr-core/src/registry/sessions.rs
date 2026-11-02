@@ -75,6 +75,8 @@ pub(crate) struct ClientLease {
     activated: AtomicBool,
     detached: AtomicBool,
     handshake: Mutex<(bool, Option<String>)>,
+    agent_socket: std::sync::OnceLock<Option<PathBuf>>,
+    activation_order: std::sync::atomic::AtomicU64,
 }
 impl ClientLease {
     pub(crate) fn ensure_active(&self) -> Result<()> {
@@ -126,6 +128,92 @@ impl ClientLease {
 }
 
 impl Registry {
+    /// Install the daemon-owned forwarding endpoint before any terminal starts.
+    pub fn configure_agent_forwarding(&self, control_socket: &Path) -> Result<()> {
+        {
+            let state = self.inner.state.lock().unwrap();
+            ensure!(
+                state.live.is_empty() && state.spawning == 0 && !state.closing,
+                "configure forwarding before first pane"
+            );
+        }
+        let mut path = control_socket.as_os_str().to_owned();
+        path.push(".agent");
+        ensure!(
+            path.as_os_str().as_encoded_bytes().len() < 104,
+            "control path leaves insufficient room for its SSH-agent socket; select a shorter --socket path"
+        );
+        let relay = Arc::new(crate::ssh_agent::Relay::bind(Path::new(&path))?);
+        let _transaction = self.inner.transaction.lock().unwrap();
+        let state = self.inner.state.lock().unwrap();
+        ensure!(
+            state.live.is_empty() && state.spawning == 0 && !state.closing,
+            "pane started during forwarding configuration"
+        );
+        drop(state);
+        let clients = self.inner.clients.lock().unwrap();
+        ensure!(
+            clients.is_empty(),
+            "configure forwarding before client registration"
+        );
+        let mut configured = self.inner.ssh_agent.lock().unwrap();
+        ensure!(configured.is_none(), "agent forwarding already configured");
+        *configured = Some(relay);
+        Ok(())
+    }
+
+    fn agent_route_locked(
+        &self,
+        clients: &BTreeMap<String, Arc<ClientLease>>,
+    ) -> Option<(u64, Option<crate::ssh_agent::Source>)> {
+        let selected = clients
+            .values()
+            .filter(|client| {
+                client.is_active()
+                    && client.owner.is_alive()
+                    && crate::transport::lifetime_connected(&client.lifetime)
+            })
+            .max_by_key(|client| client.activation_order.load(Ordering::Acquire));
+        let identity = selected.map(|client| &client.id);
+        let mut previous = self.inner.ssh_agent_selected.lock().unwrap();
+        if previous.as_ref() == identity {
+            return None;
+        }
+        *previous = identity.cloned();
+        let sequence = self
+            .inner
+            .ssh_agent_sequence
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        let source = selected.and_then(|client| {
+            let path = client.agent_socket.get()?.as_ref()?.clone();
+            let client = client.clone();
+            Some(crate::ssh_agent::Source {
+                path,
+                live: Arc::new(move || {
+                    client.is_active()
+                        && client.owner.is_alive()
+                        && crate::transport::lifetime_connected(&client.lifetime)
+                }),
+            })
+        });
+        Some((sequence, source))
+    }
+
+    fn publish_agent_route(
+        &self,
+        route: Option<(u64, Option<crate::ssh_agent::Source>)>,
+    ) -> Result<()> {
+        let Some((sequence, source)) = route else {
+            return Ok(());
+        };
+        let relay = self.inner.ssh_agent.lock().unwrap().clone();
+        if let Some(relay) = relay {
+            relay.select(sequence, source)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn register_client(
         &self,
         stream: &UnixStream,
@@ -147,6 +235,8 @@ impl Registry {
             activated: AtomicBool::new(false),
             detached: AtomicBool::new(false),
             handshake: Mutex::new((false, None)),
+            agent_socket: std::sync::OnceLock::new(),
+            activation_order: std::sync::atomic::AtomicU64::new(0),
         });
         let mut clients = self.inner.clients.lock().unwrap();
         ensure!(
@@ -178,9 +268,10 @@ impl Registry {
             client.clone()
         };
         match operation {
-            Operation::ClientActivate { detach_others } => {
-                self.activate_client(&client, detach_others)
-            }
+            Operation::ClientActivate {
+                detach_others,
+                agent_socket,
+            } => self.activate_client(&client, detach_others, agent_socket),
             Operation::ClientDetach => {
                 self.detach_client(&client, "detached");
                 Ok(json!({"detached":true}))
@@ -197,8 +288,19 @@ impl Registry {
             operation => self.request_for_client(Request::new(operation), Some(client)),
         }
     }
-    fn activate_client(&self, client: &Arc<ClientLease>, detach_others: bool) -> Result<Value> {
-        let retired = {
+    fn activate_client(
+        &self,
+        client: &Arc<ClientLease>,
+        detach_others: bool,
+        agent_socket: Option<PathBuf>,
+    ) -> Result<Value> {
+        if let Some(path) = &agent_socket {
+            ensure!(
+                path.is_absolute(),
+                "agent socket must be an absolute native path"
+            );
+        }
+        let (retired, route) = {
             let mut clients = self.inner.clients.lock().unwrap();
             ensure!(
                 !self.inner.state.lock().unwrap().closing && !self.session_end_requested(),
@@ -219,8 +321,19 @@ impl Registry {
             if client.activated.swap(true, Ordering::AcqRel) {
                 return Ok(json!({"activated":true,"already_active":true}));
             }
+            client
+                .agent_socket
+                .set(agent_socket)
+                .map_err(|_| anyhow::anyhow!("agent source already published"))?;
+            client.activation_order.store(
+                self.inner
+                    .ssh_agent_sequence
+                    .load(Ordering::Acquire)
+                    .saturating_add(1),
+                Ordering::Release,
+            );
             client.active.store(true, Ordering::Release);
-            if detach_others {
+            let retired = if detach_others {
                 let retired = clients
                     .values()
                     .filter(|other| !Arc::ptr_eq(other, client))
@@ -233,15 +346,20 @@ impl Registry {
                 retired
             } else {
                 Vec::new()
-            }
+            };
+            let route = self.agent_route_locked(&clients);
+            (retired, route)
         };
+        let forwarding = self.publish_agent_route(route);
         for other in retired {
             self.finish_client_detach(&other, "takeover");
         }
+        forwarding
+            .context("client activated but agent routing failed; do not replay activation")?;
         Ok(json!({"activated":true,"already_active":false}))
     }
     pub(crate) fn detach_client(&self, client: &Arc<ClientLease>, reason: &str) {
-        let removed = {
+        let (removed, route) = {
             let mut clients = self.inner.clients.lock().unwrap();
             if !clients
                 .get(&client.id)
@@ -250,20 +368,26 @@ impl Registry {
                 return;
             }
             client.invalidate();
-            clients.remove(&client.id)
+            let removed = clients.remove(&client.id);
+            let route = self.agent_route_locked(&clients);
+            (removed, route)
         };
+        let _ = self.publish_agent_route(route);
         if removed.is_some() {
             self.finish_client_detach(client, reason);
         }
     }
     pub(super) fn detach_all_clients(&self, reason: &str) {
-        let clients = {
+        let (clients, route) = {
             let mut clients = self.inner.clients.lock().unwrap();
             for client in clients.values() {
                 client.invalidate();
             }
-            std::mem::take(&mut *clients)
+            let retired = std::mem::take(&mut *clients);
+            let route = self.agent_route_locked(&clients);
+            (retired, route)
         };
+        let _ = self.publish_agent_route(route);
         for client in clients.values() {
             self.finish_client_detach(client, reason);
         }

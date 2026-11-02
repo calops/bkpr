@@ -66,8 +66,59 @@ mod tests {
             authority,
             request: Box::new(crate::Operation::ClientActivate {
                 detach_others: true,
+                agent_socket: Some("/private/source-agent.sock".into()),
             }),
         });
         assert!(!format!("{request:?}").contains("secret-token"));
+        assert!(!format!("{request:?}").contains("/private/source-agent.sock"));
+    }
+
+    #[test]
+    fn activation_preserves_explicit_absence_without_an_ambient_default() {
+        let request = crate::Request::new(crate::Operation::ClientActivate {
+            detach_others: false,
+            agent_socket: None,
+        });
+        let value = serde_json::to_value(request).unwrap();
+        assert!(value["agent_socket"].is_null());
+        let decoded: crate::Request = serde_json::from_value(value).unwrap();
+        assert!(matches!(
+            decoded.operation,
+            crate::Operation::ClientActivate {
+                agent_socket: None,
+                ..
+            }
+        ));
+        assert!(
+            serde_json::from_value::<crate::Request>(serde_json::json!({
+                "version": crate::PROTOCOL_VERSION,
+                "op": "client_activate",
+                "detach_others": false,
+            }))
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn activation_source_preserves_raw_unix_bytes_and_stays_out_of_debug() {
+        use std::os::unix::ffi::OsStringExt;
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(
+            b"/private/source-\xff.sock".to_vec(),
+        ));
+        let request = crate::Request::new(crate::Operation::ClientActivate {
+            detach_others: false,
+            agent_socket: Some(path.clone()),
+        });
+        let value = serde_json::to_value(&request).unwrap();
+        assert!(value["agent_socket"]["unix_bytes"].is_array());
+        let decoded: crate::Request = serde_json::from_value(value).unwrap();
+        let crate::Operation::ClientActivate { agent_socket, .. } = decoded.operation else {
+            panic!("expected activation");
+        };
+        assert_eq!(agent_socket, Some(path));
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("source-"));
+        assert!(!debug.contains("unix_bytes"));
     }
 }
