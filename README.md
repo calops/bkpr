@@ -40,8 +40,10 @@ just build
 ```
 
 There is only the default devshell. No separate sibling-runtime shell or build
-is needed. `just build` prepares the engine and builds both executables with
-`cargo build --locked --workspace`. `just run --help` builds and runs `bkpr`.
+is needed. `just build` validates and reuses the prepared engine, preparing it
+only when missing or invalid, then builds both executables with
+`cargo build --locked --workspace`. `just run --help` builds and runs `bkpr`;
+`just test` uses the same validated engine reuse.
 All recipes respect an explicit `CARGO_TARGET_DIR`; use this worktree's local
 `target/`, not the main checkout's cache.
 

@@ -10,7 +10,9 @@ build:
     set -euo pipefail
     export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
     mkdir -p "$CARGO_TARGET_DIR"
-    bash scripts/prepare-ghostty-vt.sh
+    if ! bash scripts/prepare-ghostty-vt.sh --reuse >/dev/null 2>&1; then
+        bash scripts/prepare-ghostty-vt.sh
+    fi
     export BKPR_GHOSTTY_VT_DIR="$(bash scripts/prepare-ghostty-vt.sh --print-prefix)"
     export GHOSTTY_INSTALL_DIR="$BKPR_GHOSTTY_VT_DIR"
     cargo build --locked --workspace
@@ -27,7 +29,9 @@ test:
     set -euo pipefail
     export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
     mkdir -p "$CARGO_TARGET_DIR"
-    bash scripts/prepare-ghostty-vt.sh
+    if ! bash scripts/prepare-ghostty-vt.sh --reuse >/dev/null 2>&1; then
+        bash scripts/prepare-ghostty-vt.sh
+    fi
     export BKPR_GHOSTTY_VT_DIR="$(bash scripts/prepare-ghostty-vt.sh --print-prefix)"
     export GHOSTTY_INSTALL_DIR="$BKPR_GHOSTTY_VT_DIR"
     cargo test --locked --workspace
