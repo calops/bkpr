@@ -300,12 +300,8 @@ fn managed(
         .tempdir_in("/tmp")?;
     fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700))?;
     let relay = agent::Relay::start(capture, runtime.path())?;
-    // A fresh backend launch namespace preserves every configured MCP server, including
-    // an existing `bkpr` entry. This is an ephemeral CLI override, never a settings write.
-    let server_name = format!("bkpr_{}", capture.grant.launch_id.replace('-', ""));
     let mcp = format!(
-        "mcp_servers.{}={{command={},args=[\"capture\",\"mcp\",\"--harness\",\"codex\"],env_vars=[\"BKPR_AGENT_RELAY_SOCKET\",\"BKPR_AGENT_RELAY_TOKEN\"],enabled=true}}",
-        server_name,
+        "mcp_servers.bkpr={{command={},args=[\"capture\",\"mcp\",\"--harness\",\"codex\"],env_vars=[\"BKPR_AGENT_RELAY_SOCKET\",\"BKPR_AGENT_RELAY_TOKEN\"],enabled=true}}",
         serde_json::to_string(
             capture
                 .program

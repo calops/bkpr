@@ -260,14 +260,12 @@ pub(super) fn launch(executable: PathBuf, mut arguments: Vec<OsString>) -> Resul
     let inbox = tempfile::Builder::new().prefix("bkpr-claude-").tempdir()?;
     std::fs::set_permissions(inbox.path(), std::fs::Permissions::from_mode(0o700))?;
     let capture = Capture::begin(HarnessKind::Claude)?;
-    // A launch-unique namespace cannot replace a user's configured `bkpr` server.
-    let server_name = format!("bkpr_{}", capture.grant.launch_id.replace('-', ""));
     let insertion = arguments
         .iter()
         .position(|argument| argument == "--")
         .unwrap_or(arguments.len());
     let server = serde_json::to_string(
-        &json!({"mcpServers":{(server_name.clone()):{"type":"stdio","command":program,"args":["capture","mcp","--harness","claude"]}}}),
+        &json!({"mcpServers":{"bkpr":{"type":"stdio","command":program,"args":["capture","mcp","--harness","claude"]}}}),
     )?;
     arguments.splice(
         insertion..insertion,
