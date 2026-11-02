@@ -121,6 +121,7 @@ fn spawn_shell(registry: &Registry, home: &Path, argv: Vec<String>) -> String {
         registry,
         Operation::PaneSpawn {
             workspace_id: None,
+            window_id: None,
             expected_revision: None,
             spec: launch,
         },

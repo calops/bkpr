@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
-use bkpr_tui_framework::{TextInput, UiSurface};
+use bkpr_tui_framework::{Role, RoleSpan, TextInput, Theme, UiSurface};
 
 /// Execution membership, not a guess from another workspace's projected layout.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +36,7 @@ pub enum FinderIntent {
 enum Field {
     Text,
     Workspace,
+    Window,
     Harness,
     Status,
     Cwd,
@@ -47,6 +48,7 @@ impl Field {
         [
             ("workspace", Self::Workspace),
             ("harness", Self::Harness),
+            ("window", Self::Window),
             ("status", Self::Status),
             ("cwd", Self::Cwd),
             ("project", Self::Project),
@@ -59,6 +61,7 @@ impl Field {
         match self {
             Self::Text => "pane",
             Self::Workspace => "workspace",
+            Self::Window => "window",
             Self::Harness => "harness",
             Self::Status => "status",
             Self::Cwd => "cwd",
@@ -319,6 +322,14 @@ impl Finder {
             }) {
                 document.add(Field::Workspace, &workspace.name);
                 document.add(Field::Workspace, &workspace.id);
+                if let Some(window) = workspace
+                    .windows
+                    .iter()
+                    .find(|window| Some(&window.id) == pane.window_id.as_ref())
+                {
+                    document.add(Field::Window, &window.name);
+                    document.add(Field::Window, &window.id);
+                }
             }
             document.add(
                 Field::Status,
@@ -733,8 +744,7 @@ impl Finder {
                 .enumerate()
             {
                 let document = &self.documents[result.document];
-                let selected = self.scroll + visible == self.selected
-                    || self.hovered.as_ref() == Some(&document.target.pane_id);
+                let selected = self.scroll + visible == self.selected;
                 let y = visible as u16 * 2;
                 let title = &document.values[0];
                 self.positions.clear();
@@ -845,12 +855,25 @@ impl Finder {
                 shape: CursorShape::Bar,
                 color: None,
             });
-        surface.paint(size, lines, cursor);
-        for row in &mut surface.frame.rows {
-            for cell in &mut row.cells {
+        // Only fuzzy-result emphasis is ours to clear. Titles and preview
+        // headings belong to the retained theme and may not repaint this frame.
+        for row in surface
+            .frame
+            .rows
+            .iter_mut()
+            .skip(usize::from(layout.list.y))
+            .take(usize::from(layout.list.height))
+        {
+            for cell in row
+                .cells
+                .iter_mut()
+                .skip(usize::from(layout.list.x))
+                .take(usize::from(layout.list.width))
+            {
                 cell.style.bold = false;
             }
         }
+        surface.paint(size, lines, cursor);
         for (y, columns) in highlights {
             if let Some(row) = surface.frame.rows.get_mut(y as usize) {
                 for column in columns {
@@ -860,6 +883,85 @@ impl Finder {
                 }
             }
         }
+    }
+
+    pub(crate) fn apply_theme(&self, surface: &mut UiSurface, theme: &Theme) {
+        let size = surface.frame.size;
+        let layout = FinderLayout::new(size, self.compact);
+        let full = Rect {
+            x: 0,
+            y: 0,
+            width: size.cols,
+            height: 1,
+        };
+        let mut spans = vec![
+            RoleSpan {
+                rect: full,
+                role: if self.input.error().is_some() {
+                    Role::Error
+                } else {
+                    Role::Title
+                },
+            },
+            RoleSpan {
+                rect: Rect { y: 1, ..full },
+                role: Role::Accent,
+            },
+            RoleSpan {
+                rect: Rect { y: 2, ..full },
+                role: Role::Muted,
+            },
+            RoleSpan {
+                rect: Rect {
+                    y: size.rows.saturating_sub(1),
+                    ..full
+                },
+                role: Role::Muted,
+            },
+        ];
+        for (visible, result) in self
+            .results
+            .iter()
+            .skip(self.scroll)
+            .take(layout.count())
+            .enumerate()
+        {
+            let y = layout.list.y + visible as u16 * 2;
+            let hovered =
+                self.hovered.as_ref() == Some(&self.documents[result.document].target.pane_id);
+            spans.push(RoleSpan {
+                rect: Rect {
+                    y,
+                    height: 1,
+                    ..layout.list
+                },
+                role: if hovered { Role::Hover } else { Role::Panel },
+            });
+            if y + 1 < layout.list.y + layout.list.height {
+                spans.push(RoleSpan {
+                    rect: Rect {
+                        y: y + 1,
+                        height: 1,
+                        ..layout.list
+                    },
+                    role: if hovered { Role::Hover } else { Role::Muted },
+                });
+            }
+        }
+        if layout.preview.width > 0 && layout.preview.height > 0 {
+            spans.push(RoleSpan {
+                rect: layout.preview,
+                role: Role::Muted,
+            });
+            spans.push(RoleSpan {
+                rect: Rect {
+                    height: 1,
+                    ..layout.preview
+                },
+                role: Role::Title,
+            });
+        }
+        surface.apply_theme(theme, Role::Panel, &spans);
     }
 }
 
@@ -958,11 +1060,12 @@ fn excerpt(value: &Value, positions: &[u32], width: usize) -> (String, Vec<usize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bkpr_protocol::{PaneInfo, Workspace};
+    use bkpr_protocol::{PaneInfo, Window, Workspace};
     fn registry() -> RegistrySnapshot {
         let pane = |id: &str, title: &str| PaneInfo {
             id: id.into(),
             workspace_id: Some("w".into()),
+            window_id: Some(if id == "b" { "builder" } else { "shell" }.into()),
             title: title.into(),
             status: PaneStatus::Running,
             exit_code: None,
@@ -980,7 +1083,15 @@ mod tests {
                 id: "w".into(),
                 name: "Main Work".into(),
                 revision: 1,
-                layout: None,
+                windows: ["builder", "shell"]
+                    .into_iter()
+                    .map(|id| Window {
+                        id: id.into(),
+                        name: id.into(),
+                        revision: 1,
+                        layout: None,
+                    })
+                    .collect(),
             }],
             panes: vec![pane("b", "builder"), pane("a", "build")],
         }
@@ -1000,6 +1111,52 @@ mod tests {
             rows: 12,
             cell_width: 0,
             cell_height: 0,
+        }
+    }
+
+    #[test]
+    fn palette_changes_retheme_unchanged_finder_without_losing_match_or_focus() {
+        let mut finder = Finder::new(&registry(), Some("b"), |_| None);
+        finder.set_query("build");
+        let size = size();
+        let layout = FinderLayout::new(size, finder.compact);
+        let mut surface = UiSurface::new(size);
+        let mut theme = Theme::default();
+        finder.paint(&mut surface, size);
+        finder.apply_theme(&mut surface, &theme);
+        let cursor = surface.frame.cursor.clone();
+        let selected = finder.selected_target().cloned();
+        let y = usize::from(layout.list.y);
+        let x = usize::from(layout.list.x);
+        assert!(surface.frame.rows[y].cells[x].style.bold);
+        surface.frame.rows[y].cells[x].style.underline = 1;
+        let mut host = bkpr_tui_framework::ColorProbe {
+            truecolor: true,
+            ..bkpr_tui_framework::ColorProbe::default()
+        };
+        for (foreground, background) in [
+            ([30, 40, 50], [240, 245, 250]),
+            ([220, 230, 240], [20, 30, 40]),
+        ] {
+            host.foreground = Some(foreground);
+            host.background = Some(background);
+            assert!(theme.update(&host));
+            let previous = surface.frame.rows[y].cells[x].style.background_source;
+            finder.paint(&mut surface, size);
+            finder.apply_theme(&mut surface, &theme);
+            let matched = &surface.frame.rows[y].cells[x];
+            assert!(matched.style.bold);
+            assert_eq!(matched.style.underline, 1);
+            assert_ne!(matched.style.background_source, previous);
+            assert!(surface.frame.rows[0].cells[0].style.bold);
+            assert_eq!(surface.frame.cursor, cursor);
+            assert_eq!(finder.selected_target(), selected.as_ref());
+            // A second unchanged render must retain themed title attributes,
+            // even though fuzzy-match emphasis is cleared and rebuilt.
+            finder.paint(&mut surface, size);
+            finder.apply_theme(&mut surface, &theme);
+            assert!(surface.frame.rows[0].cells[0].style.bold);
+            assert!(surface.frame.rows[y].cells[x].style.bold);
         }
     }
     #[test]
@@ -1040,6 +1197,25 @@ mod tests {
         finder.navigate(isize::MAX, size());
         assert_eq!(finder.selected, 0);
         assert_eq!(finder.scroll, 0);
+    }
+    #[test]
+    fn window_queries_keep_exact_pane_owner_across_same_workspace_windows() {
+        let mut registry = registry();
+        let mut finder = Finder::new(&registry, None, |_| None);
+        finder.set_query("window:builder");
+        assert_eq!(finder.results.len(), 1);
+        let target = finder.selected_target().unwrap().clone();
+        assert_eq!(target.workspace_id.as_deref(), Some("w"));
+        assert_eq!(target.pane_id, "b");
+        registry.workspaces[0].windows.reverse();
+        registry.panes.reverse();
+        registry.revision += 1;
+        finder.update_registry(&registry, |_| None);
+        assert_eq!(finder.selected_target(), Some(&target));
+        assert_eq!(
+            finder.handle_key(&key("Enter"), size()),
+            FinderIntent::Activate(target)
+        );
     }
     #[test]
     fn unicode_editing_erases_graphemes_and_bounds_pastes() {

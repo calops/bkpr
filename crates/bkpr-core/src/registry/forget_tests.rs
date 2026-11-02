@@ -5,7 +5,7 @@ fn forget_requires_retirement_no_layout_references_and_never_touches_running_pan
     let fixture = Fixture::new();
     let registry = &fixture.registry;
     let a = create(registry, "owner");
-    let b = create(registry, "projection");
+    create(registry, "administrative document");
     let one = spawn(registry, &fixture.home("retired"), Some(a.clone()), Some(1));
     let parallel = spawn(registry, &fixture.home("parallel"), None, None);
     let parallel_pid = snapshot(registry, &parallel)["pid"].clone();
@@ -33,49 +33,6 @@ fn forget_requires_retirement_no_layout_references_and_never_touches_running_pan
         .get(&one)
         .unwrap()
         .clone();
-    send(
-        registry,
-        Operation::LayoutUpdate {
-            workspace_id: b.clone(),
-            expected_revision: 1,
-            layout: Some(LayoutNode::Leaf {
-                pane_id: one.clone(),
-            }),
-        },
-    );
-    assert!(
-        registry
-            .request(Request::new(Operation::PaneForget {
-                pane_id: one.clone()
-            }))
-            .unwrap_err()
-            .to_string()
-            .contains("referenced")
-    );
-    send(
-        registry,
-        Operation::WorkspaceRemove {
-            workspace_id: a,
-            expected_revision: 3,
-        },
-    );
-    assert!(
-        registry
-            .request(Request::new(Operation::PaneForget {
-                pane_id: one.clone()
-            }))
-            .unwrap_err()
-            .to_string()
-            .contains(&b)
-    );
-    send(
-        registry,
-        Operation::LayoutUpdate {
-            workspace_id: b,
-            expected_revision: 2,
-            layout: None,
-        },
-    );
     let forgotten = send(
         registry,
         Operation::PaneForget {
@@ -157,6 +114,7 @@ fn explicit_forget_releases_record_capacity_without_automatic_pruning() {
                 r.panes.push(PaneInfo {
                     id: id.clone(),
                     workspace_id: None,
+                    window_id: None,
                     title: "retired".into(),
                     status: PaneStatus::Stopped,
                     exit_code: None,
@@ -177,6 +135,7 @@ fn explicit_forget_releases_record_capacity_without_automatic_pruning() {
         registry
             .request(Request::new(Operation::PaneSpawn {
                 workspace_id: None,
+                window_id: None,
                 expected_revision: None,
                 spec: spec(&home)
             }))

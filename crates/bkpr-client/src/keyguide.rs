@@ -5,7 +5,7 @@
 //! not import Zellij modes, actions, SDK keymaps or terminal-output rendering.
 
 use bkpr_protocol::{KeyAction, KeyEvent};
-use bkpr_tui_framework::EditAction;
+use bkpr_tui_framework::{EditAction, Rect, Role, RoleSpan};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,8 +151,9 @@ pub enum Action {
     RenameWorkspace,
     RenamePane,
     TerminatePane,
-    RemoveWorkspace,
+    CloseWorkspace,
     ChooseWorkspace,
+    ChooseWindow,
     ChoosePane,
     ReopenPane,
     SplitHorizontal,
@@ -236,8 +237,9 @@ impl Action {
             Self::RenameWorkspace => "rename workspace",
             Self::RenamePane => "rename pane",
             Self::TerminatePane => "terminate pane",
-            Self::RemoveWorkspace => "remove workspace",
+            Self::CloseWorkspace => "close workspace",
             Self::ChooseWorkspace => "choose workspace",
+            Self::ChooseWindow => "choose window",
             Self::ChoosePane => "choose pane",
             Self::ReopenPane => "reopen shell",
             Self::SplitHorizontal => "split side by side",
@@ -468,11 +470,13 @@ static BINDINGS: &[Binding] = &[
     text(PREFIX, "y", A::CopySelection, 13),
     text(PREFIX, "i", A::ProjectDetails, 30),
     text(PREFIX, "c", A::CreateWorkspace, 20),
+    text(PREFIX, "N", A::CreateTerminal, 19),
     text(PREFIX, "r", A::RenameWorkspace, 23),
     text(PREFIX, "p", A::RenamePane, 24),
     text(PREFIX, "!", A::TerminatePane, 40),
-    text(PREFIX, "X", A::RemoveWorkspace, 41),
+    text(PREFIX, "X", A::CloseWorkspace, 41),
     text(PREFIX, "w", A::ChooseWorkspace, 14),
+    text(PREFIX, "W", A::ChooseWindow, 15),
     text(PREFIX, "o", A::ChoosePane, 15),
     text(PREFIX, "R", A::ReopenPane, 42),
     text(PREFIX, "n", A::SplitHorizontal, 21),
@@ -911,11 +915,8 @@ static BINDINGS: &[Binding] = &[
     ),
 ];
 
-/// Until the caller confirms product support, do not advertise creation of a
-/// separate terminal or closing an unspecified sidebar entity. Pane-only close
-/// and workspace cascade-close have different backend requirements.
-fn supported_by_default(action: Action) -> bool {
-    !matches!(action, Action::CreateTerminal | Action::CloseSelected)
+fn supported_by_default(_action: Action) -> bool {
+    true
 }
 
 /// Use the same capability predicate for dispatch and hints. It can inspect
@@ -1084,6 +1085,49 @@ pub fn expanded_with(
     rows
 }
 
+/// Keep keycap ink attached to the same executable bindings as the guide text.
+/// Called only when the retained guide content changes, not while repainting.
+pub(crate) fn roles_with(
+    context: Context,
+    footer: &str,
+    expanded: &[String],
+    supported: impl Fn(Action) -> bool,
+) -> (Vec<RoleSpan>, Vec<RoleSpan>) {
+    let hints = hints_with(context, supported);
+    let mut footer_roles = Vec::new();
+    for hint in &hints {
+        let label = format!("{} {}", hint.keys[0], hint.description);
+        if let Some(offset) = footer.find(&label) {
+            footer_roles.push(RoleSpan {
+                rect: Rect {
+                    x: width(&footer[..offset]) as u16,
+                    y: 0,
+                    width: width(hint.keys[0]) as u16,
+                    height: 1,
+                },
+                role: Role::Accent,
+            });
+        }
+    }
+    let mut expanded_roles = Vec::new();
+    for (y, (row, hint)) in expanded.iter().zip(&hints).enumerate() {
+        if let Some((keys, _)) = row.split_once("  ")
+            && (keys == hint.keys[0] || keys == hint.keys.join("/"))
+        {
+            expanded_roles.push(RoleSpan {
+                rect: Rect {
+                    x: 0,
+                    y: y as u16,
+                    width: width(keys) as u16,
+                    height: 1,
+                },
+                role: Role::Accent,
+            });
+        }
+    }
+    (footer_roles, expanded_roles)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1123,6 +1167,32 @@ mod tests {
             lookup(state.context(), &event("KeyN", "n", 0, KeyAction::Press)),
             Some(A::SplitHorizontal)
         );
+    }
+
+    #[test]
+    fn separate_window_creation_and_selector_are_discoverable_without_global_key_hijacks() {
+        let create = event("KeyN", "N", SHIFT, KeyAction::Press);
+        let choose = event("KeyW", "W", SHIFT, KeyAction::Press);
+        assert_eq!(
+            lookup(Context::CommandPrefix, &create),
+            Some(A::CreateTerminal)
+        );
+        assert_eq!(
+            lookup(Context::CommandPrefix, &choose),
+            Some(A::ChooseWindow)
+        );
+        assert_eq!(
+            lookup(
+                Context::CommandPrefix,
+                &event("KeyW", "w", 0, KeyAction::Press)
+            ),
+            Some(A::ChooseWorkspace)
+        );
+        assert_eq!(lookup(Context::Application, &create), None);
+        assert_eq!(lookup(Context::Application, &choose), None);
+        let hints = hints(Context::CommandPrefix);
+        assert!(hints.iter().any(|hint| hint.action == A::CreateTerminal));
+        assert!(hints.iter().any(|hint| hint.action == A::ChooseWindow));
     }
 
     #[test]
@@ -1329,11 +1399,11 @@ mod tests {
     fn backend_capabilities_gate_dispatch_and_advertising_together() {
         let context = Context::Sidebar { selected: true };
         let key = event("KeyN", "N", SHIFT, KeyAction::Press);
-        assert_eq!(lookup(context, &key), None);
+        assert_eq!(lookup(context, &key), Some(A::CreateTerminal));
         assert!(
-            !hints(context)
+            hints(context)
                 .iter()
-                .any(|hint| matches!(hint.action, A::CreateTerminal | A::CloseSelected))
+                .any(|hint| hint.action == A::CreateTerminal)
         );
         let supported = |action| action != A::CreateTerminal;
         assert_eq!(lookup_with(context, &key, supported), None);

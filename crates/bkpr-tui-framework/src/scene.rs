@@ -182,25 +182,6 @@ pub fn text(frame: &mut Frame, x: u16, y: u16, value: &str, selected: bool) {
         column += width;
     }
 }
-/// Apply confirmed physical defaults to trusted widget scenes only. Application
-/// scenes retain their engine's own default-color provenance and values.
-pub fn native_colors(frame: &mut Frame, host: &ColorProbe) {
-    let foreground = host.foreground.unwrap_or(frame.foreground);
-    let background = host.background.unwrap_or(frame.background);
-    if foreground == frame.foreground && background == frame.background {
-        return;
-    }
-    for cell in frame.rows.iter_mut().flat_map(|row| &mut row.cells) {
-        if cell.style.foreground_source == ColorSource::Default {
-            cell.style.foreground = foreground;
-        }
-        if cell.style.background_source == ColorSource::Default {
-            cell.style.background = background;
-        }
-    }
-    frame.foreground = foreground;
-    frame.background = background;
-}
 
 impl TerminalGuard {
     pub fn enter() -> Result<Self> {
@@ -212,15 +193,14 @@ impl TerminalGuard {
             kitty_keyboard: false,
             clipboard_mode: None,
             requested_clipboard_mode: None,
+            theme_mode: None,
         };
         let mut out = std::io::stdout();
         write!(
             out,
-            "\x1b[?1049h\x1b[?2004h\x1b[?1004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1bP+q5463\x1b\\\x1bP+q524742\x1b\\\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[?u\x1b[?5522$p"
+            "\x1b[?1049h\x1b[?2004h\x1b[?1004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1bP+q5463\x1b\\\x1bP+q524742\x1b\\\x1b[?u\x1b[?5522$p\x1b[?2031$p"
         )?;
-        for index in 0..256 {
-            write!(out, "\x1b]4;{index};?\x1b\\")?;
-        }
+        out.write_all(&ColorProbe::query())?;
         out.flush()?;
         Ok(guard)
     }
@@ -383,7 +363,7 @@ pub fn clear(frame: &mut Frame, rect: Rect) {
         }
     }
 }
-fn effective_style(style: &Style, frame: &Frame) -> Style {
+fn effective_style(style: &Style, frame: &Frame, native_palette: &[bool; 16]) -> Style {
     let resolve = |source: ColorSource, default: [u8; 3], fallback: [u8; 3]| match source {
         ColorSource::Default => default,
         ColorSource::Palette(index) => frame
@@ -401,6 +381,19 @@ fn effective_style(style: &Style, frame: &Frame) -> Style {
         result.foreground,
         style.underline_color,
     );
+    // Resolve virtual pane palettes before mixing surfaces. Preserve native
+    // ANSI encoding when the host entry matches; only virtual mismatches need
+    // explicit RGB. Unresolved UI sources remain honest native ANSI indices.
+    let projected_source = |source| match source {
+        ColorSource::Palette(index) => match frame.palette.get(usize::from(index)) {
+            Some(rgb) if !native_palette.get(usize::from(index)).copied().unwrap_or(false) => ColorSource::Rgb(*rgb),
+            _ => source,
+        },
+        _ => source,
+    };
+    result.foreground_source = projected_source(style.foreground_source);
+    result.background_source = projected_source(style.background_source);
+    result.underline_source = projected_source(style.underline_source);
     result
 }
 fn copy_cell(destination: &mut Cell, source: &Cell, style: &Style) {
@@ -415,9 +408,12 @@ fn copy_cell(destination: &mut Cell, source: &Cell, style: &Style) {
         destination.hyperlink.clone_from(&source.hyperlink);
     }
 }
-fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect]) {
+fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect], host: &ColorProbe) {
+    // Prepare host/virtual palette equality once per surface, not per cell.
+    let native_palette = std::array::from_fn(|index|
+        surface.frame.palette.get(index).is_some_and(|rgb| host.palette.get(&index) == Some(rgb)));
     let blank = blank_cell();
-    let blank_style = effective_style(&blank.style, surface.frame);
+    let blank_style = effective_style(&blank.style, surface.frame, &native_palette);
     let r = surface.rect;
     for clip in visible {
         let left = clip.x - r.x;
@@ -448,7 +444,7 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect]) {
                 }
                 if end > left && x < right {
                     if x >= left && end <= right {
-                        let mut style = effective_style(&cell.style, surface.frame);
+                        let mut style = effective_style(&cell.style, surface.frame, &native_palette);
                         while search_index < search.len() && search[search_index].end <= x {
                             search_index += 1;
                         }
@@ -594,7 +590,7 @@ impl Renderer {
                 continue;
             }
             occlude(&mut prepared.placements, r, scene.size)?;
-            compose_cells(canvas, surface, &self.visible[index]);
+            compose_cells(canvas, surface, &self.visible[index], host);
             if surface.focused {
                 canvas.cursor.clone_from(&surface.frame.cursor);
                 canvas.cursor.visible &= canvas.cursor.x < r.width && canvas.cursor.y < r.height;
@@ -734,6 +730,7 @@ mod scene_tests {
             kitty_keyboard: false,
             clipboard_mode: None,
             requested_clipboard_mode: None,
+            theme_mode: None,
         })
     }
     #[test]
@@ -1051,6 +1048,45 @@ mod scene_tests {
     }
 
     #[test]
+    fn native_ui_ansi_and_virtual_pane_palettes_keep_distinct_output_semantics() {
+        let size = Size { cols: 2, rows: 1, cell_width: 8, cell_height: 16 };
+        let mut ui = crate::UiSurface::new(size);
+        ui.paint(size, vec![(Rect { x: 0, y: 0, width: 2, height: 1 }, "UI".into(), false)], None);
+        ui.apply_theme(&crate::Theme::default(), crate::Role::Error, &[]);
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        let scene = Scene { size, surfaces: vec![Surface {
+            id: "ui", rect: Rect { x: 0, y: 0, width: 2, height: 1 },
+            frame: &ui.frame, selection: &[], search: &[], focused: false,
+        }] };
+        let mut bytes = Vec::new();
+        renderer.render(&mut bytes, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(output.contains("\x1b[31m"));
+        assert!(!output.contains("38;2;") && !output.contains("38;5;"));
+
+        let mut pane = blank(size);
+        text(&mut pane, 0, 0, "AP", false);
+        pane.palette[1] = [210, 45, 60];
+        pane.rows[0].cells[0].style.foreground_source = ColorSource::Palette(1);
+        let canonical = pane.rows.clone();
+        let scene = Scene { size, surfaces: vec![Surface {
+            id: "app", rect: Rect { x: 0, y: 0, width: 2, height: 1 },
+            frame: &pane, selection: &[], search: &[], focused: false,
+        }] };
+        let mut host = ColorProbe { truecolor: true, ..ColorProbe::default() };
+        host.feed(b"4;1;rgb:d2/2d/3c");
+        let mut bytes = Vec::new();
+        renderer.render(&mut bytes, &scene, &host, &mut terminal).unwrap();
+        assert!(String::from_utf8(bytes).unwrap().contains("\x1b[31m"));
+        host.feed(b"4;1;rgb:10/20/30");
+        let mut bytes = Vec::new();
+        renderer.render(&mut bytes, &scene, &host, &mut terminal).unwrap();
+        assert!(String::from_utf8(bytes).unwrap().contains("38;2;210;45;60m"));
+        assert_eq!(pane.rows, canonical);
+    }
+
+    #[test]
     fn selection_overlay_preserves_canonical_wide_combining_styles_images_and_other_views() {
         let size = Size { cols: 12, rows: 2, cell_width: 8, cell_height: 16 };
         let local = Size { cols: 6, ..size };
@@ -1108,11 +1144,11 @@ mod scene_tests {
         assert_eq!(canvas.rows[0].cells[1].width, 0);
         assert_eq!(canvas.rows[0].cells[2].text, "e\u{301}");
         for column in [0, 2] {
-            let mut expected = effective_style(&source.rows[0].cells[column].style, &source);
+            let mut expected = effective_style(&source.rows[0].cells[column].style, &source, &[false; 16]);
             expected.inverse = !expected.inverse;
             assert_eq!(canvas.rows[0].cells[column].style, expected);
             assert_eq!(canvas.rows[0].cells[column + 6].style,
-                effective_style(&source.rows[0].cells[column].style, &source));
+                effective_style(&source.rows[0].cells[column].style, &source, &[false; 16]));
         }
         assert_eq!(canvas.rows[0].cells[0].style, canvas.rows[0].cells[1].style);
         assert_eq!(canvas.rows[0].cells[0].hyperlink, source.rows[0].cells[0].hyperlink);
@@ -1127,7 +1163,7 @@ mod scene_tests {
         scene.surfaces[0].selection = &[];
         renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
         assert_eq!(renderer.canvas.as_ref().unwrap().rows[0].cells[0].style,
-            effective_style(&source.rows[0].cells[0].style, &source));
+            effective_style(&source.rows[0].cells[0].style, &source, &[false; 16]));
         let matches = [
             SearchSpan { row: 0, start: 0, end: 4, selected: false },
             SearchSpan { row: 0, start: 1, end: 3, selected: true },
@@ -1137,21 +1173,21 @@ mod scene_tests {
         scene.surfaces[0].selection = &selection;
         renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
         let canvas = renderer.canvas.as_ref().unwrap();
-        let mut selected = effective_style(&source.rows[0].cells[0].style, &source);
+        let mut selected = effective_style(&source.rows[0].cells[0].style, &source, &[false; 16]);
         selected.inverse = !selected.inverse;
         assert_eq!(canvas.rows[0].cells[0].style, selected, "selection overrides both search styles");
         assert_eq!(canvas.rows[0].cells[1].style, selected, "wide glyph is annotated atomically");
-        let mut chosen = effective_style(&source.rows[0].cells[2].style, &source);
+        let mut chosen = effective_style(&source.rows[0].cells[2].style, &source, &[false; 16]);
         chosen.inverse = !chosen.inverse;
         chosen.bold = true;
         chosen.underline = chosen.underline.max(1);
         assert_eq!(canvas.rows[0].cells[2].style, chosen);
-        let mut ordinary = effective_style(&source.rows[0].cells[3].style, &source);
+        let mut ordinary = effective_style(&source.rows[0].cells[3].style, &source, &[false; 16]);
         ordinary.underline = ordinary.underline.max(1);
         assert_eq!(canvas.rows[0].cells[3].style, ordinary);
         assert_eq!(canvas.rows[0].cells[2].text, "e\u{301}");
         assert_eq!(canvas.rows[0].cells[2 + 6].style,
-            effective_style(&source.rows[0].cells[2].style, &source));
+            effective_style(&source.rows[0].cells[2].style, &source, &[false; 16]));
         assert_eq!(source.rows, canonical_rows);
         assert_eq!(source.rows[0].cells.as_ptr(), canonical_cells);
         assert_eq!(source.images[0].pixels.as_ptr(), pixels);

@@ -83,7 +83,8 @@ fn registry_watcher_receives_hidden_harness_status_without_admitting_any_views()
     let workspace = fixture
         .registry
         .request(Request::new(Operation::WorkspaceCreate {
-            name: "not attached".into(),
+            name: Some("not attached".into()),
+            initial: None,
         }))
         .unwrap()["workspace_id"]
         .as_str()
@@ -92,9 +93,10 @@ fn registry_watcher_receives_hidden_harness_status_without_admitting_any_views()
     let script = r#"while [ ! -f working ]; do sleep 0.01; done; printf '\033]7501;state=working:app=claude\007'; while [ ! -f blocked ]; do sleep 0.01; done; printf '\033]7501;state=blocked:app=claude:id=task\007'; while [ ! -f error ]; do sleep 0.01; done; printf '\033]7501;state=error:app=claude:id=task\007'; while [ ! -f done ]; do sleep 0.01; done; printf '\033]7501;state=clear\007\033]7501;state=done:app=claude:id=result\007'; while [ ! -f clear ]; do sleep 0.01; done; printf '\033]7501;state=clear\007'; exec sleep 60"#;
     let result = fixture
         .registry
-        .request(Request::new(Operation::PaneSpawn {
-            workspace_id: Some(workspace),
-            expected_revision: Some(1),
+        .request(Request::new(Operation::WindowCreate {
+            workspace_id: workspace,
+            expected_revision: 1,
+            name: None,
             spec: PaneSpawnSpec {
                 argv: vec![
                     fixture.home.join("native/claude").to_str().unwrap().into(),

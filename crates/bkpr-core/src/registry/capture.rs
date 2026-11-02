@@ -108,7 +108,7 @@ impl Registry {
                 });
                 let native = launch.managed.conversation.as_ref().map(|c| c.id.as_str());
                 Ok(
-                    json!({"launch_id":launch.grant.launch_id,"harness":launch.grant.kind.as_str(),"active":active,"session_id":native,"pane_id":pane.id,"workspace_id":pane.workspace_id,"workspace_name":workspace.map(|w| w.name.as_str()),"cwd":cwd.as_deref().map(bkpr_protocol::path_wire::WirePath)}),
+                    json!({"launch_id":launch.grant.launch_id,"harness":launch.grant.kind.as_str(),"active":active,"session_id":native,"pane_id":pane.id,"workspace_id":pane.workspace_id,"window_id":pane.window_id,"workspace_name":workspace.map(|w| w.name.as_str()),"cwd":cwd.as_deref().map(bkpr_protocol::path_wire::WirePath)}),
                 )
             }
             operation => self.request(Request::new(operation)),

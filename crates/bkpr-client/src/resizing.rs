@@ -12,6 +12,7 @@ enum Mode {
 struct Gesture {
     generation: u64,
     workspace: String,
+    window: String,
     pane: String,
     size: Size,
     revision: u64,
@@ -25,6 +26,7 @@ struct Gesture {
 struct Commit {
     generation: u64,
     workspace: String,
+    window: String,
     revision: u64,
     layout: LayoutNode,
 }
@@ -45,16 +47,26 @@ impl State {
         let Some(gesture) = &self.gesture else {
             return true;
         };
-        registry.workspaces.iter().any(|workspace| {
-            workspace.id == gesture.workspace
-                && (workspace.revision == gesture.revision
-                    && workspace.layout.as_ref() == Some(&gesture.acknowledged)
+        registry
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == gesture.workspace)
+            .and_then(|workspace| {
+                workspace
+                    .windows
+                    .iter()
+                    .find(|window| window.id == gesture.window)
+            })
+            .is_some_and(|window| {
+                window.revision == gesture.revision
+                    && window.layout.as_ref() == Some(&gesture.acknowledged)
                     || self.flight.as_ref().is_some_and(|flight| {
                         flight.generation == gesture.generation
-                            && flight.revision.checked_add(1) == Some(workspace.revision)
-                            && workspace.layout.as_ref() == Some(&flight.layout)
-                    }))
-        })
+                            && flight.window == window.id
+                            && flight.revision.checked_add(1) == Some(window.revision)
+                            && window.layout.as_ref() == Some(&flight.layout)
+                    })
+            })
     }
 
     fn acknowledge(&mut self) -> bool {
@@ -99,7 +111,7 @@ impl App<'_> {
 
     pub(super) fn observe_resize(&mut self, registry: &RegistrySnapshot) {
         if !self.resizing.observes(registry) {
-            self.retire_resize("workspace changed elsewhere");
+            self.retire_resize("window changed elsewhere");
         }
     }
 
@@ -114,9 +126,10 @@ impl App<'_> {
         } else if gesture.size != size {
             Some("terminal geometry changed")
         } else if self.state.workspace.as_ref() != Some(&gesture.workspace)
+            || self.state.window.as_ref() != Some(&gesture.window)
             || self.state.focused.as_ref() != Some(&gesture.pane)
         {
-            Some("pane or workspace focus changed")
+            Some("pane, window, or workspace focus changed")
         } else if self.state.form.is_some()
             || self
                 .consent
@@ -125,7 +138,7 @@ impl App<'_> {
         {
             Some("modal opened")
         } else if !self.resizing.observes(&self.registry) {
-            Some("workspace changed elsewhere")
+            Some("window changed elsewhere")
         } else {
             None
         };
@@ -151,17 +164,19 @@ impl App<'_> {
             bail!("Resize waiting for previous gesture to finish; no new gesture started");
         }
         let workspace = self.state.current(&self.registry).context("no workspace")?;
+        let window = self
+            .state
+            .current_window(&self.registry)
+            .context("no window")?;
         let pane = self.state.focused.as_ref().context("no focused pane")?;
-        if self
-            .jobs
-            .contains(&format!("manage:workspace:{}", workspace.id))
+        if self.jobs.contains(&format!("manage:window:{}", window.id))
+            || self
+                .jobs
+                .contains(&format!("manage:workspace:{}", workspace.id))
         {
-            bail!("Resize waiting for pending workspace management; no gesture started");
+            bail!("Resize waiting for pending window management; no gesture started");
         }
-        let layout = workspace
-            .layout
-            .as_ref()
-            .context("workspace has no layout")?;
+        let layout = window.layout.as_ref().context("window has no layout")?;
         let mut splits = Vec::new();
         tiling::dividers(Some(layout), screen_geometry(size).1, &mut splits);
         if splits.is_empty() {
@@ -171,9 +186,10 @@ impl App<'_> {
         self.resizing.gesture = Some(Gesture {
             generation: self.resizing.generation,
             workspace: workspace.id.clone(),
+            window: window.id.clone(),
             pane: pane.clone(),
             size,
-            revision: workspace.revision,
+            revision: window.revision,
             acknowledged: layout.clone(),
             desired: layout.clone(),
             mode,
@@ -289,8 +305,8 @@ impl App<'_> {
         let mut splits = Vec::new();
         tiling::dividers(
             self.state
-                .current(&self.registry)
-                .and_then(|workspace| workspace.layout.as_ref()),
+                .current_window(&self.registry)
+                .and_then(|window| window.layout.as_ref()),
             screen_geometry(size).1,
             &mut splits,
         );
@@ -357,19 +373,23 @@ impl App<'_> {
         let flight = Commit {
             generation: gesture.generation,
             workspace: gesture.workspace.clone(),
+            window: gesture.window.clone(),
             revision: gesture.revision,
             layout: gesture.desired.clone(),
         };
         let command = management::Command::Single(Operation::LayoutUpdate {
             workspace_id: flight.workspace.clone(),
+            window_id: flight.window.clone(),
             expected_revision: flight.revision,
             layout: Some(flight.layout.clone()),
         });
         let socket = self.socket.to_owned();
-        if let Err(error) = self.jobs.submit(
-            format!("manage:workspace:{}", flight.workspace),
-            move || management::execute(&socket, command).map(Background::Resize),
-        ) {
+        if let Err(error) = self
+            .jobs
+            .submit(format!("manage:window:{}", flight.window), move || {
+                management::execute(&socket, command).map(Background::Resize)
+            })
+        {
             self.retire_resize("layout update was not admitted");
             return Err(error);
         }
@@ -379,7 +399,7 @@ impl App<'_> {
 
     pub(super) fn owns_resize_job(&self, key: &str) -> bool {
         self.resizing.flight.as_ref().is_some_and(|flight| {
-            key.strip_prefix("manage:workspace:") == Some(flight.workspace.as_str())
+            key.strip_prefix("manage:window:") == Some(flight.window.as_str())
         })
     }
 
@@ -388,11 +408,22 @@ impl App<'_> {
             return;
         };
         let result = result.and_then(|result| {
-            if result.registry.workspaces.iter().any(|workspace| {
-                workspace.id == flight.workspace
-                    && flight.revision.checked_add(1) == Some(workspace.revision)
-                    && workspace.layout.as_ref() == Some(&flight.layout)
-            }) {
+            if result
+                .registry
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == flight.workspace)
+                .and_then(|workspace| {
+                    workspace
+                        .windows
+                        .iter()
+                        .find(|window| window.id == flight.window)
+                })
+                .is_some_and(|window| {
+                    flight.revision.checked_add(1) == Some(window.revision)
+                        && window.layout.as_ref() == Some(&flight.layout)
+                })
+            {
                 Ok(result)
             } else {
                 Err(transport::mark_outcome_unknown(anyhow::anyhow!(
@@ -425,7 +456,7 @@ impl App<'_> {
                     };
                     self.state.status = format!(
                         "Resize {outcome} in {}: {error:#}; not replayed; start a new gesture after inspecting layout",
-                        flight.workspace
+                        flight.window
                     );
                 }
             }
@@ -456,6 +487,7 @@ mod tests {
             gesture: Some(Gesture {
                 generation: 1,
                 workspace: "workspace".into(),
+                window: "window".into(),
                 pane: "a".into(),
                 size: Size {
                     cols: 100,
@@ -474,6 +506,7 @@ mod tests {
             flight: Some(Commit {
                 generation: 1,
                 workspace: "workspace".into(),
+                window: "window".into(),
                 revision: 7,
                 layout: layout(600),
             }),
@@ -488,13 +521,18 @@ mod tests {
                     id: "other".into(),
                     name: "unrelated changes".into(),
                     revision: 99,
-                    layout: None,
+                    windows: Vec::new(),
                 },
                 Workspace {
                     id: "workspace".into(),
                     name: "target".into(),
-                    revision,
-                    layout: Some(layout(ratio)),
+                    revision: 900,
+                    windows: vec![Window {
+                        id: "window".into(),
+                        name: "target window".into(),
+                        revision,
+                        layout: Some(layout(ratio)),
+                    }],
                 },
             ],
             panes: Vec::new(),
@@ -515,6 +553,24 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_window_and_workspace_edits_do_not_cancel_target_resize() {
+        let state = pending();
+        let mut snapshot = registry(7, 500);
+        snapshot.workspaces[1].revision += 25;
+        snapshot.workspaces[1].windows.push(Window {
+            id: "other-window".into(),
+            name: "other".into(),
+            revision: 22,
+            layout: None,
+        });
+        assert!(state.observes(&snapshot));
+        snapshot.workspaces[1].windows[1].revision += 1;
+        assert!(state.observes(&snapshot));
+        snapshot.workspaces[1].windows[0].revision += 1;
+        assert!(!state.observes(&snapshot));
+    }
+
+    #[test]
     fn completion_preserves_latest_raw_release_until_its_final_commit_is_confirmed() {
         let mut state = pending();
         let gesture = state.gesture.as_mut().unwrap();
@@ -530,6 +586,7 @@ mod tests {
         state.flight = Some(Commit {
             generation: 1,
             workspace: "workspace".into(),
+            window: "window".into(),
             revision: 8,
             layout: layout(700),
         });

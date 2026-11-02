@@ -17,6 +17,7 @@ impl Fixture {
         let value = registry
             .request(Request::new(Operation::PaneSpawn {
                 workspace_id: None,
+                window_id: None,
                 expected_revision: None,
                 spec: PaneSpawnSpec {
                     argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],

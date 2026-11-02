@@ -60,6 +60,7 @@ pub struct TerminalGuard {
     pub kitty_keyboard: bool,
     clipboard_mode: Option<bool>,
     requested_clipboard_mode: Option<bool>,
+    theme_mode: Option<bool>,
 }
 impl TerminalGuard {
     pub fn observe_enhanced_paste(&mut self, enabled: bool) {
@@ -77,6 +78,23 @@ impl TerminalGuard {
         self.requested_clipboard_mode = Some(enabled);
         Ok(())
     }
+    /// Enable host theme-change notifications only after observing a mutable
+    /// supported DEC mode; restore exactly the originally observed mode.
+    pub fn theme_reply(&mut self, reply: &[u8], out: &mut impl Write) -> Result<()> {
+        let enabled = match reply {
+            b"theme-cap;?2031;1$" => true,
+            b"theme-cap;?2031;2$" => false,
+            _ => return Ok(()),
+        };
+        if self.theme_mode.is_none() {
+            self.theme_mode = Some(enabled);
+            if !enabled {
+                out.write_all(b"\x1b[?2031h")?;
+                out.flush()?;
+            }
+        }
+        Ok(())
+    }
 }
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
@@ -89,6 +107,9 @@ impl Drop for TerminalGuard {
         }
         if let Some(enabled) = self.clipboard_mode {
             let _ = write!(out, "\x1b[?5522{}", if enabled { "h" } else { "l" });
+        }
+        if let Some(enabled) = self.theme_mode {
+            let _ = write!(out, "\x1b[?2031{}", if enabled { "h" } else { "l" });
         }
         let _ = write!(
             out,
@@ -152,12 +173,7 @@ fn color(
         .is_none_or(|physical| physical == rgb)
     {
         write!(out, "\x1b[{}m", if background { 49 } else { 39 })?;
-    } else if let ColorSource::Palette(index @ 0..=15) = source
-        && host
-            .palette
-            .get(&(index as usize))
-            .is_some_and(|physical| *physical == rgb)
-    {
+    } else if let ColorSource::Palette(index @ 0..=15) = source {
         write!(
             out,
             "\x1b[{}m",
@@ -685,6 +701,31 @@ impl ReplyDemux {
                             keys.extend_from_slice(b"\x1b[200~");
                             self.in_paste = true;
                             self.paste_bytes = 0;
+                            cursor += end + 3;
+                            continue;
+                        }
+                        // Theme notifications are private DSR reports: the '?'
+                        // is part of the wire grammar, not an optional marker.
+                        if tail[end] == b'n' && tail.starts_with(b"?997;") {
+                            if matches!(&tail[..end], b"?997;1" | b"?997;2") {
+                                let mut reply = b"theme-change;".to_vec();
+                                reply.push(tail[end - 1]);
+                                emit_reply(&mut parts, &mut keys, reply);
+                            }
+                            // Unknown private theme modes remain host reports,
+                            // never keyboard input or positive refresh evidence.
+                            cursor += end + 3;
+                            continue;
+                        }
+                        if tail[end] == b'y'
+                            && matches!(
+                                &tail[..end],
+                                b"?2031;0$" | b"?2031;1$" | b"?2031;2$" | b"?2031;3$" | b"?2031;4$"
+                            )
+                        {
+                            let mut reply = b"theme-cap;".to_vec();
+                            reply.extend_from_slice(&tail[..end]);
+                            emit_reply(&mut parts, &mut keys, reply);
                             cursor += end + 3;
                             continue;
                         }
@@ -1420,7 +1461,7 @@ fn parse_rgb(value: &str) -> Option<[u8; 3]> {
     let mut result = [0; 3];
     for component in &mut result {
         let s = values.next()?;
-        if s.is_empty() || s.len() > 4 {
+        if s.is_empty() || s.len() > 4 || !s.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return None;
         }
         let value = u32::from_str_radix(s, 16).ok()?;
@@ -1432,6 +1473,31 @@ fn parse_rgb(value: &str) -> Option<[u8; 3]> {
     Some(result)
 }
 impl ColorProbe {
+    /// Shared startup/notification OSC queries. Never query theme notifications
+    /// here: receiving a theme notification must not cause another notification.
+    pub fn query() -> Vec<u8> {
+        let mut query = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\".to_vec();
+        for index in 0..256 {
+            write!(&mut query, "\x1b]4;{index};?\x1b\\").expect("writing to a Vec");
+        }
+        query
+    }
+    /// Terminal notifications invalidate observations, not independent positive
+    /// capability evidence. This function never interprets light/dark as colors.
+    pub fn theme_changed(&mut self, reply: &[u8]) -> bool {
+        if !matches!(reply, b"theme-change;1" | b"theme-change;2") {
+            return false;
+        }
+        let changed = self.foreground.take().is_some()
+            | self.background.take().is_some()
+            | self.cursor.take().is_some()
+            | !self.palette.is_empty();
+        self.palette.clear();
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        true
+    }
     pub fn feed(&mut self, bytes: &[u8]) {
         if self.graphics.consume_tagged(bytes) {
             return;
@@ -1439,36 +1505,48 @@ impl ColorProbe {
         let Ok(text) = std::str::from_utf8(bytes) else {
             return;
         };
-        if (text.starts_with("1+r5463") || text.starts_with("1+r524742")) && !self.truecolor {
+        // Match complete supported XTGETTCAP values, including numeric RGB
+        // variants returned by xterm/Kitty. Palette replies imply no capability.
+        if text.strip_prefix("1+r").is_some_and(|entries| {
+            let supported = |entry: &str| {
+                matches!(
+                    entry,
+                    "5463" | "5463=31" | "524742" | "524742=31" | "524742=38" | "524742=3234"
+                )
+            };
+            entries
+                .split(';')
+                .all(|entry| supported(entry) || matches!(entry, "5463=30" | "524742=30"))
+                && entries.split(';').any(supported)
+        }) && !self.truecolor
+        {
             self.truecolor = true;
-            self.revision += 1;
+            self.revision = self.revision.wrapping_add(1);
         }
-        let parts = text.split(';').collect::<Vec<_>>();
-        match parts.as_slice() {
-            ["10", rgb] => {
-                if let Some(rgb) = parse_rgb(rgb) {
-                    self.foreground = Some(rgb);
-                    self.revision += 1;
+        let mut parts = text.split(';');
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some(code @ ("10" | "11" | "12")), Some(value), None, None) => {
+                if let Some(rgb) = parse_rgb(value) {
+                    let target = match code {
+                        "10" => &mut self.foreground,
+                        "11" => &mut self.background,
+                        _ => &mut self.cursor,
+                    };
+                    if *target != Some(rgb) {
+                        *target = Some(rgb);
+                        self.revision = self.revision.wrapping_add(1);
+                    }
                 }
             }
-            ["11", rgb] => {
-                if let Some(rgb) = parse_rgb(rgb) {
-                    self.background = Some(rgb);
-                    self.revision += 1;
-                }
-            }
-            ["12", rgb] => {
-                if let Some(rgb) = parse_rgb(rgb) {
-                    self.cursor = Some(rgb);
-                    self.revision += 1;
-                }
-            }
-            ["4", index, rgb] => {
-                if let (Ok(index), Some(rgb)) = (index.parse::<usize>(), parse_rgb(rgb))
+            (Some("4"), Some(index), Some(value), None) => {
+                if !index.is_empty()
+                    && index.bytes().all(|byte| byte.is_ascii_digit())
+                    && let (Ok(index), Some(rgb)) = (index.parse::<usize>(), parse_rgb(value))
                     && index < 256
+                    && self.palette.get(&index) != Some(&rgb)
                 {
                     self.palette.insert(index, rgb);
-                    self.revision += 1;
+                    self.revision = self.revision.wrapping_add(1);
                 }
             }
             _ => {}
@@ -1521,6 +1599,105 @@ mod tests {
         p.feed(b"0+r524742");
         assert!(p.truecolor);
         assert_eq!(parse_rgb("rgb:ffff/0000/8080"), Some([255, 0, 128]));
+    }
+    #[test]
+    fn duplicate_and_malformed_color_replies_leave_observations_unchanged() {
+        let mut probe = ColorProbe::default();
+        for invalid in [
+            b"1+r5463garbage".as_slice(),
+            b"1+r524742=not-hex",
+            b"1+r5463;malformed",
+            b"10;rgb:+f/0/0",
+            b"4;256;rgb:f/f/f",
+            b"11;rgb:ffff/ffff/ffff;extra",
+        ] {
+            probe.feed(invalid);
+        }
+        assert_eq!(probe.revision, 0);
+        assert!(!probe.truecolor);
+        for valid in [
+            b"10;rgb:aaaa/bbbb/cccc".as_slice(),
+            b"11;rgb:1111/2222/3333",
+            b"4;2;rgb:1234/5678/9abc",
+        ] {
+            probe.feed(valid);
+            let revision = probe.revision;
+            probe.feed(valid);
+            assert_eq!(probe.revision, revision);
+        }
+        assert!(!probe.truecolor);
+        probe.feed(b"1+r524742=3234");
+        assert!(probe.truecolor);
+        let revision = probe.revision;
+        probe.feed(b"0+r5463");
+        probe.feed(b"1+r524742=3234");
+        assert_eq!(probe.revision, revision);
+    }
+    #[test]
+    fn fragmented_theme_notifications_never_become_keys_and_refresh_keeps_capability() {
+        for packet in [b"\x1b[?997;1n", b"\x1b[?997;2n"] {
+            for boundary in 0..=packet.len() {
+                let mut demux = ReplyDemux::default();
+                let mut probe = ColorProbe::default();
+                probe.feed(b"1+r5463");
+                probe.feed(b"10;rgb:f/f/f");
+                probe.feed(b"11;rgb:0/0/0");
+                probe.feed(b"4;2;rgb:0/f/0");
+                let mut refreshes = 0;
+                for bytes in [&packet[..boundary], &packet[boundary..]] {
+                    let (keys, replies) = split(demux.feed(bytes));
+                    assert!(keys.is_empty());
+                    for reply in replies {
+                        refreshes += usize::from(probe.theme_changed(&reply));
+                    }
+                }
+                assert_eq!(refreshes, 1);
+                assert!(probe.truecolor);
+                assert!(
+                    probe.foreground.is_none()
+                        && probe.background.is_none()
+                        && probe.palette.is_empty()
+                );
+            }
+        }
+        let mut demux = ReplyDemux::default();
+        let paste = b"\x1b[200~\x1b[?997;2n\x1b[201~";
+        let (keys, replies) = split(demux.feed(paste));
+        assert_eq!(keys, paste);
+        assert!(replies.is_empty());
+    }
+    #[test]
+    fn undefined_private_theme_modes_are_not_keyboard_input_or_refresh_evidence() {
+        let mut demux = ReplyDemux::default();
+        let (keys, replies) = split(demux.feed(b"before\x1b[?997;3nafter"));
+        assert_eq!(keys, b"beforeafter");
+        assert!(replies.is_empty());
+        let (_, replies) = split(demux.feed(b"\x1b[997;1n"));
+        let mut probe = ColorProbe::default();
+        assert!(replies.iter().all(|reply| !probe.theme_changed(reply)));
+    }
+    #[test]
+    fn notification_subscription_requires_confirmed_mutable_support() {
+        let mut guard = std::mem::ManuallyDrop::new(TerminalGuard {
+            graphics: GraphicsState::new(1000),
+            kitty_keyboard: false,
+            clipboard_mode: None,
+            requested_clipboard_mode: None,
+            theme_mode: None,
+        });
+        let mut out = Vec::new();
+        for reply in [
+            b"theme-cap;?2031;0$".as_slice(),
+            b"theme-cap;?2031;4$",
+            b"theme-cap;?2031;2$malformed",
+        ] {
+            guard.theme_reply(reply, &mut out).unwrap();
+        }
+        assert!(out.is_empty());
+        guard.theme_reply(b"theme-cap;?2031;2$", &mut out).unwrap();
+        assert_eq!(out, b"\x1b[?2031h");
+        guard.theme_reply(b"theme-cap;?2031;2$", &mut out).unwrap();
+        assert_eq!(out, b"\x1b[?2031h");
     }
     #[test]
     fn oversized_reply_tail_is_not_keyboard_input() {

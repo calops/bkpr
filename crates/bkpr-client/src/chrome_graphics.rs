@@ -151,4 +151,35 @@ mod tests {
         ));
         assert_eq!(frame, original);
     }
+    #[test]
+    fn hierarchy_gutters_preserve_text_markers_until_artwork_is_ready() {
+        let chrome = ChromeGraphics::new().unwrap();
+        let mut frame = bkpr_tui_framework::blank(Size {
+            cols: 28,
+            rows: 3,
+            cell_width: 10,
+            cell_height: 20,
+        });
+        bkpr_tui_framework::text(&mut frame, 0, 0, "▾ [] Workspace", false);
+        bkpr_tui_framework::text(&mut frame, 0, 1, "  ▾ ▪ Window", false);
+        bkpr_tui_framework::text(&mut frame, 0, 2, "    ● <> Terminal", false);
+        let original = frame.clone();
+        assert!(!chrome.decorate(
+            &mut frame,
+            Artwork::Hive,
+            2,
+            0,
+            Some(ColorSource::Default),
+            1
+        ));
+        assert!(!chrome.decorate(
+            &mut frame,
+            Artwork::Bee,
+            6,
+            2,
+            Some(ColorSource::Default),
+            2
+        ));
+        assert_eq!(frame, original);
+    }
 }

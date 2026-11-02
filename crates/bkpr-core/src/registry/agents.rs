@@ -534,6 +534,7 @@ fn public(
     subscribers: usize,
 ) -> Value {
     let mut value = json!({"agent_id":fact.launch_id,"launch_id":fact.launch_id,"harness":agent.harness.as_str(),"title":agent.title,"session_id":fact.session_id,"pane_id":fact.pane.id,"pane_name":fact.pane.title,"workspace_id":fact.pane.workspace_id,"workspace_name":fact.workspace_name,"cwd":fact.cwd.as_deref().map(path_wire::WirePath),"attached":fact.active,"status":fact.pane.harness_status,"notification_ready":receiver.is_some() && subscribers > 0,"readiness":{"can_notify":receiver.is_some() && subscribers > 0},"receiver_mode":receiver.map(|r| r.mode)});
+    value["window_id"] = json!(fact.pane.window_id);
     value["project"] = serde_json::to_value(
         fact.pane
             .project
@@ -886,7 +887,7 @@ impl Registry {
                         require_scope(scope, own, &state.store)?;
                         let agents = contexts.values().filter(|other| other.launch_id != *id && other.active && state.store.agents.get(&other.launch_id).is_some_and(|a| a.exited_at.is_none()) && in_scope(scope, own, other, &state.store)).map(|other| {
                             let value=public(other,&state.store.agents[&other.launch_id],state.receivers.get(&other.launch_id),current_subscribers(&state,&other.launch_id));
-                            if detail {value} else {json!({"agent_id":value["agent_id"],"launch_id":value["launch_id"],"harness":value["harness"],"title":value["title"],"pane_id":value["pane_id"],"pane_name":value["pane_name"],"workspace_id":value["workspace_id"],"status":value["status"],"notification_ready":value["notification_ready"]})}
+                            if detail {value} else {json!({"agent_id":value["agent_id"],"launch_id":value["launch_id"],"harness":value["harness"],"title":value["title"],"pane_id":value["pane_id"],"pane_name":value["pane_name"],"workspace_id":value["workspace_id"],"window_id":value["window_id"],"status":value["status"],"notification_ready":value["notification_ready"]})}
                         }).collect::<Vec<_>>();
                         Ok(json!({"agents":agents,"scope":scope}))
                     }

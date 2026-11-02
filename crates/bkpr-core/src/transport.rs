@@ -18,7 +18,7 @@ use std::{
     },
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
@@ -35,6 +35,33 @@ impl ConnectionSlot {
         } else {
             Some(Self(active.clone()))
         }
+    }
+}
+
+// Only decoded, admitted requests hold this guard. Idle sockets and lifetime
+// watches cannot delay process exit; a committed close still gets its response.
+#[derive(Default)]
+struct ResponseDrain {
+    pending: Mutex<usize>,
+    changed: Condvar,
+}
+struct PendingResponse(Arc<ResponseDrain>);
+impl PendingResponse {
+    fn admit(drain: &Arc<ResponseDrain>, shutdown: &AtomicBool) -> Result<Self> {
+        let mut pending = drain.pending.lock().unwrap();
+        anyhow::ensure!(
+            !shutdown.load(Ordering::Acquire),
+            "session is shutting down"
+        );
+        *pending += 1;
+        Ok(Self(drain.clone()))
+    }
+}
+impl Drop for PendingResponse {
+    fn drop(&mut self) {
+        let mut pending = self.0.pending.lock().unwrap();
+        *pending -= 1;
+        self.0.changed.notify_all();
     }
 }
 fn waiting_slot(
@@ -191,6 +218,7 @@ impl BoundSocket {
         } = self;
         let shutdown = Arc::new(AtomicBool::new(false));
         let active = Arc::new(AtomicUsize::new(0));
+        let responses = Arc::new(ResponseDrain::default());
         let waiting_panes = Arc::new(AtomicUsize::new(0));
         let waiting_registry = Arc::new(AtomicUsize::new(0));
         let waiting_agents = Arc::new(AtomicUsize::new(0));
@@ -207,6 +235,14 @@ impl BoundSocket {
                 wake_write.try_clone()?,
             )?);
         }
+        // Registration replays an already-committed session end. The flag and
+        // private wake fd cover both sides of entering the blocking accept poll.
+        let end_shutdown = shutdown.clone();
+        let end_wake = wake_write.clone();
+        registry.set_session_end_waker(Arc::new(move || {
+            end_shutdown.store(true, Ordering::Release);
+            let _ = (&*end_wake).write_all(b"\0");
+        }));
         println!(
             "{}",
             json!({"version":PROTOCOL_VERSION,"ready":true,"socket":bkpr_protocol::path_wire::WirePath(&socket)})
@@ -217,6 +253,9 @@ impl BoundSocket {
             }
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    if shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
                     let Some(slot) = ConnectionSlot::take(&active, MAX_CONNECTIONS) else {
                         continue;
                     };
@@ -226,15 +265,16 @@ impl BoundSocket {
                     let waiting_registry = waiting_registry.clone();
                     let waiting_agents = waiting_agents.clone();
                     let wake_write = wake_write.clone();
+                    let responses = responses.clone();
                     thread::Builder::new()
                     .name("bkpr-control".into())
                     .spawn(move || {
                     let _slot = slot;
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-                    let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
                     let mut stop = false;
                     let mut subscription = None;
                     let mut lifetime = None;
+                    let mut pending_response = None;
                     let result = (|| -> Result<_> {
                         let mut bytes = Vec::new();
                         BufReader::new((&mut stream).take(MAX_REQUEST + 1))
@@ -254,6 +294,7 @@ impl BoundSocket {
                         };
                         stop = request.version == PROTOCOL_VERSION && matches!(&request.operation, Operation::Shutdown);
                         anyhow::ensure!(request.version == PROTOCOL_VERSION, "unsupported protocol version");
+                        pending_response = Some(PendingResponse::admit(&responses, &shutdown)?);
                         let result = match request.operation {
                             Operation::ClientRegister { session_id, daemon_id } => {
                                 let (client, response) = registry.register_client(&stream, &session_id, &daemon_id)?;
@@ -296,7 +337,7 @@ impl BoundSocket {
                     } else {
                         serde_json::to_vec(&json!({"version":PROTOCOL_VERSION,"ok":false,"error":"aggregate scene wire limit exceeded after dispatch; outcome unknown, do not replay"})).unwrap()
                     };
-                    let sent = stream.write_all(&bytes).and_then(|()| stream.write_all(b"\n"));
+                    let sent = write_response(&mut stream, &bytes, Duration::from_secs(3));
                     if sent.is_err()
                         && let Some((launch_id, receiver_id, notification_id, generation)) = subscription
                     {
@@ -307,11 +348,13 @@ impl BoundSocket {
                     if let Some(client) = lifetime {
                         if sent.is_ok() {
                             client.handshake_complete();
+                            drop(pending_response.take());
                             clients::watch_client(&stream, &registry, &client);
                         } else {
                             registry.detach_client(&client, "disconnected");
                         }
                     }
+                    drop(pending_response);
                     // A valid explicit shutdown closes the daemon even when owned cleanup
                     // reports an error. Keep the error response, not a poisoned listener.
                     if stop {
@@ -325,8 +368,66 @@ impl BoundSocket {
                 Err(e) => return Err(e.into()),
             }
         }
-        registry.shutdown()
+        drop(listener);
+        let result = registry.shutdown();
+        let mut pending = responses.pending.lock().unwrap();
+        while *pending != 0 {
+            pending = responses.changed.wait(pending).unwrap();
+        }
+        result
     }
+}
+
+fn write_response(stream: &mut UnixStream, bytes: &[u8], timeout: Duration) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    for mut remaining in [bytes, b"\n"] {
+        while !remaining.is_empty() {
+            let timeout = deadline.saturating_duration_since(std::time::Instant::now());
+            if timeout.is_zero() {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            // Per-call nonblocking keeps lifetime sockets' shared file flags intact.
+            let written = unsafe {
+                libc::send(
+                    stream.as_raw_fd(),
+                    remaining.as_ptr().cast(),
+                    remaining.len(),
+                    libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+                )
+            };
+            if written > 0 {
+                remaining = &remaining[written as usize..];
+                continue;
+            }
+            if written == 0 {
+                return Err(std::io::ErrorKind::WriteZero.into());
+            }
+            let error = std::io::Error::last_os_error();
+            match error.kind() {
+                std::io::ErrorKind::Interrupted => continue,
+                std::io::ErrorKind::WouldBlock => {
+                    let mut descriptor = libc::pollfd {
+                        fd: stream.as_raw_fd(),
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    };
+                    let millis = timeout.as_millis().saturating_add(1).min(i32::MAX as u128) as i32;
+                    let ready = unsafe { libc::poll(&mut descriptor, 1, millis) };
+                    if ready == 0 {
+                        return Err(std::io::ErrorKind::TimedOut.into());
+                    }
+                    if ready < 0 {
+                        let error = std::io::Error::last_os_error();
+                        if error.kind() != std::io::ErrorKind::Interrupted {
+                            return Err(error);
+                        }
+                    }
+                }
+                _ => return Err(error),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn peer_connected(stream: &UnixStream) -> bool {

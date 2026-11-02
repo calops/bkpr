@@ -54,26 +54,45 @@ pub enum Operation {
         request: crate::AgentRequest,
     },
     WorkspaceCreate {
-        name: String,
+        name: Option<String>,
+        initial: Option<PaneSpawnSpec>,
     },
     WorkspaceRename {
         workspace_id: String,
         expected_revision: u64,
         name: String,
     },
-    WorkspaceRemove {
+    WorkspaceClose {
         workspace_id: String,
+        expected_revision: u64,
+    },
+    WindowCreate {
+        workspace_id: String,
+        expected_revision: u64,
+        name: Option<String>,
+        spec: PaneSpawnSpec,
+    },
+    WindowRename {
+        workspace_id: String,
+        window_id: String,
+        expected_revision: u64,
+        name: String,
+    },
+    WindowClose {
+        workspace_id: String,
+        window_id: String,
         expected_revision: u64,
     },
     PaneSpawn {
         workspace_id: Option<String>,
+        window_id: Option<String>,
         expected_revision: Option<u64>,
         spec: PaneSpawnSpec,
     },
-    /// Start a new execution in place of an unavailable leaf in one workspace.
-    /// The old pane record and every other workspace projection remain unchanged.
+    /// Replace an unavailable pane in its owning window; never replay saved argv.
     PaneReopen {
         workspace_id: String,
+        window_id: String,
         expected_revision: u64,
         pane_id: String,
         spec: PaneSpawnSpec,
@@ -91,6 +110,7 @@ pub enum Operation {
     },
     LayoutUpdate {
         workspace_id: String,
+        window_id: String,
         expected_revision: u64,
         layout: Option<LayoutNode>,
     },
@@ -150,6 +170,14 @@ pub struct Workspace {
     pub id: String,
     pub name: String,
     pub revision: u64,
+    pub windows: Vec<Window>,
+}
+/// Backend-owned independent layout. Active-window selection belongs to each client.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Window {
+    pub id: String,
+    pub name: String,
+    pub revision: u64,
     pub layout: Option<LayoutNode>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -174,8 +202,9 @@ pub enum Axis {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaneInfo {
     pub id: String,
-    /// Backend execution membership; independent of every workspace's projected layout.
+    /// Execution ownership, paired with window_id; both absent only for admin panes.
     pub workspace_id: Option<String>,
+    pub window_id: Option<String>,
     pub title: String,
     pub status: PaneStatus,
     pub exit_code: Option<i32>,
@@ -220,4 +249,6 @@ pub struct RegistryResult {
     pub pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<String>,
 }

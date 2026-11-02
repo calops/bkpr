@@ -2,7 +2,7 @@
 //! ui.rs::Input (9ad93bd). Backend submission and popup lifetime stay with App.
 use crate::keyguide::{self, Action, Context};
 use bkpr_protocol::{Cursor, KeyEvent, Size};
-use bkpr_tui_framework::{Rect, TextInput, UiSurface};
+use bkpr_tui_framework::{Rect, Role, RoleSpan, TextInput, Theme, UiSurface};
 use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
@@ -85,7 +85,7 @@ impl FormFields {
         };
         let tiny = size.rows < 4;
         if !tiny {
-            row(0, title.into(), true);
+            row(0, title.into(), false);
         }
         let compact = creation && size.rows < 7;
         let showing_directory = creation && compact && self.active_directory;
@@ -107,6 +107,8 @@ impl FormFields {
                 1,
                 if showing_directory {
                     "Working directory".into()
+                } else if creation {
+                    "Name (blank chooses automatically)".into()
                 } else {
                     "Name".into()
                 },
@@ -152,7 +154,7 @@ impl FormFields {
                 } else {
                     "Enter saves · Esc cancels".into()
                 },
-                message.is_some(),
+                false,
             );
         }
         surface.paint(
@@ -169,6 +171,61 @@ impl FormFields {
                 color: None,
             }),
         );
+    }
+
+    pub(crate) fn apply_theme(
+        &self,
+        surface: &mut UiSurface,
+        theme: &Theme,
+        creation: bool,
+        error: Option<&str>,
+        pending: bool,
+    ) {
+        let size = surface.frame.size;
+        let tiny = size.rows < 4;
+        let compact = creation && size.rows < 7;
+        let mut spans = Vec::with_capacity(7);
+        let mut row = |y: u16, role| {
+            if y < size.rows {
+                spans.push(RoleSpan {
+                    rect: Rect {
+                        x: 0,
+                        y,
+                        width: size.cols,
+                        height: 1,
+                    },
+                    role,
+                });
+            }
+        };
+        if !tiny {
+            row(0, Role::Title);
+            row(1, Role::Muted);
+        }
+        row(
+            if tiny { 0 } else { 2 },
+            if pending { Role::Muted } else { Role::Panel },
+        );
+        if creation && !compact {
+            row(3, Role::Muted);
+            row(4, if pending { Role::Muted } else { Role::Panel });
+            row(5, Role::Muted);
+        }
+        if size.rows > 1 {
+            row(
+                size.rows - 1,
+                if error
+                    .or(self.primary.error())
+                    .or(self.directory.error())
+                    .is_some()
+                {
+                    Role::Error
+                } else {
+                    Role::Muted
+                },
+            );
+        }
+        surface.apply_theme(theme, Role::Panel, &spans);
     }
 }
 
@@ -210,6 +267,24 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
         let directory = PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/dir-\xff".to_vec()));
         let fields = FormFields::new(String::new(), directory.clone());
+        let size = Size {
+            cols: 60,
+            rows: 9,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let mut surface = UiSurface::new(size);
+        fields.paint(
+            &mut surface,
+            size,
+            "Create terminal window",
+            true,
+            None,
+            false,
+        );
+        fields.apply_theme(&mut surface, &Theme::default(), true, None, false);
+        assert!(surface.frame.cursor.visible);
+        assert!(fields.directory.value.is_empty());
         assert_eq!(fields.directory(), directory);
     }
 }

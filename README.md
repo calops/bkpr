@@ -325,24 +325,25 @@ messaging require a ready canonical common-Git-directory identity.
 `Ctrl-Space` (or `Ctrl-b b`) enters the all-workspace sidebar. Selection is local:
 browsing does not change the active application or attach hidden terminal views.
 Arrows or `j`/`k` move, Home/End and PageUp/PageDown reveal other rows, Left/Right
-fold or unfold a workspace, and Enter activates the selected workspace or terminal.
-Esc returns to the original application. The mouse supports activation, wheel
-scrolling and double-click folding.
+fold or unfold a workspace or window, and Enter activates the selected workspace,
+window or terminal. Esc returns to the original application. The mouse supports
+activation, wheel scrolling and double-click folding.
 
-In the sidebar, `n` opens workspace creation, `r` renames the selected item and
-`x`/Delete closes a selected terminal and its owned processes after confirmation.
-Workspace cascading close and `N` for a separate terminal window await their
-backend contracts; they are not substituted with layout removal or a split.
+In the sidebar, `n` creates a workspace and its first terminal, `N` creates a
+separate full terminal window, and `r` renames the selected item. `x`/Delete closes
+the selected workspace, window or terminal after confirmation, terminating all
+its owned processes, including hidden terminals. A separate window is not a split.
 
 `/` opens the metadata finder, distinct from `Ctrl-b /` terminal-content search.
-It supports fuzzy terms and `workspace:`, `harness:`, `status:`, `cwd:`, `project:`
-and `branch:` filters, including quoted values. PR/CI/ticket filters explicitly
+It supports fuzzy terms and `workspace:`, `window:`, `harness:`, `status:`, `cwd:`,
+`project:` and `branch:` filters, including quoted values. PR/CI/ticket filters explicitly
 report unavailable facts. Narrow windows use Tab to cycle input, results and
 details; PageUp/PageDown scroll the preview. Selection activates the actual pane
 identity, not a row number.
 
 Creation has name and directory fields; Tab changes fields and a blank directory
-keeps the exact inherited directory. A workspace name is currently required.
+keeps the exact inherited native path. Blank workspace/window names are chosen
+atomically by the backend together with their first terminal.
 Name fields support cursor movement, Home/End, Backspace/Delete, Ctrl-u and paste.
 Enter submits, Esc cancels, and close confirmations also accept `y`/`n`. Failed
 submissions retain their fields and diagnostics; an unknown outcome blocks blind
@@ -356,6 +357,18 @@ loading/error/stale labels, and contradictory foreground identities hide retired
 harness facts. Contextual hints use the same typed binding table as dispatch;
 the command prefix expands the guide when space permits.
 
+Chrome follows each client's reported terminal foreground, background and ANSI
+palette. Confirmed `Tc`/`RGB` support plus observed foreground/background enables
+subdued RGB surfaces, readable muted text, selection shading and palette-derived
+accents. Sidebar, headers, popups, focused fields, hints and artwork share the
+framework theme; application pane styles are not themed.
+
+Supporting hosts notify live theme changes through mode 2031; Bkpr re-queries
+colors without polling and restores the original confirmed notification setting
+on detach. Missing replies or unconfirmed truecolor retain native default colors,
+ANSI accents, inverse selection and underlined hover instead of a guessed dark
+theme. Terminal names and RGB color replies alone do not establish truecolor.
+
 Reusable text surfaces, editing, window decoration, clipping, capability probes
 and SVG preparation belong to `bkpr-tui-framework`; Bkpr content, action semantics
 and artwork selection belong to `bkpr-client`. Confirmed Kitty graphics support
@@ -365,20 +378,22 @@ markers, fold/status glyphs and the same interactions. Pixel recessed/raised
 frames and decorative animation remain separate work; this is not general
 terminal-graphics acceptance.
 
-### Workspace and pane controls
+### Workspace, window and pane controls
 
 Press `Ctrl-b`, then a command:
 
 | Command | Action |
 | --- | --- |
 | `b` | Enter the all-workspace sidebar |
-| `c` | Create workspace and first pane |
-| `n` or `%` | Spawn a pane, split left/right |
-| `"` | Spawn a pane, split top/bottom |
+| `c` | Create workspace, window and first pane |
+| `N` (uppercase) | Create a separate full terminal window in the active workspace |
+| `n` or `%` | Spawn a pane in the active window, split left/right |
+| `"` | Spawn a pane in the active window, split top/bottom |
 | `e` | Enter keyboard split-resize mode |
 | `R` (uppercase) | Confirm a new configured shell in the focused unavailable pane's layout position |
 | `r` / `p` | Rename workspace / pane |
 | `w` / `o` | Choose workspace / show an existing pane |
+| `W` (uppercase) | Choose a window in the active workspace |
 | `i` | Inspect focused pane's local project/Git snapshot (arrows scroll) |
 | `s` | Enter focused pane's scrollback and page upward |
 | `y` | Copy the focused view's terminal selection to the host clipboard |
@@ -388,19 +403,22 @@ Press `Ctrl-b`, then a command:
 | Shift+Arrows | Exchange focused pane with nearest pane in that direction |
 | `x` | Remove a layout leaf; keep its process running |
 | `!` | Terminate a pane, after confirmation |
-| `X` | Remove a workspace, after confirmation; keep its processes running |
+| `X` | Close the workspace and all its owned terminals, after confirmation |
 | `d` | Detach client |
 | `Ctrl-b` | Send literal Ctrl-b to the application (live mode only) |
 
-`Ctrl-]` also detaches. Focus is client-local; showing a pane in another workspace
-does not change its backend membership. Layout removal, client detach and process
-termination are distinct.
+`Ctrl-]` also detaches. Active workspace/window and per-window pane focus are
+client-local. Choosing an existing owned pane switches to its owning workspace
+and window; it does not borrow the pane into another layout. Unassigned
+administrative panes and retired exit receipts are not implicitly adopted.
+Layout removal and detach keep processes alive; closing a window or workspace
+terminates its owned terminals even when they are hidden.
 
-`Ctrl-b Shift+Arrow` rearranges the selected workspace by exchanging two pane
+`Ctrl-b Shift+Arrow` rearranges the selected window by exchanging two pane
 positions; focus follows the same execution. It uses the same nearest-center
 directional choice as focus navigation and does not wrap at an edge. Split axes,
-ratios, other panes and backend workspace membership stay unchanged. Other
-clients viewing that workspace see the saved arrangement, but keep their own
+ratios, other windows and backend workspace/window membership stay unchanged.
+Other clients viewing that window see the saved arrangement, but keep their own
 focus. Processes and existing views survive the exchange.
 
 Each move is one asynchronous revision-checked layout update. Read-only clients
@@ -419,9 +437,9 @@ directory is an error, not a silent fallback; reopen the confirmation and choose
 that alternative. The new shell uses the current client's shell argv, HOME and
 environment policy, not the old command or launch authority.
 
-Replacement updates only the selected workspace, with a captured layout revision.
-The old pane record and any projections in other workspaces remain unchanged.
-Failure leaves the old layout intact; an ambiguous result is never automatically
+Replacement updates only the selected window, with its captured revision.
+The old exit receipt remains without document ownership; other windows are
+unchanged. Failure leaves the old layout intact; an ambiguous result is never automatically
 retried. Changing selection while work is pending does not pull focus back.
 Read-only clients cannot create or replace executions. Stopped records have no
 restorable terminal scene; exited scenes are inspectable only while retained by
@@ -431,12 +449,15 @@ Compact sidebar `[S]` / `[E]` badges mean stopped / exited and preserve space fo
 the user-assigned pane title; headers and the chooser show the full state.
 
 When a pane's root process exits normally, including shell `exit` or Ctrl-D,
-the backend removes its references from every workspace layout and collapses
-only the affected split paths. Explicit termination performs the same closure.
-The pane's exit record and final in-memory scene remain available by ID; faults
-remain visible for diagnosis. Completed, unprojected records are omitted from the
-live sidebar; explicitly showing a retained scene still works. Closing one shell
-never terminates neighboring panes.
+the backend removes its references from its owning window and collapses only the
+affected split paths. Explicit termination performs the same closure. Closing
+the last terminal closes its window; the last window closes its workspace; the
+last workspace ends its session and restores all attached clients without
+starting replacement shells. Other sessions continue running.
+
+Retired exit records and final in-memory scenes remain inspectable by backend
+ID, not implicitly restored as owned sidebar terminals. Faults remain visible
+for diagnosis. Closing one terminal preserves neighboring terminals.
 
 Attachment and management work runs in bounded background jobs. Input remains
 ordered per pane; a native callback blocked in one pane does not serialize input
@@ -604,17 +625,36 @@ The native library retains result endpoints for all matches: dense queries acros
 many views can consume substantial memory. Exact matches/counts aren't silently
 capped; resource optimization remains tracked in `TODO.md`.
 
+### Workspace and session ownership
+
+A named session owns its workspaces. Each workspace owns independent windows,
+their layouts and their terminals; a layout cannot borrow a terminal from another
+window or workspace. Clients choose active windows independently.
+
+Closing a window terminates all its owned terminals, including terminals absent
+from its displayed layout. Closing the last terminal, including normal shell
+exit, closes its workspace. Closing the last workspace closes the session.
+Detaching a client or removing a layout projection does not terminate a program.
+An intentionally empty headless server stays available until explicitly stopped.
+
+Whole-workspace references across sessions or remote endpoints are still planned,
+not implemented routing. They will allow normal use through the owner, not
+read-only display; assume the same user without a new permissions framework.
+
 ### Requests and explicit shutdown
 
-Requests use protocol version 2. Registry operations target workspaces/panes;
-terminal/view operations are explicitly scoped to a pane:
+Requests use protocol version 3. Registry operations target workspaces, their
+independent windows and owned panes; terminal/view operations are pane-scoped.
+Active-window selection belongs to each client. Older daemons reject this
+protocol before attachment or takeover; stop only an owned test session and
+start a fresh one with the matching launcher/server pair.
 
 ```sh
 "$CARGO_TARGET_DIR/debug/bkpr" context --socket "$BKPR_RUN/control.sock"
 "$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
-  '{"version":2,"op":"inspect"}'
+  '{"version":3,"op":"inspect"}'
 "$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
-  '{"version":2,"op":"shutdown"}'
+  '{"version":3,"op":"shutdown"}'
 ```
 
 Check `ok` and `error` before treating an operation as successful. Shutdown closes
@@ -624,9 +664,12 @@ successful persistence acknowledgement. Never target an unrelated live daemon.
 Layouts and pane metadata survive restart, but PTYs and terminal contents do
 not. Restored panes without a live runtime are Stopped; known exit codes remain.
 The server never silently restarts their commands.
+Metadata uses schema 2. The one-shot schema-1 upgrade preserves unambiguous
+owned layouts and historical receipts without replaying commands; ambiguous
+foreign-workspace layouts are rejected without overwriting the source record.
 
 Retired metadata can be explicitly forgotten with
-`{"version":2,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
+`{"version":3,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
 has stopped, every layout reference has been removed and all its views detached.
 This releases record capacity; it is not termination or automatic history pruning.
 

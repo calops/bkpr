@@ -108,6 +108,7 @@ impl Server {
             &self.socket,
             Operation::PaneSpawn {
                 workspace_id: None,
+                window_id: None,
                 expected_revision: None,
                 spec: PaneSpawnSpec {
                     argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
@@ -421,15 +422,12 @@ fn queued_native_commands_lose_client_grant_but_accepted_releases_remain_cleanup
     let client = server.register();
     server.activate(&client, false);
     let home = server._root.path().join("clipboard-home");
-    let created = wire(&server.socket, Operation::PaneSpawn {
-        workspace_id: None, expected_revision: None,
-        spec: PaneSpawnSpec {
-            argv: vec!["/bin/sh".into(), "-c".into(),
-                r"while [ ! -f query ]; do sleep 0.01; done; printf '\033]52;c;?\007'; exec sleep 60".into()],
-            cwd: home.clone(), home: home.clone(), isolated_environment: true,
-            title: Some("queued".into()), size: spec().size,
-        },
-    });
+    let created = wire(&server.socket, Operation::PaneSpawn { workspace_id: None, window_id: None, expected_revision: None, spec: PaneSpawnSpec {
+        argv: vec!["/bin/sh".into(), "-c".into(),
+            r"while [ ! -f query ]; do sleep 0.01; done; printf '\033]52;c;?\007'; exec sleep 60".into()],
+        cwd: home.clone(), home: home.clone(), isolated_environment: true,
+        title: Some("queued".into()), size: spec().size,
+    } });
     assert_eq!(created["ok"], true, "{created}");
     let pane_id = created["result"]["pane_id"].as_str().unwrap();
     let view_id = server.attach(&client, pane_id);

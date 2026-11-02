@@ -171,7 +171,24 @@ impl Attached {
                     self.retirement_policy = RetirementPolicy::Failed;
                 }
                 Err(mpsc::TryRecvError::Empty) if wait_policy => return Ok(None),
-                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Shutdown is outside the UI loop. The independent policy
+                    // lane must settle before command-lane Detach can revoke it.
+                    match receipt.recv() {
+                        Ok(Ok(())) => self.retirement_policy = RetirementPolicy::Revoked,
+                        Ok(Err(error)) => {
+                            self.retirement_error = Some(error);
+                            self.retirement_policy = RetirementPolicy::Failed;
+                        }
+                        Err(_) => {
+                            self.retirement_error = Some(format!(
+                                "pane {pane} view {} policy completion disconnected; outcome unknown; not replayed",
+                                self.view
+                            ));
+                            self.retirement_policy = RetirementPolicy::Failed;
+                        }
+                    }
+                }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.retirement_error = Some(format!(
                         "pane {pane} view {} policy completion disconnected; outcome unknown; not replayed",
@@ -184,6 +201,7 @@ impl Attached {
         if !drain_ready {
             return Ok(None);
         }
+        self.pump.cancel();
         input
             .retire(pane, &self.view, self.retirement_focus_out)
             .map(Some)
@@ -234,7 +252,6 @@ struct DeviceConsent {
 struct RetiringView {
     attached: Attached,
     receipt: updates::Receipt,
-    poll_error: Option<String>,
 }
 struct DeviceResponse {
     pane: String,
@@ -246,6 +263,8 @@ struct GuideCache {
     key: Option<(crate::keyguide::Context, u16, u16, u16)>,
     footer: String,
     expanded: Vec<String>,
+    footer_roles: Vec<RoleSpan>,
+    expanded_roles: Vec<RoleSpan>,
 }
 struct App<'a> {
     socket: &'a Endpoint,
@@ -273,6 +292,7 @@ struct App<'a> {
     paste_target: Option<(String, String)>,
     enhanced_supported: Option<bool>,
     colors: ColorProbe,
+    color_query_pending: bool,
     last_button: MouseButton,
     pointer_capture: Option<PointerCapture>,
     pressed_pointers: RefCell<Vec<PressedPointer>>,
@@ -310,17 +330,16 @@ impl App<'_> {
         match action {
             Action::CommandPrefix => !self.resize_capturing() || self.resize_dragging(),
             Action::Resize { .. } => !self.options.read_only && !self.resize_dragging(),
-            Action::CreateTerminal => false,
-            Action::CloseSelected => {
-                !self.options.read_only
-                    && matches!(self.state.sidebar.cursor, Some(SidebarTarget::Pane { .. }))
+            Action::CreateTerminal => {
+                !self.options.read_only && self.state.current(&self.registry).is_some()
             }
+            Action::CloseSelected => !self.options.read_only && self.state.sidebar.cursor.is_some(),
             Action::CreateWorkspace
             | Action::RenameSelected
             | Action::RenameWorkspace
             | Action::RenamePane
             | Action::TerminatePane
-            | Action::RemoveWorkspace
+            | Action::CloseWorkspace
             | Action::ReopenPane
             | Action::SplitHorizontal
             | Action::SplitVertical
@@ -403,10 +422,7 @@ impl App<'_> {
         let context = self.guide_context();
         let flags = u16::from(self.options.read_only)
             | (u16::from(self.options.clipboard_policy == "deny") << 1)
-            | (u16::from(matches!(
-                self.state.sidebar.cursor,
-                Some(SidebarTarget::Pane { .. })
-            )) << 2)
+            | (u16::from(self.state.current(&self.registry).is_some()) << 2)
             | (u16::from(
                 self.state
                     .form
@@ -438,10 +454,16 @@ impl App<'_> {
                 size.rows.saturating_sub(4) as usize,
                 |action| self.supports_action(action),
             );
+            let (footer_roles, expanded_roles) =
+                crate::keyguide::roles_with(context, &footer, &expanded, |action| {
+                    self.supports_action(action)
+                });
             self.guide = GuideCache {
                 key: Some(key),
                 footer,
                 expanded,
+                footer_roles,
+                expanded_roles,
             };
         }
     }
@@ -537,9 +559,13 @@ impl App<'_> {
             (120, 40)
         } else {
             match self.state.form.as_ref().map(|form| &form.kind) {
-                Some(FormKind::CreateWorkspace) => (76, 12),
-                Some(FormKind::RenameWorkspace | FormKind::RenamePane) => (76, 8),
-                Some(FormKind::TerminatePane | FormKind::RemoveWorkspace) => (88, 9),
+                Some(FormKind::CreateWorkspace | FormKind::CreateWindow) => (76, 12),
+                Some(FormKind::RenameWorkspace | FormKind::RenameWindow | FormKind::RenamePane) => {
+                    (76, 8)
+                }
+                Some(
+                    FormKind::TerminatePane | FormKind::CloseWorkspace | FormKind::CloseWindow,
+                ) => (88, 9),
                 Some(FormKind::ReopenPane { .. }) => (100, 12),
                 _ => (112, screen.rows.saturating_sub(4)),
             }
@@ -569,24 +595,56 @@ impl App<'_> {
         self.retire_resize("modal opened");
         self.selection_focus_lost();
         self.close_search();
-        let target = self.state.current(&self.registry).and_then(|workspace| {
-            let target = match &kind {
-                FormKind::RenameWorkspace | FormKind::RemoveWorkspace => {
-                    Some(SidebarTarget::Workspace(workspace.id.clone()))
+        let target = self
+            .state
+            .current(&self.registry)
+            .and_then(|workspace| match &kind {
+                FormKind::CreateWindow
+                | FormKind::ChooseWindow
+                | FormKind::RenameWorkspace
+                | FormKind::CloseWorkspace => Some((
+                    SidebarTarget::Workspace(workspace.id.clone()),
+                    workspace.revision,
+                )),
+                FormKind::RenameWindow | FormKind::CloseWindow => {
+                    self.state.current_window(&self.registry).map(|window| {
+                        (
+                            SidebarTarget::Window {
+                                workspace: workspace.id.clone(),
+                                window: window.id.clone(),
+                            },
+                            window.revision,
+                        )
+                    })
                 }
                 FormKind::RenamePane | FormKind::TerminatePane => {
-                    self.state.focused.as_ref().map(|pane| SidebarTarget::Pane {
-                        workspace: workspace.id.clone(),
-                        pane: pane.clone(),
+                    self.state.focused.as_ref().map(|pane| {
+                        (
+                            SidebarTarget::Pane {
+                                workspace: workspace.id.clone(),
+                                pane: pane.clone(),
+                            },
+                            self.state
+                                .current_window(&self.registry)
+                                .map_or(0, |window| window.revision),
+                        )
                     })
                 }
                 _ => None,
-            };
-            target.map(|target| (target, workspace.revision))
-        });
+            });
+        let directory = if matches!(kind, FormKind::CreateWindow) {
+            self.state
+                .focused
+                .as_ref()
+                .and_then(|id| self.registry.panes.iter().find(|pane| pane.id == *id))
+                .map(|pane| pane.foreground_cwd.as_ref().unwrap_or(&pane.cwd).clone())
+                .unwrap_or_else(|| self.options.cwd.clone())
+        } else {
+            self.options.cwd.clone()
+        };
         self.state.open(kind, value);
         let form = self.state.form.as_mut().unwrap();
-        form.fields.inherit_directory(self.options.cwd.clone());
+        form.fields.inherit_directory(directory);
         form.target = target;
     }
     fn focus(&mut self, pane: String) {
@@ -607,6 +665,15 @@ impl App<'_> {
         self.state.switch(workspace, &self.registry);
         self.select_current_lease();
     }
+    fn switch_window(&mut self, window: String) {
+        if self.state.window.as_ref() != Some(&window) {
+            self.retire_resize("window focus changed");
+            self.close_search();
+        }
+        self.selection_epoch = self.selection_epoch.wrapping_add(1);
+        self.state.switch_window(window, &self.registry);
+        self.select_current_lease();
+    }
     fn select_current_lease(&mut self) {
         if self.host_focused
             && let Some(pane) = &self.state.focused
@@ -624,18 +691,24 @@ impl App<'_> {
                 &command,
                 management::Command::Spawn { .. }
                     | management::Command::Create { .. }
+                    | management::Command::CreateWindow { .. }
                     | management::Command::Reopen { .. }
             );
         let scope = match &command {
-            management::Command::Spawn { workspace, .. } => format!("workspace:{}", workspace.id),
-            management::Command::Reopen { workspace_id, .. } => format!("workspace:{workspace_id}"),
+            management::Command::Spawn { window, .. } => format!("window:{}", window.id),
+            management::Command::Reopen { window_id, .. } => format!("window:{window_id}"),
             management::Command::Create { .. } => "create".into(),
+            management::Command::CreateWindow { workspace_id, .. } => {
+                format!("workspace:{workspace_id}")
+            }
             management::Command::Single(operation) => match operation {
                 Operation::WorkspaceRename { workspace_id, .. }
-                | Operation::WorkspaceRemove { workspace_id, .. }
-                | Operation::LayoutUpdate { workspace_id, .. } => {
+                | Operation::WorkspaceClose { workspace_id, .. } => {
                     format!("workspace:{workspace_id}")
                 }
+                Operation::WindowRename { window_id, .. }
+                | Operation::WindowClose { window_id, .. }
+                | Operation::LayoutUpdate { window_id, .. } => format!("window:{window_id}"),
                 Operation::PaneRename { pane_id, .. } | Operation::PaneTerminate { pane_id } => {
                     format!("pane:{pane_id}")
                 }
@@ -688,15 +761,23 @@ impl App<'_> {
                 .find(|workspace| workspace.id == selection.workspace)
         {
             let mut projected = Vec::new();
-            leaves(workspace.layout.as_ref(), &mut projected);
+            let window = workspace
+                .windows
+                .iter()
+                .find(|window| window.id == selection.window);
+            leaves(
+                window.and_then(|window| window.layout.as_ref()),
+                &mut projected,
+            );
             if projected.contains(&selection.pane)
-                && self
-                    .registry
-                    .panes
-                    .iter()
-                    .any(|pane| pane.id == selection.pane)
+                && self.registry.panes.iter().any(|pane| {
+                    pane.id == selection.pane
+                        && pane.workspace_id.as_ref() == Some(&selection.workspace)
+                        && pane.window_id.as_ref() == Some(&selection.window)
+                })
             {
                 self.state.switch(selection.workspace, &self.registry);
+                self.state.switch_window(selection.window, &self.registry);
                 self.state.focus(selection.pane);
                 self.state.reconcile(&self.registry);
             }
@@ -1093,8 +1174,8 @@ impl App<'_> {
     fn rects(&self, size: Size) -> Vec<(String, Rect)> {
         let (_, content) = screen_geometry(size);
         let mut rects = Vec::new();
-        if let Some(workspace) = self.state.current(&self.registry) {
-            layout_rects(workspace.layout.as_ref(), content, &mut rects);
+        if let Some(window) = self.state.current_window(&self.registry) {
+            layout_rects(window.layout.as_ref(), content, &mut rects);
         }
         rects
     }
@@ -1290,11 +1371,7 @@ impl App<'_> {
         }
         let attached = self.views.remove(pane).unwrap();
         self.held.retain(|_, (origin, _)| origin != pane);
-        self.retiring.push(RetiringView {
-            attached,
-            receipt,
-            poll_error: None,
-        });
+        self.retiring.push(RetiringView { attached, receipt });
         cancellation
     }
     fn reap_retiring(&mut self) -> Result<()> {
@@ -1313,15 +1390,6 @@ impl App<'_> {
                     drop(retired);
                 }
                 Err(mpsc::TryRecvError::Empty) => {
-                    let retired = &mut self.retiring[index];
-                    if retired.poll_error.is_none()
-                        && let Err(error) = retired.attached.pump.latest()
-                    {
-                        // Detach may already have committed while its ACK is in
-                        // flight. Keep this evidence without reporting expected
-                        // poll cancellation as a helper fault after success.
-                        retired.poll_error = Some(format!("{error:#}"));
-                    }
                     index += 1;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -1395,7 +1463,6 @@ impl App<'_> {
                     self.retiring.push(RetiringView {
                         attached: candidate.attached,
                         receipt,
-                        poll_error: None,
                     });
                 }
                 Ok(None) => index += 1,
@@ -1560,6 +1627,10 @@ impl App<'_> {
             bail!("read-only client cannot open a new shell");
         }
         let workspace = self.state.current(&self.registry).context("no workspace")?;
+        let window = self
+            .state
+            .current_window(&self.registry)
+            .context("no window")?;
         let pane_id = self.state.focused.as_ref().context("no focused pane")?;
         let pane = self
             .registry
@@ -1571,15 +1642,19 @@ impl App<'_> {
             bail!("focused execution is still live; opening a new shell cannot replace it");
         }
         let mut projected = Vec::new();
-        leaves(workspace.layout.as_ref(), &mut projected);
-        if !projected.contains(pane_id) {
-            bail!("focused pane is no longer in this workspace");
+        leaves(window.layout.as_ref(), &mut projected);
+        if !projected.contains(pane_id)
+            || pane.workspace_id.as_ref() != Some(&workspace.id)
+            || pane.window_id.as_ref() != Some(&window.id)
+        {
+            bail!("focused pane is no longer owned and projected in this window");
         }
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
         self.open_form(
             FormKind::ReopenPane {
                 workspace_id: workspace.id.clone(),
-                expected_revision: workspace.revision,
+                window_id: window.id.clone(),
+                expected_revision: window.revision,
                 pane_id: pane_id.clone(),
                 selection_epoch: self.selection_epoch,
                 cwd: pane.foreground_cwd.as_ref().unwrap_or(&pane.cwd).clone(),
@@ -1597,6 +1672,11 @@ impl App<'_> {
             .current(&self.registry)
             .cloned()
             .context("create a workspace first (Ctrl-b c)")?;
+        let window = self
+            .state
+            .current_window(&self.registry)
+            .cloned()
+            .context("no selected window")?;
         let parent = self
             .state
             .focused
@@ -1620,6 +1700,7 @@ impl App<'_> {
         self.manage(
             management::Command::Spawn {
                 workspace,
+                window,
                 target,
                 axis,
                 spec,
@@ -1628,27 +1709,52 @@ impl App<'_> {
         )
     }
     fn show_existing(&mut self, pane: String) -> Result<()> {
-        let workspace = self
-            .state
-            .current(&self.registry)
+        let owner = self
+            .registry
+            .panes
+            .iter()
+            .find(|entry| entry.id == pane)
+            .context("terminal no longer exists")?;
+        let workspace_id = owner
+            .workspace_id
+            .clone()
+            .context("administrative terminal has no owning workspace")?;
+        let window_id = owner
+            .window_id
+            .clone()
+            .context("terminal has no owning window")?;
+        let window = self
+            .registry
+            .workspaces
+            .iter()
+            .find(|entry| entry.id == workspace_id)
+            .and_then(|entry| entry.windows.iter().find(|window| window.id == window_id))
             .cloned()
-            .context("create a workspace first")?;
+            .context("terminal's owning window no longer exists")?;
+        if self.state.workspace.as_ref() != Some(&workspace_id) {
+            self.switch(workspace_id.clone());
+        }
+        if self.state.window.as_ref() != Some(&window_id) {
+            self.switch_window(window_id.clone());
+        }
         let mut visible = Vec::new();
-        leaves(workspace.layout.as_ref(), &mut visible);
+        leaves(window.layout.as_ref(), &mut visible);
         if !visible.contains(&pane) {
             if self.options.read_only {
-                bail!("read-only client cannot change layout");
+                bail!("read-only client cannot restore a removed terminal projection");
             }
             let target = self.state.focused.as_deref().unwrap_or("");
-            let layout = split_leaf(workspace.layout, target, &pane, Axis::Horizontal);
+            let layout = split_leaf(window.layout, target, &pane, Axis::Horizontal);
             return self.manage(
                 management::Command::Single(Operation::LayoutUpdate {
-                    workspace_id: workspace.id.clone(),
-                    expected_revision: workspace.revision,
+                    workspace_id: workspace_id.clone(),
+                    window_id: window_id.clone(),
+                    expected_revision: window.revision,
                     layout,
                 }),
                 Some(management::Selection {
-                    workspace: workspace.id,
+                    workspace: workspace_id,
+                    window: window_id,
                     pane,
                 }),
             );
@@ -2023,6 +2129,7 @@ impl App<'_> {
             FormKind::ProjectDetails => self.state.cancel(),
             FormKind::ReopenPane {
                 workspace_id,
+                window_id,
                 expected_revision,
                 pane_id,
                 selection_epoch,
@@ -2033,6 +2140,7 @@ impl App<'_> {
                 }
                 if selection_epoch != self.selection_epoch
                     || self.state.workspace.as_ref() != Some(&workspace_id)
+                    || self.state.window.as_ref() != Some(&window_id)
                     || self.state.focused.as_ref() != Some(&pane_id)
                 {
                     bail!("selection changed while confirming the new shell; reopen confirmation");
@@ -2048,6 +2156,7 @@ impl App<'_> {
                 self.manage(
                     management::Command::Reopen {
                         workspace_id,
+                        window_id,
                         expected_revision,
                         pane_id,
                         spec: PaneSpawnSpec {
@@ -2072,6 +2181,31 @@ impl App<'_> {
                     self.switch(workspace.id.clone());
                 }
             }
+            FormKind::ChooseWindow => {
+                let workspace_id = form
+                    .target
+                    .as_ref()
+                    .map(|(target, _)| target.workspace())
+                    .context("window chooser has no captured workspace")?;
+                let workspace = self
+                    .registry
+                    .workspaces
+                    .iter()
+                    .find(|entry| entry.id == workspace_id)
+                    .context("window chooser's workspace no longer exists")?;
+                let window = workspace
+                    .windows
+                    .get(form.selection)
+                    .context("selected window no longer exists")?
+                    .id
+                    .clone();
+                let workspace = workspace.id.clone();
+                self.state.form = None;
+                if self.state.workspace.as_ref() != Some(&workspace) {
+                    self.switch(workspace);
+                }
+                self.switch_window(window);
+            }
             FormKind::ChoosePane => {
                 self.state.form = None;
                 if let Some(pane) = self.registry.panes.get(form.selection) {
@@ -2085,7 +2219,8 @@ impl App<'_> {
                 let cwd = form.fields.directory();
                 self.manage(
                     management::Command::Create {
-                        name: form.fields.primary.value,
+                        name: (!form.fields.primary.value.trim().is_empty())
+                            .then_some(form.fields.primary.value),
                         spec: PaneSpawnSpec {
                             argv: self.options.shell.clone(),
                             cwd,
@@ -2097,6 +2232,45 @@ impl App<'_> {
                     },
                     None,
                 )?;
+            }
+            FormKind::CreateWindow => {
+                if self.options.read_only {
+                    bail!("read-only client cannot create windows");
+                }
+                let workspace = self.form_workspace(form.target.as_ref())?;
+                let cwd = form.fields.directory();
+                self.manage(
+                    management::Command::CreateWindow {
+                        workspace_id: workspace.id,
+                        expected_revision: workspace.revision,
+                        name: (!form.fields.primary.value.trim().is_empty())
+                            .then_some(form.fields.primary.value),
+                        spec: PaneSpawnSpec {
+                            argv: self.options.shell.clone(),
+                            cwd,
+                            home: self.options.home.clone(),
+                            size,
+                            title: None,
+                            isolated_environment: self.options.isolated_environment,
+                        },
+                    },
+                    None,
+                )?;
+            }
+            FormKind::RenameWindow => {
+                if self.options.read_only {
+                    bail!("read-only client cannot rename windows");
+                }
+                if form.fields.primary.value.trim().is_empty() {
+                    bail!("window name cannot be empty");
+                }
+                let (workspace_id, window) = self.form_window(form.target.as_ref())?;
+                self.operation(Operation::WindowRename {
+                    workspace_id,
+                    window_id: window.id,
+                    expected_revision: window.revision,
+                    name: form.fields.primary.value,
+                })?;
             }
             FormKind::RenameWorkspace => {
                 if self.options.read_only {
@@ -2134,13 +2308,26 @@ impl App<'_> {
                     })?;
                 }
             }
-            FormKind::RemoveWorkspace => {
+            FormKind::CloseWindow => {
                 if form.confirmed {
                     if self.options.read_only {
-                        bail!("read-only client cannot remove workspaces");
+                        bail!("read-only client cannot close windows");
+                    }
+                    let (workspace_id, window) = self.form_window(form.target.as_ref())?;
+                    self.operation(Operation::WindowClose {
+                        workspace_id,
+                        window_id: window.id,
+                        expected_revision: window.revision,
+                    })?;
+                }
+            }
+            FormKind::CloseWorkspace => {
+                if form.confirmed {
+                    if self.options.read_only {
+                        bail!("read-only client cannot close workspaces");
                     }
                     let workspace = self.form_workspace(form.target.as_ref())?;
-                    self.operation(Operation::WorkspaceRemove {
+                    self.operation(Operation::WorkspaceClose {
                         workspace_id: workspace.id,
                         expected_revision: workspace.revision,
                     })?;
@@ -2179,12 +2366,12 @@ impl App<'_> {
         }
     }
     fn form_workspace(&self, target: Option<&(SidebarTarget, u64)>) -> Result<Workspace> {
-        if let Some((target, revision)) = target {
+        if let Some((SidebarTarget::Workspace(id), revision)) = target {
             let mut workspace = self
                 .registry
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.id == target.workspace())
+                .find(|workspace| workspace.id == *id)
                 .context("selected workspace no longer exists")?
                 .clone();
             workspace.revision = *revision;
@@ -2193,10 +2380,27 @@ impl App<'_> {
             bail!("workspace was unavailable when the form opened; reopen the form")
         }
     }
+    fn form_window(&self, target: Option<&(SidebarTarget, u64)>) -> Result<(String, Window)> {
+        let Some((SidebarTarget::Window { workspace, window }, revision)) = target else {
+            bail!("window was unavailable when the form opened; reopen the form");
+        };
+        let mut document = self
+            .registry
+            .workspaces
+            .iter()
+            .find(|entry| entry.id == *workspace)
+            .and_then(|entry| entry.windows.iter().find(|entry| entry.id == *window))
+            .cloned()
+            .context("selected window no longer exists")?;
+        document.revision = *revision;
+        Ok((workspace.clone(), document))
+    }
     fn form_pane(&self, target: Option<&(SidebarTarget, u64)>) -> Result<String> {
         match target {
             Some((SidebarTarget::Pane { pane, .. }, _)) => Ok(pane.clone()),
-            Some((SidebarTarget::Workspace(_), _)) => bail!("selected item is not a terminal"),
+            Some((SidebarTarget::Workspace(_) | SidebarTarget::Window { .. }, _)) => {
+                bail!("selected item is not a terminal")
+            }
             None => self
                 .state
                 .form
@@ -2221,14 +2425,23 @@ impl App<'_> {
             .iter()
             .find(|workspace| workspace.id == target.workspace())
             .context("selected workspace no longer exists")?;
-        let revision = workspace.revision;
+        let mut revision = workspace.revision;
         let (kind, value) = match &target {
-            SidebarTarget::Workspace(_) if close => {
-                bail!(
-                    "Closing all workspace terminals requires backend workspace-close support; no processes or layouts changed"
-                );
-            }
+            SidebarTarget::Workspace(_) if close => (FormKind::CloseWorkspace, String::new()),
             SidebarTarget::Workspace(_) => (FormKind::RenameWorkspace, workspace.name.clone()),
+            SidebarTarget::Window { window, .. } => {
+                let window = workspace
+                    .windows
+                    .iter()
+                    .find(|entry| entry.id == *window)
+                    .context("selected window no longer exists")?;
+                revision = window.revision;
+                if close {
+                    (FormKind::CloseWindow, String::new())
+                } else {
+                    (FormKind::RenameWindow, window.name.clone())
+                }
+            }
             SidebarTarget::Pane { pane, .. } => {
                 let pane = self
                     .registry
@@ -2236,6 +2449,15 @@ impl App<'_> {
                     .iter()
                     .find(|entry| entry.id == *pane)
                     .context("selected terminal no longer exists")?;
+                if pane.workspace_id.as_ref() != Some(&workspace.id) {
+                    bail!("selected terminal no longer belongs to this workspace");
+                }
+                revision = workspace
+                    .windows
+                    .iter()
+                    .find(|window| pane.window_id.as_ref() == Some(&window.id))
+                    .context("selected terminal's owning window no longer exists")?
+                    .revision;
                 if close {
                     (FormKind::TerminatePane, String::new())
                 } else {
@@ -2250,12 +2472,18 @@ impl App<'_> {
     fn activate_sidebar(&mut self, target: SidebarTarget) -> Result<()> {
         match target {
             SidebarTarget::Workspace(id) => self.switch(id),
-            SidebarTarget::Pane { workspace, pane } => {
+            SidebarTarget::Window { workspace, window } => {
+                if !self.registry.workspaces.iter().any(|entry| {
+                    entry.id == workspace && entry.windows.iter().any(|entry| entry.id == window)
+                }) {
+                    bail!("selected window no longer exists");
+                }
                 if self.state.workspace.as_ref() != Some(&workspace) {
                     self.switch(workspace);
                 }
-                self.show_existing(pane)?;
+                self.switch_window(window);
             }
+            SidebarTarget::Pane { pane, .. } => self.show_existing(pane)?,
         }
         self.state.sidebar.active = false;
         Ok(())
@@ -2311,6 +2539,22 @@ impl App<'_> {
             Some(Action::CreateWorkspace) => {
                 self.open_form(FormKind::CreateWorkspace, String::new())
             }
+            Some(Action::CreateTerminal) => {
+                if let Some(target) = self.state.sidebar.cursor.clone() {
+                    let workspace = self
+                        .registry
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.id == target.workspace())
+                        .context("selected workspace no longer exists")?;
+                    let target = (
+                        SidebarTarget::Workspace(workspace.id.clone()),
+                        workspace.revision,
+                    );
+                    self.open_form(FormKind::CreateWindow, String::new());
+                    self.state.form.as_mut().unwrap().target = Some(target);
+                }
+            }
             Some(Action::RenameSelected) => self.edit_sidebar(false)?,
             Some(Action::CloseSelected) => self.edit_sidebar(true)?,
             Some(Action::OpenFinder) => self.begin_finder(),
@@ -2319,6 +2563,7 @@ impl App<'_> {
         self.state.sidebar.reconcile(
             &self.registry,
             self.state.workspace.as_deref(),
+            self.state.window.as_deref(),
             self.state.focused.as_deref(),
         );
         Ok(true)
@@ -2333,21 +2578,20 @@ impl App<'_> {
             return Ok(());
         };
         let workspace = self.state.current(&self.registry).context("no workspace")?;
-        if self
-            .jobs
-            .contains(&format!("manage:workspace:{}", workspace.id))
-        {
-            bail!("Pane move waiting for pending workspace management; not queued");
+        let window = self
+            .state
+            .current_window(&self.registry)
+            .context("no window")?;
+        if self.jobs.contains(&format!("manage:window:{}", window.id)) {
+            bail!("Pane move waiting for pending window management; not queued");
         }
         let focused = self.state.focused.as_deref().context("no focused pane")?;
-        let mut layout = workspace
-            .layout
-            .clone()
-            .context("workspace has no layout")?;
+        let mut layout = window.layout.clone().context("window has no layout")?;
         exchange_leaves(&mut layout, focused, target);
         let operation = Operation::LayoutUpdate {
             workspace_id: workspace.id.clone(),
-            expected_revision: workspace.revision,
+            window_id: window.id.clone(),
+            expected_revision: window.revision,
             layout: Some(layout),
         };
         self.retire_resize("pane rearrangement");
@@ -2529,6 +2773,16 @@ impl App<'_> {
                         project_detail_lines(form_size, form, &self.registry).len()
                     }
                     FormKind::ChooseWorkspace => self.registry.workspaces.len(),
+                    FormKind::ChooseWindow => self
+                        .registry
+                        .workspaces
+                        .iter()
+                        .find(|workspace| {
+                            form.target
+                                .as_ref()
+                                .is_some_and(|(target, _)| target.workspace() == workspace.id)
+                        })
+                        .map_or(0, |workspace| workspace.windows.len()),
                     FormKind::ChoosePane => self.registry.panes.len(),
                     FormKind::ReopenPane { .. } => 2,
                     _ => 0,
@@ -2639,6 +2893,9 @@ impl App<'_> {
                 Some(Action::CreateWorkspace) => {
                     self.open_form(FormKind::CreateWorkspace, String::new())
                 }
+                Some(Action::CreateTerminal) => {
+                    self.open_form(FormKind::CreateWindow, String::new())
+                }
                 Some(Action::RenameWorkspace) => {
                     if let Some(workspace) = self.state.current(&self.registry) {
                         self.open_form(FormKind::RenameWorkspace, workspace.name.clone());
@@ -2657,12 +2914,13 @@ impl App<'_> {
                 Some(Action::TerminatePane) => {
                     self.open_form(FormKind::TerminatePane, String::new())
                 }
-                Some(Action::RemoveWorkspace) => {
-                    self.open_form(FormKind::RemoveWorkspace, String::new())
+                Some(Action::CloseWorkspace) => {
+                    self.open_form(FormKind::CloseWorkspace, String::new())
                 }
                 Some(Action::ChooseWorkspace) => {
                     self.open_form(FormKind::ChooseWorkspace, String::new())
                 }
+                Some(Action::ChooseWindow) => self.open_form(FormKind::ChooseWindow, String::new()),
                 Some(Action::ChoosePane) => self.open_form(FormKind::ChoosePane, String::new()),
                 Some(Action::ReopenPane) => self.confirm_reopen()?,
                 Some(Action::SplitHorizontal) => self.spawn(size, Axis::Horizontal)?,
@@ -2676,11 +2934,17 @@ impl App<'_> {
                         .current(&self.registry)
                         .context("no workspace")?
                         .clone();
+                    let window = self
+                        .state
+                        .current_window(&self.registry)
+                        .cloned()
+                        .context("no window")?;
                     let target = self.state.focused.as_deref().context("no focused pane")?;
-                    let layout = remove_leaf(workspace.layout, target);
+                    let layout = remove_leaf(window.layout, target);
                     self.operation(Operation::LayoutUpdate {
                         workspace_id: workspace.id,
-                        expected_revision: workspace.revision,
+                        window_id: window.id,
+                        expected_revision: window.revision,
                         layout,
                     })?;
                     self.state.status =
@@ -3093,6 +3357,22 @@ impl App<'_> {
         }
         Ok(())
     }
+    fn color_reply(&mut self, response: &[u8]) {
+        if self.colors.theme_changed(response) {
+            self.color_query_pending = true;
+        }
+        self.colors.feed(response);
+    }
+
+    fn flush_color_query(&mut self, out: &mut impl Write) -> Result<()> {
+        if self.color_query_pending {
+            out.write_all(&ColorProbe::query())?;
+            out.flush()?;
+            self.color_query_pending = false;
+        }
+        Ok(())
+    }
+
     fn reply(
         &mut self,
         response: &[u8],
@@ -3157,7 +3437,8 @@ impl App<'_> {
             self.notify_focus()?;
             return Ok(());
         }
-        self.colors.feed(response);
+        terminal.theme_reply(response, out)?;
+        self.color_reply(response);
         if self.consent.is_none()
             && self.state.form.is_none()
             && (!self.search_open() || self.paste_offer.is_some())
@@ -3207,13 +3488,14 @@ fn attach(socket: &Endpoint, pane: &str, mut spec: ViewSpec) -> Result<Attached>
         transport::mark_outcome_unknown(error.into()).context(AttachOwnership::Unconfirmed)
     })?;
     let view = result.view_id;
-    let pump = match updates::pane(socket, pane, &view) {
+    let mut pump = match updates::pane(socket, pane, &view) {
         Ok(pump) => pump,
         Err(error) => return Err(detach_failed_attach(socket, pane, &view, error)),
     };
     let Snapshot { metadata, scene } = match pump.initial() {
         Ok(snapshot) => snapshot,
         Err(error) => {
+            pump.cancel();
             let error = detach_failed_attach(socket, pane, &view, error);
             drop(pump);
             return Err(error);
@@ -3242,6 +3524,7 @@ fn attach(socket: &Endpoint, pane: &str, mut spec: ViewSpec) -> Result<Attached>
     if let Some(scene) = scene
         && let Err(error) = attached.scene(scene)
     {
+        attached.pump.cancel();
         let error = detach_failed_attach(socket, pane, &attached.view, error);
         drop(attached);
         return Err(error);
@@ -3334,6 +3617,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         paste_target: None,
         enhanced_supported: None,
         colors: ColorProbe::default(),
+        color_query_pending: false,
         last_button: MouseButton::None,
         pointer_capture: None,
         pressed_pointers: RefCell::new(Vec::new()),
@@ -3359,6 +3643,11 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         let mut parser = InputParser::new();
         let mut demux = ReplyDemux::default();
         let mut last_input = Instant::now();
+        let mut theme = Theme::default();
+        let mut footer_roles = Vec::new();
+        let mut guide_roles = Vec::new();
+        let mut chrome_markers = Vec::new();
+        let mut marker_sources = Vec::with_capacity(16);
         let mut chrome_surface = UiSurface::new(initial_size);
         let mut popup_surface = UiSurface::new(Size {
             cols: 1,
@@ -3378,7 +3667,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         let mut window_size = None;
         let mut guide_painted = None;
         let mut search_surface = UiSurface::new(initial_size);
-        let mut placeholders = HashMap::<String, Frame>::new();
+        let mut placeholders = HashMap::<String, UiSurface>::new();
         loop {
             if client.consume_lifecycle()? {
                 return Ok(());
@@ -3405,6 +3694,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             app.state.sidebar.reconcile(
                 &app.registry,
                 app.state.workspace.as_deref(),
+                app.state.window.as_deref(),
                 app.state.focused.as_deref(),
             );
             app.state
@@ -3506,8 +3796,48 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 |pane| app.views.get(pane).map(|view| &view.metadata),
                 |pane| app.history(pane),
             );
-            let accent = app.colors.background.map(ColorSource::Rgb);
-            graphics.prepare(&app.colors, size, accent.as_slice());
+            if let Some(row) = app.state.sidebar.pointer_row {
+                app.state.sidebar.hover(
+                    workspace_hits
+                        .iter()
+                        .find(|(_, y)| *y == row)
+                        .map(|(target, _)| target),
+                );
+            }
+            theme.update(&app.colors);
+            let guide_width = unicode_width::UnicodeWidthStr::width(app.guide.footer.as_str());
+            let mut status_width = 0;
+            if !app.state.status.is_empty() {
+                let available = usize::from(size.cols).saturating_sub(guide_width + 3);
+                for ch in app.state.status.chars() {
+                    let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if status_width + width > available {
+                        break;
+                    }
+                    status_width += width;
+                }
+                status_width += 3;
+            }
+            footer_roles.clear();
+            footer_roles.extend(app.guide.footer_roles.iter().map(|span| RoleSpan {
+                rect: Rect {
+                    x: span.rect.x.saturating_add(status_width as u16),
+                    y: size.rows.saturating_sub(1),
+                    ..span.rect
+                },
+                role: span.role,
+            }));
+            theme_chrome(
+                &mut chrome_surface,
+                &theme,
+                &app.state,
+                &app.registry,
+                &rects,
+                &footer_roles,
+                |pane| app.views.get(pane).map(|view| &view.metadata),
+            );
+            chrome_markers.clear();
+            marker_sources.clear();
             chrome_surface.frame.images.clear();
             chrome_surface.frame.placements.clear();
             let sidebar_width = screen_geometry(size).0.width;
@@ -3522,8 +3852,10 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             {
                 let (artwork, col) = match entry.kind {
                     SidebarRowKind::Workspace { .. } => (crate::chrome_graphics::Artwork::Hive, 2),
-                    SidebarRowKind::Pane { .. } => (crate::chrome_graphics::Artwork::Bee, 4),
-                    _ => continue,
+                    SidebarRowKind::Pane { .. } => (crate::chrome_graphics::Artwork::Bee, 6),
+                    SidebarRowKind::Window { .. }
+                    | SidebarRowKind::Detail { .. }
+                    | SidebarRowKind::Spacer => continue,
                 };
                 if col + 2 > sidebar_width.saturating_sub(1) {
                     continue;
@@ -3531,11 +3863,16 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 let row = index as u16 + 2;
                 let style =
                     &chrome_surface.frame.rows[usize::from(row)].cells[usize::from(col)].style;
-                let source = if style.inverse {
-                    accent
-                } else {
-                    Some(style.foreground_source)
-                };
+                let source = theme.effective_ink(style);
+                if let Some(source) = source
+                    && !marker_sources.contains(&source)
+                {
+                    marker_sources.push(source);
+                }
+                chrome_markers.push((artwork, col, row, source));
+            }
+            graphics.prepare(&app.colors, size, &marker_sources);
+            for &(artwork, col, row, source) in &chrome_markers {
                 graphics.decorate(
                     &mut chrome_surface.frame,
                     artwork,
@@ -3545,15 +3882,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     u32::from(row) + 1,
                 );
             }
-            if let Some(row) = app.state.sidebar.pointer_row {
-                app.state.sidebar.hover(
-                    workspace_hits
-                        .iter()
-                        .find(|(_, y)| *y == row)
-                        .map(|(target, _)| target),
-                );
-            }
-            native_colors(&mut chrome_surface.frame, &app.colors);
+            // Native application frames below deliberately bypass the UI theme.
             placeholders.retain(|id, _| {
                 rects.iter().any(|(pane, _)| pane == id)
                     && app.views.get(id).is_none_or(|view| view.frame.is_none())
@@ -3567,14 +3896,24 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     continue;
                 }
                 let local = rect.size(size);
-                let frame = placeholders
+                let surface = placeholders
                     .entry(id.clone())
-                    .or_insert_with(|| blank(local));
-                if frame.size != local {
-                    *frame = blank(local);
-                }
-                native_colors(frame, &app.colors);
-                text(frame, 0, 0, &app.placeholder(id), false);
+                    .or_insert_with(|| UiSurface::new(local));
+                surface.paint(
+                    local,
+                    vec![(
+                        Rect {
+                            x: 0,
+                            y: 0,
+                            width: local.cols,
+                            height: 1,
+                        },
+                        app.placeholder(id),
+                        false,
+                    )],
+                    None,
+                );
+                surface.apply_theme(&theme, Role::Muted, &[]);
             }
             let consent_open = app
                 .consent
@@ -3637,19 +3976,37 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                                 height: 1,
                             },
                             "Clipboard request: y allow / n deny (pane-local)".into(),
-                            true,
+                            false,
                         )],
                         None,
                     );
+                    popup_surface.apply_theme(
+                        &theme,
+                        Role::Panel,
+                        &[RoleSpan {
+                            rect: Rect {
+                                x: 0,
+                                y: 0,
+                                width: local.cols,
+                                height: 1,
+                            },
+                            role: Role::Warning,
+                        }],
+                    );
                 } else if let Some(finder) = &mut app.finder {
                     finder.paint(&mut popup_surface, local);
+                    finder.apply_theme(&mut popup_surface, &theme);
                 } else if let Some(form) = &app.state.form {
                     modal(&mut popup_surface, local, form, &app.registry, |pane| {
                         app.views.get(pane).map(|view| &view.metadata)
                     });
+                    theme_modal(&mut popup_surface, &theme, form);
                 }
-                native_colors(&mut popup_surface.frame, &app.colors);
-                native_colors(&mut window_surface.frame, &app.colors);
+                window_surface.apply_theme(
+                    &theme,
+                    Role::Panel,
+                    &window::theme_spans(window_surface.frame.size),
+                );
             }
             let tooltip_target = if popup || app.state.prefix || app.search_open() {
                 None
@@ -3673,7 +4030,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 |pane| app.views.get(pane).map(|view| &view.metadata),
             );
             if tooltip.is_some() {
-                native_colors(&mut app.popover.surface.frame, &app.colors);
+                app.popover.apply_theme(&theme);
             }
             let guide_rect = app.guide_geometry(size, tooltip, popup);
             if let Some(rect) = guide_rect {
@@ -3686,6 +4043,34 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                         window::Border::Rounded,
                     );
                     let content = window::content(local);
+                    guide_roles.clear();
+                    guide_roles.extend_from_slice(&window::theme_spans(local));
+                    if local.cols >= 3 && local.rows >= 3 {
+                        guide_roles.push(RoleSpan {
+                            rect: Rect {
+                                x: 1,
+                                y: 0,
+                                width: (unicode_width::UnicodeWidthStr::width(
+                                    app.guide_context().title(),
+                                ) as u16)
+                                    .min(local.cols - 2),
+                                height: 1,
+                            },
+                            role: Role::Title,
+                        });
+                    }
+                    guide_roles.push(RoleSpan {
+                        rect: content,
+                        role: Role::Muted,
+                    });
+                    guide_roles.extend(app.guide.expanded_roles.iter().map(|span| RoleSpan {
+                        rect: Rect {
+                            x: span.rect.x + content.x,
+                            y: span.rect.y + content.y,
+                            ..span.rect
+                        },
+                        role: span.role,
+                    }));
                     rows.extend(
                         app.guide
                             .expanded
@@ -3708,10 +4093,10 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     guide_surface.paint(local, rows, None);
                     guide_painted = Some(key);
                 }
-                native_colors(&mut guide_surface.frame, &app.colors);
+                guide_surface.apply_theme(&theme, Role::Panel, &guide_roles);
             }
             let searching = app.search_overlay(&mut search_surface, size);
-            native_colors(&mut search_surface.frame, &app.colors);
+            app.theme_search(&mut search_surface, &theme);
             let mut surfaces = vec![Surface {
                 id: "ui:chrome",
                 rect: Rect {
@@ -3734,7 +4119,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     .views
                     .get(id)
                     .and_then(|v| v.frame.as_ref())
-                    .or_else(|| placeholders.get(id))
+                    .or_else(|| placeholders.get(id).map(|surface| &surface.frame))
                 {
                     surfaces.push(Surface {
                         id,
@@ -3953,6 +4338,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     _ => {}
                 }
             }
+            app.flush_color_query(&mut out)?;
         }
         Ok(())
     })();
@@ -4031,10 +4417,10 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         Ok(completions) => {
             for completion in completions {
                 match completion.result {
-                    Ok(Background::Attached { pane, attached }) => {
+                    Ok(Background::Attached { pane, mut attached }) => {
                         accumulate_cleanup(
                             &mut cleanup,
-                            detach_view(socket, &pane, &attached, false),
+                            detach_view(socket, &pane, &mut attached, false),
                         );
                     }
                     Ok(Background::Management(_) | Background::Resize(_)) => {}
@@ -4046,11 +4432,11 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         }
         Err(error) => accumulate_cleanup(&mut cleanup, Err(error)),
     }
-    for candidate in std::mem::take(&mut app.retiring_candidates) {
+    for mut candidate in std::mem::take(&mut app.retiring_candidates) {
         // Never displayed, so no user input was addressed to this view.
         accumulate_cleanup(
             &mut cleanup,
-            detach_view(socket, &candidate.pane, &candidate.attached, false),
+            detach_view(socket, &candidate.pane, &mut candidate.attached, false),
         );
     }
     let retiring = std::mem::take(&mut app.retiring);
@@ -4068,10 +4454,11 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
     }
     // Only views whose final retirement was not admitted reach this fallback.
     // All accepted lane operations have settled before their explicit detach.
-    for (pane, attached) in fallback {
+    for (pane, mut attached) in fallback {
+        let focus_out = attached.retirement_focus_out;
         accumulate_cleanup(
             &mut cleanup,
-            detach_view(socket, &pane, &attached, attached.retirement_focus_out),
+            detach_view(socket, &pane, &mut attached, focus_out),
         );
     }
     let mut released = Ok(());
@@ -4098,7 +4485,12 @@ fn accumulate_cleanup(result: &mut Result<()>, next: Result<()>) {
         };
     }
 }
-fn detach_view(socket: &Endpoint, pane: &str, attached: &Attached, focus_out: bool) -> Result<()> {
+fn detach_view(
+    socket: &Endpoint,
+    pane: &str,
+    attached: &mut Attached,
+    focus_out: bool,
+) -> Result<()> {
     let mut result = Ok(());
     if focus_out {
         accumulate_cleanup(
@@ -4114,6 +4506,7 @@ fn detach_view(socket: &Endpoint, pane: &str, attached: &Attached, focus_out: bo
                 .map(|_| ()),
         );
     }
+    attached.pump.cancel();
     accumulate_cleanup(
         &mut result,
         socket
@@ -4180,6 +4573,7 @@ mod tests {
                 paste_target: None,
                 enhanced_supported: None,
                 colors: ColorProbe::default(),
+                color_query_pending: false,
                 last_button: MouseButton::None,
                 pointer_capture: None,
                 pressed_pointers: RefCell::new(Vec::new()),
@@ -4197,6 +4591,71 @@ mod tests {
             },
             received,
         )
+    }
+
+    #[test]
+    fn private_theme_notifications_decode_and_coalesce_one_refresh_per_batch() {
+        let wire = b"\x1b[?997;1n\x1b[?997;2n";
+        let (mut app, _) = fixture();
+        for split in 0..=wire.len() {
+            app.colors.truecolor = true;
+            app.colors.foreground = Some([220, 230, 240]);
+            app.colors.background = Some([20, 30, 40]);
+            app.colors.palette.insert(2, [80, 180, 100]);
+            let mut parser = InputParser::new();
+            let mut demux = ReplyDemux::default();
+            let mut events = decode_input(&mut parser, demux.feed(&wire[..split]), false);
+            events.extend(decode_input(&mut parser, demux.feed(&wire[split..]), false));
+            assert_eq!(events.len(), 2, "split {split}");
+            for event in events {
+                let ClientEvent::Reply(response) = event else {
+                    panic!(
+                        "private theme notification leaked to application input at split {split}"
+                    );
+                };
+                app.color_reply(&response);
+            }
+            assert!(app.colors.truecolor);
+            assert!(app.colors.foreground.is_none());
+            assert!(app.colors.background.is_none());
+            assert!(app.colors.palette.is_empty());
+            assert!(app.color_query_pending);
+            let mut out = Vec::new();
+            app.flush_color_query(&mut out).unwrap();
+            assert_eq!(out, ColorProbe::query(), "split {split}");
+            assert!(!app.color_query_pending);
+            app.flush_color_query(&mut out).unwrap();
+            assert_eq!(out, ColorProbe::query(), "duplicate flush at split {split}");
+        }
+
+        app.colors.foreground = Some([220, 230, 240]);
+        app.colors.background = Some([20, 30, 40]);
+        app.colors.palette.insert(2, [80, 180, 100]);
+        let mut parser = InputParser::new();
+        let mut demux = ReplyDemux::default();
+        let mut typed = String::new();
+        for event in decode_input(&mut parser, demux.feed(b"before\x1b[?997;3nafter"), false) {
+            let ClientEvent::Legacy(InputEvent::Key(key)) = event else {
+                panic!("unknown theme mode must not become a reply or consume adjacent typing");
+            };
+            typed.push_str(&key_event(key).text);
+        }
+        assert_eq!(typed, "beforeafter");
+        let events = decode_input(
+            &mut parser,
+            demux.feed(b"\x1b[200~literal\x1b[?997;1ntext\x1b[201~"),
+            false,
+        );
+        let [ClientEvent::Legacy(InputEvent::Paste(text))] = events.as_slice() else {
+            panic!("a pasted notification must remain one literal paste");
+        };
+        assert_eq!(text, "literal\x1b[?997;1ntext");
+        assert_eq!(app.colors.foreground, Some([220, 230, 240]));
+        assert_eq!(app.colors.background, Some([20, 30, 40]));
+        assert_eq!(app.colors.palette.get(&2), Some(&[80, 180, 100]));
+        let mut out = Vec::new();
+        app.flush_color_query(&mut out).unwrap();
+        assert!(out.is_empty());
     }
     fn consent(paste: bool) -> DeviceConsent {
         DeviceConsent {
@@ -4341,6 +4800,7 @@ mod tests {
         app.notified_focus = None;
         app.registry.panes[0].status = PaneStatus::Stopped;
         app.registry.panes[0].workspace_id = Some("history".into());
+        app.registry.panes[0].window_id = Some("history-window".into());
         app.registry.panes[0].cwd = "/recorded/cwd".into();
         app.registry.panes[0].foreground_cwd = Some("/observed/cwd".into());
         app.registry.panes[0].home = "/retired/home".into();
@@ -4349,9 +4809,14 @@ mod tests {
             id: "history".into(),
             name: "History".into(),
             revision: 7,
-            layout: Some(LayoutNode::Leaf {
-                pane_id: "focused-pane".into(),
-            }),
+            windows: vec![Window {
+                id: "history-window".into(),
+                name: "History terminal".into(),
+                revision: 7,
+                layout: Some(LayoutNode::Leaf {
+                    pane_id: "focused-pane".into(),
+                }),
+            }],
         });
         app.state = Controller::new(&app.registry);
     }
@@ -4452,7 +4917,7 @@ mod tests {
             }
             // A newer registry observation must not silently replace the
             // revision that the user confirmed.
-            app.registry.workspaces[0].revision = 9;
+            app.registry.workspaces[0].windows[0].revision = 9;
             app.key(key("Enter"), &mut Vec::new(), size(), &[]).unwrap();
             assert!(
                 app.state
@@ -4460,9 +4925,9 @@ mod tests {
                     .as_ref()
                     .is_some_and(|form| form.pending.is_some())
             );
-            assert!(app.jobs.contains("manage:workspace:history"));
+            assert!(app.jobs.contains("manage:window:history-window"));
             assert_eq!(
-                app.registry.workspaces[0].layout.as_ref(),
+                app.registry.workspaces[0].windows[0].layout.as_ref(),
                 Some(&LayoutNode::Leaf {
                     pane_id: "focused-pane".into()
                 })
@@ -4475,11 +4940,13 @@ mod tests {
             match request.operation {
                 Operation::PaneReopen {
                     workspace_id,
+                    window_id,
                     expected_revision,
                     pane_id,
                     spec,
                 } => {
                     assert_eq!(workspace_id, "history");
+                    assert_eq!(window_id, "history-window");
                     assert_eq!(expected_revision, 7);
                     assert_eq!(pane_id, "focused-pane");
                     assert_eq!(spec.argv, app.options.shell);
@@ -4498,7 +4965,7 @@ mod tests {
                 }
                 other => panic!("unexpected replacement operation: {other:?}"),
             }
-            app.registry.workspaces[0].revision = 7;
+            app.registry.workspaces[0].windows[0].revision = 7;
             assert_eq!(serde_json::to_value(&app.registry).unwrap(), before);
             assert!(received.try_recv().is_err());
         }
@@ -4517,7 +4984,7 @@ mod tests {
             }
             assert!(app.apply_form(size()).is_err());
             assert!(app.management.is_empty());
-            assert!(!app.jobs.contains("manage:workspace:history"));
+            assert!(!app.jobs.contains("manage:window:history-window"));
             assert!(received.try_recv().is_err());
         }
     }
@@ -4531,8 +4998,8 @@ mod tests {
             neighbor.id = "neighbor".into();
             neighbor.status = PaneStatus::Running;
             app.registry.panes.push(neighbor);
-            app.registry.workspaces[0].layout = split_leaf(
-                app.registry.workspaces[0].layout.take(),
+            app.registry.workspaces[0].windows[0].layout = split_leaf(
+                app.registry.workspaces[0].windows[0].layout.take(),
                 "focused-pane",
                 "neighbor",
                 Axis::Horizontal,
@@ -4544,8 +5011,8 @@ mod tests {
             snapshot.panes.push(replacement);
             snapshot.revision += 1;
             if still_projected {
-                snapshot.workspaces[0].layout = split_leaf(
-                    snapshot.workspaces[0].layout.take(),
+                snapshot.workspaces[0].windows[0].layout = split_leaf(
+                    snapshot.workspaces[0].windows[0].layout.take(),
                     "focused-pane",
                     "new-execution",
                     Axis::Horizontal,
@@ -4563,6 +5030,7 @@ mod tests {
                     registry: snapshot,
                     selection: Some(management::Selection {
                         workspace: "history".into(),
+                        window: "history-window".into(),
                         pane: "new-execution".into(),
                     }),
                 },
@@ -4615,6 +5083,7 @@ mod tests {
         app.registry.panes.push(PaneInfo {
             id: pane.into(),
             workspace_id: None,
+            window_id: None,
             title: "test shell".into(),
             status: PaneStatus::Running,
             exit_code: None,
@@ -4767,22 +5236,27 @@ mod tests {
                 id: "main".into(),
                 name: "Main".into(),
                 revision: 1,
-                layout: Some(LayoutNode::Split {
-                    axis: Axis::Horizontal,
-                    ratio: 500,
-                    first: Box::new(LayoutNode::Leaf {
-                        pane_id: "alpha".into(),
+                windows: vec![Window {
+                    id: "main-window".into(),
+                    name: "Main terminal".into(),
+                    revision: 1,
+                    layout: Some(LayoutNode::Split {
+                        axis: Axis::Horizontal,
+                        ratio: 500,
+                        first: Box::new(LayoutNode::Leaf {
+                            pane_id: "alpha".into(),
+                        }),
+                        second: Box::new(LayoutNode::Leaf {
+                            pane_id: "beta".into(),
+                        }),
                     }),
-                    second: Box::new(LayoutNode::Leaf {
-                        pane_id: "beta".into(),
-                    }),
-                }),
+                }],
             },
             Workspace {
                 id: "remote".into(),
-                name: "Remote-style projection".into(),
+                name: "Other workspace".into(),
                 revision: 1,
-                layout: None,
+                windows: Vec::new(),
             },
         ];
         app.registry.panes = ["alpha", "beta"]
@@ -4790,6 +5264,7 @@ mod tests {
             .map(|id| PaneInfo {
                 id: id.into(),
                 workspace_id: Some("main".into()),
+                window_id: Some("main-window".into()),
                 title: id.into(),
                 status: PaneStatus::Running,
                 exit_code: None,
@@ -4833,7 +5308,7 @@ mod tests {
                     .iter()
                     .map(|cell| cell.text.as_str())
                     .collect::<String>()
-                    .contains("Remote-style")
+                    .contains("Other workspace")
             })
             .expect("target workspace is visible");
         let scene = Scene {
@@ -5482,28 +5957,47 @@ mod tests {
     fn newer_selection_intent_and_registry_snapshot_win_out_of_order_completions() {
         let (mut app, _) = fixture();
         attach_fixture(&mut app);
+        app.registry.panes[0].workspace_id = Some("old".into());
+        app.registry.panes[0].window_id = Some("old-window".into());
         let old = Workspace {
             id: "old".into(),
             name: "Old".into(),
             revision: 1,
-            layout: Some(LayoutNode::Leaf {
-                pane_id: "focused-pane".into(),
-            }),
+            windows: vec![Window {
+                id: "old-window".into(),
+                name: "Old terminal".into(),
+                revision: 1,
+                layout: Some(LayoutNode::Leaf {
+                    pane_id: "focused-pane".into(),
+                }),
+            }],
         };
         let new = Workspace {
             id: "new".into(),
             name: "New".into(),
-            ..old.clone()
+            revision: 1,
+            windows: vec![Window {
+                id: "new-window".into(),
+                name: "New terminal".into(),
+                revision: 1,
+                layout: Some(LayoutNode::Leaf {
+                    pane_id: "new-pane".into(),
+                }),
+            }],
         };
         let older = RegistrySnapshot {
             revision: 3,
             workspaces: vec![old.clone()],
             panes: app.registry.panes.clone(),
         };
+        let mut new_pane = app.registry.panes[0].clone();
+        new_pane.id = "new-pane".into();
+        new_pane.workspace_id = Some("new".into());
+        new_pane.window_id = Some("new-window".into());
         let newer = RegistrySnapshot {
             revision: 7,
             workspaces: vec![old, new],
-            panes: app.registry.panes.clone(),
+            panes: vec![app.registry.panes[0].clone(), new_pane],
         };
         app.registry = older.clone();
         app.state = Controller::new(&app.registry);
@@ -5530,6 +6024,7 @@ mod tests {
                     registry: older,
                     selection: Some(management::Selection {
                         workspace: "old".into(),
+                        window: "old-window".into(),
                         pane: "focused-pane".into(),
                     }),
                 }))
@@ -5541,7 +6036,8 @@ mod tests {
                     registry: newer,
                     selection: Some(management::Selection {
                         workspace: "new".into(),
-                        pane: "focused-pane".into(),
+                        window: "new-window".into(),
+                        pane: "new-pane".into(),
                     }),
                 }))
             })
@@ -5560,11 +6056,13 @@ mod tests {
         app.manage(
             management::Command::Single(Operation::LayoutUpdate {
                 workspace_id: "old".into(),
+                window_id: "old-window".into(),
                 expected_revision: 1,
                 layout: None,
             }),
             Some(management::Selection {
                 workspace: "old".into(),
+                window: "old-window".into(),
                 pane: "pane".into(),
             }),
         )
@@ -5572,7 +6070,7 @@ mod tests {
         assert_eq!(app.selection_epoch, 1);
         app.manage(
             management::Command::Create {
-                name: "new".into(),
+                name: Some("new".into()),
                 spec: PaneSpawnSpec {
                     argv: vec!["/bin/sh".into()],
                     cwd: app.options.cwd.clone(),
@@ -5858,12 +6356,23 @@ mod tests {
                 id: id.into(),
                 name: id.into(),
                 revision: 1,
-                layout: Some(LayoutNode::Leaf {
-                    pane_id: "focused-pane".into(),
-                }),
+                windows: if id == "first" {
+                    vec![Window {
+                        id: "first-window".into(),
+                        name: "First terminal".into(),
+                        revision: 1,
+                        layout: Some(LayoutNode::Leaf {
+                            pane_id: "focused-pane".into(),
+                        }),
+                    }]
+                } else {
+                    Vec::new()
+                },
             })
             .collect();
-        app.state.workspace = Some("first".into());
+        app.registry.panes[0].workspace_id = Some("first".into());
+        app.registry.panes[0].window_id = Some("first-window".into());
+        app.state = Controller::new(&app.registry);
         app.enter_history(&[]).unwrap();
         scroll(&capture, "focused-pane", "focused-view");
         physical_keys(&mut app, b"\x02]").unwrap();
@@ -6128,7 +6637,10 @@ mod tests {
                     app.focus("beta".into());
                     app.focus("focused-pane".into());
                 }
-                2 => app.retire_view("focused-pane", false).unwrap(),
+                2 => {
+                    app.retire_view("focused-pane", true).unwrap();
+                    assert!(app.views["focused-pane"].retirement_requested);
+                }
                 3 => app.views.get_mut("focused-pane").unwrap().view = "replacement-view".into(),
                 4 => {
                     let alpha = content(pointer.rects[0].1);
@@ -6405,25 +6917,34 @@ mod tests {
                 id: "resize".into(),
                 name: "resize".into(),
                 revision: 7,
-                layout: Some(LayoutNode::Split {
-                    axis: Axis::Horizontal,
-                    ratio: 500,
-                    first: Box::new(LayoutNode::Leaf {
-                        pane_id: "focused-pane".into(),
+                windows: vec![Window {
+                    id: "resize-window".into(),
+                    name: "Resize terminal".into(),
+                    revision: 7,
+                    layout: Some(LayoutNode::Split {
+                        axis: Axis::Horizontal,
+                        ratio: 500,
+                        first: Box::new(LayoutNode::Leaf {
+                            pane_id: "focused-pane".into(),
+                        }),
+                        second: Box::new(LayoutNode::Leaf {
+                            pane_id: "beta".into(),
+                        }),
                     }),
-                    second: Box::new(LayoutNode::Leaf {
-                        pane_id: "beta".into(),
-                    }),
-                }),
+                }],
             },
             Workspace {
                 id: "other".into(),
                 name: "other".into(),
                 revision: 2,
-                layout: None,
+                windows: Vec::new(),
             },
         ];
-        app.state.workspace = Some("resize".into());
+        for pane in &mut app.registry.panes {
+            pane.workspace_id = Some("resize".into());
+            pane.window_id = Some("resize-window".into());
+        }
+        app.state = Controller::new(&app.registry);
         pointer.rects = app.rects(pointer.size);
         pointer
     }
@@ -6431,7 +6952,7 @@ mod tests {
     fn resize_divider(app: &App<'_>, size: Size) -> Rect {
         let mut splits = Vec::new();
         crate::tiling::dividers(
-            app.registry.workspaces[0].layout.as_ref(),
+            app.registry.workspaces[0].windows[0].layout.as_ref(),
             screen_geometry(size).1,
             &mut splits,
         );
@@ -6453,6 +6974,7 @@ mod tests {
     fn accept_resize_request(registry: &mut RegistrySnapshot, operation: &Operation) {
         let Operation::LayoutUpdate {
             workspace_id,
+            window_id,
             expected_revision,
             layout,
         } = operation
@@ -6464,9 +6986,15 @@ mod tests {
             .iter_mut()
             .find(|workspace| workspace.id == *workspace_id)
             .unwrap();
-        assert_eq!(workspace.revision, *expected_revision);
+        let window = workspace
+            .windows
+            .iter_mut()
+            .find(|window| window.id == *window_id)
+            .unwrap();
+        assert_eq!(window.revision, *expected_revision);
+        window.revision += 1;
         workspace.revision += 1;
-        workspace.layout = layout.clone();
+        window.layout = layout.clone();
         registry.revision += 1;
     }
 
@@ -6482,6 +7010,7 @@ mod tests {
                         registry: registry.clone(),
                         pane_id: None,
                         workspace_id: None,
+                        window_id: None,
                     })
                     .unwrap(),
                 ),
@@ -6579,7 +7108,7 @@ mod tests {
                 "raw motion submitted another CAS"
             );
             release.send(()).unwrap();
-            wait_background(&mut app, "manage:workspace:resize");
+            wait_background(&mut app, "manage:window:resize-window");
             app.validate_resize(pointer.size);
             app.flush_resize().unwrap();
             let second = requests.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -6590,9 +7119,9 @@ mod tests {
                     ..
                 }
             ));
-            wait_background(&mut app, "manage:workspace:resize");
+            wait_background(&mut app, "manage:window:resize-window");
             server.join().unwrap();
-            assert_eq!(app.registry.workspaces[0].revision, 9);
+            assert_eq!(app.registry.workspaces[0].windows[0].revision, 9);
             let final_divider = resize_divider(&app, pointer.size);
             assert_eq!(
                 final_divider.x,
@@ -6622,7 +7151,7 @@ mod tests {
             let endpoint = Endpoint::unmanaged(&socket);
             app.socket = &endpoint;
             let pointer = resize_fixture(&mut app);
-            let before = app.registry.workspaces[0].layout.clone();
+            let before = app.registry.workspaces[0].windows[0].layout.clone();
             let mut registry = app.registry.clone();
             let (accepted, dispatched) = mpsc::channel();
             let (release, blocked) = mpsc::channel();
@@ -6640,7 +7169,7 @@ mod tests {
                                 version: PROTOCOL_VERSION,
                                 ok: false,
                                 result: None,
-                                error: Some("workspace revision conflict".into()),
+                                error: Some("window revision conflict".into()),
                             })
                             .unwrap()
                         )
@@ -6674,12 +7203,12 @@ mod tests {
             app.key(key("Enter"), &mut Vec::new(), pointer.size, &pointer.rects)
                 .unwrap();
             release.send(()).unwrap();
-            wait_background(&mut app, "manage:workspace:resize");
+            wait_background(&mut app, "manage:window:resize-window");
             server.join().unwrap();
             app.flush_resize().unwrap();
-            assert!(!app.jobs.contains("manage:workspace:resize"));
+            assert!(!app.jobs.contains("manage:window:resize-window"));
             assert!(!app.resize_capturing());
-            assert_eq!(app.registry.workspaces[0].layout, before);
+            assert_eq!(app.registry.workspaces[0].windows[0].layout, before);
             assert!(app.state.status.contains("not replayed"));
             assert_eq!(
                 app.state.status.contains("outcome unknown"),
@@ -6744,7 +7273,7 @@ mod tests {
                 pane_id, request: PaneRequest::Key { event, .. }
             } if pane_id == "focused-pane" && event.action == KeyAction::Release));
             assert!(capture.try_recv().is_err(), "{reason}: pointer tail leaked");
-            assert!(!app.jobs.contains("manage:workspace:resize"));
+            assert!(!app.jobs.contains("manage:window:resize-window"));
         }
     }
 
@@ -6771,7 +7300,7 @@ mod tests {
         app.state.reconcile(&app.registry);
         pointer.send(&mut app, 0, divider.x, 3, false);
         pointer.send(&mut app, 0, divider.x, 3, true);
-        assert!(!app.jobs.contains("manage:workspace:resize"));
+        assert!(!app.jobs.contains("manage:window:resize-window"));
         app.begin_keyboard_resize(pointer.size).unwrap();
         app.key(
             key("ArrowUp"),
@@ -6785,7 +7314,7 @@ mod tests {
         app.key(key("Escape"), &mut Vec::new(), pointer.size, &pointer.rects)
             .unwrap();
         assert_eq!(app.state.status, "Resize finished");
-        assert!(!app.jobs.contains("manage:workspace:resize"));
+        assert!(!app.jobs.contains("manage:window:resize-window"));
         assert!(capture.try_recv().is_err());
     }
 
@@ -6804,16 +7333,17 @@ mod tests {
         assert!(app.resize_capturing());
         let mut foreign = app.registry.clone();
         foreign.revision += 1;
-        foreign.workspaces[0].revision += 1;
-        if let Some(LayoutNode::Split { ratio, .. }) = &mut foreign.workspaces[0].layout {
+        foreign.workspaces[0].windows[0].revision += 1;
+        if let Some(LayoutNode::Split { ratio, .. }) = &mut foreign.workspaces[0].windows[0].layout
+        {
             *ratio = 700;
         }
         app.observe_resize(&foreign);
         app.registry = foreign;
         app.validate_resize(pointer.size);
         assert!(!app.resize_capturing());
-        assert!(app.state.status.contains("workspace changed elsewhere"));
-        assert!(!app.jobs.contains("manage:workspace:resize"));
+        assert!(app.state.status.contains("window changed elsewhere"));
+        assert!(!app.jobs.contains("manage:window:resize-window"));
         assert!(capture.try_recv().is_err());
     }
 
@@ -6864,7 +7394,7 @@ mod tests {
             .unwrap()
             .status = PaneStatus::Exited;
         app.registry.panes.push(replacement);
-        app.registry.workspaces[0].layout = Some(LayoutNode::Leaf {
+        app.registry.workspaces[0].windows[0].layout = Some(LayoutNode::Leaf {
             pane_id: "replacement-pane".into(),
         });
         app.state.reconcile(&app.registry);
@@ -6896,6 +7426,353 @@ mod tests {
         );
         physical_keys(&mut app, b"j").unwrap();
         assert!(received.try_recv().is_err());
+    }
+    #[test]
+    fn activation_selects_the_authoritative_owner_window_without_borrowing_its_layout() {
+        let (mut app, capture) = fixture();
+        unavailable_fixture(&mut app);
+        let mut hidden = app.registry.panes[0].clone();
+        hidden.id = "hidden-pane".into();
+        hidden.status = PaneStatus::Running;
+        hidden.workspace_id = Some("other".into());
+        hidden.window_id = Some("other-window".into());
+        app.registry.panes.push(hidden);
+        app.registry.workspaces.push(Workspace {
+            id: "other".into(),
+            name: "Other".into(),
+            revision: 42,
+            windows: vec![Window {
+                id: "other-window".into(),
+                name: "Hidden terminal".into(),
+                revision: 9,
+                layout: Some(LayoutNode::Leaf {
+                    pane_id: "hidden-pane".into(),
+                }),
+            }],
+        });
+        let before = serde_json::to_value(&app.registry).unwrap();
+        assert!(
+            app.rects(size())
+                .iter()
+                .all(|(pane, _)| pane != "hidden-pane")
+        );
+        // A stale sidebar workspace hint cannot transfer pane ownership.
+        app.activate_sidebar(SidebarTarget::Pane {
+            workspace: "history".into(),
+            pane: "hidden-pane".into(),
+        })
+        .unwrap();
+        assert_eq!(app.state.workspace.as_deref(), Some("other"));
+        assert_eq!(app.state.window.as_deref(), Some("other-window"));
+        assert_eq!(app.state.focused.as_deref(), Some("hidden-pane"));
+        assert_eq!(
+            app.rects(size())
+                .iter()
+                .map(|(pane, _)| pane.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hidden-pane"]
+        );
+        assert_eq!(serde_json::to_value(&app.registry).unwrap(), before);
+        assert!(app.management.is_empty());
+        assert!(capture.try_recv().is_err());
+    }
+
+    #[test]
+    fn restoring_a_removed_projection_targets_only_the_panes_owning_window_revision() {
+        use std::{os::unix::net::UnixListener, thread};
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("restore.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let endpoint = Endpoint::unmanaged(&socket);
+        let (mut app, _) = fixture();
+        app.socket = &endpoint;
+        unavailable_fixture(&mut app);
+        let mut removed = app.registry.panes[0].clone();
+        removed.id = "removed-pane".into();
+        removed.status = PaneStatus::Running;
+        removed.window_id = Some("owner-window".into());
+        app.registry.panes.push(removed.clone());
+        removed.id = "owner-neighbor".into();
+        app.registry.panes.push(removed);
+        app.registry.workspaces[0].windows.push(Window {
+            id: "owner-window".into(),
+            name: "Owner".into(),
+            revision: 23,
+            layout: Some(LayoutNode::Leaf {
+                pane_id: "owner-neighbor".into(),
+            }),
+        });
+        app.registry.workspaces[0].revision = 100;
+        let before = serde_json::to_value(&app.registry).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let operation = read_resize_request(&mut stream);
+            writeln!(
+                stream,
+                "{}",
+                serde_json::to_string(&Response {
+                    version: PROTOCOL_VERSION,
+                    ok: false,
+                    result: None,
+                    error: Some("fixture rejected layout".into()),
+                })
+                .unwrap()
+            )
+            .unwrap();
+            operation
+        });
+        app.show_existing("removed-pane".into()).unwrap();
+        assert_eq!(app.state.window.as_deref(), Some("owner-window"));
+        let Operation::LayoutUpdate {
+            workspace_id,
+            window_id,
+            expected_revision,
+            layout,
+        } = server.join().unwrap()
+        else {
+            panic!("restoration must be an owned layout update");
+        };
+        assert_eq!(
+            (workspace_id.as_str(), window_id.as_str(), expected_revision),
+            ("history", "owner-window", 23)
+        );
+        let mut projected = Vec::new();
+        leaves(layout.as_ref(), &mut projected);
+        assert_eq!(projected, vec!["owner-neighbor", "removed-pane"]);
+        assert_eq!(serde_json::to_value(&app.registry).unwrap(), before);
+        assert_eq!(app.management.len(), 1);
+    }
+
+    #[test]
+    fn create_terminal_and_window_chooser_use_the_typed_prefix_actions() {
+        let (mut app, capture) = fixture();
+        unavailable_fixture(&mut app);
+        physical_keys(&mut app, b"\x02N").unwrap();
+        let form = app.state.form.as_ref().unwrap();
+        assert_eq!(form.kind, FormKind::CreateWindow);
+        assert!(matches!(&form.target, Some((SidebarTarget::Workspace(id), 7)) if id == "history"));
+        assert_eq!(form.fields.directory(), PathBuf::from("/observed/cwd"));
+        app.state.cancel();
+        physical_keys(&mut app, b"\x02W").unwrap();
+        assert_eq!(
+            app.state.form.as_ref().unwrap().kind,
+            FormKind::ChooseWindow
+        );
+        app.apply_form(size()).unwrap();
+        assert_eq!(app.state.window.as_deref(), Some("history-window"));
+        assert!(app.management.is_empty());
+        assert!(capture.try_recv().is_err());
+    }
+
+    fn submitted_form_operation(kind: FormKind, prepare: impl FnOnce(&mut App<'_>)) -> Operation {
+        use std::{os::unix::net::UnixListener, thread};
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("form.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let endpoint = Endpoint::unmanaged(&socket);
+        let (mut app, _) = fixture();
+        app.socket = &endpoint;
+        unavailable_fixture(&mut app);
+        app.open_form(kind, "renamed".into());
+        prepare(&mut app);
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_resize_request(&mut stream);
+            writeln!(
+                stream,
+                "{}",
+                serde_json::to_string(&Response {
+                    version: PROTOCOL_VERSION,
+                    ok: false,
+                    result: None,
+                    error: Some("fixture revision rejection".into()),
+                })
+                .unwrap()
+            )
+            .unwrap();
+            request
+        });
+        app.apply_form(size()).unwrap();
+        let jobs = std::mem::replace(&mut app.jobs, jobs::Jobs::new(1).unwrap());
+        assert!(
+            jobs.finish()
+                .unwrap()
+                .into_iter()
+                .all(|completion| completion.result.is_err())
+        );
+        server.join().unwrap()
+    }
+
+    #[test]
+    fn form_creation_is_atomic_preserves_native_cwd_and_captures_workspace_revision() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        let cwd = PathBuf::from(OsString::from_vec(b"/native/\xffcwd".to_vec()));
+        for window in [false, true] {
+            let operation = submitted_form_operation(
+                if window {
+                    FormKind::CreateWindow
+                } else {
+                    FormKind::CreateWorkspace
+                },
+                |app| {
+                    let form = app.state.form.as_mut().unwrap();
+                    form.fields.primary.value.clear();
+                    form.fields.inherit_directory(cwd.clone());
+                    app.registry.workspaces[0].revision = 99;
+                },
+            );
+            match operation {
+                Operation::WorkspaceCreate {
+                    name: None,
+                    initial: Some(spec),
+                } if !window => {
+                    assert_eq!(spec.cwd, cwd);
+                }
+                Operation::WindowCreate {
+                    workspace_id,
+                    expected_revision: 7,
+                    name: None,
+                    spec,
+                } if window => {
+                    assert_eq!(workspace_id, "history");
+                    assert_eq!(spec.cwd, cwd);
+                }
+                other => panic!("unexpected creation request: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn close_and_rename_forms_submit_owned_document_targets_with_captured_revisions() {
+        for kind in [
+            FormKind::CloseWorkspace,
+            FormKind::CloseWindow,
+            FormKind::RenameWindow,
+        ] {
+            let original = kind.clone();
+            let operation = submitted_form_operation(kind, |app| {
+                app.state.form.as_mut().unwrap().confirmed = true;
+                app.registry.workspaces[0].revision = 90;
+                app.registry.workspaces[0].windows[0].revision = 91;
+            });
+            match (original, operation) {
+                (
+                    FormKind::CloseWorkspace,
+                    Operation::WorkspaceClose {
+                        workspace_id,
+                        expected_revision: 7,
+                    },
+                ) => {
+                    assert_eq!(workspace_id, "history");
+                }
+                (
+                    FormKind::CloseWindow,
+                    Operation::WindowClose {
+                        workspace_id,
+                        window_id,
+                        expected_revision: 7,
+                    },
+                )
+                | (
+                    FormKind::RenameWindow,
+                    Operation::WindowRename {
+                        workspace_id,
+                        window_id,
+                        expected_revision: 7,
+                        ..
+                    },
+                ) => {
+                    assert_eq!(workspace_id, "history");
+                    assert_eq!(window_id, "history-window");
+                }
+                other => panic!("unexpected document mutation: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn shutdown_waits_for_policy_revocation_before_admitting_backend_detach() {
+        use std::{os::unix::net::UnixListener, thread, time::Instant};
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("retire.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let accept = || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(!remaining.is_zero(), "retirement worker did not connect");
+                let mut ready = libc::pollfd {
+                    fd: listener.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let result =
+                    unsafe { libc::poll(&mut ready, 1, remaining.as_millis().max(1) as i32) };
+                if result < 0
+                    && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                {
+                    continue;
+                }
+                assert_eq!(result, 1, "retirement worker did not connect");
+                return listener.accept().unwrap().0;
+            }
+        };
+        let endpoint = Endpoint::unmanaged(&socket);
+        let input = InputPump::new(&endpoint).unwrap();
+        let (mut app, _) = fixture();
+        attach_fixture(&mut app);
+        let mut attached = app.views.remove("focused-pane").unwrap();
+        let worker = thread::spawn(move || {
+            let receipt = attached
+                .retire(&input, "focused-pane", false, false, true)
+                .unwrap()
+                .unwrap();
+            receipt.recv().unwrap().unwrap();
+            input.finish().unwrap();
+        });
+        let mut policy = accept();
+        assert!(matches!(read_resize_request(&mut policy), Operation::Pane {
+            request: PaneRequest::Update { spec, .. }, ..
+        } if !spec.visible && !spec.interactive && !spec.clipboard));
+        let mut pending_detach = libc::pollfd {
+            fd: listener.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(
+            unsafe { libc::poll(&mut pending_detach, 1, 100) },
+            0,
+            "Detach overtook unacknowledged policy revocation"
+        );
+        writeln!(
+            policy,
+            "{}",
+            serde_json::to_string(&Response {
+                version: PROTOCOL_VERSION,
+                ok: true,
+                result: Some(serde_json::Value::Bool(true)),
+                error: None,
+            })
+            .unwrap()
+        )
+        .unwrap();
+        let mut detach = accept();
+        assert!(matches!(read_resize_request(&mut detach), Operation::Pane {
+            pane_id, request: PaneRequest::Detach { view_id },
+        } if pane_id == "focused-pane" && view_id == "focused-view"));
+        writeln!(
+            detach,
+            "{}",
+            serde_json::to_string(&Response {
+                version: PROTOCOL_VERSION,
+                ok: true,
+                result: Some(serde_json::Value::Bool(true)),
+                error: None,
+            })
+            .unwrap()
+        )
+        .unwrap();
+        worker.join().unwrap();
     }
     include!("search_tests.rs");
 }
