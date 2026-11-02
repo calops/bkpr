@@ -782,7 +782,7 @@ pub fn chrome<'a>(
         ));
     }
     let status = if state.prefix {
-        "Ctrl-b: e resize  s history  y copy  i project  c workspace  n pane  % / \" split  r/p rename  x unlayout  ! close  w/o choose  d detach".into()
+        "Ctrl-b: / search  e resize  s history  y copy  i project  c workspace  n pane  % / \" split  r/p rename  x unlayout  ! close  w/o choose  d detach".into()
     } else if let Some((offset, total)) = state.focused.as_deref().and_then(&history) {
         format!(
             "HISTORY -{offset}/{total} | drag select/copy  Ctrl-b y copy | Esc clear/live  ↑/↓ line  PgUp/PgDn page  Home oldest{}",
@@ -1278,6 +1278,7 @@ mod tests {
             views: Vec::new(),
             clipboard: None,
             selection: None,
+            search: None,
             clipboard_pending: false,
             capabilities: PaneCapabilities {
                 sixel: false,

@@ -28,6 +28,9 @@ pub struct Surface<'a> {
     pub frame: &'a Frame,
     /// Sorted, one-span-per-row view-local highlighting, outside the canonical delta baseline.
     pub selection: &'a [SelectionSpan],
+    /// Sorted by row/start. Selection wins over selected search, then ordinary
+    /// search. Annotations borrow canonical glyphs/styles/resources unchanged.
+    pub search: &'a [SearchSpan],
     pub focused: bool,
 }
 pub struct Scene<'a> {
@@ -421,6 +424,11 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect]) {
         for y in clip.y..clip.y + clip.height {
             let selection = surface.selection.binary_search_by_key(&(y - r.y), |span| span.row)
                 .ok().map(|index| &surface.selection[index]);
+            let row = y - r.y;
+            let begin = surface.search.partition_point(|span| span.row < row);
+            let end = surface.search.partition_point(|span| span.row <= row);
+            let search = &surface.search[begin..end];
+            let mut search_index = 0;
             let target = &mut canvas.rows[y as usize].cells;
             let mut x = 0u16;
             for cell in surface
@@ -440,9 +448,10 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect]) {
                 if end > left && x < right {
                     if x >= left && end <= right {
                         let mut style = effective_style(&cell.style, surface.frame);
-                        if selection.is_some_and(|span| span.start < end && span.end > x) {
-                            style.inverse = !style.inverse;
+                        while search_index < search.len() && search[search_index].end <= x {
+                            search_index += 1;
                         }
+                        annotate(&mut style, selection, &search[search_index..], x, end);
                         copy_cell(&mut target[(r.x + x) as usize], cell, &style);
                         for tail in x + 1..end {
                             let destination = &mut target[(r.x + tail) as usize];
@@ -467,11 +476,36 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect]) {
             }
             for column in x.max(left)..right {
                 let mut style = blank_style.clone();
-                if selection.is_some_and(|span| span.start <= column && span.end > column) {
-                    style.inverse = !style.inverse;
+                while search_index < search.len() && search[search_index].end <= column {
+                    search_index += 1;
                 }
+                annotate(&mut style, selection, &search[search_index..], column, column + 1);
                 copy_cell(&mut target[(r.x + column) as usize], blank, &style);
             }
+        }
+    }
+}
+
+fn annotate(style: &mut Style, selection: Option<&SelectionSpan>, search: &[SearchSpan], start: u16, end: u16) {
+    if selection.is_some_and(|span| span.start < end && span.end > start) {
+        style.inverse = !style.inverse;
+        return;
+    }
+    let mut matched = false;
+    let mut selected = false;
+    for span in search.iter().take_while(|span| span.start < end) {
+        if span.end > start {
+            matched = true;
+            selected |= span.selected;
+        }
+    }
+    if matched {
+        // Preserve source colors, glyphs, hyperlinks and attributes. Underline
+        // marks all results; inversion additionally identifies the chosen one.
+        style.underline = style.underline.max(1);
+        if selected {
+            style.inverse = !style.inverse;
+            style.bold = true;
         }
     }
 }
@@ -658,6 +692,7 @@ mod scene_tests {
                     },
                     frame: &frame,
                     selection: &[],
+                    search: &[],
                     focused: true,
                 },
                 Surface {
@@ -670,6 +705,7 @@ mod scene_tests {
                     },
                     frame: &frame,
                     selection: &[],
+                    search: &[],
                     focused: false,
                 },
             ],
@@ -756,6 +792,7 @@ mod scene_tests {
                     },
                     frame: &left,
                     selection: &[],
+                    search: &[],
                     focused: false,
                 },
                 Surface {
@@ -768,6 +805,7 @@ mod scene_tests {
                     },
                     frame: &right,
                     selection: &[],
+                    search: &[],
                     focused: true,
                 },
             ],
@@ -808,6 +846,7 @@ mod scene_tests {
                 },
                 frame: &frame,
                 selection: &[],
+                search: &[],
                 focused: true,
             }],
         };
@@ -959,6 +998,7 @@ mod scene_tests {
                     },
                     frame: &a,
                     selection: &[],
+                    search: &[],
                     focused: false,
                 },
                 Surface {
@@ -971,6 +1011,7 @@ mod scene_tests {
                     },
                     frame: &b,
                     selection: &[],
+                    search: &[],
                     focused: false,
                 },
             ],
@@ -1041,11 +1082,11 @@ mod scene_tests {
             surfaces: vec![
                 Surface {
                     id: "selected-view", rect: Rect { x: 0, y: 0, width: 6, height: 2 },
-                    frame: &source, selection: &[], focused: false,
+                    frame: &source, selection: &[], search: &[], focused: false,
                 },
                 Surface {
                     id: "other-view", rect: Rect { x: 6, y: 0, width: 6, height: 2 },
-                    frame: &source, selection: &[], focused: false,
+                    frame: &source, selection: &[], search: &[], focused: false,
                 },
             ],
         };
@@ -1085,5 +1126,36 @@ mod scene_tests {
         renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
         assert_eq!(renderer.canvas.as_ref().unwrap().rows[0].cells[0].style,
             effective_style(&source.rows[0].cells[0].style, &source));
+        let matches = [
+            SearchSpan { row: 0, start: 0, end: 4, selected: false },
+            SearchSpan { row: 0, start: 1, end: 3, selected: true },
+        ];
+        let selection = [SelectionSpan { row: 0, start: 0, end: 1 }];
+        scene.surfaces[0].search = &matches;
+        scene.surfaces[0].selection = &selection;
+        renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        let canvas = renderer.canvas.as_ref().unwrap();
+        let mut selected = effective_style(&source.rows[0].cells[0].style, &source);
+        selected.inverse = !selected.inverse;
+        assert_eq!(canvas.rows[0].cells[0].style, selected, "selection overrides both search styles");
+        assert_eq!(canvas.rows[0].cells[1].style, selected, "wide glyph is annotated atomically");
+        let mut chosen = effective_style(&source.rows[0].cells[2].style, &source);
+        chosen.inverse = !chosen.inverse;
+        chosen.bold = true;
+        chosen.underline = chosen.underline.max(1);
+        assert_eq!(canvas.rows[0].cells[2].style, chosen);
+        let mut ordinary = effective_style(&source.rows[0].cells[3].style, &source);
+        ordinary.underline = ordinary.underline.max(1);
+        assert_eq!(canvas.rows[0].cells[3].style, ordinary);
+        assert_eq!(canvas.rows[0].cells[2].text, "e\u{301}");
+        assert_eq!(canvas.rows[0].cells[2 + 6].style,
+            effective_style(&source.rows[0].cells[2].style, &source));
+        assert_eq!(source.rows, canonical_rows);
+        assert_eq!(source.rows[0].cells.as_ptr(), canonical_cells);
+        assert_eq!(source.images[0].pixels.as_ptr(), pixels);
+        assert_eq!(renderer.aliases.len(), 2);
+        let mut idle = Vec::new();
+        renderer.render(&mut idle, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        assert!(idle.is_empty(), "static search annotations must produce no damage");
     }
 }

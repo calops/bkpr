@@ -491,3 +491,36 @@ The nested three-pane layout exercises horizontal and vertical keyboard movement
 The burst uses owned Kitty's byte-transparent `send-text` to exercise one input batch; physical XTest dragging is verified separately. Counts establish bounded/coalesced mutation behavior, not input-to-presentation latency, a full-screen editor comparison or improvement to the deferred sustained-animation CPU problem. Tiny windows can collapse a second subtree; projection never rewrites the stored ratio. Beyond 1,000 usable cells on an axis, thousandths ratios can quantize movement to larger cell steps.
 
 Locked workspace tests pass: 355 tests, six explicitly ignored subprocess fixtures. Strict all-target Clippy and formatting pass. Optimized client SHA-256: `3ef4ea69bf4b9ffca58b8f6c71f7a431c3b0e2aaf7ae8b325c6c38d57ecc1e66`; server: `9d4fdfdff8ddee2c8f8501815d52c012c0349f2b585f942afebea64a761cfdbd` (unchanged). Builds use the local target with eight jobs on CPUs 0–7; the actual-terminal fixture uses CPUs 8–15, with no compilation in flight. Controllers/provenance are archived beside the evidence. Owned cleanup reports no survivors; no live sessions, model/provider services, real clipboard, user profiles or persistent host settings participated.
+
+## Per-view native terminal search
+
+`Ctrl-b /` now opens a bottom-row literal-search editor; Enter/Shift-Enter navigate older/newer matches and Esc clears without application input. Read-only views are supported. The pinned SDK supplies native incremental search, counts, match selection, reflow/retention and per-screen state. Bkpr binds it to visible inspection epochs, bounded pane-worker scheduling, query acknowledgements/generations and borrowed highlight spans. No full-history strings, competing parser, blocking SDK `run`, new runtime dependency or native/SDK patch is introduced.
+
+The dependency/source audit is in `target/smoke/search/source-review.json` and the implementation plan. Native navigation was checked in retained source at revision `93967b7`: it feeds and selects, not an all-history run loop. Safe `Search::snapshot` feeds before borrowing matches; the native active rescan preserves prior progress/completion state. Snapshotting can add an extra active-area scan in a progress turn; no universal search-cost or presentation-latency claim is made.
+
+### Corrections and acceptance
+
+The initial engine test assumed the newest history marker was outside the live grid. It wasn't; native `IfNeeded` correctly did not scroll. Nonmatching tail rows now make the intended history case real. Previous-match navigation need not recenter an already-visible match. These fixture corrections preserve native semantics and keep assertions for real history navigation, view isolation and unchanged canonical scenes.
+
+Actual resizing exposed a product issue: native reflow discarded the chosen match while the query/count survived. Bounded progress now selects an actual newest available match when native selection is missing, without inventing an index or scanning every result in Rust. A regression exercises repeated resize/reflow, selected spans and independent views.
+
+Baseline `physical-1224533976403086/` shows the previous release sends would-be query text to the raw fixture. Final optimized evidence is `physical-1226829354243781/`: real Kitty/Xvfb keyboard input, independent read-only/client views, Unicode, ASCII case folding, no-match, 400 retained history markers, next/previous, explicit live return and exact application-input logs. The full 684×612 body matches an independent direct-Kitty reference before search and with the chosen match's native bold/underline/inverse styling; the other client stays plain. Resize away/back restores the same complete chosen body. New output updates the actual count from 400 to 440 while old anchored rows retain exact pixels and the complete visible body shows the newly written rows.
+
+The offline text oracle strips SGR before pyte because its colon-SGR handling otherwise fabricates literal glyphs. Unmodified bytes still go to the actual Kitty, and pixel checks remain independent. Anchoring preserves logical top rows, not a frozen snapshot: writes to still-visible live rows legitimately appear. End is only a local live-return key while inspecting history; sending it in live mode correctly belongs to the application.
+
+### Dense-result resource observation
+
+`api-1226835421162477/result.json` uses 1,000 rows of 76 repeated characters, three independent read-only views and 20 replacement queries, with no compilation or other owned workload running. Native search finds exactly 76,006 matches per view including fixture live text.
+
+| Native searches | Daemon RSS (bytes) |
+| --- | ---: |
+| None, before query | 13,996,032 |
+| One dense search | 46,469,120 |
+| Three dense searches | 109,912,064 |
+| All cleared, after replacements | 81,395,712 |
+
+The SDK retains flattened result endpoints for all matches and has no configurable result-memory cap. Bkpr materializes only viewport-page matches for clipped spans; it doesn't copy all matches into another search engine. Existing history/view admission bounds are not a separate byte-hard search allocation cap. Dense multi-view memory and post-clear RSS need allocation/lifetime profiling; this observation alone does not diagnose a leak. Exact results/counts are retained rather than silently capped. `TODO.md` tracks the optimization and required discussion before changing supported semantics.
+
+Raw control-completion timings are retained in the JSON, including polling/serialization overhead and an 80 ms sampling interval; they are not physical presentation latency. No editor/animation CPU improvement is claimed.
+
+Final locked workspace tests: 372 passed, six explicitly ignored subprocess fixtures. Strict all-target Clippy and formatting pass. Optimized client SHA-256: `a4e6c16c7b603406d993789043594376e89d88c18e5d0726a670baaeebb3fe18`; server: `806f56e7e3ba3b855339ba38db4e99fd649cd03e2dd13de14688403ecc548f82`. Builds use local Cargo/native artifacts, eight jobs on CPUs 0–7; runtime fixtures use CPUs 8–15. Controllers and provenance are archived beside the evidence. Owned cleanup reports no survivors. No user sessions, persistent host/profile settings, real clipboard or model/provider services participate.

@@ -113,6 +113,10 @@ impl App<'_> {
     }
 
     pub(super) fn paste(&mut self, text: String) -> Result<()> {
+        if self.search_open() {
+            self.search_text(&text);
+            return Ok(());
+        }
         if let Some(form) = self.state.form.as_mut() {
             if !matches!(
                 form.kind,

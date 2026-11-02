@@ -7,11 +7,12 @@ mod environment;
 mod harness;
 mod harness_process;
 pub mod registry;
+mod search;
 mod selection;
 pub mod transport;
 mod writer;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use authority::Authority;
 #[cfg(test)]
 use bkpr_protocol::ViewSpec;
@@ -20,6 +21,7 @@ use bkpr_protocol::{
     ImageKey, KeyEvent, MouseEvent, ProgramStatus, SelectionEvent, SelectionSnapshot, Size,
 };
 use bkpr_protocol::{MAX_INPUT_BYTES, PaneRequest as Request, valid_size};
+use bkpr_protocol::{MAX_SEARCH_BYTES, SearchAction, SearchSnapshot};
 use bkpr_terminal_engine::Terminal;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::{Value, json};
@@ -60,6 +62,7 @@ struct Published {
     event_sequence: u64,
     scroll_frames: BTreeMap<String, Arc<Frame>>,
     selections: BTreeMap<String, (u64, SelectionSnapshot)>,
+    searches: BTreeMap<String, (u64, SearchSnapshot)>,
     status: Vec<ProgramStatus>,
     program_identity: Option<bkpr_protocol::ProcessIdentity>,
     lifecycle: String,
@@ -73,6 +76,7 @@ impl Default for Published {
             frame: None,
             scroll_frames: BTreeMap::new(),
             selections: BTreeMap::new(),
+            searches: BTreeMap::new(),
             status: Vec::new(),
             program_identity: None,
             revision: 0,
@@ -111,16 +115,23 @@ enum Mutation {
         view_id: String,
         inspection_epoch: u64,
     },
+    Search {
+        view_id: String,
+        inspection_epoch: u64,
+        action: SearchAction,
+    },
     Terminate,
 }
 enum CommandOutcome {
     Applied(Option<u64>),
     Completed,
     Copied(Option<Vec<u8>>),
+    Searched(Option<u64>),
 }
 impl CommandOutcome {
     fn response(self) -> Value {
         match self {
+            Self::Searched(generation) => json!({"accepted":true,"generation":generation}),
             Self::Applied(id) => {
                 json!({"accepted":true,"write_id":id,"semantics":"queued_once_no_replay"})
             }
@@ -315,6 +326,7 @@ impl Pane {
                 let _gate = state.command_gate.lock().unwrap();
                 let mut published = state.published.lock().unwrap();
                 published.selections.clear();
+                published.searches.clear();
                 if let Err(error) = &result {
                     published.lifecycle = "fault".into();
                     published.error = Some(format!("{error:#}"));
@@ -529,6 +541,12 @@ impl Pane {
                         .unwrap()
                         .selections
                         .remove(&view_id);
+                    self.shared
+                        .published
+                        .lock()
+                        .unwrap()
+                        .searches
+                        .remove(&view_id);
                 }
                 drop(authority);
                 self.shared.changes.notify();
@@ -547,6 +565,12 @@ impl Pane {
                     .lock()
                     .unwrap()
                     .selections
+                    .remove(&view_id);
+                self.shared
+                    .published
+                    .lock()
+                    .unwrap()
+                    .searches
                     .remove(&view_id);
                 self.shared.delta_frames.lock().unwrap().remove(&view_id);
                 self.shared.changes.notify();
@@ -627,6 +651,24 @@ impl Pane {
                     .context("stale view")?;
                 self.command(Mutation::Scroll { view_id, delta })?;
                 Ok(json!({"scrolled":true}))
+            }
+            Request::Search { view_id, action } => {
+                if let SearchAction::Query { text } = &action {
+                    ensure!(
+                        text.len() <= MAX_SEARCH_BYTES,
+                        "search query exceeds byte limit"
+                    );
+                }
+                let inspection_epoch = selection::visible(&self.shared, &view_id, None)?;
+                let result = self
+                    .command(Mutation::Search {
+                        view_id: view_id.clone(),
+                        inspection_epoch,
+                        action,
+                    })?
+                    .response();
+                selection::visible(&self.shared, &view_id, Some(inspection_epoch))?;
+                Ok(result)
             }
             Request::Select { view_id, event } => {
                 let inspection_epoch = selection::visible(&self.shared, &view_id, None)?;
@@ -735,6 +777,7 @@ impl Pane {
             events,
             event_sequence,
             selection,
+            search,
         ) = {
             let mut authority = self.shared.authority.lock().unwrap();
             if let Some(id) = view {
@@ -792,6 +835,19 @@ impl Pane {
                                 .get(id)
                                 .filter(|(epoch, _)| *epoch == view.inspection_epoch)
                                 .map(|(_, selection)| selection.clone())
+                        })
+                }),
+                view.and_then(|id| {
+                    authority
+                        .views
+                        .get(id)
+                        .filter(|view| view.spec.visible)
+                        .and_then(|view| {
+                            published
+                                .searches
+                                .get(id)
+                                .filter(|(epoch, _)| *epoch == view.inspection_epoch)
+                                .map(|(_, snapshot)| snapshot.clone())
                         })
                 }),
             )
@@ -856,6 +912,7 @@ impl Pane {
             "clipboard": clipboard,
             "clipboard_pending": clipboard_pending,
             "selection": selection,
+            "search": search,
             "capabilities": {
                 "sixel": false,
                 "normalized_frames": true,
@@ -983,6 +1040,7 @@ fn publish(terminal: &mut Terminal, shared: &Shared) -> Result<()> {
         frames.insert(id.clone(), cache[&offset].clone());
     }
     let selections = selection::snapshots(terminal, shared)?;
+    let searches = search::snapshots(terminal, shared)?;
     {
         let mut authority = shared.authority.lock().unwrap();
         for id in views {
@@ -998,6 +1056,7 @@ fn publish(terminal: &mut Terminal, shared: &Shared) -> Result<()> {
     p.frame = Some(frame);
     p.scroll_frames = frames;
     p.selections = selections;
+    p.searches = searches;
     let status = terminal.program_status();
     let status_changed = p.status != status;
     p.status = status;
@@ -1361,6 +1420,14 @@ fn run_pane(
                     Err(crossbeam_channel::TryRecvError::Empty) => break,
                 }
             }
+            search::retire(&mut terminal, &shared);
+            if let Some((id, epoch, moved)) = terminal.advance_search()? {
+                if moved {
+                    dirty = true;
+                } else {
+                    search::publish(&mut terminal, &shared, &id, epoch)?;
+                }
+            }
             let now = clock.elapsed().as_millis().min(u64::MAX.into()) as u64;
             if dirty || next_image_tick.is_some_and(|deadline| now >= deadline) {
                 next_image_tick = terminal.tick_images(now)?;
@@ -1378,6 +1445,9 @@ fn run_pane(
             // Maintenance is bounded separately from readiness. Output and writer
             // progress wake the worker instead of waiting for the command timer.
             let mut wait = Duration::from_millis(100);
+            if terminal.has_search_work()? {
+                wait = wait.min(Duration::from_millis(1));
+            }
             if let Some(remaining) = terminal.sync_output_remaining() {
                 wait = wait.min(remaining);
             }
@@ -1422,6 +1492,7 @@ fn run_pane(
                         published.exit_code = Some(status.exit_code());
                         published.lifecycle = "terminating".into();
                         published.selections.clear();
+                        published.searches.clear();
                         drop(published);
                         shared.changes.notify();
                         break;
@@ -1450,6 +1521,7 @@ fn run_pane(
                         let complete = eof && terminal.sync_output_remaining().is_none();
                         published.lifecycle = if complete { "exited" } else { "draining" }.into();
                         published.selections.clear();
+                        published.searches.clear();
                         let outcome = completed_command(&published, &command.mutation);
                         drop(published);
                         if status_changed {
@@ -1584,6 +1656,29 @@ fn run_pane(
                                 selection::visible(&shared, &view_id, Some(inspection_epoch))?;
                                 return Ok(CommandOutcome::Copied(copied));
                             }
+                            Mutation::Search {
+                                view_id,
+                                inspection_epoch,
+                                action,
+                            } => {
+                                selection::visible(&shared, &view_id, Some(inspection_epoch))?;
+                                search::retire(&mut terminal, &shared);
+                                let moved =
+                                    terminal.search_view(&view_id, inspection_epoch, action)?;
+                                selection::visible(&shared, &view_id, Some(inspection_epoch))?;
+                                let generation = terminal.view_search_generation(&view_id);
+                                if moved {
+                                    publish(&mut terminal, &shared)?;
+                                } else {
+                                    search::publish(
+                                        &mut terminal,
+                                        &shared,
+                                        &view_id,
+                                        inspection_epoch,
+                                    )?;
+                                }
+                                return Ok(CommandOutcome::Searched(generation));
+                            }
                             Mutation::Terminate => {}
                         }
                         route_effects(terminal.drain_effects()?, &writer, &shared)?;
@@ -1616,6 +1711,7 @@ fn run_pane(
                 p.exit_code = Some(status.exit_code());
                 p.lifecycle = lifecycle.into();
                 p.selections.clear();
+                p.searches.clear();
                 drop(p);
                 if program_status_changed {
                     shared.notify_status_changed();

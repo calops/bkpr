@@ -18,6 +18,8 @@ pub use snapshot::*;
 pub const PROTOCOL_VERSION: u32 = 2;
 /// Maximum aggregate input, paste or clipboard-response payload accepted per request.
 pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
+/// Maximum UTF-8 query bytes; rejected rather than truncated.
+pub const MAX_SEARCH_BYTES: usize = 4096;
 /// Maximum decoded pixel bytes retained for one canonical image.
 pub const IMAGE_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Admission bounds shared by registry, view authority and transport.
@@ -138,6 +140,11 @@ pub enum PaneRequest {
     CopySelection {
         view_id: String,
     },
+    /// Native literal search, scoped to one visible inspection lifetime.
+    Search {
+        view_id: String,
+        action: SearchAction,
+    },
     Clipboard {
         view_id: String,
         request_id: String,
@@ -154,6 +161,15 @@ pub enum PaneRequest {
         view_id: String,
     },
     Shutdown,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SearchAction {
+    Query { text: String },
+    Next,
+    Previous,
+    Clear,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

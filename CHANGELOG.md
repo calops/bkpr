@@ -45,6 +45,12 @@
 * Share partition arithmetic across pane projection, divider drawing and hit testing. Preserve unrelated ratios/topology, clamp useful subtree sizes and keep small-window projection separate from saved layout intent.
 * Reuse the existing revisioned backend layout API and bounded background pool. Retain only the latest pending pointer position behind one in-flight commit, preserve final release, block read-only mutation and retire foreign/focus/modal/geometry changes without replaying ambiguous updates.
 
+### Native terminal search
+
+* Add `Ctrl-b /` literal terminal/history search through the pinned SDK's incremental search APIs. Support text/paste/backspace, Ctrl-u, next/previous matching with Enter/Shift-Enter, honest running/count/no-match status and Esc clear with explicit history live return.
+* Keep queries, native result state, history navigation and highlight annotations view-local. Reuse existing pane workers and input lanes, coalesce queries, reject stale generations, preserve application-owned releases and allow read-only search without input/clipboard authority.
+* Recover a real newest native match when resize/reflow invalidates the chosen one. Preserve whole wide/combining glyphs, styles and resources; terminal selection takes precedence over chosen/ordinary search highlighting. Record dense native result-memory costs without silently truncating matches.
+
 ### Native harness capture
 
 * Recognize foreground harnesses and directories, authenticate backend-owned launch identities and bind native Claude, Codex, Omp and Antigravity conversations through their own hooks, extensions or protocols. Restore ordinary-command wrappers and `bkpr run`, preserve native argument/exit behavior, and keep recognition-only and incompatible startup modes credential-free.
