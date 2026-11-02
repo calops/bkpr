@@ -208,7 +208,7 @@ impl Captures {
         self.version = self.version.wrapping_add(1);
     }
 }
-fn constant_equal(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_equal(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0_u8, |diff, (a, b)| diff | (a ^ b)) == 0
 }
 pub(crate) fn validate_callback(peer: &Peer, launch: &Launch) -> Result<Vec<Process>> {

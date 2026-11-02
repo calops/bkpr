@@ -1,7 +1,9 @@
-use crate::{controller::split_leaf, transport};
+use crate::{
+    controller::split_leaf,
+    transport::{self, Endpoint},
+};
 use anyhow::{Context, Result};
 use bkpr_protocol::*;
-use std::path::Path;
 
 #[derive(Debug)]
 pub(crate) enum Command {
@@ -38,7 +40,7 @@ pub(crate) struct Completion {
 
 // Synchronous by design: callers must dispatch this entire sequence to a worker.
 // A later failure never replays or rolls back an earlier mutation.
-pub(crate) fn execute(socket: &Path, command: Command) -> Result<Completion> {
+pub(crate) fn execute(socket: &Endpoint, command: Command) -> Result<Completion> {
     match command {
         Command::Single(operation) => {
             let result = request(socket, operation, "operation")?;
@@ -126,7 +128,7 @@ pub(crate) fn execute(socket: &Path, command: Command) -> Result<Completion> {
 }
 
 fn spawn(
-    socket: &Path,
+    socket: &Endpoint,
     workspace: Workspace,
     target: &str,
     axis: Axis,
@@ -179,8 +181,8 @@ fn spawn(
     })().context("pane creation already succeeded; its process remains registry-owned even if layout placement was not confirmed")
 }
 
-fn request(socket: &Path, operation: Operation, phase: &str) -> Result<RegistryResult> {
-    let value = transport::checked(socket, operation)?;
+fn request(socket: &Endpoint, operation: Operation, phase: &str) -> Result<RegistryResult> {
+    let value = socket.checked(operation)?;
     serde_json::from_value(value)
         .map_err(|error| transport::mark_outcome_unknown(error.into()))
         .with_context(|| {
@@ -347,7 +349,7 @@ mod tests {
             );
             requests
         });
-        let result = execute(&socket, command);
+        let result = execute(&Endpoint::unmanaged(&socket), command);
         done.send(()).unwrap();
         (result, server.join().unwrap())
     }

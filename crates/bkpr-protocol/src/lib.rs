@@ -11,6 +11,8 @@ pub use project::*;
 mod registry;
 pub mod scene_wire;
 pub use registry::*;
+mod session;
+pub use session::*;
 mod snapshot;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -34,10 +36,12 @@ pub const MAX_REGISTRY_WATCHERS: usize = 32;
 pub const MAX_WAITING_PANE_POLLS: usize = MAX_ADMITTED_VIEWS;
 pub const MAX_CONTROL_CONNECTIONS: usize = 32;
 pub const MAX_AGENT_SUBSCRIBERS: usize = 32;
+pub const MAX_CLIENTS: usize = 32;
 pub const MAX_CONNECTIONS: usize = MAX_WAITING_PANE_POLLS
     + MAX_REGISTRY_WATCHERS
     + MAX_CONTROL_CONNECTIONS
-    + MAX_AGENT_SUBSCRIBERS;
+    + MAX_AGENT_SUBSCRIBERS
+    + MAX_CLIENTS;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ViewSpec {
     pub size: Size,

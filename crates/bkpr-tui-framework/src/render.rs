@@ -58,7 +58,25 @@ impl GraphicsState {
 pub struct TerminalGuard {
     graphics: GraphicsState,
     pub kitty_keyboard: bool,
-    pub clipboard_mode: Option<bool>,
+    clipboard_mode: Option<bool>,
+    requested_clipboard_mode: Option<bool>,
+}
+impl TerminalGuard {
+    pub fn observe_enhanced_paste(&mut self, enabled: bool) {
+        self.clipboard_mode.get_or_insert(enabled);
+        self.requested_clipboard_mode.get_or_insert(enabled);
+    }
+    /// Select the host paste framing without touching clipboard contents.
+    /// Restore the originally observed mode on exit and avoid redundant writes.
+    pub fn set_enhanced_paste(&mut self, out: &mut impl Write, enabled: bool) -> Result<()> {
+        if self.clipboard_mode.is_none() || self.requested_clipboard_mode == Some(enabled) {
+            return Ok(());
+        }
+        write!(out, "\x1b[?5522{}", if enabled { "h" } else { "l" })?;
+        out.flush()?;
+        self.requested_clipboard_mode = Some(enabled);
+        Ok(())
+    }
 }
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
@@ -556,6 +574,13 @@ fn emit_reply(parts: &mut Vec<InputPart>, keys: &mut Vec<u8>, reply: Vec<u8>) {
 }
 fn client_input(event: InputEvent) -> Option<ClientEvent> {
     let event = match event {
+        InputEvent::Key(mut key) if key.key == KeyCode::Char('\0') => {
+            // Legacy terminals encode Ctrl-Space/Ctrl-@ as NUL. Normalize only
+            // this legacy event; CSI-u functional-key placeholders stay distinct.
+            key.key = KeyCode::Char(' ');
+            key.modifiers.insert(Modifiers::CTRL);
+            InputEvent::Key(key)
+        }
         InputEvent::Mouse(mut mouse) => {
             // Termwiz preserves SGR cell coordinates as one-based values.
             // Scene rectangles and hit tests use zero-based cell coordinates.
@@ -717,11 +742,23 @@ impl ReplyDemux {
                         i += 1;
                     }
                     if let Some((payload_end, next)) = end {
-                        emit_reply(
-                            &mut parts,
-                            &mut keys,
-                            self.buffer[start + 2..payload_end].to_vec(),
-                        );
+                        let payload = &self.buffer[start + 2..payload_end];
+                        let prefix: &[u8] = if self.buffer[start + 1] == b'_'
+                            && next == payload_end + 2
+                            && payload.starts_with(b"G")
+                        {
+                            b"graphics;"
+                        } else if payload.starts_with(b"graphics;") {
+                            // The internal route tag cannot be forged by an
+                            // OSC/DCS payload carrying its literal spelling.
+                            b"unrecognized;"
+                        } else {
+                            b""
+                        };
+                        let mut reply = Vec::with_capacity(prefix.len() + payload.len());
+                        reply.extend_from_slice(prefix);
+                        reply.extend_from_slice(payload);
+                        emit_reply(&mut parts, &mut keys, reply);
                         cursor = next;
                         continue;
                     }
@@ -1309,6 +1346,74 @@ pub struct ColorProbe {
     pub cursor: Option<[u8; 3]>,
     pub palette: HashMap<usize, [u8; 3]>,
     pub revision: u64,
+    pub graphics: GraphicsProbe,
+}
+
+/// Explicit Kitty query evidence, independent of TERM and color capabilities.
+#[derive(Default)]
+pub struct GraphicsProbe {
+    pending: Option<(u32, Instant)>,
+    issued_id: Option<u32>,
+    supported: bool,
+}
+impl GraphicsProbe {
+    /// Send these bytes through the existing terminal-output owner, then feed
+    /// ReplyDemux's APC payloads through ColorProbe::feed.
+    pub fn begin(&mut self) -> Vec<u8> {
+        static NEXT_ID: std::sync::atomic::AtomicU32 =
+            std::sync::atomic::AtomicU32::new(0x7000_0000);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.pending = Some((id, Instant::now()));
+        self.issued_id = Some(id);
+        self.supported = false;
+        format!("\x1b_Gi={id},s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\").into_bytes()
+    }
+    pub fn supported(&self) -> bool {
+        self.supported
+    }
+    /// Consume only this probe's tagged query response. False means the caller
+    /// must preserve its ordinary graphics acknowledgement/error dispatch.
+    /// Late, duplicate and invalid responses for our query id are consumed but
+    /// cannot turn an expired/completed query into positive evidence.
+    pub fn consume_tagged(&mut self, bytes: &[u8]) -> bool {
+        let Some(bytes) = bytes.strip_prefix(b"graphics;") else {
+            return false;
+        };
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return false;
+        };
+        let (header, status) = text.split_once(';').unwrap_or((text, ""));
+        let Some(value) = header.strip_prefix("Gi=") else {
+            return false;
+        };
+        let image_id = value.split(',').next().unwrap_or("");
+        if image_id.as_bytes().first() == Some(&b'0')
+            || !image_id.bytes().all(|b| b.is_ascii_digit())
+            || image_id.parse::<u32>().ok() != self.issued_id
+            || self.issued_id.is_none()
+        {
+            return false;
+        }
+        let Some((_, started)) = self.pending else {
+            return true;
+        };
+        if started.elapsed() > std::time::Duration::from_secs(2) {
+            self.pending = None;
+            return true;
+        }
+        // Ownership is not capability evidence. Reject extra query fields,
+        // malformed statuses and placement acknowledgements for our id.
+        if value != image_id || status.len() > 256 {
+            return true;
+        }
+        if status == "OK" {
+            self.pending = None;
+            self.supported = true;
+        } else if status.starts_with('E') && status.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
+            self.pending = None;
+        }
+        true
+    }
 }
 fn parse_rgb(value: &str) -> Option<[u8; 3]> {
     let mut values = value.strip_prefix("rgb:")?.split('/');
@@ -1328,6 +1433,9 @@ fn parse_rgb(value: &str) -> Option<[u8; 3]> {
 }
 impl ColorProbe {
     pub fn feed(&mut self, bytes: &[u8]) {
+        if self.graphics.consume_tagged(bytes) {
+            return;
+        }
         let Ok(text) = std::str::from_utf8(bytes) else {
             return;
         };
@@ -1508,3 +1616,115 @@ mod regressions;
 mod geometry_regressions;
 
 include!("scene.rs");
+
+#[cfg(test)]
+mod graphics_probe_tests {
+    use super::*;
+
+    fn query_id(probe: &mut ColorProbe) -> u32 {
+        probe.graphics.begin();
+        probe.graphics.pending.unwrap().0
+    }
+    fn feed(probe: &mut ColorProbe, bytes: &[u8]) {
+        let mut demux = ReplyDemux::default();
+        for part in demux.feed(bytes) {
+            if let InputPart::Reply(reply) = part {
+                probe.feed(&reply);
+            }
+        }
+    }
+    #[test]
+    fn only_pending_matching_apc_query_confirms_graphics() {
+        let mut probe = ColorProbe::default();
+        feed(&mut probe, b"\x1b_Gi=1;OK\x1b\\");
+        assert!(!probe.graphics.supported());
+        let id = query_id(&mut probe);
+        for packet in [
+            format!("\x1b]Gi={id};OK\x1b\\"),
+            format!("\x1b]graphics;Gi={id};OK\x1b\\"),
+            format!("\x1bPGi={id};OK\x1b\\"),
+            format!("\x1b_Gi={id};OK\x07"),
+            format!("\x1b_Gi={id},p=1;OK\x1b\\"),
+            format!("\x1b_Gi={};OK\x1b\\", id + 1),
+            format!("\x1b_Gi={id};OK;extra\x1b\\"),
+        ] {
+            feed(&mut probe, packet.as_bytes());
+            assert!(!probe.graphics.supported());
+        }
+        feed(&mut probe, format!("\x1b_Gi={id};OK\x1b\\").as_bytes());
+        assert!(probe.graphics.supported());
+    }
+    #[test]
+    fn fragmented_query_reply_never_becomes_keyboard_input() {
+        for split in 0..32 {
+            let mut probe = ColorProbe::default();
+            let id = query_id(&mut probe);
+            let packet = format!("\x1b_Gi={id};OK\x1b\\");
+            if split > packet.len() {
+                continue;
+            }
+            let mut demux = ReplyDemux::default();
+            for bytes in [&packet.as_bytes()[..split], &packet.as_bytes()[split..]] {
+                for part in demux.feed(bytes) {
+                    match part {
+                        InputPart::Keys(keys) => assert!(keys.is_empty()),
+                        InputPart::Reply(reply) => probe.feed(&reply),
+                    }
+                }
+            }
+            assert!(probe.graphics.supported());
+        }
+    }
+    #[test]
+    fn negative_and_expired_replies_cannot_enable_graphics() {
+        let mut probe = ColorProbe::default();
+        let id = query_id(&mut probe);
+        feed(
+            &mut probe,
+            format!("\x1b_Gi={id};ENOTSUP: unsupported\x1b\\").as_bytes(),
+        );
+        feed(&mut probe, format!("\x1b_Gi={id};OK\x1b\\").as_bytes());
+        assert!(!probe.graphics.supported());
+        let id = query_id(&mut probe);
+        probe.graphics.pending.as_mut().unwrap().1 =
+            Instant::now() - std::time::Duration::from_secs(3);
+        feed(&mut probe, format!("\x1b_Gi={id};OK\x1b\\").as_bytes());
+        assert!(!probe.graphics.supported());
+    }
+    #[test]
+    fn renderer_failures_remain_unconsumed_while_query_failures_are_owned() {
+        let mut probe = ColorProbe::default();
+        let id = query_id(&mut probe);
+        assert!(
+            !probe
+                .graphics
+                .consume_tagged(b"graphics;Gi=1000;EINVAL: invalid projection")
+        );
+        assert!(
+            probe
+                .graphics
+                .consume_tagged(format!("graphics;Gi={id};ENOTSUP: unsupported").as_bytes())
+        );
+        assert!(!probe.graphics.supported());
+        assert!(
+            probe
+                .graphics
+                .consume_tagged(format!("graphics;Gi={id};OK").as_bytes())
+        );
+        assert!(!probe.graphics.supported());
+        let id = query_id(&mut probe);
+        probe.graphics.pending.as_mut().unwrap().1 =
+            Instant::now() - std::time::Duration::from_secs(3);
+        assert!(
+            probe
+                .graphics
+                .consume_tagged(format!("graphics;Gi={id};OK").as_bytes())
+        );
+        assert!(!probe.graphics.supported());
+        assert!(
+            !probe
+                .graphics
+                .consume_tagged(b"graphics;Gi=1000,p=1;EINVAL: invalid projection")
+        );
+    }
+}

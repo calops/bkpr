@@ -1,7 +1,10 @@
-use crate::tiling::{self, Split};
+use crate::tiling;
 use bkpr_protocol::*;
-use bkpr_tui_framework::{Rect, blank, text};
+use bkpr_tui_framework::{Divider, Rect, UiSurface};
 use std::collections::HashMap;
+#[path = "sidebar.rs"]
+mod sidebar;
+pub use sidebar::{RowKind as SidebarRowKind, Sidebar, SidebarTarget};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FormKind {
@@ -24,9 +27,39 @@ pub enum FormKind {
 #[derive(Clone, Debug)]
 pub struct Form {
     pub kind: FormKind,
-    pub value: String,
+    pub fields: crate::form_fields::FormFields,
+    pub error: Option<String>,
+    pub pending: Option<String>,
+    pub ambiguous: bool,
+    pub confirmed: bool,
     pub selection: usize,
     pub restore: Option<String>,
+    pub target: Option<(SidebarTarget, u64)>,
+}
+impl Form {
+    pub fn new(kind: FormKind, value: String, restore: Option<String>) -> Self {
+        Self {
+            kind,
+            fields: crate::form_fields::FormFields::new(value, std::path::PathBuf::new()),
+            error: None,
+            pending: None,
+            ambiguous: false,
+            confirmed: false,
+            selection: 0,
+            restore,
+            target: None,
+        }
+    }
+    pub fn context(&self) -> crate::keyguide::Context {
+        use crate::keyguide::Context;
+        match self.kind {
+            FormKind::CreateWorkspace => Context::Create,
+            FormKind::RenameWorkspace | FormKind::RenamePane => Context::Edit,
+            FormKind::TerminatePane | FormKind::RemoveWorkspace => Context::Confirmation,
+            FormKind::ProjectDetails => Context::Details,
+            _ => Context::Chooser,
+        }
+    }
 }
 pub struct Controller {
     pub workspace: Option<String>,
@@ -36,6 +69,7 @@ pub struct Controller {
     pub form: Option<Form>,
     pub status: String,
     pub suppressed: std::collections::HashSet<String>,
+    pub sidebar: Sidebar,
 }
 impl Controller {
     pub fn new(registry: &RegistrySnapshot) -> Self {
@@ -47,6 +81,7 @@ impl Controller {
             form: None,
             status: String::new(),
             suppressed: Default::default(),
+            sidebar: Sidebar::default(),
         };
         state.reconcile(registry);
         state
@@ -84,6 +119,8 @@ impl Controller {
                     })
                     .or_else(|| ids.first().cloned());
         }
+        self.sidebar
+            .reconcile(registry, self.workspace.as_deref(), self.focused.as_deref());
     }
     pub fn focus(&mut self, pane: String) {
         self.focused = Some(pane.clone());
@@ -125,12 +162,7 @@ impl Controller {
         self.focus(ids[next].clone());
     }
     pub fn open(&mut self, kind: FormKind, value: String) {
-        self.form = Some(Form {
-            kind,
-            value,
-            selection: 0,
-            restore: self.focused.clone(),
-        });
+        self.form = Some(Form::new(kind, value, self.focused.clone()));
     }
     pub fn cancel(&mut self) {
         if let Some(form) = self.form.take() {
@@ -225,6 +257,22 @@ pub fn remove_leaf(layout: Option<LayoutNode>, target: &str) -> Option<LayoutNod
         other => other,
     }
 }
+pub fn exchange_leaves(layout: &mut LayoutNode, first_id: &str, second_id: &str) {
+    match layout {
+        LayoutNode::Leaf { pane_id } if pane_id == first_id => {
+            *pane_id = second_id.to_owned();
+        }
+        LayoutNode::Leaf { pane_id } if pane_id == second_id => {
+            *pane_id = first_id.to_owned();
+        }
+        LayoutNode::Split { first, second, .. } => {
+            exchange_leaves(first, first_id, second_id);
+            exchange_leaves(second, first_id, second_id);
+        }
+        LayoutNode::Leaf { .. } => {}
+    }
+}
+
 /// Horizontal partitions columns; vertical partitions rows. Every header and
 /// content rectangle is derived from this single source, including hit testing.
 pub fn layout_rects(layout: Option<&LayoutNode>, rect: Rect, result: &mut Vec<(String, Rect)>) {
@@ -280,27 +328,7 @@ pub fn content(rect: Rect) -> Rect {
         ..rect
     }
 }
-#[derive(Clone, Debug)]
-pub enum SidebarTarget {
-    Workspace(String),
-    Pane(String),
-}
-fn clipped(value: &str, width: usize) -> String {
-    let mut used = 0;
-    value
-        .chars()
-        .take_while(|c| {
-            let n = unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
-            if used + n > width {
-                false
-            } else {
-                used += n;
-                true
-            }
-        })
-        .collect()
-}
-fn recognized_harness<'a>(
+pub(crate) fn recognized_harness<'a>(
     pane: &'a PaneInfo,
     snapshot: Option<&PaneSnapshot>,
 ) -> Option<&'a HarnessInfo> {
@@ -311,7 +339,8 @@ fn recognized_harness<'a>(
     // Registry and pane streams arrive independently. Do not combine a launch
     // from one observation with a contradictory terminal identity from another.
     if snapshot.is_some_and(|snapshot| {
-        matches!(snapshot.lifecycle.as_str(), "exited" | "terminated")
+        snapshot.pane_id != pane.id
+            || matches!(snapshot.lifecycle.as_str(), "exited" | "terminated")
             || snapshot.program_identity.as_ref().is_none_or(|identity| {
                 identity.pid != harness.pid || identity.birth != harness.birth
             })
@@ -323,7 +352,7 @@ fn recognized_harness<'a>(
 
 /// Terminal status belongs to the observed foreground identity, not its title,
 /// a previous launch, or another application's OSC record.
-fn harness_status<'a>(
+pub(crate) fn harness_status<'a>(
     pane: &'a PaneInfo,
     snapshot: Option<&PaneSnapshot>,
 ) -> Option<&'a ProgramStatus> {
@@ -376,7 +405,7 @@ fn sidebar_pane_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>, width: u
         };
         return format!(
             "{} [{state}]",
-            clipped(&pane.title, width.saturating_sub(4))
+            bkpr_tui_framework::window::fit(&pane.title, width.saturating_sub(4) as u16)
         );
     }
     let Some(harness) = recognized_harness(pane, snapshot) else {
@@ -399,7 +428,10 @@ fn sidebar_pane_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>, width: u
     let identity = format!("[{status}{}{binding}]", harness.kind.as_str());
     let identity_width = unicode_width::UnicodeWidthStr::width(identity.as_str());
     let title_width = width.saturating_sub(identity_width + 1).max(2).min(width);
-    format!("{} {identity}", clipped(&pane.title, title_width))
+    format!(
+        "{} {identity}",
+        bkpr_tui_framework::window::fit(&pane.title, title_width as u16)
+    )
 }
 
 fn project_label(project: &ProjectSnapshot) -> String {
@@ -444,7 +476,7 @@ fn change_label(summary: &ChangeSummary) -> String {
     )
 }
 
-fn project_details(project: Option<&ProjectSnapshot>) -> Vec<String> {
+pub(crate) fn project_details(project: Option<&ProjectSnapshot>) -> Vec<String> {
     let Some(project) = project else {
         return vec!["Project: awaiting foreground directory".into()];
     };
@@ -555,80 +587,6 @@ fn wrapped(value: &str, width: usize) -> Vec<String> {
     }
     lines
 }
-/// Retained UI cells: text changes repaint narrow widget lines, not a fresh
-/// full-screen grid. This is scene construction, never a competing output layer.
-pub struct UiSurface {
-    pub frame: Frame,
-    lines: Vec<(Rect, String, bool)>,
-    dividers: Vec<Split>,
-}
-impl UiSurface {
-    pub fn new(size: Size) -> Self {
-        Self {
-            frame: blank(size),
-            lines: Vec::new(),
-            dividers: Vec::new(),
-        }
-    }
-    pub fn paint(&mut self, size: Size, lines: Vec<(Rect, String, bool)>, cursor: Option<Cursor>) {
-        self.paint_parts(size, lines, Vec::new(), cursor);
-    }
-    fn paint_parts(
-        &mut self,
-        size: Size,
-        lines: Vec<(Rect, String, bool)>,
-        dividers: Vec<Split>,
-        cursor: Option<Cursor>,
-    ) {
-        if self.frame.size != size {
-            self.frame = blank(size);
-            self.lines.clear();
-            self.dividers.clear();
-        }
-        if self.lines != lines || self.dividers != dividers {
-            for (rect, _, _) in self.lines.iter().chain(&lines) {
-                bkpr_tui_framework::clear(&mut self.frame, *rect);
-            }
-            for split in self.dividers.iter().chain(&dividers) {
-                bkpr_tui_framework::clear(&mut self.frame, split.divider);
-            }
-            for (rect, label, selected) in &lines {
-                text(
-                    &mut self.frame,
-                    rect.x,
-                    rect.y,
-                    &clipped(label, rect.width as usize),
-                    *selected,
-                );
-            }
-            for split in &dividers {
-                let rect = split.divider;
-                let glyph = match split.axis {
-                    Axis::Horizontal => "│",
-                    Axis::Vertical => "─",
-                };
-                let label = glyph.repeat(usize::from(rect.width));
-                for y in rect.y..rect.y + rect.height {
-                    text(&mut self.frame, rect.x, y, &label, false);
-                    for cell in self.frame.rows[y as usize]
-                        .cells
-                        .iter_mut()
-                        .skip(usize::from(rect.x))
-                        .take(usize::from(rect.width))
-                    {
-                        cell.style.faint = true;
-                    }
-                }
-            }
-            self.dividers = dividers;
-            self.lines = lines;
-        }
-        self.frame.cursor.visible = false;
-        if let Some(cursor) = cursor {
-            self.frame.cursor = cursor;
-        }
-    }
-}
 fn line(
     x: u16,
     y: u16,
@@ -652,7 +610,7 @@ pub struct ChromeContext<'a> {
     pub state: &'a Controller,
     pub registry: &'a RegistrySnapshot,
     pub rects: &'a [(String, Rect)],
-    pub rgb: bool,
+    pub guide: &'a str,
 }
 pub fn chrome<'a>(
     surface: &mut UiSurface,
@@ -666,34 +624,38 @@ pub fn chrome<'a>(
         state,
         registry,
         rects,
-        rgb,
+        guide,
     } = context;
     let (sidebar, _) = screen_geometry(size);
     let mut hit = Vec::new();
     let mut lines = vec![line(0, 0, sidebar.width, " Bkpr / workspaces", false)];
-    let mut entries = Vec::new();
-    for workspace in &registry.workspaces {
-        let selected = Some(&workspace.id) == state.workspace.as_ref();
-        entries.push((
-            SidebarTarget::Workspace(workspace.id.clone()),
-            format!("{} {}", if selected { "▸" } else { " " }, workspace.name),
-            selected,
-        ));
-        if selected {
-            let mut visible = Vec::new();
-            leaves(workspace.layout.as_ref(), &mut visible);
-            for pane in &registry.panes {
-                let projected = visible.contains(&pane.id);
-                if !projected
-                    && (pane.status == PaneStatus::Exited
-                        || pane.workspace_id.as_ref() != Some(&workspace.id))
-                {
-                    continue;
-                }
-                let focused = state.focused.as_ref() == Some(&pane.id);
-                let label_width = sidebar.width.saturating_sub(5) as usize;
-                let label = format!(
-                    "  {} {}",
+    let available = sidebar.height.saturating_sub(2) as usize;
+    for (index, entry) in state
+        .sidebar
+        .rows
+        .iter()
+        .skip(state.sidebar.scroll)
+        .take(available)
+        .enumerate()
+    {
+        let selected = entry.target.is_some() && entry.target == state.sidebar.cursor;
+        let label = match entry.kind {
+            SidebarRowKind::Workspace { index, collapsed } => {
+                let workspace = &registry.workspaces[index];
+                format!(
+                    "{} [] {}",
+                    if collapsed { "▸" } else { "▾" },
+                    workspace.name
+                )
+            }
+            SidebarRowKind::Pane { index, projected } => {
+                let pane = &registry.panes[index];
+                let focused = state.focused.as_ref() == Some(&pane.id)
+                    && entry.target.as_ref().is_some_and(|target| {
+                        Some(target.workspace()) == state.workspace.as_deref()
+                    });
+                format!(
+                    "  {} <> {}",
                     if focused {
                         "●"
                     } else if projected {
@@ -701,28 +663,20 @@ pub fn chrome<'a>(
                     } else {
                         "◌"
                     },
-                    sidebar_pane_label(pane, snapshot(&pane.id), label_width)
-                );
-                entries.push((SidebarTarget::Pane(pane.id.clone()), label, focused));
-                if let Some(project) = &pane.project {
-                    entries.push((
-                        SidebarTarget::Pane(pane.id.clone()),
-                        format!("    {}", project_label(project)),
-                        false,
-                    ));
-                }
+                    sidebar_pane_label(
+                        pane,
+                        snapshot(&pane.id),
+                        sidebar.width.saturating_sub(8) as usize
+                    )
+                )
             }
-        }
-    }
-    let available = sidebar.height.saturating_sub(2) as usize;
-    let selected = entries
-        .iter()
-        .rposition(|(_, _, selected)| *selected)
-        .unwrap_or(0);
-    let offset = selected.saturating_add(1).saturating_sub(available);
-    for (index, (target, label, selected)) in
-        entries.into_iter().skip(offset).take(available).enumerate()
-    {
+            SidebarRowKind::Detail { index } => registry.panes[index]
+                .project
+                .as_ref()
+                .map(|project| format!("       {}", project_label(project)))
+                .unwrap_or_default(),
+            SidebarRowKind::Spacer => String::new(),
+        };
         let row = index as u16 + 2;
         lines.push(line(
             0,
@@ -731,7 +685,9 @@ pub fn chrome<'a>(
             label,
             selected,
         ));
-        hit.push((target, row));
+        if let Some(target) = &entry.target {
+            hit.push((target.clone(), row));
+        }
     }
     for (id, rect) in rects {
         let title = registry
@@ -781,27 +737,14 @@ pub fn chrome<'a>(
             state.focused.as_ref() == Some(id),
         ));
     }
-    let status = if state.prefix {
-        "Ctrl-b: / search  e resize  s history  y copy  i project  c workspace  n pane  % / \" split  r/p rename  x unlayout  ! close  w/o choose  d detach".into()
-    } else if let Some((offset, total)) = state.focused.as_deref().and_then(&history) {
-        format!(
-            "HISTORY -{offset}/{total} | drag select/copy  Ctrl-b y copy | Esc clear/live  ↑/↓ line  PgUp/PgDn page  Home oldest{}",
-            if state.status.is_empty() {
-                String::new()
-            } else {
-                format!(" | {}", state.status)
-            }
-        )
-    } else if !state.status.is_empty() {
-        state.status.clone()
+    let status = if state.status.is_empty() {
+        guide.to_owned()
     } else {
+        let guide_width = unicode_width::UnicodeWidthStr::width(guide);
+        let available = usize::from(size.cols).saturating_sub(guide_width + 3);
         format!(
-            "Ctrl-b commands  drag select/copy  Shift overrides app mouse  Ctrl-] detach | {}",
-            if rgb {
-                "RGB confirmed"
-            } else {
-                "ANSI fallback"
-            }
+            "{} | {guide}",
+            bkpr_tui_framework::window::fit(&state.status, available as u16)
         )
     };
     lines.push(line(
@@ -820,7 +763,18 @@ pub fn chrome<'a>(
         area,
         &mut dividers,
     );
-    surface.paint_parts(size, lines, dividers, None);
+    surface.paint_parts(
+        size,
+        lines,
+        dividers
+            .into_iter()
+            .map(|split| Divider {
+                rect: split.divider,
+                vertical: split.axis == Axis::Horizontal,
+            })
+            .collect(),
+        None,
+    );
     hit
 }
 pub(crate) fn project_detail_lines(
@@ -828,7 +782,7 @@ pub(crate) fn project_detail_lines(
     form: &Form,
     registry: &RegistrySnapshot,
 ) -> Vec<String> {
-    let width = size.cols - (size.cols / 8).min(8);
+    let width = size.cols;
     let details = form
         .restore
         .as_ref()
@@ -848,25 +802,34 @@ pub fn modal<'a>(
     registry: &RegistrySnapshot,
     snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
 ) {
-    let x = (size.cols / 8).min(8);
-    let y = if form.kind == FormKind::ProjectDetails {
-        1.min(size.rows.saturating_sub(1))
-    } else {
-        (size.rows / 3).min(size.rows.saturating_sub(1))
-    };
-    let width = size.cols - x;
-    let mut cursor = None;
+    let x = 0;
+    let y = 0;
+    let width = size.cols;
     let title = match &form.kind {
         FormKind::CreateWorkspace => "Create workspace",
         FormKind::RenameWorkspace => "Rename workspace",
         FormKind::RenamePane => "Rename pane",
-        FormKind::TerminatePane => "Terminate focused pane and its owned processes? Type yes",
+        FormKind::TerminatePane => "Close terminal and its owned processes?",
         FormKind::ReopenPane { .. } => "Open a new shell here",
-        FormKind::RemoveWorkspace => "Remove workspace layout only (panes survive)? Type yes",
+        FormKind::RemoveWorkspace => "Remove workspace layout only (terminals survive)?",
         FormKind::ChooseWorkspace => "Switch workspace (arrows / Enter)",
         FormKind::ChoosePane => "Show existing pane (membership unchanged)",
         FormKind::ProjectDetails => "Focused project (arrows scroll)",
     };
+    if matches!(
+        form.kind,
+        FormKind::CreateWorkspace | FormKind::RenameWorkspace | FormKind::RenamePane
+    ) {
+        form.fields.paint(
+            surface,
+            size,
+            title,
+            form.kind == FormKind::CreateWorkspace,
+            form.error.as_deref(),
+            form.pending.is_some() || form.ambiguous,
+        );
+        return;
+    }
     let mut lines = vec![line(x, y, width, title, true)];
     if form.kind == FormKind::ProjectDetails {
         let details = project_detail_lines(size, form, registry);
@@ -907,7 +870,7 @@ pub fn modal<'a>(
             format!(
                 "{} Client current directory: {}",
                 if form.selection == 1 { "▸" } else { " " },
-                form.value
+                form.fields.primary.value
             ),
             form.selection == 1,
         ));
@@ -992,30 +955,54 @@ pub fn modal<'a>(
             ));
         }
     } else {
-        let row = (y + 2).min(size.rows.saturating_sub(1));
-        lines.push(line(x, row, width, form.value.clone(), false));
-        cursor = Some(Cursor {
-            x: (x + unicode_width::UnicodeWidthStr::width(form.value.as_str()) as u16)
-                .min(size.cols.saturating_sub(1)),
-            y: row,
-            visible: true,
-            blinking: false,
-            shape: CursorShape::Bar,
-            color: None,
-        });
+        let target = match form.target.as_ref().map(|(target, _)| target) {
+            Some(SidebarTarget::Workspace(id)) => registry
+                .workspaces
+                .iter()
+                .find(|workspace| &workspace.id == id)
+                .map(|workspace| workspace.name.as_str()),
+            Some(SidebarTarget::Pane { pane, .. }) => registry
+                .panes
+                .iter()
+                .find(|entry| &entry.id == pane)
+                .map(|pane| pane.title.as_str()),
+            None => form
+                .restore
+                .as_ref()
+                .and_then(|id| registry.panes.iter().find(|pane| &pane.id == id))
+                .map(|pane| pane.title.as_str()),
+        };
+        if let Some(target) = target {
+            lines.push(line(
+                0,
+                2.min(size.rows.saturating_sub(1)),
+                width,
+                target,
+                true,
+            ));
+        }
     }
     lines.push(line(
         x,
         size.rows.saturating_sub(2),
         width,
-        if form.kind == FormKind::ProjectDetails {
+        if let Some(error) = &form.error {
+            error.as_str()
+        } else if form.pending.is_some() {
+            "Waiting for backend receipt · Esc leaves without cancelling accepted work"
+        } else if form.kind == FormKind::ProjectDetails {
             "↑/↓ scroll · Enter / Esc close"
+        } else if matches!(
+            form.kind,
+            FormKind::TerminatePane | FormKind::RemoveWorkspace
+        ) {
+            "y / Enter confirms · n / Esc cancels"
         } else {
-            "Enter apply · Esc cancel (returns focus to pane)"
+            "Enter applies · Esc cancels"
         },
         false,
     ));
-    surface.paint(size, lines, cursor);
+    surface.paint(size, lines, None);
 }
 
 #[cfg(test)]
@@ -1059,14 +1046,13 @@ mod tests {
             cell_height: 18,
         };
         let mut surface = UiSurface::new(size);
-        let mut form = Form {
-            kind: FormKind::ProjectDetails,
-            value: String::new(),
-            selection: 0,
-            restore: Some(pane.id.clone()),
-        };
+        let mut form = Form::new(
+            FormKind::ProjectDetails,
+            String::new(),
+            Some(pane.id.clone()),
+        );
         let details = project_detail_lines(size, &form, &registry);
-        let width = size.cols - (size.cols / 8).min(8);
+        let width = size.cols;
         for (index, detail) in details.iter().enumerate() {
             assert!(unicode_width::UnicodeWidthStr::width(detail.as_str()) <= width as usize);
             form.selection = index;
@@ -1119,6 +1105,43 @@ mod tests {
         let state = Controller::new(&registry);
         assert_eq!(state.workspace.as_deref(), Some("history"));
         assert_eq!(state.focused.as_deref(), Some("stopped"));
+    }
+
+    #[test]
+    fn exchanging_nested_panes_preserves_split_geometry_and_unrelated_projection() {
+        let mut layout = LayoutNode::Split {
+            axis: Axis::Horizontal,
+            ratio: 650,
+            first: Box::new(LayoutNode::Split {
+                axis: Axis::Vertical,
+                ratio: 300,
+                first: Box::new(leaf("a")),
+                second: Box::new(leaf("b")),
+            }),
+            second: Box::new(leaf("c")),
+        };
+        let original = layout.clone();
+        let area = Rect {
+            x: 5,
+            y: 2,
+            width: 100,
+            height: 40,
+        };
+        let mut before = Vec::new();
+        layout_rects(Some(&layout), area, &mut before);
+        exchange_leaves(&mut layout, "a", "c");
+        let mut after = Vec::new();
+        layout_rects(Some(&layout), area, &mut after);
+        assert_eq!(
+            after,
+            vec![
+                ("c".into(), before[0].1),
+                ("b".into(), before[1].1),
+                ("a".into(), before[2].1),
+            ]
+        );
+        exchange_leaves(&mut layout, "c", "a");
+        assert_eq!(layout, original);
     }
 
     #[test]
@@ -1205,32 +1228,19 @@ mod tests {
                 state: &Controller::new(&registry),
                 registry: &registry,
                 rects: &[],
-                rgb: false,
+                guide: "",
             },
             |_| None,
             |_| None,
             |_| None,
         );
-        let displayed: String = surface
-            .frame
-            .rows
-            .iter()
-            .flat_map(|row| &row.cells)
-            .map(|cell| cell.text.as_str())
-            .collect();
-        assert!(!displayed.contains("Closed shell"));
-        for title in ["Live shell", "Faulted shell", "Retained scene"] {
-            assert!(displayed.contains(title));
-        }
-        assert!(
-            !hit.iter()
-                .any(|(target, _)| matches!(target, SidebarTarget::Pane(id) if id == "closed"))
-        );
+        assert!(!hit.iter().any(
+            |(target, _)| matches!(target, SidebarTarget::Pane { pane, .. } if pane == "closed")
+        ));
         for expected in ["live", "fault", "history"] {
-            assert!(
-                hit.iter()
-                    .any(|(target, _)| matches!(target, SidebarTarget::Pane(id) if id == expected))
-            );
+            assert!(hit.iter().any(
+                |(target, _)| matches!(target, SidebarTarget::Pane { pane, .. } if pane == expected)
+            ));
         }
     }
     fn capture_fixture() -> (PaneInfo, PaneSnapshot) {
@@ -1349,7 +1359,7 @@ mod tests {
                 state: &state,
                 registry: &registry,
                 rects: &[(pane.id.clone(), rect)],
-                rgb: false,
+                guide: "",
             },
             |_| None,
             |_| Some(snapshot),
@@ -1359,12 +1369,7 @@ mod tests {
 
     fn capture_chooser(surface: &mut UiSurface, pane: &PaneInfo, snapshot: &PaneSnapshot) {
         let registry = capture_registry(pane);
-        let form = Form {
-            kind: FormKind::ChoosePane,
-            value: String::new(),
-            selection: 0,
-            restore: Some(pane.id.clone()),
-        };
+        let form = Form::new(FormKind::ChoosePane, String::new(), Some(pane.id.clone()));
         let size = surface.frame.size;
         modal(surface, size, &form, &registry, |_| Some(snapshot));
     }
@@ -1393,7 +1398,7 @@ mod tests {
                     state: &state,
                     registry: &registry,
                     rects: &rects,
-                    rgb: false,
+                    guide: "",
                 },
                 |_| None,
                 |_| None,
@@ -1439,7 +1444,7 @@ mod tests {
                     state: &state,
                     registry: &registry,
                     rects: &rects,
-                    rgb: false,
+                    guide: "",
                 },
                 |_| None,
                 |_| None,
@@ -1572,16 +1577,15 @@ mod tests {
                 state: &state,
                 registry: &registry,
                 rects: &[],
-                rgb: false,
+                guide: "",
             },
             |_| None,
             |_| None,
             |_| None,
         );
-        assert!(
-            hits.iter()
-                .any(|(target, _)| matches!(target, SidebarTarget::Pane(id) if id == "pane"))
-        );
+        assert!(hits.iter().any(
+            |(target, _)| matches!(target, SidebarTarget::Pane { pane, .. } if pane == "pane")
+        ));
         assert!(painted_text(&surface).contains("[~claude]"));
 
         registry.panes[0].harness_status = None;
@@ -1592,7 +1596,7 @@ mod tests {
                 state: &state,
                 registry: &registry,
                 rects: &[],
-                rgb: false,
+                guide: "",
             },
             |_| None,
             |_| None,
@@ -1658,6 +1662,53 @@ mod tests {
     }
 
     #[test]
+    fn metadata_popover_retires_harness_on_snapshot_identity_change_without_registry_change() {
+        let (pane, mut snapshot) = capture_fixture();
+        let registry = capture_registry(&pane);
+        let size = capture_surface().frame.size;
+        for target in [
+            SidebarTarget::Pane {
+                workspace: "work".into(),
+                pane: pane.id.clone(),
+            },
+            SidebarTarget::Workspace("work".into()),
+        ] {
+            snapshot.program_identity = Some(ProcessIdentity {
+                pid: 41,
+                birth: "100".into(),
+            });
+            let mut popover = crate::popover::Popover::new(size);
+            popover
+                .paint(&registry, Some(&target), 2, 24, size, |_| Some(&snapshot))
+                .unwrap();
+            assert!(painted_text(&popover.surface).contains("Claude"));
+            snapshot.program_identity = None;
+            popover
+                .paint(&registry, Some(&target), 2, 24, size, |_| Some(&snapshot))
+                .unwrap();
+            assert!(!painted_text(&popover.surface).contains("Claude"));
+        }
+    }
+    #[test]
+    fn finder_reindexes_harness_facts_on_held_identity_change_without_registry_change() {
+        let (mut pane, mut snapshot) = capture_fixture();
+        pane.harness_status = Some(working_record(Some("claude")));
+        let registry = capture_registry(&pane);
+        let mut finder = crate::finder::Finder::new(&registry, None, |_| Some(&snapshot));
+        finder.paste("harness:claude status:working");
+        assert_eq!(finder.selected_target().unwrap().pane_id, pane.id);
+        snapshot.program_identity = None;
+        finder.update_registry(&registry, |_| Some(&snapshot));
+        assert!(finder.selected_target().is_none());
+        snapshot.program_identity = Some(ProcessIdentity {
+            pid: 41,
+            birth: "100".into(),
+        });
+        finder.update_registry(&registry, |_| Some(&snapshot));
+        assert_eq!(finder.selected_target().unwrap().pane_id, pane.id);
+    }
+
+    #[test]
     fn newer_pane_identity_cannot_keep_an_old_registry_conversation_visible() {
         let (pane, mut snapshot) = capture_fixture();
         let mut pane = pane;
@@ -1718,12 +1769,15 @@ mod tests {
                 pane.foreground_cwd = None;
             }
             capture_chooser(&mut surface, &pane, &snapshot);
-            let selected_row = surface.frame.rows[4]
-                .cells
-                .iter()
-                .map(|cell| cell.text.as_str())
-                .collect::<String>();
-            assert!(selected_row.contains("Design notes"));
+            assert!(surface.frame.rows.iter().any(|row| {
+                row.cells.iter().any(|cell| cell.style.inverse)
+                    && row
+                        .cells
+                        .iter()
+                        .map(|cell| cell.text.as_str())
+                        .collect::<String>()
+                        .contains("Design notes")
+            }));
             assert!(!surface.frame.cursor.visible);
         }
     }
@@ -1749,10 +1803,9 @@ mod tests {
         };
         let mut surface = UiSurface::new(size);
         let hits = capture_chrome(&mut surface, &pane, &snapshot);
-        assert!(
-            hits.iter()
-                .any(|(target, _)| matches!(target, SidebarTarget::Pane(id) if id == "pane"))
-        );
+        assert!(hits.iter().any(
+            |(target, _)| matches!(target, SidebarTarget::Pane { pane, .. } if pane == "pane")
+        ));
         assert!(!surface.frame.cursor.visible);
         let unchanged = surface.frame.clone();
         capture_chrome(&mut surface, &pane, &snapshot);

@@ -221,6 +221,12 @@ impl App<'_> {
         self.flush_resize()
     }
 
+    pub(super) fn resize_dragging(&self) -> bool {
+        self.resizing
+            .gesture
+            .as_ref()
+            .is_some_and(|gesture| matches!(gesture.mode, Mode::Drag))
+    }
     pub(super) fn resize_key(&mut self, event: &KeyEvent, size: Size) -> Result<bool> {
         if event.key == "BracketRight" && event.modifiers & 2 != 0 {
             return Ok(false);
@@ -240,27 +246,28 @@ impl App<'_> {
         if !self.held.contains_key(&event.key) {
             self.state.suppressed.insert(event.key.clone());
         }
-        if matches!(event.key.as_str(), "Enter" | "Escape") {
+        use crate::keyguide::{self, Action, Context};
+        let command = keyguide::lookup(Context::Resize, event);
+        if command == Some(Action::FinishResize) {
             self.finish_resize()?;
             return Ok(true);
         }
-        let direction = match event.key.as_str() {
-            "ArrowLeft" => Some(Direction::Left),
-            "ArrowRight" => Some(Direction::Right),
-            "ArrowUp" => Some(Direction::Up),
-            "ArrowDown" => Some(Direction::Down),
-            _ => None,
-        };
-        if let Some(direction) = direction
+        if let Some(Action::Resize { direction, cells }) = command
             && matches!(self.resizing.gesture.as_ref().unwrap().mode, Mode::Keyboard)
         {
+            let direction = match direction {
+                keyguide::Direction::Left => Direction::Left,
+                keyguide::Direction::Right => Direction::Right,
+                keyguide::Direction::Up => Direction::Up,
+                keyguide::Direction::Down => Direction::Down,
+            };
             let gesture = self.resizing.gesture.as_mut().unwrap();
             if let Some(layout) = tiling::nudge(
                 &gesture.desired,
                 screen_geometry(size).1,
                 &gesture.pane,
                 direction,
-                if event.modifiers & 1 != 0 { 5 } else { 1 },
+                cells,
             ) {
                 gesture.desired = layout;
                 gesture.boundary = false;

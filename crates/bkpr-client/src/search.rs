@@ -159,22 +159,26 @@ impl App<'_> {
         if !self.held.contains_key(&event.key) {
             self.state.suppressed.insert(event.key.clone());
         }
-        match event.key.as_str() {
-            "Escape" => self.close_search(),
-            "Enter" => {
+        use crate::keyguide::{self, Action, Context};
+        use bkpr_tui_framework::EditAction;
+        match keyguide::lookup(Context::Search, event) {
+            Some(Action::Cancel) => self.close_search(),
+            Some(action @ (Action::NextMatch | Action::PreviousMatch)) => {
                 let editor = self.search.editor.as_mut().unwrap();
                 if editor.navigation.len() < MAX_NAVIGATION {
                     editor.notice = None;
-                    editor.navigation.push_back(if event.modifiers & 1 != 0 {
-                        SearchAction::Previous
-                    } else {
-                        SearchAction::Next
-                    });
+                    editor
+                        .navigation
+                        .push_back(if action == Action::PreviousMatch {
+                            SearchAction::Previous
+                        } else {
+                            SearchAction::Next
+                        });
                 } else {
                     editor.notice = Some("Navigation queue full; key not admitted".into());
                 }
             }
-            "Backspace" => {
+            Some(Action::Edit(EditAction::Backspace)) => {
                 let editor = self.search.editor.as_mut().unwrap();
                 if editor.query.pop().is_some() {
                     editor.dirty = true;
@@ -185,7 +189,7 @@ impl App<'_> {
                     editor.navigation.clear();
                 }
             }
-            "KeyU" if event.modifiers & 2 != 0 => {
+            Some(Action::Edit(EditAction::Clear)) => {
                 let editor = self.search.editor.as_mut().unwrap();
                 editor.query.clear();
                 editor.dirty = true;
@@ -195,7 +199,7 @@ impl App<'_> {
                 editor.notice = None;
                 editor.navigation.clear();
             }
-            _ if event.modifiers & 6 == 0 => self.search_text(&event.text),
+            None if event.modifiers & 14 == 0 => self.search_text(&event.text),
             _ => {}
         }
         true

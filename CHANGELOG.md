@@ -4,6 +4,7 @@
 
 * Close completed shell/process projections atomically across workspace layouts and remove their unprojected records from the live sidebar, including Ctrl-D and explicit pane termination. Preserve exit metadata and final scenes, keep faults visible, and distinguish trailing key/pointer/focus cleanup from real input after execution ends. Remove the obsolete client-side termination/layout-update sequence.
 * Route Omp tools through the shared launch-local MCP server and include communication guidance as a private package skill. Remove Omp-specific tool registration/schema conversion; keep the extension for native conversation binding and step-boundary notifications.
+* Reap explicitly terminated pane processes before stopping their PTY writer. `portable-pty` emits newline/VEOF on writer drop; those bytes must not reach a still-live application or pending shell command.
 
 ### Breaking branch replacement
 
@@ -11,6 +12,22 @@
 * Remove the old host-runtime flake input, WASI build/export paths, sibling-runtime recipes and obsolete package/cache/publication automation. Nix now supplies only the default native development shell; Cargo plus the pinned engine preparation helper is the supported build path. Native Nix packaging requires a reproducible, offline engine dependency closure and runtime acceptance before package/app outputs return.
 * Expose the native daemon, TUI, typed version-2 control protocol and keyboard client. Backend-owned workspaces and split layouts reference independent panes; closing a projection or detaching a client does not terminate its process. Workspace/layout metadata persists, but process and terminal-content recovery is not implemented. Forge/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
 * Native graphics initial-presentation gates remain unaccepted. This replacement is not production acceptance and does not modify installed applications or live sessions.
+
+### Native named sessions
+
+* Restore `--session/-s` with default `bkpr`, exact UTF-8 names and separate daemon/state roots. Add read-only `bkpr list` and explicitly targeted `bkpr stop`; serialize concurrent bootstrap and validate stored/live identity without automatically restarting a live incompatible server.
+* Add process-bound, ephemeral client registration and a dedicated lifetime stream. Initialize the TUI before one-shot `-d/--detach-others` activation; revoke other attachments without closing programs or layouts, waiting for their acknowledgement, or detaching clients that arrive later.
+* Bind managed views, queued native callbacks, device grants and sizing to revocable client authority. Retire it on EOF, owner exit or detach, including fork-inherited lifetime sockets. Inject trusted logical session ID/name snapshots before pane exec.
+* Move daemon bootstrap out of the terminal-client library into the launcher. Keep headless tools nonbootstrapping, separate lifetime/watch/input admission, and keep process/CWD scans off managed per-key authentication.
+
+### Bkpr frontend restoration
+
+* Restore the all-workspace sidebar's independent keyboard selection, folding, scrolling, rename/create/close-terminal actions and passive metadata popovers. Keep separate-window creation and owned-terminal cascading workspace close explicitly dependent on backend contracts.
+* Restore focused name/directory forms, grapheme-boundary editing and paste, identity-bound modal intent, honest asynchronous errors and the metadata-only fuzzy finder with filters and responsive previews.
+* Share typed binding dispatch with contextual hints; compose bounded popup/guide windows without taking native pointer gestures or leaking UI keys into applications. Normalize legacy Ctrl-Space/NUL at the framework input boundary.
+* Put retained UI surfaces, text editing, window decoration, capability gating and bounded off-thread SVG preparation in the reusable TUI framework. Keep Bkpr-specific models/assets in the client. Restore static bee/hive artwork through the existing scene/image lifecycle with terminal-default colors and readable unsupported-host fallbacks.
+* Reuse foreground-identity and project freshness presentation across metadata views. Preserve native clipboard framing for applications while local forms/finder receive ordinary paste, restoring the host's original mode on detach.
+
 
 ### Development
 
@@ -44,6 +61,11 @@
 * Add `Ctrl-b e` resize mode: arrows move a containing divider by one cell, Shift moves five, held arrows repeat, and Enter/Esc finishes without application input. Add left-drag resizing on real one-cell divider gutters outside pane content.
 * Share partition arithmetic across pane projection, divider drawing and hit testing. Preserve unrelated ratios/topology, clamp useful subtree sizes and keep small-window projection separate from saved layout intent.
 * Reuse the existing revisioned backend layout API and bounded background pool. Retain only the latest pending pointer position behind one in-flight commit, preserve final release, block read-only mutation and retire foreign/focus/modal/geometry changes without replaying ambiguous updates.
+
+### Native pane rearrangement
+
+* Add `Ctrl-b Shift+Arrow` to exchange the focused pane with the nearest pane in that direction. Keep unmodified prefix arrows as focus navigation, preserve split geometry and focused execution, and publish the saved arrangement to other clients without moving their focus.
+* Reuse asynchronous revision-checked layout updates. Reject read-only changes and additional moves during pending workspace management; preserve processes and existing views, and never replay ambiguous mutations.
 
 ### Native terminal search
 

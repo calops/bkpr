@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 pub struct ViewRecord {
     pub id: String,
+    pub(crate) client: Option<Arc<crate::registry::sessions::ClientLease>>,
     pub spec: ViewSpec,
     pub activity: u64,
     /// Inspection lifetime changes only when visibility is revoked/restored;
@@ -22,6 +23,9 @@ pub struct ViewRecord {
     pub last_seen: Instant,
 }
 impl ViewRecord {
+    pub(crate) fn live(&self) -> bool {
+        self.client.as_ref().is_none_or(|client| client.is_active())
+    }
     pub(crate) fn snapshot(&self) -> ViewInfo {
         ViewInfo {
             id: self.id.clone(),
@@ -84,6 +88,9 @@ impl Authority {
             .views
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("stale view"))?;
+        if !view.live() {
+            bail!("client attachment detached");
+        }
         view.last_seen = Instant::now();
         Ok(())
     }
@@ -91,7 +98,11 @@ impl Authority {
         let stale = self
             .views
             .values()
-            .filter(|v| now.saturating_duration_since(v.last_seen) > Duration::from_secs(10))
+            .filter(|v| {
+                !v.live()
+                    || (v.client.is_none()
+                        && now.saturating_duration_since(v.last_seen) > Duration::from_secs(10))
+            })
             .map(|v| v.id.clone())
             .collect::<Vec<_>>();
         for id in &stale {
@@ -100,6 +111,16 @@ impl Authority {
         stale
     }
     pub fn attach(&mut self, spec: ViewSpec) -> Result<String> {
+        self.attach_owned(spec, None)
+    }
+    pub(crate) fn attach_owned(
+        &mut self,
+        spec: ViewSpec,
+        client: Option<Arc<crate::registry::sessions::ClientLease>>,
+    ) -> Result<String> {
+        if let Some(client) = &client {
+            client.ensure_active()?;
+        }
         valid_size(spec.size)?;
         if self.views.len() >= MAX_VIEWS_PER_PANE {
             bail!("view limit reached");
@@ -111,6 +132,7 @@ impl Authority {
             id.clone(),
             ViewRecord {
                 id: id.clone(),
+                client,
                 spec,
                 activity: self.clock,
                 inspection_epoch: 1,
@@ -128,6 +150,9 @@ impl Authority {
             .views
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("stale view"))?;
+        if !view.live() {
+            bail!("client attachment detached");
+        }
         if view.spec.visible != spec.visible {
             view.inspection_epoch = view
                 .inspection_epoch
@@ -189,6 +214,9 @@ impl Authority {
             .views
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("stale view"))?;
+        if !view.live() {
+            bail!("client attachment detached");
+        }
         if !view.spec.input {
             bail!("input capability denied");
         }
@@ -201,9 +229,28 @@ impl Authority {
             .max_by_key(|v| v.activity)
             .map(|v| v.id.clone())
     }
+    pub(crate) fn check_client(
+        &self,
+        id: &str,
+        client: Option<&Arc<crate::registry::sessions::ClientLease>>,
+    ) -> Result<()> {
+        let view = self
+            .views
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("stale view"))?;
+        let matches = match (&view.client, client) {
+            (None, None) => true,
+            (Some(owner), Some(client)) => Arc::ptr_eq(owner, client) && client.is_active(),
+            _ => false,
+        };
+        if !matches {
+            bail!("view belongs to a different client authority");
+        }
+        Ok(())
+    }
 }
 fn eligible(view: &ViewRecord) -> bool {
-    view.spec.visible && view.spec.interactive
+    view.live() && view.spec.visible && view.spec.interactive
 }
 #[cfg(test)]
 mod tests {

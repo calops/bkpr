@@ -91,13 +91,19 @@ impl App<'_> {
             return Ok(true);
         };
         let page = self.history_page(&pane, rects);
-        let delta = match event.key.as_str() {
-            "Escape" | "Enter" | "End" => i64::MIN,
-            "Home" => i64::MAX,
-            "ArrowUp" => 1,
-            "ArrowDown" => -1,
-            "PageUp" => page,
-            "PageDown" => -page,
+        use crate::keyguide::{self, Action, Context, HistoryAction};
+        let context = if self.focused_history() {
+            Context::History
+        } else {
+            Context::Application
+        };
+        let delta = match keyguide::lookup(context, event) {
+            Some(Action::History(HistoryAction::Live)) => i64::MIN,
+            Some(Action::History(HistoryAction::Oldest)) => i64::MAX,
+            Some(Action::History(HistoryAction::LineUp)) => 1,
+            Some(Action::History(HistoryAction::LineDown)) => -1,
+            Some(Action::History(HistoryAction::PageUp)) => page,
+            Some(Action::History(HistoryAction::PageDown)) => -page,
             _ => return Ok(true),
         };
         self.scroll_history(&pane, delta, delta != i64::MIN)?;
@@ -113,26 +119,40 @@ impl App<'_> {
     }
 
     pub(super) fn paste(&mut self, text: String) -> Result<()> {
+        if self
+            .consent
+            .as_ref()
+            .is_some_and(|consent| !consent.state.allowed && !consent.state.sent)
+        {
+            return Ok(());
+        }
+        if self.state.prefix {
+            return Ok(());
+        }
+        if let Some(finder) = &mut self.finder {
+            finder.paste(&text);
+            return Ok(());
+        }
+        if let Some(form) = &mut self.state.form {
+            if form.pending.is_none()
+                && !form.ambiguous
+                && matches!(
+                    form.kind,
+                    FormKind::CreateWorkspace | FormKind::RenameWorkspace | FormKind::RenamePane
+                )
+            {
+                form.fields.paste(&text);
+            }
+            return Ok(());
+        }
+        if self.state.sidebar.active {
+            return Ok(());
+        }
         if self.search_open() {
             self.search_text(&text);
             return Ok(());
         }
-        if let Some(form) = self.state.form.as_mut() {
-            if !matches!(
-                form.kind,
-                FormKind::ChooseWorkspace
-                    | FormKind::ChoosePane
-                    | FormKind::ProjectDetails
-                    | FormKind::ReopenPane { .. }
-            ) && form.value.len() + text.len() <= 1024
-            {
-                form.value.push_str(&safe_text(&text));
-            }
-        } else if !self
-            .consent
-            .as_ref()
-            .is_some_and(|c| !c.state.allowed && !c.state.sent)
-            && !self.options.read_only
+        if !self.options.read_only
             && !self.focused_history()
             && let Some((pane, view)) = self.active()
         {

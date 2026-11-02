@@ -13,7 +13,10 @@ pub(super) fn visible_record(
     inspection_epoch: Option<u64>,
 ) -> Result<u64> {
     let view = authority.views.get(id).context("stale selection view")?;
-    ensure!(view.spec.visible, "selection requires a visible view");
+    ensure!(
+        view.live() && view.spec.visible,
+        "selection requires a live visible view"
+    );
     ensure!(
         inspection_epoch.is_none_or(|epoch| epoch == view.inspection_epoch),
         "selection view inspection lifetime changed"
@@ -41,7 +44,7 @@ pub(super) fn retire(terminal: &mut Terminal, shared: &Shared, authority: &Autho
             && authority
                 .views
                 .get(id)
-                .is_some_and(|view| view.spec.visible)
+                .is_some_and(|view| view.live() && view.spec.visible)
     });
 }
 pub(super) fn snapshots(
@@ -57,7 +60,7 @@ pub(super) fn snapshots(
         authority
             .views
             .values()
-            .filter(|view| view.spec.visible)
+            .filter(|view| view.live() && view.spec.visible)
             .map(|view| (view.id.clone(), view.inspection_epoch))
             .collect::<Vec<_>>()
     };

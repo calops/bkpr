@@ -8,6 +8,10 @@ use std::{
     time::Duration,
 };
 
+#[path = "client_lifetime.rs"]
+mod client_lifetime;
+pub use client_lifetime::{Endpoint, RegisteredClient, detached_before_dispatch};
+
 #[derive(Debug)]
 struct OutcomeUnknown;
 impl std::fmt::Display for OutcomeUnknown {
@@ -36,7 +40,10 @@ pub fn request(socket: &Path, request: &Request) -> Result<Response> {
 
 /// A caller-owned connection allows cancellation by shutting down a cloned socket.
 /// Configure read/write deadlines before dispatch; no request is replayed.
-pub fn request_stream(stream: &mut UnixStream, request: &Request) -> Result<Response> {
+pub fn request_stream<T: serde::Serialize + ?Sized>(
+    stream: &mut UnixStream,
+    request: &T,
+) -> Result<Response> {
     // A missing or invalid reply cannot establish whether a mutation executed.
     // Keep that uncertainty typed through caller error contexts.
     let response = (|| -> Result<Response> {
@@ -53,17 +60,7 @@ pub fn request_stream(stream: &mut UnixStream, request: &Request) -> Result<Resp
         }
         let response: Response =
             serde_json::from_slice(&bytes).context("decoding server response")?;
-        if response.version != PROTOCOL_VERSION {
-            bail!("unsupported server protocol version");
-        }
-        match (
-            response.ok,
-            response.result.is_some(),
-            response.error.is_some(),
-        ) {
-            (true, true, false) | (false, false, true) => Ok(response),
-            _ => bail!("incomplete or contradictory server response"),
-        }
+        validate_response(response)
     })();
     response.context(OutcomeUnknown)
 }
@@ -75,6 +72,20 @@ pub fn checked(socket: &Path, operation: Operation) -> Result<Value> {
 /// Dispatch once on a connection whose lifetime and deadlines the caller owns.
 pub fn checked_stream(stream: &mut UnixStream, operation: Operation) -> Result<Value> {
     checked_response(request_stream(stream, &Request::new(operation))?)
+}
+
+fn validate_response(response: Response) -> Result<Response> {
+    if response.version != PROTOCOL_VERSION {
+        bail!("unsupported server protocol version");
+    }
+    match (
+        response.ok,
+        response.result.is_some(),
+        response.error.is_some(),
+    ) {
+        (true, true, false) | (false, false, true) => Ok(response),
+        _ => bail!("incomplete or contradictory server response"),
+    }
 }
 
 fn checked_response(response: Response) -> Result<Value> {

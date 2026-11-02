@@ -524,3 +524,85 @@ The SDK retains flattened result endpoints for all matches and has no configurab
 Raw control-completion timings are retained in the JSON, including polling/serialization overhead and an 80 ms sampling interval; they are not physical presentation latency. No editor/animation CPU improvement is claimed.
 
 Final locked workspace tests: 372 passed, six explicitly ignored subprocess fixtures. Strict all-target Clippy and formatting pass. Optimized client SHA-256: `a4e6c16c7b603406d993789043594376e89d88c18e5d0726a670baaeebb3fe18`; server: `806f56e7e3ba3b855339ba38db4e99fd649cd03e2dd13de14688403ecc548f82`. Builds use local Cargo/native artifacts, eight jobs on CPUs 0–7; runtime fixtures use CPUs 8–15. Controllers and provenance are archived beside the evidence. Owned cleanup reports no survivors. No user sessions, persistent host/profile settings, real clipboard or model/provider services participate.
+
+## Directional pane rearrangement
+
+`Ctrl-b Shift+Arrow` now exchanges the focused leaf with its nearest-center directional neighbor using the existing off-path, revision-checked layout API. The same execution remains focused; split axes/ratios and unrelated leaves are unchanged. No backend/protocol change or runtime dependency is required. Read-only clients are denied, missing neighbors are explicit no-ops, and another move during pending workspace management is rejected rather than queued or rebased.
+
+Evidence is under `target/smoke/rearrangement/`:
+
+* `physical-1234036873629974/` demonstrates the old optimized binary only changes focus: Shift+Right leaves the layout unchanged and subsequent `q` reaches GAMMA instead of ALPHA.
+* `physical-1234179917013905/` exercises the new binary through real Kitty/Xvfb and physical XTest keys: all four directions, nested splits, inverse moves, boundary/no revision change, read-only denial, shared layout publication, peer detach and continued typing into the original focused execution.
+* Twenty-two exchanges include ten repeated moves at 100×36 and eight at 200×60. Three raw native applications repaint their entire cell grids with row-dependent SGR colors after each WINCH. The controller verifies every visible body cell and saves actual screenshots; the original application PIDs and first client's view IDs remain unchanged, and no move/denial key reaches an application.
+* `result.json` retains controller-key-through-complete-surface samples, including XTest delays, RPC/text analysis and screenshot work. They are not physical presentation latency or an editor/sustained-animation performance comparison. The existing deferred sustained-output CPU work remains unresolved.
+
+The first baseline controller expected focused-pane identity in the ordinary footer; it is shown in pane chrome instead. The corrected baseline checks actual application delivery. No product change was made to satisfy that mistaken oracle.
+
+Verification: 120 client tests and 373 workspace tests pass, with six explicitly ignored subprocess fixtures; locked release workspace build, strict all-target Clippy and workspace formatting check pass. The new regression verifies nested exchanges preserve exact projected rectangles and unrelated panes. Optimized client SHA-256: `d0e95a14d05db160067f4a65d43f28d028cc80519cc2f97dc83fcdd909c1d05d`; unchanged server: `806f56e7e3ba3b855339ba38db4e99fd649cd03e2dd13de14688403ecc548f82`. Known-good before/after binaries and archived controllers are retained beside the evidence. Cargo uses this worktree's native prefix/target, eight jobs on CPUs 0–7; Kitty fixtures use CPUs 8–15. Cleanup records contain no survivors. No live sessions, user profiles, provider services, persistent settings or real clipboard participate.
+
+## Named sessions and client lifetimes
+
+The launcher restores `--session/-s` (default `bkpr`), one-shot `--detach-others/-d`, read-only `list` and targeted `stop`. Exact names select independent daemon/state roots; persistent logical UUIDs are distinct from fresh daemon incarnations. Native pane exec receives trusted session ID/name snapshots. Bootstrap belongs to the launcher, not the client library, and a live identity/protocol error never triggers an automatic restart.
+
+Managed frontends register a process-bound ephemeral capability on a dedicated lifetime stream, prepare their terminal/runtime state, then activate once before creating views. Normal requests carry that authority; headless admin requests cannot adopt managed views implicitly. Takeover/EOF/owner exit revoke the capability and its views, queued callbacks, device grants and sizing leases without terminating programs or waiting for an old client acknowledgement. Authentication retains kernel owner identity instead of scanning processes on each key.
+
+### Runtime acceptance
+
+Evidence is under `target/smoke/sessions/`:
+
+* `api-1238916549271360/` uses real daemons and native raw PTY applications: independent exact session identities/environment, registration without activation, failed identity handshake, exact takeover, repeat-activation idempotence, stale/bare/wrong-process credential rejection, forbidden managed shutdown/nesting, EOF view retirement and original-owner exit despite a fork-inherited lifetime socket. Surviving clients and programs remain usable; stopping one daemon does not stop another.
+* `physical-1238916580875331/` uses actual isolated Kitty/Xvfb, physical XTest keys and the real CLI bootstrap/list/stop paths. Unicode/slash names and default `bkpr` ignore an unrelated inherited socket for normal attachment. Ordinary attachments share the same program without spawning another shell. Read-only empty discovery creates no state.
+* With A1's exact owned client process SIGSTOPped, A3 takes over via `-d`, becomes visible and types into the original pane while A2 exits normally. A1 requires no acknowledgement; after SIGCONT it exits and restores the real host TTY. Both native termios equality and the returned host screen are checked. Original pane/application PID and actual PTY `TIOCGWINSZ` dimensions are retained/verified, and session B continues accepting independent input.
+* A later ordinary A4 attachment survives the earlier takeover and A3's normal detach. Targeted stop affects A only. Restart keeps A's logical UUID, changes its daemon UUID and starts the explicit fresh A5 command rather than replaying historical argv.
+
+The single observed A3 launch-through-visible-marker interval is 196.5 ms, including Kitty/Python/client startup, X11 actions and controller sampling. It is not backend takeover latency, physical presentation latency or a sustained-rendering benchmark.
+
+### Shutdown correction
+
+The actual terminal fixture exposed `abcdef` becoming `abcdef\n\x04` during stop. Failing-before evidence is `physical-1237515932644782/fixture-inputs.json`. Maintained `portable-pty` 0.9.0's `UnixMasterWriter::drop` explicitly writes newline and the configured VEOF byte. The explicit termination branch stopped its writer before killing the child, allowing those bytes into a live raw application or pending shell command.
+
+Explicit termination now signals/reaps the owned process tree before stopping the writer, matching the common cleanup order. The Linux regression `explicit_termination_does_not_type_eof_into_a_live_raw_child` uses a real raw `cat` that ignores HUP; native grace/forced-kill behavior must complete without adding input. The final physical fixture preserves exactly `abcdef` through stop/restart. No input filtering, special-case byte suppression or dependency fork is introduced.
+
+The first smoke decoder incorrectly capped full verbose inspection JSON at 1 MiB; its corrected bounded, buffered short-request reader leaves the lifetime handshake/event reader exact and unbuffered. Initial launcher/core identity fixtures also assumed `tempfile` directories were private; explicit 0700 roots and bounded fake-listener deadlines correct the fixtures, not production permission checks.
+
+Verified checks for this fixed backend: 131 core tests pass with five explicitly ignored subprocess fixtures; all seven launcher session tests pass. The immutable exercised pair is `after-stop-fix/bkpr` SHA-256 `89001401eebe2f616b7fd9f31b1f00aa6424e1d5355fc168a4bd7909b58f9328` and `after-stop-fix/bkprd` `3f2eb693f32e7bc08ce5557286b94e300559ba6ec9c1334af1e6e21c0048018c`. It deliberately isolates this backend fix from the separately progressing frontend chrome batch.
+
+Compilation uses local incremental artifacts, eight jobs on CPUs 0–7; owned runtime fixtures use CPUs 8–15. Both cleanup reports contain no survivors. No live user sessions, profiles, real clipboard or model/provider services participate. Runtime proof is Linux-only; macOS owner-observer/package acceptance is not claimed. Cross-daemon sidebar/agent aggregation, separate terminal windows within a workspace, owned-pane cascading workspace close and optional creation naming remain distinct tracked work, not implemented by this session slice.
+
+### Review corrections and final integrated acceptance
+
+Independent backend review found a second sizing path: view expiration captured a bare fallback size and bypassed lease-aware reconciliation. Expiry now uses the same guarded resize path. Captured authority generation is checked as well as client liveness, so retiring a view without ending its client cannot restore that view's stale size. A native-actor barrier regression covers both takeover and view detach during expiration-driven fallback. The earlier resize regression now acknowledges a native turn without attaching a fresh sizing view that could hide a transient stale resize.
+
+Launcher review also found that forwarding `--session -work` made the daemon parse a valid name as an option. Failing-before `physical-1242344435395133/daemon-logs.json` records `unexpected argument '-w'`. Bootstrap now forwards one `--session=<value>` argument. The final real-CLI acceptance creates, lists and stops both `-work` and `--`, alongside Unicode/slash names and default `bkpr`. The default runtime fallback resolves the trusted system `/tmp` base before adding owned components, handling macOS's system alias without relaxing owned-descendant symlink checks. A real filesystem alias regression exercises that boundary; no macOS runtime claim is added.
+
+Final integrated evidence is `api-1242785272769591/` and `physical-1242785238906312/`. It repeats the process/view/grant isolation, five named-session roots, suspended-client takeover, native PTY dimensions, actual host-screen/termios restoration, later normal attachment, targeted stop and fresh-command restart against the coordinated frontend/framework build. The observed launch-through-visible-marker sample is 196.8 ms with the same non-latency limits described above. Both owned cleanup reports have no survivors.
+
+The exercised immutable pair is `target/smoke/sidebar/final-framework/`: client SHA-256 `9fb7f1108ea615584b2494e0fd65b7b602506e9d5bdc11b2df1b7275f6bbda68`, server `a1f4d56296e84f26f3f58502d8936cbbd45344eb17bdd5e1372decc736ff2e5b`. Coordinated locked workspace verification passes 453 tests with eight explicitly ignored subprocess fixtures; strict all-target Clippy, workspace formatting and the release workspace build pass. The final core count is 132 passing tests. Earlier isolated-backend binaries/evidence remain retained for the failing-before comparison; final controllers and provenance are archived under `target/smoke/sessions/`.
+
+## Bkpr product frontend
+
+This slice restores Bkpr's own main-branch product layer, not general Zellij parity. Reusable retained surfaces, editing, windows, capability probes and generic SVG preparation live in `bkpr-tui-framework`; Bkpr navigation, metadata semantics, bindings and artwork selection live in `bkpr-client`. Source revisions, maintained-dependency comparisons and asset notices are recorded in the [implementation plan](implementation-plan.md#bkpr-frontend-ownership-and-reuse).
+
+### Actual terminal acceptance
+
+Evidence is under `target/smoke/sidebar/`, using isolated HOME/XDG, private daemon sockets, native raw-grid applications and owned Kitty/Xvfb or xterm:
+
+* `physical-1242531997296624/`: all-workspace keyboard navigation, fold/unfold, scrolling, activation and cancellation preserve exact native input ownership. Browsing metadata admits no hidden views and changes no layouts.
+* `physical-1242541175061145/`: actual rename cursor edits/cancel/commit, editable submission errors, explicit workspace name/directory creation and native cwd/input; fuzzy/field-filter finder, compact Tab previews and actual pane-ID activation; contextual guides, narrow/wide clipping and passive popup pointer safety. Private clipboard paste through actual Kitty `Ctrl-Shift-v` reaches rename, creation and finder exactly once, without native input leakage. Host paste framing follows the owning UI/native context without interrupting admitted transfers.
+* The same run physically double-clicks workspace folding and unfolding. It projects pane 10 into workspace 11 without changing membership, waits for both native grids and the real ratio-400 divider, then drags through the popup covering that divider. Layout/revision, view IDs, input logs and borrowed-pane ownership remain unchanged; closing UI ownership restores typing into pane 11.
+* `physical-1242571341218707/`: actual xterm enters the sidebar with `Ctrl-Space`, preserves native input, shows readable `[]`/`<>` markers and presents contextual hints. Unsupported-host behavior is not inferred from a fabricated capability reply.
+* Kitty full screenshots and image-slot crops show static hive/bee artwork, with 19/23 sampled colors. Explicit APC query evidence and observed client colors gate these decorations; the existing Scene renderer owns resources, clipping and upload deduplication. No extra output loop or decorative refresh timer is added.
+
+The original xterm failure is retained at `physical-1240737337658698/`: advertised `Ctrl-Space` did not enter the sidebar and subsequent `j` reached the native program. The failing decoder-to-App regression observed Termwiz's legacy NUL as `Unidentified` with no modifiers. Framework legacy-event normalization now maps NUL to Ctrl-Space without changing Kitty functional-key placeholders. The final xterm run confirms the actual changed path.
+
+Other failing-before/passing-after regressions cover modal targets being redirected by registry-driven focus/workspace replacement, and cached popovers retaining old harness facts when a held snapshot changes identity without a registry revision. Popovers and finder now share the existing foreground-identity guard and invalidate metadata on relevant facts, not every terminal-output revision. Project details reuse the inspector's loading/error/stale presentation; retained finder project/branch values are labeled stale.
+
+### Reproduction and limits
+
+The final immutable pair is `final-framework/bkpr` SHA-256 `9fb7f1108ea615584b2494e0fd65b7b602506e9d5bdc11b2df1b7275f6bbda68` and `final-framework/bkprd` `a1f4d56296e84f26f3f58502d8936cbbd45344eb17bdd5e1372decc736ff2e5b`. Rust 1.96.1, Kitty 0.49.2 and xterm 411 are exercised on Linux; builds use this worktree's target/native prefix, eight jobs on CPUs 0–7, and fixtures run on CPUs 8–15. Workspace tests pass: 453 tests plus eight explicitly ignored subprocess fixtures. Locked release workspace build, all-target strict Clippy and formatting check pass. `checks.json` retains the toolchain/counts/hashes; `controllers.zip` retains the throwaway controller sources after cleanup.
+
+All final fixture cleanup reports contain no survivors. No live user sessions, profiles, real desktop clipboard or model/provider services participate. The workload uses 13 initial workspaces, styled full-grid native redraws, repeated navigation, narrow/wide resizes and a real shared-pane split. It is not a sustained-editor/animation CPU comparison, cold/warm startup benchmark or physical-presentation latency measurement; those existing performance gates remain unresolved.
+
+Static icons and text windows do not establish general terminal-image initial-presentation acceptance. Pixel recessed/raised atlases, animation, remote aggregation and forge/CI facts remain separate work. Separate terminal windows, owned-pane cascading workspace close (including shared projections), and atomic blank-name creation still require backend contracts; no split, layout-only removal or racy frontend naming substitutes for them.
+
+
