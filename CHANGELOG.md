@@ -5,6 +5,7 @@
 * Close completed shell/process projections atomically across workspace layouts and remove their unprojected records from the live sidebar, including Ctrl-D and explicit pane termination. Preserve exit metadata and final scenes, keep faults visible, and distinguish trailing key/pointer/focus cleanup from real input after execution ends. Remove the obsolete client-side termination/layout-update sequence.
 * Route Omp tools through the shared launch-local MCP server and include communication guidance as a private package skill. Remove Omp-specific tool registration/schema conversion; keep the extension for native conversation binding and step-boundary notifications.
 * Reap explicitly terminated pane processes before stopping their PTY writer. `portable-pty` emits newline/VEOF on writer drop; those bytes must not reach a still-live application or pending shell command.
+* Use the stable launch-local MCP name `bkpr` for Claude, Codex and Omp instead of a launch-ID suffix. Keep authentication launch-scoped and persistent configuration untouched.
 
 ### Breaking branch replacement
 

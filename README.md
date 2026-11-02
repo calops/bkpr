@@ -240,8 +240,8 @@ terms prompts remain the user's responsibility; Bkpr does not approve them.
 ### Agent communication
 
 Managed Claude, Codex, Omp and Antigravity launches expose the shared Bkpr MCP
-tools. Claude, Codex and Omp use unique launch-local MCP server names so existing
-registrations remain intact. Omp's extension handles native conversation binding
+tools. Claude, Codex and Omp register it launch-locally as `bkpr`, without
+changing persistent MCP configuration. Omp's extension handles native conversation binding
 and wake notifications only; its launch-local `bkpr-control` skill describes the
 available communication tools. No persistent Omp configuration is changed.
 

@@ -203,8 +203,7 @@ fn extension_package(capture: &Capture) -> Result<TempDir> {
     write_private(&directory.path().join("package.json"),
         br#"{"name":"bkpr-native-capture","private":true,"type":"module","omp":{"extensions":["index.ts"]}}"#)?;
     write_private(&directory.path().join("index.ts"), EXTENSION.as_bytes())?;
-    let server = format!("bkpr_{}", capture.grant.launch_id.replace('-', ""));
-    let config = serde_json::json!({"mcpServers":{(server):{
+    let config = serde_json::json!({"mcpServers":{"bkpr":{
         "type":"stdio",
         "command":capture.program,
         "args":["capture","mcp","--harness","omp"],
