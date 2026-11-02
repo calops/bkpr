@@ -62,6 +62,22 @@ fn ascii_csi_u_and_arrows_share_one_wire_order() {
         vec!["KeyA", "ArrowLeft", "KeyB"]
     );
 }
+
+#[test]
+fn layout_control_keys_do_not_use_the_pc101_alternate() {
+    let mut terminal = Terminal::new(size(8, 16)).unwrap();
+    for (wire, expected) in [
+        (b"\x1b[119::122;5;u".as_slice(), b"\x17".as_slice()),
+        (b"\x1b[122::119;5;u".as_slice(), b"\x1a".as_slice()),
+        (b"\x1b[97::113;5;u".as_slice(), b"\x01".as_slice()),
+        (b"\x1b[113::97;5;u".as_slice(), b"\x11".as_slice()),
+    ] {
+        let event = keys(wire).pop().unwrap();
+        assert_eq!(terminal.encode_key(&event).unwrap(), expected);
+    }
+    let event = keys(b"\x1b[119::122;1;119u").pop().unwrap();
+    assert_eq!(terminal.encode_key(&event).unwrap(), b"w");
+}
 #[test]
 fn mouse_maps_cells_to_canonical_not_physical_metrics_and_rejects_padding() {
     assert_eq!(

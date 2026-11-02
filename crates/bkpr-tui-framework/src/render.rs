@@ -1208,12 +1208,11 @@ pub fn kitty_key(payload: &[u8]) -> Result<KeyEvent> {
         .filter(|s| !s.is_empty())
         .map(str::parse::<u32>)
         .transpose()?;
-    let base = codes
+    let _base = codes
         .next()
         .filter(|s| !s.is_empty())
         .map(str::parse::<u32>)
-        .transpose()?
-        .unwrap_or(code);
+        .transpose()?;
     if codes.next().is_some() {
         bail!("malformed Kitty key codes");
     }
@@ -1295,7 +1294,7 @@ pub fn kitty_key(payload: &[u8]) -> Result<KeyEvent> {
         57399..=57408 => KeyCode::Char('\0'),
         57344..=63743 if physical.is_some() => KeyCode::Char('\0'),
         57344..=63743 => bail!("unsupported Kitty functional key {code}"),
-        _ => KeyCode::Char(char::from_u32(base).context("invalid Kitty Unicode key")?),
+        _ => KeyCode::Char(char::from_u32(code).context("invalid Kitty Unicode key")?),
     };
     let mut event = key_event(termwiz::input::KeyEvent {
         key,
@@ -1308,8 +1307,9 @@ pub fn kitty_key(payload: &[u8]) -> Result<KeyEvent> {
     }
     event.modifiers = modifiers;
     event.action = action;
-    event.unshifted_codepoint = if !(57344..=63743).contains(&base) {
-        base
+    // The alternate PC-101 key is not the active layout's unshifted key.
+    event.unshifted_codepoint = if !(57344..=63743).contains(&code) {
+        code
     } else {
         0
     };
