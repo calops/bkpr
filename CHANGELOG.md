@@ -2,6 +2,7 @@
 
 ### Fixes
 
+* Reuse the validated native engine in `just build`, `just run` and `just test`. Re-extract, patch and prepare it only when missing or invalid instead of refreshing native inputs on every invocation.
 * Route Omp tools through the shared launch-local MCP server and include communication guidance as a private package skill. Remove Omp-specific tool registration/schema conversion; keep the extension for native conversation binding and step-boundary notifications.
 * Reap explicitly terminated pane processes before stopping their PTY writer. `portable-pty` emits newline/VEOF on writer drop; those bytes must not reach a still-live application or pending shell command.
 * Use the stable launch-local MCP name `bkpr` for Claude, Codex and Omp instead of a launch-ID suffix. Keep authentication launch-scoped and persistent configuration untouched.
