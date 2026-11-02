@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 use uuid::Uuid;
-const STORAGE_VERSION: u32 = 1;
+const STORAGE_VERSION: u32 = 2;
 const MAX_RECORD: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -46,6 +46,7 @@ struct DurablePanes<'a>(&'a [PaneInfo]);
 struct DurablePane<'a> {
     id: &'a str,
     workspace_id: &'a Option<String>,
+    window_id: &'a Option<String>,
     title: &'a str,
     status: PaneStatus,
     exit_code: Option<i32>,
@@ -66,6 +67,7 @@ impl Serialize for DurablePanes<'_> {
             sequence.serialize_element(&DurablePane {
                 id: &pane.id,
                 workspace_id: &pane.workspace_id,
+                window_id: &pane.window_id,
                 title: &pane.title,
                 status: pane.status,
                 exit_code: pane.exit_code,
@@ -82,6 +84,7 @@ struct State {
     live: BTreeMap<String, Pane>,
     spawning: usize,
     spawn_workspaces: BTreeSet<String>,
+    closing_workspaces: BTreeSet<String>,
     closing: bool,
     durability_error: Option<String>,
 }
@@ -97,6 +100,8 @@ struct Inner {
     agents: Arc<agents::Agents>,
     spawn_environment: Mutex<Option<crate::harness::SpawnEnvironment>>,
     observer_started: std::sync::atomic::AtomicBool,
+    session_end: std::sync::atomic::AtomicBool,
+    session_end_waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     status_wake: crossbeam_channel::Sender<()>,
     status_events: crossbeam_channel::Receiver<()>,
     project_wake: crossbeam_channel::Sender<()>,
@@ -134,53 +139,80 @@ impl Drop for Lease {
 enum SpawnTarget {
     Append {
         workspace_id: Option<String>,
+        window_id: Option<String>,
         expected_revision: Option<u64>,
     },
     Reopen {
         workspace_id: String,
+        window_id: String,
         expected_revision: u64,
         pane_id: String,
     },
-    Bootstrap {
+    CreateWorkspace {
         workspace_id: String,
+        window_id: String,
+        name: Option<String>,
+        bootstrap: bool,
+    },
+    CreateWindow {
+        workspace_id: String,
+        window_id: String,
+        expected_revision: u64,
+        name: Option<String>,
     },
 }
 impl SpawnTarget {
     fn workspace_id(&self) -> Option<&str> {
         match self {
             Self::Append { workspace_id, .. } => workspace_id.as_deref(),
-            Self::Reopen { workspace_id, .. } | Self::Bootstrap { workspace_id } => {
-                Some(workspace_id)
-            }
+            Self::Reopen { workspace_id, .. }
+            | Self::CreateWorkspace { workspace_id, .. }
+            | Self::CreateWindow { workspace_id, .. } => Some(workspace_id),
+        }
+    }
+    fn window_id(&self) -> Option<&str> {
+        match self {
+            Self::Append { window_id, .. } => window_id.as_deref(),
+            Self::Reopen { window_id, .. }
+            | Self::CreateWorkspace { window_id, .. }
+            | Self::CreateWindow { window_id, .. } => Some(window_id),
         }
     }
     fn check(&self, state: &State) -> Result<()> {
+        let r = &state.record.registry;
         match self {
             Self::Append {
                 workspace_id,
+                window_id,
                 expected_revision,
-            } => check_spawn_workspace(
-                &state.record.registry,
+            } => check_spawn_window(
+                r,
                 workspace_id.as_deref(),
+                window_id.as_deref(),
                 *expected_revision,
             ),
             Self::Reopen {
                 workspace_id,
+                window_id,
                 expected_revision,
                 pane_id,
             } => {
-                check_spawn_workspace(
-                    &state.record.registry,
+                check_spawn_window(
+                    r,
                     Some(workspace_id),
+                    Some(window_id),
                     Some(*expected_revision),
                 )?;
-                let pane = state
-                    .record
-                    .registry
+                let pane = r
                     .panes
                     .iter()
                     .find(|pane| &pane.id == pane_id)
                     .context("unknown pane")?;
+                ensure!(
+                    pane.workspace_id.as_deref() == Some(workspace_id)
+                        && pane.window_id.as_deref() == Some(window_id),
+                    "pane belongs to another window"
+                );
                 ensure!(
                     pane.status != PaneStatus::Running
                         && state.live.get(pane_id).is_none_or(|pane| pane
@@ -189,24 +221,57 @@ impl SpawnTarget {
                             .load(std::sync::atomic::Ordering::Acquire)),
                     "cannot reopen a live pane; open a new pane instead"
                 );
+                let window = find_window(r, workspace_id, window_id)?;
                 ensure!(
-                    state
-                        .record
-                        .registry
-                        .workspaces
-                        .iter()
-                        .find(|workspace| &workspace.id == workspace_id)
-                        .and_then(|workspace| workspace.layout.as_ref())
+                    window
+                        .layout
+                        .as_ref()
                         .is_some_and(|layout| layout_references(layout, pane_id)),
-                    "workspace layout does not reference pane"
+                    "window layout does not reference pane"
                 );
                 Ok(())
             }
-            Self::Bootstrap { .. } => {
+            Self::CreateWorkspace {
+                workspace_id, name, ..
+            } => {
                 ensure!(
-                    state.record.registry.workspaces.len() < MAX_WORKSPACES,
+                    state.closing_workspaces.is_empty(),
+                    "session busy: workspace close in progress"
+                );
+                let pending = state
+                    .spawn_workspaces
+                    .iter()
+                    .filter(|id| *id != workspace_id && !r.workspaces.iter().any(|w| &w.id == *id))
+                    .count();
+                ensure!(
+                    r.workspaces.len() + pending < MAX_WORKSPACES,
                     "workspace limit"
                 );
+                if let Some(name) = name.as_deref().filter(|name| !name.trim().is_empty()) {
+                    valid_name(name)?;
+                }
+                Ok(())
+            }
+            Self::CreateWindow {
+                workspace_id,
+                expected_revision,
+                name,
+                ..
+            } => {
+                let w = r
+                    .workspaces
+                    .iter()
+                    .find(|w| &w.id == workspace_id)
+                    .context("unknown workspace")?;
+                ensure!(
+                    w.revision == *expected_revision,
+                    "stale workspace revision: current {}",
+                    w.revision
+                );
+                ensure!(w.windows.len() < MAX_PANE_RECORDS, "window limit");
+                if let Some(name) = name.as_deref().filter(|name| !name.trim().is_empty()) {
+                    valid_name(name)?;
+                }
                 Ok(())
             }
         }
@@ -224,6 +289,13 @@ impl Drop for SpawnReservation {
             state.spawn_workspaces.remove(workspace_id);
         }
         self.inner.changed.notify_all();
+        drop(state);
+        let registry = Registry {
+            inner: self.inner.clone(),
+            fresh: false,
+            lifecycle_owner: false,
+        };
+        let _ = registry.drain_completions();
     }
 }
 pub struct Registry {
@@ -333,6 +405,7 @@ impl Registry {
                     live: BTreeMap::new(),
                     spawning: 0,
                     spawn_workspaces: BTreeSet::new(),
+                    closing_workspaces: BTreeSet::new(),
                     closing: false,
                     durability_error: None,
                 }),
@@ -342,6 +415,8 @@ impl Registry {
                 agents,
                 spawn_environment: Mutex::new(None),
                 observer_started: std::sync::atomic::AtomicBool::new(false),
+                session_end: std::sync::atomic::AtomicBool::new(false),
+                session_end_waker: Mutex::new(None),
                 status_wake,
                 status_events,
                 project_wake,
@@ -364,6 +439,25 @@ impl Registry {
     }
     pub fn is_fresh(&self) -> bool {
         self.fresh
+    }
+    pub fn session_end_requested(&self) -> bool {
+        self.inner
+            .session_end
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub fn set_session_end_waker(&self, waker: Arc<dyn Fn() + Send + Sync>) {
+        *self.inner.session_end_waker.lock().unwrap() = Some(waker.clone());
+        if self.session_end_requested() {
+            waker();
+        }
+    }
+    fn notify_session_end(&self) {
+        if self.session_end_requested() {
+            let waker = self.inner.session_end_waker.lock().unwrap().clone();
+            if let Some(waker) = waker {
+                waker();
+            }
+        }
     }
     pub fn snapshot(&self) -> Result<RegistrySnapshot> {
         let state = self.inner.state.lock().unwrap();
@@ -393,6 +487,7 @@ impl Registry {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
             ensure!(!state.closing, "daemon is shutting down");
+            ensure!(!self.session_end_requested(), "session has ended");
             if let Some(workspace_id) = workspace_id {
                 workspace_available(&state, workspace_id)?;
             }
@@ -452,16 +547,45 @@ impl Registry {
                 healthy(&state)?;
                 Ok(json!({"registry":state.record.registry}))
             }
-            Operation::WorkspaceCreate { name } => {
-                valid_name(&name)?;
+            Operation::WorkspaceCreate { name, initial } => {
                 let id = Uuid::new_v4().to_string();
+                if let Some(spec) = initial {
+                    return self.spawn(
+                        SpawnTarget::CreateWorkspace {
+                            workspace_id: id,
+                            window_id: Uuid::new_v4().to_string(),
+                            name,
+                            bootstrap: false,
+                        },
+                        spec,
+                    );
+                }
                 let registry = self.mutate(|r| {
-                    ensure!(r.workspaces.len() < MAX_WORKSPACES, "workspace limit");
+                    let state = self.inner.state.lock().unwrap();
+                    ensure!(
+                        state.closing_workspaces.is_empty(),
+                        "session busy: workspace close in progress"
+                    );
+                    let pending = state
+                        .spawn_workspaces
+                        .iter()
+                        .filter(|id| !r.workspaces.iter().any(|w| &w.id == *id))
+                        .count();
+                    drop(state);
+                    ensure!(
+                        r.workspaces.len() + pending < MAX_WORKSPACES,
+                        "workspace limit"
+                    );
+                    let name = available_name(
+                        name.as_deref(),
+                        "Workspace",
+                        r.workspaces.iter().map(|w| w.name.as_str()),
+                    )?;
                     r.workspaces.push(Workspace {
                         id: id.clone(),
                         name,
                         revision: 1,
-                        layout: None,
+                        windows: Vec::new(),
                     });
                     Ok(())
                 })?;
@@ -481,33 +605,68 @@ impl Registry {
                 })?;
                 Ok(json!({"registry":registry}))
             }
-            Operation::WorkspaceRemove {
+            Operation::WorkspaceClose {
                 workspace_id,
                 expected_revision,
+            } => self.close_documents(&workspace_id, None, expected_revision),
+            Operation::WindowCreate {
+                workspace_id,
+                expected_revision,
+                name,
+                spec,
+            } => self.spawn(
+                SpawnTarget::CreateWindow {
+                    workspace_id,
+                    window_id: Uuid::new_v4().to_string(),
+                    expected_revision,
+                    name,
+                },
+                spec,
+            ),
+            Operation::WindowRename {
+                workspace_id,
+                window_id,
+                expected_revision,
+                name,
             } => {
+                valid_name(&name)?;
                 let registry = self.mutate_workspace(&workspace_id, |r| {
-                    workspace(r, &workspace_id, expected_revision)?;
-                    r.workspaces.retain(|w| w.id != workspace_id);
-                    for pane in &mut r.panes {
-                        if pane.workspace_id.as_deref() == Some(workspace_id.as_str()) {
-                            pane.workspace_id = None;
-                        }
-                    }
+                    let w = r
+                        .workspaces
+                        .iter_mut()
+                        .find(|w| w.id == workspace_id)
+                        .context("unknown workspace")?;
+                    let window = window(w, &window_id, expected_revision)?;
+                    window.name = name;
+                    window.revision = next_revision(window.revision)?;
+                    w.revision = next_revision(w.revision)?;
                     Ok(())
                 })?;
                 Ok(json!({"registry":registry}))
             }
+            Operation::WindowClose {
+                workspace_id,
+                window_id,
+                expected_revision,
+            } => self.close_documents(&workspace_id, Some(&window_id), expected_revision),
             Operation::LayoutUpdate {
                 workspace_id,
+                window_id,
                 expected_revision,
                 layout,
             } => {
                 let registry = self.mutate_workspace(&workspace_id, |r| {
                     if let Some(node) = &layout {
-                        validate_layout(node, &r.panes)?;
+                        validate_owned_layout(node, &r.panes, &workspace_id, &window_id)?;
                     }
-                    let w = workspace(r, &workspace_id, expected_revision)?;
-                    w.layout = layout;
+                    let w = r
+                        .workspaces
+                        .iter_mut()
+                        .find(|w| w.id == workspace_id)
+                        .context("unknown workspace")?;
+                    let window = window(w, &window_id, expected_revision)?;
+                    window.layout = layout;
+                    window.revision = next_revision(window.revision)?;
                     w.revision = next_revision(w.revision)?;
                     Ok(())
                 })?;
@@ -515,23 +674,27 @@ impl Registry {
             }
             Operation::PaneSpawn {
                 workspace_id,
+                window_id,
                 expected_revision,
                 spec,
             } => self.spawn(
                 SpawnTarget::Append {
                     workspace_id,
+                    window_id,
                     expected_revision,
                 },
                 spec,
             ),
             Operation::PaneReopen {
                 workspace_id,
+                window_id,
                 expected_revision,
                 pane_id,
                 spec,
             } => self.spawn(
                 SpawnTarget::Reopen {
                     workspace_id,
+                    window_id,
                     expected_revision,
                     pane_id,
                 },
@@ -540,12 +703,42 @@ impl Registry {
             Operation::PaneForget { pane_id } => self.forget(&pane_id),
             Operation::PaneRename { pane_id, title } => {
                 valid_name(&title)?;
-                let registry = self.mutate(|r| {
-                    r.panes
+                let workspace_id = self
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .record
+                    .registry
+                    .panes
+                    .iter()
+                    .find(|p| p.id == pane_id)
+                    .context("unknown pane")?
+                    .workspace_id
+                    .clone();
+                let registry = self.mutate_inner(workspace_id.as_deref(), |r| {
+                    let pane = r
+                        .panes
                         .iter_mut()
                         .find(|p| p.id == pane_id)
-                        .context("unknown pane")?
-                        .title = title;
+                        .context("unknown pane")?;
+                    pane.title = title;
+                    if let (Some(workspace_id), Some(window_id)) =
+                        (&pane.workspace_id, &pane.window_id)
+                    {
+                        let w = r
+                            .workspaces
+                            .iter_mut()
+                            .find(|w| &w.id == workspace_id)
+                            .context("unknown workspace")?;
+                        let window = w
+                            .windows
+                            .iter_mut()
+                            .find(|w| &w.id == window_id)
+                            .context("unknown window")?;
+                        window.revision = next_revision(window.revision)?;
+                        w.revision = next_revision(w.revision)?;
+                    }
                     Ok(())
                 })?;
                 Ok(json!({"registry":registry}))
@@ -558,11 +751,9 @@ impl Registry {
                         state.record.registry.panes.iter().any(|p| p.id == pane_id),
                         "unknown pane"
                     );
-                    state.live.get(&pane_id).cloned()
+                    state.live.get(&pane_id).cloned().context("pane execution unavailable; reopen it or explicitly close its window/workspace")?
                 };
-                if let Some(pane) = pane {
-                    pane.request(PaneRequest::Shutdown)?;
-                }
+                pane.request(PaneRequest::Shutdown)?;
                 self.record_completion(&pane_id)?;
                 Ok(json!({"registry":self.snapshot()?,"pane_id":pane_id}))
             }
@@ -611,8 +802,11 @@ impl Registry {
     /// A running execution makes this a no-op; metadata-only state is preserved.
     pub fn bootstrap(&self, spec: PaneSpawnSpec) -> Result<Value> {
         self.spawn(
-            SpawnTarget::Bootstrap {
+            SpawnTarget::CreateWorkspace {
                 workspace_id: Uuid::new_v4().to_string(),
+                window_id: Uuid::new_v4().to_string(),
+                name: None,
+                bootstrap: true,
             },
             spec,
         )
@@ -638,6 +832,7 @@ impl Registry {
         let info = PaneInfo {
             id: id.clone(),
             workspace_id: workspace_id.clone(),
+            window_id: target.window_id().map(str::to_owned),
             title,
             status: PaneStatus::Running,
             exit_code: None,
@@ -654,17 +849,22 @@ impl Registry {
             let mut state = self.inner.state.lock().unwrap();
             healthy(&state)?;
             ensure!(!state.closing, "daemon is shutting down");
-            if matches!(target, SpawnTarget::Bootstrap { .. })
-                && state.record.registry.panes.iter().any(|pane| {
-                    pane.status == PaneStatus::Running
-                        && state.live.get(&pane.id).is_some_and(|pane| {
-                            !pane
-                                .shared
-                                .finished
-                                .load(std::sync::atomic::Ordering::Acquire)
-                        })
-                })
-            {
+            ensure!(!self.session_end_requested(), "session has ended");
+            if matches!(
+                target,
+                SpawnTarget::CreateWorkspace {
+                    bootstrap: true,
+                    ..
+                }
+            ) && state.record.registry.panes.iter().any(|pane| {
+                pane.status == PaneStatus::Running
+                    && state.live.get(&pane.id).is_some_and(|pane| {
+                        !pane
+                            .shared
+                            .finished
+                            .load(std::sync::atomic::Ordering::Acquire)
+                    })
+            }) {
                 return Ok(json!({"registry":state.record.registry}));
             }
             let running = state
@@ -738,6 +938,7 @@ impl Registry {
                 let state = self.inner.state.lock().unwrap();
                 healthy(&state)?;
                 ensure!(!state.closing, "daemon is shutting down");
+                ensure!(!self.session_end_requested(), "session has ended");
                 target.check(&state)?;
                 state.record.clone()
             };
@@ -771,11 +972,38 @@ impl Registry {
         {
             callback();
         }
-        if matches!(target, SpawnTarget::Bootstrap { .. }) {
-            Ok(json!({"registry":registry,"pane_id":id,"workspace_id":workspace_id}))
-        } else {
-            Ok(json!({"registry":registry,"pane_id":id}))
+        drop(_reservation);
+        let registry = {
+            let state = self.inner.state.lock().unwrap();
+            healthy(&state)?;
+            if state.record.registry.revision == registry.revision {
+                registry
+            } else {
+                state.record.registry.clone()
+            }
+        };
+        Ok(
+            json!({"registry":registry,"pane_id":id,"workspace_id":workspace_id,"window_id":target.window_id()}),
+        )
+    }
+    fn drain_completions(&self) -> Result<bool> {
+        let completed = {
+            let state = self.inner.state.lock().unwrap();
+            healthy(&state)?;
+            state
+                .record
+                .registry
+                .panes
+                .iter()
+                .filter(|p| p.workspace_id.is_some() && p.status == PaneStatus::Exited)
+                .map(|p| p.id.clone())
+                .collect::<Vec<_>>()
+        };
+        let pending = !completed.is_empty();
+        for id in completed {
+            self.record_completion(&id)?;
         }
+        Ok(pending)
     }
     fn expire_retired_views(&self) -> Result<()> {
         // Live workers expire their own leases. Completed workers no longer run a
@@ -847,6 +1075,7 @@ impl Registry {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
             ensure!(!state.closing, "daemon is shutting down");
+            ensure!(!self.session_end_requested(), "session has ended");
             let info = state
                 .record
                 .registry
@@ -854,22 +1083,44 @@ impl Registry {
                 .iter()
                 .find(|pane| pane.id == id)
                 .context("unknown pane")?;
+            if let Some(workspace_id) = &info.workspace_id {
+                workspace_available(&state, workspace_id)?;
+            }
             ensure!(
                 info.status != PaneStatus::Running,
                 "cannot forget a running pane"
             );
             for workspace in &state.record.registry.workspaces {
-                ensure!(
-                    !workspace
-                        .layout
-                        .as_ref()
-                        .is_some_and(|layout| layout_references(layout, id)),
-                    "pane is still referenced by workspace {} layout; remove its layout references first",
-                    workspace.id
-                );
+                for window in &workspace.windows {
+                    ensure!(
+                        !window
+                            .layout
+                            .as_ref()
+                            .is_some_and(|layout| layout_references(layout, id)),
+                        "pane is still referenced by window {}; remove its layout references first",
+                        window.id
+                    );
+                }
             }
             state.record.clone()
         };
+        if let Some(info) = next.registry.panes.iter().find(|p| p.id == id)
+            && let (Some(workspace_id), Some(window_id)) = (&info.workspace_id, &info.window_id)
+        {
+            let w = next
+                .registry
+                .workspaces
+                .iter_mut()
+                .find(|w| &w.id == workspace_id)
+                .context("unknown workspace")?;
+            let window = w
+                .windows
+                .iter_mut()
+                .find(|w| &w.id == window_id)
+                .context("unknown window")?;
+            window.revision = next_revision(window.revision)?;
+            w.revision = next_revision(w.revision)?;
+        }
         next.registry.panes.retain(|pane| pane.id != id);
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
@@ -910,16 +1161,33 @@ impl Registry {
         }
         pane.shared.changes.notify();
         let _transaction = self.inner.transaction.lock().unwrap();
-        let (mut next, closing) = {
+        let (mut next, closing, reserved) = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
-            (state.record.clone(), state.closing)
+            let reserved = state
+                .record
+                .registry
+                .panes
+                .iter()
+                .find(|p| p.id == id)
+                .and_then(|p| p.workspace_id.as_ref())
+                .is_some_and(|id| {
+                    state.closing_workspaces.contains(id) || state.spawn_workspaces.contains(id)
+                })
+                || state
+                    .spawn_workspaces
+                    .iter()
+                    .any(|id| !state.record.registry.workspaces.iter().any(|w| &w.id == id));
+            (state.record.clone(), state.closing, reserved)
         };
         let Some(info) = next.registry.panes.iter_mut().find(|pane| pane.id == id) else {
             // A concurrent successful PaneForget may retire an already-completed handle.
             return Ok(());
         };
-        if info.status == status && info.exit_code == exit_code {
+        if info.status == status
+            && info.exit_code == exit_code
+            && (status != PaneStatus::Exited || info.workspace_id.is_none() || closing || reserved)
+        {
             return Ok(());
         }
         info.status = status;
@@ -928,29 +1196,155 @@ impl Registry {
         info.harness = None;
         info.harness_status = None;
         info.project = None;
-        // Daemon teardown ends executions, not the user's saved layout intent.
-        // Only an ordinary pane exit or explicit pane termination closes projections.
-        if status == PaneStatus::Exited && !closing {
-            for workspace in &mut next.registry.workspaces {
-                if workspace
-                    .layout
-                    .as_ref()
-                    .is_some_and(|layout| layout_references(layout, id))
-                {
-                    workspace.layout = workspace
-                        .layout
-                        .take()
-                        .and_then(|layout| remove_layout_pane(layout, id));
-                    workspace.revision = next_revision(workspace.revision)?;
-                }
-            }
+        if status == PaneStatus::Exited && !closing && !reserved {
+            close_membership(&mut next.registry, id)?;
         }
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
         commit(&self.inner, next, |_| {})?;
+        drop(_transaction);
+        self.notify_session_end();
         // Keep the final in-memory scene readable until daemon shutdown; no pixels go to disk.
         agent_retirement?;
         Ok(())
+    }
+    fn close_documents(
+        &self,
+        workspace_id: &str,
+        window_id: Option<&str>,
+        revision: u64,
+    ) -> Result<Value> {
+        let panes = {
+            let _transaction = self.inner.transaction.lock().unwrap();
+            let mut state = self.inner.state.lock().unwrap();
+            healthy(&state)?;
+            ensure!(
+                !state.closing && !self.session_end_requested(),
+                "session is closing"
+            );
+            workspace_available(&state, workspace_id)?;
+            ensure!(
+                !state.spawn_workspaces.iter().any(|id| !state
+                    .record
+                    .registry
+                    .workspaces
+                    .iter()
+                    .any(|w| &w.id == id)),
+                "session busy: workspace creation in progress"
+            );
+            let w = state
+                .record
+                .registry
+                .workspaces
+                .iter()
+                .find(|w| w.id == workspace_id)
+                .context("unknown workspace")?;
+            if let Some(id) = window_id {
+                let window = w
+                    .windows
+                    .iter()
+                    .find(|w| w.id == id)
+                    .context("unknown window")?;
+                ensure!(
+                    window.revision == revision,
+                    "stale window revision: current {}",
+                    window.revision
+                );
+            } else {
+                ensure!(
+                    w.revision == revision,
+                    "stale workspace revision: current {}",
+                    w.revision
+                );
+            }
+            let panes = state
+                .record
+                .registry
+                .panes
+                .iter()
+                .filter(|p| {
+                    p.workspace_id.as_deref() == Some(workspace_id)
+                        && window_id.is_none_or(|id| p.window_id.as_deref() == Some(id))
+                })
+                .filter_map(|p| state.live.get(&p.id).cloned())
+                .collect::<Vec<_>>();
+            state.closing_workspaces.insert(workspace_id.to_owned());
+            panes
+        };
+        // Native waits must not hold the durable writer or global state locks.
+        let mut failures = Vec::new();
+        for pane in panes {
+            if let Err(error) = pane.request(PaneRequest::Shutdown) {
+                failures.push(format!("{}: {error:#}", pane.shared.pane_id));
+            }
+            if let Err(error) = self.record_completion(&pane.shared.pane_id) {
+                failures.push(format!("{} completion: {error:#}", pane.shared.pane_id));
+            }
+        }
+        let result = (|| -> Result<RegistrySnapshot> {
+            let _transaction = self.inner.transaction.lock().unwrap();
+            let mut next = {
+                let state = self.inner.state.lock().unwrap();
+                healthy(&state)?;
+                ensure!(
+                    failures.is_empty(),
+                    "partial close; executions may already have terminated: {}",
+                    failures.join("; ")
+                );
+                state.record.clone()
+            };
+            for pane in &mut next.registry.panes {
+                if pane.workspace_id.as_deref() == Some(workspace_id)
+                    && window_id.is_none_or(|id| pane.window_id.as_deref() == Some(id))
+                {
+                    pane.workspace_id = None;
+                    pane.window_id = None;
+                }
+            }
+            if let Some(window_id) = window_id {
+                let w = next
+                    .registry
+                    .workspaces
+                    .iter_mut()
+                    .find(|w| w.id == workspace_id)
+                    .context("workspace disappeared during close")?;
+                w.windows.retain(|w| w.id != window_id);
+                w.revision = next_revision(w.revision)?;
+                if w.windows.is_empty()
+                    && !next
+                        .registry
+                        .panes
+                        .iter()
+                        .any(|p| p.workspace_id.as_deref() == Some(workspace_id))
+                {
+                    next.registry.workspaces.retain(|w| w.id != workspace_id);
+                }
+            } else {
+                next.registry.workspaces.retain(|w| w.id != workspace_id);
+            }
+            next.registry.revision = next_revision(next.registry.revision)?;
+            validate_record(&next)?;
+            commit(&self.inner, next, |_| {}).context(
+                "close executions completed but document persistence failed; restart required",
+            )
+        })();
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .closing_workspaces
+            .remove(workspace_id);
+        let drained = self.drain_completions();
+        self.notify_session_end();
+        let registry = result.context("close may already have terminated executions; inspect durable registry before another action")?;
+        let registry = if drained.context(
+            "close committed but deferred completion failed; inspect before another action",
+        )? {
+            self.snapshot()?
+        } else {
+            registry
+        };
+        Ok(json!({"registry":registry}))
     }
     pub fn shutdown(&self) -> Result<()> {
         let panes = {
@@ -998,6 +1392,10 @@ fn healthy(state: &State) -> Result<()> {
 }
 fn workspace_available(state: &State, workspace_id: &str) -> Result<()> {
     ensure!(
+        !state.closing_workspaces.contains(workspace_id),
+        "workspace busy: close in progress"
+    );
+    ensure!(
         !state.spawn_workspaces.contains(workspace_id),
         "workspace busy: pane spawn in progress"
     );
@@ -1039,49 +1437,77 @@ fn remove_layout_pane(layout: LayoutNode, pane_id: &str) -> Option<LayoutNode> {
     }
 }
 fn spawn_record(mut next: Record, info: PaneInfo, target: &SpawnTarget) -> Result<Record> {
-    if let SpawnTarget::Bootstrap { workspace_id } = target {
-        let mut suffix = 1;
-        let name = loop {
-            let name = if suffix == 1 {
-                "Main".to_owned()
-            } else {
-                format!("Main {suffix}")
-            };
-            if next
-                .registry
-                .workspaces
-                .iter()
-                .all(|workspace| workspace.name != name)
-            {
-                break name;
-            }
-            suffix += 1;
-        };
+    if let SpawnTarget::CreateWorkspace {
+        workspace_id,
+        name,
+        bootstrap,
+        ..
+    } = target
+    {
+        let base = if *bootstrap { "Main" } else { "Workspace" };
+        let name = available_name(
+            name.as_deref(),
+            base,
+            next.registry.workspaces.iter().map(|w| w.name.as_str()),
+        )?;
         next.registry.workspaces.push(Workspace {
             id: workspace_id.clone(),
             name,
             revision: 1,
-            layout: None,
+            windows: Vec::new(),
         });
     }
-    if let Some(workspace_id) = &info.workspace_id {
+    if let (Some(workspace_id), Some(window_id)) = (&info.workspace_id, &info.window_id) {
         let workspace = next
             .registry
             .workspaces
             .iter_mut()
-            .find(|workspace| &workspace.id == workspace_id)
+            .find(|w| &w.id == workspace_id)
             .context("unknown workspace")?;
+        if matches!(
+            target,
+            SpawnTarget::CreateWorkspace { .. } | SpawnTarget::CreateWindow { .. }
+        ) {
+            let requested = match target {
+                SpawnTarget::CreateWindow { name, .. } => name.as_deref(),
+                _ => None,
+            };
+            let name = available_name(
+                requested,
+                "Window",
+                workspace.windows.iter().map(|w| w.name.as_str()),
+            )?;
+            workspace.windows.push(Window {
+                id: window_id.clone(),
+                name,
+                revision: 1,
+                layout: None,
+            });
+        }
+        let window = workspace
+            .windows
+            .iter_mut()
+            .find(|w| &w.id == window_id)
+            .context("unknown window")?;
         if let SpawnTarget::Reopen { pane_id, .. } = target {
-            let layout = workspace
+            let layout = window
                 .layout
                 .as_mut()
-                .context("workspace layout does not reference pane")?;
+                .context("window layout does not reference pane")?;
             replace_layout_pane(layout, pane_id, &info.id);
+            let old = next
+                .registry
+                .panes
+                .iter_mut()
+                .find(|p| &p.id == pane_id)
+                .context("unknown pane")?;
+            old.workspace_id = None;
+            old.window_id = None;
         } else {
             let leaf = LayoutNode::Leaf {
                 pane_id: info.id.clone(),
             };
-            workspace.layout = Some(match workspace.layout.take() {
+            window.layout = Some(match window.layout.take() {
                 None => leaf,
                 Some(first) => LayoutNode::Split {
                     axis: Axis::Horizontal,
@@ -1091,6 +1517,7 @@ fn spawn_record(mut next: Record, info: PaneInfo, target: &SpawnTarget) -> Resul
                 },
             });
         }
+        window.revision = next_revision(window.revision)?;
         workspace.revision = next_revision(workspace.revision)?;
     }
     next.registry.panes.push(info);
@@ -1128,28 +1555,74 @@ fn workspace<'a>(
     );
     Ok(w)
 }
-fn check_spawn_workspace(
+fn find_window<'a>(
+    r: &'a RegistrySnapshot,
+    workspace_id: &str,
+    window_id: &str,
+) -> Result<&'a Window> {
+    r.workspaces
+        .iter()
+        .find(|w| w.id == workspace_id)
+        .context("unknown workspace")?
+        .windows
+        .iter()
+        .find(|w| w.id == window_id)
+        .context("unknown window")
+}
+fn window<'a>(workspace: &'a mut Workspace, id: &str, revision: u64) -> Result<&'a mut Window> {
+    let w = workspace
+        .windows
+        .iter_mut()
+        .find(|w| w.id == id)
+        .context("unknown window")?;
+    ensure!(
+        w.revision == revision,
+        "stale window revision: current {}",
+        w.revision
+    );
+    Ok(w)
+}
+fn check_spawn_window(
     r: &RegistrySnapshot,
-    id: Option<&str>,
+    workspace_id: Option<&str>,
+    window_id: Option<&str>,
     revision: Option<u64>,
 ) -> Result<()> {
-    match (id, revision) {
-        (Some(id), Some(revision)) => {
-            let w = r
-                .workspaces
-                .iter()
-                .find(|w| w.id == id)
-                .context("unknown workspace")?;
+    match (workspace_id, window_id, revision) {
+        (Some(workspace_id), Some(window_id), Some(revision)) => {
+            let w = find_window(r, workspace_id, window_id)?;
             ensure!(
                 w.revision == revision,
-                "stale workspace revision: current {}",
+                "stale window revision: current {}",
                 w.revision
             );
         }
-        (None, None) => {}
-        _ => bail!("workspace spawn requires expected_revision; standalone spawn must omit it"),
+        (None, None, None) => {}
+        _ => bail!("bound spawn requires workspace_id, window_id and expected_revision together"),
     }
     Ok(())
+}
+fn available_name<'a>(
+    requested: Option<&str>,
+    base: &str,
+    existing: impl Iterator<Item = &'a str>,
+) -> Result<String> {
+    if let Some(name) = requested.filter(|name| !name.trim().is_empty()) {
+        valid_name(name)?;
+        return Ok(name.to_owned());
+    }
+    let existing: BTreeSet<_> = existing.collect();
+    for suffix in 1..=MAX_PANE_RECORDS + MAX_WORKSPACES + 1 {
+        let name = if suffix == 1 {
+            base.to_owned()
+        } else {
+            format!("{base} {suffix}")
+        };
+        if !existing.contains(name.as_str()) {
+            return Ok(name);
+        }
+    }
+    bail!("name space exhausted")
 }
 fn valid_name(name: &str) -> Result<()> {
     ensure!(
@@ -1195,6 +1668,80 @@ fn validate_layout(node: &LayoutNode, panes: &[PaneInfo]) -> Result<()> {
     }
     walk(node, panes, &mut BTreeSet::new(), 0)
 }
+fn validate_owned_layout(
+    node: &LayoutNode,
+    panes: &[PaneInfo],
+    workspace_id: &str,
+    window_id: &str,
+) -> Result<()> {
+    validate_layout(node, panes)?;
+    fn walk(
+        node: &LayoutNode,
+        panes: &[PaneInfo],
+        workspace_id: &str,
+        window_id: &str,
+    ) -> Result<()> {
+        match node {
+            LayoutNode::Leaf { pane_id } => {
+                let pane = panes
+                    .iter()
+                    .find(|p| &p.id == pane_id)
+                    .context("unknown pane")?;
+                ensure!(
+                    pane.workspace_id.as_deref() == Some(workspace_id)
+                        && pane.window_id.as_deref() == Some(window_id),
+                    "layout pane belongs to another workspace/window"
+                );
+            }
+            LayoutNode::Split { first, second, .. } => {
+                walk(first, panes, workspace_id, window_id)?;
+                walk(second, panes, workspace_id, window_id)?;
+            }
+        }
+        Ok(())
+    }
+    walk(node, panes, workspace_id, window_id)
+}
+fn close_membership(r: &mut RegistrySnapshot, pane_id: &str) -> Result<()> {
+    let Some(pane) = r.panes.iter_mut().find(|p| p.id == pane_id) else {
+        return Ok(());
+    };
+    let (Some(workspace_id), Some(window_id)) = (pane.workspace_id.take(), pane.window_id.take())
+    else {
+        return Ok(());
+    };
+    let w = r
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == workspace_id)
+        .context("unknown owning workspace")?;
+    let window = w
+        .windows
+        .iter_mut()
+        .find(|w| w.id == window_id)
+        .context("unknown owning window")?;
+    window.layout = window
+        .layout
+        .take()
+        .and_then(|layout| remove_layout_pane(layout, pane_id));
+    window.revision = next_revision(window.revision)?;
+    if !r.panes.iter().any(|p| {
+        p.workspace_id.as_deref() == Some(&workspace_id)
+            && p.window_id.as_deref() == Some(&window_id)
+    }) {
+        w.windows.retain(|w| w.id != window_id);
+    }
+    w.revision = next_revision(w.revision)?;
+    if w.windows.is_empty()
+        && !r
+            .panes
+            .iter()
+            .any(|p| p.workspace_id.as_deref() == Some(&workspace_id))
+    {
+        r.workspaces.retain(|w| w.id != workspace_id);
+    }
+    Ok(())
+}
 fn validate_record(record: &Record) -> Result<()> {
     ensure!(
         record.version == STORAGE_VERSION,
@@ -1224,16 +1771,27 @@ fn validate_record(record: &Record) -> Result<()> {
             "invalid workspace identity/revision"
         );
         valid_name(&w.name)?;
-        if let Some(node) = &w.layout {
-            validate_layout(node, &r.panes)?;
+        let mut window_ids = BTreeSet::new();
+        for window in &w.windows {
+            ensure!(
+                Uuid::parse_str(&window.id).is_ok()
+                    && window_ids.insert(&window.id)
+                    && window.revision > 0,
+                "invalid window identity/revision"
+            );
+            valid_name(&window.name)?;
+            if let Some(node) = &window.layout {
+                validate_owned_layout(node, &r.panes, &w.id, &window.id)?;
+            }
         }
     }
     for pane in &r.panes {
-        if let Some(workspace_id) = &pane.workspace_id {
-            ensure!(
-                r.workspaces.iter().any(|w| &w.id == workspace_id),
-                "pane refers to unknown backend workspace"
-            );
+        match (&pane.workspace_id, &pane.window_id) {
+            (Some(workspace_id), Some(window_id)) => {
+                find_window(r, workspace_id, window_id)?;
+            }
+            (None, None) => {}
+            _ => bail!("pane requires paired workspace/window membership"),
         }
     }
     Ok(())
@@ -1276,9 +1834,93 @@ fn read_record(root: &Path) -> Result<Option<Record>> {
         .take(MAX_RECORD + 1)
         .read_to_end(&mut bytes)?;
     ensure!(bytes.len() as u64 <= MAX_RECORD, "registry file limit");
-    Ok(Some(serde_json::from_slice(&bytes).context(
-        "decode registry (never discard unreadable metadata)",
-    )?))
+    let mut value: Value = serde_json::from_slice(&bytes)
+        .context("decode registry (never discard unreadable metadata)")?;
+    let upgraded = value["version"] == 1;
+    // LEGACY_COMPAT(next-major): one-shot v1 metadata upgrade, not a wire/runtime shim.
+    // Window IDs reuse their workspace UUID in a distinct typed identity domain.
+    if upgraded {
+        let registry = value["registry"]
+            .as_object_mut()
+            .context("invalid legacy registry")?;
+        let mut panes = match registry.remove("panes") {
+            Some(Value::Array(panes)) => panes,
+            _ => bail!("invalid legacy panes"),
+        };
+        let mut referenced = BTreeSet::new();
+        let workspaces = registry
+            .get_mut("workspaces")
+            .and_then(Value::as_array_mut)
+            .context("invalid legacy workspaces")?;
+        for workspace in workspaces {
+            let id = workspace["id"]
+                .as_str()
+                .context("invalid legacy workspace id")?
+                .to_owned();
+            let layout = workspace
+                .as_object_mut()
+                .context("invalid legacy workspace")?
+                .remove("layout")
+                .unwrap_or(Value::Null);
+            if !layout.is_null() {
+                let node = LayoutNode::deserialize(&layout)?;
+                fn owned(
+                    node: &LayoutNode,
+                    panes: &[Value],
+                    id: &str,
+                    referenced: &mut BTreeSet<String>,
+                ) -> bool {
+                    match node {
+                        LayoutNode::Leaf { pane_id } => {
+                            if !panes
+                                .iter()
+                                .any(|p| p["id"] == *pane_id && p["workspace_id"] == id)
+                            {
+                                return false;
+                            }
+                            referenced.insert(pane_id.clone());
+                            true
+                        }
+                        LayoutNode::Split { first, second, .. } => {
+                            owned(first, panes, id, referenced)
+                                && owned(second, panes, id, referenced)
+                        }
+                    }
+                }
+                ensure!(
+                    owned(&node, &panes, &id, &mut referenced),
+                    "legacy registry has ambiguous foreign-workspace layout ownership; export and repair registry.json before retrying"
+                );
+            }
+            let has_panes = panes
+                .iter()
+                .any(|p| p["workspace_id"] == id && p["status"] != "exited");
+            workspace["windows"] = if has_panes || !layout.is_null() {
+                json!([{"id":id,"name":"Window","revision":1,"layout":layout}])
+            } else {
+                json!([])
+            };
+        }
+        for pane in &mut panes {
+            // v1 kept the workspace label on retired, unreferenced receipts.
+            if pane["status"] == "exited"
+                && pane["id"]
+                    .as_str()
+                    .is_some_and(|id| !referenced.contains(id))
+            {
+                pane["workspace_id"] = Value::Null;
+            }
+            pane["window_id"] = pane["workspace_id"].clone();
+        }
+        registry.insert("panes".into(), Value::Array(panes));
+        value["version"] = json!(STORAGE_VERSION);
+    }
+    let record: Record = serde_json::from_value(value).context("decode registry metadata")?;
+    validate_record(&record)?;
+    if upgraded {
+        persist(root, &record)?;
+    }
+    Ok(Some(record))
 }
 fn persist(root: &Path, record: &Record) -> Result<()> {
     let mut temporary = tempfile::NamedTempFile::new_in(root)?;
@@ -1330,6 +1972,14 @@ fn commit(
         return Err(error);
     }
     let mut state = inner.state.lock().unwrap();
+    if !state.record.registry.workspaces.is_empty()
+        && next.registry.workspaces.is_empty()
+        && !state.closing
+    {
+        inner
+            .session_end
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     state.record = next;
     publish(&mut state);
     inner.changed.notify_all();

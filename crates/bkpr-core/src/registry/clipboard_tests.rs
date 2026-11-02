@@ -12,6 +12,7 @@ fn blocked_clipboard_is_pane_scoped_and_wrong_client_cannot_answer() {
         registry,
         Operation::PaneSpawn {
             workspace_id: None,
+            window_id: None,
             expected_revision: None,
             spec: first,
         },

@@ -52,9 +52,10 @@ fn spawn_reserves_workspace_revision_before_exec_without_blocking_other_workspac
     let worker_workspace = a.clone();
     let launch = sentinel_spec(&accepted_home);
     let worker = std::thread::spawn(move || {
-        worker_registry.request(Request::new(Operation::PaneSpawn {
-            workspace_id: Some(worker_workspace),
-            expected_revision: Some(1),
+        worker_registry.request(Request::new(Operation::WindowCreate {
+            workspace_id: worker_workspace,
+            expected_revision: 1,
+            name: None,
             spec: launch,
         }))
     });
@@ -67,18 +68,14 @@ fn spawn_reserves_workspace_revision_before_exec_without_blocking_other_workspac
             expected_revision: 1,
             name: "raced".into(),
         },
-        Operation::WorkspaceRemove {
+        Operation::WorkspaceClose {
             workspace_id: a.clone(),
             expected_revision: 1,
         },
-        Operation::LayoutUpdate {
+        Operation::WindowCreate {
             workspace_id: a.clone(),
             expected_revision: 1,
-            layout: None,
-        },
-        Operation::PaneSpawn {
-            workspace_id: Some(a.clone()),
-            expected_revision: Some(1),
+            name: None,
             spec: sentinel_spec(&busy_home),
         },
     ] {
@@ -106,9 +103,10 @@ fn spawn_reserves_workspace_revision_before_exec_without_blocking_other_workspac
     );
     send(
         registry,
-        Operation::PaneSpawn {
-            workspace_id: Some(b),
-            expected_revision: Some(2),
+        Operation::WindowCreate {
+            workspace_id: b,
+            expected_revision: 2,
+            name: None,
             spec: sentinel_spec(&unrelated_home),
         },
     );
@@ -119,9 +117,10 @@ fn spawn_reserves_workspace_revision_before_exec_without_blocking_other_workspac
     wait_for_sentinel(&accepted_home);
     // A stale request is rejected before argv can run or even create its home.
     let error = registry
-        .request(Request::new(Operation::PaneSpawn {
-            workspace_id: Some(a.clone()),
-            expected_revision: Some(1),
+        .request(Request::new(Operation::WindowCreate {
+            workspace_id: a.clone(),
+            expected_revision: 1,
+            name: None,
             spec: sentinel_spec(&stale_home),
         }))
         .unwrap_err();
@@ -147,9 +146,10 @@ fn failed_child_start_releases_workspace_reservation_without_advancing_revision(
     launch.argv = vec!["/this-executable-does-not-exist-bkpr".into()];
     assert!(
         registry
-            .request(Request::new(Operation::PaneSpawn {
-                workspace_id: Some(id.clone()),
-                expected_revision: Some(1),
+            .request(Request::new(Operation::WindowCreate {
+                workspace_id: id.clone(),
+                expected_revision: 1,
+                name: None,
                 spec: launch,
             }))
             .is_err()
@@ -170,6 +170,7 @@ fn invalid_post_spawn_layout_is_rejected_before_child_setup_or_exec() {
     let fixture = Fixture::new();
     let registry = &fixture.registry;
     let workspace_id = create(registry, "maximum depth");
+    let window_id = Uuid::new_v4().to_string();
     let ids = (0..=MAX_LAYOUT_DEPTH)
         .map(|_| Uuid::new_v4().to_string())
         .collect::<Vec<_>>();
@@ -180,6 +181,7 @@ fn invalid_post_spawn_layout_is_rejected_before_child_setup_or_exec() {
                 r.panes.push(PaneInfo {
                     id: id.clone(),
                     workspace_id: Some(workspace_id.clone()),
+                    window_id: Some(window_id.clone()),
                     title: "stopped".into(),
                     status: PaneStatus::Stopped,
                     exit_code: None,
@@ -192,6 +194,12 @@ fn invalid_post_spawn_layout_is_rejected_before_child_setup_or_exec() {
                     isolated_environment: false,
                 });
             }
+            r.workspaces[0].windows.push(Window {
+                id: window_id.clone(),
+                name: "Saved".into(),
+                revision: 1,
+                layout: None,
+            });
             Ok(())
         })
         .unwrap();
@@ -212,6 +220,7 @@ fn invalid_post_spawn_layout_is_rejected_before_child_setup_or_exec() {
         registry,
         Operation::LayoutUpdate {
             workspace_id: workspace_id.clone(),
+            window_id: window_id.clone(),
             expected_revision: 1,
             layout: Some(layout),
         },
@@ -220,6 +229,7 @@ fn invalid_post_spawn_layout_is_rejected_before_child_setup_or_exec() {
     let error = registry
         .request(Request::new(Operation::PaneSpawn {
             workspace_id: Some(workspace_id.clone()),
+            window_id: Some(window_id),
             expected_revision: Some(2),
             spec: sentinel_spec(&home),
         }))
@@ -241,4 +251,195 @@ fn invalid_post_spawn_layout_is_rejected_before_child_setup_or_exec() {
             name: "still available".into(),
         },
     );
+}
+
+#[test]
+fn close_reserves_owned_documents_without_locking_unrelated_controls_or_starting_argv() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let a = create(registry, "closing");
+    let b = create(registry, "unrelated");
+    let pane_id = spawn(registry, &fixture.home("pane"), Some(a.clone()), Some(1));
+    let r = registry.snapshot().unwrap();
+    let w = r.workspaces.iter().find(|w| w.id == a).unwrap();
+    let window_id = w.windows[0].id.clone();
+    let pane = registry
+        .inner
+        .state
+        .lock()
+        .unwrap()
+        .live
+        .get(&pane_id)
+        .unwrap()
+        .clone();
+    let blocked = pane.shared.requests.lock().unwrap();
+    let worker_registry = registry.clone();
+    let target = a.clone();
+    let worker = std::thread::spawn(move || {
+        worker_registry.request(Request::new(Operation::WorkspaceClose {
+            workspace_id: target,
+            expected_revision: 2,
+        }))
+    });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !registry
+        .inner
+        .state
+        .lock()
+        .unwrap()
+        .closing_workspaces
+        .contains(&a)
+    {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let home = fixture.home("must-not-run");
+    let error = registry
+        .request(Request::new(Operation::PaneSpawn {
+            workspace_id: Some(a.clone()),
+            window_id: Some(window_id.clone()),
+            expected_revision: Some(2),
+            spec: sentinel_spec(&home),
+        }))
+        .unwrap_err();
+    assert!(error.to_string().contains("workspace busy"));
+    assert!(!home.exists());
+    assert!(
+        registry
+            .request(Request::new(Operation::LayoutUpdate {
+                workspace_id: a,
+                window_id,
+                expected_revision: 2,
+                layout: None
+            }))
+            .is_err()
+    );
+    send(
+        registry,
+        Operation::WorkspaceRename {
+            workspace_id: b,
+            expected_revision: 1,
+            name: "not blocked".into(),
+        },
+    );
+    drop(blocked);
+    worker.join().unwrap().unwrap();
+}
+
+#[test]
+fn atomic_initial_creation_rolls_back_failed_exec_and_chooses_names_under_commit() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let mut launch = spec(&fixture.home("failed-initial"));
+    launch.argv = vec!["/does-not-exist-bkpr".into()];
+    assert!(
+        registry
+            .request(Request::new(Operation::WorkspaceCreate {
+                name: None,
+                initial: Some(launch)
+            }))
+            .is_err()
+    );
+    assert!(registry.snapshot().unwrap().workspaces.is_empty());
+    assert!(registry.snapshot().unwrap().panes.is_empty());
+    let one = send(
+        registry,
+        Operation::WorkspaceCreate {
+            name: Some("  ".into()),
+            initial: Some(spec(&fixture.home("initial-one"))),
+        },
+    );
+    let two = send(
+        registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(spec(&fixture.home("initial-two"))),
+        },
+    );
+    let r = registry.snapshot().unwrap();
+    assert_ne!(r.workspaces[0].name, r.workspaces[1].name);
+    for value in [one, two] {
+        let pane = r
+            .panes
+            .iter()
+            .find(|p| p.id == value["pane_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(pane.workspace_id.as_deref(), value["workspace_id"].as_str());
+        assert_eq!(pane.window_id.as_deref(), value["window_id"].as_str());
+        assert_eq!(pane.cwd, pane.home);
+    }
+}
+
+#[test]
+fn last_execution_completion_during_admitted_spawn_converges_after_reservation_release() {
+    for new_workspace in [false, true] {
+        let fixture = Fixture::new();
+        let registry = &fixture.registry;
+        let workspace_id = create(registry, "existing");
+        let old = spawn(
+            registry,
+            &fixture.home("old"),
+            Some(workspace_id.clone()),
+            Some(1),
+        );
+        let r = registry.snapshot().unwrap();
+        let window_id = r.workspaces[0].windows[0].id.clone();
+        let (entered, rx) = std::sync::mpsc::sync_channel(1);
+        let (resume, resume_rx) = std::sync::mpsc::sync_channel(1);
+        *registry.inner.spawn_barrier.lock().unwrap() = Some(Arc::new(SpawnBarrier {
+            entered,
+            resume: Mutex::new(resume_rx),
+        }));
+        let release = ResumeSpawn(Some(resume));
+        let worker_registry = registry.clone();
+        let launch = spec(&fixture.home("new"));
+        let operation = if new_workspace {
+            Operation::WorkspaceCreate {
+                name: None,
+                initial: Some(launch),
+            }
+        } else {
+            Operation::PaneSpawn {
+                workspace_id: Some(workspace_id.clone()),
+                window_id: Some(window_id),
+                expected_revision: Some(2),
+                spec: launch,
+            }
+        };
+        let worker = std::thread::spawn(move || worker_registry.request(Request::new(operation)));
+        rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        send(
+            registry,
+            Operation::PaneTerminate {
+                pane_id: old.clone(),
+            },
+        );
+        assert!(!registry.session_end_requested());
+        assert_eq!(registry.snapshot().unwrap().workspaces.len(), 1);
+        drop(release);
+        let created = worker.join().unwrap().unwrap();
+        let r = registry.snapshot().unwrap();
+        assert_eq!(r.workspaces.len(), 1);
+        assert!(!registry.session_end_requested());
+        assert!(
+            r.panes
+                .iter()
+                .find(|p| p.id == old)
+                .unwrap()
+                .workspace_id
+                .is_none()
+        );
+        let new = r
+            .panes
+            .iter()
+            .find(|p| p.id == created["pane_id"].as_str().unwrap())
+            .unwrap();
+        assert!(new.workspace_id.is_some() && new.window_id.is_some());
+        assert_eq!(
+            r.workspaces[0].windows[0].layout,
+            Some(LayoutNode::Leaf {
+                pane_id: new.id.clone()
+            })
+        );
+    }
 }

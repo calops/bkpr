@@ -281,14 +281,11 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
         entered,
         resume: Mutex::new(resume_rx),
     }));
-    let request = Request::new(Operation::PaneSpawn {
-        workspace_id: None, expected_revision: None,
-        spec: PaneSpawnSpec {
-            argv: vec!["/bin/sh".into(), "-c".into(), "\"$1\" --ignored --exact registry::capture::tests::managed_peer_fixture --nocapture --test-threads=1; printf RETURNED; exec sleep 60".into(), "fixture".into(), wrapper.to_str().unwrap().into()],
-            cwd: fixture.home.clone(), home: fixture.home.clone(), title: None, isolated_environment: true,
-            size: Size { cols: 80, rows: 24, cell_width: 8, cell_height: 16 },
-        },
-    });
+    let request = Request::new(Operation::PaneSpawn { workspace_id: None, window_id: None, expected_revision: None, spec: PaneSpawnSpec {
+        argv: vec!["/bin/sh".into(), "-c".into(), "\"$1\" --ignored --exact registry::capture::tests::managed_peer_fixture --nocapture --test-threads=1; printf RETURNED; exec sleep 60".into(), "fixture".into(), wrapper.to_str().unwrap().into()],
+        cwd: fixture.home.clone(), home: fixture.home.clone(), title: None, isolated_environment: true,
+        size: Size { cols: 80, rows: 24, cell_width: 8, cell_height: 16 },
+    } });
     let spawning_registry = registry.clone();
     let spawning = thread::spawn(move || spawning_registry.request(request));
     entered_rx.recv_timeout(Duration::from_secs(8)).unwrap();
@@ -414,6 +411,7 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
     let other = registry
         .request(Request::new(Operation::PaneSpawn {
             workspace_id: None,
+            window_id: None,
             expected_revision: None,
             spec: PaneSpawnSpec {
                 argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
@@ -532,6 +530,7 @@ fn restored_foreground_facts_are_stripped_and_metadata_writes_do_not_persist_the
     let pane = PaneInfo {
         id: Uuid::new_v4().to_string(),
         workspace_id: None,
+        window_id: None,
         title: "old".into(),
         status: PaneStatus::Stopped,
         exit_code: None,
@@ -636,6 +635,7 @@ fn non_utf8_foreground_cwd_round_trips_without_poisoning_or_persisting_live_fact
         .registry
         .request(Request::new(Operation::PaneSpawn {
             workspace_id: None,
+            window_id: None,
             expected_revision: None,
             spec: PaneSpawnSpec {
                 argv: vec![
@@ -700,7 +700,8 @@ fn non_utf8_foreground_cwd_round_trips_without_poisoning_or_persisting_live_fact
     fixture
         .registry
         .request(Request::new(Operation::WorkspaceCreate {
-            name: "still healthy".into(),
+            name: Some("still healthy".into()),
+            initial: None,
         }))
         .unwrap();
     assert!(

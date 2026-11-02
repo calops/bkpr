@@ -1,6 +1,6 @@
 //! Terminal-default, cell-based decorations for existing local scene frames.
 //! No terminal output or graphics capabilities are assumed here.
-use crate::{Rect, text};
+use crate::{Rect, Role, RoleSpan, text};
 use bkpr_protocol::{Frame, Size};
 use unicode_width::UnicodeWidthChar;
 
@@ -120,6 +120,80 @@ pub fn content(size: Size) -> Rect {
             height: size.rows - 2,
         }
     }
+}
+
+/// Shared panel/border styling geometry, matching the tiny-window decoration
+/// policy of `content` and `border_rows`. Product title/hint spans layer above it.
+pub fn theme_spans(size: Size) -> [RoleSpan; 5] {
+    let panel = RoleSpan {
+        rect: Rect {
+            x: 0,
+            y: 0,
+            width: size.cols,
+            height: size.rows,
+        },
+        role: Role::Panel,
+    };
+    if size.cols < 3 || size.rows < 3 {
+        return [
+            panel,
+            RoleSpan {
+                rect: Rect::default(),
+                role: Role::Border,
+            },
+            RoleSpan {
+                rect: Rect::default(),
+                role: Role::Border,
+            },
+            RoleSpan {
+                rect: Rect::default(),
+                role: Role::Border,
+            },
+            RoleSpan {
+                rect: Rect::default(),
+                role: Role::Border,
+            },
+        ];
+    }
+    [
+        panel,
+        RoleSpan {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: size.cols,
+                height: 1,
+            },
+            role: Role::Border,
+        },
+        RoleSpan {
+            rect: Rect {
+                x: 0,
+                y: size.rows - 1,
+                width: size.cols,
+                height: 1,
+            },
+            role: Role::Border,
+        },
+        RoleSpan {
+            rect: Rect {
+                x: 0,
+                y: 1,
+                width: 1,
+                height: size.rows - 2,
+            },
+            role: Role::Border,
+        },
+        RoleSpan {
+            rect: Rect {
+                x: size.cols - 1,
+                y: 1,
+                width: 1,
+                height: size.rows - 2,
+            },
+            role: Role::Border,
+        },
+    ]
 }
 
 /// Bounded local-coordinate rows suitable for retained UiSurface painting.

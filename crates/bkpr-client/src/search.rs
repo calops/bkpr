@@ -407,10 +407,51 @@ impl App<'_> {
                     height: 1,
                 },
                 value,
-                true,
+                false,
             )],
             Some(cursor),
         );
         true
+    }
+
+    pub(super) fn theme_search(&self, surface: &mut UiSurface, theme: &Theme) {
+        let Some(editor) = &self.search.editor else {
+            return;
+        };
+        let size = surface.frame.size;
+        let mut spans = vec![RoleSpan {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: size.cols,
+                height: 1,
+            },
+            role: if editor.error.is_some() {
+                Role::Error
+            } else {
+                Role::Muted
+            },
+        }];
+        let cursor = &surface.frame.cursor;
+        if cursor.visible {
+            let mut width = 0;
+            for ch in editor.query.chars().rev() {
+                let columns = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                if width + columns > usize::from(size.cols / 3) {
+                    break;
+                }
+                width += columns;
+            }
+            spans.push(RoleSpan {
+                rect: Rect {
+                    x: cursor.x.saturating_sub(width as u16),
+                    y: 0,
+                    width: (width as u16).saturating_add(1),
+                    height: 1,
+                },
+                role: Role::Selected,
+            });
+        }
+        surface.apply_theme(theme, Role::Panel, &spans);
     }
 }

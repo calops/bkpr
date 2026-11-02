@@ -1,430 +1,187 @@
 use super::*;
 
-fn value(data: &impl serde::Serialize) -> Value {
-    serde_json::to_value(data).unwrap()
+fn initial(registry: &Registry, home: &Path) -> RegistryResult {
+    serde_json::from_value(send(
+        registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(spec(home)),
+        },
+    ))
+    .unwrap()
 }
 
-struct ResumeCompletion(Option<std::sync::mpsc::SyncSender<()>>);
-impl Drop for ResumeCompletion {
-    fn drop(&mut self) {
-        if let Some(resume) = self.0.take() {
-            let _ = resume.try_send(());
-        }
-    }
+#[test]
+fn independent_windows_have_no_backend_active_selection_and_close_only_owned_executions() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let first = initial(registry, &fixture.home("first"));
+    let workspace_id = first.workspace_id.unwrap();
+    let first_pane = first.pane_id.unwrap();
+    let w = &first.registry.workspaces[0];
+    let second: RegistryResult = serde_json::from_value(send(
+        registry,
+        Operation::WindowCreate {
+            workspace_id: workspace_id.clone(),
+            expected_revision: w.revision,
+            name: None,
+            spec: spec(&fixture.home("second")),
+        },
+    ))
+    .unwrap();
+    let second_pane = second.pane_id.unwrap();
+    let second_window = second.window_id.unwrap();
+    let workspace = &second.registry.workspaces[0];
+    assert_eq!(workspace.windows.len(), 2);
+    assert_eq!(
+        workspace.windows[0].layout,
+        Some(LayoutNode::Leaf {
+            pane_id: first_pane.clone()
+        })
+    );
+    assert_eq!(
+        workspace.windows[1].layout,
+        Some(LayoutNode::Leaf {
+            pane_id: second_pane.clone()
+        })
+    );
+    let first_view = view(registry, &first_pane, 100);
+    let second_view = view(registry, &second_pane, 70);
+    send(
+        registry,
+        Operation::WindowClose {
+            workspace_id: workspace_id.clone(),
+            window_id: second_window,
+            expected_revision: workspace.windows[1].revision,
+        },
+    );
+    assert_eq!(snapshot(registry, &first_pane)["lifecycle"], "running");
+    assert_eq!(snapshot(registry, &second_pane)["lifecycle"], "terminated");
+    assert_eq!(registry.snapshot().unwrap().workspaces[0].windows.len(), 1);
+    assert!(!registry.session_end_requested());
+    send(
+        registry,
+        Operation::Pane {
+            pane_id: first_pane.clone(),
+            request: PaneRequest::Input {
+                view_id: first_view,
+                data: Vec::new(),
+            },
+        },
+    );
+    send(
+        registry,
+        Operation::Pane {
+            pane_id: second_pane,
+            request: PaneRequest::Detach {
+                view_id: second_view,
+            },
+        },
+    );
+    send(
+        registry,
+        Operation::PaneTerminate {
+            pane_id: first_pane,
+        },
+    );
+    assert!(registry.snapshot().unwrap().workspaces.is_empty());
+    assert!(registry.session_end_requested());
 }
-
-fn leaf(pane_id: &str) -> LayoutNode {
-    LayoutNode::Leaf {
-        pane_id: pane_id.into(),
-    }
+#[test]
+fn natural_last_exit_requests_end_without_client_polling_and_keeps_final_receipt() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let (tx, rx) = std::sync::mpsc::channel();
+    registry.set_session_end_waker(Arc::new(move || {
+        let _ = tx.send(());
+    }));
+    let home = fixture.home("natural");
+    let mut launch = spec(&home);
+    launch.argv = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "while [ ! -e finish ]; do sleep 0.01; done; exit 7".into(),
+    ];
+    let created = send(
+        registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(launch),
+        },
+    );
+    let pane_id = created["pane_id"].as_str().unwrap();
+    fs::write(home.join("finish"), b"").unwrap();
+    rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let r = registry.snapshot().unwrap();
+    assert!(r.workspaces.is_empty());
+    let pane = r.panes.iter().find(|p| p.id == pane_id).unwrap();
+    assert_eq!(pane.status, PaneStatus::Exited);
+    assert_eq!(pane.exit_code, Some(7));
+    assert!(pane.workspace_id.is_none() && pane.window_id.is_none());
+    assert_eq!(snapshot(registry, pane_id)["lifecycle"], "exited");
+    assert!(
+        registry
+            .request(Request::new(Operation::WorkspaceCreate {
+                name: None,
+                initial: None
+            }))
+            .is_err()
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    registry.set_session_end_waker(Arc::new(move || {
+        let _ = tx.send(());
+    }));
+    rx.recv_timeout(Duration::from_secs(1)).unwrap();
 }
-fn split(axis: Axis, ratio: u16, first: LayoutNode, second: LayoutNode) -> LayoutNode {
-    LayoutNode::Split {
-        axis,
-        ratio,
-        first: Box::new(first),
-        second: Box::new(second),
-    }
-}
-fn set_layout(registry: &Registry, workspace_id: &str, layout: LayoutNode) {
-    let expected_revision = registry
-        .snapshot()
-        .unwrap()
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.id == workspace_id)
-        .unwrap()
-        .revision;
+#[test]
+fn empty_admin_standalone_detach_and_layout_only_removal_do_not_end_session() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    assert!(!registry.session_end_requested());
+    let admin = create(registry, "admin");
+    let standalone = spawn(registry, &fixture.home("standalone"), None, None);
+    send(
+        registry,
+        Operation::PaneTerminate {
+            pane_id: standalone,
+        },
+    );
+    assert!(!registry.session_end_requested());
+    assert_eq!(registry.snapshot().unwrap().workspaces[0].id, admin);
+    let created = initial(registry, &fixture.home("bound"));
+    let pane = created.pane_id.unwrap();
+    let workspace = &created.registry.workspaces[1];
+    let window = &workspace.windows[0];
+    let id = view(registry, &pane, 80);
+    send(
+        registry,
+        Operation::Pane {
+            pane_id: pane.clone(),
+            request: PaneRequest::Detach { view_id: id },
+        },
+    );
     send(
         registry,
         Operation::LayoutUpdate {
-            workspace_id: workspace_id.into(),
-            expected_revision,
-            layout: Some(layout),
+            workspace_id: workspace.id.clone(),
+            window_id: window.id.clone(),
+            expected_revision: window.revision,
+            layout: None,
         },
     );
+    assert_eq!(snapshot(registry, &pane)["lifecycle"], "running");
+    assert!(!registry.session_end_requested());
+    send(registry, Operation::PaneTerminate { pane_id: pane });
+    assert_eq!(registry.snapshot().unwrap().workspaces.len(), 1);
+    assert!(!registry.session_end_requested());
 }
-fn launch_reader(
-    registry: &Registry,
-    home: &Path,
-    script: &str,
-    workspace_id: Option<&str>,
-) -> String {
-    let mut launch = spec(home);
-    launch.argv = vec!["/bin/sh".into(), "-c".into(), script.into()];
-    send(
-        registry,
-        Operation::PaneSpawn {
-            workspace_id: workspace_id.map(str::to_owned),
-            expected_revision: workspace_id.map(|id| {
-                registry
-                    .snapshot()
-                    .unwrap()
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.id == id)
-                    .unwrap()
-                    .revision
-            }),
-            spec: launch,
-        },
-    )["pane_id"]
-        .as_str()
-        .unwrap()
-        .to_owned()
-}
-fn wait_scene(registry: &Registry, id: &str, marker: &str) -> PaneSnapshot {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let scene: PaneSnapshot = serde_json::from_value(snapshot(registry, id)).unwrap();
-        let text: String = scene
-            .frame
-            .as_ref()
-            .unwrap()
-            .rows
-            .iter()
-            .flat_map(|row| row.cells.iter())
-            .map(|cell| cell.text.as_str())
-            .collect();
-        if text.contains(marker) {
-            return scene;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "expected terminal output did not arrive"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
-fn execution_completion_closes_all_projections(natural: bool) {
+#[test]
+fn faults_keep_owned_recovery_documents_instead_of_closing_session() {
     let fixture = Fixture::new();
     let registry = &fixture.registry;
-    let owner = create(registry, "owner");
-    let projection = create(registry, "projection");
-    let sole = create(registry, "sole projection");
-    let untouched = create(registry, "unaffected");
-    let target = launch_reader(
-        registry,
-        &fixture.home("ending"),
-        "printf FINAL-SCENE; IFS= read -r line; printf 'NATURAL-%s' \"$line\"; exit 7",
-        Some(&owner),
-    );
-    let survivor_home = fixture.home("survivor");
-    let survivor = launch_reader(
-        registry,
-        &survivor_home,
-        "while IFS= read -r line; do printf '%s' \"$line\" > received; done",
-        None,
-    );
-    let sibling = spawn(registry, &fixture.home("sibling"), None, None);
-    let preserved = split(Axis::Horizontal, 711, leaf(&survivor), leaf(&sibling));
-    set_layout(
-        registry,
-        &owner,
-        split(Axis::Vertical, 173, leaf(&target), preserved.clone()),
-    );
-    set_layout(
-        registry,
-        &projection,
-        split(Axis::Horizontal, 829, preserved.clone(), leaf(&target)),
-    );
-    set_layout(registry, &sole, leaf(&target));
-    set_layout(registry, &untouched, preserved.clone());
-    let target_view = view(registry, &target, 80);
-    let survivor_view = view(registry, &survivor, 80);
-    wait_scene(registry, &target, "FINAL-SCENE");
-    let before = registry.snapshot().unwrap();
-    let (entered, entered_rx) = std::sync::mpsc::sync_channel(1);
-    let (resume, resume_rx) = std::sync::mpsc::sync_channel(1);
-    *registry.inner.persist_barrier.lock().unwrap() = Some(Arc::new(SpawnBarrier {
-        entered,
-        resume: Mutex::new(resume_rx),
-    }));
-    let resume = ResumeCompletion(Some(resume));
-    let ending_registry = registry.clone();
-    let ending_target = target.clone();
-    let ending_view = target_view.clone();
-    let ending = std::thread::spawn(move || {
-        ending_registry.request(Request::new(if natural {
-            Operation::Pane {
-                pane_id: ending_target,
-                request: PaneRequest::Input {
-                    view_id: ending_view,
-                    data: b"done\n".to_vec(),
-                },
-            }
-        } else {
-            Operation::PaneTerminate {
-                pane_id: ending_target,
-            }
-        }))
-    });
-    let entered = entered_rx.recv_timeout(Duration::from_secs(5));
-    if entered.is_err() {
-        drop(resume);
-        ending.join().unwrap().unwrap();
-        panic!("execution completion did not reach durable publication");
-    }
-    // An explicit termination racing the observer must share its single commit.
-    let repeating_registry = registry.clone();
-    let repeating_target = target.clone();
-    let repeating = std::thread::spawn(move || {
-        repeating_registry.request(Request::new(Operation::PaneTerminate {
-            pane_id: repeating_target,
-        }))
-    });
-    assert_eq!(
-        value(&registry.snapshot().unwrap().workspaces),
-        value(&before.workspaces),
-        "uncommitted layout changes must remain invisible during persistence"
-    );
-    drop(resume);
-    ending.join().unwrap().unwrap();
-    repeating.join().unwrap().unwrap();
-    let after = registry.snapshot().unwrap();
-    assert!(after.revision > before.revision);
-    assert_eq!(after.workspaces.len(), before.workspaces.len());
-    assert_eq!(after.panes.len(), before.panes.len());
-    for old in &before.workspaces {
-        let current = after
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.id == old.id)
-            .unwrap();
-        if old.id == untouched {
-            assert_eq!(value(current), value(old));
-        } else {
-            assert_eq!(current.revision, old.revision + 1);
-            assert_eq!(current.id, old.id);
-            assert_eq!(current.name, old.name);
-            assert_eq!(
-                current.layout,
-                if old.id == sole {
-                    None
-                } else {
-                    Some(preserved.clone())
-                }
-            );
-        }
-    }
-    for old in &before.panes {
-        let current = after.panes.iter().find(|pane| pane.id == old.id).unwrap();
-        if old.id == target {
-            assert_eq!(current.status, PaneStatus::Exited);
-            assert!(current.exit_code.is_some());
-            if natural {
-                assert_eq!(current.exit_code, Some(7));
-            }
-        } else {
-            assert_eq!(current.status, old.status);
-            assert_eq!(current.exit_code, old.exit_code);
-        }
-    }
-    let scene = wait_scene(
-        registry,
-        &target,
-        if natural {
-            "NATURAL-done"
-        } else {
-            "FINAL-SCENE"
-        },
-    );
-    assert_eq!(
-        scene.lifecycle,
-        if natural { "exited" } else { "terminated" }
-    );
-    assert!(scene.error.is_none());
-    assert_eq!(
-        scene.exit_code.map(|code| code as i32),
-        after
-            .panes
-            .iter()
-            .find(|pane| pane.id == target)
-            .unwrap()
-            .exit_code
-    );
-    for _ in 0..3 {
-        send(
-            registry,
-            Operation::PaneTerminate {
-                pane_id: target.clone(),
-            },
-        );
-    }
-    let repeated = send(
-        registry,
-        Operation::Pane {
-            pane_id: target.clone(),
-            request: PaneRequest::Terminate {
-                view_id: target_view.clone(),
-            },
-        },
-    );
-    assert_eq!(repeated["terminated"], false);
-    assert_eq!(repeated["already_completed"], true);
-    assert!(
-        registry
-            .request(Request::new(Operation::Pane {
-                pane_id: target.clone(),
-                request: PaneRequest::Input {
-                    view_id: target_view.clone(),
-                    data: b"never delivered\n".to_vec()
-                },
-            }))
-            .is_err()
-    );
-    for action in [KeyAction::Press, KeyAction::Repeat] {
-        assert!(
-            registry
-                .request(Request::new(Operation::Pane {
-                    pane_id: target.clone(),
-                    request: PaneRequest::Key {
-                        view_id: target_view.clone(),
-                        event: KeyEvent {
-                            key: "KeyD".into(),
-                            modifiers: 2,
-                            text: String::new(),
-                            action,
-                            unshifted_codepoint: u32::from('d'),
-                        },
-                    },
-                }))
-                .is_err()
-        );
-    }
-    send(
-        registry,
-        Operation::Pane {
-            pane_id: target.clone(),
-            request: PaneRequest::Update {
-                view_id: target_view.clone(),
-                spec: ViewSpec {
-                    size: size(80),
-                    visible: false,
-                    interactive: false,
-                    input: true,
-                    clipboard: false,
-                },
-            },
-        },
-    );
-    for request in [
-        PaneRequest::Focus {
-            view_id: target_view.clone(),
-            focused: false,
-        },
-        PaneRequest::Key {
-            view_id: target_view.clone(),
-            event: KeyEvent {
-                key: "KeyD".into(),
-                modifiers: 2,
-                text: String::new(),
-                action: KeyAction::Release,
-                unshifted_codepoint: u32::from('d'),
-            },
-        },
-        PaneRequest::Mouse {
-            view_id: target_view.clone(),
-            event: MouseEvent {
-                x: 0.0,
-                y: 0.0,
-                modifiers: 0,
-                button: MouseButton::Left,
-                action: MouseAction::Release,
-            },
-        },
-    ] {
-        let cleanup = send(
-            registry,
-            Operation::Pane {
-                pane_id: target.clone(),
-                request,
-            },
-        );
-        assert_eq!(cleanup["accepted"], false);
-        assert!(cleanup["write_id"].is_null());
-    }
-    assert!(
-        registry
-            .request(Request::new(Operation::Pane {
-                pane_id: target.clone(),
-                request: PaneRequest::Focus {
-                    view_id: "not-an-attached-view".into(),
-                    focused: false
-                },
-            }))
-            .is_err()
-    );
-    send(
-        registry,
-        Operation::Pane {
-            pane_id: target.clone(),
-            request: PaneRequest::Detach {
-                view_id: target_view,
-            },
-        },
-    );
-    send(
-        registry,
-        Operation::Pane {
-            pane_id: survivor.clone(),
-            request: PaneRequest::Input {
-                view_id: survivor_view,
-                data: b"still-usable\n".to_vec(),
-            },
-        },
-    );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while fs::read(survivor_home.join("received")).ok().as_deref() != Some(b"still-usable") {
-        assert!(
-            Instant::now() < deadline,
-            "unrelated pane lost usable input"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert_eq!(snapshot(registry, &survivor)["lifecycle"], "running");
-    let stored = read_record(fixture._root.path()).unwrap().unwrap();
-    assert_eq!(value(&stored.registry.workspaces), value(&after.workspaces));
-    let stored_target = stored
-        .registry
-        .panes
-        .iter()
-        .find(|pane| pane.id == target)
-        .unwrap();
-    assert_eq!(stored_target.status, PaneStatus::Exited);
-    assert_eq!(
-        stored_target.exit_code,
-        scene.exit_code.map(|code| code as i32)
-    );
-    assert_eq!(
-        snapshot(registry, &target)["frame"],
-        serde_json::to_value(scene.frame).unwrap()
-    );
-}
-
-#[test]
-fn natural_shell_exit_atomically_closes_every_projection_and_retains_execution_history() {
-    execution_completion_closes_all_projections(true);
-}
-
-#[test]
-fn explicit_termination_atomically_closes_every_projection_and_retains_execution_history() {
-    execution_completion_closes_all_projections(false);
-}
-
-#[test]
-fn failed_completion_persistence_does_not_publish_partial_closure_or_success() {
-    let fixture = Fixture::new();
-    let registry = &fixture.registry;
-    let workspace_id = create(registry, "completion storage failure");
-    let pane_id = spawn(
-        registry,
-        &fixture.home("ending"),
-        Some(workspace_id),
-        Some(1),
-    );
-    let retained = registry
+    let created = initial(registry, &fixture.home("fault"));
+    let pane_id = created.pane_id.unwrap();
+    let pane = registry
         .inner
         .state
         .lock()
@@ -433,58 +190,41 @@ fn failed_completion_persistence_does_not_publish_partial_closure_or_success() {
         .get(&pane_id)
         .unwrap()
         .clone();
-    let before = registry.snapshot().unwrap();
+    pane.shared.published.lock().unwrap().lifecycle = "fault".into();
+    registry.record_completion(&pane_id).unwrap();
+    let r = registry.snapshot().unwrap();
+    assert_eq!(r.panes[0].status, PaneStatus::Stopped);
+    assert_eq!(r.workspaces.len(), 1);
+    assert_eq!(r.workspaces[0].windows.len(), 1);
+    assert!(!registry.session_end_requested());
+}
+#[test]
+fn final_close_persistence_failure_never_requests_successful_session_end() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let id = create(registry, "admin");
     let path = fixture._root.path().join("registry.json");
     fs::remove_file(&path).unwrap();
     fs::create_dir(&path).unwrap();
     assert!(
         registry
-            .request(Request::new(Operation::PaneTerminate {
-                pane_id: pane_id.clone()
+            .request(Request::new(Operation::WorkspaceClose {
+                workspace_id: id,
+                expected_revision: 1
             }))
             .is_err()
     );
+    assert!(!registry.session_end_requested());
     assert!(registry.snapshot().is_err());
-    assert!(
-        registry
-            .request(Request::new(Operation::PaneTerminate { pane_id }))
-            .is_err()
-    );
-    let state = registry.inner.state.lock().unwrap();
-    assert_eq!(
-        value(&state.record.registry.workspaces),
-        value(&before.workspaces)
-    );
-    assert!(state.durability_error.is_some());
-    drop(state);
-    let final_scene: PaneSnapshot =
-        serde_json::from_value(retained.request(PaneRequest::Inspect).unwrap()).unwrap();
-    assert_eq!(final_scene.lifecycle, "terminated");
-    assert!(final_scene.frame.is_some());
-    assert!(final_scene.exit_code.is_some());
 }
 
 #[test]
-fn faulted_execution_keeps_its_projection_and_never_acknowledges_cleanup_or_termination() {
+fn native_close_durability_failure_reports_completed_side_effects_and_suspends_commits() {
     let fixture = Fixture::new();
     let registry = &fixture.registry;
-    let workspace_id = create(registry, "inspectable fault");
-    let pane_id = spawn(
-        registry,
-        &fixture.home("fault"),
-        Some(workspace_id.clone()),
-        Some(1),
-    );
-    let view_id = view(registry, &pane_id, 80);
-    send(
-        registry,
-        Operation::PaneTerminate {
-            pane_id: pane_id.clone(),
-        },
-    );
-    set_layout(registry, &workspace_id, leaf(&pane_id));
-    let before = registry.snapshot().unwrap();
-    let retained = registry
+    let created = initial(registry, &fixture.home("close-failure"));
+    let pane_id = created.pane_id.unwrap();
+    let pane = registry
         .inner
         .state
         .lock()
@@ -493,61 +233,244 @@ fn faulted_execution_keeps_its_projection_and_never_acknowledges_cleanup_or_term
         .get(&pane_id)
         .unwrap()
         .clone();
-    // Inject an engine/cleanup fault into a retained real execution, without
-    // weakening process ownership or leaving an actual live process behind.
-    let fault = "injected runtime failure";
-    {
-        let mut published = retained.shared.published.lock().unwrap();
-        published.lifecycle = "fault".into();
-        published.error = Some(fault.into());
-    }
-    registry.record_completion(&pane_id).unwrap();
-    let after = registry.snapshot().unwrap();
-    assert_eq!(value(&after.workspaces), value(&before.workspaces));
-    assert_eq!(after.panes[0].status, PaneStatus::Stopped);
-    let observed: PaneSnapshot = serde_json::from_value(snapshot(registry, &pane_id)).unwrap();
-    assert_eq!(observed.error.as_deref(), Some(fault));
-    assert!(observed.frame.is_some());
+    let path = fixture._root.path().join("registry.json");
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
     assert!(
         registry
-            .request(Request::new(Operation::PaneTerminate {
-                pane_id: pane_id.clone(),
+            .request(Request::new(Operation::WorkspaceClose {
+                workspace_id: created.workspace_id.unwrap(),
+                expected_revision: created.registry.workspaces[0].revision,
             }))
             .is_err()
     );
-    for request in [
-        PaneRequest::Focus {
-            view_id: view_id.clone(),
-            focused: false,
+    assert_eq!(
+        pane.request(PaneRequest::Inspect).unwrap()["lifecycle"],
+        "terminated"
+    );
+    assert!(!registry.session_end_requested());
+    assert!(registry.snapshot().is_err());
+    assert_eq!(
+        registry
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .record
+            .registry
+            .workspaces
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn registering_end_waker_concurrently_with_final_commit_has_no_lost_notification() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let id = create(registry, "admin");
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let worker_barrier = barrier.clone();
+    let worker_registry = registry.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        worker_barrier.wait();
+        worker_registry.set_session_end_waker(Arc::new(move || {
+            let _ = tx.send(());
+        }));
+    });
+    barrier.wait();
+    send(
+        registry,
+        Operation::WorkspaceClose {
+            workspace_id: id,
+            expected_revision: 1,
         },
-        PaneRequest::Key {
-            view_id: view_id.clone(),
-            event: KeyEvent {
-                key: "KeyD".into(),
-                modifiers: 2,
-                text: String::new(),
-                action: KeyAction::Release,
-                unshifted_codepoint: u32::from('d'),
-            },
+    );
+    worker.join().unwrap();
+    rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert!(registry.session_end_requested());
+}
+
+#[test]
+fn window_revisions_are_independent_and_workspace_close_cas_covers_all_membership_edits() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let first = initial(registry, &fixture.home("first-revision"));
+    let workspace_id = first.workspace_id.unwrap();
+    let created = send(
+        registry,
+        Operation::WindowCreate {
+            workspace_id: workspace_id.clone(),
+            expected_revision: first.registry.workspaces[0].revision,
+            name: Some("second".into()),
+            spec: spec(&fixture.home("second-revision")),
         },
-        PaneRequest::Mouse {
-            view_id,
-            event: MouseEvent {
-                x: 0.0,
-                y: 0.0,
-                modifiers: 0,
-                button: MouseButton::Left,
-                action: MouseAction::Release,
-            },
+    );
+    let result: RegistryResult = serde_json::from_value(created).unwrap();
+    let workspace = &result.registry.workspaces[0];
+    let one = &workspace.windows[0];
+    let two = &workspace.windows[1];
+    send(
+        registry,
+        Operation::WindowRename {
+            workspace_id: workspace_id.clone(),
+            window_id: one.id.clone(),
+            expected_revision: one.revision,
+            name: "renamed".into(),
         },
-    ] {
+    );
+    assert!(
+        registry
+            .request(Request::new(Operation::WindowRename {
+                workspace_id: workspace_id.clone(),
+                window_id: one.id.clone(),
+                expected_revision: one.revision,
+                name: "stale".into(),
+            }))
+            .is_err()
+    );
+    assert!(
+        registry
+            .request(Request::new(Operation::WorkspaceClose {
+                workspace_id: workspace_id.clone(),
+                expected_revision: workspace.revision
+            }))
+            .is_err()
+    );
+    let split = send(
+        registry,
+        Operation::PaneSpawn {
+            workspace_id: Some(workspace_id.clone()),
+            window_id: Some(two.id.clone()),
+            expected_revision: Some(two.revision),
+            spec: spec(&fixture.home("second-split")),
+        },
+    );
+    let pane = split["pane_id"].as_str().unwrap();
+    let r = registry.snapshot().unwrap();
+    assert_eq!(r.workspaces[0].windows[0].name, "renamed");
+    assert_eq!(
+        r.panes
+            .iter()
+            .find(|p| p.id == pane)
+            .unwrap()
+            .window_id
+            .as_deref(),
+        Some(two.id.as_str())
+    );
+    for (index, (workspace_id, window_id, revision)) in [
+        (Some(workspace_id.clone()), None, Some(two.revision)),
+        (None, Some(two.id.clone()), Some(two.revision)),
+        (
+            Some(workspace_id),
+            Some(Uuid::new_v4().to_string()),
+            Some(two.revision),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let home = fixture.home(&format!("rejected-membership-{index}"));
         assert!(
             registry
-                .request(Request::new(Operation::Pane {
-                    pane_id: pane_id.clone(),
-                    request,
+                .request(Request::new(Operation::PaneSpawn {
+                    workspace_id,
+                    window_id,
+                    expected_revision: revision,
+                    spec: spec(&home)
                 }))
                 .is_err()
         );
+        assert!(!home.exists());
     }
+}
+
+#[test]
+fn review_regression_window_close_drains_sibling_normal_completion() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let first = initial(registry, &fixture.home("closing"));
+    let workspace_id = first.workspace_id.unwrap();
+    let first_pane = first.pane_id.unwrap();
+    let home = fixture.home("sibling");
+    let mut launch = spec(&home);
+    launch.argv = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "while [ ! -e finish ]; do sleep 0.01; done; exit 7".into(),
+    ];
+    let second: RegistryResult = serde_json::from_value(send(
+        registry,
+        Operation::WindowCreate {
+            workspace_id: workspace_id.clone(),
+            expected_revision: first.registry.workspaces[0].revision,
+            name: None,
+            spec: launch,
+        },
+    ))
+    .unwrap();
+    let sibling_id = second.pane_id.unwrap();
+    let window = &second.registry.workspaces[0].windows[0];
+    let closing = registry
+        .inner
+        .state
+        .lock()
+        .unwrap()
+        .live
+        .get(&first_pane)
+        .unwrap()
+        .clone();
+    // Hold only this pane's publication: its close reserves the workspace while
+    // another pane can really exit and publish a deferred completion.
+    let held = closing.shared.published.lock().unwrap();
+    let other = registry.clone();
+    let id = workspace_id.clone();
+    let window_id = window.id.clone();
+    let revision = window.revision;
+    let worker = std::thread::spawn(move || {
+        other.request(Request::new(Operation::WindowClose {
+            workspace_id: id,
+            window_id,
+            expected_revision: revision,
+        }))
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !registry
+        .inner
+        .state
+        .lock()
+        .unwrap()
+        .closing_workspaces
+        .contains(&workspace_id)
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    fs::write(home.join("finish"), b"").unwrap();
+    let deferred = loop {
+        let state = registry.inner.state.lock().unwrap();
+        let observed = state.record.registry.panes.iter().any(|p| {
+            p.id == sibling_id && p.status == PaneStatus::Exited && p.workspace_id.is_some()
+        });
+        drop(state);
+        if observed || Instant::now() >= deadline {
+            break observed;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    drop(held);
+    let result = worker.join().unwrap().unwrap();
+    assert!(
+        deferred,
+        "did not exercise completion during the close reservation"
+    );
+    assert!(registry.session_end_requested());
+    assert!(registry.snapshot().unwrap().workspaces.is_empty());
+    assert!(
+        result["registry"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }

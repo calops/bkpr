@@ -5,21 +5,43 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SidebarTarget {
     Workspace(String),
+    Window { workspace: String, window: String },
     Pane { workspace: String, pane: String },
 }
 impl SidebarTarget {
     pub fn workspace(&self) -> &str {
         match self {
-            Self::Workspace(id) | Self::Pane { workspace: id, .. } => id,
+            Self::Workspace(id)
+            | Self::Window { workspace: id, .. }
+            | Self::Pane { workspace: id, .. } => id,
+        }
+    }
+    pub fn window(&self) -> Option<&str> {
+        match self {
+            Self::Window { window, .. } => Some(window),
+            _ => None,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum RowKind {
-    Workspace { index: usize, collapsed: bool },
-    Pane { index: usize, projected: bool },
-    Detail { index: usize },
+    Workspace {
+        index: usize,
+        collapsed: bool,
+    },
+    Window {
+        workspace: usize,
+        index: usize,
+        collapsed: bool,
+    },
+    Pane {
+        index: usize,
+        projected: bool,
+    },
+    Detail {
+        index: usize,
+    },
     Spacer,
 }
 #[derive(Clone, Debug)]
@@ -38,6 +60,7 @@ pub struct Sidebar {
     pub pointer_row: Option<u16>,
     last_click: Option<(SidebarTarget, Instant)>,
     collapsed: HashSet<String>,
+    collapsed_windows: HashSet<String>,
     revision: Option<u64>,
     height: usize,
     reveal: bool,
@@ -47,11 +70,19 @@ impl Sidebar {
         &mut self,
         registry: &RegistrySnapshot,
         workspace: Option<&str>,
+        window: Option<&str>,
         focused: Option<&str>,
     ) {
         if self.revision != Some(registry.revision) {
             self.collapsed
                 .retain(|id| registry.workspaces.iter().any(|w| w.id == *id));
+            self.collapsed_windows.retain(|id| {
+                registry
+                    .workspaces
+                    .iter()
+                    .flat_map(|w| &w.windows)
+                    .any(|window| window.id == *id)
+            });
             self.rows.clear();
             let mut projected = HashSet::new();
             for (index, workspace) in registry.workspaces.iter().enumerate() {
@@ -69,74 +100,90 @@ impl Sidebar {
                 if collapsed {
                     continue;
                 }
-                projected.clear();
-                fn leaves<'a>(node: &'a LayoutNode, result: &mut HashSet<&'a str>) {
-                    match node {
-                        LayoutNode::Leaf { pane_id } => {
-                            result.insert(pane_id);
-                        }
-                        LayoutNode::Split { first, second, .. } => {
-                            leaves(first, result);
-                            leaves(second, result);
-                        }
-                    }
-                }
-                if let Some(layout) = &workspace.layout {
-                    leaves(layout, &mut projected);
-                }
-                for (index, pane) in registry.panes.iter().enumerate() {
-                    let visible = projected.contains(pane.id.as_str());
-                    if !visible
-                        && (pane.status == PaneStatus::Exited
-                            || pane.workspace_id.as_deref() != Some(&workspace.id))
-                    {
-                        continue;
-                    }
-                    let target = SidebarTarget::Pane {
-                        workspace: workspace.id.clone(),
-                        pane: pane.id.clone(),
-                    };
+                for (window_index, window) in workspace.windows.iter().enumerate() {
+                    let collapsed = self.collapsed_windows.contains(&window.id);
                     self.rows.push(Row {
-                        target: Some(target.clone()),
-                        kind: RowKind::Pane {
-                            index,
-                            projected: visible,
+                        target: Some(SidebarTarget::Window {
+                            workspace: workspace.id.clone(),
+                            window: window.id.clone(),
+                        }),
+                        kind: RowKind::Window {
+                            workspace: index,
+                            index: window_index,
+                            collapsed,
                         },
                     });
-                    if pane.project.is_some() {
+                    if collapsed {
+                        continue;
+                    }
+                    projected.clear();
+                    fn leaves<'a>(node: &'a LayoutNode, result: &mut HashSet<&'a str>) {
+                        match node {
+                            LayoutNode::Leaf { pane_id } => {
+                                result.insert(pane_id);
+                            }
+                            LayoutNode::Split { first, second, .. } => {
+                                leaves(first, result);
+                                leaves(second, result);
+                            }
+                        }
+                    }
+                    if let Some(layout) = &window.layout {
+                        leaves(layout, &mut projected);
+                    }
+                    for (index, pane) in registry.panes.iter().enumerate() {
+                        if pane.workspace_id.as_deref() != Some(workspace.id.as_str())
+                            || pane.window_id.as_deref() != Some(window.id.as_str())
+                        {
+                            continue;
+                        }
+                        let visible = projected.contains(pane.id.as_str());
+                        if !visible && pane.status == PaneStatus::Exited {
+                            continue;
+                        }
+                        let target = SidebarTarget::Pane {
+                            workspace: workspace.id.clone(),
+                            pane: pane.id.clone(),
+                        };
                         self.rows.push(Row {
-                            target: Some(target),
-                            kind: RowKind::Detail { index },
+                            target: Some(target.clone()),
+                            kind: RowKind::Pane {
+                                index,
+                                projected: visible,
+                            },
                         });
+                        if pane.project.is_some() {
+                            self.rows.push(Row {
+                                target: Some(target),
+                                kind: RowKind::Detail { index },
+                            });
+                        }
                     }
                 }
             }
             self.revision = Some(registry.revision);
         }
-        let focus_matches = match (&self.cursor, workspace, focused) {
-            (
-                Some(SidebarTarget::Pane {
-                    workspace: selected,
-                    pane,
-                }),
-                Some(workspace),
-                Some(focused),
-            ) => selected == workspace && pane == focused && !self.collapsed.contains(workspace),
-            (Some(SidebarTarget::Workspace(selected)), Some(workspace), focused) => {
-                selected == workspace && (focused.is_none() || self.collapsed.contains(workspace))
+        let desired = workspace.map(|workspace| {
+            if self.collapsed.contains(workspace) {
+                return SidebarTarget::Workspace(workspace.into());
             }
-            (None, None, _) => true,
-            _ => false,
-        };
-        if !self.active && !focus_matches {
-            self.reveal = true;
-            self.cursor = workspace.map(|workspace| match focused {
-                Some(pane) if !self.collapsed.contains(workspace) => SidebarTarget::Pane {
+            match window {
+                Some(window) if !self.collapsed_windows.contains(window) && focused.is_some() => {
+                    SidebarTarget::Pane {
+                        workspace: workspace.into(),
+                        pane: focused.unwrap().into(),
+                    }
+                }
+                Some(window) => SidebarTarget::Window {
                     workspace: workspace.into(),
-                    pane: pane.into(),
+                    window: window.into(),
                 },
-                _ => SidebarTarget::Workspace(workspace.into()),
-            });
+                None => SidebarTarget::Workspace(workspace.into()),
+            }
+        });
+        if !self.active && self.cursor != desired {
+            self.reveal = true;
+            self.cursor = desired;
         }
         if !self.cursor.as_ref().is_some_and(|cursor| {
             self.rows
@@ -269,13 +316,47 @@ impl Sidebar {
         let Some(cursor) = &self.cursor else {
             return;
         };
-        let workspace = cursor.workspace().to_owned();
-        let folded = collapsed.unwrap_or(!self.collapsed.contains(&workspace));
-        if folded {
-            self.collapsed.insert(workspace.clone());
-            self.cursor = Some(SidebarTarget::Workspace(workspace));
+        if let SidebarTarget::Window { workspace, window } = cursor {
+            let folded = collapsed.unwrap_or(!self.collapsed_windows.contains(window));
+            if folded {
+                self.collapsed_windows.insert(window.clone());
+                self.cursor = Some(SidebarTarget::Window {
+                    workspace: workspace.clone(),
+                    window: window.clone(),
+                });
+            } else {
+                self.collapsed_windows.remove(window);
+            }
+        } else if let SidebarTarget::Pane { workspace, .. } = cursor {
+            let mut parent = None;
+            for row in &self.rows {
+                if row.target.as_ref() == Some(cursor) {
+                    break;
+                }
+                match &row.target {
+                    Some(SidebarTarget::Window { window, .. }) => parent = Some(window.clone()),
+                    Some(SidebarTarget::Workspace(_)) => parent = None,
+                    _ => {}
+                }
+            }
+            if let Some(window) = parent
+                && collapsed.unwrap_or(true)
+            {
+                self.collapsed_windows.insert(window.clone());
+                self.cursor = Some(SidebarTarget::Window {
+                    workspace: workspace.clone(),
+                    window,
+                });
+            }
         } else {
-            self.collapsed.remove(&workspace);
+            let workspace = cursor.workspace().to_owned();
+            let folded = collapsed.unwrap_or(!self.collapsed.contains(&workspace));
+            if folded {
+                self.collapsed.insert(workspace.clone());
+                self.cursor = Some(SidebarTarget::Workspace(workspace));
+            } else {
+                self.collapsed.remove(&workspace);
+            }
         }
         self.revision = None;
         self.reveal = true;
@@ -285,66 +366,97 @@ impl Sidebar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bkpr_protocol::{PaneInfo, Workspace};
+    use bkpr_protocol::{PaneInfo, Window, Workspace};
     fn registry() -> RegistrySnapshot {
+        let pane = |id: &str, workspace: &str, window: &str| PaneInfo {
+            id: id.into(),
+            workspace_id: Some(workspace.into()),
+            window_id: Some(window.into()),
+            title: "terminal".into(),
+            status: PaneStatus::Running,
+            exit_code: None,
+            cwd: "/fixture".into(),
+            foreground_cwd: None,
+            harness: None,
+            harness_status: None,
+            project: None,
+            home: "/fixture".into(),
+            isolated_environment: true,
+        };
+        let window = |id: &str, pane: &str| Window {
+            id: id.into(),
+            name: id.into(),
+            revision: 1,
+            layout: Some(LayoutNode::Leaf {
+                pane_id: pane.into(),
+            }),
+        };
         RegistrySnapshot {
             revision: 1,
-            workspaces: ["a", "b"]
-                .into_iter()
-                .map(|id| Workspace {
-                    id: id.into(),
-                    name: id.into(),
+            workspaces: vec![
+                Workspace {
+                    id: "a".into(),
+                    name: "a".into(),
                     revision: 1,
-                    layout: Some(LayoutNode::Leaf {
-                        pane_id: "shared".into(),
-                    }),
-                })
-                .collect(),
-            panes: vec![PaneInfo {
-                id: "shared".into(),
-                workspace_id: Some("a".into()),
-                title: "terminal".into(),
-                status: PaneStatus::Running,
-                exit_code: None,
-                cwd: "/fixture".into(),
-                foreground_cwd: None,
-                harness: None,
-                harness_status: None,
-                project: None,
-                home: "/fixture".into(),
-                isolated_environment: true,
-            }],
+                    windows: vec![window("one", "first"), window("two", "second")],
+                },
+                Workspace {
+                    id: "b".into(),
+                    name: "b".into(),
+                    revision: 1,
+                    windows: vec![window("three", "third")],
+                },
+            ],
+            panes: vec![
+                pane("first", "a", "one"),
+                pane("second", "a", "two"),
+                pane("third", "b", "three"),
+            ],
         }
     }
     #[test]
-    fn shared_pane_selection_is_workspace_qualified_and_folding_keeps_its_group() {
+    fn windows_keep_same_workspace_panes_in_distinct_selectable_groups() {
         let registry = registry();
         let mut sidebar = Sidebar::default();
-        sidebar.reconcile(&registry, Some("a"), Some("shared"));
+        sidebar.reconcile(&registry, Some("a"), Some("one"), Some("first"));
         sidebar.enter();
-        sidebar.navigate(isize::MAX);
+        sidebar.navigate(1);
         assert_eq!(
             sidebar.cursor,
-            Some(SidebarTarget::Pane {
-                workspace: "b".into(),
-                pane: "shared".into()
+            Some(SidebarTarget::Window {
+                workspace: "a".into(),
+                window: "two".into()
             })
         );
-        sidebar.fold(Some(true));
-        sidebar.reconcile(&registry, Some("a"), Some("shared"));
-        assert_eq!(sidebar.cursor, Some(SidebarTarget::Workspace("b".into())));
-        assert!(!sidebar.rows.iter().any(|row| matches!(&row.target,
-            Some(SidebarTarget::Pane { workspace, .. }) if workspace == "b")));
-        assert!(sidebar.rows.iter().any(|row| matches!(&row.target,
-            Some(SidebarTarget::Pane { workspace, .. }) if workspace == "a")));
-        sidebar.fold(Some(false));
-        sidebar.reconcile(&registry, Some("a"), Some("shared"));
         sidebar.navigate(1);
         assert_eq!(
             sidebar.cursor,
             Some(SidebarTarget::Pane {
-                workspace: "b".into(),
-                pane: "shared".into()
+                workspace: "a".into(),
+                pane: "second".into()
+            })
+        );
+        sidebar.fold(Some(true));
+        sidebar.reconcile(&registry, Some("a"), Some("one"), Some("first"));
+        assert_eq!(
+            sidebar.cursor,
+            Some(SidebarTarget::Window {
+                workspace: "a".into(),
+                window: "two".into()
+            })
+        );
+        assert!(!sidebar.rows.iter().any(|row| matches!(&row.target,
+            Some(SidebarTarget::Pane { pane, .. }) if pane == "second")));
+        assert!(sidebar.rows.iter().any(|row| matches!(&row.target,
+            Some(SidebarTarget::Pane { pane, .. }) if pane == "first")));
+        sidebar.fold(Some(false));
+        sidebar.reconcile(&registry, Some("a"), Some("one"), Some("first"));
+        sidebar.navigate(1);
+        assert_eq!(
+            sidebar.cursor,
+            Some(SidebarTarget::Pane {
+                workspace: "a".into(),
+                pane: "second".into()
             })
         );
     }
@@ -352,13 +464,13 @@ mod tests {
     fn manual_scrolling_survives_unchanged_focus_until_keyboard_navigation_reveals_cursor() {
         let mut registry = registry();
         let mut sidebar = Sidebar::default();
-        sidebar.reconcile(&registry, Some("a"), Some("shared"));
+        sidebar.reconcile(&registry, Some("a"), Some("one"), Some("first"));
         sidebar.viewport(2);
         sidebar.scroll_by(isize::MAX);
         let bottom = sidebar.scroll;
         assert!(bottom > 0);
         registry.revision += 1;
-        sidebar.reconcile(&registry, Some("a"), Some("shared"));
+        sidebar.reconcile(&registry, Some("a"), Some("one"), Some("first"));
         assert_eq!(sidebar.scroll, bottom);
         sidebar.enter();
         sidebar.navigate(isize::MIN);
@@ -367,7 +479,7 @@ mod tests {
         registry.workspaces.clear();
         registry.panes.clear();
         registry.revision += 1;
-        sidebar.reconcile(&registry, None, None);
+        sidebar.reconcile(&registry, None, None, None);
         sidebar.navigate(1);
         assert!(sidebar.cursor.is_none());
         assert_eq!(sidebar.scroll, 0);
@@ -376,13 +488,13 @@ mod tests {
     fn double_click_requires_same_qualified_target_within_the_click_window() {
         let mut sidebar = Sidebar::default();
         let now = Instant::now();
-        let first = SidebarTarget::Pane {
+        let first = SidebarTarget::Window {
             workspace: "a".into(),
-            pane: "shared".into(),
+            window: "one".into(),
         };
-        let other = SidebarTarget::Pane {
-            workspace: "b".into(),
-            pane: "shared".into(),
+        let other = SidebarTarget::Window {
+            workspace: "a".into(),
+            window: "two".into(),
         };
         assert!(!sidebar.click(first.clone(), now));
         assert!(!sidebar.click(other.clone(), now + Duration::from_millis(100)));

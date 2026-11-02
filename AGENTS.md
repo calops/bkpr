@@ -16,7 +16,9 @@ The implementation plan and source ledger are in `docs/pane-first-mux/implementa
 
 ## Architecture and crate boundaries
 
-The backend owns independent panes, their processes/PTYs, canonical terminal state and associated authoritative data. Layout/session documents reference endpoint-qualified panes; displaying a pane doesn't own its lifetime or change its backend workspace membership. TUI, GUI, browser and mobile clients may project the same state differently. A mobile view may show one pane without sidebar chrome.
+The backend owns panes, their processes/PTYs, canonical terminal state and associated authoritative data independently of attached clients. Displaying a pane doesn't own its lifetime or change backend workspace membership. TUI, GUI, browser and mobile clients may project the same state differently; a mobile view may show one pane without sidebar chrome.
+
+Backend ownership is hierarchical: each workspace belongs to exactly one session and owns its terminals/windows/layouts. Authoritative window layouts reject panes from other windows or workspaces. Closing the last terminal, including normal shell exit, closes its workspace; closing the last workspace closes its session. Detach and layout-only removal remain nonterminating, and an initially empty headless server is not a last-workspace-close transition. These rules are enforced locally. Cross-session/remote workspace routing is separate work: references must permit normal use through the owner, including input, creation, layout changes and closure, not just display. Assume the same user without an additional permissions framework; preserve OS/process-bound authentication. Merged or selected-pane client compositions never change ownership.
 
 The workspace uses these seven packages. Keep implementation boundaries real, without empty crates, compatibility aliases or old combined prototype trees. Some responsibilities describe future domains, not features already exposed by the current executables.
 

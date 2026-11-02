@@ -74,7 +74,7 @@ pub(crate) struct ClientLease {
     active: AtomicBool,
     activated: AtomicBool,
     detached: AtomicBool,
-    handshake: AtomicBool,
+    handshake: Mutex<(bool, Option<String>)>,
 }
 impl ClientLease {
     pub(crate) fn ensure_active(&self) -> Result<()> {
@@ -94,20 +94,30 @@ impl ClientLease {
         self.detached.load(Ordering::Acquire)
     }
     pub(crate) fn handshake_complete(&self) {
-        self.handshake.store(true, Ordering::Release);
+        let mut handshake = self.handshake.lock().unwrap();
+        handshake.0 = true;
+        if let Some(reason) = handshake.1.take() {
+            self.send_detach(&reason);
+        }
     }
     fn invalidate(&self) {
         self.detached.store(true, Ordering::Release);
         self.active.store(false, Ordering::Release);
     }
     fn notify(&self, reason: &str) {
+        let mut handshake = self.handshake.lock().unwrap();
+        if handshake.0 {
+            self.send_detach(reason);
+        } else {
+            handshake.1 = Some(reason.to_owned());
+        }
+    }
+    fn send_detach(&self, reason: &str) {
         let event = ClientEvent {
             event: "client_detached".into(),
             reason: reason.into(),
         };
-        if self.handshake.load(Ordering::Acquire)
-            && let Ok(mut bytes) = serde_json::to_vec(&event)
-        {
+        if let Ok(mut bytes) = serde_json::to_vec(&event) {
             bytes.push(b'\n');
             crate::transport::send_lifetime_event(&self.lifetime, &bytes);
         }
@@ -136,11 +146,11 @@ impl Registry {
             active: AtomicBool::new(false),
             activated: AtomicBool::new(false),
             detached: AtomicBool::new(false),
-            handshake: AtomicBool::new(false),
+            handshake: Mutex::new((false, None)),
         });
         let mut clients = self.inner.clients.lock().unwrap();
         ensure!(
-            !self.inner.state.lock().unwrap().closing,
+            !self.inner.state.lock().unwrap().closing && !self.session_end_requested(),
             "daemon is shutting down"
         );
         ensure!(clients.len() < MAX_CLIENTS, "client attachment limit");
@@ -191,7 +201,7 @@ impl Registry {
         let retired = {
             let mut clients = self.inner.clients.lock().unwrap();
             ensure!(
-                !self.inner.state.lock().unwrap().closing,
+                !self.inner.state.lock().unwrap().closing && !self.session_end_requested(),
                 "daemon is shutting down"
             );
             ensure!(

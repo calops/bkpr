@@ -30,6 +30,7 @@ fn context(id: &str, workspace: Option<&str>) -> ContextFact {
         pane: PaneInfo {
             id: format!("pane-{id}"),
             workspace_id: workspace.map(str::to_owned),
+            window_id: workspace.map(|id| format!("window-{id}")),
             title: id.into(),
             status: PaneStatus::Running,
             exit_code: None,
@@ -185,6 +186,26 @@ fn exact_retry_survives_recipient_exit_and_membership_change_but_conflicts_fail(
     });
     assert!(changed_to.is_err());
     assert_eq!(service.state.lock().unwrap().store.messages.len(), 1);
+}
+
+#[test]
+fn window_membership_is_reported_without_narrowing_workspace_agent_scope() {
+    let (_dir, service, mut contexts) = fixture();
+    contexts.get_mut("b").unwrap().pane.window_id = Some("independent-window".into());
+    assert!(
+        send(
+            &service,
+            &contexts,
+            "across-windows",
+            "body",
+            AgentScope::Workspace
+        )
+        .is_ok()
+    );
+    let state = service.state.lock().unwrap();
+    let payload = public(&contexts["b"], &state.store.agents["b"], None, 0);
+    assert_eq!(payload["window_id"], "independent-window");
+    assert_eq!(payload["workspace_id"], "one");
 }
 
 #[test]

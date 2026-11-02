@@ -2,11 +2,9 @@
 //! Inspired by Bkpr main's MIT-licensed ui.rs tooltip model; this implementation
 //! uses only pane-first protocol facts, without the old Zellij overlay transport.
 use crate::controller::SidebarTarget;
-use bkpr_protocol::{
-    LayoutNode, PaneInfo, PaneSnapshot, PaneStatus, ProjectSnapshot, RegistrySnapshot, Size,
-};
+use bkpr_protocol::{PaneInfo, PaneSnapshot, PaneStatus, ProjectSnapshot, RegistrySnapshot, Size};
 use bkpr_tui_framework::{
-    Rect, UiSurface,
+    Rect, Role, RoleSpan, Theme, UiSurface,
     window::{self, Border},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -25,15 +23,6 @@ pub struct Content {
     pub sections: Vec<Section>,
 }
 
-fn projected(layout: Option<&LayoutNode>, pane: &str) -> bool {
-    match layout {
-        Some(LayoutNode::Leaf { pane_id }) => pane_id == pane,
-        Some(LayoutNode::Split { first, second, .. }) => {
-            projected(Some(first), pane) || projected(Some(second), pane)
-        }
-        None => false,
-    }
-}
 fn belongs(registry: &RegistrySnapshot, target: &SidebarTarget) -> bool {
     let Some(workspace) = registry
         .workspaces
@@ -44,10 +33,14 @@ fn belongs(registry: &RegistrySnapshot, target: &SidebarTarget) -> bool {
     };
     match target {
         SidebarTarget::Workspace(_) => true,
+        SidebarTarget::Window { window, .. } => workspace.windows.iter().any(|w| &w.id == window),
         SidebarTarget::Pane { pane, .. } => registry.panes.iter().any(|p| {
             p.id == *pane
-                && (p.workspace_id.as_deref() == Some(workspace.id.as_str())
-                    || projected(workspace.layout.as_ref(), pane))
+                && p.workspace_id.as_deref() == Some(workspace.id.as_str())
+                && workspace
+                    .windows
+                    .iter()
+                    .any(|window| Some(&window.id) == p.window_id.as_ref())
         }),
     }
 }
@@ -88,13 +81,16 @@ pub fn build_content<'a>(
         .iter()
         .find(|w| w.id == target.workspace())?;
     match target {
-        SidebarTarget::Workspace(_) => {
+        SidebarTarget::Workspace(_) | SidebarTarget::Window { .. } => {
+            let window = target
+                .window()
+                .and_then(|id| workspace.windows.iter().find(|w| w.id == id));
             let panes: Vec<_> = registry
                 .panes
                 .iter()
                 .filter(|p| {
                     p.workspace_id.as_deref() == Some(workspace.id.as_str())
-                        || projected(workspace.layout.as_ref(), &p.id)
+                        && window.is_none_or(|window| p.window_id.as_ref() == Some(&window.id))
                 })
                 .collect();
             let mut sections = vec![Section {
@@ -114,9 +110,14 @@ pub fn build_content<'a>(
                     .collect(),
             }];
             if panes.is_empty() {
-                sections[0]
-                    .rows
-                    .push("No terminals in this workspace".into());
+                sections[0].rows.push(
+                    if window.is_some() {
+                        "No terminals in this window"
+                    } else {
+                        "No terminals in this workspace"
+                    }
+                    .into(),
+                );
             }
             let mut projects: Vec<&ProjectSnapshot> = Vec::new();
             for pane in &panes {
@@ -134,6 +135,16 @@ pub fn build_content<'a>(
             for project in projects {
                 sections.push(project_section(project));
             }
+            if window.is_none() {
+                sections.push(Section {
+                    title: "Windows".into(),
+                    rows: workspace
+                        .windows
+                        .iter()
+                        .map(|window| window.name.clone())
+                        .collect(),
+                });
+            }
             if sections.len() == 1 {
                 sections.push(Section {
                     title: "Project".into(),
@@ -141,8 +152,16 @@ pub fn build_content<'a>(
                 });
             }
             Some(Content {
-                title: workspace.name.clone(),
-                subtitle: format!("Workspace · {} terminals", panes.len()),
+                title: window.map_or_else(|| workspace.name.clone(), |window| window.name.clone()),
+                subtitle: if window.is_some() {
+                    format!("Window · {} · {} terminals", workspace.name, panes.len())
+                } else {
+                    format!(
+                        "Workspace · {} windows · {} terminals",
+                        workspace.windows.len(),
+                        panes.len()
+                    )
+                },
                 sections,
             })
         }
@@ -153,6 +172,14 @@ pub fn build_content<'a>(
             let mut rows = vec![
                 format!("Status: {}", status(pane)),
                 format!("Pane: {}", pane.id),
+                format!(
+                    "Window: {}",
+                    workspace
+                        .windows
+                        .iter()
+                        .find(|window| Some(&window.id) == pane.window_id.as_ref())
+                        .map_or("unavailable", |window| window.name.as_str())
+                ),
                 format!(
                     "CWD: {}",
                     pane.foreground_cwd.as_ref().unwrap_or(&pane.cwd).display()
@@ -269,6 +296,7 @@ pub struct Popover {
     rect: Option<Rect>,
     scroll: usize,
     max_scroll: usize,
+    roles: Vec<RoleSpan>,
 }
 impl Popover {
     pub fn new(screen: Size) -> Self {
@@ -284,6 +312,7 @@ impl Popover {
             rect: None,
             scroll: 0,
             max_scroll: 0,
+            roles: Vec::new(),
         }
     }
     pub fn hide(&mut self) {
@@ -348,7 +377,10 @@ impl Popover {
                     SidebarTarget::Pane { pane: id, .. } => pane.id == *id,
                     SidebarTarget::Workspace(_) => {
                         pane.workspace_id.as_deref() == Some(workspace.id.as_str())
-                            || projected(workspace.layout.as_ref(), &pane.id)
+                    }
+                    SidebarTarget::Window { window, .. } => {
+                        pane.workspace_id.as_deref() == Some(workspace.id.as_str())
+                            && pane.window_id.as_ref() == Some(window)
                     }
                 })
                 .map(|pane| (pane.id.clone(), snapshot(&pane.id).map(SnapshotKey::new)))
@@ -417,12 +449,33 @@ impl Popover {
         self.max_scroll = wrapped.len().saturating_sub(body_height);
         self.scroll = self.scroll.min(self.max_scroll);
         let mut lines = window::border_rows(local, " Details ", Border::Rounded);
+        self.roles = window::theme_spans(local).to_vec();
+        if local.cols >= 3 && local.rows >= 3 {
+            self.roles.push(RoleSpan {
+                rect: Rect {
+                    x: 1,
+                    y: 0,
+                    width: 9.min(local.cols - 2),
+                    height: 1,
+                },
+                role: Role::Title,
+            });
+        }
         for (index, (label, heading)) in wrapped
             .iter()
             .skip(self.scroll)
             .take(body_height)
             .enumerate()
         {
+            self.roles.push(RoleSpan {
+                rect: Rect {
+                    x: inner.x,
+                    y: inner.y + index as u16,
+                    width: inner.width,
+                    height: 1,
+                },
+                role: if *heading { Role::Title } else { Role::Muted },
+            });
             lines.push((
                 Rect {
                     x: inner.x,
@@ -431,7 +484,7 @@ impl Popover {
                     height: 1,
                 },
                 label.clone(),
-                *heading,
+                false,
             ));
         }
         if footer {
@@ -466,6 +519,10 @@ impl Popover {
             ..key
         });
         Some(rect)
+    }
+
+    pub(crate) fn apply_theme(&mut self, theme: &Theme) {
+        self.surface.apply_theme(theme, Role::Panel, &self.roles);
     }
 }
 
@@ -540,9 +597,14 @@ mod tests {
                 id: "one".into(),
                 name: "One".into(),
                 revision: 1,
-                layout: Some(LayoutNode::Leaf {
-                    pane_id: "gone".into(),
-                }),
+                windows: vec![bkpr_protocol::Window {
+                    id: "window".into(),
+                    name: "Window".into(),
+                    revision: 1,
+                    layout: Some(bkpr_protocol::LayoutNode::Leaf {
+                        pane_id: "gone".into(),
+                    }),
+                }],
             }],
         };
         assert!(
@@ -563,6 +625,67 @@ mod tests {
             build_content(&registry, &SidebarTarget::Workspace("gone".into()), |_| {
                 None
             })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn window_metadata_excludes_other_windows_in_the_same_workspace() {
+        let pane = |id: &str, window: &str| PaneInfo {
+            id: id.into(),
+            workspace_id: Some("work".into()),
+            window_id: Some(window.into()),
+            title: id.into(),
+            status: PaneStatus::Running,
+            exit_code: None,
+            cwd: "/fixture".into(),
+            foreground_cwd: None,
+            harness: None,
+            harness_status: None,
+            project: None,
+            home: "/fixture".into(),
+            isolated_environment: true,
+        };
+        let registry = RegistrySnapshot {
+            revision: 1,
+            workspaces: vec![bkpr_protocol::Workspace {
+                id: "work".into(),
+                name: "Work".into(),
+                revision: 1,
+                windows: ["one", "two"]
+                    .into_iter()
+                    .map(|id| bkpr_protocol::Window {
+                        id: id.into(),
+                        name: id.into(),
+                        revision: 1,
+                        layout: None,
+                    })
+                    .collect(),
+            }],
+            panes: vec![pane("first", "one"), pane("second", "two")],
+        };
+        let observed = std::cell::RefCell::new(Vec::new());
+        let target = SidebarTarget::Window {
+            workspace: "work".into(),
+            window: "two".into(),
+        };
+        let content = build_content(&registry, &target, |pane| {
+            observed.borrow_mut().push(pane.to_owned());
+            None
+        })
+        .unwrap();
+        assert_eq!(content.title, "two");
+        assert_eq!(content.sections[0].rows, ["second · Running"]);
+        assert_eq!(*observed.borrow(), ["second"]);
+        assert!(
+            build_content(
+                &registry,
+                &SidebarTarget::Window {
+                    workspace: "work".into(),
+                    window: "gone".into(),
+                },
+                |_| None
+            )
             .is_none()
         );
     }

@@ -2,7 +2,6 @@
 
 ### Fixes
 
-* Close completed shell/process projections atomically across workspace layouts and remove their unprojected records from the live sidebar, including Ctrl-D and explicit pane termination. Preserve exit metadata and final scenes, keep faults visible, and distinguish trailing key/pointer/focus cleanup from real input after execution ends. Remove the obsolete client-side termination/layout-update sequence.
 * Route Omp tools through the shared launch-local MCP server and include communication guidance as a private package skill. Remove Omp-specific tool registration/schema conversion; keep the extension for native conversation binding and step-boundary notifications.
 * Reap explicitly terminated pane processes before stopping their PTY writer. `portable-pty` emits newline/VEOF on writer drop; those bytes must not reach a still-live application or pending shell command.
 * Use the stable launch-local MCP name `bkpr` for Claude, Codex and Omp instead of a launch-ID suffix. Keep authentication launch-scoped and persistent configuration untouched.
@@ -12,7 +11,7 @@
 
 * `feat/pane-first-mux` replaces the previous runtime with seven focused crates: `bkpr`, `bkpr-client`, `bkpr-tui-framework`, `bkpr-server` (the `bkprd` executable), `bkpr-core`, `bkpr-protocol` and `bkpr-terminal-engine`. There is no legacy launcher, plugin, binary alias or compatibility track on this branch.
 * Remove the old host-runtime flake input, WASI build/export paths, sibling-runtime recipes and obsolete package/cache/publication automation. Nix now supplies only the default native development shell; Cargo plus the pinned engine preparation helper is the supported build path. Native Nix packaging requires a reproducible, offline engine dependency closure and runtime acceptance before package/app outputs return.
-* Expose the native daemon, TUI, typed version-2 control protocol and keyboard client. Backend-owned workspaces and split layouts reference independent panes; closing a projection or detaching a client does not terminate its process. Workspace/layout metadata persists, but process and terminal-content recovery is not implemented. Forge/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
+* Expose the native daemon, TUI, typed version-3 control protocol and keyboard client. Backend-owned workspaces contain independent windows/layouts and owned panes; layout-only removal or client detach does not terminate a process. Metadata persists, but process and terminal-content recovery is not implemented. Forge/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
 * Native graphics initial-presentation gates remain unaccepted. This replacement is not production acceptance and does not modify installed applications or live sessions.
 
 ### Native named sessions
@@ -22,13 +21,22 @@
 * Bind managed views, queued native callbacks, device grants and sizing to revocable client authority. Retire it on EOF, owner exit or detach, including fork-inherited lifetime sockets. Inject trusted logical session ID/name snapshots before pane exec.
 * Move daemon bootstrap out of the terminal-client library into the launcher. Keep headless tools nonbootstrapping, separate lifetime/watch/input admission, and keep process/CWD scans off managed per-key authentication.
 
+### Owned workspace windows and session closure
+
+* Own each workspace in one session, with independent windows and explicit terminal membership. Reject foreign-window/workspace layout borrowing; keep active-window choice per client and destructive changes revision-guarded.
+* Restore separate full-window terminal creation rather than substituting a split. Create optional-name workspaces and their initial window/terminal atomically; choose collision-free names on the backend and preserve exact native directories.
+* Close windows/workspaces by terminating their owned executions, including hidden or unprojected terminals. Cascade normal last-shell exit into workspace and final-session closure, notify attachments and reap residual administrative executions without requiring client acknowledgement. Detach, layout-only removal and initially empty headless startup remain nonterminating.
+* Drain deferred sibling completions after close reservations, retain de-owned exit receipts and bound final-response delivery with an absolute nonblocking write deadline. Cancel retired client snapshot generations and settle accepted policy revocation before shutdown detach.
+* Replace the single-layout API with protocol 3 and durable schema 2. Upgrade unambiguous schema-1 metadata once without command replay; reject ambiguous foreign layouts without replacing metadata. Cross-session/SSH workspace routing remains separate work, with normal same-user use through its owner rather than read-only references.
+
 ### Bkpr frontend restoration
 
-* Restore the all-workspace sidebar's independent keyboard selection, folding, scrolling, rename/create/close-terminal actions and passive metadata popovers. Keep separate-window creation and owned-terminal cascading workspace close explicitly dependent on backend contracts.
+* Restore the all-workspace sidebar's independent keyboard selection, folding, scrolling, rename/create/close-terminal actions and passive metadata popovers.
 * Restore focused name/directory forms, grapheme-boundary editing and paste, identity-bound modal intent, honest asynchronous errors and the metadata-only fuzzy finder with filters and responsive previews.
 * Share typed binding dispatch with contextual hints; compose bounded popup/guide windows without taking native pointer gestures or leaking UI keys into applications. Normalize legacy Ctrl-Space/NUL at the framework input boundary.
 * Put retained UI surfaces, text editing, window decoration, capability gating and bounded off-thread SVG preparation in the reusable TUI framework. Keep Bkpr-specific models/assets in the client. Restore static bee/hive artwork through the existing scene/image lifecycle with terminal-default colors and readable unsupported-host fallbacks.
 * Reuse foreground-identity and project freshness presentation across metadata views. Preserve native clipboard framing for applications while local forms/finder receive ordinary paste, restoring the host's original mode on detach.
+* Derive a shared framework theme from confirmed terminal color capabilities and observed foreground/background/ANSI colors. Apply readable surfaces, selection, muted text and semantic accents throughout Bkpr chrome; retain native/ANSI fallbacks and canonical application styles. Refresh on actual private theme notifications without polling, preserve retained field/finder state and tint artwork from its final displayed ink.
 
 
 ### Development

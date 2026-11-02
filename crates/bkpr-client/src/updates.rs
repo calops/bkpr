@@ -24,6 +24,13 @@ pub struct Pump<T> {
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
+impl<T> Pump<T> {
+    /// Retire this receiver generation before its backend view is detached.
+    pub fn cancel(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        self.receiver.take();
+    }
+}
 impl<T: Send + 'static> Pump<T> {
     fn start(mut next: impl FnMut() -> Result<T> + Send + 'static) -> Result<Self> {
         let (wake, mut notify) = UnixStream::pair()?;
@@ -35,6 +42,9 @@ impl<T: Send + 'static> Pump<T> {
         let worker = thread::spawn(move || {
             while !stopped.load(Ordering::Acquire) {
                 let value = next().map_err(|e| format!("{e:#}"));
+                if stopped.load(Ordering::Acquire) {
+                    break;
+                }
                 let failed = value.is_err();
                 if sender.send(value).is_err() {
                     break;
@@ -66,7 +76,7 @@ impl<T: Send + 'static> Pump<T> {
     pub fn initial(&self) -> Result<T> {
         self.receiver
             .as_ref()
-            .unwrap()
+            .context("snapshot receiver cancelled")?
             .recv()
             .context("snapshot worker disconnected")?
             .map_err(anyhow::Error::msg)
@@ -74,7 +84,10 @@ impl<T: Send + 'static> Pump<T> {
     pub fn latest(&mut self) -> Result<Option<T>> {
         let mut bytes = [0u8; 128];
         while matches!(self.wake.read(&mut bytes),Ok(n)if n>0) {}
-        match self.receiver.as_ref().unwrap().try_recv() {
+        let Some(receiver) = self.receiver.as_ref() else {
+            return Ok(None);
+        };
+        match receiver.try_recv() {
             Ok(value) => value.map(Some).map_err(anyhow::Error::msg),
             Err(mpsc::TryRecvError::Empty) => Ok(None),
             Err(mpsc::TryRecvError::Disconnected) => bail!("snapshot worker disconnected"),
@@ -83,11 +96,9 @@ impl<T: Send + 'static> Pump<T> {
 }
 impl<T> Drop for Pump<T> {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        self.receiver.take();
-        // Pane owners retain this pump until Detach has revoked the view and
-        // awakened its poll. Never join a thread on the input/render path:
-        // transport completion/decode can still be finishing after that ACK.
+        self.cancel();
+        // Detach wakes an in-flight poll. Do not join on the input/render path:
+        // transport completion/decode can still be finishing after its ACK.
         drop(self.worker.take());
     }
 }
@@ -141,3 +152,34 @@ pub(crate) use input::{
     DeviceReservation, InputFailure, InputLane, InputPump, InputRejected, Receipt, ReservedInput,
     ResponseReceipt, cleanup,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn cancellation_releases_buffered_scene_and_discards_late_retired_error() {
+        let retained = Arc::new(());
+        let weak = Arc::downgrade(&retained);
+        let mut first = Some(retained);
+        let (entered, running) = mpsc::sync_channel(1);
+        let (release, blocked) = mpsc::sync_channel(1);
+        let mut pump = Pump::start(move || {
+            if let Some(scene) = first.take() {
+                return Ok(scene);
+            }
+            entered.send(()).unwrap();
+            blocked.recv().unwrap();
+            bail!("retired view rejected its outstanding poll");
+        })
+        .unwrap();
+        running.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(weak.upgrade().is_some());
+        pump.cancel();
+        assert!(weak.upgrade().is_none());
+        release.send(()).unwrap();
+        pump.worker.take().unwrap().join().unwrap();
+        assert!(pump.latest().unwrap().is_none());
+    }
+}

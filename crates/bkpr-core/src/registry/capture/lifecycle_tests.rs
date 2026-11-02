@@ -10,6 +10,7 @@ fn seed_launch(fixture: &Fixture) -> (String, CaptureGrant, Peer) {
         .registry
         .request(Request::new(Operation::PaneSpawn {
             workspace_id: None,
+            window_id: None,
             expected_revision: None,
             spec: PaneSpawnSpec {
                 argv: vec![
@@ -173,6 +174,7 @@ fn first_and_after_last_pane_observe_real_foreground_cwd_without_manual_refresh(
             .registry
             .request(Request::new(Operation::PaneSpawn {
                 workspace_id: None,
+                window_id: None,
                 expected_revision: None,
                 spec: PaneSpawnSpec {
                     argv: vec![

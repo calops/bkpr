@@ -119,6 +119,18 @@ impl Daemon {
             thread::sleep(Duration::from_millis(10));
         }
     }
+    fn wait_for_exit(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                assert!(status.success(), "session-end daemon exit: {status}");
+                assert!(!self.socket.exists(), "session-end socket survived");
+                return;
+            }
+            assert!(Instant::now() < deadline, "session-end did not stop daemon");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 impl Drop for Daemon {
     fn drop(&mut self) {
@@ -155,16 +167,9 @@ fn wait_for(path: &Path, bytes: &[u8]) {
     }
 }
 fn historical(fixture: &Fixture, daemon: &Daemon) -> (String, String) {
-    let workspace = daemon.send(Operation::WorkspaceCreate {
-        name: "Main".into(),
-    })["workspace_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let pane = daemon.send(Operation::PaneSpawn {
-        workspace_id: Some(workspace.clone()),
-        expected_revision: Some(1),
-        spec: PaneSpawnSpec {
+    let created = daemon.send(Operation::WorkspaceCreate {
+        name: Some("Main".into()),
+        initial: Some(PaneSpawnSpec {
             argv: vec![
                 "/bin/sh".into(),
                 "-c".into(),
@@ -180,11 +185,10 @@ fn historical(fixture: &Fixture, daemon: &Daemon) -> (String, String) {
             },
             title: Some("old explicit command".into()),
             isolated_environment: true,
-        },
-    })["pane_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+        }),
+    });
+    let workspace = created["workspace_id"].as_str().unwrap().to_owned();
+    let pane = created["pane_id"].as_str().unwrap().to_owned();
     wait_for(&fixture.cwd.join("original-runs"), b"original");
     (workspace, pane)
 }
@@ -261,7 +265,8 @@ fn explicit_loaded_bootstrap_preserves_history_and_adds_uniquely_named_current_e
     let mut first = fixture.start(&[]);
     let (workspace, pane) = historical(&fixture, &first);
     first.send(Operation::WorkspaceCreate {
-        name: "Main 2".into(),
+        name: Some("Main 2".into()),
+        initial: None,
     });
     let before = first.snapshot();
     first.stop();
@@ -295,7 +300,7 @@ fn explicit_loaded_bootstrap_preserves_history_and_adds_uniquely_named_current_e
         .unwrap();
     assert_eq!(boot.name, "Main 3");
     assert_eq!(
-        boot.layout,
+        boot.windows[0].layout,
         Some(LayoutNode::Leaf {
             pane_id: live[0].id.clone()
         })
@@ -312,6 +317,14 @@ fn graceful_shutdown_preserves_exact_layout_intent_for_fresh_execution_reopen() 
     let fixture = Fixture::new();
     let mut first = fixture.start(&[]);
     let (workspace, old) = historical(&fixture, &first);
+    let initial = first.snapshot();
+    let window = initial
+        .workspaces
+        .iter()
+        .find(|w| w.id == workspace)
+        .unwrap()
+        .windows[0]
+        .clone();
     let spec = PaneSpawnSpec {
         argv: vec![
             "/bin/sh".into(),
@@ -331,7 +344,8 @@ fn graceful_shutdown_preserves_exact_layout_intent_for_fresh_execution_reopen() 
     };
     let other = first.send(Operation::PaneSpawn {
         workspace_id: Some(workspace.clone()),
-        expected_revision: Some(2),
+        window_id: Some(window.id.clone()),
+        expected_revision: Some(window.revision),
         spec: spec.clone(),
     })["pane_id"]
         .as_str()
@@ -350,22 +364,24 @@ fn graceful_shutdown_preserves_exact_layout_intent_for_fresh_execution_reopen() 
     };
     first.send(Operation::LayoutUpdate {
         workspace_id: workspace.clone(),
-        expected_revision: 3,
+        window_id: window.id.clone(),
+        expected_revision: window.revision + 1,
         layout: Some(historical_layout.clone()),
     });
-    let peer_workspace = first.send(Operation::WorkspaceCreate {
-        name: "shared historical projection".into(),
-    })["workspace_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    first.send(Operation::LayoutUpdate {
-        workspace_id: peer_workspace.clone(),
-        expected_revision: 1,
-        layout: Some(LayoutNode::Leaf {
-            pane_id: old.clone(),
-        }),
+    // A distinct owned window remains unchanged when reopening this window.
+    let second = first.send(Operation::WindowCreate {
+        workspace_id: workspace.clone(),
+        expected_revision: first
+            .snapshot()
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace)
+            .unwrap()
+            .revision,
+        name: Some("independent".into()),
+        spec: spec.clone(),
     });
+    let independent = second["window_id"].as_str().unwrap().to_owned();
     let before = first.snapshot();
     assert!(
         before
@@ -396,25 +412,35 @@ fn graceful_shutdown_preserves_exact_layout_intent_for_fresh_execution_reopen() 
         .unwrap()
         .ok
     );
-    let revision = stopped
+    let selected_workspace = stopped
         .workspaces
         .iter()
         .find(|w| w.id == workspace)
+        .unwrap();
+    let revision = selected_workspace
+        .windows
+        .iter()
+        .find(|w| w.id == window.id)
         .unwrap()
         .revision;
-    let historical_record =
-        serde_json::to_value(stopped.panes.iter().find(|p| p.id == old).unwrap()).unwrap();
+    let historical_exit_code = stopped
+        .panes
+        .iter()
+        .find(|p| p.id == old)
+        .unwrap()
+        .exit_code;
     let peer = serde_json::to_value(
-        stopped
-            .workspaces
+        selected_workspace
+            .windows
             .iter()
-            .find(|w| w.id == peer_workspace)
+            .find(|w| w.id == independent)
             .unwrap(),
     )
     .unwrap();
     fs::remove_file(fixture.cwd.join("reopened")).unwrap();
     let reopened: RegistryResult = serde_json::from_value(restored.send(Operation::PaneReopen {
         workspace_id: workspace.clone(),
+        window_id: window.id.clone(),
         expected_revision: revision,
         pane_id: old.clone(),
         spec,
@@ -430,9 +456,10 @@ fn graceful_shutdown_preserves_exact_layout_intent_for_fresh_execution_reopen() 
         .iter()
         .find(|w| w.id == workspace)
         .unwrap();
-    assert_eq!(selected.revision, revision + 1);
+    let selected_window = selected.windows.iter().find(|w| w.id == window.id).unwrap();
+    assert_eq!(selected_window.revision, revision + 1);
     assert_eq!(
-        selected.layout,
+        selected_window.layout,
         Some(LayoutNode::Split {
             axis: bkpr_protocol::Axis::Vertical,
             ratio: 317,
@@ -444,25 +471,25 @@ fn graceful_shutdown_preserves_exact_layout_intent_for_fresh_execution_reopen() 
             }),
         })
     );
-    assert_eq!(
-        serde_json::to_value(
-            reopened
-                .registry
-                .panes
-                .iter()
-                .find(|p| p.id == old)
-                .unwrap()
-        )
-        .unwrap(),
-        historical_record
-    );
+    let historical = reopened
+        .registry
+        .panes
+        .iter()
+        .find(|p| p.id == old)
+        .unwrap();
+    assert_eq!(historical.exit_code, historical_exit_code);
+    assert!(historical.workspace_id.is_none() && historical.window_id.is_none());
     assert_eq!(
         serde_json::to_value(
             reopened
                 .registry
                 .workspaces
                 .iter()
-                .find(|w| w.id == peer_workspace)
+                .find(|w| w.id == workspace)
+                .unwrap()
+                .windows
+                .iter()
+                .find(|w| w.id == independent)
                 .unwrap()
         )
         .unwrap(),
@@ -481,7 +508,7 @@ fn graceful_shutdown_preserves_exact_layout_intent_for_fresh_execution_reopen() 
     assert_eq!(live.len(), 1);
     assert_eq!(live[0].id, new);
 
-    // Explicit pane termination still closes only that execution's projections.
+    // Explicit termination removes only the selected window's owned position.
     restored.send(Operation::PaneTerminate { pane_id: new });
     let after_termination = restored.snapshot();
     assert_eq!(
@@ -489,6 +516,10 @@ fn graceful_shutdown_preserves_exact_layout_intent_for_fresh_execution_reopen() 
             .workspaces
             .iter()
             .find(|w| w.id == workspace)
+            .unwrap()
+            .windows
+            .iter()
+            .find(|w| w.id == window.id)
             .unwrap()
             .layout,
         Some(LayoutNode::Leaf { pane_id: other })
@@ -498,11 +529,196 @@ fn graceful_shutdown_preserves_exact_layout_intent_for_fresh_execution_reopen() 
             after_termination
                 .workspaces
                 .iter()
-                .find(|w| w.id == peer_workspace)
+                .find(|w| w.id == workspace)
+                .unwrap()
+                .windows
+                .iter()
+                .find(|w| w.id == independent)
                 .unwrap()
         )
         .unwrap(),
         peer
     );
     restored.stop();
+}
+
+fn sleeping_spec(fixture: &Fixture) -> PaneSpawnSpec {
+    PaneSpawnSpec {
+        argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
+        cwd: fixture.cwd.clone(),
+        home: fixture.home.clone(),
+        isolated_environment: true,
+        title: None,
+        size: Size {
+            cols: 80,
+            rows: 24,
+            cell_width: 8,
+            cell_height: 16,
+        },
+    }
+}
+
+#[test]
+fn passive_last_shell_exit_stops_daemon_without_inspect_or_wait_and_other_session_survives() {
+    let fixture = Fixture::new();
+    let other_fixture = Fixture::new();
+    let mut other = other_fixture.start(&[]);
+    let mut daemon = fixture.start(&[
+        "/bin/sh",
+        "-c",
+        "printf ready > ready; while test ! -f release; do sleep 0.02; done",
+    ]);
+    wait_for(&fixture.cwd.join("ready"), b"ready");
+    // No control requests after releasing the last shell.
+    fs::write(fixture.cwd.join("release"), b"exit").unwrap();
+    daemon.wait_for_exit();
+    assert!(other.child.try_wait().unwrap().is_none());
+    assert!(other.snapshot().workspaces.is_empty());
+    // The socket and metadata lease are both reusable after normal return.
+    let mut restarted = fixture.start(&[]);
+    restarted.stop();
+    other.stop();
+}
+
+#[test]
+fn last_explicit_workspace_close_notifies_lifetime_and_reaps_standalone_without_ack() {
+    let fixture = Fixture::new();
+    let mut daemon = fixture.start(&["/bin/sh", "-c", "exec sleep 60"]);
+    let snapshot = daemon.snapshot();
+    let identity = daemon.send(Operation::SessionInfo);
+    let mut lifetime = UnixStream::connect(&fixture.socket).unwrap();
+    lifetime
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    serde_json::to_writer(
+        &mut lifetime,
+        &Request::new(Operation::ClientRegister {
+            session_id: identity["session"]["session_id"].as_str().unwrap().into(),
+            daemon_id: identity["session"]["daemon_id"].as_str().unwrap().into(),
+        }),
+    )
+    .unwrap();
+    lifetime.write_all(b"\n").unwrap();
+    let mut lifetime = BufReader::new(lifetime);
+    let mut line = String::new();
+    lifetime.read_line(&mut line).unwrap();
+    let registered: Response = serde_json::from_str(&line).unwrap();
+    assert!(registered.ok, "{:?}", registered.error);
+    let standalone = daemon.send(Operation::PaneSpawn {
+        workspace_id: None,
+        window_id: None,
+        expected_revision: None,
+        spec: sleeping_spec(&fixture),
+    });
+    let standalone_scene = daemon.send(Operation::Pane {
+        pane_id: standalone["pane_id"].as_str().unwrap().into(),
+        request: PaneRequest::Inspect,
+    });
+    let workspace = &snapshot.workspaces[0];
+    let closed = request(
+        &fixture.socket,
+        Operation::WorkspaceClose {
+            workspace_id: workspace.id.clone(),
+            expected_revision: workspace.revision,
+        },
+    )
+    .unwrap();
+    assert!(closed.ok, "{:?}", closed.error);
+    // Keep the lifetime open and send no acknowledgement. Shutdown cannot wait
+    // for client participation, or for this reader to drain its event.
+    daemon.wait_for_exit();
+    line.clear();
+    lifetime.read_line(&mut line).unwrap();
+    let event: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(event["event"], "client_detached");
+    assert_eq!(event["reason"], "shutdown");
+    #[cfg(target_os = "linux")]
+    assert!(
+        !Path::new("/proc")
+            .join(standalone_scene["pid"].as_i64().unwrap().to_string())
+            .exists()
+    );
+    #[cfg(not(target_os = "linux"))]
+    let _ = standalone_scene;
+}
+
+#[test]
+fn administrative_documents_detach_and_layout_removal_do_not_end_session() {
+    let fixture = Fixture::new();
+    let mut daemon = fixture.start(&[]);
+    daemon.send(Operation::WorkspaceCreate {
+        name: Some("admin".into()),
+        initial: None,
+    });
+    let created = daemon.send(Operation::WorkspaceCreate {
+        name: None,
+        initial: Some(sleeping_spec(&fixture)),
+    });
+    let snapshot = daemon.snapshot();
+    let workspace = snapshot
+        .workspaces
+        .iter()
+        .find(|w| w.id == created["workspace_id"].as_str().unwrap())
+        .unwrap();
+    let window = &workspace.windows[0];
+    daemon.send(Operation::LayoutUpdate {
+        workspace_id: workspace.id.clone(),
+        window_id: window.id.clone(),
+        expected_revision: window.revision,
+        layout: None,
+    });
+    // Register a real process-bound lifetime, then detach it. The execution
+    // belongs to its workspace, not to the lifetime of this connection.
+    let identity = daemon.send(Operation::SessionInfo);
+    let mut lifetime = UnixStream::connect(&fixture.socket).unwrap();
+    lifetime
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    serde_json::to_writer(
+        &mut lifetime,
+        &Request::new(Operation::ClientRegister {
+            session_id: identity["session"]["session_id"].as_str().unwrap().into(),
+            daemon_id: identity["session"]["daemon_id"].as_str().unwrap().into(),
+        }),
+    )
+    .unwrap();
+    lifetime.write_all(b"\n").unwrap();
+    let mut lifetime = BufReader::new(lifetime);
+    let mut line = String::new();
+    lifetime.read_line(&mut line).unwrap();
+    assert!(serde_json::from_str::<Response>(&line).unwrap().ok);
+    drop(lifetime);
+    let after = daemon.snapshot();
+    assert_eq!(after.workspaces.len(), 2);
+    assert_eq!(
+        after
+            .panes
+            .iter()
+            .filter(|p| p.status == PaneStatus::Running)
+            .count(),
+        1
+    );
+    assert!(daemon.child.try_wait().unwrap().is_none());
+    daemon.stop();
+}
+
+#[test]
+fn last_pane_termination_ends_session_even_when_requester_disconnects_before_response() {
+    let fixture = Fixture::new();
+    let mut daemon = fixture.start(&["/bin/sh", "-c", "exec sleep 60"]);
+    let snapshot = daemon.snapshot();
+    let mut stream = UnixStream::connect(&fixture.socket).unwrap();
+    serde_json::to_writer(
+        &mut stream,
+        &Request::new(Operation::PaneTerminate {
+            pane_id: snapshot.panes[0].id.clone(),
+        }),
+    )
+    .unwrap();
+    stream.write_all(b"\n").unwrap();
+    // No response read and no lifetime acknowledgement can gate session teardown.
+    drop(stream);
+    daemon.wait_for_exit();
+    let mut restarted = fixture.start(&[]);
+    restarted.stop();
 }
