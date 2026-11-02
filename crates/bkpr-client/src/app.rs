@@ -25,6 +25,8 @@ mod management;
 mod resizing;
 #[path = "scrollback.rs"]
 mod scrollback;
+#[path = "search.rs"]
+mod search;
 #[path = "selection.rs"]
 mod selection;
 
@@ -267,6 +269,7 @@ struct App<'a> {
     pressed_pointers: RefCell<Vec<PressedPointer>>,
     terminal_selection: selection::State,
     resizing: resizing::State,
+    search: search::State,
     notified_focus: Option<(String, String)>,
     focus_out_pending: HashSet<(String, String)>,
     lease_pending: HashSet<String>,
@@ -276,6 +279,7 @@ impl App<'_> {
     fn focus(&mut self, pane: String) {
         if self.state.focused.as_ref() != Some(&pane) {
             self.retire_resize("pane focus changed");
+            self.close_search();
         }
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
         self.state.focus(pane);
@@ -284,6 +288,7 @@ impl App<'_> {
     fn switch(&mut self, workspace: String) {
         if self.state.workspace.as_ref() != Some(&workspace) {
             self.retire_resize("workspace focus changed");
+            self.close_search();
         }
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
         self.state.switch(workspace, &self.registry);
@@ -1165,6 +1170,7 @@ impl App<'_> {
     fn notify_focus(&mut self) -> Result<()> {
         let focused = if self.host_focused
             && self.state.form.is_none()
+            && !self.search_open()
             && !self
                 .consent
                 .as_ref()
@@ -1839,7 +1845,8 @@ impl App<'_> {
         let local = self.state.prefix
             || self.state.form.is_some()
             || self.focused_history()
-            || self.resize_capturing();
+            || self.resize_capturing()
+            || self.search_open();
         match self.key(event, out, size, rects) {
             Err(error) if error.downcast_ref::<updates::InputRejected>().is_some() => {
                 self.scope_input_result(Err(error))?;
@@ -1860,14 +1867,18 @@ impl App<'_> {
         rects: &[(String, Rect)],
     ) -> Result<bool> {
         match event.action {
-            KeyAction::Release if self.state.suppressed.remove(&event.key) => return Ok(false),
+            KeyAction::Release if self.state.suppressed.remove(&event.key) => {
+                self.search_release(&event.key);
+                return Ok(false);
+            }
             KeyAction::Repeat
                 if self.state.suppressed.contains(&event.key)
                     && !(self.resize_capturing()
                         && matches!(
                             event.key.as_str(),
                             "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown"
-                        )) =>
+                        ))
+                    && !self.search_repeat(&event.key) =>
             {
                 return Ok(false);
             }
@@ -1877,6 +1888,7 @@ impl App<'_> {
             _ => {}
         }
         if event.action == KeyAction::Release {
+            self.search_release(&event.key);
             if let Some((pane, view)) = self.held.remove(&event.key)
                 && !self.execution_completed(&pane)
                 && self
@@ -2034,11 +2046,21 @@ impl App<'_> {
             }
             return Ok(false);
         }
+        if self.search_open()
+            && !self.state.prefix
+            && !(event.action == KeyAction::Press
+                && event.key == "KeyB"
+                && event.modifiers & 2 != 0)
+            && self.search_key(&event)
+        {
+            return Ok(false);
+        }
         if event.action == KeyAction::Press && event.key == "KeyB" && event.modifiers & 2 != 0 {
             self.state.suppressed.insert(event.key);
             if self.state.prefix {
                 self.state.prefix = false;
                 if !self.options.read_only
+                    && !self.search_open()
                     && !self.focused_history()
                     && let Some((pane, view)) = self.active()
                 {
@@ -2077,8 +2099,12 @@ impl App<'_> {
             self.state.prefix = false;
             self.state.suppressed.insert(event.key.clone());
             self.state.status.clear();
+            if !matches!(event.text.as_str(), "/" | "y") {
+                self.close_search();
+            }
             match (event.text.as_str(), event.key.as_str()) {
                 ("d", _) => return Ok(true),
+                ("/", _) => self.begin_search()?,
                 ("s", _) => self.enter_history(rects)?,
                 ("e", _) => self.begin_keyboard_resize(size)?,
                 ("y", _) => self.copy_focused_selection()?,
@@ -2154,6 +2180,7 @@ impl App<'_> {
             if self.state.form.is_some() {
                 self.retire_resize("modal opened");
                 self.selection_focus_lost();
+                self.close_search();
             }
             return Ok(false);
         }
@@ -2311,7 +2338,7 @@ impl App<'_> {
         if origin.is_none()
             && hits
                 .hit_test(mouse.x, mouse.y)
-                .is_none_or(|id| id == "ui:modal")
+                .is_none_or(|id| id == "ui:modal" || id == "ui:search")
         {
             return Ok(());
         }
@@ -2366,6 +2393,7 @@ impl App<'_> {
         let shifted = mouse.modifiers.contains(Modifiers::SHIFT);
         if vertical
             && (shifted
+                || self.search_open() && !frame.alternate_screen
                 || attached.metadata.capabilities.native_mouse_reporting
                     && !frame.mouse_reporting
                     && !frame.alternate_screen)
@@ -2383,6 +2411,7 @@ impl App<'_> {
             && action == MouseAction::Press
             && (shifted
                 || self.history(pane).is_some()
+                || self.search_open()
                 || attached.metadata.capabilities.native_mouse_reporting && !frame.mouse_reporting)
         {
             let origin = Arc::new(PointerOrigin {
@@ -2394,6 +2423,7 @@ impl App<'_> {
         // Historical cells cannot start a new application gesture. Complete
         // accepted releases and preserve application-owned wheel reporting.
         if self.options.read_only
+            || (self.search_open() && !(origin.is_some() && action == MouseAction::Release))
             || (!wheel
                 && self.history(pane).is_some()
                 && !(origin.is_some() && action == MouseAction::Release))
@@ -2524,6 +2554,7 @@ impl App<'_> {
             if !self.host_focused {
                 self.retire_resize("terminal focus lost");
                 self.selection_focus_lost();
+                self.close_search();
             }
             if self.host_focused
                 && let Some((pane, _)) = self.active()
@@ -2536,6 +2567,7 @@ impl App<'_> {
         self.colors.feed(response);
         if self.consent.is_none()
             && self.state.form.is_none()
+            && (!self.search_open() || self.paste_offer.is_some())
             && (!self.resize_capturing() || self.paste_offer.is_some())
             && !self.options.read_only
             && self.options.clipboard_policy != "deny"
@@ -2698,6 +2730,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         pressed_pointers: RefCell::new(Vec::new()),
         terminal_selection: selection::State::default(),
         resizing: resizing::State::default(),
+        search: search::State::default(),
         notified_focus: None,
         focus_out_pending: HashSet::new(),
         lease_pending: HashSet::new(),
@@ -2714,6 +2747,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         let initial_size = dimensions()?;
         let mut chrome_surface = UiSurface::new(initial_size);
         let mut popup_surface = UiSurface::new(initial_size);
+        let mut search_surface = UiSurface::new(initial_size);
         let mut placeholders = HashMap::<String, Frame>::new();
         let (resize_read, resize_write) = std::os::unix::net::UnixStream::pair()?;
         resize_read.set_nonblocking(true)?;
@@ -2752,6 +2786,8 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             let rects = app.rects(size);
             app.sync_views(size, &rects)?;
             app.poll_views();
+            let search = app.flush_search();
+            app.scope_input_result(search)?;
             let tick = app.selection_tick();
             app.scope_input_result(tick)?;
             app.selection_clipboard(&mut out)?;
@@ -2880,6 +2916,8 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 false
             };
             native_colors(&mut popup_surface.frame, &app.colors);
+            let searching = app.search_overlay(&mut search_surface, size);
+            native_colors(&mut search_surface.frame, &app.colors);
             let mut surfaces = vec![Surface {
                 id: "ui:chrome",
                 rect: Rect {
@@ -2890,6 +2928,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 },
                 frame: &chrome_surface.frame,
                 selection: &[],
+                search: &[],
                 focused: false,
             }];
             for (id, rect) in &rects {
@@ -2908,7 +2947,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                         rect,
                         frame,
                         selection: app.selection_spans(id),
+                        search: app.search_spans(id),
                         focused: !popup
+                            && !searching
                             && app.state.focused.as_ref() == Some(id)
                             && app.input_enabled(id)
                             && app.history(id).is_none()
@@ -2931,6 +2972,22 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     },
                     frame: &popup_surface.frame,
                     selection: &[],
+                    search: &[],
+                    focused: true,
+                });
+            }
+            if searching && !popup {
+                surfaces.push(Surface {
+                    id: "ui:search",
+                    rect: Rect {
+                        x: 0,
+                        y: size.rows.saturating_sub(1),
+                        width: size.cols,
+                        height: 1,
+                    },
+                    frame: &search_surface.frame,
+                    selection: &[],
+                    search: &[],
                     focused: true,
                 });
             }
@@ -3275,6 +3332,7 @@ mod tests {
                 pressed_pointers: RefCell::new(Vec::new()),
                 terminal_selection: selection::State::default(),
                 resizing: resizing::State::default(),
+                search: search::State::default(),
                 notified_focus: None,
                 focus_out_pending: HashSet::new(),
                 lease_pending: HashSet::new(),
@@ -3726,6 +3784,7 @@ mod tests {
             views: Vec::new(),
             clipboard: None,
             selection: None,
+            search: None,
             clipboard_pending: false,
             capabilities: PaneCapabilities {
                 sixel: false,
@@ -3927,6 +3986,7 @@ mod tests {
                 },
                 frame: &surface.frame,
                 selection: &[],
+                search: &[],
                 focused: false,
             }],
         };
@@ -3990,6 +4050,7 @@ mod tests {
                 },
                 frame: &frame,
                 selection: &[],
+                search: &[],
                 focused: false,
             }];
             for (pane, rect) in &rects {
@@ -3998,6 +4059,7 @@ mod tests {
                     rect: content(*rect),
                     frame: &frame,
                     selection: &[],
+                    search: &[],
                     focused: false,
                 });
             }
@@ -5910,4 +5972,5 @@ mod tests {
         assert!(capture.try_recv().is_err());
         assert!(app.held.is_empty());
     }
+    include!("search_tests.rs");
 }

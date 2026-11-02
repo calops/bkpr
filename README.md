@@ -298,6 +298,7 @@ Press `Ctrl-b`, then a command:
 | `i` | Inspect focused pane's local project/Git snapshot (arrows scroll) |
 | `s` | Enter focused pane's scrollback and page upward |
 | `y` | Copy the focused view's terminal selection to the host clipboard |
+| `/` | Search the focused pane's terminal contents and retained history |
 | `[` / `]` | Previous / next workspace |
 | Arrows / Tab | Focus direction / next pane |
 | `x` | Remove a layout leaf; keep its process running |
@@ -440,7 +441,7 @@ retiring a projection or switching workspaces retires its view, so a later
 attachment starts live. The engine is configured for 10,000 lines and 16 MiB of
 native in-memory scrollback; page-granular retention can discard older rows
 together. Navigation clamps to the oldest retained row. This is not a saved
-session or disk-backed transcript. Terminal search remains separate work.
+session or disk-backed transcript.
 
 ### Selection and copy
 
@@ -476,6 +477,36 @@ follow native tracked endpoints. Screen changes, discarded endpoints,
 hidden/retired views and pane completion invalidate the selection. A sizing
 lease update alone does not. Delayed copy results after a new gesture, focus
 change or retirement are discarded instead of writing stale text.
+
+### Terminal search
+
+Press `Ctrl-b /` to open the focused view's search field. Type or paste a literal
+query; Backspace edits and Ctrl-u clears it. Enter selects the next older match;
+Shift-Enter selects the next newer match, with wrapping. Counts run newest to
+oldest and show incomplete progress while the native search is still running.
+Matching is ASCII-case-insensitive and otherwise byte-exact, not regex or full
+Unicode case folding. Queries over 4096 UTF-8 bytes are rejected without truncation.
+Counts belong to the active primary or alternate screen; native primary-screen
+results resume when the application returns to it.
+
+Esc clears search and closes its field without sending Escape to the application.
+If the view is still in history, End returns live before ordinary typing resumes.
+Read-only clients can search. Pane/workspace focus changes, another form or view
+retirement close the editor and discard stale query results; another client's
+search and viewport remain independent.
+
+Matches are underlined; the chosen match is also bold/inverted. Ordinary terminal
+selection takes precedence and remains the target of `Ctrl-b y`. Output and
+reflow update native matches. If native invalidation loses the chosen match,
+search selects the actual newest available match rather than keeping a fake index.
+An anchored view can still show new writes in visible live rows; it is not a frozen
+screen capture.
+
+Search uses bounded native work on the pane worker and publishes view annotations,
+not copies of full terminal history. Completed idle searches add no progress timer.
+The native library retains result endpoints for all matches: dense queries across
+many views can consume substantial memory. Exact matches/counts aren't silently
+capped; resource optimization remains tracked in `TODO.md`.
 
 ### Requests and explicit shutdown
 

@@ -36,6 +36,8 @@ pub struct PaneSnapshot {
     /// View-local metadata, independent of canonical scene revisions and resources.
     #[serde(default)]
     pub selection: Option<SelectionSnapshot>,
+    #[serde(default)]
+    pub search: Option<SearchSnapshot>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Event {
@@ -116,4 +118,25 @@ pub struct SelectionSpan {
     pub start: u16,
     /// Exclusive endpoint, bounded by the visible terminal columns.
     pub end: u16,
+}
+
+/// Native literal matching is byte-exact except ASCII case-insensitivity.
+/// Counts cover the active screen and are provisional while running.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchSnapshot {
+    pub query: String,
+    pub generation: u64,
+    pub running: bool,
+    pub total_matches: u64,
+    /// Zero-based, newest-to-oldest native ordering.
+    pub selected_index: Option<u64>,
+    pub spans: Vec<SearchSpan>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchSpan {
+    pub row: u16,
+    pub start: u16,
+    pub end: u16,
+    pub selected: bool,
 }

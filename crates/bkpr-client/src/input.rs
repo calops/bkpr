@@ -1,6 +1,6 @@
 use crate::transport;
 use anyhow::{Context, Result, bail};
-use bkpr_protocol::{MAX_INPUT_BYTES, Operation, PaneRequest};
+use bkpr_protocol::{MAX_INPUT_BYTES, Operation, PaneRequest, SearchAction};
 use std::{
     collections::HashMap,
     io::{Read, Write},
@@ -53,6 +53,13 @@ pub(crate) fn cleanup(request: &PaneRequest) -> bool {
             if event.action == bkpr_protocol::MouseAction::Release)
         || matches!(request, PaneRequest::Select { event, .. }
             if matches!(event.action, bkpr_protocol::SelectionAction::Release | bkpr_protocol::SelectionAction::Clear))
+        || matches!(
+            request,
+            PaneRequest::Search {
+                action: SearchAction::Clear,
+                ..
+            }
+        )
 }
 pub(crate) type ResponseReceipt = mpsc::Receiver<Result<serde_json::Value, String>>;
 pub(crate) type Receipt = mpsc::Receiver<Result<(), String>>;
@@ -128,6 +135,7 @@ fn payload_bytes(pane: &str, request: &PaneRequest) -> usize {
         | PaneRequest::PasteContents { view_id, .. }
         | PaneRequest::Key { view_id, .. }
         | PaneRequest::Select { view_id, .. }
+        | PaneRequest::Search { view_id, .. }
         | PaneRequest::CopySelection { view_id }
         | PaneRequest::Mouse { view_id, .. }
         | PaneRequest::Focus { view_id, .. }
@@ -147,6 +155,10 @@ fn payload_bytes(pane: &str, request: &PaneRequest) -> usize {
         PaneRequest::Input { data, .. } | PaneRequest::Paste { data, .. } => data.len(),
         PaneRequest::PasteContents { contents: data, .. } => contents(data),
         PaneRequest::Key { event, .. } => event.key.len() + event.text.len(),
+        PaneRequest::Search {
+            action: SearchAction::Query { text },
+            ..
+        } => text.len(),
         PaneRequest::Clipboard {
             request_id,
             response,
@@ -200,6 +212,7 @@ impl InputFailure {
             PaneRequest::PasteContents { view_id, .. } => ("paste_contents", Some(view_id)),
             PaneRequest::Key { view_id, .. } => ("key", Some(view_id)),
             PaneRequest::Select { view_id, .. } => ("select", Some(view_id)),
+            PaneRequest::Search { view_id, .. } => ("search", Some(view_id)),
             PaneRequest::CopySelection { view_id } => ("copy_selection", Some(view_id)),
             PaneRequest::Mouse { view_id, .. } => ("mouse", Some(view_id)),
             PaneRequest::Focus { view_id, .. } => ("focus", Some(view_id)),
@@ -421,14 +434,15 @@ impl InputPump {
                     let colors = matches!(&operation, Operation::Pane { request: PaneRequest::Colors { .. }, .. });
                     let copy = matches!(&operation, Operation::Pane { request: PaneRequest::CopySelection { .. }, .. });
                     let select = matches!(&operation, Operation::Pane { request: PaneRequest::Select { .. }, .. });
+                    let search = matches!(&operation, Operation::Pane { request: PaneRequest::Search { .. }, .. });
                     let mut context = InputFailure::context(&operation);
                     let result = transport::checked(&socket, operation);
                     if let Err(error) = &result {
                         let expected_owner_rejection = colors && !transport::outcome_unknown(error)
                             && error.root_cause().to_string() == "only current size owner may seed terminal colors";
-                        let expected_inspection_rejection = (copy || select) && !transport::outcome_unknown(error);
+                        let expected_inspection_rejection = (copy || select || search) && !transport::outcome_unknown(error);
                         if expected_inspection_rejection {
-                            if select {
+                            if select || search {
                                 context.error = format!("{error:#}");
                                 *noticed.lock().unwrap() = Some(context);
                                 notify(&wake);

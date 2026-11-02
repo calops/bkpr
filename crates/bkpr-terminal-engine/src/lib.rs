@@ -5,6 +5,7 @@ mod callbacks;
 mod input;
 mod offers;
 mod render;
+mod search;
 mod selection;
 mod status;
 use bkpr_protocol::*;
@@ -74,6 +75,7 @@ pub struct Terminal {
     last_offer_id: u64,
     history: HashMap<String, sdk::screen::TrackedGridRef>,
     selections: selection::Selections,
+    searches: search::Searches,
 }
 impl Terminal {
     pub fn new(size: Size) -> Result<Self> {
@@ -115,6 +117,7 @@ impl Terminal {
             last_offer_id: 0,
             history: HashMap::new(),
             selections: selection::Selections::new()?,
+            searches: search::Searches::default(),
         };
         this.resize(size)?;
         Ok(this)
@@ -157,6 +160,7 @@ impl Terminal {
         }
         self.size = size;
         self.selections.reconcile(&self.native)?;
+        self.searches.invalidate();
         Ok(())
     }
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Effect>> {
@@ -165,6 +169,7 @@ impl Terminal {
         }
         self.native.vt_write(bytes);
         self.selections.reconcile(&self.native)?;
+        self.searches.invalidate();
         // Alternate screens have no primary-screen history projection. Do not
         // resurrect a stale inspection position when the application returns.
         if self.native.active_screen()? == sdk::screen::Screen::Alternate {
@@ -317,5 +322,6 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         self.clear_view_selections();
+        self.searches.retain(|_| None);
     }
 }
