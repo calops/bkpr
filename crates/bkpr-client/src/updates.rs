@@ -1,10 +1,9 @@
-use crate::transport;
+use crate::transport::Endpoint;
 use anyhow::{Context, Result, bail};
 use bkpr_protocol::*;
 use std::{
     io::{Read, Write},
     os::unix::net::UnixStream,
-    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -92,15 +91,14 @@ impl<T> Drop for Pump<T> {
         drop(self.worker.take());
     }
 }
-pub fn pane(socket: &Path, pane_id: &str, view: &str) -> Result<Pump<Snapshot>> {
+pub fn pane(socket: &Endpoint, pane_id: &str, view: &str) -> Result<Pump<Snapshot>> {
     let socket = socket.to_owned();
     let pane_id = pane_id.to_owned();
     let view_id = view.to_owned();
     let (mut frame_after, mut snapshot_after, mut resources) = (0, 0, Vec::new());
     Pump::start(move || {
-        let mut metadata: PaneSnapshot = serde_json::from_value(transport::checked(
-            &socket,
-            Operation::Pane {
+        let mut metadata: PaneSnapshot =
+            serde_json::from_value(socket.checked(Operation::Pane {
                 pane_id: pane_id.clone(),
                 request: PaneRequest::Poll {
                     view_id: view_id.clone(),
@@ -112,8 +110,7 @@ pub fn pane(socket: &Path, pane_id: &str, view: &str) -> Result<Pump<Snapshot>> 
                     row_deltas: true,
                     scene_encoding: Some("compact_v1".into()),
                 },
-            },
-        )?)?;
+            })?)?;
         let scene = metadata.scene.take().map(scene_wire::decode).transpose()?;
         snapshot_after = metadata.snapshot_revision;
         frame_after = metadata.revision;
@@ -123,17 +120,14 @@ pub fn pane(socket: &Path, pane_id: &str, view: &str) -> Result<Pump<Snapshot>> 
         Ok(Snapshot { metadata, scene })
     })
 }
-pub fn registry(socket: &Path, after: u64) -> Result<Pump<RegistrySnapshot>> {
+pub fn registry(socket: &Endpoint, after: u64) -> Result<Pump<RegistrySnapshot>> {
     let socket = socket.to_owned();
     let mut after = after;
     Pump::start(move || {
-        let value: RegistryResult = serde_json::from_value(transport::checked(
-            &socket,
-            Operation::Wait {
-                after,
-                wait_ms: 1000,
-            },
-        )?)?;
+        let value: RegistryResult = serde_json::from_value(socket.checked(Operation::Wait {
+            after,
+            wait_ms: 1000,
+        })?)?;
         after = value.registry.revision;
         Ok(value.registry)
     })

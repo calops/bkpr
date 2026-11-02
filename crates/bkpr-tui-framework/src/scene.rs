@@ -211,6 +211,7 @@ impl TerminalGuard {
             ),
             kitty_keyboard: false,
             clipboard_mode: None,
+            requested_clipboard_mode: None,
         };
         let mut out = std::io::stdout();
         write!(
@@ -732,6 +733,7 @@ mod scene_tests {
             graphics: GraphicsState::new(1000),
             kitty_keyboard: false,
             clipboard_mode: None,
+            requested_clipboard_mode: None,
         })
     }
     #[test]

@@ -8,6 +8,9 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(name = "bkprd", version)]
 struct Cli {
+    /// Exact logical session name, independent of paths and this daemon's birth.
+    #[arg(short = 's', long, default_value = bkpr_protocol::DEFAULT_SESSION_NAME)]
+    session: String,
     /// Explicit private Unix socket. A live listener is never replaced.
     #[arg(long)]
     socket: PathBuf,
@@ -45,7 +48,7 @@ fn main() {
 }
 fn run(cli: Cli) -> Result<()> {
     ensure!(cli.socket.is_absolute(), "socket must be absolute");
-    let registry = Registry::open(&cli.state_root)?;
+    let registry = Registry::open_named(&cli.state_root, &cli.session)?;
     let result = (|| -> Result<()> {
         let listener = transport::bind(&cli.socket)?;
         let executable = match cli.bkpr {

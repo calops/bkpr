@@ -4,6 +4,7 @@ use crate::{Pane, SpawnSpec};
 mod agents;
 mod capture;
 mod project;
+pub(crate) mod sessions;
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::*;
 use fs2::FileExt;
@@ -86,6 +87,8 @@ struct State {
 }
 struct Inner {
     root: PathBuf,
+    session: SessionInfo,
+    clients: Mutex<BTreeMap<String, Arc<sessions::ClientLease>>>,
     state: Mutex<State>,
     // Serialize durable writers, never pane I/O. Lock order: transaction, then state.
     transaction: Mutex<()>,
@@ -260,6 +263,10 @@ impl Drop for Registry {
 
 impl Registry {
     pub fn open(root: &Path) -> Result<Self> {
+        Self::open_named(root, DEFAULT_SESSION_NAME)
+    }
+    pub fn open_named(root: &Path, name: &str) -> Result<Self> {
+        valid_session_name(name)?;
         ensure!(root.is_absolute(), "state root must be absolute");
         private_directory(root)?;
         let lease = OpenOptions::new()
@@ -275,6 +282,7 @@ impl Registry {
             .try_lock_exclusive()
             .context("state root already owned by another daemon")?;
         let lease = Lease(lease);
+        let session = sessions::open_session(root, name)?;
         let stored = read_record(root)?;
         let fresh = stored.is_none();
         let mut record = stored.unwrap_or(Record {
@@ -318,6 +326,8 @@ impl Registry {
         let registry = Self {
             inner: Arc::new(Inner {
                 root: root.to_owned(),
+                session,
+                clients: Mutex::new(BTreeMap::new()),
                 state: Mutex::new(State {
                     record,
                     live: BTreeMap::new(),
@@ -394,11 +404,28 @@ impl Registry {
         commit(&self.inner, next, |_| {})
     }
     pub fn request(&self, request: Request) -> Result<Value> {
+        self.request_for_client(request, None)
+    }
+    fn request_for_client(
+        &self,
+        request: Request,
+        client: Option<Arc<sessions::ClientLease>>,
+    ) -> Result<Value> {
         ensure!(
             request.version == PROTOCOL_VERSION,
             "unsupported protocol version"
         );
+        if let Some(client) = &client {
+            client.ensure_active()?;
+        }
         match request.operation {
+            Operation::SessionInfo => Ok(json!({"session":self.inner.session})),
+            Operation::ClientRegister { .. }
+            | Operation::Client { .. }
+            | Operation::ClientActivate { .. }
+            | Operation::ClientDetach => {
+                bail!("client operations require authenticated attachment transport")
+            }
             Operation::Inspect => Ok(json!({"registry":self.snapshot()?})),
             Operation::HarnessBegin { .. }
             | Operation::HarnessEvent { .. }
@@ -557,7 +584,18 @@ impl Registry {
                         .context("pane is stopped; terminal contents were not recovered")?
                 };
                 let terminating = matches!(request, PaneRequest::Terminate { .. });
-                let result = pane.request(request)?;
+                let inspection = matches!(
+                    request,
+                    PaneRequest::Inspect
+                        | PaneRequest::Poll { .. }
+                        | PaneRequest::Select { .. }
+                        | PaneRequest::CopySelection { .. }
+                        | PaneRequest::Search { .. }
+                );
+                let result = pane.request_for_client(request, client.clone())?;
+                if inspection && let Some(client) = &client {
+                    client.ensure_active()?;
+                }
                 if terminating {
                     self.record_completion(&pane_id)?;
                 }
@@ -688,6 +726,10 @@ impl Registry {
             self.inner.view_budget.clone(),
             environment,
             Some(self.inner.status_wake.clone()),
+            Some((
+                self.inner.session.session_id.clone(),
+                self.inner.session.name.clone(),
+            )),
         );
         let pane = spawned?;
         let result = (|| -> Result<RegistrySnapshot> {
@@ -919,6 +961,7 @@ impl Registry {
             self.inner.changed.notify_all();
             state.live.values().cloned().collect::<Vec<_>>()
         };
+        self.detach_all_clients("shutdown");
         let agent_shutdown = self.inner.agents.shutdown();
         self.stop_projects();
         let mut first_error = agent_shutdown.err();

@@ -19,6 +19,22 @@ impl Request {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Operation {
+    SessionInfo,
+    /// Upgrade this connection to a dedicated attachment lifetime stream.
+    ClientRegister {
+        session_id: String,
+        daemon_id: String,
+    },
+    /// Authenticate an exact attachment, never inferred from the caller PID.
+    Client {
+        authority: crate::ClientAuthority,
+        request: Box<Operation>,
+    },
+    /// One-shot readiness; repeated activation never repeats takeover.
+    ClientActivate {
+        detach_others: bool,
+    },
+    ClientDetach,
     Inspect,
     HarnessBegin {
         kind: HarnessKind,
@@ -91,9 +107,22 @@ pub enum Operation {
 impl std::fmt::Debug for Operation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut value = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
-        if let Some(token) = value.get_mut("token") {
-            *token = serde_json::Value::String("[REDACTED]".into());
+        fn redact(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    for (key, value) in fields {
+                        if key == "token" {
+                            *value = serde_json::Value::String("[REDACTED]".into());
+                        } else {
+                            redact(value);
+                        }
+                    }
+                }
+                serde_json::Value::Array(values) => values.iter_mut().for_each(redact),
+                _ => {}
+            }
         }
+        redact(&mut value);
         std::fmt::Debug::fmt(&value, f)
     }
 }

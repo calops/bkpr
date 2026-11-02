@@ -82,17 +82,36 @@ system Ghostty installation is not a substitute.
 
 ## Native CLI
 
-After building both executables, run `bkpr` to connect to or start the local
-`bkprd` and open the terminal client:
+After building both executables, bare `bkpr` connects to or starts the local
+named session `bkpr` and opens its terminal client. Each name owns one `bkprd`
+and an independent persisted workspace/layout registry:
 
 ```sh
 "$CARGO_TARGET_DIR/debug/bkpr"
+"$CARGO_TARGET_DIR/debug/bkpr" --session work
+"$CARGO_TARGET_DIR/debug/bkpr" -s work -d
+"$CARGO_TARGET_DIR/debug/bkpr" list
+"$CARGO_TARGET_DIR/debug/bkpr" stop -s work
 ```
 
 Normal launches preserve your HOME, shell profiles and environment, using the
 invocation directory. Closing the client leaves the daemon and panes running.
-`bkpr context` and `bkpr request` are headless and do not start a daemon. Inside a
-managed pane they default to its `BKPR_SOCKET`; an explicit `--socket` overrides it.
+`-s` / `--session` selects an exact name; Unicode, spaces and slashes are
+supported without treating names as filesystem paths. `-d` / `--detach-others`
+revokes the selected session's other client attachments once, after the new
+client is initialized. It does not close panes, terminate programs or change
+layouts. Later normal attachments are not detached again.
+
+`list` discovers running/stopped stored sessions without creating state or
+starting a daemon. `stop` terminates only the selected session and its programs;
+without `-s` it targets `bkpr`. Restart preserves the logical session identity
+and layout records, but gets a new daemon identity and never replays old argv.
+
+`bkpr context`, `bkpr request` and `bkpr keyboard` are headless and never start a
+daemon. Inside a managed pane they default to its `BKPR_SOCKET`; explicit `-s`
+overrides inherited routing. Normal TUI and `stop` commands default to `bkpr`,
+not an inherited pane socket. Explicit `--socket` selects a fixture endpoint;
+TUI attachment also requires its matching `--state-root`.
 
 Starting a new daemon with `bkpr` supplies the current client's configured shell.
 If loaded metadata has no running execution, it creates a fresh workspace named
@@ -122,7 +141,8 @@ This prints readiness and remains in the foreground; that is the daemon, not a
 hung TUI. In another terminal, set `BKPR_RUN` to the printed directory:
 
 ```sh
-"$CARGO_TARGET_DIR/debug/bkpr" tui --socket "$BKPR_RUN/control.sock"
+"$CARGO_TARGET_DIR/debug/bkpr" tui \
+  --socket "$BKPR_RUN/control.sock" --state-root "$BKPR_RUN/state"
 ```
 
 Socket/state directories must be private and current-user-owned. The socket is
@@ -131,9 +151,27 @@ each state root. Keep Unix socket paths short. Explicit `--home` selects a
 scrubbed fixture environment, not an OS/filesystem sandbox. `--bkprd PATH`
 selects the server executable; `bkprd --bkpr PATH` selects the matching utility
 and harness wrappers when testing independently staged binaries.
-View admission is bounded to 128 per daemon and 32 per pane. Pane waits,
-registry watchers and controls have separate capacity, so admitted waiting views
-do not consume the slots reserved for input or management.
+
+Named paths live under `$XDG_RUNTIME_DIR/bkpr/<name-hash>/s` and
+`$XDG_STATE_HOME/bkpr/sessions/<name-hash>/`. Without these variables, runtime
+uses a private `bkpr-<uid>/bkpr/` beneath the resolved system `/tmp`, and state
+uses `$HOME/.local/state/bkpr/sessions/`. Resolving the system temporary-directory
+alias does not permit symlinks in Bkpr-owned descendants.
+Launch serialization, private filesystem checks and exact stored/live identities
+prevent accidental attachment to another session. A live protocol or identity
+failure never causes an automatic restart.
+
+Client registration keeps a dedicated lifetime connection. Takeover, disconnect
+or owner-process exit revokes managed views and pending authority without
+requiring another client to acknowledge. Credentials are ephemeral, process-bound
+and never written to pane environments or session records. Ordinary pane execs
+receive immutable `BKPR_SESSION_ID` and `BKPR_SESSION_NAME` snapshots. On Linux,
+managed clients require kernel `SO_PEERPIDFD` support and fail before takeover
+when that prerequisite is unavailable.
+
+Client admission is bounded to 32 per daemon; views to 128 per daemon and 32 per
+pane. Lifetime connections, pane waits, registry watchers and controls have
+separate capacity, so admitted waiting views do not consume input/control slots.
 
 ### Harness capture
 
@@ -282,12 +320,58 @@ messaging require a ready canonical common-Git-directory identity.
 
 
 
+### Sidebar, popups and presentation
+
+`Ctrl-Space` (or `Ctrl-b b`) enters the all-workspace sidebar. Selection is local:
+browsing does not change the active application or attach hidden terminal views.
+Arrows or `j`/`k` move, Home/End and PageUp/PageDown reveal other rows, Left/Right
+fold or unfold a workspace, and Enter activates the selected workspace or terminal.
+Esc returns to the original application. The mouse supports activation, wheel
+scrolling and double-click folding.
+
+In the sidebar, `n` opens workspace creation, `r` renames the selected item and
+`x`/Delete closes a selected terminal and its owned processes after confirmation.
+Workspace cascading close and `N` for a separate terminal window await their
+backend contracts; they are not substituted with layout removal or a split.
+
+`/` opens the metadata finder, distinct from `Ctrl-b /` terminal-content search.
+It supports fuzzy terms and `workspace:`, `harness:`, `status:`, `cwd:`, `project:`
+and `branch:` filters, including quoted values. PR/CI/ticket filters explicitly
+report unavailable facts. Narrow windows use Tab to cycle input, results and
+details; PageUp/PageDown scroll the preview. Selection activates the actual pane
+identity, not a row number.
+
+Creation has name and directory fields; Tab changes fields and a blank directory
+keeps the exact inherited directory. A workspace name is currently required.
+Name fields support cursor movement, Home/End, Backspace/Delete, Ctrl-u and paste.
+Enter submits, Esc cancels, and close confirmations also accept `y`/`n`. Failed
+submissions retain their fields and diagnostics; an unknown outcome blocks blind
+resubmission. Modal targets stay bound to their original identities through
+background focus or registry changes.
+
+Hovering or keyboard-selecting sidebar items opens passive, scrollable metadata.
+It uses supplied registry facts and already-held snapshots, never hidden view
+attachments or provider/filesystem work on the render path. Project data retains
+loading/error/stale labels, and contradictory foreground identities hide retired
+harness facts. Contextual hints use the same typed binding table as dispatch;
+the command prefix expands the guide when space permits.
+
+Reusable text surfaces, editing, window decoration, clipping, capability probes
+and SVG preparation belong to `bkpr-tui-framework`; Bkpr content, action semantics
+and artwork selection belong to `bkpr-client`. Confirmed Kitty graphics support
+and observed colors enable static bee/hive artwork, prepared off-thread and sent
+through the existing scene renderer. Other hosts retain readable `[]`/`<>`
+markers, fold/status glyphs and the same interactions. Pixel recessed/raised
+frames and decorative animation remain separate work; this is not general
+terminal-graphics acceptance.
+
 ### Workspace and pane controls
 
 Press `Ctrl-b`, then a command:
 
 | Command | Action |
 | --- | --- |
+| `b` | Enter the all-workspace sidebar |
 | `c` | Create workspace and first pane |
 | `n` or `%` | Spawn a pane, split left/right |
 | `"` | Spawn a pane, split top/bottom |
@@ -301,16 +385,28 @@ Press `Ctrl-b`, then a command:
 | `/` | Search the focused pane's terminal contents and retained history |
 | `[` / `]` | Previous / next workspace |
 | Arrows / Tab | Focus direction / next pane |
+| Shift+Arrows | Exchange focused pane with nearest pane in that direction |
 | `x` | Remove a layout leaf; keep its process running |
 | `!` | Terminate a pane, after confirmation |
 | `X` | Remove a workspace, after confirmation; keep its processes running |
 | `d` | Detach client |
 | `Ctrl-b` | Send literal Ctrl-b to the application (live mode only) |
 
-`Ctrl-]` also detaches. Click a sidebar workspace or pane to focus it.
-Forms use Enter to apply, Esc to cancel and Ctrl-u to clear. Focus is
-client-local; showing a pane in another workspace does not change its backend
-membership. Layout removal, client detach and process termination are distinct.
+`Ctrl-]` also detaches. Focus is client-local; showing a pane in another workspace
+does not change its backend membership. Layout removal, client detach and process
+termination are distinct.
+
+`Ctrl-b Shift+Arrow` rearranges the selected workspace by exchanging two pane
+positions; focus follows the same execution. It uses the same nearest-center
+directional choice as focus navigation and does not wrap at an edge. Split axes,
+ratios, other panes and backend workspace membership stay unchanged. Other
+clients viewing that workspace see the saved arrangement, but keep their own
+focus. Processes and existing views survive the exchange.
+
+Each move is one asynchronous revision-checked layout update. Read-only clients
+cannot rearrange panes. While workspace management is pending, another move is
+rejected rather than queued or replayed; wait for completion before moving again.
+Foreign changes and ambiguous failures are reported without rebasing or retrying.
 
 `Ctrl-b R` opens **Open a new shell here** only for a stopped or exited execution;
 it never kills or restarts a live pane. Enter confirms and Esc cancels without

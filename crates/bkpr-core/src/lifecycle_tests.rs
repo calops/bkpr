@@ -81,3 +81,67 @@ fn last_view_detaches_without_killing_and_explicit_termination_reaps_stopped_job
     );
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn explicit_termination_does_not_type_eof_into_a_live_raw_child() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let input = home.path().join("input");
+    let size = Size {
+        cols: 80,
+        rows: 24,
+        cell_width: 8,
+        cell_height: 16,
+    };
+    let pane = Pane::spawn(SpawnSpec {
+        argv: vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "trap '' HUP; stty raw -echo; exec cat > input".into(),
+        ],
+        home: home.path().to_owned(),
+        cwd: home.path().to_owned(),
+        size,
+        isolated_process: false,
+        isolated_environment: true,
+    })
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !input.exists() {
+        assert!(Instant::now() < deadline, "raw child did not start");
+        thread::sleep(Duration::from_millis(2));
+    }
+    let view_id = pane
+        .request(Request::Attach {
+            spec: ViewSpec {
+                size,
+                visible: true,
+                interactive: true,
+                input: true,
+                clipboard: false,
+            },
+        })
+        .unwrap()["view_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    pane.request(Request::Input {
+        view_id: view_id.clone(),
+        data: b"kept".to_vec(),
+    })
+    .unwrap();
+    while std::fs::read(&input).unwrap() != b"kept" {
+        assert!(Instant::now() < deadline, "raw child did not receive input");
+        thread::sleep(Duration::from_millis(2));
+    }
+    pane.request(Request::Terminate { view_id }).unwrap();
+    assert_eq!(
+        std::fs::read(input).unwrap(),
+        b"kept",
+        "termination must signal/reap, not inject a line and EOF"
+    );
+}

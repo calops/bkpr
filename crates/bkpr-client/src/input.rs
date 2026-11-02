@@ -1,11 +1,10 @@
-use crate::transport;
+use crate::transport::{self, Endpoint};
 use anyhow::{Context, Result, bail};
 use bkpr_protocol::{MAX_INPUT_BYTES, Operation, PaneRequest, SearchAction};
 use std::{
     collections::HashMap,
     io::{Read, Write},
     os::unix::net::UnixStream,
-    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -357,7 +356,7 @@ impl PaneLanes {
 /// Command lanes share one admission budget, including requests in flight.
 /// A separate bounded device reserve cannot be exhausted by blocked input.
 pub struct InputPump {
-    socket: PathBuf,
+    socket: Endpoint,
     lanes: Mutex<HashMap<String, PaneLanes>>,
     tombstones: Mutex<HashMap<String, [Option<InputFailure>; 3]>>,
     budget: Arc<InputBudget>,
@@ -373,7 +372,7 @@ fn notify(wake: &UnixStream) {
     let _ = wake.write_all(&[1]);
 }
 impl InputPump {
-    pub fn new(socket: &Path) -> Result<Self> {
+    pub fn new(socket: &Endpoint) -> Result<Self> {
         let (wake, notify) = UnixStream::pair()?;
         wake.set_nonblocking(true)?;
         notify.set_nonblocking(true)?;
@@ -436,7 +435,7 @@ impl InputPump {
                     let select = matches!(&operation, Operation::Pane { request: PaneRequest::Select { .. }, .. });
                     let search = matches!(&operation, Operation::Pane { request: PaneRequest::Search { .. }, .. });
                     let mut context = InputFailure::context(&operation);
-                    let result = transport::checked(&socket, operation);
+                    let result = socket.checked(operation);
                     if let Err(error) = &result {
                         let expected_owner_rejection = colors && !transport::outcome_unknown(error)
                             && error.root_cause().to_string() == "only current size owner may seed terminal colors";
@@ -510,6 +509,7 @@ impl InputPump {
         before: Option<&Operation>,
         future_bytes: usize,
     ) -> Result<InputPermit> {
+        self.socket.ensure_live()?;
         let Operation::Pane { pane_id, request } = operation else {
             bail!("input dispatcher requires a pane-scoped operation");
         };
@@ -549,6 +549,7 @@ impl InputPump {
         self.reserve_before(operation, None)
     }
     fn dispatch(&self, mut reserved: ReservedInput, done: Option<Completion>) -> Result<()> {
+        self.socket.ensure_live()?;
         #[cfg(test)]
         if let Some((sender, pending)) = &self.capture {
             reserved.permit.attach(pending);
@@ -827,7 +828,10 @@ impl InputPump {
     }
     #[cfg(test)]
     pub(crate) fn capture() -> (Self, Capture) {
-        let mut input = Self::new(Path::new("/unused-input-capture")).unwrap();
+        let mut input = Self::new(&Endpoint::unmanaged(std::path::Path::new(
+            "/unused-input-capture",
+        )))
+        .unwrap();
         let (sender, receiver) = mpsc::channel();
         input.capture = Some((sender, Arc::new(AtomicUsize::new(0))));
         (
@@ -885,6 +889,7 @@ mod tests {
     use std::{
         io::{BufRead, BufReader},
         os::unix::net::UnixListener,
+        path::PathBuf,
         time::Duration,
     };
 
@@ -983,7 +988,7 @@ mod tests {
                 worker.join().unwrap();
             }
         });
-        let input = InputPump::new(&path).unwrap();
+        let input = InputPump::new(&Endpoint::unmanaged(&path)).unwrap();
         input
             .send(Operation::Pane {
                 pane_id: "alpha".into(),
@@ -1205,7 +1210,7 @@ mod tests {
                 worker.join().unwrap();
             }
         });
-        let input = InputPump::new(&path).unwrap();
+        let input = InputPump::new(&Endpoint::unmanaged(&path)).unwrap();
         input.send(key("alpha", "KeyA")).unwrap();
         assert!(
             matches!(received.recv_timeout(Duration::from_secs(2)).unwrap(),
@@ -1425,7 +1430,7 @@ mod tests {
                 stream.write_all(&bytes).unwrap();
             }
         });
-        let input = InputPump::new(&path).unwrap();
+        let input = InputPump::new(&Endpoint::unmanaged(&path)).unwrap();
         let copy = input
             .response(Operation::Pane {
                 pane_id: "alpha".into(),
@@ -1471,7 +1476,7 @@ mod tests {
             received.send(()).unwrap();
             closed.recv_timeout(Duration::from_secs(5)).unwrap();
         });
-        let input = InputPump::new(&path).unwrap();
+        let input = InputPump::new(&Endpoint::unmanaged(&path)).unwrap();
         let copy = input
             .response(Operation::Pane {
                 pane_id: "alpha".into(),
@@ -1543,7 +1548,7 @@ mod tests {
             }
             keys
         });
-        let input = InputPump::new(&path).unwrap();
+        let input = InputPump::new(&Endpoint::unmanaged(&path)).unwrap();
         // Ordinary selection has no response receipt: its backend rejection
         // must still reach the UI, without becoming an application-input stop.
         input

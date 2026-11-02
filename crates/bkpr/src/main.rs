@@ -1,24 +1,35 @@
+mod cli;
 mod harness;
+mod session;
 
 use anyhow::{Context, Result, bail};
-use bkpr_client::{LocalPaths, Options};
-use bkpr_protocol::{Request, Size};
+use bkpr_client::Options;
+use bkpr_protocol::{Operation, Request, Size};
 use std::{io::IsTerminal, path::PathBuf};
 
-const HELP: &str = r#"Bkpr — persistent pane workspaces
+const HELP: &str = r#"Bkpr — persistent named pane workspaces
 
-  bkpr [tui] [--socket PATH] [--state-root PATH] [--cwd PATH]
-       [--read-only] [--clipboard ask|allow|deny] [--bkprd PATH]
+  bkpr [tui] [-s NAME | --socket PATH --state-root PATH] [-d]
+       [--cwd PATH] [--read-only] [--clipboard ask|allow|deny] [--bkprd PATH]
        [--home ISOLATED_FIXTURE_HOME] [-- SHELL ARGS...]
-  bkpr context [--socket PATH]
-  bkpr request [--socket PATH] 'VERSIONED_TYPED_JSON_REQUEST'
+  bkpr list
+  bkpr stop [-s NAME | --socket PATH]
+  bkpr context [-s NAME | --socket PATH]
+  bkpr request [-s NAME | --socket PATH] 'VERSIONED_TYPED_JSON_REQUEST'
   bkpr keyboard --socket PATH --pane PANE_ID --view VIEW_ID '[PHYSICAL_BYTES]'
   bkpr run HARNESS [--] ARGS...
   bkpr install agy
 
-Bare bkpr connects or starts local bkprd, then opens the workspace TUI.
-The daemon and pane processes survive detach and client exit. Utilities do not
-initialize the TUI; `request` and `context` do not start a daemon.
+Bare bkpr connects or starts the named local session `bkpr`, then opens its TUI.
+-s / --session selects an exact name (Unicode, spaces and slashes are supported).
+-d / --detach-others revokes other clients once this attachment is ready; it does
+not terminate their panes. Client exit/detach preserves daemon and pane processes.
+`list` discovers stored sessions without starting them; `stop` stops only the
+selected session and its programs. Restart restores metadata, not old commands;
+the normal fresh initial shell remains explicit daemon bootstrap behavior.
+Explicit --session overrides inherited BKPR_SOCKET. Headless context/request/
+keyboard otherwise inherit pane routing; normal TUI/stop default to `bkpr`.
+Utilities do not initialize the TUI or automatically start a daemon.
 `run` preserves native arguments and captures supported interactive harnesses in
 an authenticated Bkpr pane. Recognized generic harnesses run without capture.
 `install agy` explicitly registers the launch-scoped context/capture MCP server.
@@ -30,140 +41,92 @@ Keyboard (Ctrl-b prefix, then one command):
   c create workspace       n / % split left/right    " split top/bottom
   r rename workspace       p rename pane            w workspace chooser
   [ / ] previous/next workspace    Tab next pane     arrows focus direction
+  Shift+arrows exchange focused pane with its directional neighbour
+  e resize: arrows 1 cell, Shift+arrows 5; Enter/Esc finish; drag dividers directly
+  / search: type query, Enter next / Shift+Enter previous, Esc close
+  s scrollback/history     y copy selection         i project details
   x remove layout leaf only (process survives)      ! close / terminate (yes)
   X remove workspace layout (confirm yes; processes survive)
   o show existing pane (including hidden/unassigned executions)
   d detach                 Ctrl-b Ctrl-b send Ctrl-b to focused pane
 Ctrl-] detaches directly. Click workspace or pane to focus; application mouse
-coordinates are pane-local. Forms use Enter apply / Esc cancel / Ctrl-u clear;
-pane focus is restored. Clipboard requests use y allow / n deny, bound to their
-originating pane. Approved device transfers do not block unrelated pane input.
+coordinates are pane-local. Drag selects/copies; Shift overrides application
+mouse tracking. History uses arrows/PgUp/PgDn/Home; Esc returns to live output.
+Forms use Enter apply / Esc cancel / Ctrl-u clear; pane focus is restored.
+Clipboard requests use y allow / n deny, bound to their originating pane.
+Approved device transfers do not block unrelated pane input.
 "#;
 
-fn absolute(path: PathBuf) -> Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path)
-    } else {
-        Ok(std::env::current_dir()?.join(path))
-    }
-}
 fn main() -> Result<()> {
-    let mut native_args = std::env::args_os();
-    let program = native_args.next().context("missing executable name")?;
-    if let Some(code) = harness::dispatch(&program, native_args.collect())? {
+    let args: Vec<_> = std::env::args_os().collect();
+    let program = args.first().context("missing executable name")?;
+    // Native harness wrappers must see their untouched argv before normal CLI parsing.
+    if let Some(code) = harness::dispatch(program, args[1..].to_vec())? {
         harness::terminate(code);
     }
-    let mut args = std::env::args().skip(1).peekable();
-    if matches!(
-        args.peek().map(String::as_str),
-        Some("help" | "--help" | "-h")
-    ) {
-        println!("{HELP}");
-        return Ok(());
-    }
-    if matches!(args.peek().map(String::as_str), Some("--version" | "-V")) {
-        println!("bkpr {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-    let command = if args.peek().is_some_and(|arg| !arg.starts_with('-')) {
-        args.next().unwrap()
-    } else {
-        "tui".into()
-    };
-    if !matches!(command.as_str(), "tui" | "request" | "context" | "keyboard") {
-        bail!("unknown command {command}; use --help");
-    }
-    let mut paths = LocalPaths::defaults()?;
-    if let Some(socket) = std::env::var_os("BKPR_SOCKET") {
-        paths.socket = absolute(PathBuf::from(socket))?;
-    }
-    let mut options = Options::inherited()?;
-    let mut server = None;
-    let mut pane = None;
-    let mut view = None;
-    let mut payload = None;
-    let mut size = Size {
-        cols: 80,
-        rows: 24,
-        cell_width: 8,
-        cell_height: 16,
-    };
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--help" | "-h" => {
-                println!("{HELP}");
-                return Ok(());
+    let matches = match cli::parse(args) {
+        Ok(matches) => matches,
+        Err(error) => {
+            if let Some(error) = error.downcast_ref::<clap::Error>() {
+                error.exit();
             }
-            "--socket" => {
-                paths.socket = absolute(PathBuf::from(args.next().context("--socket needs path")?))?
-            }
-            "--state-root" => {
-                paths.state_root = absolute(PathBuf::from(
-                    args.next().context("--state-root needs path")?,
-                ))?
-            }
-            "--home" => {
-                options.home = absolute(PathBuf::from(
-                    args.next().context("--home needs fixture path")?,
-                ))?;
-                options.isolated_environment = true;
-            }
-            "--cwd" => {
-                options.cwd =
-                    absolute(PathBuf::from(args.next().context("--cwd needs directory")?))?
-            }
-            "--bkprd" => {
-                server = Some(absolute(PathBuf::from(
-                    args.next().context("--bkprd needs executable path")?,
-                ))?)
-            }
-            "--pane" => pane = Some(args.next().context("--pane needs ID")?),
-            "--view" => view = Some(args.next().context("--view needs ID")?),
-            "--read-only" => options.read_only = true,
-            "--clipboard" => {
-                options.clipboard_policy =
-                    args.next().context("--clipboard needs ask|allow|deny")?
-            }
-            "--cols" => size.cols = args.next().context("--cols needs number")?.parse()?,
-            "--rows" => size.rows = args.next().context("--rows needs number")?.parse()?,
-            "--cell-width" => {
-                size.cell_width = args.next().context("--cell-width needs number")?.parse()?
-            }
-            "--cell-height" => {
-                size.cell_height = args.next().context("--cell-height needs number")?.parse()?
-            }
-            "--" => {
-                options.shell = args.collect();
-                break;
-            }
-            _ if matches!(command.as_str(), "request" | "keyboard") && payload.is_none() => {
-                payload = Some(arg)
-            }
-            _ => bail!("unknown argument {arg}; use --help"),
+            return Err(error);
         }
+    };
+    let command = matches.subcommand_name().unwrap_or("tui");
+    let roots = session::Roots::inherited()?;
+    if command == "list" {
+        println!("{}", serde_json::to_string(&session::list(&roots)?)?);
+        return Ok(());
     }
-    match command.as_str() {
+    let paths = session::LocalPaths::resolve(
+        &roots,
+        matches.get_one::<String>("session").map(String::as_str),
+        matches.get_one::<PathBuf>("socket").cloned(),
+        matches.get_one::<PathBuf>("state-root").cloned(),
+        std::env::var_os("BKPR_SOCKET").map(PathBuf::from),
+        matches!(command, "context" | "request" | "keyboard"),
+        command == "tui",
+    )?;
+    let payload = || {
+        matches
+            .subcommand()
+            .and_then(|(_, args)| args.get_one::<String>("payload"))
+            .context("command needs a JSON payload")
+    };
+    match command {
         "request" => {
-            let request: Request =
-                serde_json::from_str(&payload.context("request needs versioned typed JSON")?)?;
+            let request: Request = serde_json::from_str(payload()?)?;
+            session::validate_target(&paths)?;
             let response = bkpr_client::transport::request(&paths.socket, &request)?;
             println!("{}", serde_json::to_string(&response)?);
             Ok(())
         }
         "context" => {
+            session::validate_target(&paths)?;
             println!(
                 "{}",
                 serde_json::to_string(&bkpr_client::context(&paths.socket)?)?
             );
             Ok(())
         }
+        "stop" => {
+            session::validate_target(&paths)?;
+            let result = bkpr_client::transport::checked(&paths.socket, Operation::Shutdown)?;
+            println!("{}", serde_json::to_string(&result)?);
+            Ok(())
+        }
         "keyboard" => {
-            let bytes: Vec<u8> =
-                serde_json::from_str(&payload.context("keyboard needs JSON byte array")?)?;
+            let bytes: Vec<u8> = serde_json::from_str(payload()?)?;
+            session::validate_target(&paths)?;
             bkpr_client::keyboard(
                 &paths.socket,
-                &pane.context("--pane is required")?,
-                &view.context("--view is required")?,
+                matches
+                    .get_one::<String>("pane")
+                    .context("--pane is required")?,
+                matches
+                    .get_one::<String>("view")
+                    .context("--view is required")?,
                 &bytes,
             )?;
             println!(
@@ -176,19 +139,36 @@ fn main() -> Result<()> {
             if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
                 bail!("TUI needs a terminal; use context or request for headless access");
             }
-            if options.shell.is_empty() {
-                bail!("-- requires a real shell command");
+            let mut options = Options::inherited()?;
+            options.read_only = matches.get_flag("read-only");
+            options.detach_others = matches.get_flag("detach-others");
+            if let Some(policy) = matches.get_one::<String>("clipboard") {
+                options.clipboard_policy.clone_from(policy);
             }
-            if !matches!(options.clipboard_policy.as_str(), "ask" | "allow" | "deny") {
-                bail!("clipboard must be ask, allow or deny");
+            if let Some(path) = matches.get_one::<PathBuf>("cwd") {
+                options.cwd = cli::absolute(path.clone())?;
+            }
+            if let Some(path) = matches.get_one::<PathBuf>("home") {
+                options.home = cli::absolute(path.clone())?;
+                options.isolated_environment = true;
+            }
+            if let Some(shell) = cli::shell_arguments(&matches)? {
+                options.shell = shell;
             }
             let physical = bkpr_tui_framework::dimensions()?;
-            size.cols = physical.cols;
-            size.rows = physical.rows;
-            size.cell_width = physical.cell_width;
-            size.cell_height = physical.cell_height;
+            let size = Size {
+                cols: physical.cols,
+                rows: physical.rows,
+                cell_width: physical.cell_width,
+                cell_height: physical.cell_height,
+            };
             bkpr_protocol::valid_size(size)?;
-            bkpr_client::ensure_server(&paths, server.as_deref(), &options, size)?;
+            let binary = matches
+                .get_one::<PathBuf>("bkprd")
+                .cloned()
+                .map(cli::absolute)
+                .transpose()?;
+            session::ensure_server(&paths, binary.as_deref(), &options, size)?;
             bkpr_client::run(&paths.socket, options)
         }
         _ => unreachable!(),

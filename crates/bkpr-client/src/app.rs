@@ -1,3 +1,4 @@
+use crate::transport::{Endpoint, RegisteredClient};
 use crate::{
     controller::*,
     transport,
@@ -5,7 +6,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use bkpr_protocol::*;
-use bkpr_tui_framework::*;
+use bkpr_tui_framework::{ClientEvent, *};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
@@ -101,6 +102,7 @@ impl PressedPointer {
 
 pub struct Options {
     pub read_only: bool,
+    pub detach_others: bool,
     pub clipboard_policy: String,
     pub shell: Vec<String>,
     pub cwd: PathBuf,
@@ -111,6 +113,7 @@ impl Options {
     pub fn inherited() -> Result<Self> {
         Ok(Self {
             read_only: false,
+            detach_others: false,
             clipboard_policy: "ask".into(),
             shell: vec![
                 std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()),
@@ -238,8 +241,14 @@ struct DeviceResponse {
     view: String,
     receipt: updates::Receipt,
 }
+#[derive(Default)]
+struct GuideCache {
+    key: Option<(crate::keyguide::Context, u16, u16, u16)>,
+    footer: String,
+    expanded: Vec<String>,
+}
 struct App<'a> {
-    socket: &'a Path,
+    socket: &'a Endpoint,
     options: Options,
     registry: RegistrySnapshot,
     state: Controller,
@@ -270,12 +279,316 @@ struct App<'a> {
     terminal_selection: selection::State,
     resizing: resizing::State,
     search: search::State,
+    finder: Option<crate::finder::Finder>,
+    popover: crate::popover::Popover,
+    modal_rect: Option<Rect>,
+    guide: GuideCache,
     notified_focus: Option<(String, String)>,
     focus_out_pending: HashSet<(String, String)>,
     lease_pending: HashSet<String>,
     host_focused: bool,
 }
 impl App<'_> {
+    fn enter_sidebar(&mut self) {
+        self.retire_resize("sidebar focused");
+        self.selection_focus_lost();
+        self.close_search();
+        self.state.status.clear();
+        self.state.sidebar.enter();
+    }
+    fn supports_action(&self, action: crate::keyguide::Action) -> bool {
+        use crate::keyguide::Action;
+        if self
+            .state
+            .form
+            .as_ref()
+            .is_some_and(|form| form.pending.is_some() || form.ambiguous)
+            && !matches!(action, Action::Cancel | Action::Detach)
+        {
+            return false;
+        }
+        match action {
+            Action::CommandPrefix => !self.resize_capturing() || self.resize_dragging(),
+            Action::Resize { .. } => !self.options.read_only && !self.resize_dragging(),
+            Action::CreateTerminal => false,
+            Action::CloseSelected => {
+                !self.options.read_only
+                    && matches!(self.state.sidebar.cursor, Some(SidebarTarget::Pane { .. }))
+            }
+            Action::CreateWorkspace
+            | Action::RenameSelected
+            | Action::RenameWorkspace
+            | Action::RenamePane
+            | Action::TerminatePane
+            | Action::RemoveWorkspace
+            | Action::ReopenPane
+            | Action::SplitHorizontal
+            | Action::SplitVertical
+            | Action::RemovePaneFromLayout
+            | Action::MovePane(_)
+            | Action::StartResize => !self.options.read_only,
+            Action::CopySelection => self.options.clipboard_policy != "deny",
+            Action::SendPrefix => {
+                !self.options.read_only
+                    && !self.state.sidebar.active
+                    && !self.focused_history()
+                    && !self.search_open()
+            }
+            Action::Submit => self
+                .state
+                .form
+                .as_ref()
+                .is_none_or(|form| form.pending.is_none() && !form.ambiguous),
+            _ => true,
+        }
+    }
+    fn binding_action(
+        &self,
+        context: crate::keyguide::Context,
+        event: &KeyEvent,
+    ) -> Result<Option<crate::keyguide::Action>> {
+        let action = crate::keyguide::lookup_with(context, event, |_| true);
+        if let Some(action) = action
+            && !self.supports_action(action)
+        {
+            if self.options.read_only {
+                bail!(
+                    "read-only client: {} is unavailable",
+                    action.description(context)
+                );
+            }
+            bail!(
+                "{} is unavailable with the current backend/context",
+                action.description(context)
+            );
+        }
+        Ok(action)
+    }
+    fn guide_context(&self) -> crate::keyguide::Context {
+        use crate::keyguide::{Context, ContextState, ModalContext};
+        let modal = if self
+            .consent
+            .as_ref()
+            .is_some_and(|consent| !consent.state.allowed && !consent.state.sent)
+        {
+            Some(ModalContext::ClipboardConsent)
+        } else if let Some(form) = &self.state.form {
+            Some(match form.context() {
+                Context::Create => ModalContext::Create,
+                Context::Edit => ModalContext::Edit,
+                Context::Confirmation => ModalContext::Confirmation,
+                Context::Details => ModalContext::Details,
+                _ => ModalContext::Chooser,
+            })
+        } else if self.finder.is_some() {
+            Some(ModalContext::Finder)
+        } else {
+            None
+        };
+        ContextState {
+            modal,
+            resizing: self.resize_capturing() && !self.state.prefix,
+            prefix: self.state.prefix,
+            searching: self.search_open(),
+            sidebar: self
+                .state
+                .sidebar
+                .active
+                .then_some(self.state.sidebar.cursor.is_some()),
+            history: self.focused_history(),
+        }
+        .context()
+    }
+    fn refresh_guide(&mut self, size: Size) {
+        let context = self.guide_context();
+        let flags = u16::from(self.options.read_only)
+            | (u16::from(self.options.clipboard_policy == "deny") << 1)
+            | (u16::from(matches!(
+                self.state.sidebar.cursor,
+                Some(SidebarTarget::Pane { .. })
+            )) << 2)
+            | (u16::from(
+                self.state
+                    .form
+                    .as_ref()
+                    .is_some_and(|form| form.pending.is_some() || form.ambiguous),
+            ) << 3)
+            | (u16::from(self.focused_history()) << 4)
+            | (u16::from(self.search_open()) << 5)
+            | (u16::from(self.state.sidebar.active) << 6)
+            | (u16::from(self.resize_dragging()) << 7)
+            | (u16::from(!self.state.status.is_empty()) << 8);
+        let width = size
+            .cols
+            .saturating_sub(screen_geometry(size).0.width)
+            .clamp(1, 64);
+        let key = (context, size.cols, size.rows, flags);
+        if self.guide.key != Some(key) {
+            let footer_columns = if self.state.status.is_empty() {
+                size.cols
+            } else {
+                size.cols / 2
+            };
+            let footer = crate::keyguide::footer_with(context, footer_columns as usize, |action| {
+                self.supports_action(action)
+            });
+            let expanded = crate::keyguide::expanded_with(
+                context,
+                width.saturating_sub(2) as usize,
+                size.rows.saturating_sub(4) as usize,
+                |action| self.supports_action(action),
+            );
+            self.guide = GuideCache {
+                key: Some(key),
+                footer,
+                expanded,
+            };
+        }
+    }
+    fn guide_geometry(&self, size: Size, tooltip: Option<Rect>, modal: bool) -> Option<Rect> {
+        if modal
+            || !(self.state.prefix || self.state.sidebar.active)
+            || self.guide.expanded.is_empty()
+        {
+            return None;
+        }
+        let width = size
+            .cols
+            .saturating_sub(screen_geometry(size).0.width)
+            .min(64);
+        let height = u16::try_from(self.guide.expanded.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(2)
+            .min(size.rows.saturating_sub(1));
+        if width < 16 || height == 0 {
+            return None;
+        }
+        let mut rect = Rect {
+            x: size.cols - width,
+            y: size.rows - 1 - height,
+            width,
+            height,
+        };
+        if let Some(tooltip) = tooltip
+            && rect.x < tooltip.x.saturating_add(tooltip.width)
+            && tooltip.x < rect.x.saturating_add(rect.width)
+            && rect.y < tooltip.y.saturating_add(tooltip.height)
+            && tooltip.y < rect.y.saturating_add(rect.height)
+        {
+            if tooltip.y >= height {
+                rect.y = tooltip.y - height;
+            } else if tooltip
+                .y
+                .saturating_add(tooltip.height)
+                .saturating_add(height)
+                < size.rows
+            {
+                rect.y = tooltip.y + tooltip.height;
+            } else {
+                return None;
+            }
+        }
+        Some(rect)
+    }
+    fn local_repeat(&self, event: &KeyEvent) -> bool {
+        use crate::keyguide::{self, Action, Context};
+        let context = self.guide_context();
+        matches!(
+            keyguide::lookup_with(context, event, |action| self.supports_action(action)),
+            Some(
+                Action::Navigate(_) | Action::Edit(_) | Action::History(_) | Action::Resize { .. }
+            )
+        ) || (matches!(context, Context::Create | Context::Edit | Context::Finder)
+            && event.modifiers & 14 == 0
+            && event.text.chars().any(|ch| !ch.is_control()))
+    }
+    fn begin_finder(&mut self) {
+        self.retire_resize("finder opened");
+        self.selection_focus_lost();
+        self.close_search();
+        self.popover.hide();
+        self.finder = Some(crate::finder::Finder::new(
+            &self.registry,
+            self.state.focused.as_deref(),
+            |pane| self.views.get(pane).map(|view| &view.metadata),
+        ));
+    }
+    fn finder_intent(&mut self, intent: crate::finder::FinderIntent) -> Result<()> {
+        match intent {
+            crate::finder::FinderIntent::None => {}
+            crate::finder::FinderIntent::Cancel => self.finder = None,
+            crate::finder::FinderIntent::Activate(target) => {
+                self.finder = None;
+                if let Some(workspace) = target.workspace_id {
+                    self.activate_sidebar(SidebarTarget::Pane {
+                        workspace,
+                        pane: target.pane_id,
+                    })?;
+                } else {
+                    self.show_existing(target.pane_id)?;
+                    self.state.sidebar.active = false;
+                }
+            }
+        }
+        Ok(())
+    }
+    fn modal_geometry(&self, screen: Size) -> (Rect, Rect) {
+        let (width, height) = if self.finder.is_some() {
+            (120, 40)
+        } else {
+            match self.state.form.as_ref().map(|form| &form.kind) {
+                Some(FormKind::CreateWorkspace) => (76, 12),
+                Some(FormKind::RenameWorkspace | FormKind::RenamePane) => (76, 8),
+                Some(FormKind::TerminatePane | FormKind::RemoveWorkspace) => (88, 9),
+                Some(FormKind::ReopenPane { .. }) => (100, 12),
+                _ => (112, screen.rows.saturating_sub(4)),
+            }
+        };
+        let rect = window::centered(
+            screen,
+            width.min(screen.cols.saturating_sub(4).max(1)),
+            height.min(screen.rows.saturating_sub(2).max(1)),
+        );
+        let inset = window::content(Size {
+            cols: rect.width,
+            rows: rect.height,
+            ..screen
+        });
+        (
+            rect,
+            Rect {
+                x: rect.x + inset.x,
+                y: rect.y + inset.y,
+                ..inset
+            },
+        )
+    }
+    fn open_form(&mut self, kind: FormKind, value: String) {
+        self.finder = None;
+        self.popover.hide();
+        self.retire_resize("modal opened");
+        self.selection_focus_lost();
+        self.close_search();
+        let target = self.state.current(&self.registry).and_then(|workspace| {
+            let target = match &kind {
+                FormKind::RenameWorkspace | FormKind::RemoveWorkspace => {
+                    Some(SidebarTarget::Workspace(workspace.id.clone()))
+                }
+                FormKind::RenamePane | FormKind::TerminatePane => {
+                    self.state.focused.as_ref().map(|pane| SidebarTarget::Pane {
+                        workspace: workspace.id.clone(),
+                        pane: pane.clone(),
+                    })
+                }
+                _ => None,
+            };
+            target.map(|target| (target, workspace.revision))
+        });
+        self.state.open(kind, value);
+        let form = self.state.form.as_mut().unwrap();
+        form.fields.inherit_directory(self.options.cwd.clone());
+        form.target = target;
+    }
     fn focus(&mut self, pane: String) {
         if self.state.focused.as_ref() != Some(&pane) {
             self.retire_resize("pane focus changed");
@@ -344,6 +657,10 @@ impl App<'_> {
                 selection,
             },
         );
+        if let Some(form) = &mut self.state.form {
+            form.pending = Some(key.clone());
+            form.error = None;
+        }
         self.state.status = format!("{key} pending; other panes remain interactive");
         Ok(())
     }
@@ -396,8 +713,19 @@ impl App<'_> {
                 continue;
             }
             let intent = self.management.remove(&completion.key);
+            let form_pending = self
+                .state
+                .form
+                .as_ref()
+                .is_some_and(|form| form.pending.as_deref() == Some(completion.key.as_str()));
             match completion.result {
                 Ok(Background::Management(result)) => {
+                    if form_pending {
+                        self.state.form = None;
+                        if result.selection.is_some() {
+                            self.state.sidebar.active = false;
+                        }
+                    }
                     self.accept_management(result, intent);
                     self.state.status = format!("{} completed", completion.key);
                 }
@@ -420,6 +748,11 @@ impl App<'_> {
                         "; not replayed"
                     };
                     let message = format!("{} failed{unknown}: {error:#}", completion.key);
+                    if form_pending && let Some(form) = &mut self.state.form {
+                        form.pending = None;
+                        form.ambiguous = transport::outcome_unknown(&error);
+                        form.error = Some(message.clone());
+                    }
                     if let Some(pane) = completion.key.strip_prefix("attach:") {
                         let held = error
                             .downcast_ref::<AttachOwnership>()
@@ -1170,6 +1503,8 @@ impl App<'_> {
     fn notify_focus(&mut self) -> Result<()> {
         let focused = if self.host_focused
             && self.state.form.is_none()
+            && self.finder.is_none()
+            && !self.state.sidebar.active
             && !self.search_open()
             && !self
                 .consent
@@ -1241,7 +1576,7 @@ impl App<'_> {
             bail!("focused pane is no longer in this workspace");
         }
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
-        self.state.open(
+        self.open_form(
             FormKind::ReopenPane {
                 workspace_id: workspace.id.clone(),
                 expected_revision: workspace.revision,
@@ -1546,7 +1881,11 @@ impl App<'_> {
             {
                 continue;
             }
-            if self.consent.is_some() || self.paste_offer.is_some() || self.state.form.is_some() {
+            if self.consent.is_some()
+                || self.paste_offer.is_some()
+                || self.state.form.is_some()
+                || self.finder.is_some()
+            {
                 let mut response = Some(Operation::Pane {
                     pane_id: pane.clone(),
                     request: PaneRequest::Clipboard {
@@ -1630,7 +1969,7 @@ impl App<'_> {
                 });
             }
             Ok(None) if !listing && self.paste_offer.is_some() => {
-                if self.focused_history() {
+                if self.focused_history() || self.state.sidebar.active || self.finder.is_some() {
                     self.paste_offer = None;
                     return Ok(());
                 }
@@ -1672,12 +2011,16 @@ impl App<'_> {
         Ok(())
     }
     fn apply_form(&mut self, size: Size) -> Result<()> {
-        let Some(form) = self.state.form.take() else {
+        let Some(form) = self.state.form.as_ref().cloned() else {
             return Ok(());
         };
-        self.state.focused = form.restore;
+        if form.pending.is_some() || form.ambiguous {
+            bail!(
+                "submission already pending or unconfirmed; inspect the result before submitting again"
+            );
+        }
         match form.kind {
-            FormKind::ProjectDetails => {}
+            FormKind::ProjectDetails => self.state.cancel(),
             FormKind::ReopenPane {
                 workspace_id,
                 expected_revision,
@@ -1724,11 +2067,13 @@ impl App<'_> {
                 )?;
             }
             FormKind::ChooseWorkspace => {
+                self.state.form = None;
                 if let Some(workspace) = self.registry.workspaces.get(form.selection) {
                     self.switch(workspace.id.clone());
                 }
             }
             FormKind::ChoosePane => {
+                self.state.form = None;
                 if let Some(pane) = self.registry.panes.get(form.selection) {
                     self.show_existing(pane.id.clone())?;
                 }
@@ -1737,12 +2082,13 @@ impl App<'_> {
                 if self.options.read_only {
                     bail!("read-only client cannot create workspaces");
                 }
+                let cwd = form.fields.directory();
                 self.manage(
                     management::Command::Create {
-                        name: form.value,
+                        name: form.fields.primary.value,
                         spec: PaneSpawnSpec {
                             argv: self.options.shell.clone(),
-                            cwd: self.options.cwd.clone(),
+                            cwd,
                             home: self.options.home.clone(),
                             size,
                             title: None,
@@ -1756,46 +2102,44 @@ impl App<'_> {
                 if self.options.read_only {
                     bail!("read-only client cannot rename workspaces");
                 }
-                let workspace = self
-                    .state
-                    .current(&self.registry)
-                    .context("no workspace")?
-                    .clone();
+                if form.fields.primary.value.trim().is_empty() {
+                    bail!("workspace name cannot be empty");
+                }
+                let workspace = self.form_workspace(form.target.as_ref())?;
                 self.operation(Operation::WorkspaceRename {
                     workspace_id: workspace.id,
                     expected_revision: workspace.revision,
-                    name: form.value,
+                    name: form.fields.primary.value,
                 })?;
             }
             FormKind::RenamePane => {
                 if self.options.read_only {
                     bail!("read-only client cannot rename panes");
                 }
+                if form.fields.primary.value.trim().is_empty() {
+                    bail!("terminal name cannot be empty");
+                }
                 self.operation(Operation::PaneRename {
-                    pane_id: self.state.focused.clone().context("no focused pane")?,
-                    title: form.value,
+                    pane_id: self.form_pane(form.target.as_ref())?,
+                    title: form.fields.primary.value,
                 })?;
             }
             FormKind::TerminatePane => {
-                if form.value == "yes" {
+                if form.confirmed {
                     if self.options.read_only {
                         bail!("read-only client cannot terminate panes");
                     }
                     self.operation(Operation::PaneTerminate {
-                        pane_id: self.state.focused.clone().context("no focused pane")?,
+                        pane_id: self.form_pane(form.target.as_ref())?,
                     })?;
                 }
             }
             FormKind::RemoveWorkspace => {
-                if form.value == "yes" {
+                if form.confirmed {
                     if self.options.read_only {
                         bail!("read-only client cannot remove workspaces");
                     }
-                    let workspace = self
-                        .state
-                        .current(&self.registry)
-                        .context("no workspace")?
-                        .clone();
+                    let workspace = self.form_workspace(form.target.as_ref())?;
                     self.operation(Operation::WorkspaceRemove {
                         workspace_id: workspace.id,
                         expected_revision: workspace.revision,
@@ -1805,21 +2149,18 @@ impl App<'_> {
         }
         Ok(())
     }
-    fn directional(&mut self, key: &str, rects: &[(String, Rect)]) {
-        let Some((_, current)) = rects
+    fn directional_target<'a>(&self, key: &str, rects: &'a [(String, Rect)]) -> Option<&'a str> {
+        let (_, current) = rects
             .iter()
-            .find(|(id, _)| Some(id) == self.state.focused.as_ref())
-        else {
-            return;
-        };
-        let cx = i32::from(current.x) * 2 + i32::from(current.width);
-        let cy = i32::from(current.y) * 2 + i32::from(current.height);
-        let target = rects
+            .find(|(id, _)| Some(id) == self.state.focused.as_ref())?;
+        let cx = i64::from(current.x) * 2 + i64::from(current.width);
+        let cy = i64::from(current.y) * 2 + i64::from(current.height);
+        rects
             .iter()
             .filter(|(id, _)| Some(id) != self.state.focused.as_ref())
             .filter_map(|(id, r)| {
-                let dx = i32::from(r.x) * 2 + i32::from(r.width) - cx;
-                let dy = i32::from(r.y) * 2 + i32::from(r.height) - cy;
+                let dx = i64::from(r.x) * 2 + i64::from(r.width) - cx;
+                let dy = i64::from(r.y) * 2 + i64::from(r.height) - cy;
                 let valid = match key {
                     "ArrowLeft" => dx < 0,
                     "ArrowRight" => dx > 0,
@@ -1830,10 +2171,188 @@ impl App<'_> {
                 valid.then_some((id, dx * dx + dy * dy))
             })
             .min_by_key(|(_, distance)| *distance)
-            .map(|(id, _)| id.clone());
-        if let Some(id) = target {
+            .map(|(id, _)| id.as_str())
+    }
+    fn directional(&mut self, key: &str, rects: &[(String, Rect)]) {
+        if let Some(id) = self.directional_target(key, rects).map(str::to_owned) {
             self.focus(id);
         }
+    }
+    fn form_workspace(&self, target: Option<&(SidebarTarget, u64)>) -> Result<Workspace> {
+        if let Some((target, revision)) = target {
+            let mut workspace = self
+                .registry
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == target.workspace())
+                .context("selected workspace no longer exists")?
+                .clone();
+            workspace.revision = *revision;
+            Ok(workspace)
+        } else {
+            bail!("workspace was unavailable when the form opened; reopen the form")
+        }
+    }
+    fn form_pane(&self, target: Option<&(SidebarTarget, u64)>) -> Result<String> {
+        match target {
+            Some((SidebarTarget::Pane { pane, .. }, _)) => Ok(pane.clone()),
+            Some((SidebarTarget::Workspace(_), _)) => bail!("selected item is not a terminal"),
+            None => self
+                .state
+                .form
+                .as_ref()
+                .and_then(|form| form.restore.clone())
+                .context("original terminal is unavailable"),
+        }
+    }
+    fn edit_sidebar(&mut self, close: bool) -> Result<()> {
+        if self.options.read_only {
+            bail!("read-only client cannot rename or close items");
+        }
+        let target = self
+            .state
+            .sidebar
+            .cursor
+            .clone()
+            .context("no selected sidebar item")?;
+        let workspace = self
+            .registry
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == target.workspace())
+            .context("selected workspace no longer exists")?;
+        let revision = workspace.revision;
+        let (kind, value) = match &target {
+            SidebarTarget::Workspace(_) if close => {
+                bail!(
+                    "Closing all workspace terminals requires backend workspace-close support; no processes or layouts changed"
+                );
+            }
+            SidebarTarget::Workspace(_) => (FormKind::RenameWorkspace, workspace.name.clone()),
+            SidebarTarget::Pane { pane, .. } => {
+                let pane = self
+                    .registry
+                    .panes
+                    .iter()
+                    .find(|entry| entry.id == *pane)
+                    .context("selected terminal no longer exists")?;
+                if close {
+                    (FormKind::TerminatePane, String::new())
+                } else {
+                    (FormKind::RenamePane, pane.title.clone())
+                }
+            }
+        };
+        self.open_form(kind, value);
+        self.state.form.as_mut().unwrap().target = Some((target, revision));
+        Ok(())
+    }
+    fn activate_sidebar(&mut self, target: SidebarTarget) -> Result<()> {
+        match target {
+            SidebarTarget::Workspace(id) => self.switch(id),
+            SidebarTarget::Pane { workspace, pane } => {
+                if self.state.workspace.as_ref() != Some(&workspace) {
+                    self.switch(workspace);
+                }
+                self.show_existing(pane)?;
+            }
+        }
+        self.state.sidebar.active = false;
+        Ok(())
+    }
+    fn sidebar_key(&mut self, event: &KeyEvent, size: Size) -> Result<bool> {
+        use crate::keyguide::{Action, Context, Navigation};
+        if self.state.prefix {
+            return Ok(false);
+        }
+        let context = if self.state.sidebar.active {
+            Context::Sidebar {
+                selected: self.state.sidebar.cursor.is_some(),
+            }
+        } else {
+            Context::Application
+        };
+        let action = self.binding_action(context, event)?;
+        if action == Some(Action::ToggleSidebar) {
+            if self.state.sidebar.active {
+                self.state.sidebar.active = false;
+            } else {
+                self.enter_sidebar();
+            }
+            self.state.suppressed.insert(event.key.clone());
+            return Ok(true);
+        }
+        if !self.state.sidebar.active
+            || matches!(action, Some(Action::CommandPrefix | Action::Detach))
+        {
+            return Ok(false);
+        }
+        self.state.suppressed.insert(event.key.clone());
+        self.state.status.clear();
+        let page = (screen_geometry(size).0.height.saturating_sub(2) / 2).max(1) as isize;
+        match action {
+            Some(Action::LeaveSidebar) => self.state.sidebar.active = false,
+            Some(Action::Navigate(direction)) => self.state.sidebar.navigate(match direction {
+                Navigation::Previous => -1,
+                Navigation::Next => 1,
+                Navigation::First => isize::MIN,
+                Navigation::Last => isize::MAX,
+                Navigation::PagePrevious => -page,
+                Navigation::PageNext => page,
+            }),
+            Some(Action::FoldSidebar) => self.state.sidebar.fold(Some(true)),
+            Some(Action::UnfoldSidebar) => self.state.sidebar.fold(Some(false)),
+            Some(Action::ToggleFoldSidebar) => self.state.sidebar.fold(None),
+            Some(Action::ActivateSelected) => {
+                if let Some(target) = self.state.sidebar.cursor.clone() {
+                    self.activate_sidebar(target)?;
+                }
+            }
+            Some(Action::CreateWorkspace) => {
+                self.open_form(FormKind::CreateWorkspace, String::new())
+            }
+            Some(Action::RenameSelected) => self.edit_sidebar(false)?,
+            Some(Action::CloseSelected) => self.edit_sidebar(true)?,
+            Some(Action::OpenFinder) => self.begin_finder(),
+            _ => {}
+        }
+        self.state.sidebar.reconcile(
+            &self.registry,
+            self.state.workspace.as_deref(),
+            self.state.focused.as_deref(),
+        );
+        Ok(true)
+    }
+    fn move_directional(&mut self, key: &str, size: Size) -> Result<()> {
+        if self.options.read_only {
+            bail!("read-only client cannot rearrange panes");
+        }
+        let rects = self.rects(size);
+        let Some(target) = self.directional_target(key, &rects) else {
+            self.state.status = "No pane in that direction; layout unchanged".into();
+            return Ok(());
+        };
+        let workspace = self.state.current(&self.registry).context("no workspace")?;
+        if self
+            .jobs
+            .contains(&format!("manage:workspace:{}", workspace.id))
+        {
+            bail!("Pane move waiting for pending workspace management; not queued");
+        }
+        let focused = self.state.focused.as_deref().context("no focused pane")?;
+        let mut layout = workspace
+            .layout
+            .clone()
+            .context("workspace has no layout")?;
+        exchange_leaves(&mut layout, focused, target);
+        let operation = Operation::LayoutUpdate {
+            workspace_id: workspace.id.clone(),
+            expected_revision: workspace.revision,
+            layout: Some(layout),
+        };
+        self.retire_resize("pane rearrangement");
+        self.selection_focus_lost();
+        self.operation(operation)
     }
     fn dispatch_key(
         &mut self,
@@ -1844,6 +2363,8 @@ impl App<'_> {
     ) -> Result<bool> {
         let local = self.state.prefix
             || self.state.form.is_some()
+            || self.finder.is_some()
+            || self.state.sidebar.active
             || self.focused_history()
             || self.resize_capturing()
             || self.search_open();
@@ -1873,11 +2394,7 @@ impl App<'_> {
             }
             KeyAction::Repeat
                 if self.state.suppressed.contains(&event.key)
-                    && !(self.resize_capturing()
-                        && matches!(
-                            event.key.as_str(),
-                            "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown"
-                        ))
+                    && !self.local_repeat(&event)
                     && !self.search_repeat(&event.key) =>
             {
                 return Ok(false);
@@ -1914,7 +2431,9 @@ impl App<'_> {
             }
             return Ok(false);
         }
-        if self.resize_key(&event, size)? {
+        if self.guide_context() == crate::keyguide::Context::Resize
+            && self.resize_key(&event, size)?
+        {
             return Ok(false);
         }
         if self.state.prefix {
@@ -1954,96 +2473,91 @@ impl App<'_> {
         {
             return Ok(true);
         }
-        if let Some(consent) = self
+        if self
             .consent
-            .as_mut()
-            .filter(|c| !c.state.sent && !c.state.allowed)
+            .as_ref()
+            .is_some_and(|consent| !consent.state.sent && !consent.state.allowed)
         {
-            if event.action != KeyAction::Release {
-                self.state.suppressed.insert(event.key.clone());
-                if event.modifiers & 6 == 0 {
-                    if event.text.eq_ignore_ascii_case("y") {
-                        consent.state.allowed = true;
-                        self.begin_consent(out)?;
-                    } else if event.text.eq_ignore_ascii_case("n") {
-                        self.finish_consent(ClipboardResponse::denied())?;
-                    }
+            use crate::keyguide::{self, Action, Context};
+            self.state.suppressed.insert(event.key.clone());
+            match keyguide::lookup(Context::ClipboardConsent, &event) {
+                Some(Action::AllowClipboard) => {
+                    self.consent.as_mut().unwrap().state.allowed = true;
+                    self.begin_consent(out)?;
                 }
+                Some(Action::DenyClipboard) => self.finish_consent(ClipboardResponse::denied())?,
+                _ => {}
             }
             return Ok(false);
         }
         if self.state.form.is_some() {
+            use crate::keyguide::{self, Action, Context, Navigation};
             self.selection_focus_lost();
-            if event.action == KeyAction::Release {
+            self.state.suppressed.insert(event.key.clone());
+            let form = self.state.form.as_ref().unwrap();
+            let context = form.context();
+            let action = keyguide::lookup(context, &event);
+            if action == Some(Action::Cancel) {
+                if form.pending.is_some() {
+                    self.selection_epoch = self.selection_epoch.wrapping_add(1);
+                }
+                self.state.cancel();
+                self.state.reconcile(&self.registry);
                 return Ok(false);
             }
-            self.state.suppressed.insert(event.key.clone());
-            match event.key.as_str() {
-                "Escape" => {
-                    self.state.cancel();
-                    self.state.reconcile(&self.registry);
-                }
-                "Enter" => self.apply_form(size)?,
-                "Backspace"
-                    if !matches!(
-                        self.state.form.as_ref().unwrap().kind,
-                        FormKind::ReopenPane { .. }
-                    ) =>
-                {
-                    self.state.form.as_mut().unwrap().value.pop();
-                }
-                "KeyU"
-                    if event.modifiers & 2 != 0
-                        && !matches!(
-                            self.state.form.as_ref().unwrap().kind,
-                            FormKind::ReopenPane { .. }
-                        ) =>
-                {
-                    self.state.form.as_mut().unwrap().value.clear()
-                }
-                "ArrowDown" | "ArrowUp" => {
-                    let form = self.state.form.as_mut().unwrap();
-                    if form.kind == FormKind::ProjectDetails {
-                        let last = project_detail_lines(size, form, &self.registry)
-                            .len()
-                            .saturating_sub(1);
-                        form.selection = if event.key == "ArrowDown" {
-                            form.selection.saturating_add(1).min(last)
-                        } else {
-                            form.selection.saturating_sub(1)
-                        };
-                        return Ok(false);
-                    }
-                    let n = match form.kind {
-                        FormKind::ChooseWorkspace => self.registry.workspaces.len(),
-                        FormKind::ChoosePane => self.registry.panes.len(),
-                        FormKind::ReopenPane { .. } => 2,
-                        _ => 0,
-                    };
-                    if n > 0 {
-                        form.selection = if event.key == "ArrowDown" {
-                            (form.selection + 1) % n
-                        } else {
-                            (form.selection + n - 1) % n
-                        };
-                    }
-                }
-                _ => {
-                    if event.modifiers & 6 == 0 {
-                        let form = self.state.form.as_mut().unwrap();
-                        if !matches!(
-                            form.kind,
-                            FormKind::ChooseWorkspace
-                                | FormKind::ChoosePane
-                                | FormKind::ProjectDetails
-                                | FormKind::ReopenPane { .. }
-                        ) && form.value.len() + event.text.len() <= 1024
-                        {
-                            form.value.push_str(&safe_text(&event.text));
-                        }
-                    }
-                }
+            if form.pending.is_some() || form.ambiguous {
+                return Ok(false);
             }
+            if action == Some(Action::Submit) {
+                if context == Context::Confirmation {
+                    self.state.form.as_mut().unwrap().confirmed = true;
+                }
+                if let Err(error) = self.apply_form(size) {
+                    let message = format!("{error:#}");
+                    self.state.status = message.clone();
+                    if let Some(form) = &mut self.state.form {
+                        form.error = Some(message);
+                    }
+                }
+                return Ok(false);
+            }
+            let form_size = self.modal_geometry(size).1.size(size);
+            let form = self.state.form.as_mut().unwrap();
+            if let Some(Action::Navigate(navigation)) = action {
+                let count = match form.kind {
+                    FormKind::ProjectDetails => {
+                        project_detail_lines(form_size, form, &self.registry).len()
+                    }
+                    FormKind::ChooseWorkspace => self.registry.workspaces.len(),
+                    FormKind::ChoosePane => self.registry.panes.len(),
+                    FormKind::ReopenPane { .. } => 2,
+                    _ => 0,
+                };
+                let last = count.saturating_sub(1);
+                let page = form_size.rows.saturating_sub(4).max(1) as usize;
+                form.selection = match navigation {
+                    Navigation::Previous => form.selection.saturating_sub(1),
+                    Navigation::Next => form.selection.saturating_add(1).min(last),
+                    Navigation::First => 0,
+                    Navigation::Last => last,
+                    Navigation::PagePrevious => form.selection.saturating_sub(page),
+                    Navigation::PageNext => form.selection.saturating_add(page).min(last),
+                };
+            } else if matches!(context, Context::Create | Context::Edit) {
+                form.error = None;
+                form.fields.edit(&event, context == Context::Create);
+            }
+            return Ok(false);
+        }
+        if self.finder.is_some() {
+            let (_, content) = self.modal_geometry(size);
+            let intent = self
+                .finder
+                .as_mut()
+                .unwrap()
+                .handle_key(&event, content.size(size));
+            self.state.suppressed.insert(event.key.clone());
+            self.finder_intent(intent)?;
             return Ok(false);
         }
         if self.search_open()
@@ -2055,11 +2569,15 @@ impl App<'_> {
         {
             return Ok(false);
         }
+        if self.sidebar_key(&event, size)? {
+            return Ok(false);
+        }
         if event.action == KeyAction::Press && event.key == "KeyB" && event.modifiers & 2 != 0 {
             self.state.suppressed.insert(event.key);
             if self.state.prefix {
                 self.state.prefix = false;
                 if !self.options.read_only
+                    && !self.state.sidebar.active
                     && !self.search_open()
                     && !self.focused_history()
                     && let Some((pane, view)) = self.active()
@@ -2099,24 +2617,34 @@ impl App<'_> {
             self.state.prefix = false;
             self.state.suppressed.insert(event.key.clone());
             self.state.status.clear();
-            if !matches!(event.text.as_str(), "/" | "y") {
+            use crate::keyguide::{Action, Context};
+            let action = self.binding_action(Context::CommandPrefix, &event)?;
+            if !matches!(action, Some(Action::StartSearch | Action::CopySelection)) {
                 self.close_search();
             }
-            match (event.text.as_str(), event.key.as_str()) {
-                ("d", _) => return Ok(true),
-                ("/", _) => self.begin_search()?,
-                ("s", _) => self.enter_history(rects)?,
-                ("e", _) => self.begin_keyboard_resize(size)?,
-                ("y", _) => self.copy_focused_selection()?,
-                ("i", _) => self.state.open(FormKind::ProjectDetails, String::new()),
-                ("c", _) => self.state.open(FormKind::CreateWorkspace, String::new()),
-                ("r", _) => {
+            match action {
+                Some(Action::Detach) => return Ok(true),
+                Some(Action::StartSearch) => self.begin_search()?,
+                Some(Action::StartHistory) => self.enter_history(rects)?,
+                Some(Action::StartResize) => self.begin_keyboard_resize(size)?,
+                Some(Action::EnterSidebar) => {
+                    self.state.sidebar.enter();
+                    self.retire_resize("sidebar focused");
+                    self.selection_focus_lost();
+                }
+                Some(Action::CopySelection) => self.copy_focused_selection()?,
+                Some(Action::ProjectDetails) => {
+                    self.open_form(FormKind::ProjectDetails, String::new())
+                }
+                Some(Action::CreateWorkspace) => {
+                    self.open_form(FormKind::CreateWorkspace, String::new())
+                }
+                Some(Action::RenameWorkspace) => {
                     if let Some(workspace) = self.state.current(&self.registry) {
-                        self.state
-                            .open(FormKind::RenameWorkspace, workspace.name.clone());
+                        self.open_form(FormKind::RenameWorkspace, workspace.name.clone());
                     }
                 }
-                ("p", _) => {
+                Some(Action::RenamePane) => {
                     let title = self
                         .state
                         .focused
@@ -2124,16 +2652,22 @@ impl App<'_> {
                         .and_then(|id| self.registry.panes.iter().find(|p| p.id == *id))
                         .map(|p| p.title.clone())
                         .unwrap_or_default();
-                    self.state.open(FormKind::RenamePane, title);
+                    self.open_form(FormKind::RenamePane, title);
                 }
-                ("!", _) => self.state.open(FormKind::TerminatePane, String::new()),
-                ("X", _) => self.state.open(FormKind::RemoveWorkspace, String::new()),
-                ("w", _) => self.state.open(FormKind::ChooseWorkspace, String::new()),
-                ("o", _) => self.state.open(FormKind::ChoosePane, String::new()),
-                ("R", _) => self.confirm_reopen()?,
-                ("n", _) | ("%", _) => self.spawn(size, Axis::Horizontal)?,
-                ("\"", _) => self.spawn(size, Axis::Vertical)?,
-                ("x", _) => {
+                Some(Action::TerminatePane) => {
+                    self.open_form(FormKind::TerminatePane, String::new())
+                }
+                Some(Action::RemoveWorkspace) => {
+                    self.open_form(FormKind::RemoveWorkspace, String::new())
+                }
+                Some(Action::ChooseWorkspace) => {
+                    self.open_form(FormKind::ChooseWorkspace, String::new())
+                }
+                Some(Action::ChoosePane) => self.open_form(FormKind::ChoosePane, String::new()),
+                Some(Action::ReopenPane) => self.confirm_reopen()?,
+                Some(Action::SplitHorizontal) => self.spawn(size, Axis::Horizontal)?,
+                Some(Action::SplitVertical) => self.spawn(size, Axis::Vertical)?,
+                Some(Action::RemovePaneFromLayout) => {
                     if self.options.read_only {
                         bail!("read-only client cannot change layouts");
                     }
@@ -2153,28 +2687,29 @@ impl App<'_> {
                         "Layout removal pending; process survives. Ctrl-b o or click ◌ to show it."
                             .into();
                 }
-                ("[", _) => {
+                Some(Action::PreviousWorkspace) => {
                     self.retire_resize("workspace focus changed");
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_workspace(&self.registry, -1);
                     self.select_current_lease();
                 }
-                ("]", _) => {
+                Some(Action::NextWorkspace) => {
                     self.retire_resize("workspace focus changed");
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_workspace(&self.registry, 1);
                     self.select_current_lease();
                 }
-                (_, "Tab") => {
+                Some(Action::NextPane) => {
                     self.retire_resize("pane focus changed");
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_pane(&self.registry);
                     self.select_current_lease();
                 }
-                (_, key @ ("ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown")) => {
-                    self.directional(key, rects)
+                Some(Action::MovePane(direction)) => {
+                    self.move_directional(direction.key(), size)?
                 }
-                (_, "Escape") => {}
+                Some(Action::FocusPane(direction)) => self.directional(direction.key(), rects),
+                Some(Action::Cancel) => {}
                 _ => self.state.status = "Unknown Ctrl-b command; press Ctrl-b for bindings".into(),
             };
             if self.state.form.is_some() {
@@ -2319,13 +2854,55 @@ impl App<'_> {
             return Ok(());
         }
         let modal = self.state.form.is_some()
+            || self.finder.is_some()
             || self
                 .consent
                 .as_ref()
                 .is_some_and(|consent| !consent.state.allowed && !consent.state.sent);
         // Complete an already accepted native gesture even if a modal acquired
         // focus afterward; never start a native gesture through a modal.
+        if origin.is_none()
+            && self.finder.is_some()
+            && !self
+                .consent
+                .as_ref()
+                .is_some_and(|consent| !consent.state.allowed && !consent.state.sent)
+        {
+            if let Some(rect) = self.modal_rect
+                && rect.contains(mouse.x, mouse.y)
+            {
+                let event = MouseEvent {
+                    x: f32::from(mouse.x - rect.x),
+                    y: f32::from(mouse.y - rect.y),
+                    button: event_button,
+                    action,
+                    modifiers: u16::from(selection::mouse_modifiers(mouse.modifiers)),
+                };
+                let intent = self
+                    .finder
+                    .as_mut()
+                    .unwrap()
+                    .handle_mouse(&event, rect.size(size));
+                self.finder_intent(intent)?;
+            }
+            return Ok(());
+        }
         if modal && !(origin.is_some() && action == MouseAction::Release) {
+            return Ok(());
+        }
+        if origin.is_none() && hits.hit_test(mouse.x, mouse.y) == Some(crate::popover::SURFACE_ID) {
+            match button {
+                MouseButton::WheelUp => self.popover.scroll_by(-3),
+                MouseButton::WheelDown => self.popover.scroll_by(3),
+                _ => {}
+            }
+            return Ok(());
+        }
+        if origin.is_none()
+            && hits
+                .hit_test(mouse.x, mouse.y)
+                .is_none_or(|id| matches!(id, "ui:modal" | "ui:search" | "ui:guide" | "ui:window"))
+        {
             return Ok(());
         }
         if origin.is_none()
@@ -2335,25 +2912,41 @@ impl App<'_> {
         {
             return Ok(());
         }
-        if origin.is_none()
-            && hits
-                .hit_test(mouse.x, mouse.y)
-                .is_none_or(|id| id == "ui:modal" || id == "ui:search")
-        {
-            return Ok(());
-        }
         let (sidebar, _) = screen_geometry(size);
         if origin.is_none() && mouse.x < sidebar.width {
+            self.state.sidebar.pointer_row = Some(mouse.y);
+            self.state.sidebar.hover(
+                workspace_hits
+                    .iter()
+                    .find(|(_, row)| *row == mouse.y)
+                    .map(|(target, _)| target),
+            );
+            if matches!(button, MouseButton::WheelUp | MouseButton::WheelDown) {
+                self.state
+                    .sidebar
+                    .scroll_by(if button == MouseButton::WheelUp {
+                        -3
+                    } else {
+                        3
+                    });
+                return Ok(());
+            }
             if button == MouseButton::Left
                 && action == MouseAction::Press
                 && let Some((target, _)) = workspace_hits.iter().find(|(_, row)| *row == mouse.y)
             {
-                match target {
-                    SidebarTarget::Workspace(id) => self.switch(id.clone()),
-                    SidebarTarget::Pane(id) => self.show_existing(id.clone())?,
+                let double = self.state.sidebar.click(target.clone(), Instant::now());
+                self.activate_sidebar(target.clone())?;
+                if double {
+                    self.state.sidebar.select(target.clone());
+                    self.state.sidebar.fold(None);
                 }
             }
             return Ok(());
+        }
+        if origin.is_none() {
+            self.state.sidebar.pointer_row = None;
+            self.state.sidebar.hover(None);
         }
         let target = if let Some(origin) = origin {
             rects.iter().find(|(pane, _)| *pane == origin.pane)
@@ -2366,6 +2959,7 @@ impl App<'_> {
             return Ok(());
         };
         if origin.is_none() && button == MouseButton::Left && action == MouseAction::Press {
+            self.state.sidebar.active = false;
             self.focus(pane.clone());
         }
         self.notify_focus()?;
@@ -2505,8 +3099,11 @@ impl App<'_> {
         out: &mut impl Write,
         terminal: &mut TerminalGuard,
     ) -> Result<()> {
-        if response.starts_with(b"G") {
-            if let Some(status) = response.splitn(2, |b| *b == b';').nth(1)
+        if let Some(graphics) = response.strip_prefix(b"graphics;") {
+            if self.colors.graphics.consume_tagged(response) {
+                return Ok(());
+            }
+            if let Some(status) = graphics.splitn(2, |b| *b == b';').nth(1)
                 && status != b"OK"
             {
                 bail!(
@@ -2531,12 +3128,8 @@ impl App<'_> {
             {
                 let supported = (1..=4).contains(&status);
                 self.enhanced_supported = Some(supported);
-                if supported && terminal.clipboard_mode.is_none() {
-                    terminal.clipboard_mode = Some(matches!(status, 1 | 3));
-                    if !self.options.read_only && self.options.clipboard_policy != "deny" {
-                        write!(out, "\x1b[?5522h")?;
-                        out.flush()?;
-                    }
+                if supported {
+                    terminal.observe_enhanced_paste(matches!(status, 1 | 3));
                 }
             }
             return Ok(());
@@ -2593,25 +3186,23 @@ impl App<'_> {
 
 // Runs exclusively on the bounded background pool. Attach starts ineligible:
 // a stale or slow initial poll must never acquire hidden size/device authority.
-fn attach(socket: &Path, pane: &str, mut spec: ViewSpec) -> Result<Attached> {
+fn attach(socket: &Endpoint, pane: &str, mut spec: ViewSpec) -> Result<Attached> {
     spec.visible = false;
     spec.interactive = false;
     spec.clipboard = false;
-    let payload = transport::checked(
-        socket,
-        Operation::Pane {
+    let payload = socket
+        .checked(Operation::Pane {
             pane_id: pane.into(),
             request: PaneRequest::Attach { spec: spec.clone() },
-        },
-    )
-    .map_err(|error| {
-        let ownership = if transport::outcome_unknown(&error) {
-            AttachOwnership::Unconfirmed
-        } else {
-            AttachOwnership::NotAdmitted
-        };
-        error.context(ownership)
-    })?;
+        })
+        .map_err(|error| {
+            let ownership = if transport::outcome_unknown(&error) {
+                AttachOwnership::Unconfirmed
+            } else {
+                AttachOwnership::NotAdmitted
+            };
+            error.context(ownership)
+        })?;
     let result: AttachResult = serde_json::from_value(payload).map_err(|error| {
         transport::mark_outcome_unknown(error.into()).context(AttachOwnership::Unconfirmed)
     })?;
@@ -2658,20 +3249,17 @@ fn attach(socket: &Path, pane: &str, mut spec: ViewSpec) -> Result<Attached> {
     Ok(attached)
 }
 fn detach_failed_attach(
-    socket: &Path,
+    socket: &Endpoint,
     pane: &str,
     view: &str,
     error: anyhow::Error,
 ) -> anyhow::Error {
-    match transport::checked(
-        socket,
-        Operation::Pane {
-            pane_id: pane.into(),
-            request: PaneRequest::Detach {
-                view_id: view.into(),
-            },
+    match socket.checked(Operation::Pane {
+        pane_id: pane.into(),
+        request: PaneRequest::Detach {
+            view_id: view.into(),
         },
-    ) {
+    }) {
         Ok(_) => error
             .context(format!(
                 "pane {pane} admitted view {view} was detached after initial snapshot failure"
@@ -2694,10 +3282,31 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
     if !matches!(options.clipboard_policy.as_str(), "ask" | "allow" | "deny") {
         bail!("clipboard must be ask, allow or deny");
     }
-    let registry: RegistryResult =
-        serde_json::from_value(transport::checked(socket, Operation::Inspect)?)?;
-    let state = Controller::new(&registry.registry);
+    let mut client = RegisteredClient::register(socket)?;
+    let endpoint = client.endpoint().clone();
+    let socket = &endpoint;
+    let terminal = TerminalGuard::enter()?;
+    let initial_size = dimensions()?;
+    let jobs = jobs::Jobs::new(8)?;
     let input = InputPump::new(socket)?;
+    let mut graphics = crate::chrome_graphics::ChromeGraphics::new()?;
+    let (resize_read, resize_write) = std::os::unix::net::UnixStream::pair()?;
+    resize_read.set_nonblocking(true)?;
+    resize_write.set_nonblocking(true)?;
+    struct ResizeSignal(signal_hook::SigId);
+    impl Drop for ResizeSignal {
+        fn drop(&mut self) {
+            signal_hook::low_level::unregister(self.0);
+        }
+    }
+    let _resize = ResizeSignal(signal_hook::low_level::pipe::register(
+        signal_hook::consts::SIGWINCH,
+        resize_write,
+    )?);
+    let mut resize_read = resize_read;
+    client.activate_once(options.detach_others)?;
+    let registry: RegistryResult = serde_json::from_value(socket.checked(Operation::Inspect)?)?;
+    let state = Controller::new(&registry.registry);
     let mut registry_pump = updates::registry(socket, registry.registry.revision)?;
     let mut app = App {
         socket,
@@ -2707,7 +3316,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         views: HashMap::new(),
         retiring: Vec::new(),
         retiring_candidates: Vec::new(),
-        jobs: jobs::Jobs::new(8)?,
+        jobs,
         management: HashMap::new(),
         selection_epoch: 0,
         attach_slots: 0,
@@ -2731,39 +3340,50 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         terminal_selection: selection::State::default(),
         resizing: resizing::State::default(),
         search: search::State::default(),
+        finder: None,
+        popover: crate::popover::Popover::new(initial_size),
+        modal_rect: None,
+        guide: GuideCache::default(),
         notified_focus: None,
         focus_out_pending: HashSet::new(),
         lease_pending: HashSet::new(),
         host_focused: true,
     };
     let result = (|| -> Result<()> {
-        let mut terminal = TerminalGuard::enter()?;
+        let mut terminal = terminal;
         let mut renderer = Renderer::default();
         let stdout = std::io::stdout();
         let mut out = std::io::BufWriter::with_capacity(256 * 1024, stdout.lock());
+        out.write_all(&app.colors.graphics.begin())?;
+        out.flush()?;
         let mut parser = InputParser::new();
         let mut demux = ReplyDemux::default();
         let mut last_input = Instant::now();
-        let initial_size = dimensions()?;
         let mut chrome_surface = UiSurface::new(initial_size);
-        let mut popup_surface = UiSurface::new(initial_size);
+        let mut popup_surface = UiSurface::new(Size {
+            cols: 1,
+            rows: 1,
+            ..initial_size
+        });
+        let mut window_surface = UiSurface::new(Size {
+            cols: 1,
+            rows: 1,
+            ..initial_size
+        });
+        let mut guide_surface = UiSurface::new(Size {
+            cols: 1,
+            rows: 1,
+            ..initial_size
+        });
+        let mut window_size = None;
+        let mut guide_painted = None;
         let mut search_surface = UiSurface::new(initial_size);
         let mut placeholders = HashMap::<String, Frame>::new();
-        let (resize_read, resize_write) = std::os::unix::net::UnixStream::pair()?;
-        resize_read.set_nonblocking(true)?;
-        resize_write.set_nonblocking(true)?;
-        struct ResizeSignal(signal_hook::SigId);
-        impl Drop for ResizeSignal {
-            fn drop(&mut self) {
-                signal_hook::low_level::unregister(self.0);
-            }
-        }
-        let _resize = ResizeSignal(signal_hook::low_level::pipe::register(
-            signal_hook::consts::SIGWINCH,
-            resize_write,
-        )?);
-        let mut resize_read = resize_read;
         loop {
+            if client.consume_lifecycle()? {
+                return Ok(());
+            }
+            graphics.drain()?;
             for failure in app.input.check()? {
                 app.record_input_failure(failure);
             }
@@ -2782,6 +3402,14 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 app.state.reconcile(&app.registry);
             }
             let size = dimensions()?;
+            app.state.sidebar.reconcile(
+                &app.registry,
+                app.state.workspace.as_deref(),
+                app.state.focused.as_deref(),
+            );
+            app.state
+                .sidebar
+                .viewport(screen_geometry(size).0.height.saturating_sub(2) as usize);
             app.validate_resize(size);
             let rects = app.rects(size);
             app.sync_views(size, &rects)?;
@@ -2831,6 +3459,20 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             }
             let clipboard = app.clipboard(&mut out);
             app.scope_input_result(clipboard)?;
+            let transfer = app.paste_offer.is_some()
+                || app
+                    .consent
+                    .as_ref()
+                    .is_some_and(|consent| consent.state.paste);
+            let local = app.guide_context() != crate::keyguide::Context::Application;
+            terminal.set_enhanced_paste(
+                &mut out,
+                transfer
+                    || (app.enhanced_supported == Some(true)
+                        && !app.options.read_only
+                        && app.options.clipboard_policy != "deny"
+                        && !local),
+            )?;
             app.validate_resize(size);
             app.flush_resize()?;
             if app
@@ -2850,6 +3492,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 app.scope_input_result(result)?;
             }
             app.resize_hint();
+            app.refresh_guide(size);
             let workspace_hits = chrome(
                 &mut chrome_surface,
                 crate::controller::ChromeContext {
@@ -2857,12 +3500,59 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     state: &app.state,
                     registry: &app.registry,
                     rects: &rects,
-                    rgb: app.colors.truecolor,
+                    guide: &app.guide.footer,
                 },
                 |pane| app.badge(pane),
                 |pane| app.views.get(pane).map(|view| &view.metadata),
                 |pane| app.history(pane),
             );
+            let accent = app.colors.background.map(ColorSource::Rgb);
+            graphics.prepare(&app.colors, size, accent.as_slice());
+            chrome_surface.frame.images.clear();
+            chrome_surface.frame.placements.clear();
+            let sidebar_width = screen_geometry(size).0.width;
+            for (index, entry) in app
+                .state
+                .sidebar
+                .rows
+                .iter()
+                .skip(app.state.sidebar.scroll)
+                .take(usize::from(size.rows.saturating_sub(3)))
+                .enumerate()
+            {
+                let (artwork, col) = match entry.kind {
+                    SidebarRowKind::Workspace { .. } => (crate::chrome_graphics::Artwork::Hive, 2),
+                    SidebarRowKind::Pane { .. } => (crate::chrome_graphics::Artwork::Bee, 4),
+                    _ => continue,
+                };
+                if col + 2 > sidebar_width.saturating_sub(1) {
+                    continue;
+                }
+                let row = index as u16 + 2;
+                let style =
+                    &chrome_surface.frame.rows[usize::from(row)].cells[usize::from(col)].style;
+                let source = if style.inverse {
+                    accent
+                } else {
+                    Some(style.foreground_source)
+                };
+                graphics.decorate(
+                    &mut chrome_surface.frame,
+                    artwork,
+                    col,
+                    row,
+                    source,
+                    u32::from(row) + 1,
+                );
+            }
+            if let Some(row) = app.state.sidebar.pointer_row {
+                app.state.sidebar.hover(
+                    workspace_hits
+                        .iter()
+                        .find(|(_, y)| *y == row)
+                        .map(|(target, _)| target),
+                );
+            }
             native_colors(&mut chrome_surface.frame, &app.colors);
             placeholders.retain(|id, _| {
                 rects.iter().any(|(pane, _)| pane == id)
@@ -2886,36 +3576,140 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 native_colors(frame, &app.colors);
                 text(frame, 0, 0, &app.placeholder(id), false);
             }
-            let popup = if let Some(form) = &app.state.form {
-                modal(&mut popup_surface, size, form, &app.registry, |pane| {
-                    app.views.get(pane).map(|view| &view.metadata)
-                });
-                true
-            } else if app
+            let consent_open = app
                 .consent
                 .as_ref()
-                .is_some_and(|c| !c.state.allowed && !c.state.sent)
-            {
-                let x = 2.min(size.cols.saturating_sub(1));
-                popup_surface.paint(
-                    size,
-                    vec![(
+                .is_some_and(|consent| !consent.state.allowed && !consent.state.sent);
+            if let Some(finder) = &mut app.finder {
+                finder.update_registry(&app.registry, |pane| {
+                    app.views.get(pane).map(|view| &view.metadata)
+                });
+            }
+            let popup = consent_open || app.state.form.is_some() || app.finder.is_some();
+            let placement = popup.then(|| {
+                if consent_open {
+                    let rect = window::centered(
+                        size,
+                        size.cols.saturating_sub(4).clamp(1, 82),
+                        size.rows.min(6),
+                    );
+                    let inset = window::content(Size {
+                        cols: rect.width,
+                        rows: rect.height,
+                        ..size
+                    });
+                    (
+                        rect,
                         Rect {
-                            x,
-                            y: size.rows / 2,
-                            width: size.cols - x,
-                            height: 1,
+                            x: rect.x + inset.x,
+                            y: rect.y + inset.y,
+                            ..inset
                         },
-                        "Clipboard request: y allow / n deny (pane-local)".into(),
-                        true,
-                    )],
-                    None,
-                );
-                true
+                    )
+                } else {
+                    app.modal_geometry(size)
+                }
+            });
+            app.modal_rect = placement.map(|(_, content)| content);
+            if let Some((outer, inner)) = placement {
+                let local = Size {
+                    cols: outer.width,
+                    rows: outer.height,
+                    ..size
+                };
+                if window_size != Some(local) {
+                    window_surface.paint(
+                        local,
+                        window::border_rows(local, "", window::Border::Rounded),
+                        None,
+                    );
+                    window_size = Some(local);
+                }
+                let local = inner.size(size);
+                if consent_open {
+                    popup_surface.paint(
+                        local,
+                        vec![(
+                            Rect {
+                                x: 0,
+                                y: 0,
+                                width: local.cols,
+                                height: 1,
+                            },
+                            "Clipboard request: y allow / n deny (pane-local)".into(),
+                            true,
+                        )],
+                        None,
+                    );
+                } else if let Some(finder) = &mut app.finder {
+                    finder.paint(&mut popup_surface, local);
+                } else if let Some(form) = &app.state.form {
+                    modal(&mut popup_surface, local, form, &app.registry, |pane| {
+                        app.views.get(pane).map(|view| &view.metadata)
+                    });
+                }
+                native_colors(&mut popup_surface.frame, &app.colors);
+                native_colors(&mut window_surface.frame, &app.colors);
+            }
+            let tooltip_target = if popup || app.state.prefix || app.search_open() {
+                None
+            } else if app.state.sidebar.active {
+                app.state.sidebar.cursor.as_ref()
             } else {
-                false
+                app.state.sidebar.hover.as_ref()
             };
-            native_colors(&mut popup_surface.frame, &app.colors);
+            let anchor = tooltip_target.and_then(|target| {
+                workspace_hits
+                    .iter()
+                    .find(|(candidate, _)| candidate == target)
+                    .map(|(_, row)| *row)
+            });
+            let tooltip = app.popover.paint(
+                &app.registry,
+                tooltip_target.filter(|_| anchor.is_some()),
+                anchor.unwrap_or(0),
+                screen_geometry(size).0.width,
+                size,
+                |pane| app.views.get(pane).map(|view| &view.metadata),
+            );
+            if tooltip.is_some() {
+                native_colors(&mut app.popover.surface.frame, &app.colors);
+            }
+            let guide_rect = app.guide_geometry(size, tooltip, popup);
+            if let Some(rect) = guide_rect {
+                let local = rect.size(size);
+                let key = (app.guide.key, local);
+                if guide_painted != Some(key) {
+                    let mut rows = window::border_rows(
+                        local,
+                        app.guide_context().title(),
+                        window::Border::Rounded,
+                    );
+                    let content = window::content(local);
+                    rows.extend(
+                        app.guide
+                            .expanded
+                            .iter()
+                            .take(usize::from(content.height))
+                            .enumerate()
+                            .map(|(y, text)| {
+                                (
+                                    Rect {
+                                        x: content.x,
+                                        y: content.y + y as u16,
+                                        width: content.width,
+                                        height: 1,
+                                    },
+                                    text.clone(),
+                                    false,
+                                )
+                            }),
+                    );
+                    guide_surface.paint(local, rows, None);
+                    guide_painted = Some(key);
+                }
+                native_colors(&mut guide_surface.frame, &app.colors);
+            }
             let searching = app.search_overlay(&mut search_surface, size);
             native_colors(&mut search_surface.frame, &app.colors);
             let mut surfaces = vec![Surface {
@@ -2950,6 +3744,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                         search: app.search_spans(id),
                         focused: !popup
                             && !searching
+                            && !app.state.sidebar.active
                             && app.state.focused.as_ref() == Some(id)
                             && app.input_enabled(id)
                             && app.history(id).is_none()
@@ -2961,15 +3756,38 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     });
                 }
             }
-            if popup {
+            if let Some(rect) = tooltip {
+                surfaces.push(Surface {
+                    id: crate::popover::SURFACE_ID,
+                    rect,
+                    frame: &app.popover.surface.frame,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                });
+            }
+            if let Some(rect) = guide_rect {
+                surfaces.push(Surface {
+                    id: "ui:guide",
+                    rect,
+                    frame: &guide_surface.frame,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                });
+            }
+            if let Some((outer, inner)) = placement {
+                surfaces.push(Surface {
+                    id: "ui:window",
+                    rect: outer,
+                    frame: &window_surface.frame,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                });
                 surfaces.push(Surface {
                     id: "ui:modal",
-                    rect: Rect {
-                        x: 0,
-                        y: 0,
-                        width: size.cols,
-                        height: size.rows,
-                    },
+                    rect: inner,
                     frame: &popup_surface.frame,
                     selection: &[],
                     search: &[],
@@ -2993,6 +3811,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             }
             let scene = Scene { size, surfaces };
             let hits = scene.hit_map();
+            if client.consume_lifecycle()? {
+                return Ok(());
+            }
             renderer.render(&mut out, &scene, &app.colors, &mut terminal)?;
             let mut fds = vec![
                 libc::pollfd {
@@ -3020,6 +3841,16 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     events: libc::POLLIN,
                     revents: 0,
                 },
+                libc::pollfd {
+                    fd: client.lifetime_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: graphics.wake_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
             ];
             for (pane, view) in &app.views {
                 if view.retirement_requested || app.view_failures.contains_key(pane) {
@@ -3043,6 +3874,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
             {
                 return Err(std::io::Error::last_os_error().into());
+            }
+            if client.consume_lifecycle()? {
+                return Ok(());
             }
             let mut resized = [0u8; 64];
             let mut geometry_changed = false;
@@ -3075,6 +3909,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             };
             let mut incoming = VecDeque::from(decode_input(&mut parser, parts, available));
             while let Some(event) = incoming.pop_front() {
+                if client.consume_lifecycle()? {
+                    return Ok(());
+                }
                 match event {
                     ClientEvent::Reply(response) => {
                         if let Some(key) = response.strip_prefix(b"key;") {
@@ -3119,6 +3956,23 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         }
         Ok(())
     })();
+    let lifecycle = client.consume_lifecycle();
+    if socket.is_revoked() {
+        // Backend revocation already retired this client's views and grants.
+        // Do not manufacture failed cleanup mutations with expired authority.
+        let mut finished = result.and(lifecycle.map(|_| ()));
+        match app.jobs.finish() {
+            Ok(completions) => {
+                for completion in completions {
+                    accumulate_cleanup(&mut finished, completion.result.map(|_| ()));
+                }
+            }
+            Err(error) => accumulate_cleanup(&mut finished, Err(error)),
+        }
+        accumulate_cleanup(&mut finished, app.input.finish());
+        return finished;
+    }
+    lifecycle?;
     app.retire_resize("client detached");
     let mut cleanup = Ok(());
     while app.consent.is_some() {
@@ -3159,17 +4013,15 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             spec.visible = false;
             spec.interactive = false;
             spec.clipboard = false;
-            let revoke = transport::checked(
-                socket,
-                Operation::Pane {
+            let revoke = socket
+                .checked(Operation::Pane {
                     pane_id: pane.clone(),
                     request: PaneRequest::Update {
                         view_id: attached.view.clone(),
                         spec,
                     },
-                },
-            )
-            .map(|_| ());
+                })
+                .map(|_| ());
             accumulate_cleanup(&mut cleanup, revoke);
         }
     }
@@ -3212,10 +4064,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             .release
             .take()
             .unwrap_or_else(|| pointer.release_operation());
-        accumulate_cleanup(
-            &mut cleanup,
-            transport::checked(socket, operation).map(|_| ()),
-        );
+        accumulate_cleanup(&mut cleanup, socket.checked(operation).map(|_| ()));
     }
     // Only views whose final retirement was not admitted reach this fallback.
     // All accepted lane operations have settled before their explicit detach.
@@ -3235,7 +4084,8 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         drop(retired.attached);
         accumulate_cleanup(&mut released, result);
     }
-    result.and(cleanup).and(drained).and(released)
+    let detached = client.detach();
+    result.and(cleanup).and(drained).and(released).and(detached)
 }
 
 fn accumulate_cleanup(result: &mut Result<()>, next: Result<()>) {
@@ -3248,36 +4098,32 @@ fn accumulate_cleanup(result: &mut Result<()>, next: Result<()>) {
         };
     }
 }
-fn detach_view(socket: &Path, pane: &str, attached: &Attached, focus_out: bool) -> Result<()> {
+fn detach_view(socket: &Endpoint, pane: &str, attached: &Attached, focus_out: bool) -> Result<()> {
     let mut result = Ok(());
     if focus_out {
         accumulate_cleanup(
             &mut result,
-            transport::checked(
-                socket,
-                Operation::Pane {
+            socket
+                .checked(Operation::Pane {
                     pane_id: pane.into(),
                     request: PaneRequest::Focus {
                         view_id: attached.view.clone(),
                         focused: false,
                     },
-                },
-            )
-            .map(|_| ()),
+                })
+                .map(|_| ()),
         );
     }
     accumulate_cleanup(
         &mut result,
-        transport::checked(
-            socket,
-            Operation::Pane {
+        socket
+            .checked(Operation::Pane {
                 pane_id: pane.into(),
                 request: PaneRequest::Detach {
                     view_id: attached.view.clone(),
                 },
-            },
-        )
-        .map(|_| ()),
+            })
+            .map(|_| ()),
     );
     result
 }
@@ -3295,9 +4141,16 @@ mod tests {
         let (input, received) = InputPump::capture();
         (
             App {
-                socket: Path::new("/unused-ui-test-endpoint"),
+                socket: {
+                    static ENDPOINT: std::sync::LazyLock<Endpoint> =
+                        std::sync::LazyLock::new(|| {
+                            Endpoint::unmanaged(Path::new("/unused-ui-test-endpoint"))
+                        });
+                    &ENDPOINT
+                },
                 options: Options {
                     read_only: false,
+                    detach_others: false,
                     clipboard_policy: "ask".into(),
                     shell: vec!["/bin/sh".into(), "-i".into()],
                     cwd: PathBuf::from("/fixture"),
@@ -3333,6 +4186,10 @@ mod tests {
                 terminal_selection: selection::State::default(),
                 resizing: resizing::State::default(),
                 search: search::State::default(),
+                finder: None,
+                popover: crate::popover::Popover::new(size()),
+                modal_rect: None,
+                guide: GuideCache::default(),
                 notified_focus: None,
                 focus_out_pending: HashSet::new(),
                 lease_pending: HashSet::new(),
@@ -3556,7 +4413,8 @@ mod tests {
             let socket = directory.path().join("reopen.sock");
             let listener = UnixListener::bind(&socket).unwrap();
             let (mut app, received) = fixture();
-            app.socket = &socket;
+            let endpoint = Endpoint::unmanaged(&socket);
+            app.socket = &endpoint;
             unavailable_fixture(&mut app);
             if !has_foreground_cwd {
                 app.registry.panes[0].foreground_cwd = None;
@@ -3596,7 +4454,12 @@ mod tests {
             // revision that the user confirmed.
             app.registry.workspaces[0].revision = 9;
             app.key(key("Enter"), &mut Vec::new(), size(), &[]).unwrap();
-            assert!(app.state.form.is_none());
+            assert!(
+                app.state
+                    .form
+                    .as_ref()
+                    .is_some_and(|form| form.pending.is_some())
+            );
             assert!(app.jobs.contains("manage:workspace:history"));
             assert_eq!(
                 app.registry.workspaces[0].layout.as_ref(),
@@ -3852,12 +4715,7 @@ mod tests {
         .unwrap();
         assert!(app.state.prefix);
         assert!(app.state.status.is_empty());
-        let error = physical_keys(&mut app, b"\x1b[53:37;2:1;37u").unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("read-only client cannot create panes")
-        );
+        physical_keys(&mut app, b"\x1b[53:37;2:1;37u").unwrap_err();
         assert!(!app.state.prefix);
         assert!(app.state.suppressed.contains("Digit5"));
         assert!(received.try_recv().is_err());
@@ -3960,20 +4818,24 @@ mod tests {
                 state: &app.state,
                 registry: &app.registry,
                 rects: &rects,
-                rgb: true,
+                guide: "",
             },
             |_| None,
             |_| None,
             |_| None,
         );
-        assert!(workspace_hits.iter().any(|(target, row)| *row == 5
-            && matches!(target, SidebarTarget::Workspace(id) if id == "remote")));
-        let row = surface.frame.rows[5]
-            .cells
+        let row = surface
+            .frame
+            .rows
             .iter()
-            .map(|cell| cell.text.as_str())
-            .collect::<String>();
-        assert!(row.contains("Remote-style"));
+            .position(|row| {
+                row.cells
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>()
+                    .contains("Remote-style")
+            })
+            .expect("target workspace is visible");
         let scene = Scene {
             size,
             surfaces: vec![Surface {
@@ -3993,7 +4855,8 @@ mod tests {
         let hits = scene.hit_map();
         let mut parser = InputParser::new();
         let mut demux = ReplyDemux::default();
-        for event in decode_input(&mut parser, demux.feed(b"\x1b[<0;6;6M\x1b[<0;6;6m"), false) {
+        let bytes = format!("\x1b[<0;6;{}M\x1b[<0;6;{}m", row + 1, row + 1);
+        for event in decode_input(&mut parser, demux.feed(bytes.as_bytes()), false) {
             let ClientEvent::Legacy(InputEvent::Mouse(mouse)) = event else {
                 panic!("expected physical SGR mouse event");
             };
@@ -4760,7 +5623,12 @@ mod tests {
             } else {
                 anyhow::anyhow!("bad initial scene")
             };
-            let error = detach_failed_attach(&socket, "new-pane", "admitted-view", initial);
+            let error = detach_failed_attach(
+                &Endpoint::unmanaged(&socket),
+                "new-pane",
+                "admitted-view",
+                initial,
+            );
             assert_eq!(transport::outcome_unknown(&error), detached);
             let (mut app, _) = fixture();
             app.attach_slots = 1;
@@ -5632,7 +6500,8 @@ mod tests {
             let socket = directory.path().join("resize.sock");
             let listener = UnixListener::bind(&socket).unwrap();
             let (mut app, capture) = fixture();
-            app.socket = &socket;
+            let endpoint = Endpoint::unmanaged(&socket);
+            app.socket = &endpoint;
             let pointer = resize_fixture(&mut app);
             let initial = resize_divider(&app, pointer.size);
             let mut registry = app.registry.clone();
@@ -5750,7 +6619,8 @@ mod tests {
             let socket = directory.path().join("resize.sock");
             let listener = UnixListener::bind(&socket).unwrap();
             let (mut app, capture) = fixture();
-            app.socket = &socket;
+            let endpoint = Endpoint::unmanaged(&socket);
+            app.socket = &endpoint;
             let pointer = resize_fixture(&mut app);
             let before = app.registry.workspaces[0].layout.clone();
             let mut registry = app.registry.clone();
@@ -5971,6 +6841,61 @@ mod tests {
             .unwrap();
         assert!(capture.try_recv().is_err());
         assert!(app.held.is_empty());
+    }
+    #[test]
+    fn modal_targets_do_not_follow_registry_driven_focus_or_workspace_replacement() {
+        let (mut app, _) = fixture();
+        unavailable_fixture(&mut app);
+        let original = app.state.focused.clone().unwrap();
+        app.open_form(FormKind::RenamePane, "renamed".into());
+        let mut replacement = app
+            .registry
+            .panes
+            .iter()
+            .find(|pane| pane.id == original)
+            .unwrap()
+            .clone();
+        replacement.id = "replacement-pane".into();
+        replacement.status = PaneStatus::Running;
+        app.registry
+            .panes
+            .iter_mut()
+            .find(|pane| pane.id == original)
+            .unwrap()
+            .status = PaneStatus::Exited;
+        app.registry.panes.push(replacement);
+        app.registry.workspaces[0].layout = Some(LayoutNode::Leaf {
+            pane_id: "replacement-pane".into(),
+        });
+        app.state.reconcile(&app.registry);
+        assert_eq!(app.state.focused.as_deref(), Some("replacement-pane"));
+        let target = app.state.form.as_ref().unwrap().target.as_ref();
+        assert_eq!(app.form_pane(target).unwrap(), original);
+
+        let (mut app, _) = fixture();
+        unavailable_fixture(&mut app);
+        app.open_form(FormKind::RenameWorkspace, "renamed".into());
+        app.registry.workspaces[0].id = "replacement-workspace".into();
+        app.state.reconcile(&app.registry);
+        assert_eq!(
+            app.state.workspace.as_deref(),
+            Some("replacement-workspace")
+        );
+        let target = app.state.form.as_ref().unwrap().target.as_ref();
+        assert!(app.form_workspace(target).is_err());
+    }
+    #[test]
+    fn legacy_control_space_owns_sidebar_navigation_instead_of_native_input() {
+        let (mut app, received) = fixture();
+        attach_fixture(&mut app);
+        physical_keys(&mut app, b"\0").unwrap();
+        assert!(
+            app.state.sidebar.active,
+            "native event: {:?}",
+            received.try_recv()
+        );
+        physical_keys(&mut app, b"j").unwrap();
+        assert!(received.try_recv().is_err());
     }
     include!("search_tests.rs");
 }

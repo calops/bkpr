@@ -122,6 +122,18 @@ enum Mutation {
     },
     Terminate,
 }
+fn release_cleanup(mutation: &Mutation) -> bool {
+    matches!(
+        mutation,
+        Mutation::Key(KeyEvent {
+            action: bkpr_protocol::KeyAction::Release,
+            ..
+        }) | Mutation::Mouse(MouseEvent {
+            action: bkpr_protocol::MouseAction::Release,
+            ..
+        }) | Mutation::Focus(false)
+    )
+}
 enum CommandOutcome {
     Applied(Option<u64>),
     Completed,
@@ -148,6 +160,7 @@ impl CommandOutcome {
 type CommandResult = std::result::Result<CommandOutcome, String>;
 struct Command {
     mutation: Mutation,
+    client: Option<Arc<registry::sessions::ClientLease>>,
     result: mpsc::SyncSender<CommandResult>,
 }
 fn completed_command(published: &Published, mutation: &Mutation) -> CommandResult {
@@ -228,6 +241,7 @@ struct Shared {
     resize_wake: crossbeam_channel::Sender<()>,
     root: Mutex<Option<harness_process::Process>>,
     spawn_environment: Option<harness::SpawnEnvironment>,
+    session: Option<(String, String)>,
     status_reset: AtomicBool,
     status_dirty: AtomicBool,
     status_wake: Option<crossbeam_channel::Sender<()>>,
@@ -257,7 +271,14 @@ pub struct SpawnSpec {
 }
 impl Pane {
     pub fn spawn(spec: SpawnSpec) -> Result<Self> {
-        Self::spawn_with_id(spec, Uuid::new_v4().to_string(), Arc::default(), None, None)
+        Self::spawn_with_id(
+            spec,
+            Uuid::new_v4().to_string(),
+            Arc::default(),
+            None,
+            None,
+            None,
+        )
     }
     fn spawn_with_id(
         spec: SpawnSpec,
@@ -265,6 +286,7 @@ impl Pane {
         view_budget: Arc<authority::ViewBudget>,
         spawn_environment: Option<harness::SpawnEnvironment>,
         status_wake: Option<crossbeam_channel::Sender<()>>,
+        session: Option<(String, String)>,
     ) -> Result<Self> {
         valid_size(spec.size)?;
         if spec.argv.is_empty() {
@@ -302,6 +324,7 @@ impl Pane {
             resize_wake,
             root: Mutex::new(None),
             spawn_environment,
+            session,
             status_reset: AtomicBool::new(false),
             status_dirty: AtomicBool::new(false),
             status_wake,
@@ -360,7 +383,18 @@ impl Pane {
             .map_err(anyhow::Error::msg)?;
         Ok(Self { shared, commands })
     }
+    #[cfg(test)]
     fn command(&self, mutation: Mutation) -> Result<CommandOutcome> {
+        self.command_for_client(mutation, None)
+    }
+    fn command_for_client(
+        &self,
+        mutation: Mutation,
+        client: Option<Arc<registry::sessions::ClientLease>>,
+    ) -> Result<CommandOutcome> {
+        if let Some(client) = &client {
+            client.ensure_active()?;
+        }
         let (tx, rx) = mpsc::sync_channel(1);
         {
             let _gate = self.shared.command_gate.lock().unwrap();
@@ -374,6 +408,7 @@ impl Pane {
             self.commands
                 .try_send(Command {
                     mutation,
+                    client,
                     result: tx,
                 })
                 .map_err(|_| anyhow::anyhow!("pane command queue full or closed"))?;
@@ -394,7 +429,89 @@ impl Pane {
             self.shared.changes.notify();
         }
     }
+    fn check_request_client(
+        &self,
+        request: &Request,
+        client: Option<&Arc<registry::sessions::ClientLease>>,
+    ) -> Result<()> {
+        if let Some(client) = client {
+            client.ensure_active()?;
+        }
+        let view = match request {
+            Request::Inspect | Request::Attach { .. } | Request::Shutdown => None,
+            Request::Update { view_id, .. }
+            | Request::Detach { view_id }
+            | Request::Poll { view_id, .. }
+            | Request::Pin { view_id, .. }
+            | Request::Input { view_id, .. }
+            | Request::Paste { view_id, .. }
+            | Request::PasteContents { view_id, .. }
+            | Request::Key { view_id, .. }
+            | Request::Mouse { view_id, .. }
+            | Request::Focus { view_id, .. }
+            | Request::Scroll { view_id, .. }
+            | Request::Select { view_id, .. }
+            | Request::CopySelection { view_id }
+            | Request::Search { view_id, .. }
+            | Request::Clipboard { view_id, .. }
+            | Request::Colors { view_id, .. }
+            | Request::Terminate { view_id } => Some(view_id),
+        };
+        if let Some(view) = view {
+            self.shared
+                .authority
+                .lock()
+                .unwrap()
+                .check_client(view, client)?;
+        }
+        Ok(())
+    }
+    fn detach_client_views(&self, client: &Arc<registry::sessions::ClientLease>) {
+        let _policy = self.shared.view_policy.lock().unwrap();
+        let ids = {
+            let mut authority = self.shared.authority.lock().unwrap();
+            let ids = authority
+                .views
+                .values()
+                .filter(|view| {
+                    view.client
+                        .as_ref()
+                        .is_some_and(|owner| Arc::ptr_eq(owner, client))
+                })
+                .map(|view| view.id.clone())
+                .collect::<Vec<_>>();
+            for id in &ids {
+                let _ = authority.detach(id);
+            }
+            ids
+        };
+        for id in ids {
+            revoke_paste(&self.shared, Some(&id));
+            self.cancel_clipboard(Some(&id));
+            self.shared
+                .selection_revoked
+                .lock()
+                .unwrap()
+                .insert(id.clone());
+            let mut published = self.shared.published.lock().unwrap();
+            published.selections.remove(&id);
+            published.searches.remove(&id);
+            drop(published);
+            self.shared.delta_frames.lock().unwrap().remove(&id);
+        }
+        self.shared.changes.notify();
+        let _ = self.shared.resize_wake.try_send(());
+    }
     pub fn request(&self, request: Request) -> Result<Value> {
+        self.request_for_client(request, None)
+    }
+    fn request_for_client(
+        &self,
+        request: Request,
+        client: Option<Arc<registry::sessions::ClientLease>>,
+    ) -> Result<Value> {
+        self.check_request_client(&request, client.as_ref())?;
+        let command = |mutation| self.command_for_client(mutation, client.clone());
         if self.shared.forgotten.load(Ordering::Acquire) {
             bail!("pane was forgotten");
         }
@@ -475,7 +592,8 @@ impl Pane {
             }
             let authority = self.shared.authority.lock().unwrap();
             let view = authority.views.get(&view_id).context("stale view")?;
-            if !view.spec.clipboard || !view.spec.visible || !view.spec.interactive {
+            if !view.live() || !view.spec.clipboard || !view.spec.visible || !view.spec.interactive
+            {
                 bail!("clipboard authority denied");
             }
             let mut pending = self.shared.clipboard.lock().unwrap();
@@ -515,10 +633,16 @@ impl Pane {
         if self.shared.forgotten.load(Ordering::Acquire) {
             bail!("pane was forgotten");
         }
+        self.check_request_client(&request, client.as_ref())?;
         match request {
             Request::Inspect | Request::Poll { .. } => unreachable!(),
             Request::Attach { spec } => {
-                let id = self.shared.authority.lock().unwrap().attach(spec)?;
+                let id = self
+                    .shared
+                    .authority
+                    .lock()
+                    .unwrap()
+                    .attach_owned(spec, client.clone())?;
                 self.shared.changes.notify();
                 // This acknowledges desired policy, not an applied native resize.
                 // A completed retained scene has no receiver and remains viewable.
@@ -592,14 +716,14 @@ impl Pane {
                 if data.len() > MAX_INPUT_BYTES {
                     bail!("input payload limit");
                 }
-                Ok(self.command(Mutation::Raw(data))?.response())
+                Ok(command(Mutation::Raw(data))?.response())
             }
             Request::Paste { view_id, data } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
                 if data.len() > MAX_INPUT_BYTES {
                     bail!("input payload limit");
                 }
-                Ok(self.command(Mutation::Paste(data))?.response())
+                Ok(command(Mutation::Paste(data))?.response())
             }
             Request::PasteContents {
                 view_id,
@@ -620,26 +744,25 @@ impl Pane {
                 {
                     bail!("paste payload limits");
                 }
-                Ok(self
-                    .command(Mutation::PasteContents(
-                        view_id,
-                        contents,
-                        location,
-                        allow_unsafe,
-                    ))?
-                    .response())
+                Ok(command(Mutation::PasteContents(
+                    view_id,
+                    contents,
+                    location,
+                    allow_unsafe,
+                ))?
+                .response())
             }
             Request::Key { view_id, event } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
-                Ok(self.command(Mutation::Key(event))?.response())
+                Ok(command(Mutation::Key(event))?.response())
             }
             Request::Mouse { view_id, event } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
-                Ok(self.command(Mutation::Mouse(event))?.response())
+                Ok(command(Mutation::Mouse(event))?.response())
             }
             Request::Focus { view_id, focused } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
-                Ok(self.command(Mutation::Focus(focused))?.response())
+                Ok(command(Mutation::Focus(focused))?.response())
             }
             Request::Scroll { view_id, delta } => {
                 self.shared
@@ -649,7 +772,7 @@ impl Pane {
                     .views
                     .get(&view_id)
                     .context("stale view")?;
-                self.command(Mutation::Scroll { view_id, delta })?;
+                command(Mutation::Scroll { view_id, delta })?;
                 Ok(json!({"scrolled":true}))
             }
             Request::Search { view_id, action } => {
@@ -660,19 +783,18 @@ impl Pane {
                     );
                 }
                 let inspection_epoch = selection::visible(&self.shared, &view_id, None)?;
-                let result = self
-                    .command(Mutation::Search {
-                        view_id: view_id.clone(),
-                        inspection_epoch,
-                        action,
-                    })?
-                    .response();
+                let result = command(Mutation::Search {
+                    view_id: view_id.clone(),
+                    inspection_epoch,
+                    action,
+                })?
+                .response();
                 selection::visible(&self.shared, &view_id, Some(inspection_epoch))?;
                 Ok(result)
             }
             Request::Select { view_id, event } => {
                 let inspection_epoch = selection::visible(&self.shared, &view_id, None)?;
-                self.command(Mutation::Select {
+                command(Mutation::Select {
                     view_id,
                     inspection_epoch,
                     event,
@@ -681,12 +803,11 @@ impl Pane {
             }
             Request::CopySelection { view_id } => {
                 let inspection_epoch = selection::visible(&self.shared, &view_id, None)?;
-                let response = self
-                    .command(Mutation::CopySelection {
-                        view_id: view_id.clone(),
-                        inspection_epoch,
-                    })?
-                    .response();
+                let response = command(Mutation::CopySelection {
+                    view_id: view_id.clone(),
+                    inspection_epoch,
+                })?
+                .response();
                 // Native formatting is pane-local and does not block policy
                 // acceptance. Reject results whose originating policy retired.
                 selection::visible(&self.shared, &view_id, Some(inspection_epoch))?;
@@ -717,7 +838,7 @@ impl Pane {
                     }
                     None => None,
                 };
-                self.command(Mutation::Colors {
+                command(Mutation::Colors {
                     foreground,
                     background,
                     cursor,
@@ -728,18 +849,12 @@ impl Pane {
             Request::Terminate { view_id } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
                 self.cancel_clipboard(None);
-                let completed = matches!(
-                    self.command(Mutation::Terminate)?,
-                    CommandOutcome::Completed
-                );
+                let completed = matches!(command(Mutation::Terminate)?, CommandOutcome::Completed);
                 Ok(json!({"terminated":!completed,"already_completed":completed}))
             }
             Request::Shutdown => {
                 self.cancel_clipboard(None);
-                let completed = matches!(
-                    self.command(Mutation::Terminate)?,
-                    CommandOutcome::Completed
-                );
+                let completed = matches!(command(Mutation::Terminate)?, CommandOutcome::Completed);
                 self.shared.changes.notify();
                 Ok(json!({"shutdown":true,"already_completed":completed}))
             }
@@ -1110,15 +1225,20 @@ fn reconcile_size(
     shared: &Shared,
     current_size: &mut Size,
 ) -> Result<()> {
-    let desired = shared
-        .authority
-        .lock()
-        .unwrap()
-        .owner()
-        .map(|(_, size)| size);
-    if let Some(size) = desired
-        && size != *current_size
-    {
+    let desired = {
+        let authority = shared.authority.lock().unwrap();
+        authority
+            .owner()
+            .filter(|(_, size)| *size != *current_size)
+            .map(|(id, size)| {
+                (
+                    size,
+                    authority.generation,
+                    authority.views[id].client.clone(),
+                )
+            })
+    };
+    if let Some((size, generation, client)) = desired {
         #[cfg(test)]
         {
             let barrier = shared.resize_barrier.lock().unwrap().take();
@@ -1134,6 +1254,11 @@ fn reconcile_size(
                     .recv_timeout(Duration::from_secs(10))
                     .context("resize test barrier was not released")?;
             }
+        }
+        if shared.authority.lock().unwrap().generation != generation
+            || client.as_ref().is_some_and(|client| !client.is_active())
+        {
+            return Ok(());
         }
         master.resize(pty_size(size))?;
         terminal.resize(size)?;
@@ -1174,6 +1299,10 @@ fn run_pane(
             environment::strip_parent_context(&mut cmd);
         }
         cmd.env("BKPR_PANE_ID", &shared.pane_id);
+        if let Some((id, name)) = &shared.session {
+            cmd.env("BKPR_SESSION_ID", id);
+            cmd.env("BKPR_SESSION_NAME", name);
+        }
         if let Some(environment) = &shared.spawn_environment {
             cmd.env("BKPR_SOCKET", &environment.socket);
             cmd.env("BKPR_HARNESS_WRAPPER_DIR", &environment.wrappers);
@@ -1289,7 +1418,8 @@ fn run_pane(
             let allowed = grants.origins.get(&id).is_some_and(|origin| {
                 origin.expires > Instant::now()
                     && authority.views.get(&origin.view_id).is_some_and(|view| {
-                        view.spec.input
+                        view.live()
+                            && view.spec.input
                             && view.spec.clipboard
                             && view.spec.visible
                             && view.spec.interactive
@@ -1309,12 +1439,16 @@ fn run_pane(
         let Some(view_id) = authority.clipboard_owner() else {
             return ClipboardResponse::denied();
         };
+        let owner = authority
+            .views
+            .get(&view_id)
+            .and_then(|view| view.client.clone());
         let (tx, rx) = mpsc::sync_channel(1);
         let request_id = Uuid::new_v4().to_string();
         *clipboard_state.clipboard.lock().unwrap() = Some(ClipboardWait {
             info: ClipboardPending {
                 request_id: request_id.clone(),
-                view_id,
+                view_id: view_id.clone(),
                 request,
             },
             response: tx,
@@ -1330,8 +1464,17 @@ fn run_pane(
             .is_some_and(|p| p.info.request_id == request_id)
         {
             *pending = None;
-            drop(pending);
             clipboard_state.changes.notify();
+        }
+        drop(pending);
+        if owner.as_ref().is_some_and(|owner| !owner.is_active()) {
+            return ClipboardResponse::denied();
+        }
+        let authority = clipboard_state.authority.lock().unwrap();
+        if !authority.views.get(&view_id).is_some_and(|view| {
+            view.live() && view.spec.clipboard && view.spec.visible && view.spec.interactive
+        }) {
+            return ClipboardResponse::denied();
         }
         response
     }));
@@ -1354,16 +1497,7 @@ fn run_pane(
         loop {
             child.observe();
             let mut dirty = false;
-            let (stale, size) = {
-                let mut a = shared.authority.lock().unwrap();
-                let stale = a.expire(Instant::now());
-                let size = if stale.is_empty() {
-                    None
-                } else {
-                    a.owner().map(|(_, size)| size)
-                };
-                (stale, size)
-            };
+            let stale = shared.authority.lock().unwrap().expire(Instant::now());
             for view in &stale {
                 revoke_paste(&shared, Some(view));
                 shared.selection_revoked.lock().unwrap().remove(view);
@@ -1389,14 +1523,8 @@ fn run_pane(
             }
             if !stale.is_empty() {
                 shared.changes.notify();
-                if let Some(size) = size
-                    && size != current_size
-                {
-                    master.resize(pty_size(size))?;
-                    terminal.resize(size)?;
-                    route_effects(terminal.drain_effects()?, &writer, &shared)?;
-                    current_size = size;
-                }
+                reconcile_size(&*master, &mut terminal, &shared, &mut current_size)?;
+                route_effects(terminal.drain_effects()?, &writer, &shared)?;
                 dirty = true;
             }
             // A bounded drain gives controls a turn even under an output flood.
@@ -1479,10 +1607,25 @@ fn run_pane(
             };
             match command {
                 Some(Ok(command)) => {
+                    // Already accepted releases keep their cleanup/origin semantics;
+                    // new input and queued callbacks cannot outlive an attachment.
+                    if command
+                        .client
+                        .as_ref()
+                        .is_some_and(|client| !client.is_active())
+                        && !release_cleanup(&command.mutation)
+                    {
+                        let _ = command
+                            .result
+                            .send(Err("client attachment detached before execution".into()));
+                        continue;
+                    }
                     if matches!(&command.mutation, Mutation::Terminate) {
                         *termination_reply = Some(command.result);
-                        writer.stop();
+                        // portable-pty's writer Drop emits LF/VEOF. Reap the
+                        // process first so closing cannot type into a live app.
                         child.terminate()?;
+                        writer.stop();
                         let status = child
                             .try_wait()?
                             .context("terminated child has no exit status")?;
@@ -1539,6 +1682,18 @@ fn run_pane(
                         Mutation::Colors { .. } | Mutation::Scroll { .. }
                     );
                     let outcome = (|| -> Result<CommandOutcome> {
+                        let cleanup = release_cleanup(&command.mutation);
+                        let enqueue = |bytes, barrier| {
+                            if !cleanup
+                                && command
+                                    .client
+                                    .as_ref()
+                                    .is_some_and(|client| !client.is_active())
+                            {
+                                bail!("client attachment detached before input acceptance");
+                            }
+                            writer.enqueue(bytes, barrier)
+                        };
                         let mut write_id = None;
                         match command.mutation {
                             Mutation::Colors {
@@ -1552,11 +1707,11 @@ fn run_pane(
                                     terminal.set_palette(&palette)?;
                                 }
                             }
-                            Mutation::Raw(data) => write_id = Some(writer.enqueue(data, false)?),
+                            Mutation::Raw(data) => write_id = Some(enqueue(data, false)?),
                             Mutation::Paste(data) => {
                                 let bytes = terminal.encode_paste(&data)?;
                                 if !bytes.is_empty() {
-                                    write_id = Some(writer.enqueue(bytes, false)?);
+                                    write_id = Some(enqueue(bytes, false)?);
                                 }
                             }
                             Mutation::PasteContents(view_id, contents, location, allow_unsafe) => {
@@ -1586,10 +1741,13 @@ fn run_pane(
                                     terminal.paste_contents(id, contents, location, allow_unsafe);
                                 let accepted =
                                     encoded.map_err(anyhow::Error::from).and_then(|bytes| {
+                                        if let Some(client) = &command.client {
+                                            client.ensure_active()?;
+                                        }
                                         if bytes.is_empty() {
                                             Ok(None)
                                         } else {
-                                            writer.enqueue(bytes, false).map(Some)
+                                            enqueue(bytes, false).map(Some)
                                         }
                                     });
                                 if accepted.is_err() || !terminal.has_paste_offer(id) {
@@ -1601,19 +1759,19 @@ fn run_pane(
                             Mutation::Key(event) => {
                                 let bytes = terminal.encode_key(&event)?;
                                 if !bytes.is_empty() {
-                                    write_id = Some(writer.enqueue(bytes, false)?);
+                                    write_id = Some(enqueue(bytes, false)?);
                                 }
                             }
                             Mutation::Mouse(event) => {
                                 let bytes = terminal.encode_mouse(&event)?;
                                 if !bytes.is_empty() {
-                                    write_id = Some(writer.enqueue(bytes, false)?);
+                                    write_id = Some(enqueue(bytes, false)?);
                                 }
                             }
                             Mutation::Focus(focused) => {
                                 let bytes = terminal.encode_focus(focused)?;
                                 if !bytes.is_empty() {
-                                    write_id = Some(writer.enqueue(bytes, false)?);
+                                    write_id = Some(enqueue(bytes, false)?);
                                 }
                             }
                             Mutation::Scroll { view_id, delta } => {
@@ -1954,6 +2112,7 @@ mod snapshot_tests {
                 resize_wake: crossbeam_channel::bounded(1).0,
                 root: Mutex::new(None),
                 spawn_environment: None,
+                session: None,
                 status_reset: AtomicBool::new(false),
                 status_dirty: AtomicBool::new(false),
                 status_wake: None,

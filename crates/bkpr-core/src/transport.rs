@@ -1,4 +1,5 @@
 use crate::registry::Registry;
+mod clients;
 use anyhow::{Context, Result, bail};
 #[cfg(test)]
 use bkpr_protocol::MAX_CONTROL_CONNECTIONS;
@@ -6,6 +7,7 @@ use bkpr_protocol::{
     AgentRequest, MAX_AGENT_SUBSCRIBERS, MAX_CONNECTIONS, MAX_REGISTRY_WATCHERS,
     MAX_WAITING_PANE_POLLS, Operation, PROTOCOL_VERSION, PaneRequest, Request,
 };
+pub(crate) use clients::{ClientOwner, lifetime_connected, send_lifetime_event};
 use serde_json::json;
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -41,6 +43,9 @@ fn waiting_slot(
     registry: &Arc<AtomicUsize>,
     agents: &Arc<AtomicUsize>,
 ) -> Result<Option<ConnectionSlot>> {
+    if let Operation::Client { request, .. } = operation {
+        return waiting_slot(request, panes, registry, agents);
+    }
     match operation {
         Operation::Pane {
             request: PaneRequest::Poll { wait_ms, .. },
@@ -229,6 +234,7 @@ impl BoundSocket {
                     let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
                     let mut stop = false;
                     let mut subscription = None;
+                    let mut lifetime = None;
                     let result = (|| -> Result<_> {
                         let mut bytes = Vec::new();
                         BufReader::new((&mut stream).take(MAX_REQUEST + 1))
@@ -247,11 +253,22 @@ impl BoundSocket {
                             _ => None,
                         };
                         stop = request.version == PROTOCOL_VERSION && matches!(&request.operation, Operation::Shutdown);
-                        let result = if matches!(&request.operation, Operation::HarnessBegin { .. } | Operation::HarnessEvent { .. } | Operation::HarnessContext { .. } | Operation::Agent { .. }) {
-                            let peer = authenticated_peer(&stream)?;
-                            registry.request_authenticated_cancellable(request, &peer, &|| peer_connected(&stream))?
-                        } else {
-                            registry.request(request)?
+                        anyhow::ensure!(request.version == PROTOCOL_VERSION, "unsupported protocol version");
+                        let result = match request.operation {
+                            Operation::ClientRegister { session_id, daemon_id } => {
+                                let (client, response) = registry.register_client(&stream, &session_id, &daemon_id)?;
+                                lifetime = Some(client);
+                                response
+                            }
+                            Operation::Client { authority, request: operation } => {
+                                registry.client_request(authority, *operation, &stream)?
+                            }
+                            operation @ (Operation::HarnessBegin { .. } | Operation::HarnessEvent { .. }
+                            | Operation::HarnessContext { .. } | Operation::Agent { .. }) => {
+                                let peer = authenticated_peer(&stream)?;
+                                registry.request_authenticated_cancellable(Request::new(operation), &peer, &|| peer_connected(&stream))?
+                            }
+                            operation => registry.request(Request::new(operation))?,
                         };
                         subscription = requested_subscription.and_then(|(launch_id, receiver_id)| {
                             let notification = result.get("notification")?;
@@ -286,6 +303,14 @@ impl BoundSocket {
                         let _ = registry.agent_subscription_disconnected(
                             &launch_id, &receiver_id, &notification_id, generation,
                         );
+                    }
+                    if let Some(client) = lifetime {
+                        if sent.is_ok() {
+                            client.handshake_complete();
+                            clients::watch_client(&stream, &registry, &client);
+                        } else {
+                            registry.detach_client(&client, "disconnected");
+                        }
                     }
                     // A valid explicit shutdown closes the daemon even when owned cleanup
                     // reports an error. Keep the error response, not a poisoned listener.
@@ -602,8 +627,11 @@ mod tests {
         let controls = (0..MAX_CONTROL_CONNECTIONS)
             .map(|_| ConnectionSlot::take(&active, MAX_CONNECTIONS).unwrap())
             .collect::<Vec<_>>();
+        let clients = (0..bkpr_protocol::MAX_CLIENTS)
+            .map(|_| ConnectionSlot::take(&active, MAX_CONNECTIONS).unwrap())
+            .collect::<Vec<_>>();
         assert!(ConnectionSlot::take(&active, MAX_CONNECTIONS).is_none());
-        drop((controls, subscribers, watchers, polls));
+        drop((clients, controls, subscribers, watchers, polls));
         assert_eq!(active.load(Ordering::Acquire), 0);
         assert_eq!(waiting_panes.load(Ordering::Acquire), 0);
         assert_eq!(waiting_registry.load(Ordering::Acquire), 0);
