@@ -2,6 +2,7 @@
 //! dependency is linked into a frontend.
 mod app;
 mod controller;
+mod tiling;
 pub mod transport;
 mod updates;
 use anyhow::{Context, Result, bail};

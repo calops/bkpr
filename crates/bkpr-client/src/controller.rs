@@ -1,3 +1,4 @@
+use crate::tiling::{self, Split};
 use bkpr_protocol::*;
 use bkpr_tui_framework::{Rect, blank, text};
 use std::collections::HashMap;
@@ -227,6 +228,7 @@ pub fn remove_leaf(layout: Option<LayoutNode>, target: &str) -> Option<LayoutNod
 /// Horizontal partitions columns; vertical partitions rows. Every header and
 /// content rectangle is derived from this single source, including hit testing.
 pub fn layout_rects(layout: Option<&LayoutNode>, rect: Rect, result: &mut Vec<(String, Rect)>) {
+    let rect = tiling::visible_area(rect);
     if rect.width == 0 || rect.height == 0 {
         return;
     }
@@ -238,38 +240,12 @@ pub fn layout_rects(layout: Option<&LayoutNode>, rect: Rect, result: &mut Vec<(S
             first,
             second,
         }) => {
-            let length = if *axis == Axis::Horizontal {
-                rect.width
+            if let Some((a, _, b)) = tiling::partition(rect, *axis, *ratio) {
+                layout_rects(Some(first), a, result);
+                layout_rects(Some(second), b, result);
             } else {
-                rect.height
-            };
-            if length < 2 {
                 layout_rects(Some(first), rect, result);
-                return;
             }
-            let n = ((u32::from(length) * u32::from(*ratio)) / 1000).clamp(1, u32::from(length - 1))
-                as u16;
-            let (a, b) = if *axis == Axis::Horizontal {
-                (
-                    Rect { width: n, ..rect },
-                    Rect {
-                        x: rect.x + n,
-                        width: rect.width - n,
-                        ..rect
-                    },
-                )
-            } else {
-                (
-                    Rect { height: n, ..rect },
-                    Rect {
-                        y: rect.y + n,
-                        height: rect.height - n,
-                        ..rect
-                    },
-                )
-            };
-            layout_rects(Some(first), a, result);
-            layout_rects(Some(second), b, result);
         }
         None => {}
     }
@@ -584,22 +560,37 @@ fn wrapped(value: &str, width: usize) -> Vec<String> {
 pub struct UiSurface {
     pub frame: Frame,
     lines: Vec<(Rect, String, bool)>,
+    dividers: Vec<Split>,
 }
 impl UiSurface {
     pub fn new(size: Size) -> Self {
         Self {
             frame: blank(size),
             lines: Vec::new(),
+            dividers: Vec::new(),
         }
     }
     pub fn paint(&mut self, size: Size, lines: Vec<(Rect, String, bool)>, cursor: Option<Cursor>) {
+        self.paint_parts(size, lines, Vec::new(), cursor);
+    }
+    fn paint_parts(
+        &mut self,
+        size: Size,
+        lines: Vec<(Rect, String, bool)>,
+        dividers: Vec<Split>,
+        cursor: Option<Cursor>,
+    ) {
         if self.frame.size != size {
             self.frame = blank(size);
             self.lines.clear();
+            self.dividers.clear();
         }
-        if self.lines != lines {
+        if self.lines != lines || self.dividers != dividers {
             for (rect, _, _) in self.lines.iter().chain(&lines) {
                 bkpr_tui_framework::clear(&mut self.frame, *rect);
+            }
+            for split in self.dividers.iter().chain(&dividers) {
+                bkpr_tui_framework::clear(&mut self.frame, split.divider);
             }
             for (rect, label, selected) in &lines {
                 text(
@@ -610,6 +601,26 @@ impl UiSurface {
                     *selected,
                 );
             }
+            for split in &dividers {
+                let rect = split.divider;
+                let glyph = match split.axis {
+                    Axis::Horizontal => "│",
+                    Axis::Vertical => "─",
+                };
+                let label = glyph.repeat(usize::from(rect.width));
+                for y in rect.y..rect.y + rect.height {
+                    text(&mut self.frame, rect.x, y, &label, false);
+                    for cell in self.frame.rows[y as usize]
+                        .cells
+                        .iter_mut()
+                        .skip(usize::from(rect.x))
+                        .take(usize::from(rect.width))
+                    {
+                        cell.style.faint = true;
+                    }
+                }
+            }
+            self.dividers = dividers;
             self.lines = lines;
         }
         self.frame.cursor.visible = false;
@@ -771,7 +782,7 @@ pub fn chrome<'a>(
         ));
     }
     let status = if state.prefix {
-        "Ctrl-b: s history  y copy  i project  c workspace  n pane  % / \" split  r/p rename  x unlayout  ! close  w/o choose  d detach".into()
+        "Ctrl-b: e resize  s history  y copy  i project  c workspace  n pane  % / \" split  r/p rename  x unlayout  ! close  w/o choose  d detach".into()
     } else if let Some((offset, total)) = state.focused.as_deref().and_then(&history) {
         format!(
             "HISTORY -{offset}/{total} | drag select/copy  Ctrl-b y copy | Esc clear/live  ↑/↓ line  PgUp/PgDn page  Home oldest{}",
@@ -800,7 +811,16 @@ pub fn chrome<'a>(
         status,
         true,
     ));
-    surface.paint(size, lines, None);
+    let (_, area) = screen_geometry(size);
+    let mut dividers = Vec::new();
+    tiling::dividers(
+        state
+            .current(registry)
+            .and_then(|workspace| workspace.layout.as_ref()),
+        area,
+        &mut dividers,
+    );
+    surface.paint_parts(size, lines, dividers, None);
     hit
 }
 pub(crate) fn project_detail_lines(
@@ -1120,8 +1140,8 @@ mod tests {
             },
             &mut rects,
         );
-        assert_eq!(rects[0].1.width + rects[1].1.width, 101);
-        assert_eq!(rects[0].1.x + rects[0].1.width, rects[1].1.x);
+        assert_eq!(rects[0].1.width + 1 + rects[1].1.width, 101);
+        assert_eq!(rects[0].1.x + rects[0].1.width + 1, rects[1].1.x);
     }
     #[test]
     fn modal_cancel_restores_focus() {
@@ -1346,6 +1366,94 @@ mod tests {
         };
         let size = surface.frame.size;
         modal(surface, size, &form, &registry, |_| Some(snapshot));
+    }
+
+    #[test]
+    fn chrome_paints_only_real_muted_dividers_and_retires_old_geometry() {
+        let (first, _) = capture_fixture();
+        let mut second = first.clone();
+        second.id = "second".into();
+        second.title = "Second shell".into();
+        for axis in [Axis::Horizontal, Axis::Vertical] {
+            let mut registry = capture_registry(&first);
+            registry.panes.push(second.clone());
+            registry.workspaces[0].layout =
+                split_leaf(Some(leaf(&first.id)), &first.id, &second.id, axis);
+            let state = Controller::new(&registry);
+            let mut surface = capture_surface();
+            let size = surface.frame.size;
+            let (_, area) = screen_geometry(size);
+            let mut rects = Vec::new();
+            layout_rects(registry.workspaces[0].layout.as_ref(), area, &mut rects);
+            chrome(
+                &mut surface,
+                ChromeContext {
+                    size,
+                    state: &state,
+                    registry: &registry,
+                    rects: &rects,
+                    rgb: false,
+                },
+                |_| None,
+                |_| None,
+                |_| None,
+            );
+            let mut splits = Vec::new();
+            tiling::dividers(registry.workspaces[0].layout.as_ref(), area, &mut splits);
+            let divider = splits[0].divider;
+            for y in divider.y..divider.y + divider.height {
+                for x in divider.x..divider.x + divider.width {
+                    let cell = &surface.frame.rows[y as usize].cells[x as usize];
+                    assert_eq!(
+                        cell.text,
+                        if axis == Axis::Horizontal {
+                            "│"
+                        } else {
+                            "─"
+                        }
+                    );
+                    assert!(cell.style.faint && !cell.style.inverse);
+                    assert_eq!(cell.style.foreground_source, ColorSource::Default);
+                    assert_eq!(cell.style.background_source, ColorSource::Default);
+                    assert!(rects.iter().all(|(_, rect)| !rect.contains(x, y)));
+                }
+            }
+            for (id, rect) in &rects {
+                let cell = &surface.frame.rows[rect.y as usize].cells[rect.x as usize];
+                assert_eq!(cell.style.inverse, state.focused.as_ref() == Some(id));
+                assert!(!cell.style.faint);
+            }
+            assert!(painted_text(&surface).contains("Bkpr / workspaces"));
+            let LayoutNode::Split { ratio, .. } = registry.workspaces[0].layout.as_mut().unwrap()
+            else {
+                unreachable!()
+            };
+            *ratio = 399;
+            rects.clear();
+            layout_rects(registry.workspaces[0].layout.as_ref(), area, &mut rects);
+            chrome(
+                &mut surface,
+                ChromeContext {
+                    size,
+                    state: &state,
+                    registry: &registry,
+                    rects: &rects,
+                    rgb: false,
+                },
+                |_| None,
+                |_| None,
+                |_| None,
+            );
+            let (x, y) = if axis == Axis::Horizontal {
+                (divider.x, 1)
+            } else {
+                (divider.x, divider.y)
+            };
+            let retired = &surface.frame.rows[y as usize].cells[x as usize];
+            assert_eq!(retired.text, " ");
+            assert!(!retired.style.faint);
+            assert!(painted_text(&surface).contains("Bkpr / workspaces"));
+        }
     }
 
     #[test]
