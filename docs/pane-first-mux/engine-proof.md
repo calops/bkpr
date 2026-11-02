@@ -20,7 +20,7 @@ Linux [process cleanup](../../crates/bkpr-core/src/process_tree.rs) is scoped to
 
 ### IPC and resources
 
-The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses protocol-v3 typed workspace/window registry operations and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. Request/response and admission limits are bounded, with control capacity reserved independently of long polls. These remain same-user local boundaries, not authenticated remote enrollment or production network framing.
+The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses protocol-v4 typed workspace/window registry operations, one-shot client source publication and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. Request/response and admission limits are bounded, with control capacity reserved independently of long polls. These remain same-user local boundaries, not authenticated remote enrollment or production network framing.
 
 Clients receive compact lossless scene runs and whole-row deltas on snapshot workers. Image receipts include ID and generation, avoiding stale pixels or needless retransmission. Workspace/window/pane metadata and revisioned layouts persist; terminal contents and processes do not. Restored records without runtimes are explicitly Stopped. A full scene-delta protocol and sustained-animation CPU reduction remain separate work.
 
@@ -664,4 +664,27 @@ Durable schema 2 upgrades unambiguous schema-1 metadata once without replaying a
 * `physical-1258304833718434/` supplies xterm colors with truecolor unconfirmed; `physical-1258304811147753/` withholds color replies too. Both use native/ANSI fallback without RGB or Kitty image output, preserve exact complete native text and input ownership, and emit zero idle bytes. Native-body screenshots retain a two-pixel difference in each xterm run; exact pixel identity is not claimed.
 
 The private host wrapper reconstructs the native directory from ASCII hex after Kitty's UTF-8-only command-line parser, without changing bytes passed to Bkpr. Intermediate controller failures retain their output/screenshots; no product behavior or acceptance criterion was weakened to bypass them. These checks establish local interaction, color, ownership and terminal-restoration correctness, not startup/editor throughput, remote transport, decorative animation or general graphics performance.
+
+
+## Daemon-owned SSH-agent forwarding
+
+The first immutable protocol-4 release pair is under `target/smoke/ssh-forwarding/final/`: `bkpr` SHA-256 `8f49c0c90fbd2556102c1719ef6a57c47dc3874f1ed50702ae6e9886e1cbb3df`, `bkprd` `f0aec685e28e5148f0ed1c6d61e27ca9ee73dafb26354841e0c57b57932646b0`. This snapshot predates the concurrently developed frontend overlay/static-chrome changes; its acceptance is for forwarding, not those frontend additions.
+
+`api-1276022941224706/` runs real private daemons, native PTY programs, two disposable OpenSSH agents and ephemeral Ed25519 keys. Fifteen agent-only `ssh-keygen -Y sign -U` attempts include nine cryptographically verified signatures and six expected refusals. The running pane keeps the same PID and socket environment across registration-only, A/B source changes, explicit absence, fallback, unselected detach, takeover, source-agent death/replacement and zero attachments. A separate owner process exits while its child retains the lifetime descriptor; the backend retires it and returns to the prior source without waiting for that inherited descriptor to close.
+
+`tui-1276022954044389/` uses actual isolated Kitty clients and physical X11 keys. Six signing attempts verify relative-source capture, latest-source selection, refusal of the previous key, unselected detach, unset-source masking and one-shot takeover. The same native pane remains alive throughout. Screenshots show actual application output; both normal detach and takeover exit zero. Public allowed-signers files and signatures are retained, private keys are removed, and both runs report zero surviving owned processes.
+
+The relay regressions exercise opaque extension bytes, independent connection state, large simultaneous bidirectional transfers, observed backpressure with unrelated traffic, half-close draining, stale epochs, owner liveness, self aliases, bounded admission, non-UTF-8 paths and inode/lease cleanup. A controlled stuck-lookup stand-in demonstrates independent traffic, revocation, replacement routing and shutdown before releasing the blocked admission worker; this is fault injection, not an actual FUSE/NFS fixture. Missing/non-socket sources fail closed without preventing attachment or modifying their paths. Isolated panes remain credential-free after a client publishes an agent.
+
+The source/dependency decision and explicit resource bounds are in the [forwarding ledger](implementation-plan.md#ssh-agent-forwarding-boundary). No real user keys, SSH/Git configuration, profiles, live sessions or model/provider services were used by these fixtures. These checks do not implement remote endpoints, replay pending signing requests or impose an established approval timeout.
+
+### Integrated debug verification
+
+After the user clarified build policy, functional iteration uses incremental debug only. The integrated snapshot, including the separately owned frontend overlay/static-chrome work, is `target/smoke/ssh-forwarding/integrated-debug/`: `bkpr` SHA-256 `15cff63c7d6eaaeddb3f036979fea3d299949742d6a9b63a149172186f4c67a6`, `bkprd` `b8f31dd3157bce4c8914e733390d1e64d69622e06c66f303276c477e7b1408f7`.
+
+`api-1277660219032212/` and `tui-1277660246777593/` repeat the complete real-agent API and physical-client cases above against that debug pair, with the same expected signing/refusal counts and zero cleanup survivors. This is functional verification, not a release/debug performance comparison. `acceptance.json`, retained public verification material and `controllers.zip` index the evidence.
+
+The coordinated working tree passes **536 top-level tests**, with eight explicitly ignored subprocess fixtures, strict all-target Clippy and formatting checks. Counts include the parallel frontend changes. Native checks run as the host user, with eight jobs on CPUs 0–7; only the protected debug build uses private mount aliases. `protected-1277578714339700/result.json` proves every existing public debug/release executable stayed byte-identical. Cargo checks and protected builds are now serialized.
+
+Verification also repaired two native test-fixture races without changing production lifecycle behavior: pending-client closure now matches the actual client's explicit socket shutdown, and the deferred-completion test blocks request admission rather than holding publication while inspecting registry state. The original stalled test had no remaining descendants and was retired by exact identity; its cleanup receipt is retained. Intermediate failures remain evidence, not successful acceptance.
 

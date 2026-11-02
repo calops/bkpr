@@ -92,7 +92,13 @@ impl Server {
         )
     }
     fn activate(&self, client: &Client, detach_others: bool) -> Value {
-        self.managed(client, Operation::ClientActivate { detach_others })
+        self.managed(
+            client,
+            Operation::ClientActivate {
+                detach_others,
+                agent_socket: None,
+            },
+        )
     }
     fn live(&self, client: &Client) -> bool {
         self.registry
@@ -271,7 +277,8 @@ fn registration_is_not_activation_and_bad_handshakes_never_displace_clients() {
             Operation::Client {
                 authority: forged,
                 request: Box::new(Operation::ClientActivate {
-                    detach_others: true
+                    detach_others: true,
+                    agent_socket: None,
                 })
             }
         )["ok"],
@@ -282,7 +289,8 @@ fn registration_is_not_activation_and_bad_handshakes_never_displace_clients() {
         wire(
             &server.socket,
             Operation::ClientActivate {
-                detach_others: true
+                detach_others: true,
+                agent_socket: None,
             }
         )["ok"],
         false
@@ -556,7 +564,8 @@ fn inherited_lifetime_fixture() {
             Operation::Client {
                 authority,
                 request: Box::new(Operation::ClientActivate {
-                    detach_others: false
+                    detach_others: false,
+                    agent_socket: None,
                 })
             }
         )["ok"],
@@ -662,6 +671,7 @@ fn simultaneous_takeovers_have_one_exact_survivor_and_never_reactivate_a_retired
                     authority,
                     request: Box::new(Operation::ClientActivate {
                         detach_others: true,
+                        agent_socket: None,
                     }),
                 },
             )
@@ -905,6 +915,13 @@ fn a_closed_pending_attachment_cannot_take_over_existing_clients() {
     server.activate(&retained, false);
     let pending = server.register();
     let authority = pending.authority.clone();
+    // Match RegisteredClient::close: parallel fork fixtures may briefly inherit
+    // the descriptor before exec, so close alone cannot guarantee peer EOF.
+    pending
+        .stream
+        .get_ref()
+        .shutdown(std::net::Shutdown::Both)
+        .unwrap();
     drop(pending);
     assert_eq!(
         wire(
@@ -912,11 +929,175 @@ fn a_closed_pending_attachment_cannot_take_over_existing_clients() {
             Operation::Client {
                 authority,
                 request: Box::new(Operation::ClientActivate {
-                    detach_others: true
+                    detach_others: true,
+                    agent_socket: None,
                 }),
             }
         )["ok"],
         false
     );
     assert!(server.live(&retained));
+}
+
+#[test]
+fn forwarding_tracks_selected_attachments_without_retiring_an_unrelated_signing_connection() {
+    use std::{io::Read, os::unix::net::UnixListener};
+    let server = Server::new("forwarding");
+    server
+        .registry
+        .configure_agent_forwarding(&server.socket)
+        .unwrap();
+    let agent_path = server._root.path().join("upstream");
+    let listener = UnixListener::bind(&agent_path).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let accept = || {
+        let mut fd = libc::pollfd {
+            fd: std::os::fd::AsRawFd::as_raw_fd(&listener),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut fd, 1, 5000) }, 1);
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+    };
+    let activate = |client: &Client, path: Option<PathBuf>| {
+        let result = server.managed(
+            client,
+            Operation::ClientActivate {
+                detach_others: false,
+                agent_socket: path,
+            },
+        );
+        assert_eq!(result["ok"], true, "{result}");
+    };
+    let forwarding_path = server._root.path().join("daemon.sock.agent");
+    let inode = fs::metadata(&forwarding_path).unwrap().ino();
+    let first = server.register();
+    activate(&first, Some(agent_path.clone()));
+    let mut old = UnixStream::connect(&forwarding_path).unwrap();
+    old.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let _old_upstream = accept();
+    let second = server.register();
+    activate(&second, Some(agent_path.clone()));
+    assert_eq!(old.read(&mut [0]).unwrap(), 0);
+
+    let mut consumer = UnixStream::connect(&forwarding_path).unwrap();
+    consumer
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut upstream = accept();
+    let first_id = first.authority.client_id.clone();
+    drop(first);
+    eventually(|| {
+        !server
+            .registry
+            .inner
+            .clients
+            .lock()
+            .unwrap()
+            .contains_key(&first_id)
+    });
+    let identities_request = [0, 0, 0, 1, 11];
+    consumer.write_all(&identities_request).unwrap();
+    let mut received = [0; 5];
+    upstream.read_exact(&mut received).unwrap();
+    assert_eq!(received, identities_request);
+    let empty_identities = [0, 0, 0, 5, 12, 0, 0, 0, 0];
+    upstream.write_all(&empty_identities).unwrap();
+    let mut response = [0; 9];
+    consumer.read_exact(&mut response).unwrap();
+    assert_eq!(response, empty_identities);
+
+    let no_agent = server.register();
+    activate(&no_agent, None);
+    assert_eq!(consumer.read(&mut [0]).unwrap(), 0);
+    let mut denied = UnixStream::connect(&forwarding_path).unwrap();
+    denied
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    assert_eq!(denied.read(&mut [0]).unwrap(), 0);
+    let no_agent_id = no_agent.authority.client_id.clone();
+    drop(no_agent);
+    eventually(|| {
+        !server
+            .registry
+            .inner
+            .clients
+            .lock()
+            .unwrap()
+            .contains_key(&no_agent_id)
+    });
+    let mut resumed = UnixStream::connect(&forwarding_path).unwrap();
+    resumed
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let _resumed_upstream = accept();
+    let second_id = second.authority.client_id.clone();
+    drop(second);
+    eventually(|| {
+        !server
+            .registry
+            .inner
+            .clients
+            .lock()
+            .unwrap()
+            .contains_key(&second_id)
+    });
+    assert_eq!(resumed.read(&mut [0]).unwrap(), 0);
+    assert_eq!(fs::metadata(&forwarding_path).unwrap().ino(), inode);
+    let mut detached = UnixStream::connect(&forwarding_path).unwrap();
+    detached
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    assert_eq!(detached.read(&mut [0]).unwrap(), 0);
+}
+
+#[test]
+fn isolated_panes_do_not_gain_agent_credentials_after_client_activation() {
+    let server = Server::new("isolated-agent");
+    server
+        .registry
+        .configure_agent_forwarding(&server.socket)
+        .unwrap();
+    let upstream = server._root.path().join("upstream");
+    let _listener = std::os::unix::net::UnixListener::bind(&upstream).unwrap();
+    let client = server.register();
+    let activated = server.managed(
+        &client,
+        Operation::ClientActivate {
+            detach_others: false,
+            agent_socket: Some(upstream),
+        },
+    );
+    assert_eq!(activated["ok"], true, "{activated}");
+    let output = server._root.path().join("environment");
+    let home = server._root.path().join("isolated-home");
+    let response = wire(
+        &server.socket,
+        Operation::PaneSpawn {
+            workspace_id: None,
+            window_id: None,
+            expected_revision: None,
+            spec: PaneSpawnSpec {
+                argv: vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "printf '%s' \"${SSH_AUTH_SOCK-unset}\" > \"$1\"; exec sleep 60".into(),
+                    "fixture".into(),
+                    output.to_str().unwrap().into(),
+                ],
+                cwd: home.clone(),
+                home,
+                isolated_environment: true,
+                title: None,
+                size: spec().size,
+            },
+        },
+    );
+    assert_eq!(response["ok"], true, "{response}");
+    eventually(|| fs::read_to_string(&output).is_ok_and(|value| value == "unset"));
+    assert_eq!(fs::read_to_string(output).unwrap(), "unset");
 }

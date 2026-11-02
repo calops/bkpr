@@ -421,9 +421,10 @@ fn review_regression_window_close_drains_sibling_normal_completion() {
         .get(&first_pane)
         .unwrap()
         .clone();
-    // Hold only this pane's publication: its close reserves the workspace while
-    // another pane can really exit and publish a deferred completion.
-    let held = closing.shared.published.lock().unwrap();
+    // Hold this pane's request admission, not publication: background metadata
+    // may read publication while reserving registry state. The close still
+    // reserves the workspace while its sibling can publish a real completion.
+    let held = closing.shared.requests.lock().unwrap();
     let other = registry.clone();
     let id = workspace_id.clone();
     let window_id = window.id.clone();

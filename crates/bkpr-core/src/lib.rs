@@ -9,6 +9,7 @@ mod harness_process;
 pub mod registry;
 mod search;
 mod selection;
+mod ssh_agent;
 pub mod transport;
 mod writer;
 
@@ -242,6 +243,7 @@ struct Shared {
     root: Mutex<Option<harness_process::Process>>,
     spawn_environment: Option<harness::SpawnEnvironment>,
     session: Option<(String, String)>,
+    ssh_agent_socket: Option<PathBuf>,
     status_reset: AtomicBool,
     status_dirty: AtomicBool,
     status_wake: Option<crossbeam_channel::Sender<()>>,
@@ -278,6 +280,7 @@ impl Pane {
             None,
             None,
             None,
+            None,
         )
     }
     fn spawn_with_id(
@@ -287,6 +290,7 @@ impl Pane {
         spawn_environment: Option<harness::SpawnEnvironment>,
         status_wake: Option<crossbeam_channel::Sender<()>>,
         session: Option<(String, String)>,
+        ssh_agent_socket: Option<PathBuf>,
     ) -> Result<Self> {
         valid_size(spec.size)?;
         if spec.argv.is_empty() {
@@ -325,6 +329,7 @@ impl Pane {
             root: Mutex::new(None),
             spawn_environment,
             session,
+            ssh_agent_socket,
             status_reset: AtomicBool::new(false),
             status_dirty: AtomicBool::new(false),
             status_wake,
@@ -1312,6 +1317,13 @@ fn run_pane(
             ));
             cmd.env("PATH", std::env::join_paths(paths)?);
         }
+        if !spec.isolated_environment
+            && let Some(socket) = &shared.ssh_agent_socket
+        {
+            cmd.env("SSH_AUTH_SOCK", socket);
+        } else if shared.session.is_some() {
+            cmd.env_remove("SSH_AUTH_SOCK");
+        }
         cmd.env("HOME", &spec.home);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
@@ -2112,6 +2124,7 @@ mod snapshot_tests {
                 resize_wake: crossbeam_channel::bounded(1).0,
                 root: Mutex::new(None),
                 spawn_environment: None,
+                ssh_agent_socket: None,
                 session: None,
                 status_reset: AtomicBool::new(false),
                 status_dirty: AtomicBool::new(false),

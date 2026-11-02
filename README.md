@@ -173,6 +173,30 @@ Client admission is bounded to 32 per daemon; views to 128 per daemon and 32 per
 pane. Lifetime connections, pane waits, registry watchers and controls have
 separate capacity, so admitted waiting views do not consume input/control slots.
 
+### SSH agent forwarding
+
+Normal managed panes receive a daemon-owned `SSH_AUTH_SOCK`. Its pathname stays
+the same when clients attach or detach, including when no client remains, so
+already-running shells need no environment update.
+
+The latest live **activated** client supplies the upstream agent. Registration
+alone changes nothing. An unset or empty source explicitly disables forwarding,
+even if an older client has an agent; disconnecting the selected client falls
+back to the latest remaining active attachment. Read-only input, pane sizing
+and clipboard permissions do not select the agent.
+
+A changed attachment cancels old connections, including pending approvals;
+partially sent signing requests are never replayed against another agent.
+Detaching an unrelated client leaves current connections intact. The transport
+preserves opaque agent messages and connection-scoped extensions, with bounded
+buffering and admission. The five-second admission deadline is not a signing
+or approval timeout.
+
+Explicit isolated fixture panes receive no agent socket. Bkpr does not change
+SSH/Git configuration, profiles or credentials. Keep the control pathname short
+enough for its `.agent` companion; both must fit the portable Unix socket limit.
+
+
 ### Harness capture
 
 Managed shells receive private PATH wrappers, without edits to shell profiles or
@@ -643,18 +667,25 @@ read-only display; assume the same user without a new permissions framework.
 
 ### Requests and explicit shutdown
 
-Requests use protocol version 3. Registry operations target workspaces, their
+Requests use protocol version 4. Registry operations target workspaces, their
 independent windows and owned panes; terminal/view operations are pane-scoped.
 Active-window selection belongs to each client. Older daemons reject this
 protocol before attachment or takeover; stop only an owned test session and
 start a fresh one with the matching launcher/server pair.
 
+Client registration does not select an SSH agent. The attaching client captures
+its original `SSH_AUTH_SOCK` locally, resolving relative paths against its
+invocation directory and preserving non-UTF-8 Unix paths. Its one-shot authenticated
+activation publishes that source, or explicit absence when unset/empty, together
+with takeover. Repeated activation never republishes the source or repeats takeover.
+Source paths are ephemeral, redacted from request debug output and never session metadata.
+
 ```sh
 "$CARGO_TARGET_DIR/debug/bkpr" context --socket "$BKPR_RUN/control.sock"
 "$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
-  '{"version":3,"op":"inspect"}'
+  '{"version":4,"op":"inspect"}'
 "$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
-  '{"version":3,"op":"shutdown"}'
+  '{"version":4,"op":"shutdown"}'
 ```
 
 Check `ok` and `error` before treating an operation as successful. Shutdown closes
@@ -669,7 +700,7 @@ owned layouts and historical receipts without replaying commands; ambiguous
 foreign-workspace layouts are rejected without overwriting the source record.
 
 Retired metadata can be explicitly forgotten with
-`{"version":3,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
+`{"version":4,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
 has stopped, every layout reference has been removed and all its views detached.
 This releases record capacity; it is not termination or automatic history pruning.
 

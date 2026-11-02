@@ -11,7 +11,7 @@
 
 * `feat/pane-first-mux` replaces the previous runtime with seven focused crates: `bkpr`, `bkpr-client`, `bkpr-tui-framework`, `bkpr-server` (the `bkprd` executable), `bkpr-core`, `bkpr-protocol` and `bkpr-terminal-engine`. There is no legacy launcher, plugin, binary alias or compatibility track on this branch.
 * Remove the old host-runtime flake input, WASI build/export paths, sibling-runtime recipes and obsolete package/cache/publication automation. Nix now supplies only the default native development shell; Cargo plus the pinned engine preparation helper is the supported build path. Native Nix packaging requires a reproducible, offline engine dependency closure and runtime acceptance before package/app outputs return.
-* Expose the native daemon, TUI, typed version-3 control protocol and keyboard client. Backend-owned workspaces contain independent windows/layouts and owned panes; layout-only removal or client detach does not terminate a process. Metadata persists, but process and terminal-content recovery is not implemented. Forge/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
+* Expose the native daemon, TUI, typed version-4 control protocol and keyboard client. Backend-owned workspaces contain independent windows/layouts and owned panes; layout-only removal or client detach does not terminate a process. Metadata persists, but process and terminal-content recovery is not implemented. Forge/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
 * Native graphics initial-presentation gates remain unaccepted. This replacement is not production acceptance and does not modify installed applications or live sessions.
 
 ### Native named sessions
@@ -20,6 +20,14 @@
 * Add process-bound, ephemeral client registration and a dedicated lifetime stream. Initialize the TUI before one-shot `-d/--detach-others` activation; revoke other attachments without closing programs or layouts, waiting for their acknowledgement, or detaching clients that arrive later.
 * Bind managed views, queued native callbacks, device grants and sizing to revocable client authority. Retire it on EOF, owner exit or detach, including fork-inherited lifetime sockets. Inject trusted logical session ID/name snapshots before pane exec.
 * Move daemon bootstrap out of the terminal-client library into the launcher. Keep headless tools nonbootstrapping, separate lifetime/watch/input admission, and keep process/CWD scans off managed per-key authentication.
+
+### Native SSH-agent forwarding
+
+* Give ordinary managed panes a stable daemon-owned agent socket. Select the latest live activated attachment, including explicit absence; registration and unselected detach do not reroute signing. Retain the listener at zero clients and fall back only when the selected attachment retires.
+* Forward opaque bidirectional streams without parsing extensions, framing limits or approval timeouts. Fence retired connections before further I/O and never replay a partial signing request against a new source.
+* Bound buffering, connection admission and filesystem/connect work independently of terminal input/rendering. A stuck upstream pathname cannot stall established streams, route revocation or reactor shutdown.
+* Keep isolated fixture panes credential-free, preserve raw Unix paths, hold an explicit advisory socket lease and remove only owned socket inodes. Reserve companion-path space before named startup; never modify persistent SSH/Git settings.
+* Protocol 4 adds one-shot launch-local agent source publication to authenticated client activation. Use a matching fresh client/server pair; incompatible live daemons fail closed rather than being restarted.
 
 ### Owned workspace windows and session closure
 
