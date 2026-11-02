@@ -606,3 +606,9 @@ All final fixture cleanup reports contain no survivors. No live user sessions, p
 Static icons and text windows do not establish general terminal-image initial-presentation acceptance. Pixel recessed/raised atlases, animation, remote aggregation and forge/CI facts remain separate work. Separate terminal windows, owned-pane cascading workspace close (including shared projections), and atomic blank-name creation still require backend contracts; no split, layout-only removal or racy frontend naming substitutes for them.
 
 
+## Layout-aware control keys
+
+The Kitty decoder incorrectly selected the alternate PC-101 key instead of the primary active-layout key. Ordinary text followed its separate text field; Ctrl events with an explicitly empty associated-text field exposed the wrong identity. The decoder-to-native-encoder regression reproduced Ctrl-W as byte 26 instead of 23 before the fix. Primary layout identity now supplies both shortcut identity and the unshifted codepoint; the alternate field remains parsed but cannot replace it. Functional keys, shifted text and releases retain their existing paths. This follows Kitty's [alternate-key semantics](https://sw.kovidgoyal.net/kitty/keyboard-protocol/#key-codes).
+
+`target/smoke/azerty/physical-1248510252070805/` records an actual isolated Kitty/Xvfb with French XKB layout, physical XTest keys and a native raw-PTY application. Ordinary w/z/a/q and Ctrl-W/Z/A/Q produce exactly `77 17 7a 1a 61 01 71 11`; screenshots were observed and exact-birth cleanup has no survivors. The permanent regression covers decoder-to-SDK control-byte conversion and unchanged text. Locked workspace tests, strict all-target Clippy, formatting and release-client build pass. No live client keyboard map, user session, profile or model/provider service participated.
+
