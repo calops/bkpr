@@ -5,9 +5,14 @@ use bkpr_tui_framework::{Rect, Role, RoleSpan};
 use nucleo_matcher::Matcher;
 use unicode_segmentation::UnicodeSegmentation;
 
+pub(super) enum Span {
+    Role(RoleSpan),
+    Project(Rect),
+}
+
 pub(super) struct Entry {
     pub text: String,
-    pub roles: Vec<RoleSpan>,
+    pub spans: Vec<Span>,
     pub matches: Vec<usize>,
     width: usize,
     used: usize,
@@ -31,7 +36,7 @@ impl Entry {
             self.used += width;
         }
         if self.used > start {
-            self.roles.push(RoleSpan {
+            self.spans.push(Span::Role(RoleSpan {
                 rect: Rect {
                     x: start as u16,
                     y: 0,
@@ -39,7 +44,7 @@ impl Entry {
                     height: 1,
                 },
                 role,
-            });
+            }));
         }
     }
     fn value(
@@ -58,7 +63,7 @@ impl Entry {
         self.text(&text, if value.stale { Role::Warning } else { role });
         for column in marks.into_iter().map(|column| column + start) {
             self.matches.push(column);
-            self.roles.push(RoleSpan {
+            self.spans.push(Span::Role(RoleSpan {
                 rect: Rect {
                     x: column as u16,
                     y: 0,
@@ -66,7 +71,7 @@ impl Entry {
                     height: 1,
                 },
                 role: Role::Info,
-            });
+            }));
         }
     }
 }
@@ -81,7 +86,7 @@ pub(super) fn render(
 ) -> Entry {
     let mut row = Entry {
         text: String::new(),
-        roles: Vec::new(),
+        spans: Vec::new(),
         matches: Vec::new(),
         width: usize::from(width),
         used: 0,
@@ -117,8 +122,6 @@ pub(super) fn render(
         .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)))
         .map(|(_, _, value)| value);
     row.text(if selected { "› " } else { "  " }, Role::Panel);
-    // Native protocol has no stable project-color ordinal. This neutral marker
-    // indicates known repository membership, never a fabricated project color.
     row.text(
         if document.values.iter().any(|v| v.field == Field::Project) {
             "● "
@@ -127,6 +130,18 @@ pub(super) fn render(
         },
         Role::Muted,
     );
+    if document
+        .values
+        .iter()
+        .any(|value| value.field == Field::Project)
+    {
+        row.spans.push(Span::Project(Rect {
+            x: 2,
+            y: 0,
+            width: 1,
+            height: 1,
+        }));
+    }
     if let Some(value) = matched_context
         && row.remaining() < 10
     {

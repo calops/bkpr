@@ -101,6 +101,9 @@ impl Serialize for DurablePanes<'_> {
 struct State {
     record: Record,
     live: BTreeMap<String, Pane>,
+    // Completion may be followed by restoration before the project worker wakes.
+    // Preserve that ownership boundary even when the restored pane reuses its ID.
+    project_retired: BTreeSet<String>,
     spawning: usize,
     spawn_workspaces: BTreeSet<String>,
     spawn_workspace_names: BTreeMap<String, String>,
@@ -486,6 +489,7 @@ impl Registry {
                 state: Mutex::new(State {
                     record,
                     live: BTreeMap::new(),
+                    project_retired: BTreeSet::new(),
                     spawning: 0,
                     spawn_workspaces: BTreeSet::new(),
                     spawn_workspace_names: BTreeMap::new(),
@@ -1005,7 +1009,7 @@ impl Registry {
             foreground_cwd: None,
             harness: None,
             harness_status: None,
-            project: Some(project::loading(&spec.cwd)),
+            project: Some(project::loading(&spec.cwd, None)),
             isolated_environment: spec.isolated_environment,
         };
         if let Some((launch, peer)) = origin {
@@ -1402,6 +1406,9 @@ impl Registry {
                     .store(true, std::sync::atomic::Ordering::Release);
             }
             state.live.remove(id);
+            // Forgotten identities cannot be restored. Keep retirement
+            // reservations bounded by the remaining pane records.
+            state.project_retired.remove(id);
             state.closing_panes.remove(id);
         })?;
         Ok(json!({"registry":registry,"pane_id":id}))
@@ -1490,7 +1497,9 @@ impl Registry {
         }
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
-        commit(&self.inner, next, |_| {})?;
+        commit(&self.inner, next, |state| {
+            state.project_retired.insert(id.to_owned());
+        })?;
         drop(_transaction);
         self.notify_session_end();
         // Keep the final in-memory scene readable until daemon shutdown; no pixels go to disk.

@@ -1172,3 +1172,110 @@ Animation still costs about ten times the matched Zellij control. Generic scene
 JSON materialization/re-decoding, allocation, full-grid extraction and
 connection/thread churn remain candidates; host-wide process sampling remains a
 separate idle cost. This is measurable progress, not near-Zellij acceptance.
+
+## Sidebar hover, project colors and warm image residency
+
+Source policy is main `9ad93bd809f8fb0dbd0c28bcbc267a682a21430b`,
+`crates/bkpr-zellij/src/{ui,palette,native}.rs`: structured passive metadata,
+project-name/pane-marker accents, neutral branches, finite ANSI-derived colors
+and canonical-repository reservations. Connected raised geometry comes from
+fork `18890b231bc3dd29039dd6ca141ec0af49cf332e`,
+`zellij-server/src/output/recessed_frames/{joined,contour,patches,depth,strips}.rs`.
+The applicable Zellij MIT notice is retained in the framework source.
+Bkpr owns palette/content/material choices; the framework owns generic union
+geometry, glyph-safe color spans, preparation and image lifetime.
+
+The final debug pair is
+`target/smoke/sidebar-popups/bin-1339780935436455`:
+
+* `bkpr`: `d7f73e4ac86b91944f54c307615bafd916ef11427a0f3b062001245a34d4e27a`.
+* `bkprd`: `8dd470d33df08d2f6ec9ac38b4956fa06de7d9d0b672ce7771284061be9f0c7c`.
+
+`cache-build-snapshot.json` records all 151 source/manifest hashes, the protected
+link receipt and the prior immutable color-only client
+`a7cedf1a0d10d968d51dae1f750121155c4b154ff0f0c479e7eaf033f3f8ba88`.
+Both clients use the same daemon. All four public debug/release executable
+hashes remained unchanged. `cache-workspace-checks.log` records 689 top-level
+passing tests, 14 explicit ignored subprocess fixtures, strict all-target Clippy
+and rustfmt. Native-engine regressions cover exact A/B/A projection pixels and
+identity reuse, source retirement, inactive count/byte eviction and a visible
+projection exceeding the inactive-cache budget. Large VT output is fed in
+64-KiB chunks, respecting the engine's unchanged 1-MiB admission limit.
+
+The initial full check had one capture-fixture readiness failure, retained in
+`capture-readiness-failure.log`; its cause is undetermined. The focused fixture
+passed under process/write tracing, and subsequent complete suites passed
+without capture/authorization changes. The private trace is retained separately.
+`large-image-admission-failure.log` records the new regression helper's initial
+oversized feed; only its chunking was corrected, not production quotas.
+
+`project-colours-acceptance.json` records the color-only pair's five complete
+contexts: Kitty dark/light, xterm dark/light with confirmed truecolor, and xterm
+with genuinely disabled truecolor capability replies. Each uses ten private
+native C-grid panes, two local repositories and a linked worktree. Native
+process identity/birth is verified before explicitly signaled fixture OSC 7501;
+no real harness, provider, profile or approval store is invoked.
+
+Physical foreground checks cover linked-worktree slot/hue sharing, independent
+repository distinction and agreement across sidebar markers, popup names,
+finder markers and previews. Real broken `.git` metadata produces an error
+without losing the slot; repair restores fresh facts with the same assignment.
+Real Kitty foreground/background/ANSI changes trigger fresh theme queries and
+consistent recoloring without changing backend reservations. Names remain
+unique in grouped repository summaries; branches/tree guides keep their neutral
+roles, and semantic status/count colors are not flattened by hover.
+
+`cache-acceptance.json` records the final pair's dark/light Kitty and genuine
+ANSI-only fallback cases:
+
+* `kitty-dark-default-1340010493211277`.
+* `kitty-light-default-1340010558894167`.
+* `xterm-dark-default-1340010557376435`.
+
+Each rich case retains 24 popup capture records and the plain case 23, plus
+finder, palette, normal-rendering and restoration screenshots. The workload
+exercises semantic no-button hover, keyboard/pointer precedence, popup handoff
+and wheel scrolling, Codex glyph/spacer, fancy/plain toggling, 160×48/64×28/120×36
+resizes, native motion-reporting ownership and exact input delivery. It verifies
+unchanged native view/layout membership, zero idle output, clean detach, original
+termios/background restoration, host mode-1003 reset and survival of backend
+programs after client detach. All owned fixture cleanups report no survivors.
+`candidate.json` records dimensions, 9×18 cell pixels, Linux/Nix environment,
+terminal versions, palette, process births and executable hashes; Kitty is
+0.49.2. Screenshots are acquired from the actual Xvfb terminal surface after
+complete content readiness, not rendered from recorded VT.
+
+The same controller reproduces the cache defect on the old immutable client in
+`kitty-dark-default-1340010522418839`: its fully warmed zero-upload assertion
+fails, and owned cleanup still completes. The first C/B/C/B cycle primes exact
+post-toggle geometry; only the following identical cycle is called fully warm.
+The independently recorded Kitty payload bytes are:
+
+| Four target switches | Before cache correction | After cache correction |
+|---|---:|---:|
+| Initial post-toggle C/B/C/B | 1,731,072 | 63,456 |
+| Fully warmed C/B/C/B | 1,731,072 | 0 |
+
+The remaining first-cycle bytes are four newly required projection rasters,
+not source retirement. Fully warm switches transmit zero image chunks in both
+dark and light cases. Placement/text output still exists: the final warmed
+cycles write about 272 KiB of total VT. This is exact debug byte/resource
+evidence, not a release CPU/FPS, hardware-latency or zero-work claim.
+
+Direct physical probes retain the one-texel Kitty/llvmpipe leakage and guarded
+fix in `probe-kitty-dark-default-1329281147954674` and
+`probe-kitty-dark-default-1329768873736176`. Three physical texels sampling the
+middle logical texel preserve exact opaque colors across vertical and horizontal
+stretching, without rasterizing a full-length strip. The controller also uses
+xterm's native styled print mode 2, removes its `ESC # 5` row prefixes before
+coordinate/style decoding, handles inverse cells and waits for complete SVG
+artwork rather than treating the first updated foreground as readiness.
+
+`controllers.zip` retains all ten exact controller/fixture/probe sources with
+per-member SHA-256 and verified CRC:
+`34752491186d2be1289a26a3d8aaa5bcc5c496e90393f4a7d7fa95239ac54370`.
+`controller-archive.json` records the member identities. Loose sidebar/probe
+scaffolds are removed after verification; raw captures and receipts remain.
+Provider-owned forge/PR/CI content is still unavailable, not fabricated.
+Animation, command palettes and the separately listed toast/theme/keybinding
+work remain outside this pass.

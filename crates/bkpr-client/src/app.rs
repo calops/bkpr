@@ -113,10 +113,10 @@ fn raised_material(
         material_caption(frame, local, true),
     ];
     let body = window::content(frame.size);
-    let exclusions = [body, captions[0], captions[1]].map(|caption| Rect {
-        x: outer.x + caption.x,
-        y: outer.y + caption.y,
-        ..caption
+    let exclusions = [body].map(|rect| Rect {
+        x: outer.x + rect.x,
+        y: outer.y + rect.y,
+        ..rect
     });
     let ready = local.width >= 3
         && local.height >= 3
@@ -3436,6 +3436,20 @@ impl App<'_> {
         let Some((pane, rect)) = target else {
             return Ok(());
         };
+        if origin.is_none()
+            && action == MouseAction::Motion
+            && event_button == MouseButton::None
+            && (self.options.read_only
+                || self.views.get(pane).is_some_and(|view| {
+                    view.metadata.capabilities.native_mouse_reporting
+                        && view
+                            .frame
+                            .as_ref()
+                            .is_some_and(|frame| !frame.mouse_reporting)
+                }))
+        {
+            return Ok(());
+        }
         if origin.is_none() && button == MouseButton::Left && action == MouseAction::Press {
             self.state.sidebar.active = false;
             self.focus(pane.clone());
@@ -3868,6 +3882,11 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         let mut demux = ReplyDemux::default();
         let mut last_input = Instant::now();
         let mut theme = Theme::default();
+        let mut project_palette = crate::project_colors::ProjectPalette::default();
+        let mut project_capacity = 0;
+        let mut project_capacity_revision = None;
+        let mut chrome_projects = Vec::new();
+        let mut chrome_foregrounds = Vec::new();
         let mut guide_theme = Theme::default();
         let mut guide_roles = Vec::new();
         let mut chrome_markers = Vec::new();
@@ -4036,6 +4055,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 |pane| app.badge(pane),
                 |pane| app.views.get(pane).map(|view| &view.metadata),
                 |pane| app.history(pane),
+                &mut chrome_projects,
             );
             if let Some(row) = app.state.sidebar.pointer_row {
                 app.state.sidebar.hover(
@@ -4046,6 +4066,17 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 );
             }
             crate::appearance::update_theme(&mut theme, &app.colors);
+            if project_capacity_revision != Some(app.registry.revision) {
+                project_capacity = app
+                    .registry
+                    .panes
+                    .iter()
+                    .filter_map(|pane| pane.project.as_ref().and_then(|project| project.color_slot))
+                    .max()
+                    .map_or(0, |slot| slot.saturating_add(1));
+                project_capacity_revision = Some(app.registry.revision);
+            }
+            project_palette.update(&app.colors, project_capacity);
             theme_chrome(
                 &mut chrome_surface,
                 &theme,
@@ -4058,6 +4089,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     guide_rows,
                 },
                 |pane| app.views.get(pane).map(|view| &view.metadata),
+                &project_palette,
+                &chrome_projects,
+                &mut chrome_foregrounds,
             );
             chrome_markers.clear();
             marker_sources.clear();
@@ -4142,6 +4176,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     |pane| app.badge(pane),
                     |pane| app.views.get(pane).map(|view| &view.metadata),
                     |pane| app.history(pane),
+                    &mut chrome_projects,
                 );
                 theme_chrome(
                     &mut chrome_surface,
@@ -4155,6 +4190,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                         guide_rows,
                     },
                     |pane| app.views.get(pane).map(|view| &view.metadata),
+                    &project_palette,
+                    &chrome_projects,
+                    &mut chrome_foregrounds,
                 );
             }
             for &(artwork, col, row, source) in &chrome_markers {
@@ -4351,7 +4389,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     );
                 } else if let Some(finder) = &mut app.finder {
                     finder.paint(&mut popup_surface, local);
-                    finder.apply_theme(&mut popup_surface, &theme, &app.colors);
+                    finder.apply_theme(&mut popup_surface, &theme, &app.colors, &project_palette);
                 } else if let Some(form) = &app.state.form {
                     modal(&mut popup_surface, local, form, &app.registry, |pane| {
                         app.views.get(pane).map(|view| &view.metadata)
@@ -4399,16 +4437,35 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             }
             let tooltip_target = if popup || app.state.prefix || app.search_open() {
                 None
-            } else if app.state.sidebar.active {
-                app.state.sidebar.cursor.as_ref()
             } else {
-                app.state.sidebar.hover.as_ref()
+                app.state.sidebar.hover.as_ref().or_else(|| {
+                    app.state
+                        .sidebar
+                        .active
+                        .then_some(app.state.sidebar.cursor.as_ref())
+                        .flatten()
+                })
             };
             let anchor = tooltip_target.and_then(|target| {
                 workspace_hits
                     .iter()
                     .find(|(candidate, _)| candidate == target)
                     .map(|(_, row)| *row)
+            });
+            let item_band = tooltip_target.and_then(|target| {
+                let mut rows = workspace_hits
+                    .iter()
+                    .filter(|(candidate, _)| candidate == target)
+                    .map(|(_, row)| *row);
+                let first = rows.next()?;
+                let last = rows.next_back().unwrap_or(first);
+                let sidebar = screen_geometry(size).0;
+                Some(Rect {
+                    x: sidebar.x,
+                    y: first,
+                    width: sidebar.width,
+                    height: last.saturating_sub(first).saturating_add(1),
+                })
             });
             let tooltip = app.popover.paint(
                 &app.registry,
@@ -4418,18 +4475,35 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 size,
                 |pane| app.views.get(pane).map(|view| &view.metadata),
             );
+            graphics.prepare_joined(size, tooltip.zip(item_band));
             let mut popover_graphical = false;
             if let Some(rect) = tooltip {
-                app.popover.apply_theme(&theme);
+                app.popover.apply_theme(&theme, &project_palette);
                 app.popover.surface.frame.images.clear();
                 app.popover.surface.frame.placements.clear();
-                popover_graphical = raised_material(
-                    &graphics,
-                    &mut app.popover.surface.frame,
-                    &mut popover_effects,
-                    rect,
-                    1,
-                );
+                if let Some((body, item)) = app.popover.body_rect().zip(item_band) {
+                    let glyphs = Rect {
+                        x: item.x.saturating_add(1),
+                        width: item.width.saturating_sub(2),
+                        ..item
+                    };
+                    popover_graphical = graphics.joined_ready()
+                        && graphics.decorate_joined(&mut popover_effects, 1, &[body, glyphs]);
+                }
+                if !popover_graphical {
+                    let local = app.popover.surface.frame.size;
+                    let bounds = Rect {
+                        x: 0,
+                        y: 0,
+                        width: local.cols,
+                        height: local.rows,
+                    };
+                    let captions = [
+                        material_caption(&app.popover.surface.frame, bounds, false),
+                        material_caption(&app.popover.surface.frame, bounds, true),
+                    ];
+                    material_border(&mut app.popover.surface.frame, bounds, true, &captions);
+                }
                 app.overlays.present(
                     crate::popover::SURFACE_ID,
                     OverlayPlacement::framed(rect, size),
@@ -4663,18 +4737,66 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                             faint: false,
                         });
                     }
+                } else if layer.id == crate::popover::SURFACE_ID && popover_graphical {
+                    if let Some(rect) = tooltip {
+                        // Project opaque padding too; sparse material only fills
+                        // partial cells and expects the complete interior cleared.
+                        let local =
+                            bkpr_tui_framework::window::content(app.popover.surface.frame.size);
+                        let body = Rect {
+                            x: rect.x + local.x,
+                            y: rect.y + local.y,
+                            ..local
+                        };
+                        let first = surfaces.len();
+                        for span in graphics.joined_opaque_spans() {
+                            if span.row < body.y
+                                || span.row >= body.y.saturating_add(body.height).min(size.rows)
+                            {
+                                continue;
+                            }
+                            let left = span.start.max(body.x);
+                            let right = span
+                                .end
+                                .min(body.x.saturating_add(body.width))
+                                .min(size.cols);
+                            if left >= right {
+                                continue;
+                            }
+                            let clip = Rect {
+                                x: left - layer.placement.outer.x,
+                                y: span.row - layer.placement.outer.y,
+                                width: right - left,
+                                height: 1,
+                            };
+                            if surfaces.len() > first
+                                && let Some(last) = surfaces.last_mut()
+                                && let SurfaceContent::CellsClipped(previous) = &mut last.content
+                                && previous.x == clip.x
+                                && previous.width == clip.width
+                                && previous.y.saturating_add(previous.height) == clip.y
+                            {
+                                previous.height += 1;
+                                continue;
+                            }
+                            surfaces.push(Surface {
+                                id: layer.id,
+                                content: SurfaceContent::CellsClipped(clip),
+                                rect: layer.placement.outer,
+                                frame: &app.popover.surface.frame,
+                                selection: &[],
+                                search: &[],
+                                focused: false,
+                                faint: faint_background,
+                            });
+                        }
+                    }
                 } else {
                     let (frame, rect, content) = match layer.id {
                         crate::popover::SURFACE_ID => (
                             &app.popover.surface.frame,
                             layer.placement.outer,
-                            if popover_graphical {
-                                SurfaceContent::CellsClipped(window::content(
-                                    app.popover.surface.frame.size,
-                                ))
-                            } else {
-                                SurfaceContent::All
-                            },
+                            SurfaceContent::All,
                         ),
                         "ui:guide" => (
                             &guide_surface.frame,
@@ -6005,6 +6127,7 @@ mod tests {
             |_| None,
             |_| None,
             |_| None,
+            &mut Vec::new(),
         );
         let row = surface
             .frame

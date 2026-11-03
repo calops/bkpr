@@ -2,26 +2,31 @@
 //! Inspired by Bkpr main's MIT-licensed ui.rs tooltip model; this implementation
 //! uses only pane-first protocol facts, without the old Zellij overlay transport.
 use crate::controller::SidebarTarget;
-use bkpr_protocol::{PaneInfo, PaneSnapshot, PaneStatus, ProjectSnapshot, RegistrySnapshot, Size};
+use crate::metadata::{self, Paragraph, ProjectSpan};
+use crate::project_colors::ProjectPalette;
+use bkpr_protocol::{PaneSnapshot, RegistrySnapshot, Size};
 use bkpr_tui_framework::overlay::Placement;
 use bkpr_tui_framework::{
-    Rect, Role, RoleSpan, Theme, UiSurface,
+    ForegroundSpan, Rect, Role, RoleSpan, Theme, UiSurface,
     window::{self, Border},
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 pub const SURFACE_ID: &str = "ui:tooltip";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Section {
-    pub title: String,
-    pub rows: Vec<String>,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Content {
-    pub title: String,
-    pub subtitle: String,
-    pub sections: Vec<Section>,
+    rows: Vec<Paragraph>,
+}
+
+fn content_rect(size: Size) -> Rect {
+    let mut rect = window::content(size);
+    // Match finder/guide padding: corner cells are not wholly opaque in the
+    // rounded physical contour and cannot hold the first or last text glyph.
+    if rect.width > 2 {
+        rect.x += 1;
+        rect.width -= 2;
+    }
+    rect
 }
 
 fn belongs(registry: &RegistrySnapshot, target: &SidebarTarget) -> bool {
@@ -45,28 +50,28 @@ fn belongs(registry: &RegistrySnapshot, target: &SidebarTarget) -> bool {
         }),
     }
 }
-fn status(pane: &PaneInfo) -> String {
-    match pane.status {
-        PaneStatus::Running => "Running".into(),
-        PaneStatus::Stopped => "Stopped".into(),
-        PaneStatus::Exited => pane
-            .exit_code
-            .map(|code| format!("Exited ({code})"))
-            .unwrap_or_else(|| "Exited".into()),
-    }
-}
-fn project_section(project: &ProjectSnapshot) -> Section {
-    let rows = crate::controller::project_details(Some(project));
-    Section {
-        title: project
-            .repository
-            .as_ref()
-            .map(|r| r.name.clone())
-            .unwrap_or_else(|| "Project".into()),
-        rows,
-    }
+
+fn project_identity(project: &bkpr_protocol::ProjectSnapshot) -> &std::path::Path {
+    project
+        .repository
+        .as_ref()
+        .map_or(project.cwd.as_path(), |repository| {
+            repository.common_dir.as_path()
+        })
 }
 
+fn same_project_context(
+    left: &bkpr_protocol::ProjectSnapshot,
+    right: &bkpr_protocol::ProjectSnapshot,
+) -> bool {
+    left.state == right.state
+        && left.error == right.error
+        && match (&left.repository, &right.repository) {
+            (Some(left), Some(right)) => left == right,
+            (None, None) => left.cwd == right.cwd,
+            _ => false,
+        }
+}
 /// Snapshot is optional and must already be held by the frontend. No attachment,
 /// filesystem discovery, forge requests, or hidden-pane reads are performed.
 pub fn build_content<'a>(
@@ -80,171 +85,111 @@ pub fn build_content<'a>(
     let workspace = registry
         .workspaces
         .iter()
-        .find(|w| w.id == target.workspace())?;
-    match target {
-        SidebarTarget::Workspace(_) | SidebarTarget::Window { .. } => {
-            let window = target
-                .window()
-                .and_then(|id| workspace.windows.iter().find(|w| w.id == id));
-            let panes: Vec<_> = registry
-                .panes
+        .find(|workspace| workspace.id == target.workspace())?;
+    if let SidebarTarget::Pane { pane, .. } = target {
+        let pane = registry
+            .panes
+            .iter()
+            .find(|candidate| candidate.id == *pane)?;
+        return Some(Content {
+            rows: metadata::content(pane, registry, snapshot(&pane.id)),
+        });
+    }
+    let window = target
+        .window()
+        .and_then(|id| workspace.windows.iter().find(|window| window.id == id));
+    let panes: Vec<_> = registry
+        .panes
+        .iter()
+        .filter(|pane| {
+            pane.workspace_id.as_deref() == Some(workspace.id.as_str())
+                && window.is_none_or(|window| pane.window_id.as_ref() == Some(&window.id))
+        })
+        .collect();
+    let mut rows = vec![
+        Paragraph::new(
+            window.map_or(workspace.name.as_str(), |window| window.name.as_str()),
+            Role::Title,
+        ),
+        Paragraph::new(
+            if window.is_some() {
+                format!("{} · {} terminals", workspace.name, panes.len())
+            } else {
+                format!(
+                    "{} windows · {} terminals",
+                    workspace.windows.len(),
+                    panes.len()
+                )
+            },
+            Role::Muted,
+        ),
+        Paragraph::new("", Role::Panel),
+        Paragraph::new("Terminals", Role::Title),
+    ];
+    for pane in &panes {
+        rows.push(metadata::pane_summary(pane, snapshot(&pane.id), true));
+    }
+    if panes.is_empty() {
+        rows.push(Paragraph::new(
+            if window.is_some() {
+                "No terminals in this window"
+            } else {
+                "No terminals in this workspace"
+            },
+            Role::Muted,
+        ));
+    }
+
+    // Canonical Git common-dir groups linked worktrees into one project. Keep
+    // distinct supplied contexts (branch, changes, freshness) within that group;
+    // a stale pane must never make a ready sibling's facts appear current.
+    let mut projects: Vec<Vec<&bkpr_protocol::ProjectSnapshot>> = Vec::new();
+    for project in panes.iter().filter_map(|pane| pane.project.as_ref()) {
+        let identity = project_identity(project);
+        if let Some(group) = projects
+            .iter_mut()
+            .find(|group| project_identity(group[0]) == identity)
+        {
+            if !group
                 .iter()
-                .filter(|p| {
-                    p.workspace_id.as_deref() == Some(workspace.id.as_str())
-                        && window.is_none_or(|window| p.window_id.as_ref() == Some(&window.id))
-                })
-                .collect();
-            let mut sections = vec![Section {
-                title: "Terminals".into(),
-                rows: panes
-                    .iter()
-                    .map(|p| {
-                        let known = snapshot(&p.id);
-                        let harness = crate::controller::recognized_harness(p, known)
-                            .map(|h| format!(" · {}", h.kind.display_name()))
-                            .unwrap_or_default();
-                        let activity = crate::controller::harness_status(p, known)
-                            .map(|s| format!(" · {}", s.state))
-                            .unwrap_or_default();
-                        format!("{} · {}{harness}{activity}", p.title, status(p))
-                    })
-                    .collect(),
-            }];
-            if panes.is_empty() {
-                sections[0].rows.push(
-                    if window.is_some() {
-                        "No terminals in this window"
-                    } else {
-                        "No terminals in this workspace"
-                    }
-                    .into(),
-                );
+                .any(|prior| same_project_context(prior, project))
+            {
+                group.push(project);
             }
-            let mut projects: Vec<&ProjectSnapshot> = Vec::new();
-            for pane in &panes {
-                if let Some(project) = &pane.project
-                    && !projects
-                        .iter()
-                        .any(|old| match (&old.repository, &project.repository) {
-                            (Some(a), Some(b)) => a.root == b.root,
-                            _ => old.cwd == project.cwd,
-                        })
-                {
-                    projects.push(project);
-                }
-            }
-            for project in projects {
-                sections.push(project_section(project));
-            }
-            if window.is_none() {
-                sections.push(Section {
-                    title: "Windows".into(),
-                    rows: workspace
-                        .windows
-                        .iter()
-                        .map(|window| window.name.clone())
-                        .collect(),
-                });
-            }
-            if sections.len() == 1 {
-                sections.push(Section {
-                    title: "Project".into(),
-                    rows: vec!["No local project metadata available".into()],
-                });
-            }
-            Some(Content {
-                title: window.map_or_else(|| workspace.name.clone(), |window| window.name.clone()),
-                subtitle: if window.is_some() {
-                    format!("Window · {} · {} terminals", workspace.name, panes.len())
-                } else {
-                    format!(
-                        "Workspace · {} windows · {} terminals",
-                        workspace.windows.len(),
-                        panes.len()
-                    )
-                },
-                sections,
-            })
-        }
-        SidebarTarget::Pane { pane, .. } => {
-            let pane = registry.panes.iter().find(|p| p.id == *pane)?;
-            let known = snapshot(&pane.id);
-            let snapshot = known.filter(|s| s.pane_id == pane.id);
-            let mut rows = vec![
-                format!("Status: {}", status(pane)),
-                format!("Pane: {}", pane.id),
-                format!(
-                    "Window: {}",
-                    workspace
-                        .windows
-                        .iter()
-                        .find(|window| Some(&window.id) == pane.window_id.as_ref())
-                        .map_or("unavailable", |window| window.name.as_str())
-                ),
-                format!(
-                    "CWD: {}",
-                    pane.foreground_cwd.as_ref().unwrap_or(&pane.cwd).display()
-                ),
-            ];
-            if let Some(snapshot) = snapshot {
-                rows.push(format!("Lifecycle: {}", snapshot.lifecycle));
-                if let Some(pid) = snapshot.pid {
-                    rows.push(format!("PID: {pid}"));
-                }
-                if let Some(error) = &snapshot.error {
-                    rows.push(format!("Error: {error}"));
-                }
-            }
-            let mut sections = vec![Section {
-                title: "Terminal".into(),
-                rows,
-            }];
-            if let Some(harness) = crate::controller::recognized_harness(pane, known) {
-                let mut rows = vec![
-                    format!("Harness: {}", harness.kind.display_name()),
-                    format!("PID: {}", harness.pid),
-                    format!("CWD: {}", harness.cwd.display()),
-                ];
-                if let Some(managed) = &harness.managed {
-                    rows.push(format!("Agent: {}", managed.launch_id));
-                    if let Some(conversation) = &managed.conversation {
-                        rows.push(format!("Conversation: {}", conversation.id));
-                    }
-                    if let Some(error) = &managed.error {
-                        rows.push(format!("Capture: {error}"));
-                    }
-                }
-                sections.push(Section {
-                    title: "Harness".into(),
-                    rows,
-                });
-            }
-            if let Some(activity) = crate::controller::harness_status(pane, known) {
-                let mut rows = vec![format!("State: {}", activity.state)];
-                if !activity.title.is_empty() {
-                    rows.push(activity.title.clone());
-                }
-                if let Some(message) = &activity.message {
-                    rows.push(message.clone());
-                }
-                if let Some(progress) = activity.progress {
-                    rows.push(format!("Progress: {progress}%"));
-                }
-                sections.push(Section {
-                    title: "Activity".into(),
-                    rows,
-                });
-            }
-            if let Some(project) = &pane.project {
-                sections.push(project_section(project));
-            }
-            Some(Content {
-                title: pane.title.clone(),
-                subtitle: format!("Terminal · {}", workspace.name),
-                sections,
-            })
+        } else {
+            projects.push(vec![project]);
         }
     }
+    if projects.is_empty() {
+        rows.push(Paragraph::new("", Role::Panel));
+        rows.push(Paragraph::new("Context", Role::Title));
+        rows.push(Paragraph::new("No project metadata available", Role::Muted));
+    }
+    for group in projects {
+        rows.push(Paragraph::new("", Role::Panel));
+        let name = group[0].repository.as_ref().map_or_else(
+            || group[0].cwd.to_string_lossy().into_owned(),
+            |repository| repository.name.clone(),
+        );
+        rows.push(if group[0].repository.is_some() {
+            Paragraph::project(name, Role::Title, group[0].color_slot)
+        } else {
+            Paragraph::new(name, Role::Title)
+        });
+        for (index, project) in group.iter().enumerate() {
+            if index > 0 {
+                rows.push(Paragraph::new("", Role::Panel));
+            }
+            metadata::project_content(Some(project), false, &mut rows);
+        }
+    }
+    rows.push(Paragraph::new("", Role::Panel));
+    rows.push(Paragraph::new("Checks & tickets", Role::Title));
+    rows.push(Paragraph::new(
+        "Forge, CI and ticket metadata are not available",
+        Role::Muted,
+    ));
+    Some(Content { rows })
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -298,6 +243,8 @@ pub struct Popover {
     scroll: usize,
     max_scroll: usize,
     roles: Vec<RoleSpan>,
+    projects: Vec<ProjectSpan>,
+    foregrounds: Vec<ForegroundSpan>,
 }
 impl Popover {
     pub fn new(screen: Size) -> Self {
@@ -314,6 +261,8 @@ impl Popover {
             scroll: 0,
             max_scroll: 0,
             roles: Vec::new(),
+            projects: Vec::new(),
+            foregrounds: Vec::new(),
         }
     }
     pub fn hide(&mut self) {
@@ -406,13 +355,13 @@ impl Popover {
         self.rect = None;
         self.paint_key = None;
         let content = self.content.as_ref()?;
-        let raw = content_rows(content);
+        let raw = &content.rows;
         let preferred_width = raw
             .iter()
-            .map(|(line, _)| UnicodeWidthStr::width(line.as_str()))
+            .map(|paragraph| UnicodeWidthStr::width(paragraph.text.as_str()))
             .max()
             .unwrap_or(1)
-            .saturating_add(2)
+            .saturating_add(4)
             .clamp(24, 64) as u16;
         let probe =
             Placement::beside(screen, sidebar_width, anchor_row, preferred_width, 24)?.outer;
@@ -421,8 +370,10 @@ impl Popover {
             rows: probe.height,
             ..screen
         };
-        let inner = window::content(local);
-        let wrapped = wrap_rows(&raw, inner.width);
+        let inner = content_rect(local);
+        let mut wrapped = Vec::new();
+        metadata::wrap(raw, inner.width, &mut wrapped);
+        let wrapped_width = inner.width;
         let desired_height = wrapped
             .len()
             .saturating_add(if local.cols >= 3 && local.rows >= 3 {
@@ -444,8 +395,11 @@ impl Popover {
             rows: rect.height,
             ..screen
         };
-        let inner = window::content(local);
-        let wrapped = wrap_rows(&raw, inner.width);
+        let inner = content_rect(local);
+        if inner.width != wrapped_width {
+            wrapped.clear();
+            metadata::wrap(raw, inner.width, &mut wrapped);
+        }
         let overflowing = wrapped.len() > usize::from(inner.height);
         // Keep a useful content row even in a one-row terminal band.
         let footer = overflowing && inner.height > 1;
@@ -454,6 +408,7 @@ impl Popover {
         self.scroll = self.scroll.min(self.max_scroll);
         let mut lines = window::border_rows(local, " Details ", Border::Rounded);
         self.roles = window::theme_spans(local).to_vec();
+        self.projects.clear();
         if local.cols >= 3 && local.rows >= 3 {
             self.roles.push(RoleSpan {
                 rect: Rect {
@@ -465,7 +420,7 @@ impl Popover {
                 role: Role::Title,
             });
         }
-        for (index, (label, heading)) in wrapped
+        for (index, line) in wrapped
             .iter()
             .skip(self.scroll)
             .take(body_height)
@@ -478,8 +433,25 @@ impl Popover {
                     width: inner.width,
                     height: 1,
                 },
-                role: if *heading { Role::Title } else { Role::Muted },
+                role: line.role,
             });
+            self.roles.extend(line.spans.iter().map(|span| RoleSpan {
+                rect: Rect {
+                    x: inner.x + span.rect.x,
+                    y: inner.y + index as u16,
+                    ..span.rect
+                },
+                role: span.role,
+            }));
+            self.projects
+                .extend(line.projects.iter().map(|span| ProjectSpan {
+                    rect: Rect {
+                        x: inner.x + span.rect.x,
+                        y: inner.y + index as u16,
+                        ..span.rect
+                    },
+                    slot: span.slot,
+                }));
             lines.push((
                 Rect {
                     x: inner.x,
@@ -487,7 +459,7 @@ impl Popover {
                     width: inner.width,
                     height: 1,
                 },
-                label.clone(),
+                line.text.clone(),
                 false,
             ));
         }
@@ -524,74 +496,127 @@ impl Popover {
         });
         Some(rect)
     }
+    /// Screen-space opaque text body; the logical frame retains its complete
+    /// outer rounded border for the plain fallback.
+    pub(crate) fn body_rect(&self) -> Option<Rect> {
+        let outer = self.rect?;
+        let inner = content_rect(self.surface.frame.size);
+        Some(Rect {
+            x: outer.x + inner.x,
+            y: outer.y + inner.y,
+            ..inner
+        })
+    }
 
-    pub(crate) fn apply_theme(&mut self, theme: &Theme) {
-        self.surface.apply_theme(theme, Role::Panel, &self.roles);
-    }
-}
-
-fn content_rows(content: &Content) -> Vec<(String, bool)> {
-    let mut rows = vec![
-        (content.title.clone(), true),
-        (content.subtitle.clone(), false),
-    ];
-    for section in &content.sections {
-        rows.push((String::new(), false));
-        rows.push((section.title.clone(), true));
-        rows.extend(section.rows.iter().cloned().map(|row| (row, false)));
-    }
-    rows
-}
-fn wrap_rows(rows: &[(String, bool)], width: u16) -> Vec<(String, bool)> {
-    if width == 0 {
-        return Vec::new();
-    }
-    let mut output = Vec::new();
-    for (value, heading) in rows {
-        let mut line = String::new();
-        let mut columns = 0;
-        for ch in window::clean(value).chars() {
-            let advance = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if advance > usize::from(width) {
-                // A two-cell glyph cannot fit in a one-cell viewport. Mark its
-                // omission rather than silently losing metadata or spilling out.
-                if !line.is_empty() {
-                    output.push((std::mem::take(&mut line), *heading));
-                }
-                output.push(("…".into(), *heading));
-                columns = 0;
-                continue;
-            }
-            if columns + advance > usize::from(width) {
-                output.push((std::mem::take(&mut line), *heading));
-                columns = 0;
-            }
-            if advance > 0 || !line.is_empty() {
-                line.push(ch);
-            }
-            columns += advance;
+    pub(crate) fn apply_theme(&mut self, theme: &Theme, palette: &ProjectPalette) {
+        self.foregrounds.clear();
+        let muted = theme.ink(Role::Muted, false);
+        let roles_len = self.roles.len();
+        for project in &self.projects {
+            let (role, foreground) = palette.ink(project.slot, muted);
+            self.roles.push(RoleSpan {
+                rect: project.rect,
+                role,
+            });
+            self.foregrounds.push(ForegroundSpan {
+                rect: project.rect,
+                foreground,
+            });
         }
-        if !line.is_empty() || value.is_empty() {
-            output.push((line, *heading));
-        }
+        self.surface.apply_theme_with_colors(
+            theme,
+            Role::Panel,
+            &self.roles,
+            &self.foregrounds,
+            &[],
+        );
+        self.roles.truncate(roles_len);
     }
-    output
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn wrapping_preserves_combining_marks_and_marks_unfittable_glyphs() {
-        assert_eq!(
-            wrap_rows(&[("界e\u{301}x".into(), false)], 3),
-            vec![("界e\u{301}".into(), false), ("x".into(), false)]
-        );
-        assert_eq!(
-            wrap_rows(&[("界a".into(), true)], 1),
-            vec![("…".into(), true), ("a".into(), true)]
-        );
+    use bkpr_protocol::{PaneInfo, PaneStatus};
+
+    fn pane(id: &str, window: &str) -> PaneInfo {
+        PaneInfo {
+            id: id.into(),
+            workspace_id: Some("work".into()),
+            window_id: Some(window.into()),
+            title: id.into(),
+            status: PaneStatus::Running,
+            exit_code: None,
+            cwd: "/fixture".into(),
+            foreground_cwd: None,
+            harness: None,
+            harness_status: None,
+            project: None,
+            home: "/fixture".into(),
+            isolated_environment: true,
+        }
     }
+
+    fn registry() -> RegistrySnapshot {
+        RegistrySnapshot {
+            revision: 1,
+            workspaces: vec![bkpr_protocol::Workspace {
+                id: "work".into(),
+                name: "Work".into(),
+                revision: 1,
+                windows: vec![bkpr_protocol::Window {
+                    id: "one".into(),
+                    name: "One".into(),
+                    revision: 1,
+                    layout: None,
+                }],
+            }],
+            panes: vec![pane("terminal", "one")],
+        }
+    }
+
+    fn snapshot() -> PaneSnapshot {
+        PaneSnapshot {
+            pane_id: "terminal".into(),
+            pid: Some(41),
+            revision: 1,
+            snapshot_revision: 1,
+            frame: None,
+            image_refs: Vec::new(),
+            resource_protocol: 1,
+            writer: None,
+            lifecycle: "running".into(),
+            exit_code: None,
+            error: None,
+            program_status: Vec::new(),
+            program_identity: Some(bkpr_protocol::ProcessIdentity {
+                pid: 41,
+                birth: "birth".into(),
+            }),
+            events: Vec::new(),
+            event_sequence: 0,
+            size_owner: None,
+            lease_generation: 0,
+            views: Vec::new(),
+            clipboard: None,
+            clipboard_pending: false,
+            capabilities: bkpr_protocol::PaneCapabilities {
+                sixel: false,
+                normalized_frames: false,
+                native_mouse_reporting: false,
+                clipboard_timeout_ms: 0,
+                view_timeout_ms: 0,
+                poll_wait_max_ms: 0,
+                row_deltas: false,
+                scene_encodings: Vec::new(),
+            },
+            row_delta: None,
+            scene: None,
+            selection: None,
+            search: None,
+        }
+    }
+
     #[test]
     fn workspace_qualification_rejects_foreign_or_stale_panes() {
         let registry = RegistrySnapshot {
@@ -635,21 +660,6 @@ mod tests {
 
     #[test]
     fn window_metadata_excludes_other_windows_in_the_same_workspace() {
-        let pane = |id: &str, window: &str| PaneInfo {
-            id: id.into(),
-            workspace_id: Some("work".into()),
-            window_id: Some(window.into()),
-            title: id.into(),
-            status: PaneStatus::Running,
-            exit_code: None,
-            cwd: "/fixture".into(),
-            foreground_cwd: None,
-            harness: None,
-            harness_status: None,
-            project: None,
-            home: "/fixture".into(),
-            isolated_environment: true,
-        };
         let registry = RegistrySnapshot {
             revision: 1,
             workspaces: vec![bkpr_protocol::Workspace {
@@ -678,8 +688,9 @@ mod tests {
             None
         })
         .unwrap();
-        assert_eq!(content.title, "two");
-        assert_eq!(content.sections[0].rows, ["second · Running"]);
+        assert_eq!(content.rows[0].text, "two");
+        assert!(content.rows.iter().any(|row| row.text == "second"));
+        assert!(!content.rows.iter().any(|row| row.text.contains("first")));
         assert_eq!(*observed.borrow(), ["second"]);
         assert!(
             build_content(
@@ -691,6 +702,173 @@ mod tests {
                 |_| None
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn pane_metadata_shares_finder_groups_and_rejects_foreign_snapshot_authority() {
+        let mut registry = registry();
+        registry.panes[0].harness = Some(bkpr_protocol::HarnessInfo {
+            kind: bkpr_protocol::HarnessKind::Codex,
+            pid: 41,
+            birth: "birth".into(),
+            cwd: "/fixture".into(),
+            managed: None,
+        });
+        let target = SidebarTarget::Pane {
+            workspace: "work".into(),
+            pane: "terminal".into(),
+        };
+        let mut snapshot = snapshot();
+        snapshot.error = Some("Current engine error".into());
+        let popup = build_content(&registry, &target, |_| Some(&snapshot)).unwrap();
+        let finder = metadata::content(&registry.panes[0], &registry, Some(&snapshot));
+        assert_eq!(
+            popup
+                .rows
+                .iter()
+                .map(|row| (&row.text, row.role))
+                .collect::<Vec<_>>(),
+            finder
+                .iter()
+                .map(|row| (&row.text, row.role))
+                .collect::<Vec<_>>(),
+        );
+        assert!(popup.rows.iter().any(|row| row.text.contains("Codex")));
+        assert!(
+            popup
+                .rows
+                .iter()
+                .any(|row| row.role == Role::Error && row.text.contains("engine error"))
+        );
+        snapshot.pane_id = "foreign".into();
+        let popup = build_content(&registry, &target, |_| Some(&snapshot)).unwrap();
+        assert!(
+            !popup
+                .rows
+                .iter()
+                .any(|row| row.text.contains("Codex") || row.text.contains("engine error"))
+        );
+        snapshot.pane_id = "terminal".into();
+        snapshot.program_identity.as_mut().unwrap().birth = "previous".into();
+        let popup = build_content(&registry, &target, |_| Some(&snapshot)).unwrap();
+        assert!(!popup.rows.iter().any(|row| row.text.contains("Codex")));
+    }
+
+    #[test]
+    fn held_error_changes_invalidate_paint_and_tiny_geometry_stays_inside_outer() {
+        let registry = registry();
+        let target = SidebarTarget::Pane {
+            workspace: "work".into(),
+            pane: "terminal".into(),
+        };
+        let screen = Size {
+            cols: 100,
+            rows: 40,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut snapshot = snapshot();
+        let mut popup = Popover::new(screen);
+        popup
+            .paint(&registry, Some(&target), 2, 24, screen, |_| Some(&snapshot))
+            .unwrap();
+        snapshot.error = Some("Connection failed".into());
+        popup
+            .paint(&registry, Some(&target), 2, 24, screen, |_| Some(&snapshot))
+            .unwrap();
+        let text = popup
+            .surface
+            .frame
+            .rows
+            .iter()
+            .map(|row| {
+                row.cells
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Connection failed"));
+        for (cols, rows, anchor) in [(1, 3, 1), (2, 4, 0), (5, 2, 0), (24, 8, 2)] {
+            let screen = Size {
+                cols,
+                rows,
+                ..screen
+            };
+            let outer = popup
+                .paint(&registry, Some(&target), anchor, cols, screen, |_| {
+                    Some(&snapshot)
+                })
+                .unwrap();
+            let body = popup.body_rect().unwrap();
+            assert_eq!(popup.surface.frame.size.cols, outer.width);
+            assert_eq!(popup.surface.frame.size.rows, outer.height);
+            assert!(body.x >= outer.x && body.y >= outer.y);
+            assert!(body.x + body.width <= outer.x + outer.width);
+            assert!(body.y + body.height <= outer.y + outer.height);
+            assert!(outer.x + outer.width <= screen.cols && outer.y + outer.height <= screen.rows);
+        }
+        popup.hide();
+        assert!(popup.body_rect().is_none());
+    }
+
+    #[test]
+    fn canonical_project_groups_deduplicate_subdirectories_but_keep_worktree_freshness() {
+        use bkpr_protocol::{ChangeSummary, ProjectSnapshot, ProjectState, RepositoryInfo};
+        let project = |cwd: &str, root: &str, state| ProjectSnapshot {
+            color_slot: None,
+            cwd: cwd.into(),
+            state,
+            error: None,
+            repository: Some(RepositoryInfo {
+                name: "same-project".into(),
+                root: root.into(),
+                common_dir: "/repo/.git".into(),
+                git_dir: format!("{root}/.git").into(),
+                branch: Some(root.into()),
+                head_sha: Some("abcdef".into()),
+                staged: ChangeSummary::default(),
+                unstaged: ChangeSummary::default(),
+                untracked_files: 0,
+                base_ref: None,
+                base_sha: None,
+                committed: None,
+            }),
+        };
+        let mut registry = registry();
+        registry.panes[0].project = Some(project("/tree/a", "/tree/a", ProjectState::Ready));
+        let mut duplicate = pane("duplicate", "one");
+        duplicate.project = Some(project("/tree/a/subdir", "/tree/a", ProjectState::Ready));
+        let mut other = pane("other", "one");
+        other.project = Some(project("/tree/b", "/tree/b", ProjectState::Loading));
+        registry.panes.extend([duplicate, other]);
+        let content = build_content(&registry, &SidebarTarget::Workspace("work".into()), |_| {
+            None
+        })
+        .unwrap();
+        assert_eq!(
+            content
+                .rows
+                .iter()
+                .filter(|row| row.text == "same-project")
+                .count(),
+            1
+        );
+        assert_eq!(
+            content
+                .rows
+                .iter()
+                .filter(|row| row.text.starts_with("Worktree · "))
+                .count(),
+            2
+        );
+        assert!(
+            content
+                .rows
+                .iter()
+                .any(|row| row.text == "Branch · /tree/b" && row.role == Role::Warning)
         );
     }
 }

@@ -39,10 +39,20 @@ struct TextState {
     physical_cursor_color: Option<Option<[u8; 3]>>,
 }
 
+const MAX_CACHED_PROJECTIONS: usize = 512;
+const MAX_CACHED_PROJECTION_BYTES: usize = 8 * 1024 * 1024;
+
+struct ProjectionResource {
+    id: u32,
+    rgba_bytes: usize,
+    placed: bool,
+}
+
 struct GraphicsState {
     next_image: u32,
     image_ids: HashMap<ImageKey, u32>,
-    derived_ids: HashMap<geometry::DerivedKey, u32>,
+    derived_ids: hashlink::LinkedHashMap<geometry::DerivedKey, ProjectionResource>,
+    derived_bytes: usize,
     text: TextState,
     projections: Vec<geometry::Projection>,
 }
@@ -51,7 +61,8 @@ impl GraphicsState {
         Self {
             next_image: start_id,
             image_ids: HashMap::new(),
-            derived_ids: HashMap::new(),
+            derived_ids: hashlink::LinkedHashMap::new(),
+            derived_bytes: 0,
             text: TextState::default(),
             projections: Vec::new(),
         }
@@ -64,7 +75,62 @@ impl GraphicsState {
         Ok(self.next_image)
     }
     fn all_ids(&self) -> impl Iterator<Item = &u32> {
-        self.image_ids.values().chain(self.derived_ids.values())
+        self.image_ids
+            .values()
+            .chain(self.derived_ids.values().map(|resource| &resource.id))
+    }
+
+    fn prepare_projection_cache(
+        &mut self,
+        prepared: &geometry::Prepared<'_>,
+        out: &mut impl Write,
+    ) -> Result<()> {
+        let mut error = None;
+        let bytes = &mut self.derived_bytes;
+        self.derived_ids.retain(|key, resource| {
+            if prepared.images.contains_key(&key.image) || error.is_some() {
+                return true;
+            }
+            match write!(out, "\x1b_Ga=d,d=I,i={},q=2\x1b\\", resource.id) {
+                Ok(()) => {
+                    *bytes -= resource.rgba_bytes;
+                    false
+                }
+                Err(failure) => {
+                    error = Some(failure);
+                    true
+                }
+            }
+        });
+        if let Some(error) = error {
+            return Err(error.into());
+        }
+        let mut visible_bytes = 0;
+        let mut visible_count = 0;
+        for key in &prepared.derived {
+            if let Some(resource) = self.derived_ids.to_back(key) {
+                visible_bytes += resource.rgba_bytes;
+                visible_count += 1;
+            }
+        }
+        // Touch current projections first, so every inactive entry precedes them.
+        // Prune before admitting new visible rasters: cache residency cannot add
+        // another former full scene to the next frame's peak GPU byte charge.
+        while self.derived_ids.len() - visible_count > MAX_CACHED_PROJECTIONS
+            || self.derived_bytes - visible_bytes > MAX_CACHED_PROJECTION_BYTES
+        {
+            let (key, resource) = self
+                .derived_ids
+                .front()
+                .context("projection cache accounting underflow")?;
+            if prepared.derived.contains(key) {
+                bail!("visible projection cache accounting mismatch");
+            }
+            write!(out, "\x1b_Ga=d,d=I,i={},q=2\x1b\\", resource.id)?;
+            let (_, resource) = self.derived_ids.pop_front().unwrap();
+            self.derived_bytes -= resource.rgba_bytes;
+        }
+        Ok(())
     }
 }
 pub struct TerminalGuard {
@@ -149,7 +215,7 @@ impl TerminalGuard {
         }
         let _ = write!(
             out,
-            "\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?1049l"
+            "\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?1049l"
         );
         let _ = out.flush();
     }
@@ -436,7 +502,7 @@ fn draw_prepared(
         || graphics
             .derived_ids
             .keys()
-            .any(|key| !prepared.derived.contains(key))
+            .any(|key| !prepared.images.contains_key(&key.image))
         || prepared
             .original
             .iter()
@@ -460,15 +526,20 @@ fn draw_prepared(
     {
         write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
     }
-    for (_, id) in graphics
-        .derived_ids
-        .extract_if(|key, _| !prepared.derived.contains(key))
-    {
-        write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+    if placements_changed || resources_changed {
+        graphics.prepare_projection_cache(&prepared, out)?;
     }
     if placements_changed {
-        for id in graphics.all_ids() {
+        for id in graphics.image_ids.values() {
             write!(out, "\x1b_Ga=d,d=i,i={id},q=2\x1b\\")?;
+        }
+        for resource in graphics
+            .derived_ids
+            .values_mut()
+            .filter(|resource| resource.placed)
+        {
+            write!(out, "\x1b_Ga=d,d=i,i={},q=2\x1b\\", resource.id)?;
+            resource.placed = false;
         }
     }
     write!(out, "\x1b[?2026h\x1b[?25l\x1b[0m")?;
@@ -551,13 +622,26 @@ fn draw_prepared(
     }
     for p in prepared.placements.iter().filter(|_| placements_changed) {
         let id = if let Some(key) = p.derived {
-            if let Some(id) = graphics.derived_ids.get(&key) {
-                *id
+            if let Some(resource) = graphics.derived_ids.get_mut(&key) {
+                resource.placed = true;
+                resource.id
             } else {
                 let image = prepared.images[&key.image];
                 let pixels = geometry::raster(image, key)?;
                 let id = graphics.allocate()?;
-                graphics.derived_ids.insert(key, id);
+                let rgba_bytes = usize::try_from(key.visible.width)?
+                    .checked_mul(usize::try_from(key.visible.height)?)
+                    .and_then(|pixels| pixels.checked_mul(4))
+                    .context("projected image cache byte capacity exceeded")?;
+                graphics.derived_bytes += rgba_bytes;
+                graphics.derived_ids.insert(
+                    key,
+                    ProjectionResource {
+                        id,
+                        rgba_bytes,
+                        placed: true,
+                    },
+                );
                 transmit_image(
                     out,
                     id,

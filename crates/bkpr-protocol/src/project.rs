@@ -7,6 +7,10 @@ pub struct ProjectSnapshot {
     #[serde(with = "crate::path_wire")]
     pub cwd: PathBuf,
     pub state: ProjectState,
+    /// Live session ordinal for the canonical common Git repository, not an RGB
+    /// colour or persisted identity. Retained while an existing owner's identity
+    /// is temporarily unknown; absent for unrecognized/nonrepository projects.
+    pub color_slot: Option<u32>,
     pub repository: Option<RepositoryInfo>,
     pub error: Option<String>,
 }

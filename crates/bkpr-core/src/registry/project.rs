@@ -19,10 +19,11 @@ const DEBOUNCE: Duration = Duration::from_millis(100);
 const MAX_COALESCE: Duration = Duration::from_secs(1);
 const MAX_NATIVE_WATCHES: usize = 65_536;
 
-pub(super) fn loading(cwd: &Path) -> ProjectSnapshot {
+pub(super) fn loading(cwd: &Path, color_slot: Option<u32>) -> ProjectSnapshot {
     ProjectSnapshot {
         cwd: cwd.to_owned(),
         state: ProjectState::Loading,
+        color_slot,
         repository: None,
         error: None,
     }
@@ -30,6 +31,7 @@ pub(super) fn loading(cwd: &Path) -> ProjectSnapshot {
 struct Entry {
     source: PathBuf,
     identity: Option<git::Identity>,
+    identity_known: bool,
     snapshot: ProjectSnapshot,
     directories: BTreeSet<PathBuf>,
     external_files: BTreeSet<PathBuf>,
@@ -40,11 +42,12 @@ struct Entry {
     due: Option<Instant>,
 }
 impl Entry {
-    fn new(source: PathBuf, identity: Option<git::Identity>) -> Self {
+    fn new(source: PathBuf, identity: Option<git::Identity>, identity_known: bool) -> Self {
         Self {
-            snapshot: loading(&source),
+            snapshot: loading(&source, None),
             source,
             identity,
+            identity_known,
             directories: BTreeSet::new(),
             rebuild: true,
             external_files: BTreeSet::new(),
@@ -60,6 +63,7 @@ impl Entry {
         self.due = Some((now + DEBOUNCE).min(first + MAX_COALESCE));
         self.generation = self.generation.wrapping_add(1);
         self.rebuild |= rebuild;
+        self.identity_known = false;
         self.snapshot.state = if self.coverage_error.is_some() {
             ProjectState::Error
         } else {
@@ -80,6 +84,10 @@ struct Worker {
     installed: BTreeSet<PathBuf>,
     bindings: BTreeMap<PathBuf, PathBuf>,
     cache: BTreeMap<PathBuf, Entry>,
+    // Adapted from main 9ad93bd native.rs::sync_project_colors. Unlike main's
+    // recovered model, these reservations exist only for this live worker.
+    owners: BTreeMap<String, PathBuf>,
+    color_slots: BTreeMap<PathBuf, u32>,
     rebind: bool,
     inputs_pending: bool,
     watch_retry: Option<Instant>,
@@ -108,6 +116,8 @@ impl Registry {
                     installed: BTreeSet::new(),
                     bindings: BTreeMap::new(),
                     cache: BTreeMap::new(),
+                    owners: BTreeMap::new(),
+                    color_slots: BTreeMap::new(),
                     rebind: false,
                     inputs_pending: false,
                     watch_retry: None,
@@ -176,7 +186,7 @@ impl Worker {
         let Some(inner) = self.registry.upgrade() else {
             return false;
         };
-        let desired: BTreeSet<_> = {
+        let desired: BTreeMap<_, _> = {
             let state = inner.state.lock().unwrap();
             if state.closing {
                 return false;
@@ -187,7 +197,7 @@ impl Worker {
                 .panes
                 .iter()
                 .filter(|pane| pane.status == PaneStatus::Running)
-                .map(|pane| effective_cwd(pane).to_owned())
+                .map(|pane| (pane.id.clone(), effective_cwd(pane).to_owned()))
                 .collect()
         };
         drop(inner);
@@ -195,9 +205,12 @@ impl Worker {
             self.bindings.clear();
             self.rebind = false;
         }
-        self.bindings.retain(|cwd, _| desired.contains(cwd));
-        let desired_count = desired.len();
-        for cwd in desired {
+        let desired_count = {
+            let desired_cwds: BTreeSet<_> = desired.values().collect();
+            self.bindings.retain(|cwd, _| desired_cwds.contains(cwd));
+            desired_cwds.len()
+        };
+        for cwd in desired.into_values() {
             if self.bindings.contains_key(&cwd) {
                 continue;
             }
@@ -213,15 +226,18 @@ impl Worker {
                 .as_ref()
                 .map(|identity| identity.root.clone())
                 .unwrap_or(source);
+            let identity_known = discovered.is_ok();
             let entry = self
                 .cache
                 .entry(key.clone())
-                .or_insert_with(|| Entry::new(source.clone(), identity.clone()));
-            if entry.identity != identity {
+                .or_insert_with(|| Entry::new(source.clone(), identity.clone(), identity_known));
+            if identity_known && entry.identity != identity {
                 entry.source = source;
                 entry.identity = identity;
+                entry.snapshot.repository = None;
                 entry.invalidate(true);
             }
+            entry.identity_known = identity_known;
             if let Err(error) = discovered {
                 entry.snapshot.state = ProjectState::Error;
                 entry.snapshot.error = Some(format!("{error:#}"));
@@ -254,7 +270,11 @@ impl Worker {
         let previous_identity = entry.identity.clone();
         let git = git::Git::new(&source, &self.cancel);
         let discovered = git.identify();
-        let identity = discovered.as_ref().ok().cloned().flatten();
+        let identity_known = discovered.is_ok();
+        let identity = match &discovered {
+            Ok(identity) => identity.clone(),
+            Err(_) => previous_identity.clone(),
+        };
         let result = match discovered {
             Ok(Some(identity)) => git.repository(&identity).map(Some),
             Ok(None) => Ok(None),
@@ -287,6 +307,7 @@ impl Worker {
         }
         let entry = self.cache.get_mut(key).unwrap();
         entry.identity = identity.clone();
+        entry.identity_known = identity_known;
         if let Some(identity) = &identity {
             entry.source = identity.root.clone();
         }
@@ -294,6 +315,9 @@ impl Worker {
         entry.dirty_since = None;
         entry.rebuild = false;
         let mut snapshot = entry.snapshot.clone();
+        if identity_known && identity != previous_identity {
+            snapshot.repository = None;
+        }
         match result {
             Ok(repository) => {
                 snapshot.state = if repository.is_some() {
@@ -336,7 +360,8 @@ impl Worker {
         entry.snapshot = snapshot;
         // A directory can become a nested repo, or git init can create a new root.
         // Re-key aliases before publication; sibling panes still share one entry.
-        if let Some(identity) = identity
+        if identity_known
+            && let Some(identity) = identity
             && identity.root != key
         {
             let moved = self.cache.remove(key).unwrap();
@@ -515,7 +540,7 @@ impl Worker {
         self.installed.clear();
         self.watch_retry = Some(Instant::now());
     }
-    fn publish(&self) {
+    fn publish(&mut self) {
         let Some(inner) = self.registry.upgrade() else {
             return;
         };
@@ -524,6 +549,60 @@ impl Worker {
         if state.closing {
             return;
         }
+        let retired = std::mem::take(&mut state.project_retired);
+        if !retired.is_empty() {
+            self.owners.retain(|id, _| !retired.contains(id));
+            let live: BTreeSet<_> = self.owners.values().collect();
+            self.color_slots.retain(|common, _| live.contains(common));
+        }
+        let panes: BTreeMap<_, _> = state
+            .record
+            .registry
+            .panes
+            .iter()
+            .filter(|pane| pane.status == PaneStatus::Running)
+            .map(|pane| (&pane.id, pane))
+            .collect();
+        self.owners.retain(|id, _| panes.contains_key(id));
+        let mut unbound = false;
+        for pane in panes.values() {
+            let Some(entry) = self
+                .bindings
+                .get(effective_cwd(pane))
+                .and_then(|key| self.cache.get(key))
+            else {
+                unbound = true;
+                continue;
+            };
+            if !entry.identity_known {
+                // A metadata error or asynchronous CWD gap is not evidence that
+                // the pane left its previous canonical repository.
+                continue;
+            }
+            if let Some(identity) = &entry.identity {
+                if self.owners.get(&pane.id) != Some(&identity.common) {
+                    self.owners.insert(pane.id.clone(), identity.common.clone());
+                }
+            } else {
+                self.owners.remove(&pane.id);
+            }
+        }
+        let live: BTreeSet<_> = self.owners.values().collect();
+        self.color_slots.retain(|common, _| live.contains(common));
+        if !unbound {
+            // Cold CWDs are discovered incrementally. Allocate only once this
+            // input batch is bound, so CWD/cache ordering cannot choose hues.
+            let occupied: BTreeSet<_> = self.color_slots.values().copied().collect();
+            let mut available = (0..=u32::MAX).filter(|slot| !occupied.contains(slot));
+            for common in self.owners.values() {
+                if !self.color_slots.contains_key(common)
+                    && let Some(slot) = available.next()
+                {
+                    self.color_slots.insert(common.clone(), slot);
+                }
+            }
+        }
+        drop(panes);
         let mut changed = false;
         for pane in &mut state.record.registry.panes {
             if pane.status != PaneStatus::Running {
@@ -533,9 +612,15 @@ impl Worker {
             let Some(entry) = self.bindings.get(cwd).and_then(|key| self.cache.get(key)) else {
                 continue;
             };
+            let color_slot = self
+                .owners
+                .get(&pane.id)
+                .and_then(|common| self.color_slots.get(common))
+                .copied();
             if pane.project.as_ref().is_some_and(|current| {
                 current.cwd == cwd
                     && current.state == entry.snapshot.state
+                    && current.color_slot == color_slot
                     && current.repository == entry.snapshot.repository
                     && current.error == entry.snapshot.error
             }) {
@@ -543,6 +628,7 @@ impl Worker {
             }
             let mut snapshot = entry.snapshot.clone();
             snapshot.cwd = cwd.to_owned();
+            snapshot.color_slot = color_slot;
             pane.project = Some(snapshot);
             changed = true;
         }

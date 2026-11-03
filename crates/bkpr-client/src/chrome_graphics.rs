@@ -188,6 +188,32 @@ impl ChromeGraphics {
         }
     }
 
+    /// Request the single main-like passive item/details material. Geometry
+    /// changes do not invalidate finder/guide/perimeter raster caches.
+    pub(crate) fn prepare_joined(&mut self, size: Size, popup: Option<(Rect, Rect)>) {
+        let request = popup.and_then(|(popup, item)| {
+            crate::appearance::joined_surface(size, popup, item, self.1?[1])
+        });
+        self.0.prepare_joined(request);
+    }
+
+    pub(crate) fn joined_ready(&self) -> bool {
+        self.0.joined_ready()
+    }
+
+    pub(crate) fn joined_opaque_spans(&self) -> &[bkpr_tui_framework::joined::OpaqueSpan] {
+        self.0.joined_opaque_spans()
+    }
+
+    pub(crate) fn decorate_joined(
+        &self,
+        frame: &mut Frame,
+        base: u32,
+        exclusions: &[Rect],
+    ) -> bool {
+        self.0.decorate_joined(frame, base, exclusions)
+    }
+
     pub(crate) fn decorate_pane(
         &self,
         frame: &mut Frame,

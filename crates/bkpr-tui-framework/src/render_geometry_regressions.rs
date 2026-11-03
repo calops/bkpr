@@ -76,7 +76,9 @@ fn consume(frame: &Frame, graphics: &mut GraphicsState, terminal: &mut Terminal)
         graphics,
     )
     .unwrap();
-    terminal.feed(&output).unwrap();
+    for chunk in output.chunks(64 * 1024) {
+        terminal.feed(chunk).unwrap();
+    }
     terminal.snapshot().unwrap()
 }
 fn placed_image<'a>(frame: &'a Frame, p: &Placement) -> &'a Image {
@@ -302,6 +304,16 @@ fn subcell_scaled_crop_is_exact_cached_and_viewport_clipping_keeps_sampling_phas
         clipped_key
     );
     assert_eq!(frame.images[0].pixels, corners());
+    frame.placements[0].col = 1;
+    frame.placements[0].offset_x = 3;
+    let restored = consume(&frame, &mut graphics, &mut terminal);
+    let restored_raster = placed_image(&restored, &restored.placements[0]);
+    assert_eq!(restored_raster.key(), key);
+    for y in 0..9 {
+        for x in 0..11 {
+            assert_eq!(pixel(restored_raster, x, y), pixel(full_raster, x, y));
+        }
+    }
     frame.images.clear();
     frame.placements.clear();
     let cleared = consume(&frame, &mut graphics, &mut terminal);
@@ -482,4 +494,84 @@ fn aggregate_visible_pixels_are_bounded_before_allocation_or_output() {
     assert!(output.is_empty());
     assert_eq!(graphics.next_image, 100);
     assert!(graphics.derived_ids.is_empty());
+}
+
+#[test]
+fn inactive_projection_count_is_bounded_without_evicting_current_pixels() {
+    let mut frame = scene();
+    frame.size = Size {
+        cols: 1,
+        rows: 1,
+        cell_width: 1,
+        cell_height: 1,
+    };
+    frame.images.push(image(1, 4, 4, corners()));
+    let mut target = placement(1, 11, 9);
+    target.col = 0;
+    target.row = 0;
+    target.source_x = 1;
+    target.source_y = 1;
+    target.source_width = 2;
+    target.source_height = 2;
+    frame.placements.push(target);
+    let mut graphics = GraphicsState::new(100);
+    let mut terminal = consumer(&frame);
+    for width in 11..11 + MAX_CACHED_PROJECTIONS as u32 + 8 {
+        frame.placements[0].width = width;
+        let actual = consume(&frame, &mut graphics, &mut terminal);
+        assert_eq!(
+            pixel(placed_image(&actual, &actual.placements[0]), 0, 0),
+            [255, 0, 0, 255]
+        );
+        assert!(graphics.derived_ids.len() <= MAX_CACHED_PROJECTIONS + 1);
+    }
+    frame.images.clear();
+    frame.placements.clear();
+    let cleared = consume(&frame, &mut graphics, &mut terminal);
+    assert!(cleared.placements.is_empty());
+    assert!(graphics.derived_ids.is_empty());
+    assert_eq!(graphics.derived_bytes, 0);
+}
+
+#[test]
+fn inactive_projection_byte_budget_does_not_reduce_visible_image_support() {
+    let mut frame = scene();
+    frame.size = Size {
+        cols: 129,
+        rows: 65,
+        cell_width: 16,
+        cell_height: 16,
+    };
+    frame.images.push(image(1, 4, 4, corners()));
+    let mut target = placement(1, 2065, 1041);
+    target.col = 0;
+    target.row = 0;
+    target.source_x = 1;
+    target.source_y = 1;
+    target.source_width = 2;
+    target.source_height = 2;
+    frame.placements.push(target);
+    let mut graphics = GraphicsState::new(100);
+    let mut terminal = consumer(&frame);
+    let first = consume(&frame, &mut graphics, &mut terminal);
+    let raster = placed_image(&first, &first.placements[0]);
+    assert_eq!(pixel(raster, 0, 0), [255, 0, 0, 255]);
+    assert!(raster.width as usize * raster.height as usize * 4 > MAX_CACHED_PROJECTION_BYTES);
+    let large = *graphics.derived_ids.front().unwrap().0;
+    frame.placements[0].width = 11;
+    frame.placements[0].height = 9;
+    let small = consume(&frame, &mut graphics, &mut terminal);
+    assert_eq!(
+        pixel(placed_image(&small, &small.placements[0]), 0, 0),
+        [255, 0, 0, 255]
+    );
+    assert!(!graphics.derived_ids.contains_key(&large));
+    assert!(graphics.derived_bytes <= MAX_CACHED_PROJECTION_BYTES);
+    frame.placements[0].width = 2065;
+    frame.placements[0].height = 1041;
+    let restored = consume(&frame, &mut graphics, &mut terminal);
+    assert_eq!(
+        pixel(placed_image(&restored, &restored.placements[0]), 0, 0),
+        [255, 0, 0, 255]
+    );
 }

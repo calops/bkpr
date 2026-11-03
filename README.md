@@ -500,10 +500,13 @@ Focused overlays faint the underlying text without changing canonical pane
 styles or images. Passive cards and the key guide never take keyboard focus.
 
 Hovering or keyboard-selecting sidebar items opens passive, scrollable metadata.
-It uses supplied registry facts and already-held snapshots, never hidden view
-attachments or provider/filesystem work on the render path. Project data retains
-loading/error/stale labels, and contradictory foreground identities hide retired
-harness facts. Contextual hints always use a passive popup populated from the
+Pointer motion selects the hovered item, with continuous handoff into its popup;
+keyboard navigation takes ownership again on the next navigation key. Structured
+rows preserve status, repository/worktree details, semantic colors and stale/error
+labels. Workspace summaries group linked worktrees without repeating the project
+name. These popups use already-held facts, never hidden view attachments or
+provider/filesystem work on the render path. Contradictory foreground identities
+hide retired harness facts. Contextual hints always use a passive popup populated from the
 same effective bindings as dispatch. It stays left-anchored inside the sidebar,
 overflowing only when the visible content needs more width. Sidebar mode uses
 a blue tint; prefix, resize and history/search modes use a yellow tint.
@@ -519,6 +522,14 @@ palette. Confirmed `Tc`/`RGB` support plus observed foreground/background enable
 subdued RGB surfaces, muted text, selection shading and palette-derived
 accents. Sidebar, pane fallbacks, popups, focused fields, hints and artwork share
 Bkpr's client-owned style policy; canonical application styles are not themed.
+
+Project names and pane/finder markers share backend-owned, ephemeral color slots
+for canonical Git repositories. Linked worktrees share a slot; loading/error gaps
+retain it, and the final owner leaving releases it. The client follows main's
+finite ANSI-derived accent sequence and blends confirmed RGB colors against its
+inferred sidebar surface, without wrapping exhausted slots. Unknown/exhausted
+slots stay muted. Branches and tree guides remain neutral; selected tree context
+and semantic status/count colors retain their own styling.
 
 `Ctrl-b g` switches decorative chrome between fancy and rounded text rendering.
 This preference does not disable application-owned graphics or alter pane sizes.
