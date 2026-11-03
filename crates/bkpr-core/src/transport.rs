@@ -1,4 +1,4 @@
-use crate::registry::Registry;
+use crate::registry::{Registry, SessionClosing};
 mod clients;
 use anyhow::{Context, Result, bail};
 #[cfg(test)]
@@ -6,6 +6,7 @@ use bkpr_protocol::MAX_CONTROL_CONNECTIONS;
 use bkpr_protocol::{
     AgentRequest, MAX_AGENT_SUBSCRIBERS, MAX_CONNECTIONS, MAX_REGISTRY_WATCHERS,
     MAX_WAITING_PANE_POLLS, Operation, PROTOCOL_VERSION, PaneRequest, PaneSpawnSpec, Request,
+    RequestFailure, RequestOutcome, Response,
 };
 pub(crate) use clients::{ClientOwner, lifetime_connected, send_lifetime_event};
 use serde_json::json;
@@ -38,8 +39,8 @@ impl ConnectionSlot {
     }
 }
 
-// Only decoded, admitted requests hold this guard. Idle sockets and lifetime
-// watches cannot delay process exit; a committed close still gets its response.
+// Decoded requests, including startup waiters and known closing rejections, hold
+// this guard until their reply is written. Idle sockets and lifetime watches do not.
 #[derive(Default)]
 struct ResponseDrain {
     pending: Mutex<usize>,
@@ -47,14 +48,10 @@ struct ResponseDrain {
 }
 struct PendingResponse(Arc<ResponseDrain>);
 impl PendingResponse {
-    fn admit(drain: &Arc<ResponseDrain>, shutdown: &AtomicBool) -> Result<Self> {
+    fn track(drain: &Arc<ResponseDrain>) -> Self {
         let mut pending = drain.pending.lock().unwrap();
-        anyhow::ensure!(
-            !shutdown.load(Ordering::Acquire),
-            "session is shutting down"
-        );
         *pending += 1;
-        Ok(Self(drain.clone()))
+        Self(drain.clone())
     }
 }
 impl Drop for PendingResponse {
@@ -169,7 +166,7 @@ impl StartupGate {
             .unwrap();
         anyhow::ensure!(
             !shutdown.load(Ordering::Acquire) && !self.cancelled.load(Ordering::Acquire),
-            "session is shutting down"
+            SessionClosing("session is shutting down")
         );
         Ok(())
     }
@@ -373,6 +370,7 @@ impl BoundSocket {
                     let mut subscription = None;
                     let mut lifetime = None;
                     let mut pending_response = None;
+                    let mut dispatched = false;
                     let result = (|| -> Result<_> {
                         let mut bytes = Vec::new();
                         BufReader::new((&mut stream).take(MAX_REQUEST + 1))
@@ -381,6 +379,7 @@ impl BoundSocket {
                             bail!("request size limit");
                         }
                         let request: Request = serde_json::from_slice(&bytes)?;
+                        pending_response = Some(PendingResponse::track(&responses));
                         let _waiting = waiting_slot(&request.operation, &waiting_panes, &waiting_registry, &waiting_agents)?;
                         let requested_subscription = match &request.operation {
                             Operation::Agent {
@@ -392,13 +391,30 @@ impl BoundSocket {
                         };
                         stop = request.version == PROTOCOL_VERSION && matches!(&request.operation, Operation::Shutdown);
                         anyhow::ensure!(request.version == PROTOCOL_VERSION, "unsupported protocol version");
+                        if !startup_callback(&request.operation) {
+                            #[cfg(test)]
+                            if !*startup.complete.lock().unwrap() {
+                                registry.test_notify_request_wait();
+                            }
+                            if let Err(error) = startup.wait(&shutdown) {
+                                registry.request_health()?;
+                                return Err(error);
+                            }
+                        }
+                        // Immutable daemon identity must remain readable when
+                        // persistence is poisoned: normal stop validates its
+                        // exact target through SessionInfo before cleanup.
+                        if !matches!(&request.operation, Operation::SessionInfo | Operation::Shutdown) {
+                            registry.request_admission()?;
+                        }
+                        anyhow::ensure!(
+                            !shutdown.load(Ordering::Acquire),
+                            SessionClosing("session is shutting down")
+                        );
+                        dispatched = true;
                         if stop {
                             startup.cancel();
                         }
-                        if !startup_callback(&request.operation) {
-                            startup.wait(&shutdown)?;
-                        }
-                        pending_response = Some(PendingResponse::admit(&responses, &shutdown)?);
                         let result = match request.operation {
                             Operation::ClientRegister { session_id, daemon_id } => {
                                 let (client, response) = registry.register_client(&stream, &session_id, &daemon_id)?;
@@ -426,12 +442,16 @@ impl BoundSocket {
                         });
                         Ok(result)
                     })();
-                    let response = match result {
-                        Ok(value) => json!({"version":PROTOCOL_VERSION,"ok":true,"result":value}),
-                        Err(e) => {
-                            json!({"version":PROTOCOL_VERSION,"ok":false,"error":format!("{e:#}")})
+                    // Only a typed closing guard can authorize shutdown handling.
+                    // In particular, never turn a generic error into a closing
+                    // success because another request ended the session.
+                    let result = match result {
+                        Err(error) if error.is::<SessionClosing>() => {
+                            registry.request_health().and(Err(error))
                         }
+                        result => result,
                     };
+                    let response = response(result, dispatched);
                     let mut encoded = WireBuffer {
                         bytes: Vec::new(),
                         limit: MAX_RESPONSE as usize,
@@ -461,7 +481,7 @@ impl BoundSocket {
                     drop(pending_response);
                     // A valid explicit shutdown closes the daemon even when owned cleanup
                     // reports an error. Keep the error response, not a poisoned listener.
-                    if stop {
+                    if stop && dispatched {
                         shutdown.store(true, Ordering::Release);
                         let _ = (&*wake_write).write_all(b"\0");
                         startup.finish();
@@ -491,6 +511,33 @@ impl BoundSocket {
             pending = responses.changed.wait(pending).unwrap();
         }
         serving.and(bootstrapped.map(|_| ())).and(cleanup)
+    }
+}
+
+fn response(result: Result<serde_json::Value>, dispatched: bool) -> Response {
+    match result {
+        Ok(value) => Response {
+            version: PROTOCOL_VERSION,
+            ok: true,
+            result: Some(value),
+            error: None,
+            failure: None,
+        },
+        Err(error) => Response {
+            version: PROTOCOL_VERSION,
+            ok: false,
+            result: None,
+            failure: error
+                .is::<SessionClosing>()
+                .then_some(RequestFailure::SessionClosing {
+                    outcome: if dispatched {
+                        RequestOutcome::Unknown
+                    } else {
+                        RequestOutcome::NotDispatched
+                    },
+                }),
+            error: Some(format!("{error:#}")),
+        },
     }
 }
 

@@ -141,7 +141,7 @@ struct Attached {
     retirement_requested: bool,
     retirement_policy: RetirementPolicy,
     retirement_focus_out: bool,
-    retirement_error: Option<String>,
+    retirement_error: Option<anyhow::Error>,
 }
 impl Attached {
     fn retire(
@@ -181,19 +181,21 @@ impl Attached {
                             self.retirement_policy = RetirementPolicy::Failed;
                         }
                         Err(_) => {
-                            self.retirement_error = Some(format!(
-                                "pane {pane} view {} policy completion disconnected; outcome unknown; not replayed",
-                                self.view
+                            self.retirement_error = Some(transport::mark_outcome_unknown(
+                                anyhow::anyhow!(
+                                    "pane {pane} view {} policy completion disconnected; outcome unknown; not replayed",
+                                    self.view
+                                ),
                             ));
                             self.retirement_policy = RetirementPolicy::Failed;
                         }
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.retirement_error = Some(format!(
+                    self.retirement_error = Some(transport::mark_outcome_unknown(anyhow::anyhow!(
                         "pane {pane} view {} policy completion disconnected; outcome unknown; not replayed",
                         self.view
-                    ));
+                    )));
                     self.retirement_policy = RetirementPolicy::Failed;
                 }
             }
@@ -1359,7 +1361,7 @@ impl App<'_> {
             }
         };
         if let Some(error) = &self.views[pane].retirement_error {
-            self.state.status = error.clone();
+            self.state.status = format!("{error:#}");
         }
         let Some(receipt) = receipt else {
             return cancellation;
@@ -1915,7 +1917,7 @@ impl App<'_> {
                     .receipt
                     .recv()
                     .context("device reply worker stopped before completion")
-                    .and_then(|result| result.map_err(anyhow::Error::msg)),
+                    .and_then(|result| result),
             );
         }
         result
@@ -3548,15 +3550,22 @@ fn detach_failed_attach(
                 "pane {pane} admitted view {view} was detached after initial snapshot failure"
             ))
             .context(AttachOwnership::Detached),
+        Err(cleanup) if transport::shutdown_not_dispatched(&cleanup) => {
+            error.context(AttachOwnership::Unconfirmed)
+        }
         Err(cleanup) => {
-            let unknown = transport::outcome_unknown(&error);
-            let cleanup = cleanup.context(format!("pane {pane} admitted view {view} initial snapshot failed: {error:#}; detach was not confirmed"));
-            let cleanup = if unknown {
-                transport::mark_outcome_unknown(cleanup)
+            let unknown =
+                transport::outcome_unknown(&error) || transport::outcome_unknown(&cleanup);
+            // Neither failure may inherit the other's safe cancellation marker.
+            let combined = anyhow::anyhow!(
+                "pane {pane} admitted view {view} initial snapshot failed: {error:#}; detach failed: {cleanup:#}"
+            );
+            let combined = if unknown {
+                transport::mark_outcome_unknown(combined)
             } else {
-                cleanup
+                combined
             };
-            cleanup.context(AttachOwnership::Unconfirmed)
+            combined.context(AttachOwnership::Unconfirmed)
         }
     }
 }
@@ -4343,14 +4352,21 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         Ok(())
     })();
     let lifecycle = client.consume_lifecycle();
+    if result.as_ref().err().is_some_and(transport::server_closing) {
+        client.close_for_shutdown();
+    }
     if socket.is_revoked() {
         // Backend revocation already retired this client's views and grants.
         // Do not manufacture failed cleanup mutations with expired authority.
-        let mut finished = result.and(lifecycle.map(|_| ()));
+        let mut finished =
+            shutdown_result(result, socket.session_ended()).and(lifecycle.map(|_| ()));
         match app.jobs.finish() {
             Ok(completions) => {
                 for completion in completions {
-                    accumulate_cleanup(&mut finished, completion.result.map(|_| ()));
+                    accumulate_cleanup(
+                        &mut finished,
+                        shutdown_result(completion.result.map(|_| ()), socket.session_ended()),
+                    );
                 }
             }
             Err(error) => accumulate_cleanup(&mut finished, Err(error)),
@@ -4467,16 +4483,32 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             .receipt
             .recv()
             .context("pane input worker stopped before view retirement")
-            .and_then(|result| result.map_err(anyhow::Error::msg));
+            .and_then(|result| result);
         drop(retired.attached);
         accumulate_cleanup(&mut released, result);
     }
-    let detached = client.detach();
-    result.and(cleanup).and(drained).and(released).and(detached)
+    let lifecycle = client.consume_lifecycle().map(|_| ());
+    let detached = shutdown_result(client.detach(), socket.session_ended());
+    shutdown_result(result, socket.session_ended())
+        .and(cleanup)
+        .and(drained)
+        .and(released)
+        .and(lifecycle)
+        .and(detached)
+}
+
+fn shutdown_result(result: Result<()>, session_ended: bool) -> Result<()> {
+    match result {
+        Err(error) if transport::expected_shutdown(&error, session_ended) => Ok(()),
+        result => result,
+    }
 }
 
 fn accumulate_cleanup(result: &mut Result<()>, next: Result<()>) {
     if let Err(error) = next {
+        if transport::expected_shutdown(&error, false) {
+            return;
+        }
         *result = match std::mem::replace(result, Ok(())) {
             Ok(()) => Err(error),
             Err(previous) => {
@@ -4900,6 +4932,7 @@ mod tests {
                     "{}",
                     serde_json::to_string(&Response {
                         version: PROTOCOL_VERSION,
+                        failure: None,
                         ok: false,
                         result: None,
                         error: Some("fixture rejected spawn".into()),
@@ -6111,6 +6144,7 @@ mod tests {
                     ok: detached,
                     result: detached.then(|| serde_json::json!({"detached":true})),
                     error: (!detached).then(|| "cleanup rejected".into()),
+                    failure: None,
                 };
                 let mut response = serde_json::to_vec(&response).unwrap();
                 response.push(b'\n');
@@ -7004,6 +7038,7 @@ mod tests {
             "{}",
             serde_json::to_string(&Response {
                 version: PROTOCOL_VERSION,
+                failure: None,
                 ok: true,
                 result: Some(
                     serde_json::to_value(RegistryResult {
@@ -7167,6 +7202,7 @@ mod tests {
                             "{}",
                             serde_json::to_string(&Response {
                                 version: PROTOCOL_VERSION,
+                                failure: None,
                                 ok: false,
                                 result: None,
                                 error: Some("window revision conflict".into()),
@@ -7512,6 +7548,7 @@ mod tests {
                 "{}",
                 serde_json::to_string(&Response {
                     version: PROTOCOL_VERSION,
+                    failure: None,
                     ok: false,
                     result: None,
                     error: Some("fixture rejected layout".into()),
@@ -7583,6 +7620,7 @@ mod tests {
                 "{}",
                 serde_json::to_string(&Response {
                     version: PROTOCOL_VERSION,
+                    failure: None,
                     ok: false,
                     result: None,
                     error: Some("fixture revision rejection".into()),
@@ -7749,6 +7787,7 @@ mod tests {
             "{}",
             serde_json::to_string(&Response {
                 version: PROTOCOL_VERSION,
+                failure: None,
                 ok: true,
                 result: Some(serde_json::Value::Bool(true)),
                 error: None,
@@ -7765,6 +7804,7 @@ mod tests {
             "{}",
             serde_json::to_string(&Response {
                 version: PROTOCOL_VERSION,
+                failure: None,
                 ok: true,
                 result: Some(serde_json::Value::Bool(true)),
                 error: None,
@@ -7774,5 +7814,6 @@ mod tests {
         .unwrap();
         worker.join().unwrap();
     }
+    include!("attach_shutdown_tests.rs");
     include!("search_tests.rs");
 }

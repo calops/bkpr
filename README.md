@@ -801,12 +801,26 @@ Check `ok` and `error` before treating an operation as successful. Shutdown clos
 the listener even if cleanup/durability reports an error; an error is not a
 successful persistence acknowledgement. Never target an unrelated live daemon.
 
-Layouts and pane metadata survive restart, but PTYs and terminal contents do
-not. Restored panes without a live runtime are Stopped; known exit codes remain.
-The server never silently restarts their commands.
-Metadata uses schema 2. The one-shot schema-1 upgrade preserves unambiguous
-owned layouts and historical receipts without replaying commands; ambiguous
-foreign-workspace layouts are rejected without overwriting the source record.
+Expected shutdown is distinct from request failure. Responses may carry
+`failure: {"kind":"session_closing","outcome":"not_dispatched"}` when that
+specific request never entered application dispatch. `outcome:"unknown"` means
+dispatch began and failure does not prove that nothing happened. Missing
+metadata and error text alone grant no shutdown semantics.
+
+The TUI exits cleanly for known undispatched shutdown requests and interrupted
+observations backed by a typed closing reply or validated shutdown lifetime
+event. Bare EOF is not that proof. Accepted mutations drain their actual replies;
+successful results stay successful, and genuine failed or ambiguous mutations
+remain errors without replay. Snapshot workers, input receipts and attach
+rollback preserve those distinctions. Immutable session identity remains
+readable after persistence failure so targeted `bkpr stop` can still reach cleanup.
+
+PTYs and terminal contents do not survive restart. Private schema 4 retains
+layout, verified directories and native recovery intent; normal cold named
+startup uses the current shell or a verified active conversation's native
+adapter. It never replays arbitrary old commands. No-argv headless startup stays
+stopped. Older metadata upgrades without inventing active native bindings;
+ambiguous foreign-workspace ownership is rejected without replacing the record.
 
 Retired metadata can be explicitly forgotten with
 `{"version":4,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process

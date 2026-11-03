@@ -180,7 +180,8 @@ impl Registry {
                 harness::validate_callback(peer, &launch)?;
                 let (active, cwd) = foreground_context(&launch)?;
                 let state = self.inner.state.lock().unwrap();
-                ensure!(!state.closing, "daemon is shutting down");
+                healthy(&state)?;
+                ensure!(!state.closing, SessionClosing("daemon is shutting down"));
                 let pane = state
                     .record
                     .registry
@@ -207,7 +208,7 @@ impl Registry {
     pub(super) fn capture_pane(&self, pane_id: &str) -> Result<Pane> {
         let state = self.inner.state.lock().unwrap();
         healthy(&state)?;
-        ensure!(!state.closing, "daemon is shutting down");
+        ensure!(!state.closing, SessionClosing("daemon is shutting down"));
         ensure!(!state.closing_panes.contains(pane_id), "pane is closing");
         ensure!(
             !state.closing_document_panes.contains(pane_id),
@@ -288,7 +289,7 @@ impl Registry {
                 })
                 .unwrap();
             healthy(&state)?;
-            ensure!(!state.closing, "daemon is shutting down");
+            ensure!(!state.closing, SessionClosing("daemon is shutting down"));
             ensure!(
                 !deadline.timed_out() || state.spawning == 0,
                 "capture admission timed out while pane spawn is pending"

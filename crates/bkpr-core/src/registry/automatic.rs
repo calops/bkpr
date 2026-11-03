@@ -19,7 +19,7 @@ impl Registry {
             healthy(&state)?;
             ensure!(
                 !state.closing && !self.session_end_requested(),
-                "session is closing"
+                SessionClosing("session is closing")
             );
             if state.bootstrap_started
                 || state.spawning != 0

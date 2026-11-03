@@ -164,6 +164,23 @@ The version-2 transport adds `SessionInfo`, a dedicated `ClientRegister` lifetim
 
 Keep existing synchronous Unix transport and narrow OS credential/exit observers rather than adding another async runtime. Linux retains a kernel peer pidfd; ordinary managed requests validate cheap kernel identity/liveness instead of scanning process/CWD/argv state on each key. Pane exec receives trusted immutable logical session ID/name, not client credentials. Actual scope/TTY/takeover acceptance and platform limits are recorded in the engine report; remote endpoint aggregation and cross-daemon agent discovery remain future work.
 
+Protocol 4 carries optional typed `session_closing` failure metadata with a specific
+request disposition: `not_dispatched` or `unknown` after dispatch began. Missing
+metadata and error strings do not grant shutdown semantics. Keep decoded requests
+in the response drain through startup cancellation and closing admission. Immutable
+identity queries remain available after persistence failure so explicit targeted
+stop can reach cleanup without weakening target validation.
+
+Client revocation cancels observational streams, not accepted mutation replies.
+Preserve typed failures through snapshot/input workers and attach rollback;
+only proven undispatched rejection or an observational interruption backed by a
+typed closing reply/validated shutdown event may exit cleanly. Real failed or
+ambiguous mutations remain errors without replay. Existing `serde`, `anyhow`,
+Unix transport and lifetime state cover this boundary; no new runtime or dependency
+is needed. Multi-client stop/last-shell/last-document proof is in
+[typed session shutdown](engine-proof.md#typed-session-shutdown).
+
+
 ### Exec snapshots and live pane context
 
 Main `9ad93bd`, `context.rs::{current,current_pane}`, supplies the useful intent:

@@ -88,8 +88,8 @@ impl Authority {
             .views
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("stale view"))?;
-        if !view.live() {
-            bail!("client attachment detached");
+        if let Some(client) = &view.client {
+            client.ensure_active()?;
         }
         view.last_seen = Instant::now();
         Ok(())
@@ -234,13 +234,19 @@ impl Authority {
         id: &str,
         client: Option<&Arc<crate::registry::sessions::ClientLease>>,
     ) -> Result<()> {
+        if let Some(client) = client {
+            client.ensure_active()?;
+        }
         let view = self
             .views
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("stale view"))?;
         let matches = match (&view.client, client) {
             (None, None) => true,
-            (Some(owner), Some(client)) => Arc::ptr_eq(owner, client) && client.is_active(),
+            (Some(owner), Some(client)) if Arc::ptr_eq(owner, client) => {
+                client.ensure_active()?;
+                true
+            }
             _ => false,
         };
         if !matches {

@@ -34,7 +34,7 @@ impl Registry {
             // only admits another lookup; OS provenance is checked again afterward.
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
-            ensure!(!state.closing, "daemon is shutting down");
+            ensure!(!state.closing, SessionClosing("daemon is shutting down"));
             #[cfg(test)]
             if state.spawning > 0
                 && let Some(entered) = self.inner.capture_admission_wait.lock().unwrap().take()
@@ -49,7 +49,7 @@ impl Registry {
                 })
                 .unwrap();
             healthy(&state)?;
-            ensure!(!state.closing, "daemon is shutting down");
+            ensure!(!state.closing, SessionClosing("daemon is shutting down"));
             ensure!(
                 !deadline.timed_out() || state.spawning == 0,
                 "context admission timed out while pane spawn is pending"
@@ -75,7 +75,7 @@ impl Registry {
         let panes = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
-            ensure!(!state.closing, "daemon is shutting down");
+            ensure!(!state.closing, SessionClosing("daemon is shutting down"));
             state
                 .live
                 .iter()
@@ -144,7 +144,7 @@ impl Registry {
 
 fn context_pane<'a>(state: &'a State, id: &str) -> Result<(&'a Pane, &'a PaneInfo)> {
     healthy(state)?;
-    ensure!(!state.closing, "daemon is shutting down");
+    ensure!(!state.closing, SessionClosing("daemon is shutting down"));
     ensure!(!state.closing_panes.contains(id), "pane is closing");
     ensure!(
         !state.closing_document_panes.contains(id),

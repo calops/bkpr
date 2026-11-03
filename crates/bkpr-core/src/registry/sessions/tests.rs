@@ -1101,3 +1101,95 @@ fn isolated_panes_do_not_gain_agent_credentials_after_client_activation() {
     eventually(|| fs::read_to_string(&output).is_ok_and(|value| value == "unset"));
     assert_eq!(fs::read_to_string(output).unwrap(), "unset");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pending_pane_read_keeps_shutdown_distinct_from_takeover_after_its_view_is_removed() {
+    for shutdown in [false, true] {
+        let server = Server::new("pending-read");
+        let mut client = server.register();
+        assert_eq!(server.activate(&client, false)["ok"], true);
+        let replacement = (!shutdown).then(|| server.register());
+        let pane_id = server.spawn();
+        let view_id = server.attach(&client, &pane_id);
+        let pane = server.registry.inner.state.lock().unwrap().live[&pane_id].clone();
+        let (entered, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume, resume_rx) = std::sync::mpsc::sync_channel(1);
+        *pane.shared.snapshot_barrier.lock().unwrap() = Some(crate::SnapshotBarrier {
+            entered,
+            resume: resume_rx,
+        });
+        let socket = server.socket.clone();
+        let authority = client.authority.clone();
+        let reading_pane = pane_id.clone();
+        let reading_view = view_id.clone();
+        let reading = thread::spawn(move || {
+            wire(
+                &socket,
+                Operation::Client {
+                    authority,
+                    request: Box::new(Operation::Pane {
+                        pane_id: reading_pane,
+                        request: PaneRequest::Poll {
+                            view_id: reading_view,
+                            after: 0,
+                            frame_after: 0,
+                            resources: Vec::new(),
+                            snapshot_after: 0,
+                            wait_ms: 0,
+                            row_deltas: false,
+                            scene_encoding: None,
+                        },
+                    }),
+                },
+            )
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let Some(replacement) = &replacement {
+            assert_eq!(server.activate(replacement, true)["ok"], true);
+        } else {
+            server.registry.shutdown().unwrap();
+        }
+        // Both lifetime transitions have retired the exact view before capture
+        // resumes, so generic stale-view errors cannot decide shutdown semantics.
+        let removed = !pane
+            .shared
+            .authority
+            .lock()
+            .unwrap()
+            .views
+            .contains_key(&view_id);
+        resume.send(()).unwrap();
+        let response: Response = serde_json::from_value(reading.join().unwrap()).unwrap();
+        assert!(removed);
+        assert!(!response.ok);
+        assert!(response.result.is_none());
+        assert!(response.error.is_some());
+        assert_eq!(
+            response.failure,
+            if shutdown {
+                Some(RequestFailure::SessionClosing {
+                    outcome: RequestOutcome::Unknown,
+                })
+            } else {
+                None
+            }
+        );
+        assert_eq!(
+            client.event().reason,
+            if shutdown { "shutdown" } else { "takeover" }
+        );
+        if let Some(replacement) = &replacement {
+            assert_eq!(
+                server.managed(
+                    replacement,
+                    Operation::Pane {
+                        pane_id,
+                        request: PaneRequest::Inspect,
+                    }
+                )["ok"],
+                true
+            );
+        }
+    }
+}

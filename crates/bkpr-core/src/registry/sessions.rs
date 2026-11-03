@@ -74,16 +74,19 @@ pub(crate) struct ClientLease {
     active: AtomicBool,
     activated: AtomicBool,
     detached: AtomicBool,
+    session_closing: AtomicBool,
     handshake: Mutex<(bool, Option<String>)>,
     agent_socket: std::sync::OnceLock<Option<PathBuf>>,
     activation_order: std::sync::atomic::AtomicU64,
 }
 impl ClientLease {
     pub(crate) fn ensure_active(&self) -> Result<()> {
-        ensure!(
-            self.is_active(),
-            "client attachment is inactive or detached"
-        );
+        if !self.is_active() {
+            if self.session_closing.load(Ordering::Acquire) {
+                return Err(SessionClosing("session is shutting down").into());
+            }
+            bail!("client attachment is inactive or detached");
+        }
         Ok(())
     }
     pub(crate) fn is_active(&self) -> bool {
@@ -102,7 +105,9 @@ impl ClientLease {
             self.send_detach(&reason);
         }
     }
-    fn invalidate(&self) {
+    fn invalidate(&self, session_closing: bool) {
+        self.session_closing
+            .store(session_closing, Ordering::Release);
         self.detached.store(true, Ordering::Release);
         self.active.store(false, Ordering::Release);
     }
@@ -234,15 +239,20 @@ impl Registry {
             active: AtomicBool::new(false),
             activated: AtomicBool::new(false),
             detached: AtomicBool::new(false),
+            session_closing: AtomicBool::new(false),
             handshake: Mutex::new((false, None)),
             agent_socket: std::sync::OnceLock::new(),
             activation_order: std::sync::atomic::AtomicU64::new(0),
         });
         let mut clients = self.inner.clients.lock().unwrap();
-        ensure!(
-            !self.inner.state.lock().unwrap().closing && !self.session_end_requested(),
-            "daemon is shutting down"
-        );
+        {
+            let state = self.inner.state.lock().unwrap();
+            healthy(&state)?;
+            ensure!(
+                !state.closing && !self.session_end_requested(),
+                SessionClosing("daemon is shutting down")
+            );
+        }
         ensure!(clients.len() < MAX_CLIENTS, "client attachment limit");
         clients.insert(client.id.clone(), client.clone());
         let response = json!({"client":ClientAuthority {client_id:client.id.clone(),token:client.token.clone()},"session":self.inner.session});
@@ -256,6 +266,7 @@ impl Registry {
     ) -> Result<Value> {
         let client = {
             let clients = self.inner.clients.lock().unwrap();
+            self.request_admission()?;
             let client = clients
                 .get(&authority.client_id)
                 .context("unknown or detached client")?;
@@ -302,10 +313,14 @@ impl Registry {
         }
         let (retired, route) = {
             let mut clients = self.inner.clients.lock().unwrap();
-            ensure!(
-                !self.inner.state.lock().unwrap().closing && !self.session_end_requested(),
-                "daemon is shutting down"
-            );
+            {
+                let state = self.inner.state.lock().unwrap();
+                healthy(&state)?;
+                ensure!(
+                    !state.closing && !self.session_end_requested(),
+                    SessionClosing("daemon is shutting down")
+                );
+            }
             ensure!(
                 clients
                     .get(&client.id)
@@ -340,7 +355,7 @@ impl Registry {
                     .cloned()
                     .collect::<Vec<_>>();
                 for other in &retired {
-                    other.invalidate();
+                    other.invalidate(false);
                     clients.remove(&other.id);
                 }
                 retired
@@ -367,7 +382,7 @@ impl Registry {
             {
                 return;
             }
-            client.invalidate();
+            client.invalidate(reason == "shutdown");
             let removed = clients.remove(&client.id);
             let route = self.agent_route_locked(&clients);
             (removed, route)
@@ -381,7 +396,7 @@ impl Registry {
         let (clients, route) = {
             let mut clients = self.inner.clients.lock().unwrap();
             for client in clients.values() {
-                client.invalidate();
+                client.invalidate(reason == "shutdown");
             }
             let retired = std::mem::take(&mut *clients);
             let route = self.agent_route_locked(&clients);

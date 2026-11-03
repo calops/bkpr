@@ -255,6 +255,24 @@ pub struct Response {
     pub result: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<RequestFailure>,
+}
+
+/// Machine-readable failure facts; an error string alone grants no shutdown semantics.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RequestFailure {
+    SessionClosing { outcome: RequestOutcome },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestOutcome {
+    /// This specific request did not enter application dispatch.
+    NotDispatched,
+    /// Dispatch began; failure does not prove that the request had no effects.
+    Unknown,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RegistryResult {

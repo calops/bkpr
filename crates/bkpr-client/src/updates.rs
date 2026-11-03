@@ -19,7 +19,7 @@ pub struct Snapshot {
 /// Bounded single-flight receiver: output cannot grow an unbounded queue or
 /// block the UI's keyboard reader. All worker state is owned, never UI-borrowed.
 pub struct Pump<T> {
-    receiver: Option<mpsc::Receiver<Result<T, String>>>,
+    receiver: Option<mpsc::Receiver<Result<T>>>,
     pub wake: UnixStream,
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
@@ -41,7 +41,7 @@ impl<T: Send + 'static> Pump<T> {
         let stopped = stop.clone();
         let worker = thread::spawn(move || {
             while !stopped.load(Ordering::Acquire) {
-                let value = next().map_err(|e| format!("{e:#}"));
+                let value = next();
                 if stopped.load(Ordering::Acquire) {
                     break;
                 }
@@ -79,7 +79,6 @@ impl<T: Send + 'static> Pump<T> {
             .context("snapshot receiver cancelled")?
             .recv()
             .context("snapshot worker disconnected")?
-            .map_err(anyhow::Error::msg)
     }
     pub fn latest(&mut self) -> Result<Option<T>> {
         let mut bytes = [0u8; 128];
@@ -88,7 +87,7 @@ impl<T: Send + 'static> Pump<T> {
             return Ok(None);
         };
         match receiver.try_recv() {
-            Ok(value) => value.map(Some).map_err(anyhow::Error::msg),
+            Ok(value) => value.map(Some),
             Err(mpsc::TryRecvError::Empty) => Ok(None),
             Err(mpsc::TryRecvError::Disconnected) => bail!("snapshot worker disconnected"),
         }

@@ -534,6 +534,7 @@ mod tests {
                 .unwrap(),
             ),
             error: None,
+            failure: None,
         })
     }
 
@@ -543,6 +544,7 @@ mod tests {
             ok: false,
             result: None,
             error: Some(message.into()),
+            failure: None,
         })
     }
 
@@ -866,6 +868,7 @@ mod tests {
             let (result, requests) = scripted(
                 vec![Some(Response {
                     version: PROTOCOL_VERSION,
+                    failure: None,
                     ok: true,
                     result: Some(serde_json::to_value(reply).unwrap()),
                     error: None,
@@ -937,6 +940,7 @@ mod tests {
                 ok: true,
                 result: Some(serde_json::json!({})),
                 error: None,
+                failure: None,
             });
             let (result, requests) = scripted(vec![malformed], command);
             let error = result.unwrap_err();

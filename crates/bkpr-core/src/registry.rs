@@ -27,6 +27,15 @@ use uuid::Uuid;
 const STORAGE_VERSION: u32 = 4;
 const MAX_RECORD: u64 = 4 * 1024 * 1024;
 
+#[derive(Debug)]
+pub(crate) struct SessionClosing(pub(crate) &'static str);
+impl std::fmt::Display for SessionClosing {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+impl std::error::Error for SessionClosing {}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Record {
     version: u32,
@@ -139,6 +148,8 @@ struct Inner {
     capture_admission_wait: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
     #[cfg(test)]
     control_resume_barrier: Mutex<Option<Arc<SpawnBarrier>>>,
+    #[cfg(test)]
+    request_wait_entered: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -516,6 +527,8 @@ impl Registry {
                 capture_admission_wait: Mutex::new(None),
                 #[cfg(test)]
                 control_resume_barrier: Mutex::new(None),
+                #[cfg(test)]
+                request_wait_entered: Mutex::new(None),
             }),
             fresh,
             lifecycle_owner: true,
@@ -542,6 +555,28 @@ impl Registry {
         }));
         (entered_rx, resume)
     }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn test_next_request_wait(&self) -> std::sync::mpsc::Receiver<()> {
+        let (entered, receiver) = std::sync::mpsc::sync_channel(1);
+        *self.inner.request_wait_entered.lock().unwrap() = Some(entered);
+        receiver
+    }
+    #[cfg(test)]
+    pub(crate) fn test_notify_request_wait(&self) {
+        if let Some(entered) = self.inner.request_wait_entered.lock().unwrap().take() {
+            let _ = entered.try_send(());
+        }
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn test_wait_for_closing(&self) -> bool {
+        let state = self.inner.state.lock().unwrap();
+        let (state, _) = self
+            .inner
+            .changed
+            .wait_timeout_while(state, Duration::from_secs(5), |state| !state.closing)
+            .unwrap();
+        state.closing
+    }
     pub fn session_end_requested(&self) -> bool {
         self.inner
             .session_end
@@ -560,6 +595,18 @@ impl Registry {
                 waker();
             }
         }
+    }
+    pub(crate) fn request_admission(&self) -> Result<()> {
+        let state = self.inner.state.lock().unwrap();
+        healthy(&state)?;
+        ensure!(
+            !state.closing && !self.session_end_requested(),
+            SessionClosing("session is shutting down")
+        );
+        Ok(())
+    }
+    pub(crate) fn request_health(&self) -> Result<()> {
+        healthy(&self.inner.state.lock().unwrap())
     }
     pub fn snapshot(&self) -> Result<RegistrySnapshot> {
         let state = self.inner.state.lock().unwrap();
@@ -588,8 +635,11 @@ impl Registry {
         let mut next = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
-            ensure!(!state.closing, "daemon is shutting down");
-            ensure!(!self.session_end_requested(), "session has ended");
+            ensure!(!state.closing, SessionClosing("daemon is shutting down"));
+            ensure!(
+                !self.session_end_requested(),
+                SessionClosing("session has ended")
+            );
             if let Some(workspace_id) = workspace_id {
                 workspace_available(&state, workspace_id)?;
             }
@@ -645,6 +695,8 @@ impl Registry {
                     after <= state.record.registry.revision,
                     "future registry revision"
                 );
+                #[cfg(test)]
+                self.test_notify_request_wait();
                 let (state, _) = self
                     .inner
                     .changed
@@ -966,8 +1018,11 @@ impl Registry {
             }
             let mut state = self.inner.state.lock().unwrap();
             healthy(&state)?;
-            ensure!(!state.closing, "daemon is shutting down");
-            ensure!(!self.session_end_requested(), "session has ended");
+            ensure!(!state.closing, SessionClosing("daemon is shutting down"));
+            ensure!(
+                !self.session_end_requested(),
+                SessionClosing("session has ended")
+            );
             if matches!(
                 target,
                 SpawnTarget::CreateWorkspace {
@@ -1134,8 +1189,11 @@ impl Registry {
             let current = {
                 let state = self.inner.state.lock().unwrap();
                 healthy(&state)?;
-                ensure!(!state.closing, "daemon is shutting down");
-                ensure!(!self.session_end_requested(), "session has ended");
+                ensure!(!state.closing, SessionClosing("daemon is shutting down"));
+                ensure!(
+                    !self.session_end_requested(),
+                    SessionClosing("session has ended")
+                );
                 target.check(&state)?;
                 if let Some(resume) = &resume {
                     recovery::check_resume_reserved(&state, resume, &id)?;
@@ -1277,8 +1335,11 @@ impl Registry {
         let mut next = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
-            ensure!(!state.closing, "daemon is shutting down");
-            ensure!(!self.session_end_requested(), "session has ended");
+            ensure!(!state.closing, SessionClosing("daemon is shutting down"));
+            ensure!(
+                !self.session_end_requested(),
+                SessionClosing("session has ended")
+            );
             ensure!(
                 !state.resuming.values().any(|attempt| attempt.source == id),
                 "pane busy: native resume in progress"
@@ -1448,7 +1509,7 @@ impl Registry {
             healthy(&state)?;
             ensure!(
                 !state.closing && !self.session_end_requested(),
-                "session is closing"
+                SessionClosing("session is closing")
             );
             workspace_available(&state, workspace_id)?;
             ensure!(

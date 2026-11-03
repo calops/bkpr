@@ -262,3 +262,81 @@ fn agent_control_cannot_consume_a_saved_pane_while_automatic_batch_is_pending() 
         "shared control consumed saved membership before automatic restore reached it"
     );
 }
+
+#[test]
+fn startup_cancellation_replies_before_owned_spawn_cleanup_and_preserves_storage_failures() {
+    for poison_storage in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let state = root.path().join("state");
+        let registry = Registry::open(&state).unwrap();
+        let socket = root.path().join("daemon.sock");
+        let bound = bind(&socket).unwrap();
+        let (spawn_entered, spawn_release) = registry.test_pause_next_spawn();
+        let initial = spec(&root.path().join("home"));
+        let serving = registry.clone();
+        let worker = thread::spawn(move || bound.serve_bootstrap(serving, Some(initial)));
+        let mut server = Serving {
+            registry: registry.clone(),
+            socket: socket.clone(),
+            worker: Some(worker),
+        };
+        let release = ReleaseSpawn(Some(spawn_release));
+        spawn_entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let control_entered = registry.test_next_request_wait();
+        let queued_socket = socket.clone();
+        let queued = thread::spawn(move || {
+            wire(
+                &queued_socket,
+                Operation::WorkspaceCreate {
+                    name: Some("cancelled-before-dispatch".into()),
+                    initial: None,
+                },
+            )
+        });
+        control_entered
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        if poison_storage {
+            fs::remove_file(state.join("registry.json")).unwrap();
+            fs::create_dir(state.join("registry.json")).unwrap();
+            assert!(
+                registry
+                    .request(Request::new(Operation::WorkspaceCreate {
+                        name: Some("storage-failure".into()),
+                        initial: None,
+                    }))
+                    .is_err()
+            );
+        }
+        let stopping_socket = socket.clone();
+        let stopping = thread::spawn(move || wire(&stopping_socket, Operation::Shutdown));
+        let closing = registry.test_wait_for_closing();
+        // The queued request must receive its failure while Shutdown still waits
+        // for the owned startup process, rather than relying on process exit/EOF.
+        let rejected: Response = serde_json::from_value(queued.join().unwrap().unwrap()).unwrap();
+        drop(release);
+        let stopped: Response = serde_json::from_value(stopping.join().unwrap().unwrap()).unwrap();
+        let result = server.worker.take().unwrap().join().unwrap();
+        assert!(closing);
+        assert!(!rejected.ok);
+        assert!(rejected.result.is_none());
+        assert!(rejected.error.is_some());
+        assert_eq!(
+            rejected.failure,
+            if poison_storage {
+                None
+            } else {
+                Some(RequestFailure::SessionClosing {
+                    outcome: RequestOutcome::NotDispatched,
+                })
+            }
+        );
+        assert_eq!(stopped.ok, !poison_storage, "{stopped:?}");
+        assert!(stopped.failure.is_none());
+        assert_eq!(result.is_err(), poison_storage);
+        if !poison_storage {
+            assert!(registry.snapshot().unwrap().workspaces.is_empty());
+        }
+    }
+}
