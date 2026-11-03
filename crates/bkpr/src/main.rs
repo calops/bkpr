@@ -28,8 +28,11 @@ Bare bkpr connects or starts the named local session `bkpr`, then opens its TUI.
 -d / --detach-others revokes other clients once this attachment is ready; it does
 not terminate their panes. Client exit/detach preserves daemon and pane processes.
 `list` discovers stored sessions without starting them; `stop` stops only the
-selected session and its programs. Restart restores metadata, not old commands;
-the normal fresh initial shell remains explicit daemon bootstrap behavior.
+selected session and its programs. A cold named-session restart restores owned
+layouts and saved directories, using the current shell or a verified active
+native conversation's fixed resume adapter with fresh launch authority.
+Old arbitrary commands/settings are not replayed. Failed restoration retains
+intent without a fallback; direct bkprd startup without argv stays headless.
 Explicit --session overrides inherited BKPR_SOCKET. Headless context/request/
 keyboard/resume otherwise inherit pane routing; normal TUI/stop default to `bkpr`.
 Utilities do not initialize the TUI or automatically start a daemon.

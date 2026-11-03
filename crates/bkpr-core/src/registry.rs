@@ -2,8 +2,10 @@
 //! Atomic tempfile/fsync/rename follows main's recovery.rs, without its session/KDL assumptions.
 use crate::{Pane, SpawnSpec};
 mod agents;
+mod automatic;
 mod capture;
 mod context;
+mod directories;
 mod project;
 mod recovery;
 pub(crate) mod sessions;
@@ -22,7 +24,7 @@ use std::{
     time::Duration,
 };
 use uuid::Uuid;
-const STORAGE_VERSION: u32 = 3;
+const STORAGE_VERSION: u32 = 4;
 const MAX_RECORD: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -30,6 +32,8 @@ struct Record {
     version: u32,
     registry: RegistrySnapshot,
     recoveries: BTreeMap<String, HarnessRecovery>,
+    directories: BTreeMap<String, directories::Directory>,
+    automatic: BTreeMap<String, HarnessRecovery>,
 }
 // Persistence is an explicit intent whitelist, not serialization of live facts.
 // Borrow the record: a metadata write need not copy every foreground observation.
@@ -38,6 +42,8 @@ struct DurableRecord<'a> {
     version: u32,
     registry: DurableRegistry<'a>,
     recoveries: &'a BTreeMap<String, HarnessRecovery>,
+    directories: &'a BTreeMap<String, directories::Directory>,
+    automatic: &'a BTreeMap<String, HarnessRecovery>,
 }
 #[derive(Serialize)]
 struct DurableRegistry<'a> {
@@ -93,6 +99,10 @@ struct State {
     closing_panes: BTreeSet<String>,
     closing_document_panes: BTreeSet<String>,
     resuming: BTreeMap<String, recovery::ResumeAttempt>,
+    bootstrap_started: bool,
+    restore_batch: bool,
+    pending_directories: BTreeMap<String, directories::Pending>,
+    failed_restores: BTreeSet<String>,
     closing: bool,
     durability_error: Option<String>,
 }
@@ -166,6 +176,11 @@ enum SpawnTarget {
         expected_revision: u64,
         pane_id: String,
     },
+    Restore {
+        workspace_id: String,
+        window_id: String,
+        pane_id: String,
+    },
     CreateWorkspace {
         workspace_id: String,
         window_id: String,
@@ -184,6 +199,7 @@ impl SpawnTarget {
         match self {
             Self::Append { workspace_id, .. } => workspace_id.as_deref(),
             Self::Reopen { workspace_id, .. }
+            | Self::Restore { workspace_id, .. }
             | Self::CreateWorkspace { workspace_id, .. }
             | Self::CreateWindow { workspace_id, .. } => Some(workspace_id),
         }
@@ -192,6 +208,7 @@ impl SpawnTarget {
         match self {
             Self::Append { window_id, .. } => window_id.as_deref(),
             Self::Reopen { window_id, .. }
+            | Self::Restore { window_id, .. }
             | Self::CreateWorkspace { window_id, .. }
             | Self::CreateWindow { window_id, .. } => Some(window_id),
         }
@@ -246,6 +263,32 @@ impl SpawnTarget {
                         .as_ref()
                         .is_some_and(|layout| layout_references(layout, pane_id)),
                     "window layout does not reference pane"
+                );
+                Ok(())
+            }
+            Self::Restore {
+                workspace_id,
+                window_id,
+                pane_id,
+            } => {
+                find_window(r, workspace_id, window_id)?;
+                let pane = r
+                    .panes
+                    .iter()
+                    .find(|pane| &pane.id == pane_id)
+                    .context("unknown saved pane")?;
+                ensure!(
+                    pane.workspace_id.as_ref() == Some(workspace_id)
+                        && pane.window_id.as_ref() == Some(window_id),
+                    "saved pane membership changed"
+                );
+                ensure!(
+                    pane.status != PaneStatus::Running
+                        && state.live.get(pane_id).is_none_or(|pane| pane
+                            .shared
+                            .finished
+                            .load(std::sync::atomic::Ordering::Acquire)),
+                    "saved execution is still running"
                 );
                 Ok(())
             }
@@ -386,6 +429,8 @@ impl Registry {
         let mut record = stored.unwrap_or(Record {
             version: STORAGE_VERSION,
             recoveries: BTreeMap::new(),
+            directories: BTreeMap::new(),
+            automatic: BTreeMap::new(),
             registry: RegistrySnapshot {
                 revision: 0,
                 workspaces: Vec::new(),
@@ -437,6 +482,10 @@ impl Registry {
                     closing_panes: BTreeSet::new(),
                     closing_document_panes: BTreeSet::new(),
                     resuming: BTreeMap::new(),
+                    bootstrap_started: false,
+                    restore_batch: false,
+                    pending_directories: BTreeMap::new(),
+                    failed_restores: BTreeSet::new(),
                     closing: false,
                     durability_error: None,
                 }),
@@ -477,6 +526,21 @@ impl Registry {
     }
     pub fn is_fresh(&self) -> bool {
         self.fresh
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn test_pause_next_spawn(
+        &self,
+    ) -> (
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (entered, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume, resume_rx) = std::sync::mpsc::sync_channel(1);
+        *self.inner.spawn_barrier.lock().unwrap() = Some(Arc::new(SpawnBarrier {
+            entered,
+            resume: Mutex::new(resume_rx),
+        }));
+        (entered_rx, resume)
     }
     pub fn session_end_requested(&self) -> bool {
         self.inner
@@ -847,19 +911,6 @@ impl Registry {
             }
         }
     }
-    /// Cold-daemon bootstrap only: supplied current argv, never persisted commands.
-    /// A running execution makes this a no-op; metadata-only state is preserved.
-    pub fn bootstrap(&self, spec: PaneSpawnSpec) -> Result<Value> {
-        self.spawn(
-            SpawnTarget::CreateWorkspace {
-                workspace_id: Uuid::new_v4().to_string(),
-                window_id: Uuid::new_v4().to_string(),
-                name: None,
-                bootstrap: true,
-            },
-            spec,
-        )
-    }
     fn spawn(&self, target: SpawnTarget, spec: PaneSpawnSpec) -> Result<Value> {
         self.spawn_inner(target, spec, None, None)
     }
@@ -886,7 +937,10 @@ impl Registry {
         });
         valid_name(&title)?;
         let workspace_id = target.workspace_id().map(str::to_owned);
-        let id = Uuid::new_v4().to_string();
+        let id = match &target {
+            SpawnTarget::Restore { pane_id, .. } => pane_id.clone(),
+            _ => Uuid::new_v4().to_string(),
+        };
         let info = PaneInfo {
             id: id.clone(),
             workspace_id: workspace_id.clone(),
@@ -939,7 +993,8 @@ impl Registry {
                 .filter(|p| p.status == PaneStatus::Running)
                 .count();
             ensure!(
-                state.record.registry.panes.len() + state.spawning < MAX_PANE_RECORDS
+                (matches!(target, SpawnTarget::Restore { .. })
+                    || state.record.registry.panes.len() + state.spawning < MAX_PANE_RECORDS)
                     && running + state.spawning < MAX_LIVE_PANES,
                 "pane limit"
             );
@@ -1275,6 +1330,8 @@ impl Registry {
         }
         next.registry.panes.retain(|pane| pane.id != id);
         next.recoveries.remove(id);
+        next.directories.remove(id);
+        next.automatic.remove(id);
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
         let registry = commit(&self.inner, next, |state| {
@@ -1304,7 +1361,17 @@ impl Registry {
             (status, p.exit_code.map(|code| code as i32))
         };
         self.inner.captures.lock().unwrap().retire_pane(id);
-        self.inner.state.lock().unwrap().resuming.remove(id);
+        let unbound_restore = {
+            let mut state = self.inner.state.lock().unwrap();
+            let unbound = state
+                .resuming
+                .remove(id)
+                .is_some_and(|attempt| attempt.source == id);
+            if unbound {
+                state.failed_restores.insert(id.to_owned());
+            }
+            unbound || state.failed_restores.contains(id)
+        };
         let agent_retirement = self.inner.agents.retire_pane(id);
         {
             let mut published = pane.shared.published.lock().unwrap();
@@ -1319,16 +1386,18 @@ impl Registry {
         let (mut next, closing, reserved) = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
-            let reserved = state
-                .record
-                .registry
-                .panes
-                .iter()
-                .find(|p| p.id == id)
-                .and_then(|p| p.workspace_id.as_ref())
-                .is_some_and(|id| {
-                    state.closing_workspaces.contains(id) || state.spawn_workspaces.contains(id)
-                })
+            let reserved = state.restore_batch
+                || unbound_restore
+                || state
+                    .record
+                    .registry
+                    .panes
+                    .iter()
+                    .find(|p| p.id == id)
+                    .and_then(|p| p.workspace_id.as_ref())
+                    .is_some_and(|id| {
+                        state.closing_workspaces.contains(id) || state.spawn_workspaces.contains(id)
+                    })
                 || state
                     .spawn_workspaces
                     .iter()
@@ -1345,7 +1414,11 @@ impl Registry {
         {
             return Ok(());
         }
-        info.status = status;
+        info.status = if unbound_restore {
+            PaneStatus::Stopped
+        } else {
+            status
+        };
         info.exit_code = exit_code;
         info.foreground_cwd = None;
         info.harness = None;
@@ -1440,9 +1513,11 @@ impl Registry {
             );
             let mut next = state.record.clone();
             next.recoveries.retain(|id, _| !removed.contains(id));
+            next.automatic.retain(|id, _| !removed.contains(id));
             for (id, attempt) in &state.resuming {
                 if removed.contains(id) {
                     next.recoveries.remove(&attempt.source);
+                    next.automatic.remove(&attempt.source);
                 }
             }
             if next.recoveries != state.record.recoveries {
@@ -1532,6 +1607,9 @@ impl Registry {
         Ok(json!({"registry":registry}))
     }
     pub fn shutdown(&self) -> Result<()> {
+        // Observe while the process tree still exists; never derive intent from teardown.
+        self.observe_processes();
+        let directory_capture = self.flush_directories();
         let panes = {
             let _transaction = self.inner.transaction.lock().unwrap();
             let mut state = self.inner.state.lock().unwrap();
@@ -1545,7 +1623,10 @@ impl Registry {
         let forwarding = self.inner.ssh_agent.lock().unwrap().clone();
         let forwarding_shutdown = forwarding.map(|relay| relay.shutdown()).transpose();
         self.stop_projects();
-        let mut first_error = agent_shutdown.err().or_else(|| forwarding_shutdown.err());
+        let mut first_error = directory_capture
+            .err()
+            .or_else(|| agent_shutdown.err())
+            .or_else(|| forwarding_shutdown.err());
         for pane in panes {
             if let Err(error) = pane.request(PaneRequest::Shutdown)
                 && first_error.is_none()
@@ -1624,6 +1705,22 @@ fn remove_layout_pane(layout: LayoutNode, pane_id: &str) -> Option<LayoutNode> {
     }
 }
 fn spawn_record(mut next: Record, info: PaneInfo, target: &SpawnTarget) -> Result<Record> {
+    if let SpawnTarget::Restore { pane_id, .. } = target {
+        let old = next
+            .registry
+            .panes
+            .iter_mut()
+            .find(|pane| &pane.id == pane_id)
+            .context("unknown saved pane")?;
+        // Execution identity remains in its exact saved position. Initial CWD is
+        // historical launch metadata; current directory intent has its own whitelist.
+        let initial_cwd = old.cwd.clone();
+        *old = info;
+        old.cwd = initial_cwd;
+        next.registry.revision = next_revision(next.registry.revision)?;
+        validate_record(&next)?;
+        return Ok(next);
+    }
     if let SpawnTarget::CreateWorkspace {
         workspace_id, name, ..
     } = target
@@ -1954,6 +2051,20 @@ fn validate_record(record: &Record) -> Result<()> {
         );
         recovery::validate(descriptor)?;
     }
+    for (id, directory) in &record.directories {
+        ensure!(
+            r.panes.iter().any(|pane| &pane.id == id),
+            "directory refers to unknown pane"
+        );
+        directories::validate(&directory.cwd)?;
+    }
+    for (id, descriptor) in &record.automatic {
+        ensure!(
+            record.recoveries.get(id) == Some(descriptor),
+            "automatic native intent requires a verified recovery descriptor"
+        );
+        recovery::validate(descriptor)?;
+    }
     let mut ids = BTreeSet::new();
     for w in &r.workspaces {
         ensure!(
@@ -2026,7 +2137,8 @@ fn read_record(root: &Path) -> Result<Option<Record>> {
     ensure!(bytes.len() as u64 <= MAX_RECORD, "registry file limit");
     let mut value: Value = serde_json::from_slice(&bytes)
         .context("decode registry (never discard unreadable metadata)")?;
-    let upgraded = matches!(value["version"].as_u64(), Some(1 | 2));
+    let legacy_binding = matches!(value["version"].as_u64(), Some(1 | 2));
+    let upgraded = matches!(value["version"].as_u64(), Some(1..=3));
     // LEGACY_COMPAT(next-major): one-shot v1 metadata upgrade, not a wire/runtime shim.
     // Window IDs reuse their workspace UUID in a distinct typed identity domain.
     if value["version"] == 1 {
@@ -2107,9 +2219,16 @@ fn read_record(root: &Path) -> Result<Option<Record>> {
     }
     // LEGACY_COMPAT(next-major): schema 2 had no durable authenticated binding.
     // Never promote its optional live harness facts into recovery authority.
-    if upgraded {
+    if legacy_binding {
         value["version"] = json!(STORAGE_VERSION);
         value["recoveries"] = json!({});
+    }
+    // LEGACY_COMPAT(next-major): v3 had initial CWD only. Preserve verified
+    // descriptors, but never promote transient foreground observations.
+    if upgraded {
+        value["version"] = json!(STORAGE_VERSION);
+        value["directories"] = json!({});
+        value["automatic"] = json!({});
     }
     let record: Record = serde_json::from_value(value).context("decode registry metadata")?;
     validate_record(&record)?;
@@ -2123,6 +2242,8 @@ fn persist(root: &Path, record: &Record) -> Result<()> {
     let durable = DurableRecord {
         version: record.version,
         recoveries: &record.recoveries,
+        directories: &record.directories,
+        automatic: &record.automatic,
         registry: DurableRegistry {
             revision: record.registry.revision,
             workspaces: &record.registry.workspaces,

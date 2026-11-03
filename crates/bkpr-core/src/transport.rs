@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use bkpr_protocol::MAX_CONTROL_CONNECTIONS;
 use bkpr_protocol::{
     AgentRequest, MAX_AGENT_SUBSCRIBERS, MAX_CONNECTIONS, MAX_REGISTRY_WATCHERS,
-    MAX_WAITING_PANE_POLLS, Operation, PROTOCOL_VERSION, PaneRequest, Request,
+    MAX_WAITING_PANE_POLLS, Operation, PROTOCOL_VERSION, PaneRequest, PaneSpawnSpec, Request,
 };
 pub(crate) use clients::{ClientOwner, lifetime_connected, send_lifetime_event};
 use serde_json::json;
@@ -140,6 +140,53 @@ impl Drop for SocketLease {
         let _ = fs2::FileExt::unlock(&self.0);
     }
 }
+// Native wrapper callbacks must run during bootstrap, but clients must never
+// attach to a half-restored layout. Cancellation releases all waiting requests.
+struct StartupGate {
+    complete: Mutex<bool>,
+    changed: Condvar,
+    cancelled: AtomicBool,
+}
+impl StartupGate {
+    fn finish(&self) {
+        *self.complete.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+    fn cancel(&self) {
+        let _complete = self.complete.lock().unwrap();
+        self.cancelled.store(true, Ordering::Release);
+        self.changed.notify_all();
+    }
+    fn wait(&self, shutdown: &AtomicBool) -> Result<()> {
+        let complete = self.complete.lock().unwrap();
+        let _complete = self
+            .changed
+            .wait_while(complete, |complete| {
+                !*complete
+                    && !shutdown.load(Ordering::Acquire)
+                    && !self.cancelled.load(Ordering::Acquire)
+            })
+            .unwrap();
+        anyhow::ensure!(
+            !shutdown.load(Ordering::Acquire) && !self.cancelled.load(Ordering::Acquire),
+            "session is shutting down"
+        );
+        Ok(())
+    }
+}
+fn startup_callback(operation: &Operation) -> bool {
+    match operation {
+        // Shared control can mutate another saved pane's ownership. It has the
+        // same startup admission boundary as ordinary client control.
+        Operation::Agent { request, .. } => !matches!(request, AgentRequest::Control { .. }),
+        Operation::Context { .. }
+        | Operation::HarnessBegin { .. }
+        | Operation::HarnessEvent { .. }
+        | Operation::HarnessContext { .. }
+        | Operation::Shutdown => true,
+        _ => false,
+    }
+}
 /// A bound listener may queue initial-wrapper requests before pane startup commits.
 pub struct BoundSocket {
     listener: UnixListener,
@@ -210,6 +257,11 @@ pub fn serve(socket: &Path, registry: Registry) -> Result<()> {
 }
 impl BoundSocket {
     pub fn serve(self, registry: Registry) -> Result<()> {
+        self.serve_bootstrap(registry, None)
+    }
+    /// Serve authenticated native callbacks while restoring; publish ordinary
+    /// control/client readiness only after the complete bootstrap batch commits.
+    pub fn serve_bootstrap(self, registry: Registry, initial: Option<PaneSpawnSpec>) -> Result<()> {
         let Self {
             listener,
             socket,
@@ -243,30 +295,76 @@ impl BoundSocket {
             end_shutdown.store(true, Ordering::Release);
             let _ = (&*end_wake).write_all(b"\0");
         }));
-        println!(
-            "{}",
-            json!({"version":PROTOCOL_VERSION,"ready":true,"socket":bkpr_protocol::path_wire::WirePath(&socket)})
-        );
-        while !shutdown.load(Ordering::Acquire) {
-            if !wait_for_accept(&listener, &wake_read, &shutdown)? {
-                break;
-            }
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    if shutdown.load(Ordering::Acquire) {
-                        break;
+        let startup = Arc::new(StartupGate {
+            complete: Mutex::new(initial.is_none()),
+            changed: Condvar::new(),
+            cancelled: AtomicBool::new(false),
+        });
+        let bootstrap = initial.map(|spec| {
+            let registry = registry.clone();
+            let startup = startup.clone();
+            let shutdown = shutdown.clone();
+            let wake_write = wake_write.clone();
+            let socket = socket.clone();
+            thread::Builder::new().name("bkpr-bootstrap".into()).spawn(move || {
+                // Include diagnostics/readiness in the worker failure boundary:
+                // a closed output fd must never strand the admission gate.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+                    let value = registry.bootstrap(spec)?;
+                    if let Some(failures) = value.get("failures").and_then(|v| v.as_array()) {
+                        for failure in failures {
+                            writeln!(std::io::stderr().lock(), "bkprd: automatic restore: {failure}")?;
+                        }
                     }
-                    let Some(slot) = ConnectionSlot::take(&active, MAX_CONNECTIONS) else {
-                        continue;
-                    };
-                    let registry = registry.clone();
-                    let shutdown = shutdown.clone();
-                    let waiting_panes = waiting_panes.clone();
-                    let waiting_registry = waiting_registry.clone();
-                    let waiting_agents = waiting_agents.clone();
-                    let wake_write = wake_write.clone();
-                    let responses = responses.clone();
-                    thread::Builder::new()
+                    if !shutdown.load(Ordering::Acquire) && !startup.cancelled.load(Ordering::Acquire) {
+                        writeln!(
+                            std::io::stdout().lock(), "{}",
+                            json!({"version":PROTOCOL_VERSION,"ready":true,"socket":bkpr_protocol::path_wire::WirePath(&socket)})
+                        )?;
+                    }
+                    Ok(())
+                }))
+                .map_err(|_| anyhow::anyhow!("bootstrap thread panicked"))
+                .and_then(|result| result);
+                let cancelled = shutdown.load(Ordering::Acquire)
+                    || startup.cancelled.load(Ordering::Acquire);
+                if result.is_err() && !cancelled {
+                    shutdown.store(true, Ordering::Release);
+                    let _ = (&*wake_write).write_all(b"\0");
+                }
+                startup.finish();
+                if cancelled { Ok(()) } else { result }
+            })
+        }).transpose()?;
+        if bootstrap.is_none() {
+            writeln!(
+                std::io::stdout().lock(),
+                "{}",
+                json!({"version":PROTOCOL_VERSION,"ready":true,"socket":bkpr_protocol::path_wire::WirePath(&socket)})
+            )?;
+        }
+        let serving = (|| -> Result<()> {
+            while !shutdown.load(Ordering::Acquire) {
+                if !wait_for_accept(&listener, &wake_read, &shutdown)? {
+                    break;
+                }
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        if shutdown.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let Some(slot) = ConnectionSlot::take(&active, MAX_CONNECTIONS) else {
+                            continue;
+                        };
+                        let registry = registry.clone();
+                        let shutdown = shutdown.clone();
+                        let waiting_panes = waiting_panes.clone();
+                        let waiting_registry = waiting_registry.clone();
+                        let waiting_agents = waiting_agents.clone();
+                        let wake_write = wake_write.clone();
+                        let responses = responses.clone();
+                        let startup = startup.clone();
+                        thread::Builder::new()
                     .name("bkpr-control".into())
                     .spawn(move || {
                     let _slot = slot;
@@ -294,6 +392,12 @@ impl BoundSocket {
                         };
                         stop = request.version == PROTOCOL_VERSION && matches!(&request.operation, Operation::Shutdown);
                         anyhow::ensure!(request.version == PROTOCOL_VERSION, "unsupported protocol version");
+                        if stop {
+                            startup.cancel();
+                        }
+                        if !startup_callback(&request.operation) {
+                            startup.wait(&shutdown)?;
+                        }
                         pending_response = Some(PendingResponse::admit(&responses, &shutdown)?);
                         let result = match request.operation {
                             Operation::ClientRegister { session_id, daemon_id } => {
@@ -360,21 +464,33 @@ impl BoundSocket {
                     if stop {
                         shutdown.store(true, Ordering::Release);
                         let _ = (&*wake_write).write_all(b"\0");
+                        startup.finish();
                     }
                 })?;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e.into()),
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(e.into()),
             }
-        }
+            Ok(())
+        })();
         drop(listener);
-        let result = registry.shutdown();
+        shutdown.store(true, Ordering::Release);
+        startup.finish();
+        let cleanup = registry.shutdown();
+        let bootstrapped = bootstrap
+            .map(|thread| {
+                thread
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("bootstrap thread panicked"))?
+            })
+            .transpose();
         let mut pending = responses.pending.lock().unwrap();
         while *pending != 0 {
             pending = responses.changed.wait(pending).unwrap();
         }
-        result
+        serving.and(bootstrapped.map(|_| ())).and(cleanup)
     }
 }
 
@@ -640,6 +756,25 @@ fn wait_for_accept(
 mod tests {
     use super::*;
     #[test]
+    fn startup_waiters_are_released_on_commit_and_rejected_on_cancellation() {
+        for cancelled in [false, true] {
+            let gate = Arc::new(StartupGate {
+                complete: Mutex::new(false),
+                changed: Condvar::new(),
+                cancelled: AtomicBool::new(false),
+            });
+            let waiting = gate.clone();
+            let waiter = thread::spawn(move || waiting.wait(&AtomicBool::new(false)));
+            if cancelled {
+                gate.cancel();
+            } else {
+                gate.finish();
+            }
+            assert_eq!(waiter.join().unwrap().is_err(), cancelled);
+        }
+    }
+
+    #[test]
     fn aggregate_wire_limit_rejects_before_transport_dispatch() {
         let mut encoded = WireBuffer {
             bytes: Vec::new(),
@@ -767,3 +902,5 @@ mod tests {
 
 #[cfg(test)]
 mod shutdown_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod startup_tests;

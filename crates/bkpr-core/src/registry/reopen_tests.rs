@@ -180,29 +180,36 @@ fn reopen_reserves_close_and_preserves_documents_when_child_start_fails() {
     wait_for_sentinel(&home);
 }
 #[test]
-fn bootstrap_preserves_saved_unavailable_windows_and_uses_only_current_argv() {
+fn bootstrap_restores_saved_unavailable_position_with_current_argv_only_once() {
     let root = private_tempdir();
     let registry = Registry::open(root.path()).unwrap();
     let id = create(&registry, "saved");
-    let (old, window) = unavailable(&registry, &id, root.path());
+    let saved_home = root.path().join("saved-home");
+    crate::prepare_home(&saved_home).unwrap();
+    let (old, window) = unavailable(&registry, &id, &saved_home);
     drop(registry);
     let registry = Registry::open(root.path()).unwrap();
     let home = root.path().join("current");
     let result = registry.bootstrap(sentinel_spec(&home)).unwrap();
-    wait_for_sentinel(&home);
+    assert_eq!(result["failures"], json!([]));
+    wait_for_sentinel(&saved_home);
+    assert!(
+        !home.exists(),
+        "caller HOME must not replace saved private HOME"
+    );
     let r = registry.snapshot().unwrap();
-    assert_eq!(r.workspaces.len(), 2);
+    assert_eq!(r.workspaces.len(), 1);
     assert_eq!(r.workspaces[0].windows[0].id, window);
     assert_eq!(
         r.workspaces[0].windows[0].layout,
-        Some(LayoutNode::Leaf { pane_id: old })
-    );
-    assert_eq!(r.workspaces[1].windows.len(), 1);
-    assert_eq!(
-        r.workspaces[1].windows[0].layout,
         Some(LayoutNode::Leaf {
-            pane_id: result["pane_id"].as_str().unwrap().into()
+            pane_id: old.clone()
         })
+    );
+    assert_eq!(result["restored"][0]["pane_id"], old);
+    assert_eq!(
+        r.panes.iter().find(|pane| pane.id == old).unwrap().status,
+        PaneStatus::Running
     );
     let before = r.revision;
     registry

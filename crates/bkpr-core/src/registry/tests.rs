@@ -520,6 +520,8 @@ fn normal_home_and_environment_are_preserved_and_initial_cwd_is_recorded() {
     );
 }
 
+#[path = "automatic_tests.rs"]
+mod automatic_tests;
 #[path = "clipboard_tests.rs"]
 mod clipboard_tests;
 #[path = "completion_tests.rs"]

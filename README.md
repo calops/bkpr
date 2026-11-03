@@ -163,6 +163,26 @@ Launch serialization, private filesystem checks and exact stored/live identities
 prevent accidental attachment to another session. A live protocol or identity
 failure never causes an automatic restart.
 
+A cold `bkpr --session work` restart restores saved owned terminals in their
+original workspaces/windows and split positions, including hidden terminals.
+Ordinary terminals start the **current shell command** in their last verified
+working directory; old arbitrary commands are not replayed. A verified harness
+conversation still active at shutdown resumes through its fixed native adapter
+with current configuration and fresh launch/inbox authority.
+
+Missing directories or native refusal retain the stopped layout and recovery
+intent, report the failure and allow independent terminals to restore. There is
+no silent directory fallback or fresh-conversation substitution. Returning from
+a harness to its shell before shutdown restores a shell, not that historical
+conversation; its last verified descriptor remains available for explicit
+`bkpr resume`.
+
+Attaching to a live daemon never repeats restoration. Direct `bkprd` startup
+without shell argv remains headless and executes nothing. The existing 200-ms
+foreground observer checkpoints changed verified directory/role observations
+off input/render paths; abrupt daemon loss can miss an unobserved or uncommitted
+change. Graceful shutdown refreshes those observations before teardown.
+
 Client registration keeps a dedicated lifetime connection. Takeover, disconnect
 or owner-process exit revokes managed views and pending authority without
 requiring another client to acknowledge. Credentials are ephemeral, process-bound
@@ -334,12 +354,12 @@ resumes are rejected, including two pane records for the same conversation.
 A stopped projected pane is replaced in its window; a detached historical
 record creates a workspace. Running shells are never replaced implicitly.
 
-Only the harness kind, native ID and working directory are added to the private
-version-3 registry. Terminal contents, live grants and native settings are not
-recovery records. Explicit pane/workspace destruction removes recovery intent;
-ordinary harness return and daemon restart retain the last verified binding.
-This is explicit native-conversation recovery, not process resurrection or a
-frontend recovery picker.
+Private registry version 4 adds verified terminal directories and separates active
+automatic-resume intent from historical native descriptors. Terminal contents,
+old argv, live grants and native settings are not recovery records. Explicit
+pane/workspace destruction removes intent. Older records retain explicit native
+descriptors, but unknown historical activity is not guessed: their cold restart
+uses shells. Native recovery is not process resurrection or a frontend picker.
 See [native runtime evidence and remaining harness gates](docs/pane-first-mux/engine-proof.md#explicit-native-recovery).
 
 ### Agent communication
