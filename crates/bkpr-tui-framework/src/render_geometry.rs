@@ -50,6 +50,63 @@ fn scale(value: u32, destination_cell: u32, canonical_cell: u32) -> Result<i64> 
     i64::try_from(u64::from(value) * u64::from(destination_cell) / u64::from(canonical_cell))
         .context("projected image dimension overflow")
 }
+
+/// A one-pixel source axis is constant, so clipping it cannot change its
+/// sampling phase. Keep straight material strips on the uploaded atlas rather
+/// than expanding them into newly rasterized resources after occlusion.
+/// Other resampling retains the existing phase-preserving derived path.
+pub(super) fn reuse_constant_axes(projection: &mut Projection, viewport: Size) {
+    let Some(key) = projection.derived else {
+        return;
+    };
+    let axis = |start, source, full, visible_start, visible| {
+        if source == 1 {
+            Some((start, 1))
+        } else if source == full {
+            Some((start + visible_start, visible))
+        } else {
+            None
+        }
+    };
+    let Some((x, width)) = axis(
+        key.source.x,
+        key.source.width,
+        key.width,
+        key.visible.x,
+        key.visible.width,
+    ) else {
+        return;
+    };
+    let Some((y, height)) = axis(
+        key.source.y,
+        key.source.height,
+        key.height,
+        key.visible.y,
+        key.visible.height,
+    ) else {
+        return;
+    };
+    let natural = width == key.visible.width && height == key.visible.height;
+    let columns = u64::from(key.visible.width) + u64::from(projection.offset_x);
+    let rows = u64::from(key.visible.height) + u64::from(projection.offset_y);
+    if !natural
+        && (!columns.is_multiple_of(u64::from(viewport.cell_width))
+            || !rows.is_multiple_of(u64::from(viewport.cell_height)))
+    {
+        return;
+    }
+    projection.source = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    projection.cells = (!natural).then_some((
+        (columns / u64::from(viewport.cell_width)) as u32,
+        (rows / u64::from(viewport.cell_height)) as u32,
+    ));
+    projection.derived = None;
+}
 fn project(
     p: &Placement,
     canonical: Size,
@@ -150,7 +207,7 @@ fn project(
             height: u32::try_from(source_height / full_height as u64)?,
         }
     };
-    Ok(Some(Projection {
+    let mut projection = Projection {
         image,
         derived,
         source,
@@ -172,7 +229,9 @@ fn project(
             ImageLayer::AboveText => p.z.max(0),
         },
         placement_id,
-    }))
+    };
+    reuse_constant_axes(&mut projection, viewport);
+    Ok(Some(projection))
 }
 pub(super) fn prepare(frame: &Frame, viewport: Size) -> Result<Prepared<'_>> {
     if frame.size.cell_width == 0
@@ -354,5 +413,185 @@ pub(super) fn raster(image: &Image, key: DerivedKey) -> Result<Vec<u8>> {
         PixelFormat::Rgba => sample_visible::<image::Rgba<u8>>(image, key),
         PixelFormat::Gray => sample_visible::<image::Luma<u8>>(image, key),
         PixelFormat::GrayAlpha => sample_visible::<image::LumaA<u8>>(image, key),
+    }
+}
+
+#[cfg(test)]
+mod constant_axis_tests {
+    use super::*;
+
+    fn viewport() -> Size {
+        Size {
+            cols: 20,
+            rows: 10,
+            cell_width: 8,
+            cell_height: 16,
+        }
+    }
+
+    fn projection(key: DerivedKey) -> Projection {
+        Projection {
+            image: key.image,
+            derived: Some(key),
+            source: Rect {
+                x: 0,
+                y: 0,
+                width: key.visible.width,
+                height: key.visible.height,
+            },
+            col: 0,
+            row: 0,
+            offset_x: 0,
+            offset_y: 0,
+            cells: None,
+            z: 1,
+            placement_id: 1,
+        }
+    }
+
+    #[test]
+    fn clipped_constant_axes_reuse_the_exact_original_pixels_in_both_directions() {
+        let image = Image {
+            id: 1,
+            generation: 2,
+            width: 32,
+            height: 32,
+            format: PixelFormat::Rgba,
+            pixels: (0..32)
+                .flat_map(|y| (0..32).flat_map(move |x| [x as u8, y as u8, 100, 255]))
+                .collect(),
+        };
+        for (source, width, height, visible) in [
+            (
+                Rect {
+                    x: 2,
+                    y: 4,
+                    width: 1,
+                    height: 24,
+                },
+                96,
+                24,
+                Rect {
+                    x: 7,
+                    y: 3,
+                    width: 80,
+                    height: 16,
+                },
+            ),
+            (
+                Rect {
+                    x: 4,
+                    y: 2,
+                    width: 24,
+                    height: 1,
+                },
+                24,
+                96,
+                Rect {
+                    x: 3,
+                    y: 7,
+                    width: 16,
+                    height: 80,
+                },
+            ),
+        ] {
+            let key = DerivedKey {
+                image: image.key(),
+                source,
+                width,
+                height,
+                visible,
+            };
+            let mut actual = projection(key);
+            reuse_constant_axes(&mut actual, viewport());
+            assert!(actual.derived.is_none());
+            assert!(actual.cells.is_some());
+            let from_atlas = DerivedKey {
+                source: actual.source,
+                width: visible.width,
+                height: visible.height,
+                visible: Rect {
+                    x: 0,
+                    y: 0,
+                    ..visible
+                },
+                ..key
+            };
+            assert_eq!(
+                raster(&image, key).unwrap(),
+                raster(&image, from_atlas).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn fractional_other_axis_and_non_cell_ends_keep_phase_preserving_raster() {
+        let key = DerivedKey {
+            image: ImageKey {
+                id: 1,
+                generation: 2,
+            },
+            source: Rect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 24,
+            },
+            width: 96,
+            height: 48,
+            visible: Rect {
+                x: 7,
+                y: 3,
+                width: 80,
+                height: 16,
+            },
+        };
+        let mut actual = projection(key);
+        reuse_constant_axes(&mut actual, viewport());
+        assert_eq!(actual.derived, Some(key));
+        let key = DerivedKey {
+            height: 24,
+            visible: Rect {
+                width: 79,
+                ..key.visible
+            },
+            ..key
+        };
+        let mut actual = projection(key);
+        reuse_constant_axes(&mut actual, viewport());
+        assert_eq!(actual.derived, Some(key));
+    }
+
+    #[test]
+    fn viewport_clipping_of_a_stretched_strip_needs_no_derived_resource() {
+        let p = Placement {
+            image_id: 1,
+            generation: 2,
+            placement_id: 1,
+            col: -1,
+            row: 0,
+            offset_x: 0,
+            offset_y: 0,
+            width: 96,
+            height: 16,
+            source_x: 4,
+            source_y: 3,
+            source_width: 1,
+            source_height: 16,
+            layer: ImageLayer::AboveText,
+            z: 0,
+        };
+        let actual = project(&p, viewport(), viewport(), 1).unwrap().unwrap();
+        assert!(actual.derived.is_none());
+        assert_eq!(
+            actual.source,
+            Rect {
+                x: 4,
+                y: 3,
+                width: 1,
+                height: 16
+            }
+        );
+        assert_eq!(actual.cells, Some((11, 1)));
     }
 }

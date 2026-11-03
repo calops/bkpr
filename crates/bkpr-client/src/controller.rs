@@ -1,6 +1,6 @@
 use crate::tiling;
 use bkpr_protocol::*;
-use bkpr_tui_framework::{Divider, Rect, Role, RoleSpan, Theme, UiSurface};
+use bkpr_tui_framework::{Rect, Role, RoleSpan, Theme, UiSurface};
 use std::collections::HashMap;
 #[path = "sidebar.rs"]
 mod sidebar;
@@ -391,10 +391,10 @@ pub fn layout_rects(layout: Option<&LayoutNode>, rect: Rect, result: &mut Vec<(S
     }
 }
 pub fn screen_geometry(size: Size) -> (Rect, Rect) {
-    let sidebar = if size.cols >= 60 {
-        24
-    } else if size.cols >= 24 {
-        size.cols / 3
+    // Main's launcher defaults to 38 cells. On small terminals retain room
+    // for the native application instead of imposing the full preferred width.
+    let sidebar = if size.cols >= 24 {
+        38.min(size.cols / 2)
     } else {
         0
     };
@@ -403,21 +403,33 @@ pub fn screen_geometry(size: Size) -> (Rect, Rect) {
             x: 0,
             y: 0,
             width: sidebar,
-            height: size.rows.saturating_sub(1),
+            height: size.rows,
         },
         Rect {
             x: sidebar,
             y: 0,
             width: size.cols - sidebar,
-            height: size.rows.saturating_sub(1),
+            height: size.rows,
         },
     )
 }
+/// The same reserved perimeter is used by plain and graphics-backed chrome.
+/// Tiny panes retain a header-only fallback rather than losing their last cell.
 pub fn content(rect: Rect) -> Rect {
-    Rect {
-        y: rect.y.saturating_add(1),
-        height: rect.height.saturating_sub(1),
-        ..rect
+    let border = crate::appearance::PANE_BORDER;
+    if rect.width > border.saturating_mul(2) && rect.height > border.saturating_mul(2) {
+        Rect {
+            x: rect.x.saturating_add(border),
+            y: rect.y.saturating_add(border),
+            width: rect.width - border * 2,
+            height: rect.height - border * 2,
+        }
+    } else {
+        Rect {
+            y: rect.y.saturating_add(u16::from(rect.height > 1)),
+            height: rect.height.saturating_sub(u16::from(rect.height > 1)),
+            ..rect
+        }
     }
 }
 pub(crate) fn recognized_harness<'a>(
@@ -488,41 +500,109 @@ fn execution_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>) -> &'static
     }
 }
 
-fn sidebar_pane_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>, width: usize) -> String {
-    if pane.status != PaneStatus::Running {
-        let state = if pane.status == PaneStatus::Stopped {
-            "S"
-        } else {
-            "E"
-        };
-        return format!(
-            "{} [{state}]",
-            bkpr_tui_framework::window::fit(&pane.title, width.saturating_sub(4) as u16)
-        );
+fn harness_icon(kind: HarnessKind) -> &'static str {
+    match kind {
+        HarnessKind::Omp => "\u{f03ff}",
+        HarnessKind::Claude => "\u{ec82}",
+        HarnessKind::Codex => "\u{e969}",
+        _ => "\u{f120}",
     }
-    let Some(harness) = recognized_harness(pane, snapshot) else {
-        return pane.title.clone();
+}
+
+fn pane_activity(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>) -> &'static str {
+    match pane.status {
+        PaneStatus::Stopped => "■",
+        PaneStatus::Exited => "×",
+        PaneStatus::Running => {
+            match harness_status(pane, snapshot).map(|status| status.state.as_str()) {
+                Some("idle") => "\u{f03e6}",
+                Some("working") => "\u{f0150}",
+                Some("done") => "\u{f058}",
+                Some("blocked") => "\u{f059}",
+                Some("error") => "\u{f06a}",
+                _ => "",
+            }
+        }
+    }
+}
+
+fn sidebar_pane_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>, width: usize) -> String {
+    let icon = recognized_harness(pane, snapshot).map(|harness| harness_icon(harness.kind));
+    let prefix = icon.map(|icon| format!("{icon} ")).unwrap_or_default();
+    let status = pane_activity(pane, snapshot);
+    let suffix = if status.is_empty() {
+        String::new()
+    } else {
+        format!(" {status} ")
     };
-    let binding = match &harness.managed {
-        None => "",
-        Some(managed) if managed.error.is_some() => " error",
-        Some(managed) if managed.conversation.is_some() => " bound",
-        Some(_) => " binding",
-    };
-    let status = harness_status(pane, snapshot).map_or("", |status| match status.state.as_str() {
-        "idle" => ".",
-        "working" => "~",
-        "done" => "+",
-        "blocked" => "?",
-        "error" => "!",
-        _ => "",
+    let reserved = unicode_width::UnicodeWidthStr::width(prefix.as_str())
+        + unicode_width::UnicodeWidthStr::width(suffix.as_str());
+    let name = bkpr_tui_framework::window::fit(&pane.title, width.saturating_sub(reserved) as u16);
+    let padding =
+        width.saturating_sub(reserved + unicode_width::UnicodeWidthStr::width(name.as_str()));
+    format!("{prefix}{name}{}{suffix}", " ".repeat(padding))
+}
+
+fn pane_tree(state: &Controller, registry: &RegistrySnapshot, index: usize) -> (bool, bool) {
+    let pane = &registry.panes[index];
+    let grouped = registry.workspaces.iter().any(|workspace| {
+        Some(&workspace.id) == pane.workspace_id.as_ref() && workspace.windows.len() > 1
     });
-    let identity = format!("[{status}{}{binding}]", harness.kind.as_str());
-    let identity_width = unicode_width::UnicodeWidthStr::width(identity.as_str());
-    let title_width = width.saturating_sub(identity_width + 1).max(2).min(width);
+    let last = state
+        .sidebar
+        .rows
+        .iter()
+        .rev()
+        .find_map(|row| match row.kind {
+            SidebarRowKind::Pane { index, .. }
+                if registry.panes[index].window_id == pane.window_id =>
+            {
+                Some(index)
+            }
+            _ => None,
+        })
+        == Some(index);
+    (grouped, last)
+}
+
+fn sidebar_branch(pane: &PaneInfo, width: u16) -> String {
+    let Some(project) = &pane.project else {
+        return String::new();
+    };
+    let Some(repository) = &project.repository else {
+        return match project.state {
+            ProjectState::Loading => "Git loading…".into(),
+            ProjectState::Error => "Git unavailable".into(),
+            _ => String::new(),
+        };
+    };
+    let branch = repository.branch.as_deref().unwrap_or("detached");
+    // Only observed committed totals correspond to main's branch-versus-base
+    // counts. Missing comparison data is not a fabricated zero.
+    let counts = repository
+        .committed
+        .map(|changes| format!(" +{} -{}", changes.insertions, changes.deletions))
+        .unwrap_or_default();
+    let stale = if project.state == ProjectState::Ready {
+        ""
+    } else {
+        " · stale"
+    };
+    let reserved = unicode_width::UnicodeWidthStr::width(counts.as_str())
+        + unicode_width::UnicodeWidthStr::width(stale);
+    let counts = if reserved + 5 <= usize::from(width) {
+        counts.as_str()
+    } else {
+        ""
+    };
+    let available = width.saturating_sub(
+        (unicode_width::UnicodeWidthStr::width(counts)
+            + unicode_width::UnicodeWidthStr::width(stale)
+            + 2) as u16,
+    );
     format!(
-        "{} {identity}",
-        bkpr_tui_framework::window::fit(&pane.title, title_width as u16)
+        "\u{f062c} {}{counts}{stale}",
+        bkpr_tui_framework::window::fit(branch, available)
     )
 }
 
@@ -702,7 +782,18 @@ pub struct ChromeContext<'a> {
     pub state: &'a Controller,
     pub registry: &'a RegistrySnapshot,
     pub rects: &'a [(String, Rect)],
-    pub guide: &'a str,
+    /// Frame text is omitted only for material-ready rectangles.
+    pub pane_graphics: &'a [Rect],
+    /// Rows from the passive guide's top through the sidebar's bottom.
+    pub guide_rows: u16,
+}
+
+/// Keep chrome text, hit targets, artwork and keyboard paging in one viewport.
+pub(crate) fn sidebar_content_rows(sidebar: Rect, guide_rows: u16) -> usize {
+    if sidebar.width == 0 {
+        return 0;
+    }
+    usize::from(sidebar.height.saturating_sub(guide_rows).saturating_sub(3))
 }
 pub fn chrome<'a>(
     surface: &mut UiSurface,
@@ -716,12 +807,22 @@ pub fn chrome<'a>(
         state,
         registry,
         rects,
-        guide,
+        pane_graphics,
+        guide_rows,
     } = context;
     let (sidebar, _) = screen_geometry(size);
     let mut hit = Vec::new();
-    let mut lines = vec![line(0, 0, sidebar.width, " Bkpr / workspaces", false)];
-    let available = sidebar.height.saturating_sub(2) as usize;
+    let mut lines = Vec::new();
+    if sidebar.width > 0 && sidebar.height > 0 {
+        lines.push(line(
+            1,
+            0,
+            sidebar.width.saturating_sub(1),
+            "Workspaces",
+            false,
+        ));
+    }
+    let available = sidebar_content_rows(sidebar, guide_rows);
     for (index, entry) in state
         .sidebar
         .rows
@@ -736,9 +837,36 @@ pub fn chrome<'a>(
             SidebarRowKind::Workspace { index, collapsed } => {
                 let workspace = &registry.workspaces[index];
                 format!(
-                    "{} [] {}",
-                    if collapsed { "▸" } else { "▾" },
-                    workspace.name
+                    "● {}{}",
+                    workspace.name,
+                    if collapsed { " ···" } else { "" }
+                )
+            }
+            SidebarRowKind::Projects { index } => {
+                let workspace = &registry.workspaces[index];
+                let mut repositories = Vec::new();
+                for pane in &registry.panes {
+                    if pane.workspace_id.as_ref() != Some(&workspace.id) {
+                        continue;
+                    }
+                    if let Some(repository) = pane
+                        .project
+                        .as_ref()
+                        .and_then(|project| project.repository.as_ref())
+                        && !repositories
+                            .iter()
+                            .any(|(identity, _)| *identity == &repository.common_dir)
+                    {
+                        repositories.push((&repository.common_dir, repository.name.as_str()));
+                    }
+                }
+                format!(
+                    "│ {}",
+                    repositories
+                        .iter()
+                        .map(|(_, name)| *name)
+                        .collect::<Vec<_>>()
+                        .join(" · ")
                 )
             }
             SidebarRowKind::Window {
@@ -760,38 +888,36 @@ pub fn chrome<'a>(
             }
             SidebarRowKind::Pane { index, projected } => {
                 let pane = &registry.panes[index];
-                let in_window = pane.window_id == state.window;
-                let focused = in_window
-                    && state.focused.as_ref() == Some(&pane.id)
-                    && entry.target.as_ref().is_some_and(|target| {
-                        Some(target.workspace()) == state.workspace.as_deref()
-                    });
+                let (grouped, last) = pane_tree(state, registry, index);
+                let lead = if last { "╰─╴" } else { "├─╴" };
+                let indent = if grouped { "  " } else { "" };
                 format!(
-                    "    {} <> {}",
-                    if focused {
-                        "●"
-                    } else if projected {
-                        "·"
-                    } else {
-                        "◌"
-                    },
+                    "{indent}{lead}{} {}",
+                    if projected { "●" } else { "◌" },
                     sidebar_pane_label(
                         pane,
                         snapshot(&pane.id),
-                        sidebar.width.saturating_sub(10) as usize
+                        sidebar.width.saturating_sub(if grouped { 8 } else { 6 }) as usize
                     )
                 )
             }
-            SidebarRowKind::Detail { index } => registry.panes[index]
-                .project
-                .as_ref()
-                .map(|project| format!("         {}", project_label(project)))
-                .unwrap_or_default(),
+            SidebarRowKind::Detail { index } => {
+                let (grouped, last) = pane_tree(state, registry, index);
+                let lead = if last { "     " } else { "│    " };
+                let indent = if grouped { "  " } else { "" };
+                format!(
+                    "{indent}{lead}{}",
+                    sidebar_branch(
+                        &registry.panes[index],
+                        sidebar.width.saturating_sub(if grouped { 8 } else { 6 })
+                    )
+                )
+            }
             SidebarRowKind::Spacer => String::new(),
         };
         let row = index as u16 + 2;
         lines.push(line(
-            0,
+            1,
             row,
             sidebar.width.saturating_sub(1),
             label,
@@ -802,23 +928,27 @@ pub fn chrome<'a>(
         }
     }
     for (id, rect) in rects {
+        if pane_graphics.contains(rect) {
+            continue;
+        }
         let title = registry
             .panes
             .iter()
             .find(|p| p.id == *id)
-            .map(|p| {
-                let identity = harness_label(p, snapshot(id));
+            .map(|pane| {
+                let known = snapshot(id);
+                let icon = recognized_harness(pane, known)
+                    .map(|harness| format!("{} ", harness_icon(harness.kind)))
+                    .unwrap_or_default();
+                let status = pane_activity(pane, known);
                 format!(
-                    "{} [{}{}]{}",
-                    p.title,
-                    identity
-                        .map(|label| format!("{label} / "))
-                        .unwrap_or_default(),
-                    execution_label(p, snapshot(id)),
-                    p.project
-                        .as_ref()
-                        .map(|project| format!(" | {}", project_label(project)))
-                        .unwrap_or_default()
+                    "{icon}{}{}",
+                    pane.title,
+                    if status.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {status}")
+                    }
                 )
             })
             .unwrap_or_else(|| "Lost pane".into());
@@ -832,6 +962,13 @@ pub fn chrome<'a>(
         } else {
             title
         };
+        let title =
+            if sidebar.width == 0 && state.focused.as_ref() == Some(id) && !state.status.is_empty()
+            {
+                format!("[{}] {title}", state.status)
+            } else {
+                title
+            };
         let title = format!(
             " {} {}",
             if state.focused.as_ref() == Some(id) {
@@ -841,46 +978,42 @@ pub fn chrome<'a>(
             },
             title
         );
-        lines.push(line(rect.x, rect.y, rect.width, title, false));
+        if rect.width >= 3 && rect.height >= 3 {
+            let local = rect.size(size);
+            lines.extend(
+                bkpr_tui_framework::window::border_rows(
+                    local,
+                    &title,
+                    bkpr_tui_framework::window::Border::Rounded,
+                )
+                .into_iter()
+                .map(|(local, text, selected)| {
+                    (
+                        Rect {
+                            x: rect.x + local.x,
+                            y: rect.y + local.y,
+                            ..local
+                        },
+                        text,
+                        selected,
+                    )
+                }),
+            );
+        } else if rect.height > 1 {
+            lines.push(line(rect.x, rect.y, rect.width, title, false));
+        }
     }
-    let status = if state.status.is_empty() {
-        guide.to_owned()
-    } else {
-        let guide_width = unicode_width::UnicodeWidthStr::width(guide);
-        let available = usize::from(size.cols).saturating_sub(guide_width + 3);
-        format!(
-            "{} | {guide}",
-            bkpr_tui_framework::window::fit(&state.status, available as u16)
-        )
-    };
-    lines.push(line(
-        0,
-        size.rows.saturating_sub(1),
-        size.cols,
-        status,
-        false,
-    ));
-    let (_, area) = screen_geometry(size);
-    let mut dividers = Vec::new();
-    tiling::dividers(
-        state
-            .current_window(registry)
-            .and_then(|window| window.layout.as_ref()),
-        area,
-        &mut dividers,
-    );
-    surface.paint_parts(
-        size,
-        lines,
-        dividers
-            .into_iter()
-            .map(|split| Divider {
-                rect: split.divider,
-                vertical: split.axis == Axis::Horizontal,
-            })
-            .collect(),
-        None,
-    );
+    let status_bottom = sidebar.height.saturating_sub(guide_rows);
+    if sidebar.width > 0 && status_bottom > 2 && !state.status.is_empty() {
+        lines.push(line(
+            1,
+            status_bottom - 1,
+            sidebar.width.saturating_sub(1),
+            &state.status,
+            false,
+        ));
+    }
+    surface.paint(size, lines, None);
     hit
 }
 
@@ -889,12 +1022,17 @@ pub fn chrome<'a>(
 pub(crate) fn theme_chrome<'a>(
     surface: &mut UiSurface,
     theme: &Theme,
-    state: &Controller,
-    registry: &RegistrySnapshot,
-    rects: &[(String, Rect)],
-    footer_keys: &[RoleSpan],
+    context: ChromeContext<'_>,
     snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
 ) {
+    let ChromeContext {
+        state,
+        registry,
+        rects,
+        pane_graphics,
+        guide_rows,
+        ..
+    } = context;
     fn activity_role(status: &ProgramStatus) -> Role {
         match status.state.as_str() {
             "idle" => Role::Success,
@@ -906,29 +1044,24 @@ pub(crate) fn theme_chrome<'a>(
     }
     let size = surface.frame.size;
     let sidebar = screen_geometry(size).0;
-    let mut spans = vec![RoleSpan {
+    let mut spans = Vec::new();
+    spans.push(RoleSpan {
         rect: Rect {
             height: 1,
             ..sidebar
         },
         role: Role::Title,
-    }];
+    });
     for (index, entry) in state
         .sidebar
         .rows
         .iter()
         .skip(state.sidebar.scroll)
-        .take(usize::from(sidebar.height.saturating_sub(2)))
+        .take(sidebar_content_rows(sidebar, guide_rows))
         .enumerate()
     {
         let role = match entry.kind {
-            SidebarRowKind::Workspace { index, .. } => {
-                if state.workspace.as_ref() == Some(&registry.workspaces[index].id) {
-                    Role::Accent
-                } else {
-                    Role::Title
-                }
-            }
+            SidebarRowKind::Workspace { .. } => Role::Title,
             SidebarRowKind::Window {
                 workspace, index, ..
             } => {
@@ -950,11 +1083,13 @@ pub(crate) fn theme_chrome<'a>(
                     Role::Base
                 }
             }
-            SidebarRowKind::Detail { .. } | SidebarRowKind::Spacer => Role::Muted,
+            SidebarRowKind::Projects { .. }
+            | SidebarRowKind::Detail { .. }
+            | SidebarRowKind::Spacer => Role::Muted,
         };
         spans.push(RoleSpan {
             rect: Rect {
-                x: 0,
+                x: 1,
                 y: index as u16 + 2,
                 width: sidebar.width.saturating_sub(1),
                 height: 1,
@@ -968,6 +1103,54 @@ pub(crate) fn theme_chrome<'a>(
         if entry.target.is_some() && entry.target == state.sidebar.hover {
             continue;
         }
+        if let SidebarRowKind::Detail { index: pane_index } = entry.kind
+            && let Some(project) = &registry.panes[pane_index].project
+            && project.state == ProjectState::Ready
+            && let Some(changes) = project
+                .repository
+                .as_ref()
+                .and_then(|repository| repository.committed)
+        {
+            let added = changes.insertions.checked_ilog10().unwrap_or(0) as usize + 1;
+            let removed = changes.deletions.checked_ilog10().unwrap_or(0) as usize + 1;
+            let available =
+                sidebar
+                    .width
+                    .saturating_sub(if pane_tree(state, registry, pane_index).0 {
+                        8
+                    } else {
+                        6
+                    }) as usize;
+            if added + removed + 9 <= available {
+                let y = index as u16 + 2;
+                let cells = &surface.frame.rows[usize::from(y)].cells[..usize::from(sidebar.width)];
+                if let Some(end) = cells.iter().rposition(|cell| cell.text != " ")
+                    && let Some(remove_x) = (end + 1).checked_sub(removed + 1)
+                    && let Some(add_x) = remove_x.checked_sub(added + 2)
+                    && cells[remove_x].text == "-"
+                    && cells[add_x].text == "+"
+                {
+                    spans.push(RoleSpan {
+                        rect: Rect {
+                            x: add_x as u16,
+                            y,
+                            width: added as u16 + 1,
+                            height: 1,
+                        },
+                        role: Role::Success,
+                    });
+                    spans.push(RoleSpan {
+                        rect: Rect {
+                            x: remove_x as u16,
+                            y,
+                            width: removed as u16 + 1,
+                            height: 1,
+                        },
+                        role: Role::Error,
+                    });
+                }
+            }
+        }
         if let SidebarRowKind::Pane {
             index: pane_index, ..
         } = entry.kind
@@ -977,7 +1160,11 @@ pub(crate) fn theme_chrome<'a>(
             if let Some(harness) = recognized_harness(pane, known) {
                 spans.push(RoleSpan {
                     rect: Rect {
-                        x: 6,
+                        x: if pane_tree(state, registry, pane_index).0 {
+                            8
+                        } else {
+                            6
+                        },
                         y: index as u16 + 2,
                         width: 2,
                         height: 1,
@@ -997,7 +1184,7 @@ pub(crate) fn theme_chrome<'a>(
             if let Some(status) = harness_status(pane, known) {
                 spans.push(RoleSpan {
                     rect: Rect {
-                        x: 4,
+                        x: sidebar.width.saturating_sub(2),
                         y: index as u16 + 2,
                         width: 1,
                         height: 1,
@@ -1008,6 +1195,31 @@ pub(crate) fn theme_chrome<'a>(
         }
     }
     for (id, rect) in rects {
+        if pane_graphics.contains(rect) {
+            // Main's decorate_characters fills rich frame cells with the
+            // original pane background. The atlas paints the opaque matte
+            // outside its opening; its transparent interior must see normal
+            // pane color, including the opened half of horizontal gutters.
+            spans.push(RoleSpan {
+                rect: *rect,
+                role: Role::Panel,
+            });
+            continue;
+        }
+        if rect.width >= 3 && rect.height >= 3 {
+            spans.extend(
+                bkpr_tui_framework::window::theme_spans(rect.size(size))
+                    .into_iter()
+                    .map(|span| RoleSpan {
+                        rect: Rect {
+                            x: rect.x + span.rect.x,
+                            y: rect.y + span.rect.y,
+                            ..span.rect
+                        },
+                        role: span.role,
+                    }),
+            );
+        }
         spans.push(RoleSpan {
             rect: Rect { height: 1, ..*rect },
             role: if state.focused.as_ref() == Some(id) {
@@ -1039,16 +1251,18 @@ pub(crate) fn theme_chrome<'a>(
             });
         }
     }
-    spans.push(RoleSpan {
-        rect: Rect {
-            x: 0,
-            y: size.rows.saturating_sub(1),
-            width: size.cols,
-            height: 1,
-        },
-        role: Role::Muted,
-    });
-    spans.extend_from_slice(footer_keys);
+    let status_bottom = sidebar.height.saturating_sub(guide_rows);
+    if status_bottom > 2 {
+        spans.push(RoleSpan {
+            rect: Rect {
+                x: 0,
+                y: status_bottom - 1,
+                width: sidebar.width,
+                height: 1,
+            },
+            role: Role::Muted,
+        });
+    }
     surface.apply_theme(theme, Role::Base, &spans);
 }
 pub(crate) fn project_detail_lines(
@@ -1392,6 +1606,121 @@ pub(crate) fn theme_modal(surface: &mut UiSurface, theme: &Theme, form: &Form) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pane_body_reserves_all_chrome_edges_without_losing_tiny_content() {
+        let outer = Rect {
+            x: 24,
+            y: 2,
+            width: 9,
+            height: 7,
+        };
+        let body = content(outer);
+        assert!(body.width > 0 && body.height > 0);
+        for (x, y) in [
+            (body.x, body.y),
+            (body.x + body.width - 1, body.y + body.height - 1),
+        ] {
+            assert!(outer.contains(x, y));
+            assert!(x > outer.x && x < outer.x + outer.width - 1);
+            assert!(y > outer.y && y < outer.y + outer.height - 1);
+        }
+        for width in 1..=3 {
+            for height in 1..=3 {
+                let tiny = content(Rect {
+                    width,
+                    height,
+                    ..outer
+                });
+                assert!(tiny.width > 0 && tiny.height > 0);
+                assert!(tiny.x + tiny.width <= outer.x + width);
+                assert!(tiny.y + tiny.height <= outer.y + height);
+            }
+        }
+    }
+    #[test]
+    fn sidebar_hit_rows_are_item_owned_and_do_not_cover_the_contextual_guide() {
+        let (pane, snapshot) = capture_fixture();
+        let mut surface = capture_surface();
+        let hits = capture_chrome(&mut surface, &pane, &snapshot);
+        let sidebar = screen_geometry(surface.frame.size).0;
+        assert!(!hits.is_empty());
+        for (target, y) in hits {
+            assert!(
+                y >= sidebar.y + 2
+                    && usize::from(y - sidebar.y - 2) < sidebar_content_rows(sidebar, 0)
+            );
+            assert!(
+                surface.frame.rows[y as usize].cells[..usize::from(sidebar.width)]
+                    .iter()
+                    .any(|cell| !cell.text.trim().is_empty())
+            );
+            assert!(matches!(
+                target,
+                SidebarTarget::Workspace(_) | SidebarTarget::Pane { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn passive_guide_reservation_bounds_items_hits_and_status() {
+        let registry = RegistrySnapshot {
+            revision: 1,
+            workspaces: (0..20)
+                .map(|index| Workspace {
+                    id: format!("work-{index}"),
+                    name: format!("Workspace {index}"),
+                    revision: 1,
+                    windows: Vec::new(),
+                })
+                .collect(),
+            panes: Vec::new(),
+        };
+        let mut state = Controller::new(&registry);
+        state.status = "Status above guide".into();
+        let size = Size {
+            cols: 100,
+            rows: 14,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let guide_rows = 6;
+        let mut surface = UiSurface::new(size);
+        let hits = chrome(
+            &mut surface,
+            ChromeContext {
+                size,
+                state: &state,
+                registry: &registry,
+                rects: &[],
+                pane_graphics: &[],
+                guide_rows,
+            },
+            |_| None,
+            |_| None,
+            |_| None,
+        );
+        let sidebar = screen_geometry(size).0;
+        let status_y = size.rows - guide_rows - 1;
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(|(_, y)| *y < status_y));
+        let status: String = surface.frame.rows[usize::from(status_y)]
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect();
+        assert!(status.contains(&state.status));
+        for row in &surface.frame.rows[usize::from(status_y + 1)..] {
+            assert!(
+                row.cells[..usize::from(sidebar.width)]
+                    .iter()
+                    .all(|cell| cell.text.trim().is_empty())
+            );
+        }
+        for reserved in 0..=size.rows + 2 {
+            let rows = sidebar_content_rows(sidebar, reserved);
+            assert!(rows + usize::from(reserved.min(size.rows)) <= usize::from(size.rows));
+        }
+    }
     fn project_fixture() -> ProjectSnapshot {
         ProjectSnapshot {
             cwd: "/repo/linked/日本語".into(),
@@ -1692,23 +2021,6 @@ mod tests {
         assert_eq!(remove_leaf(tree, "a"), Some(leaf("b")));
     }
     #[test]
-    fn split_geometry_tiles_without_overlap() {
-        let tree = split_leaf(Some(leaf("a")), "a", "b", Axis::Horizontal);
-        let mut rects = Vec::new();
-        layout_rects(
-            tree.as_ref(),
-            Rect {
-                x: 5,
-                y: 0,
-                width: 101,
-                height: 30,
-            },
-            &mut rects,
-        );
-        assert_eq!(rects[0].1.width + 1 + rects[1].1.width, 101);
-        assert_eq!(rects[0].1.x + rects[0].1.width + 1, rects[1].1.x);
-    }
-    #[test]
     fn modal_cancel_restores_focus() {
         let registry = RegistrySnapshot {
             revision: 0,
@@ -1771,7 +2083,8 @@ mod tests {
                 state: &Controller::new(&registry),
                 registry: &registry,
                 rects: &[],
-                guide: "",
+                pane_graphics: &[],
+                guide_rows: 0,
             },
             |_| None,
             |_| None,
@@ -1903,7 +2216,8 @@ mod tests {
                 state: &state,
                 registry: &registry,
                 rects: &[(pane.id.clone(), rect)],
-                guide: "",
+                pane_graphics: &[],
+                guide_rows: 0,
             },
             |_| None,
             |_| Some(snapshot),
@@ -1919,7 +2233,7 @@ mod tests {
     }
 
     #[test]
-    fn chrome_paints_only_real_dividers_and_retires_old_geometry() {
+    fn retained_chrome_matches_fresh_projection_after_layout_change() {
         let (first, _) = capture_fixture();
         let mut second = first.clone();
         second.id = "second".into();
@@ -1946,34 +2260,13 @@ mod tests {
                     state: &state,
                     registry: &registry,
                     rects: &rects,
-                    guide: "",
+                    pane_graphics: &[],
+                    guide_rows: 0,
                 },
                 |_| None,
                 |_| None,
                 |_| None,
             );
-            let mut splits = Vec::new();
-            tiling::dividers(
-                registry.workspaces[0].windows[0].layout.as_ref(),
-                area,
-                &mut splits,
-            );
-            let divider = splits[0].divider;
-            for y in divider.y..divider.y + divider.height {
-                for x in divider.x..divider.x + divider.width {
-                    let cell = &surface.frame.rows[y as usize].cells[x as usize];
-                    assert_eq!(
-                        cell.text,
-                        if axis == Axis::Horizontal {
-                            "│"
-                        } else {
-                            "─"
-                        }
-                    );
-                    assert!(rects.iter().all(|(_, rect)| !rect.contains(x, y)));
-                }
-            }
-            assert!(painted_text(&surface).contains("Bkpr / workspaces"));
             let LayoutNode::Split { ratio, .. } =
                 registry.workspaces[0].windows[0].layout.as_mut().unwrap()
             else {
@@ -1993,20 +2286,105 @@ mod tests {
                     state: &state,
                     registry: &registry,
                     rects: &rects,
-                    guide: "",
+                    pane_graphics: &[],
+                    guide_rows: 0,
                 },
                 |_| None,
                 |_| None,
                 |_| None,
             );
-            let (x, y) = if axis == Axis::Horizontal {
-                (divider.x, 1)
-            } else {
-                (divider.x, divider.y)
+            let mut fresh = capture_surface();
+            chrome(
+                &mut fresh,
+                ChromeContext {
+                    size,
+                    state: &state,
+                    registry: &registry,
+                    rects: &rects,
+                    pane_graphics: &[],
+                    guide_rows: 0,
+                },
+                |_| None,
+                |_| None,
+                |_| None,
+            );
+            assert_eq!(
+                surface.frame, fresh.frame,
+                "retained chrome left obsolete geometry"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_frames_hide_text_when_ready_and_restore_plain_captions() {
+        let (first, _) = capture_fixture();
+        let mut second = first.clone();
+        second.id = "second".into();
+        second.title = "Second 界 shell".into();
+        for axis in [Axis::Horizontal, Axis::Vertical] {
+            let mut registry = capture_registry(&first);
+            registry.panes.push(second.clone());
+            registry.workspaces[0].windows[0].layout =
+                split_leaf(Some(leaf(&first.id)), &first.id, &second.id, axis);
+            let state = Controller::new(&registry);
+            let mut surface = capture_surface();
+            let size = surface.frame.size;
+            let area = screen_geometry(size).1;
+            let mut rects = Vec::new();
+            layout_rects(
+                registry.workspaces[0].windows[0].layout.as_ref(),
+                area,
+                &mut rects,
+            );
+            let ready: Vec<_> = rects.iter().map(|(_, rect)| *rect).collect();
+            let paint = |surface: &mut UiSurface, pane_graphics: &[Rect]| {
+                chrome(
+                    surface,
+                    ChromeContext {
+                        size,
+                        state: &state,
+                        registry: &registry,
+                        rects: &rects,
+                        pane_graphics,
+                        guide_rows: 0,
+                    },
+                    |_| None,
+                    |_| None,
+                    |_| None,
+                );
             };
-            let retired = &surface.frame.rows[y as usize].cells[x as usize];
-            assert_eq!(retired.text, " ");
-            assert!(painted_text(&surface).contains("Bkpr / workspaces"));
+            paint(&mut surface, &[]);
+            let plain = surface.frame.clone();
+            for (pane, rect) in registry.panes.iter().zip(&ready) {
+                let title: String = surface.frame.rows[usize::from(rect.y)].cells
+                    [usize::from(rect.x)..usize::from(rect.x + rect.width)]
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect();
+                assert!(title.contains(&pane.title));
+            }
+            paint(&mut surface, &ready);
+            for rect in &ready {
+                for y in rect.y..rect.y + rect.height {
+                    for x in rect.x..rect.x + rect.width {
+                        if x == rect.x
+                            || x == rect.x + rect.width - 1
+                            || y == rect.y
+                            || y == rect.y + rect.height - 1
+                        {
+                            assert_eq!(surface.frame.rows[y as usize].cells[x as usize].text, " ");
+                        }
+                    }
+                }
+            }
+            let rich = surface.frame.clone();
+            paint(&mut surface, &ready);
+            assert_eq!(surface.frame, rich);
+            paint(&mut surface, &[]);
+            assert_eq!(
+                surface.frame, plain,
+                "capability loss must restore the complete source captions"
+            );
         }
     }
 
@@ -2017,7 +2395,7 @@ mod tests {
         capture_chrome(&mut surface, &pane, &snapshot);
         let text = painted_text(&surface);
         assert!(text.contains("Design notes") && text.contains("User workspace"));
-        assert!(text.contains("Claude") && !text.contains("working"));
+        assert!(!text.contains("working") && !text.contains("[live]"));
 
         capture_chooser(&mut surface, &pane, &snapshot);
         let text = painted_text(&surface);
@@ -2047,8 +2425,7 @@ mod tests {
         });
         capture_chrome(&mut surface, &pane, &snapshot);
         let text = painted_text(&surface);
-        assert!(text.contains("bound") && text.contains("Design notes"));
-        assert!(!text.contains("working"));
+        assert!(text.contains("Design notes") && !text.contains("working"));
         capture_chooser(&mut surface, &pane, &snapshot);
         let text = painted_text(&surface);
         assert!(text.contains("native-conversation-EXACT"));
@@ -2084,20 +2461,22 @@ mod tests {
     fn only_current_recognized_harness_osc_records_supply_semantic_status() {
         let (mut pane, snapshot) = capture_fixture();
         let mut surface = capture_surface();
+        capture_chrome(&mut surface, &pane, &snapshot);
+        let without_status = surface.frame.clone();
         for app in [Some("claude-code"), None] {
             pane.harness_status = Some(working_record(app));
             capture_chrome(&mut surface, &pane, &snapshot);
-            assert!(painted_text(&surface).contains("working"));
+            assert_ne!(surface.frame, without_status);
         }
         for app in [Some("nvim"), Some("omp")] {
             pane.harness_status = Some(working_record(app));
             capture_chrome(&mut surface, &pane, &snapshot);
-            assert!(!painted_text(&surface).contains("working"));
+            assert_eq!(surface.frame, without_status);
         }
         pane.harness_status = Some(working_record(None));
         pane.harness_status.as_mut().unwrap().id = "nested-program".into();
         capture_chrome(&mut surface, &pane, &snapshot);
-        assert!(!painted_text(&surface).contains("working"));
+        assert_eq!(surface.frame, without_status);
 
         pane.harness = None;
         pane.title = "Claude named ordinary shell".into();
@@ -2125,7 +2504,8 @@ mod tests {
                 state: &state,
                 registry: &registry,
                 rects: &[],
-                guide: "",
+                pane_graphics: &[],
+                guide_rows: 0,
             },
             |_| None,
             |_| None,
@@ -2134,7 +2514,7 @@ mod tests {
         assert!(hits.iter().any(
             |(target, _)| matches!(target, SidebarTarget::Pane { pane, .. } if pane == "pane")
         ));
-        assert!(painted_text(&surface).contains("[~claude]"));
+        let working_frame = surface.frame.clone();
 
         registry.panes[0].harness_status = None;
         chrome(
@@ -2144,14 +2524,14 @@ mod tests {
                 state: &state,
                 registry: &registry,
                 rects: &[],
-                guide: "",
+                pane_graphics: &[],
+                guide_rows: 0,
             },
             |_| None,
             |_| None,
             |_| None,
         );
-        assert!(!painted_text(&surface).contains("[~claude]"));
-        assert!(painted_text(&surface).contains("[claude]"));
+        assert_ne!(surface.frame, working_frame);
     }
 
     #[test]
@@ -2190,10 +2570,10 @@ mod tests {
         capture_chooser(&mut surface, &pane, &snapshot);
         assert!(painted_text(&surface).contains("awaiting binding"));
         capture_chrome(&mut surface, &pane, &snapshot);
-        assert!(painted_text(&surface).contains("working"));
+        let working_frame = surface.frame.clone();
         pane.harness.as_mut().unwrap().birth = "200".into();
         capture_chrome(&mut surface, &pane, &snapshot);
-        assert!(!painted_text(&surface).contains("working"));
+        assert_ne!(surface.frame, working_frame);
 
         for lifecycle in ["exited", "terminated"] {
             snapshot.lifecycle = lifecycle.into();

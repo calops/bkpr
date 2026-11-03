@@ -350,33 +350,106 @@ fn visible_rasters_wider_than_host_limit_are_exact_bounded_tiles() {
     let mut frame = scene();
     frame.size.cols = 417;
     frame.size.cell_width = 24;
-    frame.images.push(image(1, 1, 1, vec![255, 0, 255, 255]));
+    // A constant 1x1 texture can be clipped and stretched directly by Kitty,
+    // without uploading a wide raster at all. Use nonrepresentable native
+    // scaling so this exercises the bounded raster path and its sampling phase.
+    frame.images.push(image(
+        1,
+        8192,
+        1,
+        (0..8192_u32)
+            .flat_map(|x| {
+                [
+                    (x % 251) as u8,
+                    ((x / 251) % 251) as u8,
+                    (x % 193) as u8,
+                    255,
+                ]
+            })
+            .collect(),
+    ));
     let mut p = placement(1, 10009, 16);
     p.col = 0;
     p.row = 0;
-    p.source_width = 1;
+    p.source_width = 8192;
     p.source_height = 1;
     frame.placements.push(p);
     let mut graphics = GraphicsState::new(100);
     let mut terminal = consumer(&frame);
     let actual = consume(&frame, &mut graphics, &mut terminal);
-    let mut bounds = actual
-        .placements
-        .iter()
-        .map(|p| (p.col, p.offset_x, p.width, p.height))
-        .collect::<Vec<_>>();
-    bounds.sort_unstable();
-    assert_eq!(bounds, vec![(0, 0, 10000, 16), (416, 16, 8, 16)]);
-    assert_eq!(graphics.derived_ids.len(), 2);
+    let visible_width = u32::from(frame.size.cols) * frame.size.cell_width;
+    let visible_height = 16;
+    let expected = image(
+        0,
+        visible_width,
+        visible_height,
+        geometry::raster(
+            &frame.images[0],
+            geometry::DerivedKey {
+                image: frame.images[0].key(),
+                source: geometry::Rect {
+                    x: 0,
+                    y: 0,
+                    width: 8192,
+                    height: 1,
+                },
+                width: 10009,
+                height: 16,
+                visible: geometry::Rect {
+                    x: 0,
+                    y: 0,
+                    width: visible_width,
+                    height: visible_height,
+                },
+            },
+        )
+        .unwrap(),
+    );
+    assert!(
+        actual
+            .images
+            .iter()
+            .all(|image| image.width <= 10000 && image.height <= 10000)
+    );
+    let mut covered = vec![false; (visible_width * visible_height) as usize];
     for p in &actual.placements {
         let raster = placed_image(&actual, p);
-        assert!(raster.width <= 10000 && raster.height <= 10000);
-        assert_eq!(pixel(raster, 0, 0), [255, 0, 255, 255]);
-        assert_eq!(
-            pixel(raster, raster.width - 1, raster.height - 1),
-            [255, 0, 255, 255]
-        );
+        let left = u32::try_from(p.col).unwrap() * frame.size.cell_width + p.offset_x;
+        let top = u32::try_from(p.row).unwrap() * frame.size.cell_height + p.offset_y;
+        assert!(left + p.width <= visible_width && top + p.height <= visible_height);
+        let displayed = geometry::raster(
+            raster,
+            geometry::DerivedKey {
+                image: raster.key(),
+                source: geometry::Rect {
+                    x: p.source_x,
+                    y: p.source_y,
+                    width: p.source_width,
+                    height: p.source_height,
+                },
+                width: p.width,
+                height: p.height,
+                visible: geometry::Rect {
+                    x: 0,
+                    y: 0,
+                    width: p.width,
+                    height: p.height,
+                },
+            },
+        )
+        .unwrap();
+        for y in 0..p.height {
+            for x in 0..p.width {
+                let start = ((y * p.width + x) * 4) as usize;
+                assert_eq!(
+                    &displayed[start..start + 4],
+                    &pixel(&expected, left + x, top + y)
+                );
+                covered[((top + y) * visible_width + left + x) as usize] = true;
+            }
+        }
     }
+    assert!(covered.into_iter().all(|pixel| pixel));
 }
 
 #[test]

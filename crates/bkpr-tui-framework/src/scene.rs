@@ -20,18 +20,28 @@ impl Rect {
         }
     }
 }
-/// Ordered opaque surfaces share clipping, hit testing and the sole physical output pass.
+/// A surface can project opaque cells, transparent graphics, or both.
 /// Resource namespaces are stable pane IDs, never native image IDs alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SurfaceContent {
+    #[default]
+    All,
+    Cells,
+    Graphics,
+}
 pub struct Surface<'a> {
     pub id: &'a str,
     pub rect: Rect,
     pub frame: &'a Frame,
+    pub content: SurfaceContent,
     /// Sorted, one-span-per-row view-local highlighting, outside the canonical delta baseline.
     pub selection: &'a [SelectionSpan],
     /// Sorted by row/start. Selection wins over selected search, then ordinary
     /// search. Annotations borrow canonical glyphs/styles/resources unchanged.
     pub search: &'a [SearchSpan],
     pub focused: bool,
+    /// Client-selected presentation only; canonical styles and image resources stay unchanged.
+    pub faint: bool,
 }
 pub struct Scene<'a> {
     pub size: Size,
@@ -42,7 +52,7 @@ impl Scene<'_> {
         self.surfaces
             .iter()
             .rev()
-            .find(|s| s.rect.contains(x, y))
+            .find(|s| s.content != SurfaceContent::Graphics && s.rect.contains(x, y))
             .map(|s| s.id)
     }
     pub fn hit_map(&self) -> HitMap {
@@ -50,6 +60,7 @@ impl Scene<'_> {
             regions: self
                 .surfaces
                 .iter()
+                .filter(|s| s.content != SurfaceContent::Graphics)
                 .map(|s| (s.id.to_owned(), s.rect))
                 .collect(),
         }
@@ -88,21 +99,29 @@ pub fn default_style() -> Style {
     }
 }
 pub fn blank(size: Size) -> Frame {
+    let mut frame = graphics_frame(size);
+    let style = default_style();
+    frame.rows = (0..size.rows)
+        .map(|_| Row {
+            cells: (0..size.cols)
+                .map(|_| Cell {
+                    text: " ".into(),
+                    width: 1,
+                    style: style.clone(),
+                    hyperlink: None,
+                })
+                .collect(),
+        })
+        .collect();
+    frame
+}
+
+/// Resource-only layers borrow this metadata without allocating a cell canvas.
+pub fn graphics_frame(size: Size) -> Frame {
     let style = default_style();
     Frame {
         size,
-        rows: (0..size.rows)
-            .map(|_| Row {
-                cells: (0..size.cols)
-                    .map(|_| Cell {
-                        text: " ".into(),
-                        width: 1,
-                        style: style.clone(),
-                        hyperlink: None,
-                    })
-                    .collect(),
-            })
-            .collect(),
+        rows: Vec::new(),
         cursor: Cursor {
             x: 0,
             y: 0,
@@ -186,7 +205,7 @@ pub fn text(frame: &mut Frame, x: u16, y: u16, value: &str, selected: bool) {
 impl TerminalGuard {
     pub fn enter() -> Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
-        let guard = Self {
+        let mut guard = Self {
             graphics: GraphicsState::new(
                 ((uuid::Uuid::new_v4().as_u128() as u32) & 0x3ffff800) | 0x80000000,
             ),
@@ -194,12 +213,14 @@ impl TerminalGuard {
             clipboard_mode: None,
             requested_clipboard_mode: None,
             theme_mode: None,
+            background: background::Background::default(),
         };
         let mut out = std::io::stdout();
         write!(
             out,
             "\x1b[?1049h\x1b[?2004h\x1b[?1004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1bP+q5463\x1b\\\x1bP+q524742\x1b\\\x1b[?u\x1b[?5522$p\x1b[?2031$p"
         )?;
+        guard.prepare_background_query();
         out.write_all(&ColorProbe::query())?;
         out.flush()?;
         Ok(guard)
@@ -289,6 +310,7 @@ fn occlude(placements: &mut Vec<geometry::Projection>, cover: Rect, size: Size) 
                     height: fh,
                 };
             }
+            geometry::reuse_constant_axes(&mut fragment, size);
             output.push(fragment);
             if output.len() > 4096 {
                 bail!("composed projection limit");
@@ -386,7 +408,14 @@ fn effective_style(style: &Style, frame: &Frame, native_palette: &[bool; 16]) ->
     // explicit RGB. Unresolved UI sources remain honest native ANSI indices.
     let projected_source = |source| match source {
         ColorSource::Palette(index) => match frame.palette.get(usize::from(index)) {
-            Some(rgb) if !native_palette.get(usize::from(index)).copied().unwrap_or(false) => ColorSource::Rgb(*rgb),
+            Some(rgb)
+                if !native_palette
+                    .get(usize::from(index))
+                    .copied()
+                    .unwrap_or(false) =>
+            {
+                ColorSource::Rgb(*rgb)
+            }
             _ => source,
         },
         _ => source,
@@ -410,17 +439,26 @@ fn copy_cell(destination: &mut Cell, source: &Cell, style: &Style) {
 }
 fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect], host: &ColorProbe) {
     // Prepare host/virtual palette equality once per surface, not per cell.
-    let native_palette = std::array::from_fn(|index|
-        surface.frame.palette.get(index).is_some_and(|rgb| host.palette.get(&index) == Some(rgb)));
+    let native_palette = std::array::from_fn(|index| {
+        surface
+            .frame
+            .palette
+            .get(index)
+            .is_some_and(|rgb| host.palette.get(&index) == Some(rgb))
+    });
     let blank = blank_cell();
-    let blank_style = effective_style(&blank.style, surface.frame, &native_palette);
+    let mut blank_style = effective_style(&blank.style, surface.frame, &native_palette);
+    blank_style.faint |= surface.faint;
     let r = surface.rect;
     for clip in visible {
         let left = clip.x - r.x;
         let right = left + clip.width;
         for y in clip.y..clip.y + clip.height {
-            let selection = surface.selection.binary_search_by_key(&(y - r.y), |span| span.row)
-                .ok().map(|index| &surface.selection[index]);
+            let selection = surface
+                .selection
+                .binary_search_by_key(&(y - r.y), |span| span.row)
+                .ok()
+                .map(|index| &surface.selection[index]);
             let row = y - r.y;
             let begin = surface.search.partition_point(|span| span.row < row);
             let end = surface.search.partition_point(|span| span.row <= row);
@@ -444,7 +482,9 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect], ho
                 }
                 if end > left && x < right {
                     if x >= left && end <= right {
-                        let mut style = effective_style(&cell.style, surface.frame, &native_palette);
+                        let mut style =
+                            effective_style(&cell.style, surface.frame, &native_palette);
+                        style.faint |= surface.faint;
                         while search_index < search.len() && search[search_index].end <= x {
                             search_index += 1;
                         }
@@ -476,14 +516,26 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect], ho
                 while search_index < search.len() && search[search_index].end <= column {
                     search_index += 1;
                 }
-                annotate(&mut style, selection, &search[search_index..], column, column + 1);
+                annotate(
+                    &mut style,
+                    selection,
+                    &search[search_index..],
+                    column,
+                    column + 1,
+                );
                 copy_cell(&mut target[(r.x + column) as usize], blank, &style);
             }
         }
     }
 }
 
-fn annotate(style: &mut Style, selection: Option<&SelectionSpan>, search: &[SearchSpan], start: u16, end: u16) {
+fn annotate(
+    style: &mut Style,
+    selection: Option<&SelectionSpan>,
+    search: &[SearchSpan],
+    start: u16,
+    end: u16,
+) {
     if selection.is_some_and(|span| span.start < end && span.end > start) {
         style.inverse = !style.inverse;
         return;
@@ -514,7 +566,7 @@ pub struct Renderer {
     aliases: HashMap<(String, ImageKey), ImageKey>,
     next_alias: u32,
     canvas: Option<Frame>,
-    layout: Vec<(String, Rect)>,
+    layout: Vec<(String, Rect, SurfaceContent)>,
     visible: Vec<Vec<Rect>>,
 }
 impl Renderer {
@@ -538,12 +590,14 @@ impl Renderer {
                 .layout
                 .iter()
                 .zip(&scene.surfaces)
-                .any(|((id, rect), surface)| id != surface.id || *rect != surface.rect);
+                .any(|((id, rect, content), surface)| {
+                    id != surface.id || *rect != surface.rect || *content != surface.content
+                });
         if changed {
             self.layout = scene
                 .surfaces
                 .iter()
-                .map(|s| (s.id.to_owned(), s.rect))
+                .map(|s| (s.id.to_owned(), s.rect, s.content))
                 .collect();
             self.visible = scene
                 .surfaces
@@ -552,6 +606,9 @@ impl Renderer {
                 .map(|(index, surface)| {
                     let mut visible = vec![surface.rect];
                     for upper in &scene.surfaces[index + 1..] {
+                        if upper.content == SurfaceContent::Graphics {
+                            continue;
+                        }
                         visible = visible
                             .into_iter()
                             .flat_map(|rect| subtract(rect, upper.rect))
@@ -584,14 +641,20 @@ impl Renderer {
             placements: Vec::new(),
         };
         let mut retained = HashSet::new();
+        // Native image depth is pane-local. Preserve each Kitty text/background
+        // band, but rank images by scene layer before their local depth so a
+        // pane cannot paint over a later transparent effect with an extreme z.
+        let mut depths = [i32::MIN, i32::MIN / 2, -1];
         for (index, surface) in scene.surfaces.iter().enumerate() {
             let r = surface.rect;
             if r.width == 0 || r.height == 0 {
                 continue;
             }
-            occlude(&mut prepared.placements, r, scene.size)?;
-            compose_cells(canvas, surface, &self.visible[index], host);
-            if surface.focused {
+            if surface.content != SurfaceContent::Graphics {
+                occlude(&mut prepared.placements, r, scene.size)?;
+                compose_cells(canvas, surface, &self.visible[index], host);
+            }
+            if surface.focused && surface.content != SurfaceContent::Graphics {
                 canvas.cursor.clone_from(&surface.frame.cursor);
                 canvas.cursor.visible &= canvas.cursor.x < r.width && canvas.cursor.y < r.height;
                 canvas.cursor.x += r.x;
@@ -600,7 +663,13 @@ impl Renderer {
                     .iter()
                     .any(|rect| rect.contains(canvas.cursor.x, canvas.cursor.y));
             }
-            let local = geometry::prepare(surface.frame, r.size(scene.size))?;
+            if surface.content == SurfaceContent::Cells {
+                continue;
+            }
+            let mut local = geometry::prepare(surface.frame, r.size(scene.size))?;
+            if !local.placements.is_sorted_by_key(|p| p.z) {
+                local.placements.sort_by_key(|p| p.z);
+            }
             let mut mapping = HashMap::new();
             for (key, image) in local.images {
                 let scoped = (surface.id.to_owned(), key);
@@ -623,6 +692,17 @@ impl Renderer {
                 prepared.images.insert(alias, image);
             }
             for mut p in local.placements {
+                let band = if p.z < i32::MIN / 2 {
+                    0
+                } else if p.z < 0 {
+                    1
+                } else {
+                    2
+                };
+                depths[band] = depths[band]
+                    .checked_add(1)
+                    .context("scene image depth capacity exhausted")?;
+                p.z = depths[band];
                 p.image = mapping[&p.image];
                 if let Some(key) = p.derived {
                     p.derived = Some(geometry::DerivedKey {
@@ -658,7 +738,10 @@ impl Renderer {
             scene.size,
             "",
             host,
-            &mut terminal.graphics,
+            PhysicalTarget {
+                background: terminal.background.surface(),
+                graphics: &mut terminal.graphics,
+            },
             prepared,
         )
     }
@@ -691,6 +774,8 @@ mod scene_tests {
                     selection: &[],
                     search: &[],
                     focused: true,
+                    faint: false,
+                    content: SurfaceContent::All,
                 },
                 Surface {
                     id: "popup",
@@ -704,6 +789,8 @@ mod scene_tests {
                     selection: &[],
                     search: &[],
                     focused: false,
+                    faint: false,
+                    content: SurfaceContent::All,
                 },
             ],
         };
@@ -731,6 +818,7 @@ mod scene_tests {
             clipboard_mode: None,
             requested_clipboard_mode: None,
             theme_mode: None,
+            background: background::Background::default(),
         })
     }
     #[test]
@@ -793,6 +881,8 @@ mod scene_tests {
                     selection: &[],
                     search: &[],
                     focused: false,
+                    faint: false,
+                    content: SurfaceContent::All,
                 },
                 Surface {
                     id: "right",
@@ -806,6 +896,8 @@ mod scene_tests {
                     selection: &[],
                     search: &[],
                     focused: true,
+                    faint: false,
+                    content: SurfaceContent::All,
                 },
             ],
         };
@@ -847,6 +939,8 @@ mod scene_tests {
                 selection: &[],
                 search: &[],
                 focused: true,
+                faint: false,
+                content: SurfaceContent::All,
             }],
         };
         let mut renderer = Renderer::default();
@@ -880,6 +974,554 @@ mod scene_tests {
                 .as_ptr(),
             text
         );
+    }
+    fn effect_frame(size: Size) -> Frame {
+        let mut frame = graphics_frame(size);
+        frame.images.push(Arc::new(Image {
+            id: 9,
+            generation: 1,
+            width: 1,
+            height: 1,
+            format: PixelFormat::Rgba,
+            pixels: vec![0, 0, 0, 64],
+        }));
+        frame.placements.push(Placement {
+            image_id: 9,
+            generation: 1,
+            placement_id: 1,
+            col: 0,
+            row: 0,
+            offset_x: 0,
+            offset_y: 0,
+            width: size.cell_width,
+            height: size.cell_height,
+            source_x: 0,
+            source_y: 0,
+            source_width: 1,
+            source_height: 1,
+            layer: ImageLayer::AboveText,
+            z: 0,
+        });
+        frame
+    }
+    #[test]
+    fn transparent_effects_preserve_native_cells_cursor_hits_and_idle_damage() {
+        let size = Size {
+            cols: 8,
+            rows: 4,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 4,
+        };
+        let mut native = blank(size);
+        text(&mut native, 0, 0, "native", false);
+        native.cursor.visible = true;
+        native.cursor.x = 3;
+        native.cursor.y = 2;
+        let original = native.clone();
+        let mut effects = effect_frame(size);
+        effects.cursor.visible = true;
+        let mut scene = Scene {
+            size,
+            surfaces: vec![
+                Surface {
+                    id: "native",
+                    rect,
+                    frame: &native,
+                    selection: &[],
+                    search: &[],
+                    focused: true,
+                    faint: false,
+                    content: SurfaceContent::All,
+                },
+                Surface {
+                    id: "effects",
+                    rect,
+                    frame: &effects,
+                    selection: &[],
+                    search: &[],
+                    focused: true,
+                    faint: false,
+                    content: SurfaceContent::Graphics,
+                },
+            ],
+        };
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        renderer
+            .render(
+                &mut Vec::new(),
+                &scene,
+                &ColorProbe::default(),
+                &mut terminal,
+            )
+            .unwrap();
+        assert_eq!(terminal.graphics.image_ids.len(), 1);
+        let canvas = renderer.canvas.as_ref().unwrap();
+        assert_eq!(canvas.rows[0].cells[0], native.rows[0].cells[0]);
+        assert!(canvas.cursor.visible);
+        assert_eq!((canvas.cursor.x, canvas.cursor.y), (3, 2));
+        assert_eq!(scene.hit_test(0, 0), Some("native"));
+        assert_eq!(scene.hit_map().hit_test(0, 0), Some("native"));
+        let mut idle = Vec::new();
+        renderer
+            .render(&mut idle, &scene, &ColorProbe::default(), &mut terminal)
+            .unwrap();
+        assert!(idle.is_empty());
+
+        // A mode change, without moving the layer, must invalidate opaque
+        // coverage and release resources excluded from a cells-only surface.
+        scene.surfaces[1].content = SurfaceContent::Cells;
+        renderer
+            .render(
+                &mut Vec::new(),
+                &scene,
+                &ColorProbe::default(),
+                &mut terminal,
+            )
+            .unwrap();
+        assert_eq!(renderer.canvas.as_ref().unwrap().rows[0].cells[0].text, " ");
+        assert!(terminal.graphics.image_ids.is_empty());
+        assert_eq!(scene.hit_test(0, 0), Some("effects"));
+        scene.surfaces[1].content = SurfaceContent::Graphics;
+        renderer
+            .render(
+                &mut Vec::new(),
+                &scene,
+                &ColorProbe::default(),
+                &mut terminal,
+            )
+            .unwrap();
+        assert_eq!(
+            renderer.canvas.as_ref().unwrap().rows[0].cells[0],
+            native.rows[0].cells[0]
+        );
+        assert!(renderer.canvas.as_ref().unwrap().cursor.visible);
+        assert_eq!(native, original);
+    }
+    #[test]
+    fn transparent_layers_stay_above_native_images_regardless_of_pane_local_depth() {
+        let size = Size {
+            cols: 8,
+            rows: 4,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 4,
+        };
+        let mut native = effect_frame(size);
+        native.placements[0].z = i32::MAX;
+        let effects = effect_frame(size);
+        let scene = Scene {
+            size,
+            surfaces: vec![
+                Surface {
+                    id: "native",
+                    rect,
+                    frame: &native,
+                    selection: &[],
+                    search: &[],
+                    focused: true,
+                    faint: false,
+                    content: SurfaceContent::All,
+                },
+                Surface {
+                    id: "effects",
+                    rect,
+                    frame: &effects,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                    content: SurfaceContent::Graphics,
+                },
+            ],
+        };
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        renderer
+            .render(
+                &mut Vec::new(),
+                &scene,
+                &ColorProbe::default(),
+                &mut terminal,
+            )
+            .unwrap();
+        let native_key = renderer.aliases[&("native".into(), native.images[0].key())];
+        let effect_key = renderer.aliases[&("effects".into(), effects.images[0].key())];
+        let depth = |image| {
+            terminal
+                .graphics
+                .projections
+                .iter()
+                .find(|p| p.image == image)
+                .unwrap()
+                .z
+        };
+        assert!(
+            depth(native_key) < depth(effect_key),
+            "pane-local depth escaped its scene layer"
+        );
+    }
+
+    fn composite_rgba_projections(
+        size: Size,
+        projections: &[geometry::Projection],
+        image: &Image,
+        background: [u8; 3],
+    ) -> Vec<[u8; 3]> {
+        assert_eq!(image.format, PixelFormat::Rgba);
+        let width = size.cols as usize * size.cell_width as usize;
+        let height = size.rows as usize * size.cell_height as usize;
+        let mut pixels = vec![background; width * height];
+        let mut ordered: Vec<_> = projections.iter().collect();
+        ordered.sort_by_key(|p| p.z);
+        for p in ordered {
+            let (w, h) = if let Some(key) = p.derived {
+                (key.visible.width, key.visible.height)
+            } else if let Some((cols, rows)) = p.cells {
+                (
+                    cols * size.cell_width - p.offset_x,
+                    rows * size.cell_height - p.offset_y,
+                )
+            } else {
+                (p.source.width, p.source.height)
+            };
+            let key = p.derived.unwrap_or(geometry::DerivedKey {
+                image: p.image,
+                source: p.source,
+                width: w,
+                height: h,
+                visible: geometry::Rect {
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h,
+                },
+            });
+            let rgba = geometry::raster(image, key).unwrap();
+            let left = (p.col * size.cell_width + p.offset_x) as usize;
+            let top = (p.row * size.cell_height + p.offset_y) as usize;
+            for y in 0..h as usize {
+                for x in 0..w as usize {
+                    let source = &rgba[(y * w as usize + x) * 4..][..4];
+                    let destination = &mut pixels[(top + y) * width + left + x];
+                    for c in 0..3 {
+                        destination[c] = ((u32::from(source[c]) * u32::from(source[3])
+                            + u32::from(destination[c]) * (255 - u32::from(source[3]))
+                            + 127)
+                            / 255) as u8;
+                    }
+                }
+            }
+        }
+        pixels
+    }
+
+    #[test]
+    fn shared_recessed_frames_preserve_both_contours_independent_of_scene_order() {
+        use crate::decoration::{
+            DecorationGeometry, DecorationKind, DecorationStyle, PreparedDecoration, atlas_size,
+            rasterize,
+        };
+        let size = Size {
+            cols: 20,
+            rows: 11,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let screen = Rect {
+            x: 0,
+            y: 0,
+            width: size.cols,
+            height: size.rows,
+        };
+        let upper_rect = Rect {
+            height: 6,
+            ..screen
+        };
+        let lower_rect = Rect {
+            y: 5,
+            height: 6,
+            ..screen
+        };
+        let style = DecorationStyle {
+            kind: DecorationKind::Recessed,
+            background: [30; 3],
+            surface: [20; 3],
+            foreground: [200; 3],
+            inset_px: [8, 16],
+            outset_px: [0, 0],
+            radius_px: 12,
+            sigma_milli: 2400,
+            offset_milli: [2800, 2800],
+            shadow_opacity_milli: 720,
+            lip_width_milli: 960,
+            lip_highlight_milli: 240,
+            lip_shade_milli: 240,
+        };
+        let cell = [size.cell_width, size.cell_height];
+        let [width, height] = atlas_size(style, cell).unwrap();
+        let decoration = PreparedDecoration {
+            style,
+            cell,
+            image: Arc::new(Image {
+                id: 11,
+                generation: 1,
+                width,
+                height,
+                format: PixelFormat::Rgba,
+                pixels: rasterize(style, cell).unwrap(),
+            }),
+        };
+        // Match the fork's physical translation: exterior edges move by the
+        // row/column excess; shared edges move by complementary half-excess.
+        // The shared row is [80,96), with independent ownership at pixel 88.
+        let upper_bounds = [0, -8, 160, 100];
+        let lower_bounds = [0, 76, 160, 184];
+        let full_clip = [0, 0, 160, 176];
+        let place = |rect, bounds_px, clip_px| {
+            let mut frame = graphics_frame(size);
+            assert!(decoration.place_with_geometry(
+                &mut frame,
+                rect,
+                1,
+                &[],
+                DecorationGeometry { bounds_px, clip_px },
+            ));
+            frame
+        };
+        let upper = place(upper_rect, upper_bounds, [0, 0, 160, 88]);
+        let lower = place(lower_rect, lower_bounds, [0, 88, 160, 176]);
+        let isolated_upper = place(upper_rect, upper_bounds, full_clip);
+        let isolated_lower = place(lower_rect, lower_bounds, full_clip);
+        let reference = |frame: &Frame| {
+            composite_rgba_projections(
+                size,
+                &geometry::prepare(frame, size).unwrap().placements,
+                &decoration.image,
+                style.background,
+            )
+        };
+        let upper_pixels = reference(&isolated_upper);
+        let lower_pixels = reference(&isolated_lower);
+        let mut expected = upper_pixels[..88 * 160].to_vec();
+        expected.extend_from_slice(&lower_pixels[88 * 160..]);
+        // Each content-facing half contains a real curved rim and shadow, not
+        // a flat separator that could accidentally satisfy the ownership test.
+        for (pixels, y) in [(&upper_pixels, 83), (&lower_pixels, 95)] {
+            assert_ne!(pixels[y * 160 + 8], pixels[y * 160 + 80]);
+            assert_ne!(pixels[y * 160 + 151], pixels[y * 160 + 80]);
+            assert_ne!(pixels[y * 160 + 80], style.background);
+        }
+        let mut native = blank(size);
+        text(&mut native, 1, 1, "upper native", false);
+        text(&mut native, 1, 7, "lower native", false);
+        native.cursor.x = 2;
+        native.cursor.y = 7;
+        native.cursor.visible = true;
+        let mut scene = Scene {
+            size,
+            surfaces: vec![
+                Surface {
+                    id: "native",
+                    rect: screen,
+                    frame: &native,
+                    content: SurfaceContent::All,
+                    selection: &[],
+                    search: &[],
+                    focused: true,
+                    faint: false,
+                },
+                Surface {
+                    id: "upper",
+                    rect: screen,
+                    frame: &upper,
+                    content: SurfaceContent::Graphics,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                },
+                Surface {
+                    id: "lower",
+                    rect: screen,
+                    frame: &lower,
+                    content: SurfaceContent::Graphics,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                },
+            ],
+        };
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        for _ in 0..2 {
+            renderer
+                .render(
+                    &mut Vec::new(),
+                    &scene,
+                    &ColorProbe::default(),
+                    &mut terminal,
+                )
+                .unwrap();
+            assert_eq!(
+                composite_rgba_projections(
+                    size,
+                    &terminal.graphics.projections,
+                    &decoration.image,
+                    style.background,
+                ),
+                expected,
+                "one frame's opaque gutter erased its neighbor's contour",
+            );
+            let canvas = renderer.canvas.as_ref().unwrap();
+            assert_eq!(canvas.rows, native.rows);
+            assert_eq!(canvas.cursor, native.cursor);
+            assert_eq!(scene.hit_test(1, 5), Some("native"));
+            scene.surfaces.swap(1, 2);
+        }
+        let mut popup = blank(Size {
+            cols: 2,
+            rows: 1,
+            ..size
+        });
+        text(&mut popup, 0, 0, "PP", false);
+        scene.surfaces.push(Surface {
+            id: "popup",
+            rect: Rect {
+                x: 9,
+                y: 5,
+                width: 2,
+                height: 1,
+            },
+            frame: &popup,
+            content: SurfaceContent::Cells,
+            selection: &[],
+            search: &[],
+            focused: false,
+            faint: false,
+        });
+        renderer
+            .render(
+                &mut Vec::new(),
+                &scene,
+                &ColorProbe::default(),
+                &mut terminal,
+            )
+            .unwrap();
+        let covered = composite_rgba_projections(
+            size,
+            &terminal.graphics.projections,
+            &decoration.image,
+            style.background,
+        );
+        for y in 80..96 {
+            assert!(
+                covered[y * 160 + 72..y * 160 + 88]
+                    .iter()
+                    .all(|pixel| *pixel == style.background)
+            );
+        }
+        assert_eq!(renderer.canvas.as_ref().unwrap().rows[5].cells[9].text, "P");
+        assert_eq!(scene.hit_test(9, 5), Some("popup"));
+    }
+    #[test]
+    fn opaque_popup_clips_transparent_effects_without_stealing_uncovered_hits() {
+        let size = Size {
+            cols: 8,
+            rows: 4,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 4,
+        };
+        let native = blank(size);
+        let effects = effect_frame(size);
+        let mut popup = blank(Size {
+            cols: 1,
+            rows: 1,
+            ..size
+        });
+        text(&mut popup, 0, 0, "P", false);
+        let mut scene = Scene {
+            size,
+            surfaces: vec![
+                Surface {
+                    id: "native",
+                    rect,
+                    frame: &native,
+                    selection: &[],
+                    search: &[],
+                    focused: true,
+                    faint: false,
+                    content: SurfaceContent::All,
+                },
+                Surface {
+                    id: "effects",
+                    rect,
+                    frame: &effects,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                    content: SurfaceContent::Graphics,
+                },
+                Surface {
+                    id: "popup",
+                    rect: Rect {
+                        width: 1,
+                        height: 1,
+                        ..rect
+                    },
+                    frame: &popup,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                    content: SurfaceContent::Cells,
+                },
+            ],
+        };
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        renderer
+            .render(
+                &mut Vec::new(),
+                &scene,
+                &ColorProbe::default(),
+                &mut terminal,
+            )
+            .unwrap();
+        assert!(terminal.graphics.image_ids.is_empty());
+        assert_eq!(renderer.canvas.as_ref().unwrap().rows[0].cells[0].text, "P");
+        assert_eq!(scene.hit_map().hit_test(0, 0), Some("popup"));
+        assert_eq!(scene.hit_map().hit_test(1, 0), Some("native"));
+        scene.surfaces.pop();
+        renderer
+            .render(
+                &mut Vec::new(),
+                &scene,
+                &ColorProbe::default(),
+                &mut terminal,
+            )
+            .unwrap();
+        assert_eq!(terminal.graphics.image_ids.len(), 1);
+        assert_eq!(renderer.canvas.as_ref().unwrap().rows[0].cells[0].text, " ");
     }
     #[test]
     fn popup_clipping_keeps_uncovered_image_fragments_and_sampler_phase() {
@@ -968,6 +1610,107 @@ mod scene_tests {
         );
     }
     #[test]
+    fn physical_canvas_keeps_native_default_local_osc11_and_explicit_backgrounds() {
+        let size = Size { cols: 6, rows: 1, cell_width: 8, cell_height: 16 };
+        let local = Size { cols: 2, ..size };
+        let original = [17, 34, 51];
+        let matte = [8, 9, 10];
+        let mut panes = Vec::new();
+        for (index, input) in [
+            b"AA".as_slice(),
+            b"\x1b]11;rgb:4444/5555/6666\x1b\\BB",
+            b"\x1b[48;2;119;136;153mCC",
+        ].into_iter().enumerate() {
+            let mut native = bkpr_terminal_engine::Terminal::new(local).unwrap();
+            native.set_default_colors([220, 220, 220], original, None).unwrap();
+            native.feed(input).unwrap();
+            let frame = native.snapshot().unwrap();
+            if index == 1 {
+                assert_eq!(frame.background, [68, 85, 102]);
+                // Native engine owns pane-local OSC 11 queries; they do not
+                // travel to the physical terminal or require another SDK API.
+                let effects = native.feed(b"\x1b]11;?\x1b\\").unwrap();
+                let mut demux = ReplyDemux::default();
+                let mut local_probe = ColorProbe::default();
+                for effect in effects {
+                    if let Effect::PtyWrite(bytes) = effect {
+                        for part in demux.feed(&bytes) {
+                            if let InputPart::Reply(reply) = part {
+                                local_probe.feed(&reply);
+                            }
+                        }
+                    }
+                }
+                assert_eq!(local_probe.background, Some([68, 85, 102]));
+            }
+            panes.push(frame);
+        }
+        let scene = Scene {
+            size,
+            surfaces: panes.iter().enumerate().map(|(index, frame)| Surface {
+                id: ["default", "local", "explicit"][index],
+                rect: Rect { x: index as u16 * 2, y: 0, width: 2, height: 1 },
+                frame,
+                content: SurfaceContent::All,
+                selection: &[],
+                search: &[],
+                focused: false,
+                faint: false,
+            }).collect(),
+        };
+        let mut host = ColorProbe {
+            truecolor: true,
+            foreground: Some([220, 220, 220]),
+            background: Some(original),
+            ..ColorProbe::default()
+        };
+        let mut terminal = terminal();
+        let mut renderer = Renderer::default();
+        let mut physical = bkpr_terminal_engine::Terminal::new(size).unwrap();
+        physical.set_default_colors([220, 220, 220], original, None).unwrap();
+        let mut bytes = Vec::new();
+        terminal.set_background(&mut bytes, Some(TerminalBackground { original, matte })).unwrap();
+        renderer.render(&mut bytes, &scene, &host, &mut terminal).unwrap();
+        let output = String::from_utf8_lossy(&bytes);
+        for sgr in ["48;2;17;34;51m", "48;2;68;85;102m", "48;2;119;136;153m"] {
+            assert!(output.contains(sgr), "{sgr}");
+        }
+        assert!(!output.contains("\x1b[49m"));
+        physical.feed(&bytes).unwrap();
+        let frame = physical.snapshot().unwrap();
+        assert_eq!(frame.background, matte);
+        for (index, rgb) in [original, [68, 85, 102], [119, 136, 153]].into_iter().enumerate() {
+            assert_eq!(frame.rows[0].cells[index * 2].style.background, rgb);
+        }
+        assert_eq!(host.background, Some(original));
+        // Theme invalidation may clear logical observations before the next
+        // ready/fallback decision. Physical ownership is independent evidence.
+        host.background = None;
+        host.revision += 1;
+        bytes.clear();
+        renderer.render(&mut bytes, &scene, &host, &mut terminal).unwrap();
+        let output = String::from_utf8_lossy(&bytes);
+        assert!(output.contains("48;2;17;34;51m"));
+        assert!(!output.contains("\x1b[49m"));
+        physical.feed(&bytes).unwrap();
+        assert_eq!(physical.snapshot().unwrap().rows[0].cells[0].style.background, original);
+        host.background = Some(original);
+        host.revision += 1;
+        // Even unchanged scene cells must repaint when the physical default
+        // changes back. Native defaults regain SGR 49; pane-local colors do not.
+        bytes.clear();
+        terminal.set_background(&mut bytes, None).unwrap();
+        renderer.render(&mut bytes, &scene, &host, &mut terminal).unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("\x1b[49m"));
+        physical.feed(&bytes).unwrap();
+        let frame = physical.snapshot().unwrap();
+        assert_eq!(frame.background, original);
+        for (index, rgb) in [original, [68, 85, 102], [119, 136, 153]].into_iter().enumerate() {
+            assert_eq!(frame.rows[0].cells[index * 2].style.background, rgb);
+        }
+    }
+
+    #[test]
     fn pane_palettes_and_default_backgrounds_are_resolved_before_composition() {
         let size = Size {
             cols: 4,
@@ -999,6 +1742,8 @@ mod scene_tests {
                     selection: &[],
                     search: &[],
                     focused: false,
+                    faint: false,
+                    content: SurfaceContent::All,
                 },
                 Surface {
                     id: "b",
@@ -1012,6 +1757,8 @@ mod scene_tests {
                     selection: &[],
                     search: &[],
                     focused: false,
+                    faint: false,
+                    content: SurfaceContent::All,
                 },
             ],
         };
@@ -1049,18 +1796,62 @@ mod scene_tests {
 
     #[test]
     fn native_ui_ansi_and_virtual_pane_palettes_keep_distinct_output_semantics() {
-        let size = Size { cols: 2, rows: 1, cell_width: 8, cell_height: 16 };
+        let size = Size {
+            cols: 2,
+            rows: 1,
+            cell_width: 8,
+            cell_height: 16,
+        };
         let mut ui = crate::UiSurface::new(size);
-        ui.paint(size, vec![(Rect { x: 0, y: 0, width: 2, height: 1 }, "UI".into(), false)], None);
-        ui.apply_theme(&crate::Theme::default(), crate::Role::Error, &[]);
+        ui.paint(
+            size,
+            vec![(
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                },
+                "UI".into(),
+                false,
+            )],
+            None,
+        );
+        let mut theme = crate::Theme::default();
+        theme.update(&ColorProbe::default(), 0, |_| {
+            let mut base = std::array::from_fn(|_| default_style());
+            base[crate::Role::Error as usize].foreground_source = ColorSource::Palette(1);
+            crate::ThemeStyles {
+                selected: base.clone(),
+                panel: base.clone(),
+                base,
+            }
+        });
+        ui.apply_theme(&theme, crate::Role::Error, &[]);
         let mut renderer = Renderer::default();
         let mut terminal = terminal();
-        let scene = Scene { size, surfaces: vec![Surface {
-            id: "ui", rect: Rect { x: 0, y: 0, width: 2, height: 1 },
-            frame: &ui.frame, selection: &[], search: &[], focused: false,
-        }] };
+        let scene = Scene {
+            size,
+            surfaces: vec![Surface {
+                id: "ui",
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                },
+                frame: &ui.frame,
+                selection: &[],
+                search: &[],
+                focused: false,
+                faint: false,
+                content: SurfaceContent::All,
+            }],
+        };
         let mut bytes = Vec::new();
-        renderer.render(&mut bytes, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        renderer
+            .render(&mut bytes, &scene, &ColorProbe::default(), &mut terminal)
+            .unwrap();
         let output = String::from_utf8(bytes).unwrap();
         assert!(output.contains("\x1b[31m"));
         assert!(!output.contains("38;2;") && !output.contains("38;5;"));
@@ -1070,25 +1861,55 @@ mod scene_tests {
         pane.palette[1] = [210, 45, 60];
         pane.rows[0].cells[0].style.foreground_source = ColorSource::Palette(1);
         let canonical = pane.rows.clone();
-        let scene = Scene { size, surfaces: vec![Surface {
-            id: "app", rect: Rect { x: 0, y: 0, width: 2, height: 1 },
-            frame: &pane, selection: &[], search: &[], focused: false,
-        }] };
-        let mut host = ColorProbe { truecolor: true, ..ColorProbe::default() };
+        let scene = Scene {
+            size,
+            surfaces: vec![Surface {
+                id: "app",
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                },
+                frame: &pane,
+                selection: &[],
+                search: &[],
+                focused: false,
+                faint: false,
+                content: SurfaceContent::All,
+            }],
+        };
+        let mut host = ColorProbe {
+            truecolor: true,
+            ..ColorProbe::default()
+        };
         host.feed(b"4;1;rgb:d2/2d/3c");
         let mut bytes = Vec::new();
-        renderer.render(&mut bytes, &scene, &host, &mut terminal).unwrap();
+        renderer
+            .render(&mut bytes, &scene, &host, &mut terminal)
+            .unwrap();
         assert!(String::from_utf8(bytes).unwrap().contains("\x1b[31m"));
         host.feed(b"4;1;rgb:10/20/30");
         let mut bytes = Vec::new();
-        renderer.render(&mut bytes, &scene, &host, &mut terminal).unwrap();
-        assert!(String::from_utf8(bytes).unwrap().contains("38;2;210;45;60m"));
+        renderer
+            .render(&mut bytes, &scene, &host, &mut terminal)
+            .unwrap();
+        assert!(
+            String::from_utf8(bytes)
+                .unwrap()
+                .contains("38;2;210;45;60m")
+        );
         assert_eq!(pane.rows, canonical);
     }
 
     #[test]
     fn selection_overlay_preserves_canonical_wide_combining_styles_images_and_other_views() {
-        let size = Size { cols: 12, rows: 2, cell_width: 8, cell_height: 16 };
+        let size = Size {
+            cols: 12,
+            rows: 2,
+            cell_width: 8,
+            cell_height: 16,
+        };
         let local = Size { cols: 6, ..size };
         let mut source = blank(local);
         text(&mut source, 0, 0, "界e\u{301}!", false);
@@ -1103,14 +1924,29 @@ mod scene_tests {
         source.rows[0].cells[2].style.underline = 2;
         source.rows[0].cells[2].style.strikethrough = true;
         source.images.push(Arc::new(Image {
-            id: 7, generation: 1, width: 8, height: 16, format: PixelFormat::Rgba,
+            id: 7,
+            generation: 1,
+            width: 8,
+            height: 16,
+            format: PixelFormat::Rgba,
             pixels: [255, 0, 0, 255].repeat(8 * 16),
         }));
         source.placements.push(Placement {
-            image_id: 7, generation: 1, placement_id: 1, col: 4, row: 1,
-            offset_x: 0, offset_y: 0, width: 8, height: 16,
-            source_x: 0, source_y: 0, source_width: 8, source_height: 16,
-            layer: ImageLayer::BelowText, z: 0,
+            image_id: 7,
+            generation: 1,
+            placement_id: 1,
+            col: 4,
+            row: 1,
+            offset_x: 0,
+            offset_y: 0,
+            width: 8,
+            height: 16,
+            source_x: 0,
+            source_y: 0,
+            source_width: 8,
+            source_height: 16,
+            layer: ImageLayer::BelowText,
+            z: 0,
         });
         let canonical_rows = source.rows.clone();
         let canonical_cells = source.rows[0].cells.as_ptr();
@@ -1119,23 +1955,58 @@ mod scene_tests {
             size,
             surfaces: vec![
                 Surface {
-                    id: "selected-view", rect: Rect { x: 0, y: 0, width: 6, height: 2 },
-                    frame: &source, selection: &[], search: &[], focused: false,
+                    id: "selected-view",
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        width: 6,
+                        height: 2,
+                    },
+                    frame: &source,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                    content: SurfaceContent::All,
                 },
                 Surface {
-                    id: "other-view", rect: Rect { x: 6, y: 0, width: 6, height: 2 },
-                    frame: &source, selection: &[], search: &[], focused: false,
+                    id: "other-view",
+                    rect: Rect {
+                        x: 6,
+                        y: 0,
+                        width: 6,
+                        height: 2,
+                    },
+                    frame: &source,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                    content: SurfaceContent::All,
                 },
             ],
         };
         let mut renderer = Renderer::default();
         let mut terminal = terminal();
-        renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        renderer
+            .render(
+                &mut Vec::new(),
+                &scene,
+                &ColorProbe::default(),
+                &mut terminal,
+            )
+            .unwrap();
         let canvas_cells = renderer.canvas.as_ref().unwrap().rows[0].cells.as_ptr();
-        let spans = [SelectionSpan { row: 0, start: 1, end: 3 }];
+        let spans = [SelectionSpan {
+            row: 0,
+            start: 1,
+            end: 3,
+        }];
         scene.surfaces[0].selection = &spans;
         let mut damage = Vec::new();
-        renderer.render(&mut damage, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        renderer
+            .render(&mut damage, &scene, &ColorProbe::default(), &mut terminal)
+            .unwrap();
         assert!(!damage.is_empty());
         let canvas = renderer.canvas.as_ref().unwrap();
         assert_eq!(canvas.rows[0].cells.as_ptr(), canvas_cells);
@@ -1144,39 +2015,88 @@ mod scene_tests {
         assert_eq!(canvas.rows[0].cells[1].width, 0);
         assert_eq!(canvas.rows[0].cells[2].text, "e\u{301}");
         for column in [0, 2] {
-            let mut expected = effective_style(&source.rows[0].cells[column].style, &source, &[false; 16]);
+            let mut expected =
+                effective_style(&source.rows[0].cells[column].style, &source, &[false; 16]);
             expected.inverse = !expected.inverse;
             assert_eq!(canvas.rows[0].cells[column].style, expected);
-            assert_eq!(canvas.rows[0].cells[column + 6].style,
-                effective_style(&source.rows[0].cells[column].style, &source, &[false; 16]));
+            assert_eq!(
+                canvas.rows[0].cells[column + 6].style,
+                effective_style(&source.rows[0].cells[column].style, &source, &[false; 16])
+            );
         }
         assert_eq!(canvas.rows[0].cells[0].style, canvas.rows[0].cells[1].style);
-        assert_eq!(canvas.rows[0].cells[0].hyperlink, source.rows[0].cells[0].hyperlink);
+        assert_eq!(
+            canvas.rows[0].cells[0].hyperlink,
+            source.rows[0].cells[0].hyperlink
+        );
         assert_eq!(source.rows, canonical_rows);
         assert_eq!(source.rows[0].cells.as_ptr(), canonical_cells);
         assert_eq!(source.images[0].pixels.as_ptr(), pixels);
         assert_eq!(renderer.aliases.len(), 2);
         assert_eq!(terminal.graphics.image_ids.len(), 2);
         let mut unchanged = Vec::new();
-        renderer.render(&mut unchanged, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        renderer
+            .render(
+                &mut unchanged,
+                &scene,
+                &ColorProbe::default(),
+                &mut terminal,
+            )
+            .unwrap();
         assert!(unchanged.is_empty());
         scene.surfaces[0].selection = &[];
-        renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
-        assert_eq!(renderer.canvas.as_ref().unwrap().rows[0].cells[0].style,
-            effective_style(&source.rows[0].cells[0].style, &source, &[false; 16]));
+        renderer
+            .render(
+                &mut Vec::new(),
+                &scene,
+                &ColorProbe::default(),
+                &mut terminal,
+            )
+            .unwrap();
+        assert_eq!(
+            renderer.canvas.as_ref().unwrap().rows[0].cells[0].style,
+            effective_style(&source.rows[0].cells[0].style, &source, &[false; 16])
+        );
         let matches = [
-            SearchSpan { row: 0, start: 0, end: 4, selected: false },
-            SearchSpan { row: 0, start: 1, end: 3, selected: true },
+            SearchSpan {
+                row: 0,
+                start: 0,
+                end: 4,
+                selected: false,
+            },
+            SearchSpan {
+                row: 0,
+                start: 1,
+                end: 3,
+                selected: true,
+            },
         ];
-        let selection = [SelectionSpan { row: 0, start: 0, end: 1 }];
+        let selection = [SelectionSpan {
+            row: 0,
+            start: 0,
+            end: 1,
+        }];
         scene.surfaces[0].search = &matches;
         scene.surfaces[0].selection = &selection;
-        renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        renderer
+            .render(
+                &mut Vec::new(),
+                &scene,
+                &ColorProbe::default(),
+                &mut terminal,
+            )
+            .unwrap();
         let canvas = renderer.canvas.as_ref().unwrap();
         let mut selected = effective_style(&source.rows[0].cells[0].style, &source, &[false; 16]);
         selected.inverse = !selected.inverse;
-        assert_eq!(canvas.rows[0].cells[0].style, selected, "selection overrides both search styles");
-        assert_eq!(canvas.rows[0].cells[1].style, selected, "wide glyph is annotated atomically");
+        assert_eq!(
+            canvas.rows[0].cells[0].style, selected,
+            "selection overrides both search styles"
+        );
+        assert_eq!(
+            canvas.rows[0].cells[1].style, selected,
+            "wide glyph is annotated atomically"
+        );
         let mut chosen = effective_style(&source.rows[0].cells[2].style, &source, &[false; 16]);
         chosen.inverse = !chosen.inverse;
         chosen.bold = true;
@@ -1186,14 +2106,101 @@ mod scene_tests {
         ordinary.underline = ordinary.underline.max(1);
         assert_eq!(canvas.rows[0].cells[3].style, ordinary);
         assert_eq!(canvas.rows[0].cells[2].text, "e\u{301}");
-        assert_eq!(canvas.rows[0].cells[2 + 6].style,
-            effective_style(&source.rows[0].cells[2].style, &source, &[false; 16]));
+        assert_eq!(
+            canvas.rows[0].cells[2 + 6].style,
+            effective_style(&source.rows[0].cells[2].style, &source, &[false; 16])
+        );
         assert_eq!(source.rows, canonical_rows);
         assert_eq!(source.rows[0].cells.as_ptr(), canonical_cells);
         assert_eq!(source.images[0].pixels.as_ptr(), pixels);
         assert_eq!(renderer.aliases.len(), 2);
         let mut idle = Vec::new();
-        renderer.render(&mut idle, &scene, &ColorProbe::default(), &mut terminal).unwrap();
-        assert!(idle.is_empty(), "static search annotations must produce no damage");
+        renderer
+            .render(&mut idle, &scene, &ColorProbe::default(), &mut terminal)
+            .unwrap();
+        assert!(
+            idle.is_empty(),
+            "static search annotations must produce no damage"
+        );
+    }
+
+    #[test]
+    fn view_local_faint_preserves_other_view_and_canonical_styles_through_dismissal() {
+        let size = Size {
+            cols: 4,
+            rows: 1,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut source = blank(Size { cols: 2, ..size });
+        text(&mut source, 0, 0, "AB", false);
+        source.rows[0].cells[0].style.bold = true;
+        source.rows[0].cells[0].style.italic = true;
+        source.rows[0].cells[1].style.faint = true;
+        let canonical = source.rows.clone();
+        let mut scene = Scene {
+            size,
+            surfaces: vec![
+                Surface {
+                    id: "first",
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        width: 2,
+                        height: 1,
+                    },
+                    frame: &source,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                    content: SurfaceContent::All,
+                },
+                Surface {
+                    id: "other",
+                    rect: Rect {
+                        x: 2,
+                        y: 0,
+                        width: 2,
+                        height: 1,
+                    },
+                    frame: &source,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                    content: SurfaceContent::All,
+                },
+            ],
+        };
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        let host = ColorProbe::default();
+        renderer
+            .render(&mut Vec::new(), &scene, &host, &mut terminal)
+            .unwrap();
+        let original = renderer.canvas.as_ref().unwrap().rows.clone();
+        scene.surfaces[0].faint = true;
+        renderer
+            .render(&mut Vec::new(), &scene, &host, &mut terminal)
+            .unwrap();
+        let canvas = renderer.canvas.as_ref().unwrap();
+        let mut expected = original[0].cells[0].style.clone();
+        expected.faint = true;
+        assert_eq!(canvas.rows[0].cells[0].style, expected);
+        assert_eq!(canvas.rows[0].cells[1], original[0].cells[1]);
+        assert_eq!(canvas.rows[0].cells[2..], original[0].cells[2..]);
+        assert_eq!(source.rows, canonical);
+        let mut idle = Vec::new();
+        renderer
+            .render(&mut idle, &scene, &host, &mut terminal)
+            .unwrap();
+        assert!(idle.is_empty(), "unchanged modal backdrop must not repaint");
+        scene.surfaces[0].faint = false;
+        renderer
+            .render(&mut Vec::new(), &scene, &host, &mut terminal)
+            .unwrap();
+        assert_eq!(renderer.canvas.as_ref().unwrap().rows, original);
+        assert_eq!(source.rows, canonical);
     }
 }

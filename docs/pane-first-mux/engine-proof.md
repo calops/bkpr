@@ -688,6 +688,84 @@ The coordinated working tree passes **536 top-level tests**, with eight explicit
 
 Verification also repaired two native test-fixture races without changing production lifecycle behavior: pending-client closure now matches the actual client's explicit socket shutdown, and the deferred-completion test blocks request admission rather than holding publication while inspecting registry state. The original stalled test had no remaining descendants and was retired by exact identity; its cleanup receipt is retained. Intermediate failures remain evidence, not successful acceptance.
 
+## Generic overlays and static window chrome
+
+The generic framework now owns overlay placement/layers, opaque return-focus tokens, modal/passive input routing, whole-gesture dismissal and clipping. Bkpr owns overlay content/actions and its `appearance` style recipe/materials. Main's focused-overlay faint is view-local presentation, not canonical terminal mutation. Static recessed/raised frames use eight perimeter fragments from a small atlas prepared by the existing graphics worker. Rich/plain modes reserve the same pane content rectangle; no graphics cover native cells.
+
+This initial pass established mechanics, not visual parity. The user's side-by-side screenshot review rejected its glossy bevels, boxed sidebar and verbose frame titles. The source-backed correction below supersedes that appearance; the historical executable/check results here remain tied to their original hashes.
+
+Evidence is under `target/smoke/frontend-overlays/`, with `acceptance.json` and CRC-checked `controllers.zip`. These are **debug functional checks**, using protocol 4, client SHA-256 `15cff63c7d6eaaeddb3f036979fea3d299949742d6a9b63a149172186f4c67a6` and daemon `b8f31dd3157bce4c8914e733390d1e64d69622e06c66f303276c477e7b1408f7`; no new release build or debug/release speed comparison is involved.
+
+* `physical-1277080183843105/` records failing-before behavior: an outside press leaves the unsubmitted rename overlay open. `physical-1277647910820949/` and `physical-1277796281725523/` exercise the corrected lifecycle on actual Kitty: wheel/resize preserve a draft, Escape restores focus, an outside press cancels and consumes its release, and all four pane borders withhold native input. A click in the final native cell delivers exactly `ESC[<0;94;33M` then `ESC[<0;94;33m`.
+* The dark and large light runs use a private real Git repository with a branch and unstaged change, no remotes/providers. Native body text and pixels are unchanged across metadata/forms/finder/guide interactions; live host palette changes preserve the field. The 240x72 run includes a 32-action navigation burst and narrow/large resize bursts. Complete popup references wait for Kitty's own resize indicator to withdraw, rather than treating its transient overlay as Bkpr pixels.
+* Both modes of real notification ownership survive normal detach: originally disabled mode 2031 remains `2`, originally enabled remains `1`, native termios match and client exit status is zero. Each color/fallback run emits zero terminal bytes during its 1.1-second idle observation.
+* `physical-1277911800512708/` supplies xterm colors without truecolor confirmation; `physical-1278130327065373/` withholds color replies too. Both are 120x36 and expose the same 94x33 native body as rich Kitty. No RGB/Kitty images are emitted. Complete native text is identical; native-body screenshots retain respectively one- and two-pixel differences, so exact pixel identity is not claimed for xterm.
+* `physical-1278013915950276/` repeats two-client window creation/selection/splitting, rename/close, hidden owned-terminal closure, inherited native byte-`ff` directories and final natural shell EOF against the framed debug client. Both host TTYs restore with exit zero, and an unrelated session remains usable.
+
+Every canonical case's exact-birth cleanup reports zero survivors. No live user session, profile, provider or desktop clipboard participates. Coordinated workspace tests pass 536 tests with eight ignored subprocess fixtures; strict all-target Clippy, formatting and protected incremental debug linking pass, as recorded above. Framework regressions cover sparse resource sharing, atlas invalidation, native content/cursor preservation, backdrop restoration and gesture tombstones. This establishes local functional/static presentation acceptance, not editor/animation throughput, startup latency, remote transport or general graphics initial-presentation performance.
+
+Main's provider-dependent forge/PR/issues/CI card content and click-to-refresh cannot be supplied by the current backend protocol. Those facts remain explicitly unavailable and are not counted as full provider parity; no frontend network calls or fake/no-op substitutes were added. Decorative animation and a command palette remain out of scope.
+
+
+## Main-aligned chrome correction
+
+The reference is the user's `2026-11-02T23:23:56.png` screenshot: main on the left, the rejected candidate on the right. Main `9ad93bd` supplies the 38-cell sidebar, compact connected project/pane rows and terminal-derived palette. Fork `d7b40a37` explicitly excludes raised bevel/outline styling and clears recessed-frame text because labels live in the sidebar. The rich bottom status line in the reference belongs to the terminal application; Bkpr does not fabricate those metrics.
+
+The corrected client uses an unboxed sidebar, elides sole-window rows without changing backend identities, omits empty project/detail hit rows, and keeps conventional top titles only in plain fallback. The framework ports the fork's rounded-mask convolution with its MIT notice, while the client supplies all material values. Multi-cell sparse atlases retain physical blur/radius support. Opaque-cell and transparent-graphics layers preserve native glyphs/cursor/hits; later overlays clip lower images, and scene-local depth ranking prevents an extreme native image z from covering later effects.
+
+Evidence: `target/smoke/visual-parity/acceptance.json` and `controllers.zip`. The immutable **debug** pair is `bin/bkpr` SHA-256 `f5816109a15834acc1f052cf07d6898b7eb9a0efac8a20d3c55f7663367e1692`, `bin/bkprd` `3d1eded764d11f8b5844e14102775ef808dbe2cd00bbfb7d59e2b660a80b9e0c`. Protected incremental linking preserves existing public debug/release executables; no release build or performance comparison is involved.
+
+| Physical run | Host cells | Native body | Native pixels changed across overlays |
+| --- | --- | --- | --- |
+| `physical-1282813032765718` — dark Kitty, live theme | 120×36 | 80×34 | 0 |
+| `physical-1282911828352305` — light Kitty | 240×72 | 200×70 | 0 |
+| `physical-1282911799805983` — ANSI-only xterm | 120×36 | 80×34 | 0 |
+| `physical-1283006349533222` — color replies withheld | 120×36 | 80×34 | 1 |
+
+These use private HOME/XDG/socket roots, actual native PTYs and row-dependent styled full-grid output. References require every expected native cell and rich-ready label-free chrome, not a first glyph. The dark/light runs exercise actual popovers, rename/error/finder/guide surfaces, 32-action navigation bursts, draft-preserving wheel/resize, outside-press cancellation and exact final-cell mouse coordinates. Live host color change retains the draft. All four emit zero terminal bytes in their 1.1-second idle interval; unconfirmed hosts emit neither RGB nor Kitty graphics.
+
+`physical-1283054008011672` repeats independent two-client window selection, separate creation, splitting, rename/close, hidden owned-terminal closure, raw byte-`ff` inherited directories and natural final shell EOF. Both terminal hosts restore successfully; an unrelated named session survives. Every case's exact-birth cleanup reports zero survivors.
+
+Coordinated workspace tests pass **541 tests**, with eight ignored subprocess fixtures; strict all-target Clippy and formatting pass. Regressions include transparent-layer cursor/hit preservation, opaque popup occlusion, mode-change invalidation and extreme pane-local image depth. Screenshots were inspected on rich dark/light and plain surfaces. This is not exact cross-runtime pixel parity: a fresh full-main fixture was not exercised, since the retained controller requires plugin permission grants that were not automated or seeded. The user screenshot and inspected source remain the visual references. Startup latency, editor throughput, remote transport and general graphics initial-presentation gates are unchanged.
+
+## Main-aligned key guide
+
+The immediate next frontend slice restores main's right-aligned alias column, wrapped descriptions and adaptive card width. Product policy stays in `bkpr-client`; `textwrap` 0.16.4 supplies maintained first-fit wrapping, and the existing framework supplies windows, roles and scene output. One capability-filtered layout emits exact key spans, including literal slash keys and wrapped aliases. An action's complete explanation fits or the whole action is omitted with overflow feedback; descriptions are not chopped to fit a row.
+
+The retained regression first reproduced `x remove from layout (keep proc` at a narrow width. It now preserves the complete current explanation. Additional boundary coverage checks intact alias keycaps, description-continuation styling and all small viewport dimensions. Coordinated workspace checks pass **543 tests**, with eight ignored subprocess fixtures; strict all-target Clippy and formatting pass.
+
+Evidence is `target/smoke/keyguide/acceptance.json` and CRC-checked `controllers.zip`. Its immutable debug pair is `bin/bkpr` SHA-256 `88474d3664a6b1cd053315af757746fe2e417be5b47451a44be571dbf7f6ad53`, `bin/bkprd` `3d1eded764d11f8b5844e14102775ef808dbe2cd00bbfb7d59e2b660a80b9e0c`; public debug/release outputs remain unchanged.
+
+`physical-1284590094349844` (240×72 light Kitty), `physical-1284590113416306` (120×36 dark Kitty) and `physical-1284590094342651` (120×36 ANSI xterm) inspect actual guide columns, complete aliases, modal/finder interactions and native content restoration. The large guide visibly includes the complete layout-removal lifetime explanation. Rich resize cases cover 80×24, 40×18, 120×36 and restoration to the original size, observing the host resize indicator's withdrawal before guide screenshots. The guide remains passive; resize/form handling adds no application input. The displayed send-prefix action delivers exactly one byte `02` to its original native pane and returns application focus, with no input to other panes.
+
+All canonical cleanup receipts have zero survivors. Native-body before/after image differences are zero for both Kitty runs and one pixel for xterm; complete native text remains identical. Each baseline idle interval emits zero terminal bytes. Three noncanonical runs exposed only a fixture predicate that mistook the persistent footer shortcut for an open guide; screenshots showed the guide correctly closed. The fixed observation excludes the footer, and all canonical cases pass without a production change. These are local debug correctness/presentation checks, not throughput or full-main cross-runtime pixel parity.
+
+## Shared split gutters and chrome resource reuse
+
+Adjacent pane frames now share their one-cell perimeter instead of allocating two borders plus a divider. Both native-body gaps are one cell, for side-by-side and stacked splits. Ready graphics perimeters contribute no text; plain captions survive shared rows, resizing and capability loss. Unrepresentable splits project their first subtree locally, preserving the authoritative layout and processes.
+
+Main/fork reuse and the distinction between independent pane apertures and joined raised surfaces are recorded in the [implementation plan](implementation-plan.md#overlay-lifecycle-and-static-graphics). The existing worker already prerendered dimension-independent sparse atlases and whole straight edges. The additional framework correction preserves constant-axis resources through representable viewport/opaque-layer clipping rather than rasterizing derived strips. Regression coverage exercises real cache hits/eviction and the physical writer: one cold atlas upload, then no additional upload for unchanged, resized and moving-occlusion variants. Exact phase-preserving rasterization remains necessary for some arbitrary native-image scaling; placement changes and projection planning are not free.
+
+Evidence: `target/smoke/split-chrome/{acceptance.json,source-freeze.json,visual-review.json,controllers.zip}`. The immutable **debug** pair is `bin/bkpr` SHA-256 `4a947edf191eabdd03a6be5b7e9cb0deea56e446ae6d6415d8ea7d13d7b957cd` and `bin/bkprd` `8286e340bc7b0b5c725d72948bc2183f74b2abef53b7caf16e1023098a1c05d0`. The protected build receipt is `target/smoke/ssh-forwarding/protected-1288375356112256/result.json`; public debug/release executables were preserved. This pair predates subsequent concurrent backend recovery changes, not the frontend source recorded by the manifest.
+
+| Physical run under `target/smoke/split-chrome/` | Scenario captures | Independent native-body comparisons | Pixel observation |
+| --- | ---: | ---: | --- |
+| `kitty-dark-default-1289156629624401` | 23 | 82 | Unshaded-interior differences have maximum channel delta 1 |
+| `kitty-light-default-1289097337091829` | 23 | 82 | Unshaded-interior differences have maximum channel delta 1 |
+| `xterm-dark-default-1289160701967639` | 23 | 82 | At most 54 changed whole-body pixels, maximum channel delta 13, all at cell-left edges |
+| `xterm-dark-bitmap-1289093983519618` | 23 | 82 | Every whole-body comparison is pixel-exact |
+| Total | 92 | 328 | Default-font pixel identity is not claimed |
+
+Every functional matrix passes side-by-side, stacked, four-way cross, nested-T and asymmetric layouts at 120×36 and 240×72. Physical keyboard focus/resize, both divider-drag axes, exact native click coordinates and modal press/release capture pass. Resize bursts cover 80×24, 38×14, 160×48, 60×20, 240×72 and 120×36; narrow input and 6×3 collapse/restoration retain the original processes and backend layouts. Tiny projection is checked through actual native text/input/identity rather than an image potentially covered by the host resize indicator. Complete expected text, target layout/ratio and indicator withdrawal precede normal screenshots.
+
+Rich material bands intentionally shade native edge pixels and have no independently composed material-band oracle here. Default-font differences are reported without tolerance or an observed-difference mask; whole native crops and full diff images remain available. Rich startup samples changed no palette/background endpoints, but unshaded interiors can differ at many antialiased pixels by one channel unit. Glyph coverage/run-boundary quantization is **[INFERENCE]**, not a proven cause. The additional bitmap control does not replace default-font screenshots. Parent inspection includes canonical dark cross, light nested-T and default-font plain cross captures, recorded in `visual-review.json`.
+
+All cases emit zero additional terminal bytes or image-payload bytes during their 0.35-second unchanged observation. Exact-birth/pidfd cleanup has zero survivors. Private HOME/XDG/sockets, verified native C programs and isolated terminal hosts avoid user profiles, models, providers, approval caches, live sessions and desktop clipboard contents. Original fixture failures are retained: Kitty cell-unit sizing included one extra pixel, xterm print output included history rows after resize, and nested adjacency/layout-readiness predicates required correction.
+
+Final coordinated workspace checks after the backend owner's frozen handoff pass **569 tests**, with nine ignored subprocess fixtures, plus global formatting and strict workspace all-target Clippy. Counts use top-level Cargo suite summaries, excluding the nested `foreign_client_fixture` subprocess summary. Raw output is retained in `target/smoke/split-chrome/workspace-checks.log`. This supersedes the earlier attempt stopped by the backend's incomplete `control_resume_barrier` test hook; no backend source was modified here. The frontend source and tested client executable remain unchanged through that handoff.
+
+Debug RSS/byte observations are not release throughput, startup, remote latency or hardware-presentation measurements. The 16-entry/8-MiB material-cache budget excludes consumer-held shared references.
+
 ## Explicit native recovery
 
 The backend now persists authenticated harness kind/native conversation ID/raw
@@ -915,3 +993,63 @@ no release benchmark, physical graphics comparison, provider/account/profile
 change, or live session participates. Existing `serde`/`anyhow` and transport/lifetime
 mechanisms suffice; no dependency or second lifecycle service is introduced.
 
+
+## Contextual chrome and horizontal frame substrates
+
+The current frontend proof is
+`target/smoke/hint-popup/horizontal-background-acceptance.json`. Its immutable
+dev-profile pair is client
+`a4dc776f7e4ed3dd8c80a6618a531c713932514a40434dff0a2375cb54669359`
+and daemon
+`c70a3d41d17459ba1fe7b4dd8e6f5c006b6a1935d3fcd2f667a984d8f04c00f2`.
+The protected link receipt is
+`target/smoke/ssh-forwarding/protected-1317588570464055/result.json`;
+its before/after public executable hashes agree. Source hashes, controller
+archive, complete per-case records and uncensored PNGs accompany the proof.
+
+Main's retained fork explicitly fills cleared frame cells with the original
+pane background in `output/recessed_frames.rs::decorate_characters`. Our hidden
+frame glyphs had still received sidebar-background border styling. Compact
+horizontal openings extend into that character row, exposing the wrong substrate.
+The client now applies its existing normal-background panel role only to
+material-ready frame rectangles. Opaque atlas pixels still supply the outside
+matte; translucent inside shadows now blend over the correct pane color.
+No extra texture, raster operation, viewport margin or canonical pane edit is
+introduced. The renderer's existing retained style/damage path owns the change.
+
+Four actual default-font Kitty/xterm dark/light cases pass **56 contextual
+captures**, including normal/sidebar/prefix/resize/history/search guides,
+modal/finder suppression, live palette changes on Kitty, narrow overflow,
+resize return and reversible `Ctrl-b g` rendering. All four normal detaches
+exit zero, restore exact termios and host background, and leave pane processes
+backend-owned until fixture cleanup. Unchanged idle windows emit no additional
+terminal or image bytes. Native dimensions, cursor, view identity and input logs
+remain checked; native image fields are retained, but this raw-grid fixture does
+not claim physical application-image presentation.
+
+Two more Kitty dark/light cases cover single panes, stacked panes, cross
+junctions and tall **120x80** windows: **eight captures and 32 horizontal-aperture
+pixel samples**. The straight-edge reference uses the original background plus
+the configured Gaussian shadow, requiring a consistent image-alpha blend space
+and allowing only eight-bit rounding. Shared-edge samples identify linear-light
+blending on this host. Normal pane background, rather than matte, is now visible
+inside both exterior and shared horizontal borders. Tall dark and stacked light
+PNGs were inspected directly. All six accepted fixture receipts have zero
+surviving owned process births.
+
+The legacy keyboard path also exposed Termwiz's raw NUL/FS/GS/RS/US characters.
+The adapter now supplies printable control-key semantics rather than losing them
+to the native encoder's control-text fence. A real Termwiz-to-Ghostty regression
+checks exact native bytes, including Alt-GS; actual xterm `Ctrl-]` detach passes.
+Clipboard replies and paste framing do not enter this normalization path.
+
+Coordinated current-source verification passes **646 top-level workspace tests**
+with fourteen ignored fixtures, strict workspace all-target Clippy and formatting.
+Receipts are under `target/smoke/bootstrap-test-checks/`. An earlier run exposed an
+unrelated recovery test's global-revision race. Its backend owner replaced
+incidental revision/whole-record pins with public no-replay PID checks before the
+passing run; the failure was neither hidden nor re-pinned.
+
+This is Linux, private HOME/XDG/socket, headless Kitty/Xvfb correctness evidence,
+not release latency, GPU FPS or equal physical presentation-cadence evidence.
+It does not establish project-color or sidebar-popup formatting parity.

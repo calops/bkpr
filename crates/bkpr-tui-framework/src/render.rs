@@ -11,17 +11,29 @@ use std::{
 };
 use termwiz::input::{InputEvent, InputParser, KeyCode, Modifiers};
 
+#[path = "background.rs"]
+mod background;
 #[path = "render_geometry.rs"]
 mod geometry;
 #[path = "render_style.rs"]
 mod style;
+pub use background::TerminalBackground;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ColorState {
+    foreground: [u8; 3],
+    background: [u8; 3],
+    host_revision: u64,
+    truecolor: bool,
+    physical_background: Option<[u8; 3]>,
+}
 
 #[derive(Default)]
 struct TextState {
     viewport: Option<Size>,
     rows: Vec<Row>,
     palette: Vec<[u8; 3]>,
-    colors: Option<([u8; 3], [u8; 3], u64, bool)>,
+    colors: Option<ColorState>,
     chrome: String,
     cursor: Option<Cursor>,
     physical_cursor_color: Option<Option<[u8; 3]>>,
@@ -61,8 +73,30 @@ pub struct TerminalGuard {
     clipboard_mode: Option<bool>,
     requested_clipboard_mode: Option<bool>,
     theme_mode: Option<bool>,
+    background: background::Background,
 }
 impl TerminalGuard {
+    /// Snapshot ownership immediately before sending ColorProbe::query().
+    pub fn prepare_background_query(&mut self) {
+        self.background.prepare_query();
+    }
+    /// Filter demultiplexed OSC 11 before ColorProbe::feed. All other replies
+    /// are borrowed unchanged; no second input parser or reader is involved.
+    pub fn observe_background_reply<'a>(
+        &mut self,
+        reply: &'a [u8],
+        out: &mut impl Write,
+    ) -> Result<Cow<'a, [u8]>> {
+        self.background.observe(reply, out)
+    }
+    /// Apply only for actually ready pane material; None restores normal output.
+    pub fn set_background(
+        &mut self,
+        out: &mut impl Write,
+        background: Option<TerminalBackground>,
+    ) -> Result<()> {
+        self.background.apply(background, out)
+    }
     pub fn observe_enhanced_paste(&mut self, enabled: bool) {
         self.clipboard_mode.get_or_insert(enabled);
         self.requested_clipboard_mode.get_or_insert(enabled);
@@ -96,9 +130,11 @@ impl TerminalGuard {
         Ok(())
     }
 }
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let mut out = std::io::stdout();
+impl TerminalGuard {
+    fn restore_output(&mut self, out: &mut impl Write) {
+        // OSC restoration must precede alternate-screen reset, including when
+        // unwinding after a partial write or render error.
+        let _ = self.background.restore(out);
         for id in self.graphics.all_ids() {
             let _ = write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\");
         }
@@ -116,6 +152,11 @@ impl Drop for TerminalGuard {
             "\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?1049l"
         );
         let _ = out.flush();
+    }
+}
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        self.restore_output(&mut std::io::stdout());
         let _ = crossterm::terminal::disable_raw_mode();
     }
 }
@@ -163,10 +204,11 @@ fn color(
     background: bool,
     frame: &Frame,
     host: &ColorProbe,
+    physical_background: Option<[u8; 3]>,
 ) -> Result<()> {
     if source == ColorSource::Default
         && (if background {
-            host.background
+            physical_background.or(host.background)
         } else {
             host.foreground
         })
@@ -264,6 +306,11 @@ fn transmit_image(
     Ok(())
 }
 
+struct PhysicalTarget<'a> {
+    graphics: &'a mut GraphicsState,
+    background: Option<[u8; 3]>,
+}
+
 #[cfg(test)]
 fn draw(
     out: &mut impl Write,
@@ -274,7 +321,18 @@ fn draw(
     graphics: &mut GraphicsState,
 ) -> Result<()> {
     let prepared = geometry::prepare(frame, viewport)?;
-    draw_prepared(out, frame, viewport, chrome, host, graphics, prepared)
+    draw_prepared(
+        out,
+        frame,
+        viewport,
+        chrome,
+        host,
+        PhysicalTarget {
+            graphics,
+            background: None,
+        },
+        prepared,
+    )
 }
 
 // Match the physical writer: continuation cells do not advance the cursor and
@@ -328,9 +386,13 @@ fn draw_prepared(
     viewport: Size,
     chrome: &str,
     host: &ColorProbe,
-    graphics: &mut GraphicsState,
+    target: PhysicalTarget<'_>,
     prepared: geometry::Prepared<'_>,
 ) -> Result<()> {
+    let PhysicalTarget {
+        graphics,
+        background: physical_background,
+    } = target;
     // Scene strings are never interpreted as terminal programs. Only renderer-owned
     // escapes and validated normalized colors/positions reach the physical terminal.
     if frame.rows.len() > frame.size.rows as usize
@@ -353,12 +415,13 @@ fn draw_prepared(
             }
         }
     }
-    let colors = (
-        frame.foreground,
-        frame.background,
-        host.revision,
-        host.truecolor,
-    );
+    let colors = ColorState {
+        foreground: frame.foreground,
+        background: frame.background,
+        host_revision: host.revision,
+        truecolor: host.truecolor,
+        physical_background,
+    };
     let full = graphics.text.viewport != Some(viewport)
         || graphics.text.colors != Some(colors)
         || graphics.text.palette != frame.palette;
@@ -433,7 +496,7 @@ fn draw_prepared(
                 }
                 let s = &cell.style;
                 if previous_style != Some(s) {
-                    style::transition(out, previous_style, s, frame, host)?;
+                    style::transition(out, previous_style, s, frame, host, physical_background)?;
                     previous_style = Some(s);
                 }
                 if let Some(link) = &cell.hyperlink {
@@ -1126,7 +1189,21 @@ pub fn key_event(key: termwiz::input::KeyEvent) -> KeyEvent {
             modifiers |= bit;
         }
     }
-    let (name, text, codepoint) = match key.key {
+    // Termwiz normalizes alphabetic C0 keys but leaves these aliases as raw
+    // characters. The native key encoder requires printable key semantics;
+    // raw control text is deliberately not forwarded as keyboard UTF-8.
+    let key = match key.key {
+        KeyCode::Char('\0') => {
+            modifiers |= 2;
+            KeyCode::Char(' ')
+        }
+        KeyCode::Char(c @ '\u{1c}'..='\u{1f}') => {
+            modifiers |= 2;
+            KeyCode::Char(char::from(c as u8 + b'@'))
+        }
+        key => key,
+    };
+    let (name, text, codepoint) = match key {
         KeyCode::Char(c) => {
             let name = if c.is_ascii_alphabetic() {
                 format!("Key{}", c.to_ascii_uppercase())
@@ -1457,6 +1534,20 @@ impl GraphicsProbe {
     }
 }
 fn parse_rgb(value: &str) -> Option<[u8; 3]> {
+    if let Some(hex) = value.strip_prefix('#') {
+        if !matches!(hex.len(), 3 | 6 | 9 | 12) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let width = hex.len() / 3;
+        let maximum = (1u32 << (4 * width)) - 1;
+        let mut result = [0; 3];
+        for (index, channel) in result.iter_mut().enumerate() {
+            let value = u32::from_str_radix(&hex[index * width..(index + 1) * width], 16).ok()?;
+            *channel = ((value * 255) / maximum) as u8;
+        }
+        return Some(result);
+    }
     let mut values = value.strip_prefix("rgb:")?.split('/');
     let mut result = [0; 3];
     for component in &mut result {
@@ -1677,6 +1768,38 @@ mod tests {
         assert!(replies.iter().all(|reply| !probe.theme_changed(reply)));
     }
     #[test]
+    fn legacy_c0_aliases_reach_shortcuts_and_preserve_native_control_bytes() {
+        let mut native = bkpr_terminal_engine::Terminal::new(Size {
+            cols: 20,
+            rows: 4,
+            cell_width: 8,
+            cell_height: 16,
+        })
+        .unwrap();
+        for byte in [0, 0x1c, 0x1d, 0x1e, 0x1f] {
+            let events = InputParser::new().parse_as_vec(&[byte], false);
+            let [InputEvent::Key(key)] = events.as_slice() else {
+                panic!("control byte did not produce one key: {byte}");
+            };
+            let event = key_event(key.clone());
+            if byte == 0 {
+                assert_eq!((&*event.key, event.modifiers), ("Space", 2));
+            } else if byte == 0x1d {
+                assert_eq!((&*event.key, event.modifiers), ("BracketRight", 2));
+            }
+            assert_eq!(native.encode_key(&event).unwrap(), [byte], "{byte:#x}");
+        }
+        let events = InputParser::new().parse_as_vec(b"\x1b\x1d", false);
+        let [InputEvent::Key(key)] = events.as_slice() else {
+            panic!("Alt-control alias did not produce one key");
+        };
+        assert_eq!(
+            native.encode_key(&key_event(key.clone())).unwrap(),
+            b"\x1b\x1d"
+        );
+    }
+
+    #[test]
     fn notification_subscription_requires_confirmed_mutable_support() {
         let mut guard = std::mem::ManuallyDrop::new(TerminalGuard {
             graphics: GraphicsState::new(1000),
@@ -1684,6 +1807,7 @@ mod tests {
             clipboard_mode: None,
             requested_clipboard_mode: None,
             theme_mode: None,
+            background: background::Background::default(),
         });
         let mut out = Vec::new();
         for reply in [
@@ -1903,5 +2027,213 @@ mod graphics_probe_tests {
                 .graphics
                 .consume_tagged(b"graphics;Gi=1000,p=1;EINVAL: invalid projection")
         );
+    }
+}
+
+#[cfg(test)]
+mod material_cache_tests {
+    use super::*;
+    use crate::{
+        decoration::{DecorationKind, DecorationStyle},
+        graphics::{SvgAsset, SvgGraphics},
+    };
+
+    fn style() -> DecorationStyle {
+        DecorationStyle {
+            kind: DecorationKind::Recessed,
+            background: [30; 3],
+            surface: [20; 3],
+            foreground: [200; 3],
+            inset_px: [5; 2],
+            outset_px: [0; 2],
+            radius_px: 10,
+            sigma_milli: 3000,
+            offset_milli: [3500; 2],
+            shadow_opacity_milli: 720,
+            lip_width_milli: 1200,
+            lip_highlight_milli: 240,
+            lip_shade_milli: 240,
+        }
+    }
+
+    fn material(graphics: &SvgGraphics, size: Size) -> Frame {
+        let mut frame = graphics_frame(size);
+        for (index, rect) in [
+            Rect {
+                x: 0,
+                y: 0,
+                width: size.cols / 2 + 1,
+                height: size.rows,
+            },
+            Rect {
+                x: size.cols / 2,
+                y: 0,
+                width: size.cols - size.cols / 2,
+                height: size.rows,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(graphics.decorate_window(&mut frame, rect, style(), index as u32 * 64));
+        }
+        assert_eq!(frame.images.len(), 1);
+        assert_eq!(frame.placements.len(), 16);
+        frame
+    }
+
+    fn render(
+        renderer: &mut Renderer,
+        terminal: &mut TerminalGuard,
+        frame: &Frame,
+        cover: Option<Rect>,
+    ) -> Vec<u8> {
+        let popup = blank(Size {
+            cols: 2,
+            rows: 1,
+            ..frame.size
+        });
+        let mut scene = Scene {
+            size: frame.size,
+            surfaces: vec![Surface {
+                id: "material",
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: frame.size.cols,
+                    height: frame.size.rows,
+                },
+                frame,
+                selection: &[],
+                search: &[],
+                focused: false,
+                faint: false,
+                content: SurfaceContent::Graphics,
+            }],
+        };
+        if let Some(rect) = cover {
+            scene.surfaces.push(Surface {
+                id: "cover",
+                rect,
+                frame: &popup,
+                selection: &[],
+                search: &[],
+                focused: false,
+                faint: false,
+                content: SurfaceContent::Cells,
+            });
+        }
+        let mut output = Vec::new();
+        renderer
+            .render(&mut output, &scene, &ColorProbe::default(), terminal)
+            .unwrap();
+        output
+    }
+
+    fn uploads(output: &[u8]) -> usize {
+        output
+            .windows(b"\x1b_Ga=t,".len())
+            .filter(|chunk| *chunk == b"\x1b_Ga=t,")
+            .count()
+    }
+
+    fn encoded_bytes(output: &[u8]) -> usize {
+        std::str::from_utf8(output)
+            .unwrap()
+            .split("\x1b_G")
+            .skip(1)
+            .filter_map(|packet| packet.split_once("\x1b\\"))
+            .filter_map(|(packet, _)| packet.split_once(';'))
+            .filter(|(header, _)| header.starts_with("a=t,") || header.starts_with("m="))
+            .map(|(_, payload)| payload.len())
+            .sum()
+    }
+
+    #[test]
+    fn prepared_edges_share_one_upload_across_warm_resize_and_opaque_clipping() {
+        static ASSETS: &[SvgAsset] = &[SvgAsset {
+            id: 1,
+            svg: r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><path d="M0 0h1v1H0z"/></svg>"#,
+        }];
+        let mut graphics = SvgGraphics::new(ASSETS, 1, 1).unwrap();
+        let mut host = ColorProbe::default();
+        let query = host.graphics.begin();
+        let query = std::str::from_utf8(&query).unwrap();
+        let id = query.split("i=").nth(1).unwrap().split(',').next().unwrap();
+        host.feed(format!("graphics;Gi={id};OK").as_bytes());
+        let size = Size {
+            cols: 120,
+            rows: 40,
+            cell_width: 10,
+            cell_height: 20,
+        };
+        graphics.prepare_with_decorations(&host, size, &[], &[style()]);
+        let mut poll = libc::pollfd {
+            fd: graphics.wake_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
+        assert!(graphics.drain().unwrap());
+        let first = material(&graphics, size);
+        let mut renderer = Renderer::default();
+        let mut terminal = std::mem::ManuallyDrop::new(TerminalGuard {
+            graphics: GraphicsState::new(1000),
+            kitty_keyboard: false,
+            clipboard_mode: None,
+            requested_clipboard_mode: None,
+            theme_mode: None,
+            background: background::Background::default(),
+        });
+
+        let cold = render(&mut renderer, &mut terminal, &first, None);
+        assert_eq!(uploads(&cold), 1);
+        assert_eq!(
+            encoded_bytes(&cold),
+            first.images[0].pixels.len().div_ceil(3) * 4
+        );
+        assert_eq!(terminal.graphics.image_ids.len(), 1);
+        assert!(terminal.graphics.derived_ids.is_empty());
+        let physical = terminal.graphics.image_ids.clone();
+        assert!(render(&mut renderer, &mut terminal, &first, None).is_empty());
+
+        let resized = Size {
+            cols: 160,
+            rows: 48,
+            ..size
+        };
+        graphics.prepare_with_decorations(&host, resized, &[], &[style()]);
+        let frame = material(&graphics, resized);
+        assert!(Arc::ptr_eq(&first.images[0], &frame.images[0]));
+        assert_eq!(
+            uploads(&render(&mut renderer, &mut terminal, &frame, None)),
+            0
+        );
+        assert_eq!(terminal.graphics.image_ids, physical);
+        assert!(terminal.graphics.derived_ids.is_empty());
+
+        // An opaque cell layer cuts a horizontal strip in two. Moving and
+        // dismissing it must only change placements, not raster/base64/upload.
+        for x in [5, 7, 9, 5] {
+            let cover = Some(Rect {
+                x,
+                y: 0,
+                width: 2,
+                height: 1,
+            });
+            assert_eq!(
+                uploads(&render(&mut renderer, &mut terminal, &frame, cover)),
+                0
+            );
+            assert_eq!(terminal.graphics.image_ids, physical);
+            assert!(terminal.graphics.derived_ids.is_empty());
+            assert!(render(&mut renderer, &mut terminal, &frame, cover).is_empty());
+        }
+        assert_eq!(
+            uploads(&render(&mut renderer, &mut terminal, &frame, None)),
+            0
+        );
+        assert_eq!(terminal.graphics.image_ids, physical);
+        assert!(terminal.graphics.derived_ids.is_empty());
     }
 }

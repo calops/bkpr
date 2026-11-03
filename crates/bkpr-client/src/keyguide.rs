@@ -6,7 +6,7 @@
 
 use bkpr_protocol::{KeyAction, KeyEvent};
 use bkpr_tui_framework::{EditAction, Rect, Role, RoleSpan};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Context {
@@ -121,6 +121,7 @@ pub enum Action {
     CommandPrefix,
     SendPrefix,
     ToggleSidebar,
+    ToggleChrome,
     EnterSidebar,
     LeaveSidebar,
     Navigate(Navigation),
@@ -229,6 +230,7 @@ impl Action {
             Self::Edit(EditAction::Delete) => "erase next",
             Self::Edit(EditAction::Clear) => "clear field",
             Self::Detach => "detach",
+            Self::ToggleChrome => "toggle fancy / normal chrome",
             Self::StartSearch => "search history",
             Self::StartHistory => "history",
             Self::StartResize => "resize pane",
@@ -420,7 +422,7 @@ use EditAction as E;
 use HistoryAction as H;
 use Navigation as N;
 
-// These definitions drive lookup and both guide layouts. Prefix commands are
+// These definitions drive lookup and the contextual popup. Prefix commands are
 // deliberately single-press operations; repeated destructive/create commands
 // must never execute because the command key was held down.
 static BINDINGS: &[Binding] = &[
@@ -469,6 +471,7 @@ static BINDINGS: &[Binding] = &[
     text(PREFIX, "e", A::StartResize, 12),
     text(PREFIX, "y", A::CopySelection, 13),
     text(PREFIX, "i", A::ProjectDetails, 30),
+    text(PREFIX, "g", A::ToggleChrome, 31),
     text(PREFIX, "c", A::CreateWorkspace, 20),
     text(PREFIX, "N", A::CreateTerminal, 19),
     text(PREFIX, "r", A::RenameWorkspace, 23),
@@ -989,143 +992,255 @@ fn width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
-fn fit(text: &str, columns: usize) -> String {
-    let mut result = String::new();
+/// Product-selected guide geometry and exact keycap spans. Layout is prepared
+/// with binding/capability changes, never inferred back from rendered text.
+#[derive(Default)]
+pub struct Guide {
+    pub columns: u16,
+    pub expanded: Vec<String>,
+    pub expanded_roles: Vec<RoleSpan>,
+}
+
+fn alias_width(keys: &[&str]) -> usize {
+    keys.iter().map(|key| width(key)).sum::<usize>() + keys.len().saturating_sub(1)
+}
+
+/// Keep each executable chord intact; only the separators between aliases wrap.
+fn alias_rows(keys: &[&str], columns: usize) -> Option<Vec<std::ops::Range<usize>>> {
+    let mut rows = Vec::new();
+    let mut start = 0;
     let mut used = 0;
-    for character in text.chars() {
-        let cells = UnicodeWidthChar::width(character).unwrap_or(0);
-        if used + cells > columns {
-            break;
+    for (index, key) in keys.iter().enumerate() {
+        let cells = width(key);
+        if cells > columns {
+            return None;
         }
-        result.push(character);
-        used += cells;
-    }
-    result
-}
-
-/// One plain-text footer row, using complete bindings rather than truncated
-/// key chords or instructions. Narrow viewports may show only the context title.
-#[cfg(test)]
-pub fn footer(context: Context, columns: usize) -> String {
-    footer_with(context, columns, supported_by_default)
-}
-
-pub fn footer_with(context: Context, columns: usize, supported: impl Fn(Action) -> bool) -> String {
-    let mut line = String::new();
-    let mut used = 0;
-    for hint in hints_with(context, supported) {
-        let key = hint.keys[0];
-        let needed = width(key) + 1 + width(hint.description);
-        let separator = if line.is_empty() { 0 } else { 2 };
-        if used + separator + needed > columns {
-            continue;
+        if index > start && used + 1 + cells > columns {
+            rows.push(start..index);
+            start = index;
+            used = 0;
         }
-        if !line.is_empty() {
-            line.push_str("  ");
+        used += usize::from(index > start) + cells;
+    }
+    if start < keys.len() {
+        rows.push(start..keys.len());
+    }
+    Some(rows)
+}
+
+struct Body<'a> {
+    hints: &'a [Hint],
+    single_key: usize,
+    aliases: usize,
+    description: usize,
+}
+
+impl<'a> Body<'a> {
+    fn new(hints: &'a [Hint]) -> Self {
+        let mut single_key = 0;
+        let mut aliases = 0;
+        let mut description = 0;
+        for hint in hints {
+            let mut full = hint.keys.len().saturating_sub(1);
+            for key in &hint.keys {
+                let cells = width(key);
+                single_key = single_key.max(cells);
+                full += cells;
+            }
+            aliases = aliases.max(full);
+            description = description.max(width(hint.description));
         }
-        line.push_str(key);
-        line.push(' ');
-        line.push_str(hint.description);
-        used += separator + needed;
+        Self {
+            hints,
+            single_key,
+            aliases,
+            description,
+        }
     }
-    if line.is_empty() {
-        fit(context.title(), columns)
-    } else {
-        line
+
+    fn render(&self, columns: usize, max_rows: usize) -> (Vec<String>, Vec<RoleSpan>) {
+        if columns < 4 || max_rows == 0 || self.hints.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let key_columns = if self.aliases + 2 + self.description <= columns {
+            self.aliases
+        } else {
+            self.single_key.max(self.aliases.div_ceil(2))
+        }
+        .clamp(1, columns - 3);
+        let description_columns = columns - key_columns - 2;
+        let options = textwrap::Options::new(description_columns)
+            .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit)
+            .word_splitter(textwrap::WordSplitter::NoHyphenation)
+            .break_words(false);
+        let mut rows = Vec::new();
+        let mut roles = Vec::new();
+        let mut omitted = 0;
+        let mut last_group = None;
+        for hint in self.hints {
+            let Some(keys) = alias_rows(&hint.keys, key_columns) else {
+                omitted += 1;
+                continue;
+            };
+            let descriptions = textwrap::wrap(hint.description, &options);
+            let count = keys.len().max(descriptions.len());
+            if count > max_rows - rows.len()
+                || descriptions
+                    .iter()
+                    .any(|line| width(line) > description_columns)
+            {
+                omitted += 1;
+                continue;
+            }
+            last_group = Some((rows.len(), roles.len()));
+            for line in 0..count {
+                let mut row = String::with_capacity(columns);
+                if let Some(range) = keys.get(line) {
+                    let aliases = &hint.keys[range.clone()];
+                    let mut x = key_columns - alias_width(aliases);
+                    row.extend(std::iter::repeat_n(' ', x));
+                    for (index, key) in aliases.iter().enumerate() {
+                        if index > 0 {
+                            row.push('/');
+                            x += 1;
+                        }
+                        let cells = width(key);
+                        roles.push(RoleSpan {
+                            rect: Rect {
+                                x: x as u16,
+                                y: rows.len() as u16,
+                                width: cells as u16,
+                                height: 1,
+                            },
+                            role: Role::Accent,
+                        });
+                        row.push_str(key);
+                        x += cells;
+                    }
+                } else {
+                    row.extend(std::iter::repeat_n(' ', key_columns));
+                }
+                row.push_str("  ");
+                if let Some(description) = descriptions.get(line) {
+                    row.push_str(description);
+                }
+                rows.push(row);
+            }
+        }
+        if omitted > 0 {
+            if rows.len() == max_rows
+                && let Some((start, role_start)) = last_group
+            {
+                // Never leave half an explanation just to make room for overflow.
+                rows.truncate(start);
+                roles.truncate(role_start);
+                omitted += 1;
+            }
+            let message = if rows.is_empty() {
+                "Widen to see shortcuts".to_owned()
+            } else {
+                format!("… {omitted} more")
+            };
+            rows.push(bkpr_tui_framework::window::fit(&message, columns as u16));
+        }
+        (rows, roles)
     }
 }
 
-fn hint_row(hint: &Hint, columns: usize) -> String {
-    let aliases = hint.keys.join("/");
-    let keys = if width(&aliases) + 2 < columns {
-        aliases.as_str()
-    } else {
-        hint.keys[0]
-    };
-    let key_width = width(keys);
-    if key_width + 2 >= columns {
-        // Do not present a chopped key chord as if it were executable.
-        return fit(hint.description, columns);
-    }
-    let mut row = String::from(keys);
-    row.push_str("  ");
-    row.push_str(&fit(hint.description, columns - key_width - 2));
-    row
-}
-
-/// Width-bounded application hints. The framework owns panel decoration,
-/// positioning and physical presentation.
-#[cfg(test)]
-pub fn expanded(context: Context, columns: usize, max_rows: usize) -> Vec<String> {
-    expanded_with(context, columns, max_rows, supported_by_default)
-}
-
-pub fn expanded_with(
+/// A sidebar-bounded popup fitted to its visible alias/description outline.
+/// The whole table, rather than its two-cell gutter, is centered when it fits.
+/// `max_rows` bounds body rows; callers reserve two additional fallback-frame
+/// rows. Each body row includes main's inner padding inside that frame.
+pub fn render_with(
     context: Context,
-    columns: usize,
+    sidebar_columns: u16,
+    max_columns: u16,
     max_rows: usize,
     supported: impl Fn(Action) -> bool,
-) -> Vec<String> {
-    if columns == 0 || max_rows == 0 {
-        return Vec::new();
+) -> Guide {
+    if max_columns == 0 || max_rows == 0 {
+        return Guide::default();
     }
-    let hints = hints_with(context, supported);
-    let shown = if hints.len() > max_rows {
-        max_rows - 1
-    } else {
-        hints.len()
-    };
-    let mut rows = Vec::with_capacity(hints.len().min(max_rows));
-    for hint in hints.iter().take(shown) {
-        rows.push(hint_row(hint, columns));
+    let mut hints = hints_with(context, supported);
+    for hint in &mut hints {
+        hint.keys.sort_by_key(|key| {
+            let arrow = key.chars().last().is_some_and(|c| "←↓↑→".contains(c));
+            (
+                !arrow,
+                width(key),
+                key.len() == 1 && key.as_bytes()[0].is_ascii_uppercase(),
+                *key,
+            )
+        });
     }
-    if shown < hints.len() {
-        rows.push(fit(&format!("… {} more", hints.len() - shown), columns));
-    }
-    rows
+    render_hints(context, &hints, sidebar_columns, max_columns, max_rows)
 }
 
-/// Keep keycap ink attached to the same executable bindings as the guide text.
-/// Called only when the retained guide content changes, not while repainting.
-pub(crate) fn roles_with(
+fn render_hints(
     context: Context,
-    footer: &str,
-    expanded: &[String],
-    supported: impl Fn(Action) -> bool,
-) -> (Vec<RoleSpan>, Vec<RoleSpan>) {
-    let hints = hints_with(context, supported);
-    let mut footer_roles = Vec::new();
-    for hint in &hints {
-        let label = format!("{} {}", hint.keys[0], hint.description);
-        if let Some(offset) = footer.find(&label) {
-            footer_roles.push(RoleSpan {
-                rect: Rect {
-                    x: width(&footer[..offset]) as u16,
-                    y: 0,
-                    width: width(hint.keys[0]) as u16,
-                    height: 1,
-                },
-                role: Role::Accent,
-            });
-        }
+    hints: &[Hint],
+    sidebar_columns: u16,
+    max_columns: u16,
+    max_rows: usize,
+) -> Guide {
+    if max_columns == 0 || max_rows == 0 {
+        return Guide::default();
     }
-    let mut expanded_roles = Vec::new();
-    for (y, (row, hint)) in expanded.iter().zip(&hints).enumerate() {
-        if let Some((keys, _)) = row.split_once("  ")
-            && (keys == hint.keys[0] || keys == hint.keys.join("/"))
-        {
-            expanded_roles.push(RoleSpan {
-                rect: Rect {
-                    x: 0,
-                    y: y as u16,
-                    width: width(keys) as u16,
-                    height: 1,
-                },
-                role: Role::Accent,
-            });
-        }
+    let body = Body::new(hints);
+    let title_columns = width(context.title()) + 5;
+    let limit = usize::from(max_columns.min(sidebar_columns.max(72)));
+    let provisional = (body.aliases + 2 + body.description + 4)
+        .max(title_columns)
+        .max(usize::from(sidebar_columns))
+        .min(limit);
+    let padding = usize::from(provisional >= 8);
+    let overhead = 2 + 2 * padding;
+    let inner_columns = provisional.saturating_sub(overhead);
+    let (mut expanded, mut expanded_roles) = body.render(inner_columns, max_rows);
+    if expanded.is_empty() {
+        let message = if hints.is_empty() {
+            "No configured shortcuts"
+        } else {
+            "Widen to see shortcuts"
+        };
+        expanded.push(bkpr_tui_framework::window::fit(
+            message,
+            inner_columns as u16,
+        ));
     }
-    (footer_roles, expanded_roles)
+    let left = expanded
+        .iter()
+        .filter(|row| !row.trim().is_empty())
+        .map(|row| row.len() - row.trim_start_matches(' ').len())
+        .min()
+        .unwrap_or(0);
+    let outline = expanded
+        .iter()
+        .map(|row| width(row.trim_end()))
+        .max()
+        .unwrap_or(0)
+        .saturating_sub(left);
+    let columns = (outline + overhead)
+        .max(title_columns)
+        .max(usize::from(sidebar_columns))
+        .min(limit) as u16;
+    let offset = padding + (usize::from(columns).saturating_sub(overhead + outline)) / 2;
+    let indent = " ".repeat(offset);
+    for row in &mut expanded {
+        row.truncate(row.trim_end().len());
+        row.replace_range(..left.min(row.len()), "");
+        row.reserve(indent.len() + padding);
+        row.insert_str(0, &indent);
+        row.extend(std::iter::repeat_n(' ', padding));
+    }
+    for span in &mut expanded_roles {
+        span.rect.x = span.rect.x.saturating_sub(left as u16) + offset as u16;
+    }
+    Guide {
+        columns,
+        expanded,
+        expanded_roles,
+    }
 }
 
 #[cfg(test)]
@@ -1140,6 +1255,162 @@ mod tests {
             action,
             unshifted_codepoint: 0,
         }
+    }
+
+    #[test]
+    fn active_context_replaces_commands_and_capability_denial_removes_them() {
+        for action in [
+            A::SplitHorizontal,
+            A::CreateWorkspace,
+            A::RemovePaneFromLayout,
+        ] {
+            let normal = hints_with(Context::Application, |_| true);
+            assert!(!normal.iter().any(|hint| hint.action == action));
+            let prefix = hints_with(Context::CommandPrefix, |_| true);
+            assert!(prefix.iter().any(|hint| hint.action == action));
+            let denied = hints_with(Context::CommandPrefix, |candidate| candidate != action);
+            assert!(!denied.iter().any(|hint| hint.action == action));
+        }
+        for context in [Context::Search, Context::History, Context::Resize] {
+            assert!(
+                !hints_with(context, |_| true)
+                    .iter()
+                    .any(|hint| matches!(hint.action, A::SplitHorizontal | A::CreateWorkspace))
+            );
+        }
+    }
+
+    #[test]
+    fn popup_prefers_sidebar_width_and_only_expands_for_content() {
+        let context = Context::CommandPrefix;
+        let compact = render_with(context, 38, 120, 10, |action| action == A::Cancel);
+        assert_eq!(compact.columns, 38);
+        let overflow = render_with(context, 38, 120, 10, |action| {
+            action == A::RemovePaneFromLayout
+        });
+        assert!(overflow.columns > 38 && overflow.columns <= 72);
+        let wide_sidebar = render_with(context, 100, 120, 10, |_| true);
+        assert_eq!(wide_sidebar.columns, 100);
+        let constrained = render_with(context, 38, 30, 10, |_| true);
+        assert_eq!(constrained.columns, 30);
+    }
+
+    fn assert_balanced_outline(guide: &Guide) {
+        let left = guide
+            .expanded
+            .iter()
+            .filter(|row| !row.trim().is_empty())
+            .map(|row| row.len() - row.trim_start_matches(' ').len())
+            .min()
+            .unwrap_or(0);
+        let end = guide
+            .expanded
+            .iter()
+            .map(|row| width(row.trim_end()))
+            .max()
+            .unwrap_or(0);
+        let right = usize::from(guide.columns.saturating_sub(2)).saturating_sub(end);
+        assert!(left.abs_diff(right) <= 1, "{left} left / {right} right");
+    }
+
+    #[test]
+    fn popup_centers_the_visible_outline_not_the_gutter() {
+        let hint = Hint {
+            keys: vec!["x"],
+            action: A::RemovePaneFromLayout,
+            description: "remove the layout entry while keeping the terminal process",
+            priority: 0,
+        };
+        let guide = render_hints(Context::CommandPrefix, &[hint], 20, 120, 8);
+        let key = &guide.expanded_roles[0].rect;
+        let key_end = key.x + key.width;
+        assert!(
+            key_end < guide.columns / 3,
+            "an asymmetric table must not center its gutter"
+        );
+        assert_eq!(
+            guide.expanded[0].find("remove the layout entry"),
+            Some(usize::from(key_end + 2))
+        );
+        assert_balanced_outline(&guide);
+    }
+
+    #[test]
+    fn short_visible_table_keeps_a_shared_gutter_and_balanced_sidebar_space() {
+        let hints = [
+            Hint {
+                keys: vec!["Ctrl-a", "a"],
+                action: A::ActivateSelected,
+                description: "select",
+                priority: 0,
+            },
+            Hint {
+                keys: vec!["b"],
+                action: A::EnterSidebar,
+                description: "open",
+                priority: 1,
+            },
+        ];
+        let guide = render_hints(Context::Application, &hints, 38, 120, 8);
+        assert_eq!(guide.columns, 38);
+        let endpoints: Vec<_> = (0..guide.expanded.len())
+            .map(|row| {
+                guide
+                    .expanded_roles
+                    .iter()
+                    .filter(|span| usize::from(span.rect.y) == row)
+                    .map(|span| span.rect.x + span.rect.width)
+                    .max()
+                    .unwrap()
+            })
+            .collect();
+        assert!(endpoints.iter().all(|end| *end == endpoints[0]));
+        for (row, hint) in hints.iter().enumerate() {
+            assert_eq!(
+                guide.expanded[row].find(hint.description),
+                Some(usize::from(endpoints[row] + 2))
+            );
+        }
+        assert_balanced_outline(&guide);
+    }
+
+    #[test]
+    fn omitted_long_description_does_not_expand_the_visible_card() {
+        let hints = [
+            Hint {
+                keys: vec!["Enter"],
+                action: A::Submit,
+                description: "apply",
+                priority: 0,
+            },
+            Hint {
+                keys: vec!["z"],
+                action: A::RemovePaneFromLayout,
+                description: "this complete explanation needs several wrapped rows to describe an operation without losing any of its important terminal process lifetime and layout ownership semantics",
+                priority: 1,
+            },
+        ];
+        let guide = render_hints(Context::CommandPrefix, &hints, 24, 120, 2);
+        assert_eq!(guide.columns, 24);
+        assert!(guide.expanded[0].contains("apply"));
+        assert!(guide.expanded[1].contains("more"));
+        assert_eq!(guide.expanded_roles.len(), 1);
+        assert_balanced_outline(&guide);
+    }
+
+    #[test]
+    fn overflowing_card_fits_its_outline_without_a_minimum_width_floor() {
+        let hint = Hint {
+            keys: vec!["x"],
+            action: A::RemovePaneFromLayout,
+            description: "keep this terminal process running",
+            priority: 0,
+        };
+        let needed = width(hint.description) + 1 + 2 + 4;
+        let guide = render_hints(Context::CommandPrefix, &[hint], 20, 120, 8);
+        assert_eq!(usize::from(guide.columns), needed);
+        assert!(guide.columns < 48);
+        assert_balanced_outline(&guide);
     }
 
     #[test]
@@ -1421,16 +1692,53 @@ mod tests {
                 .iter()
                 .any(|hint| hint.action == A::CreateTerminal)
         );
-        assert!(!footer_with(context, 1000, supported).contains("new terminal"));
-        assert!(
-            !expanded_with(context, 100, 100, supported)
-                .iter()
-                .any(|row| row.contains("new terminal"))
-        );
     }
 
     #[test]
-    fn footer_and_card_fit_every_small_viewport() {
+    fn narrow_expanded_guide_keeps_the_complete_action_explanation() {
+        let context = Context::CommandPrefix;
+        let action = A::RemovePaneFromLayout;
+        let guide = render_with(context, 38, 32, 8, |candidate| candidate == action);
+        let visible = guide
+            .expanded
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            visible.ends_with(action.description(context)),
+            "the guide cut off the operation's lifetime semantics: {visible}"
+        );
+    }
+    #[test]
+    fn wrapped_aliases_keep_complete_keycaps_and_never_style_description_continuations() {
+        let hint = Hint {
+            keys: vec!["Ctrl-Left", "Ctrl-h", "/"],
+            action: A::Edit(EditAction::Left),
+            description: "move the input cursor by a complete grapheme",
+            priority: 0,
+        };
+        let (rows, spans) = Body::new(std::slice::from_ref(&hint)).render(24, 12);
+        let keys: Vec<String> = spans
+            .iter()
+            .map(|span| {
+                rows[span.rect.y as usize]
+                    .chars()
+                    .skip(span.rect.x as usize)
+                    .take(span.rect.width as usize)
+                    .collect()
+            })
+            .collect();
+        assert_eq!(keys, hint.keys);
+        assert!(rows.iter().all(|row| width(row) <= 24));
+        let (_, clipped) = Body::new(&[hint]).render(24, 1);
+        assert!(
+            clipped.is_empty(),
+            "an incomplete action must not publish executable keycaps"
+        );
+    }
+    #[test]
+    fn popup_card_fits_every_small_viewport() {
         let contexts = [
             Context::Application,
             Context::CommandPrefix,
@@ -1449,11 +1757,20 @@ mod tests {
         ];
         for context in contexts {
             for columns in 0..=100 {
-                assert!(width(&footer(context, columns)) <= columns);
                 for max_rows in 0..=8 {
-                    let rows = expanded(context, columns, max_rows);
-                    assert!(rows.len() <= max_rows);
-                    assert!(rows.iter().all(|row| width(row) <= columns));
+                    let guide = render_with(context, columns, columns, max_rows, |_| true);
+                    assert!(guide.columns <= columns);
+                    assert!(guide.expanded.len() <= max_rows);
+                    assert!(
+                        guide
+                            .expanded
+                            .iter()
+                            .all(|row| width(row) <= usize::from(guide.columns.saturating_sub(2)))
+                    );
+                    for span in &guide.expanded_roles {
+                        assert!(usize::from(span.rect.y) < guide.expanded.len());
+                        assert!(span.rect.x + span.rect.width <= guide.columns.saturating_sub(2));
+                    }
                 }
             }
         }

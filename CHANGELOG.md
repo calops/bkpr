@@ -50,10 +50,26 @@
 
 * Restore the all-workspace sidebar's independent keyboard selection, folding, scrolling, rename/create/close-terminal actions and passive metadata popovers.
 * Restore focused name/directory forms, grapheme-boundary editing and paste, identity-bound modal intent, honest asynchronous errors and the metadata-only fuzzy finder with filters and responsive previews.
-* Share typed binding dispatch with contextual hints; compose bounded popup/guide windows without taking native pointer gestures or leaking UI keys into applications. Normalize legacy Ctrl-Space/NUL at the framework input boundary.
+* Share typed binding dispatch with contextual hints that always appear in passive popups. Preserve native pointer gestures and consume UI keys; normalize raw legacy C0 aliases without dropping their native control bytes.
+* Size guide cards to the visible outline with a shared content-sized key/description gutter, centering the whole table rather than the gutter. Wrap aliases and descriptions atomically, preserve lifecycle explanations and apply terminal-derived mode tints.
 * Put retained UI surfaces, text editing, window decoration, capability gating and bounded off-thread SVG preparation in the reusable TUI framework. Keep Bkpr-specific models/assets in the client. Restore static bee/hive artwork through the existing scene/image lifecycle with terminal-default colors and readable unsupported-host fallbacks.
 * Reuse foreground-identity and project freshness presentation across metadata views. Preserve native clipboard framing for applications while local forms/finder receive ordinary paste, restoring the host's original mode on detach.
 * Derive a shared framework theme from confirmed terminal color capabilities and observed foreground/background/ANSI colors. Apply readable surfaces, selection, muted text and semantic accents throughout Bkpr chrome; retain native/ANSI fallbacks and canonical application styles. Refresh on actual private theme notifications without polling, preserve retained field/finder state and tint artwork from its final displayed ink.
+
+### Generic overlays and static chrome
+
+* Put placement, ordered passive/modal layers, opaque return-focus tokens and whole-gesture capture in the reusable framework. Restore main's outside-press cancellation without click-through; retain drafts through outside wheel/resize and keep pending or ambiguous operations noncancellable.
+* Project focused-overlay background faint per view, preserving canonical glyphs, colors, bold styles and images. Passive cards and the key guide retain application keyboard ownership.
+* Move Bkpr's palette recipe into client-owned appearance policy. Preserve main's subdued colors instead of inventing contrast-driven replacements; the framework caches supplied styles and accepts explicit graphic materials.
+* Restore main-aligned unboxed 38-cell sidebar geometry, compact connected project/pane rows and sole-window elision without changing backend identities.
+* Reuse the fork's rounded-mask convolution for compact recessed pane contours and exterior raised-popup shadows. Add optional raised-surface bevels in the framework with client-owned hint-card styling; keep rich pane frames label-free and preserve rounded text fallbacks.
+* Compose sparse transparent graphics layers without erasing native cells, stealing cursor/input ownership or letting pane-local image depth escape its scene layer.
+* Share one separator cell between adjacent pane frames in both split orientations. Remove redundant divider glyphs and omit rich-ready text perimeters before retained painting; restore complete plain captions after resize or capability loss.
+* Reuse prerendered straight-edge atlas resources through representable viewport and overlay clipping instead of allocating, encoding and uploading derived edge rasters. Keep the existing bounded worker cache and exact phase-preserving fallback for arbitrary native-image scaling.
+* Separate physical host background ownership from logical terminal colors. Apply the sidebar matte only with ready pane materials, preserve native pane defaults, filter owned/late query echoes, adopt real theme changes and restore exact original colors on fallback or exit.
+* Fill ready graphical frame cells with the original pane background, matching main's cleared-frame underlay. Preserve the atlas's exterior matte while correcting the opened top/bottom gutters without new textures, raster work or viewport changes.
+* Add `Ctrl-b g` to reversibly switch fancy/text chrome without disabling native application images, resizing panes or discarding bounded prerender caches.
+* Keep provider-dependent forge/PR/CI overlay content unavailable until its backend contract exists. No provider calls, decorative animation or command palette are introduced.
 
 
 ### Development
