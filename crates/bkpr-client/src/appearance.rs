@@ -10,11 +10,11 @@ pub(crate) const PANE_BORDER: u16 = 1;
 /// Focused local dialogs dim lower surfaces; passive hints never do.
 pub(crate) const MODAL_BACKGROUND_FAINT: bool = true;
 
-/// Material policy from main 9ad93bd and its retained fork d7b40a37:
-/// default compact frames anchor the opening at the native content boundary;
+/// Material policy from main 9ad93bd and retained fork 18890b23:
+/// compact frames anchor the opening at the native content boundary;
 /// their placement translates horizontal edges to equalize physical spacing.
 /// depth.rs uses sigma=.30cw, offset=.35cw, opacity=.72 and a .12cw facet.
-/// raised.rs uses the inverse mask at .45 opacity; forms remain shadow-only.
+/// Raised surfaces use the inverse shadow mask at .45 opacity and the same bevel.
 /// The sidebar itself is a plain matte surface, not a decorated window.
 pub(crate) fn decoration_styles(host: &ColorProbe, size: Size) -> Option<[DecorationStyle; 2]> {
     use bkpr_tui_framework::decoration::DecorationKind;
@@ -53,15 +53,12 @@ pub(crate) fn decoration_styles(host: &ColorProbe, size: Size) -> Option<[Decora
     Some([
         recessed,
         DecorationStyle {
-            kind: DecorationKind::Raised,
+            kind: DecorationKind::RaisedSurface,
             // The supplied rect is the popup opening, not its shadow bounds.
             inset_px: padding,
             outset_px: padding,
             radius_px: popup_radius,
             shadow_opacity_milli: 450,
-            lip_width_milli: 0,
-            lip_highlight_milli: 0,
-            lip_shade_milli: 0,
             ..recessed
         },
     ])
@@ -226,6 +223,49 @@ pub(crate) fn update_guide_theme(theme: &mut Theme, host: &ColorProbe, accent: O
     )
 }
 
+pub(crate) fn update_region_theme(
+    theme: &mut Theme,
+    host: &ColorProbe,
+    accent: Option<u8>,
+) -> bool {
+    theme.update(
+        host,
+        accent.map_or(256, |index| 257 + u64::from(index)),
+        |evidence| {
+            let mut styles = theme_styles(evidence);
+            if let Some(background) = region_background(evidence, accent) {
+                for table in [&mut styles.base, &mut styles.panel] {
+                    for role in ROLES {
+                        if !matches!(role, Role::Selected | Role::Hover) {
+                            let style = &mut table[role as usize];
+                            style.background = background;
+                            style.background_source = ColorSource::Rgb(background);
+                        }
+                    }
+                }
+            }
+            styles
+        },
+    )
+}
+
+/// Raised region centers follow the fork's linear-light lift and stronger tint.
+pub(crate) fn region_background(host: &ColorProbe, accent: Option<u8>) -> Option<[u8; 3]> {
+    if !host.truecolor {
+        return None;
+    }
+    let background = host.background?;
+    let foreground = host.foreground?;
+    let lifted = std::array::from_fn(|channel| {
+        encoded(linear(background[channel]) * 0.94 + linear(foreground[channel]) * 0.06)
+    });
+    Some(
+        accent
+            .and_then(|index| host.palette.get(&usize::from(index)))
+            .map_or(lifted, |&color| mode_tint(lifted, color, 0.65)),
+    )
+}
+
 pub(crate) fn guide_background(host: &ColorProbe, accent: Option<u8>) -> Option<[u8; 3]> {
     if !host.truecolor {
         return None;
@@ -234,7 +274,7 @@ pub(crate) fn guide_background(host: &ColorProbe, accent: Option<u8>) -> Option<
     Some(
         accent
             .and_then(|index| host.palette.get(&usize::from(index)))
-            .map_or(background, |&color| mode_tint(background, color)),
+            .map_or(background, |&color| mode_tint(background, color, 0.40)),
     )
 }
 
@@ -253,9 +293,9 @@ fn theme_styles(evidence: &ColorProbe) -> ThemeStyles {
     }
 }
 
-// Fork d7b40a37 output/recessed_frames/colors.rs:32–56.
+// Fork 18890b23 output/recessed_frames/colors.rs:24–56.
 // Zellij's MIT notice is retained in the framework decoration module.
-fn mode_tint(background: [u8; 3], accent: [u8; 3]) -> [u8; 3] {
+fn mode_tint(background: [u8; 3], accent: [u8; 3], mut amount: f64) -> [u8; 3] {
     let base = background.map(linear);
     let accent = accent.map(linear);
     let light = linear_luminance(base);
@@ -264,7 +304,6 @@ fn mode_tint(background: [u8; 3], accent: [u8; 3]) -> [u8; 3] {
         return background;
     }
     let target = accent.map(|channel| channel * light / accent_light);
-    let mut amount: f64 = 0.40;
     for channel in 0..3 {
         let delta = target[channel] - base[channel];
         if delta > 0.0 {
@@ -272,14 +311,16 @@ fn mode_tint(background: [u8; 3], accent: [u8; 3]) -> [u8; 3] {
         }
     }
     std::array::from_fn(|channel| {
-        let value = base[channel] + amount * (target[channel] - base[channel]);
-        let value = if value <= 0.0031308 {
-            value * 12.92
-        } else {
-            1.055 * value.powf(1.0 / 2.4) - 0.055
-        };
-        (value * 255.0).round().clamp(0.0, 255.0) as u8
+        encoded(base[channel] + amount * (target[channel] - base[channel]))
     })
+}
+fn encoded(value: f64) -> u8 {
+    let value = if value <= 0.0031308 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    };
+    (value * 255.0).round().clamp(0.0, 255.0) as u8
 }
 fn blend(fg: [u8; 3], bg: [u8; 3], percent: u16) -> [u8; 3] {
     std::array::from_fn(|index| {
@@ -304,37 +345,6 @@ fn luminance(color: [u8; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn compact_panes_use_native_content_insets_without_changing_popup_material() {
-        let host = ColorProbe {
-            truecolor: true,
-            foreground: Some([230; 3]),
-            background: Some([30; 3]),
-            ..ColorProbe::default()
-        };
-        for (cw, ch) in [(8, 16), (9, 20), (14, 9)] {
-            let styles = decoration_styles(
-                &host,
-                Size {
-                    cols: 80,
-                    rows: 24,
-                    cell_width: cw,
-                    cell_height: ch,
-                },
-            )
-            .unwrap();
-            assert_eq!(styles[0].inset_px, [cw, ch]);
-            assert_eq!(styles[0].radius_px, (cw * 3 / 2).min(2 * ch));
-            let thickness = cw.div_ceil(2).min(ch - 1);
-            assert_eq!(
-                styles[1].radius_px,
-                (cw * 2 - thickness).min(ch - thickness)
-            );
-            assert_eq!(styles[1].inset_px, styles[1].outset_px);
-            assert_eq!(styles[1].shadow_opacity_milli, 450);
-        }
-    }
-
     #[test]
     fn static_material_requires_observed_defaults_and_truecolor() {
         let size = Size {

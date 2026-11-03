@@ -16,7 +16,12 @@ use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
-use bkpr_tui_framework::{Role, RoleSpan, TextInput, Theme, UiSurface};
+// Presentation follows main 9ad93bd's finder.rs/finder_entry.rs and pane tooltip
+// grouping (Copyright (c) 2026 Rémi Labeyrie, MIT); no legacy transport is reused.
+mod entry;
+mod preview;
+use bkpr_tui_framework::{BackgroundSpan, ColorProbe, Role, RoleSpan, TextInput, Theme, UiSurface};
+use preview::{Paragraph, PreviewLine};
 
 /// Execution membership, not a guess from another workspace's projected layout.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,7 +86,7 @@ struct Value {
 impl Value {
     fn new(field: Field, text: &str) -> Self {
         // Published metadata is untrusted terminal text, not escape sequences.
-        let text: String = text.chars().filter(|c| !c.is_control()).collect();
+        let text = preview::clean(text);
         let chars = text
             .graphemes(true)
             .map(|g| g.chars().next().unwrap())
@@ -110,6 +115,7 @@ struct Document {
     harness_visible: bool,
     status_visible: bool,
     project_stale: bool,
+    preview: Vec<Paragraph>,
 }
 impl Document {
     fn add(&mut self, field: Field, text: &str) {
@@ -139,54 +145,176 @@ enum CompactView {
     Preview,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FinderLayout {
+    title: Rect,
+    input: Rect,
     list: Rect,
     preview: Rect,
+    search_rule: Option<Rect>,
+    body_rule: Option<Rect>,
+    footer: Option<Rect>,
 }
 impl FinderLayout {
-    fn new(size: Size, compact: CompactView) -> Self {
-        let height = size.rows.saturating_sub(if size.rows > 3 { 3 } else { 2 });
-        let mut layout = Self {
-            list: Rect {
-                x: 0,
-                y: 2,
-                width: size.cols,
-                height,
-            },
-            preview: Rect {
-                x: 0,
-                y: 2,
-                width: 0,
-                height: 0,
-            },
+    fn raised(size: Size) -> Option<(Self, [(Rect, Rect); 3])> {
+        if size.cols < 40 || size.rows < 14 {
+            return None;
+        }
+        let search = Rect {
+            x: 0,
+            y: 0,
+            width: size.cols,
+            height: 4,
         };
-        if size.cols >= 84 {
-            let split = size.cols / 2;
-            layout.list.width = split.saturating_sub(1);
-            layout.preview = Rect {
+        let body = size.rows - 4;
+        let (list, preview) = if size.cols >= 84 {
+            let split = (u32::from(size.cols) * 2 / 5) as u16;
+            (
+                Rect {
+                    x: 0,
+                    y: 4,
+                    width: split,
+                    height: body,
+                },
+                Rect {
+                    x: split,
+                    y: 4,
+                    width: size.cols - split,
+                    height: body,
+                },
+            )
+        } else {
+            let split = ((u32::from(body) * 2 / 5) as u16).max(4);
+            (
+                Rect {
+                    x: 0,
+                    y: 4,
+                    width: size.cols,
+                    height: split,
+                },
+                Rect {
+                    x: 0,
+                    y: 4 + split,
+                    width: size.cols,
+                    height: body - split,
+                },
+            )
+        };
+        let inset = |rect: Rect| Rect {
+            x: rect.x + 2,
+            y: rect.y + 1,
+            width: rect.width - 4,
+            height: rect.height - 2,
+        };
+        let title = Rect {
+            x: 2,
+            y: 1,
+            width: size.cols - 4,
+            height: 1,
+        };
+        let layout = Self {
+            title,
+            input: Rect { y: 2, ..title },
+            list: inset(list),
+            preview: inset(preview),
+            ..Self::default()
+        };
+        Some((
+            layout,
+            [
+                (search, Rect { height: 2, ..title }),
+                (list, layout.list),
+                (preview, layout.preview),
+            ],
+        ))
+    }
+
+    // The parent owns the rounded outer border; these are its inner cells.
+    fn new(size: Size, compact: CompactView, graphical: bool) -> Self {
+        if graphical && let Some((layout, _)) = Self::raised(size) {
+            return layout;
+        }
+        let row = |y| Rect {
+            x: 0,
+            y,
+            width: size.cols,
+            height: 1,
+        };
+        if size.cols == 0 || size.rows == 0 {
+            return Self::default();
+        }
+        if size.rows <= 2 {
+            let mut layout = Self::default();
+            if size.rows == 2 || compact == CompactView::Input {
+                layout.input = row(0);
+            }
+            let body = row(size.rows - 1);
+            match compact {
+                CompactView::Preview => layout.preview = body,
+                _ if size.rows == 2 || compact == CompactView::List => layout.list = body,
+                _ => {}
+            }
+            return layout;
+        }
+        let mut layout = Self {
+            title: if size.rows >= 5 {
+                row(0)
+            } else {
+                Rect::default()
+            },
+            input: row(u16::from(size.rows >= 5)),
+            ..Self::default()
+        };
+        let top = layout.input.y + 1;
+        let rule = u16::from(size.rows >= 6);
+        if rule != 0 {
+            layout.search_rule = Some(row(top));
+        }
+        let footer = u16::from(size.rows >= 5);
+        if footer != 0 {
+            layout.footer = Some(row(size.rows - 1));
+        }
+        let body = Rect {
+            x: 0,
+            y: top + rule,
+            width: size.cols,
+            height: size.rows - top - rule - footer,
+        };
+        layout.list = body;
+        if size.cols >= 84 && body.height >= 2 {
+            let split = (u32::from(size.cols) * 2 / 5) as u16;
+            layout.list.width = split;
+            layout.body_rule = Some(Rect {
                 x: split,
-                y: 2,
-                width: size.cols - split,
-                height,
-            };
-        } else if height >= 12 {
-            let split = height / 2;
-            layout.list.height = split;
+                width: 1,
+                ..body
+            });
             layout.preview = Rect {
-                x: 0,
-                y: 2 + split,
-                width: size.cols,
-                height: height - split,
+                x: split + 1,
+                width: size.cols - split - 1,
+                ..body
+            };
+        } else if body.height >= 12 {
+            let split = ((u32::from(body.height) * 2 / 5) as u16).max(3);
+            layout.list.height = split;
+            layout.body_rule = Some(Rect {
+                y: body.y + split,
+                height: 1,
+                ..body
+            });
+            layout.preview = Rect {
+                y: body.y + split + 1,
+                height: body.height - split - 1,
+                ..body
             };
         } else if compact == CompactView::Preview {
-            layout.preview = layout.list;
-            layout.list.height = 0;
+            layout.preview = body;
+            layout.list = Rect::default();
         }
         layout
     }
     fn count(self) -> usize {
-        usize::from(self.list.height.div_ceil(2))
+        usize::from(self.list.height)
     }
 }
 fn contains(rect: Rect, x: u16, y: u16) -> bool {
@@ -196,7 +324,7 @@ fn contains(rect: Rect, x: u16, y: u16) -> bool {
         && y < rect.y.saturating_add(rect.height)
 }
 fn preview_capacity(rect: Rect) -> usize {
-    usize::from(rect.height.saturating_sub(u16::from(rect.height > 1)))
+    usize::from(rect.height)
 }
 
 /// Owns the bounded query, metadata index, ranked results, and stable selection.
@@ -217,8 +345,11 @@ pub struct Finder {
     compact: CompactView,
     hovered: Option<String>,
     last_click: Option<(String, Instant)>,
-    preview_lines: Vec<String>,
+    preview_lines: Vec<PreviewLine>,
     preview_key: Option<(u64, String, u16)>,
+    graphical: bool,
+    roles: Vec<RoleSpan>,
+    match_cells: Vec<(u16, u16)>,
 }
 impl Finder {
     pub fn new<'a>(
@@ -243,6 +374,9 @@ impl Finder {
             last_click: None,
             preview_lines: Vec::new(),
             preview_key: None,
+            graphical: false,
+            roles: Vec::new(),
+            match_cells: Vec::new(),
         };
         finder.update_registry(registry, snapshot);
         if let Some(index) = finder.results.iter().position(|result| {
@@ -251,6 +385,20 @@ impl Finder {
             finder.selected = index;
         }
         finder
+    }
+    /// Candidate regions are independent of artwork readiness. Every coordinate
+    /// is local to the complete overlay, including the opaque text insets.
+    pub(crate) fn graphic_regions(size: Size) -> Option<[(Rect, Rect); 3]> {
+        FinderLayout::raised(size).map(|(_, regions)| regions)
+    }
+    pub(crate) fn set_graphical(&mut self, graphical: bool) {
+        self.graphical = graphical;
+    }
+    pub(crate) fn is_graphical(&self) -> bool {
+        self.graphical
+    }
+    fn layout(&self, size: Size) -> FinderLayout {
+        FinderLayout::new(size, self.compact, self.graphical)
     }
 
     pub fn target(&self, result: &FinderResult) -> Option<&FinderTarget> {
@@ -303,12 +451,13 @@ impl Finder {
                     .project
                     .as_ref()
                     .is_some_and(|project| project.state != bkpr_protocol::ProjectState::Ready),
+                preview: preview::content(pane, registry, known),
             };
             // First value is always the title, including for an unnamed pane.
             document.values.push(Value::new(
                 Field::Text,
                 if pane.title.is_empty() {
-                    &pane.id
+                    "Untitled terminal"
                 } else {
                     &pane.title
                 },
@@ -509,7 +658,7 @@ impl Finder {
         });
     }
     fn visible_count(&self, size: Size) -> usize {
-        FinderLayout::new(size, self.compact).count()
+        self.layout(size).count()
     }
     fn reveal(&mut self, count: usize) {
         let count = count.max(1);
@@ -530,7 +679,7 @@ impl Finder {
         if self.selected != previous {
             self.preview_scroll = 0;
         }
-        if FinderLayout::new(size, self.compact).list.height == 0 {
+        if self.layout(size).list.height == 0 {
             self.compact = CompactView::List;
         }
         self.hovered = None;
@@ -557,19 +706,12 @@ impl Finder {
             return;
         }
         self.preview_lines.clear();
-        for (index, value) in document.values.iter().enumerate() {
-            let label = if index == 0 { "title" } else { value.label() };
-            wrap_preview(
-                &format!("{label}: {}", value.text),
-                width as usize,
-                &mut self.preview_lines,
-            );
-        }
+        preview::wrap(&document.preview, width, &mut self.preview_lines);
         self.preview_key = Some((revision, document.target.pane_id.clone(), width));
     }
     fn scroll_preview(&mut self, delta: isize, size: Size) {
         self.compact = CompactView::Preview;
-        let rect = FinderLayout::new(size, self.compact).preview;
+        let rect = self.layout(size).preview;
         self.prepare_preview(rect.width);
         self.preview_scroll = self.preview_scroll.saturating_add_signed(delta).min(
             self.preview_lines
@@ -594,11 +736,11 @@ impl Finder {
             return FinderIntent::None;
         }
         let (x, y) = (event.x as u16, event.y as u16);
-        let layout = FinderLayout::new(size, self.compact);
+        let layout = self.layout(size);
         let in_list = contains(layout.list, x, y);
         let in_preview = contains(layout.preview, x, y);
         let hit = in_list
-            .then(|| self.scroll + usize::from((y - layout.list.y) / 2))
+            .then(|| self.scroll + usize::from(y - layout.list.y))
             .filter(|index| *index < self.results.len());
         self.hovered = hit.map(|index| {
             self.documents[self.results[index].document]
@@ -621,6 +763,13 @@ impl Finder {
                 return FinderIntent::None;
             }
             if event.button == MouseButton::Left {
+                if in_preview {
+                    self.compact = CompactView::Preview;
+                } else if in_list {
+                    self.compact = CompactView::List;
+                } else if contains(layout.input, x, y) {
+                    self.compact = CompactView::Input;
+                }
                 if let Some(index) = hit {
                     if self.selected != index {
                         self.preview_scroll = 0;
@@ -665,13 +814,17 @@ impl Finder {
             Some(Action::Navigate(Navigation::Previous)) => self.navigate(-1, size),
             Some(Action::Navigate(Navigation::Next)) => self.navigate(1, size),
             Some(Action::Navigate(Navigation::PagePrevious)) => {
-                let page =
-                    preview_capacity(FinderLayout::new(size, CompactView::Preview).preview).max(1);
+                let page = preview_capacity(
+                    FinderLayout::new(size, CompactView::Preview, self.graphical).preview,
+                )
+                .max(1);
                 self.scroll_preview(-(page as isize), size);
             }
             Some(Action::Navigate(Navigation::PageNext)) => {
-                let page =
-                    preview_capacity(FinderLayout::new(size, CompactView::Preview).preview).max(1);
+                let page = preview_capacity(
+                    FinderLayout::new(size, CompactView::Preview, self.graphical).preview,
+                )
+                .max(1);
                 self.scroll_preview(page as isize, size);
             }
             Some(Action::CycleView) => {
@@ -694,47 +847,130 @@ impl Finder {
         FinderIntent::None
     }
 
-    /// Paint a complete focused popup content surface at its supplied local size.
-    /// Only visible documents are annotated. Matched graphemes are bold; the
-    /// selected result retains the surface's normal selection background.
+    /// Paint the supplied presentation size: full overlay for the three-card
+    /// graphical view, or the parent's inner plain-popup rectangle otherwise.
     pub fn paint(&mut self, surface: &mut UiSurface, size: Size) {
-        let layout = FinderLayout::new(size, self.compact);
+        let layout = self.layout(size);
         self.reveal(layout.count());
-        self.prepare_preview(layout.preview.width);
         let preview_count = preview_capacity(layout.preview);
-        self.preview_scroll = self
-            .preview_scroll
-            .min(self.preview_lines.len().saturating_sub(preview_count));
+        if layout.preview.width > 0 && preview_count > 0 {
+            self.prepare_preview(layout.preview.width);
+            self.preview_scroll = self
+                .preview_scroll
+                .min(self.preview_lines.len().saturating_sub(preview_count));
+        }
+        // Restore only our previous fuzzy emphasis. Surface owns retained text,
+        // and semantic title/heading styles are reapplied through RoleSpan.
+        for (x, y) in self.match_cells.drain(..) {
+            if let Some(cell) = surface
+                .frame
+                .rows
+                .get_mut(usize::from(y))
+                .and_then(|row| row.cells.get_mut(usize::from(x)))
+            {
+                cell.style.bold = false;
+                cell.style.underline = 0;
+            }
+        }
+        self.roles.clear();
         let mut lines = Vec::new();
-        let mut highlights = Vec::new();
-        let full = Rect {
-            x: 0,
-            y: 0,
-            width: size.cols,
-            height: size.rows,
-        };
-        push_line(
+        let title = self.input.error().map_or_else(
+            || {
+                format!(
+                    "Pane finder · {}/{}",
+                    self.results.len(),
+                    self.documents.len()
+                )
+            },
+            str::to_owned,
+        );
+        role_line(
             &mut lines,
-            full,
+            &mut self.roles,
+            layout.title,
             0,
-            self.input.error().unwrap_or("Find terminal").into(),
+            title,
+            if self.input.error().is_some() {
+                Role::Error
+            } else {
+                Role::Title
+            },
             false,
         );
-        let (visible, used) = self.input.visible(usize::from(size.cols.saturating_sub(2)));
-        push_line(&mut lines, full, 1, format!("> {visible}"), false);
-        if !self.unsupported.is_empty() {
-            push_line(
+        let prefix = if layout.input.width >= 3 { "> " } else { "" };
+        let (visible, used) = self
+            .input
+            .visible(usize::from(layout.input.width).saturating_sub(prefix.len()));
+        role_line(
+            &mut lines,
+            &mut self.roles,
+            layout.input,
+            0,
+            format!("{prefix}{visible}"),
+            Role::Accent,
+            false,
+        );
+        if let Some(rule) = layout.search_rule {
+            role_line(
                 &mut lines,
-                full,
-                2,
+                &mut self.roles,
+                rule,
+                0,
                 format!(
-                    "Unavailable metadata filters: {}",
-                    self.unsupported.join(", ")
+                    "─ Results · {} {}",
+                    self.results.len(),
+                    "─".repeat(usize::from(rule.width))
                 ),
+                Role::Border,
                 false,
             );
+        }
+        if let Some(rule) = layout.body_rule {
+            let vertical = rule.width == 1;
+            for row in 0..rule.height {
+                role_line(
+                    &mut lines,
+                    &mut self.roles,
+                    rule,
+                    row,
+                    if vertical {
+                        "│".into()
+                    } else {
+                        "─".repeat(usize::from(rule.width))
+                    },
+                    Role::Border,
+                    false,
+                );
+            }
+        }
+        let message = if !self.unsupported.is_empty() {
+            Some(format!(
+                "Unavailable metadata filters: {}",
+                self.unsupported.join(", ")
+            ))
+        } else if self.input.error().is_some() && layout.title.height == 0 {
+            self.input.error().map(str::to_owned)
         } else if self.results.is_empty() {
-            push_line(&mut lines, full, 2, "No matching terminals".into(), false);
+            Some("No matching terminals".into())
+        } else {
+            None
+        };
+        if let Some(message) = message {
+            // Compact preview must retain the reason for an empty result set.
+            let rect = if layout.list.height > 0 {
+                layout.list
+            } else {
+                layout.preview
+            };
+            role_line(
+                &mut lines,
+                &mut self.roles,
+                rect,
+                0,
+                message,
+                Role::Warning,
+                false,
+            );
         } else {
             for (visible, result) in self
                 .results
@@ -745,223 +981,119 @@ impl Finder {
             {
                 let document = &self.documents[result.document];
                 let selected = self.scroll + visible == self.selected;
-                let y = visible as u16 * 2;
-                let title = &document.values[0];
-                self.positions.clear();
-                annotate(title, &self.terms, &mut self.matcher, &mut self.positions);
-                let (text, marks) = excerpt(title, &self.positions, layout.list.width as usize);
-                push_line(&mut lines, layout.list, y, text, selected);
-                highlights.push((
-                    layout.list.y + y,
-                    marks
-                        .into_iter()
-                        .map(|column| column + usize::from(layout.list.x))
-                        .collect::<Vec<_>>(),
-                ));
-                let context = document
-                    .values
-                    .iter()
-                    .skip(1)
-                    .filter_map(|value| {
-                        let score = self
-                            .terms
-                            .iter()
-                            .filter(|term| term.field == Field::Text || term.field == value.field)
-                            .filter_map(|term| term.atom.as_ref())
-                            .filter_map(|atom| atom.score(value.view(), &mut self.matcher))
-                            .max();
-                        score.map(|score| (score, value))
-                    })
-                    .max_by_key(|(score, _)| *score)
-                    .map(|(_, value)| value)
-                    .or_else(|| {
-                        document
-                            .values
-                            .iter()
-                            .find(|value| value.field == Field::Cwd)
+                let row = visible as u16;
+                let entry = entry::render(
+                    document,
+                    &self.terms,
+                    &mut self.matcher,
+                    &mut self.positions,
+                    selected,
+                    layout.list.width,
+                );
+                push_line(&mut lines, layout.list, row, entry.text, selected);
+                self.roles
+                    .extend(entry.roles.into_iter().map(|span| RoleSpan {
+                        rect: Rect {
+                            x: layout.list.x + span.rect.x,
+                            y: layout.list.y + row,
+                            ..span.rect
+                        },
+                        role: span.role,
+                    }));
+                if self.hovered.as_ref() == Some(&document.target.pane_id) && !selected {
+                    self.roles.push(RoleSpan {
+                        rect: Rect {
+                            y: layout.list.y + row,
+                            height: 1,
+                            ..layout.list
+                        },
+                        role: Role::Hover,
                     });
-                if let Some(value) = context.filter(|_| y + 1 < layout.list.height) {
-                    self.positions.clear();
-                    annotate(value, &self.terms, &mut self.matcher, &mut self.positions);
-                    let prefix = format!("  {}: ", value.label());
-                    let prefix_width = display_width(&prefix);
-                    let (text, marks) = excerpt(
-                        value,
-                        &self.positions,
-                        (layout.list.width as usize).saturating_sub(prefix_width),
-                    );
-                    push_line(
-                        &mut lines,
-                        layout.list,
-                        y + 1,
-                        format!("{prefix}{text}"),
-                        selected,
-                    );
-                    highlights.push((
-                        layout.list.y + y + 1,
-                        marks
-                            .into_iter()
-                            .map(|column| column + prefix_width + usize::from(layout.list.x))
-                            .collect(),
-                    ));
                 }
+                self.match_cells.extend(
+                    entry
+                        .matches
+                        .into_iter()
+                        .map(|column| (layout.list.x + column as u16, layout.list.y + row)),
+                );
             }
-            if layout.preview.width > 0 && layout.preview.height > 0 {
-                let header = u16::from(layout.preview.height > 1);
-                if header > 0 {
-                    push_line(
-                        &mut lines,
-                        layout.preview,
-                        0,
-                        "Details · PgUp/PgDn scroll".into(),
-                        false,
-                    );
-                }
-                for (index, text) in self
-                    .preview_lines
-                    .iter()
-                    .skip(self.preview_scroll)
-                    .take(preview_count)
-                    .enumerate()
-                {
-                    push_line(
-                        &mut lines,
-                        layout.preview,
-                        index as u16 + header,
-                        text.clone(),
-                        false,
-                    );
-                }
+            for (index, line) in self
+                .preview_lines
+                .iter()
+                .skip(self.preview_scroll)
+                .take(preview_count)
+                .enumerate()
+            {
+                role_line(
+                    &mut lines,
+                    &mut self.roles,
+                    layout.preview,
+                    index as u16,
+                    line.text.clone(),
+                    line.role,
+                    false,
+                );
             }
         }
-        if size.rows > 3 {
-            push_line(
+        if let Some(footer) = layout.footer {
+            role_line(
                 &mut lines,
-                full,
-                size.rows - 1,
-                format!(
-                    "{} terminals · Tab views · Enter select · Esc cancel",
-                    self.results.len()
-                ),
+                &mut self.roles,
+                footer,
+                0,
+                "Tab views · ↑/↓ select · PgUp/PgDn preview · Enter open · Esc cancel".into(),
+                Role::Muted,
                 false,
             );
         }
-        let cursor = (size.rows > 1 && size.cols > 2 && self.compact == CompactView::Input)
-            .then_some(Cursor {
-                x: (2 + used) as u16,
-                y: 1,
+        let cursor = (layout.input.height > 0
+            && layout.input.width > 0
+            && self.compact == CompactView::Input)
+            .then(|| Cursor {
+                x: layout.input.x
+                    + (prefix.len() + used).min(usize::from(layout.input.width - 1)) as u16,
+                y: layout.input.y,
                 visible: true,
                 blinking: true,
                 shape: CursorShape::Bar,
                 color: None,
             });
-        // Only fuzzy-result emphasis is ours to clear. Titles and preview
-        // headings belong to the retained theme and may not repaint this frame.
-        for row in surface
-            .frame
-            .rows
-            .iter_mut()
-            .skip(usize::from(layout.list.y))
-            .take(usize::from(layout.list.height))
-        {
-            for cell in row
-                .cells
-                .iter_mut()
-                .skip(usize::from(layout.list.x))
-                .take(usize::from(layout.list.width))
-            {
-                cell.style.bold = false;
-            }
-        }
         surface.paint(size, lines, cursor);
-        for (y, columns) in highlights {
-            if let Some(row) = surface.frame.rows.get_mut(y as usize) {
-                for column in columns {
-                    if let Some(cell) = row.cells.get_mut(column) {
-                        cell.style.bold = true;
-                    }
-                }
+        for &(x, y) in &self.match_cells {
+            if let Some(cell) = surface
+                .frame
+                .rows
+                .get_mut(usize::from(y))
+                .and_then(|row| row.cells.get_mut(usize::from(x)))
+            {
+                cell.style.bold = true;
+                cell.style.underline = 1;
             }
         }
     }
 
-    pub(crate) fn apply_theme(&self, surface: &mut UiSurface, theme: &Theme) {
-        let size = surface.frame.size;
-        let layout = FinderLayout::new(size, self.compact);
-        let full = Rect {
-            x: 0,
-            y: 0,
-            width: size.cols,
-            height: 1,
-        };
-        let mut spans = vec![
-            RoleSpan {
-                rect: full,
-                role: if self.input.error().is_some() {
-                    Role::Error
-                } else {
-                    Role::Title
-                },
-            },
-            RoleSpan {
-                rect: Rect { y: 1, ..full },
-                role: Role::Accent,
-            },
-            RoleSpan {
-                rect: Rect { y: 2, ..full },
-                role: Role::Muted,
-            },
-            RoleSpan {
-                rect: Rect {
-                    y: size.rows.saturating_sub(1),
-                    ..full
-                },
-                role: Role::Muted,
-            },
-        ];
-        for (visible, result) in self
-            .results
-            .iter()
-            .skip(self.scroll)
-            .take(layout.count())
-            .enumerate()
-        {
-            let y = layout.list.y + visible as u16 * 2;
-            let hovered =
-                self.hovered.as_ref() == Some(&self.documents[result.document].target.pane_id);
-            spans.push(RoleSpan {
-                rect: Rect {
-                    y,
-                    height: 1,
-                    ..layout.list
-                },
-                role: if hovered { Role::Hover } else { Role::Panel },
+    pub(crate) fn apply_theme(&self, surface: &mut UiSurface, theme: &Theme, host: &ColorProbe) {
+        let backgrounds = Self::graphic_regions(surface.frame.size)
+            .filter(|_| self.graphical)
+            .map(|regions| {
+                std::array::from_fn::<_, 3, _>(|index| BackgroundSpan {
+                    rect: regions[index].1,
+                    background: crate::appearance::region_background(
+                        host,
+                        (index == 0).then_some(6),
+                    )
+                    .map_or(
+                        bkpr_protocol::ColorSource::Default,
+                        bkpr_protocol::ColorSource::Rgb,
+                    ),
+                })
             });
-            if y + 1 < layout.list.y + layout.list.height {
-                spans.push(RoleSpan {
-                    rect: Rect {
-                        y: y + 1,
-                        height: 1,
-                        ..layout.list
-                    },
-                    role: if hovered { Role::Hover } else { Role::Muted },
-                });
-            }
-        }
-        if layout.preview.width > 0 && layout.preview.height > 0 {
-            spans.push(RoleSpan {
-                rect: layout.preview,
-                role: Role::Muted,
-            });
-            spans.push(RoleSpan {
-                rect: Rect {
-                    height: 1,
-                    ..layout.preview
-                },
-                role: Role::Title,
-            });
-        }
-        surface.apply_theme(theme, Role::Panel, &spans);
+        surface.apply_theme_with_backgrounds(
+            theme,
+            Role::Panel,
+            &self.roles,
+            backgrounds.as_ref().map_or(&[], |spans| &spans[..]),
+        );
     }
 }
 
@@ -986,23 +1118,25 @@ fn push_line(
     }
 }
 
-fn wrap_preview(text: &str, width: usize, lines: &mut Vec<String>) {
-    if width == 0 {
-        return;
-    }
-    let mut line = String::new();
-    let mut columns = 0;
-    for grapheme in text.graphemes(true) {
-        let length = display_width(grapheme);
-        if columns + length > width && !line.is_empty() {
-            lines.push(std::mem::take(&mut line));
-            columns = 0;
-        }
-        line.push_str(grapheme);
-        columns += length;
-    }
-    if !line.is_empty() {
-        lines.push(line);
+fn role_line(
+    lines: &mut Vec<(Rect, String, bool)>,
+    roles: &mut Vec<RoleSpan>,
+    rect: Rect,
+    row: u16,
+    text: String,
+    role: Role,
+    selected: bool,
+) {
+    if row < rect.height && rect.width > 0 {
+        push_line(lines, rect, row, text, selected);
+        roles.push(RoleSpan {
+            rect: Rect {
+                y: rect.y + row,
+                height: 1,
+                ..rect
+            },
+            role,
+        });
     }
 }
 
@@ -1026,30 +1160,73 @@ fn display_width(text: &str) -> usize {
         .sum()
 }
 fn excerpt(value: &Value, positions: &[u32], width: usize) -> (String, Vec<usize>) {
+    if width == 0 {
+        return (String::new(), Vec::new());
+    }
     let first = positions.iter().copied().min().unwrap_or(0) as usize;
+    let last = positions.iter().copied().max().unwrap_or(0) as usize;
     let mut start = 0;
-    let mut preceding = 0;
-    // Shift the context when the first match would otherwise be clipped away.
-    for (index, grapheme) in value.text.graphemes(true).enumerate().take(first) {
-        preceding += display_width(grapheme);
-        if preceding >= width.saturating_sub(2) {
-            start = index + 1;
+    // Fit the complete matched span when possible, not merely its first glyph.
+    let through_match: usize = value
+        .text
+        .graphemes(true)
+        .take(last + 1)
+        .map(display_width)
+        .sum();
+    if !positions.is_empty() && through_match > width {
+        start = first;
+        let span: usize = value
+            .text
+            .graphemes(true)
+            .skip(first)
+            .take(last - first + 1)
+            .map(display_width)
+            .sum();
+        let context_budget = width.saturating_sub(span + 2).min(width / 3);
+        let byte = value
+            .text
+            .grapheme_indices(true)
+            .nth(first)
+            .map_or(0, |(byte, _)| byte);
+        let mut before = 0;
+        for glyph in value.text[..byte].graphemes(true).rev() {
+            let length = display_width(glyph);
+            if before + length > context_budget {
+                break;
+            }
+            before += length;
+            start -= 1;
         }
     }
     let mut text = String::new();
     let mut marks = Vec::new();
     let mut column = 0;
-    if start > 0 && width > 0 {
+    let mut glyphs = value
+        .text
+        .graphemes(true)
+        .enumerate()
+        .skip(start)
+        .peekable();
+    if start > 0
+        && glyphs
+            .peek()
+            .is_some_and(|(_, glyph)| display_width(glyph) < width)
+    {
         text.push('…');
         column = 1;
     }
-    for (index, grapheme) in value.text.graphemes(true).enumerate().skip(start) {
-        let length = display_width(grapheme);
-        if column + length > width {
+    for (index, glyph) in glyphs {
+        let length = display_width(glyph);
+        let matched = positions.contains(&(index as u32));
+        let clipped = index + 1 < value.chars.len() && column + length >= width;
+        if column + length > width || (clipped && !matched) {
+            if column < width {
+                text.push('…');
+            }
             break;
         }
-        text.push_str(grapheme);
-        if positions.contains(&(index as u32)) {
+        text.push_str(glyph);
+        if matched {
             marks.extend(column..column + length);
         }
         column += length;
@@ -1119,17 +1296,15 @@ mod tests {
         let mut finder = Finder::new(&registry(), Some("b"), |_| None);
         finder.set_query("build");
         let size = size();
-        let layout = FinderLayout::new(size, finder.compact);
         let mut surface = UiSurface::new(size);
         let mut theme = Theme::default();
         finder.paint(&mut surface, size);
-        finder.apply_theme(&mut surface, &theme);
+        finder.apply_theme(&mut surface, &theme, &ColorProbe::default());
         let cursor = surface.frame.cursor.clone();
         let selected = finder.selected_target().cloned();
-        let y = usize::from(layout.list.y);
-        let x = usize::from(layout.list.x);
+        let (x, y) = finder.match_cells[0];
+        let (x, y) = (usize::from(x), usize::from(y));
         assert!(surface.frame.rows[y].cells[x].style.bold);
-        surface.frame.rows[y].cells[x].style.underline = 1;
         let mut host = bkpr_tui_framework::ColorProbe {
             truecolor: true,
             ..bkpr_tui_framework::ColorProbe::default()
@@ -1143,7 +1318,7 @@ mod tests {
             assert!(crate::appearance::update_theme(&mut theme, &host));
             let previous = surface.frame.rows[y].cells[x].style.background_source;
             finder.paint(&mut surface, size);
-            finder.apply_theme(&mut surface, &theme);
+            finder.apply_theme(&mut surface, &theme, &host);
             let matched = &surface.frame.rows[y].cells[x];
             assert!(matched.style.bold);
             assert_eq!(matched.style.underline, 1);
@@ -1154,7 +1329,7 @@ mod tests {
             // A second unchanged render must retain themed title attributes,
             // even though fuzzy-match emphasis is cleared and rebuilt.
             finder.paint(&mut surface, size);
-            finder.apply_theme(&mut surface, &theme);
+            finder.apply_theme(&mut surface, &theme, &host);
             assert!(surface.frame.rows[0].cells[0].style.bold);
             assert!(surface.frame.rows[y].cells[x].style.bold);
         }
@@ -1258,12 +1433,12 @@ mod tests {
         finder.handle_key(&key("Tab"), size());
         finder.handle_key(&key("Tab"), size());
         assert_eq!(finder.compact, CompactView::Preview);
-        assert_eq!(FinderLayout::new(size(), finder.compact).list.height, 0);
+        assert_eq!(finder.layout(size()).list.height, 0);
         assert_eq!(finder.selected_target().unwrap().pane_id, "b");
         finder.handle_key(&key("PageDown"), size());
         assert!(!finder.preview_lines.is_empty());
         finder.handle_key(&key("ArrowUp"), size());
-        assert_ne!(FinderLayout::new(size(), finder.compact).list.height, 0);
+        assert_ne!(finder.layout(size()).list.height, 0);
     }
     #[test]
     fn pointer_scroll_routes_to_preview_and_click_activation_uses_stable_id() {
@@ -1275,6 +1450,7 @@ mod tests {
             rows: 10,
             ..size()
         };
+        let list = finder.layout(wide).list;
         finder.handle_mouse(
             &mouse(60.0, 3.0, MouseButton::WheelDown, MouseAction::Press),
             wide,
@@ -1283,7 +1459,12 @@ mod tests {
         assert_eq!(finder.selected_target().unwrap().pane_id, "b");
         assert_eq!(
             finder.handle_mouse(
-                &mouse(2.0, 2.0, MouseButton::Left, MouseAction::Press),
+                &mouse(
+                    f32::from(list.x + 2),
+                    f32::from(list.y),
+                    MouseButton::Left,
+                    MouseAction::Press
+                ),
                 wide
             ),
             FinderIntent::None
@@ -1294,7 +1475,12 @@ mod tests {
         finder.update_registry(&registry, |_| None);
         assert_eq!(
             finder.handle_mouse(
-                &mouse(2.0, 2.0, MouseButton::Left, MouseAction::Press),
+                &mouse(
+                    f32::from(list.x + 2),
+                    f32::from(list.y),
+                    MouseButton::Left,
+                    MouseAction::Press
+                ),
                 wide
             ),
             FinderIntent::Activate(selected)
@@ -1306,23 +1492,6 @@ mod tests {
             ),
             FinderIntent::None
         );
-    }
-    #[test]
-    fn narrow_layout_and_unicode_preview_wrap_keep_content_reachable() {
-        let tiny = Size {
-            cols: 8,
-            rows: 3,
-            ..size()
-        };
-        assert_eq!(FinderLayout::new(tiny, CompactView::List).count(), 1);
-        assert_eq!(
-            FinderLayout::new(tiny, CompactView::Preview).preview.height,
-            1
-        );
-        let mut lines = Vec::new();
-        wrap_preview("界e\u{301}tail", 3, &mut lines);
-        assert_eq!(lines.concat(), "界e\u{301}tail");
-        assert!(lines.iter().all(|line| display_width(line) <= 3));
     }
     #[test]
     fn rejected_paste_and_cursor_motion_preserve_ranked_selection() {
@@ -1338,5 +1507,215 @@ mod tests {
         assert_eq!(finder.input.cursor, cursor);
         assert_eq!(finder.selected_target(), Some(&selected));
         assert!(finder.input.error().is_some());
+    }
+    #[test]
+    fn graphical_regions_share_painted_and_pointer_geometry() {
+        let mut finder = Finder::new(&registry(), None, |_| None);
+        for (cols, rows) in [(120, 28), (84, 18), (60, 24), (40, 14)] {
+            let size = Size {
+                cols,
+                rows,
+                ..size()
+            };
+            let regions = Finder::graphic_regions(size).unwrap();
+            finder.set_graphical(true);
+            assert!(finder.is_graphical());
+            let layout = finder.layout(size);
+            assert_eq!(layout.list, regions[1].1);
+            assert_eq!(layout.preview, regions[2].1);
+            for (card, text) in regions {
+                assert!(card.x + card.width <= cols && card.y + card.height <= rows);
+                assert!(contains(card, text.x, text.y));
+                assert!(contains(
+                    card,
+                    text.x + text.width - 1,
+                    text.y + text.height - 1
+                ));
+            }
+            let mut surface = UiSurface::new(size);
+            finder.paint(&mut surface, size);
+            let selected_row = layout.list.y + (finder.selected - finder.scroll) as u16;
+            assert!(
+                surface.frame.rows[usize::from(selected_row)].cells
+                    [usize::from(layout.list.x + layout.list.width - 1)]
+                .style
+                .inverse
+            );
+            let first = finder
+                .target(&finder.results[finder.scroll])
+                .unwrap()
+                .clone();
+            let second = finder
+                .target(&finder.results[finder.scroll + 1])
+                .unwrap()
+                .clone();
+            let row_text = |y: u16| {
+                surface.frame.rows[usize::from(y)]
+                    .cells
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>()
+            };
+            assert!(
+                row_text(layout.list.y)
+                    .contains(&finder.documents[finder.results[0].document].values[0].text)
+            );
+            assert!(
+                row_text(layout.list.y + 1)
+                    .contains(&finder.documents[finder.results[1].document].values[0].text)
+            );
+            for (row, target) in [(0, first), (1, second)] {
+                finder.handle_mouse(
+                    &mouse(
+                        f32::from(layout.list.x),
+                        f32::from(layout.list.y + row),
+                        MouseButton::Left,
+                        MouseAction::Press,
+                    ),
+                    size,
+                );
+                assert_eq!(finder.selected_target(), Some(&target));
+            }
+        }
+    }
+
+    #[test]
+    fn presentation_toggle_and_tiny_resize_preserve_query_selection_and_preview_focus() {
+        let mut finder = Finder::new(&registry(), None, |_| None);
+        finder.paste("build");
+        finder.navigate(1, size());
+        finder.handle_key(&key("ArrowLeft"), size());
+        finder.compact = CompactView::Preview;
+        let target = finder.selected_target().cloned();
+        let query = finder.input.value.clone();
+        let cursor = finder.input.cursor;
+        let mut surface = UiSurface::new(size());
+        for (cols, rows) in [
+            (110, 28),
+            (60, 24),
+            (40, 14),
+            (30, 8),
+            (8, 3),
+            (1, 1),
+            (0, 0),
+            (110, 28),
+        ] {
+            let size = Size {
+                cols,
+                rows,
+                ..size()
+            };
+            finder.set_graphical(Finder::graphic_regions(size).is_some());
+            finder.paint(&mut surface, size);
+            assert_eq!(finder.input.value, query);
+            assert_eq!(finder.input.cursor, cursor);
+            assert_eq!(finder.selected_target(), target.as_ref());
+            assert_eq!(finder.compact, CompactView::Preview);
+            assert!(!surface.frame.cursor.visible);
+        }
+    }
+
+    #[test]
+    fn compact_view_switch_keeps_preview_scroll_when_hidden() {
+        let mut registry = registry();
+        registry.panes[0].cwd = format!("/{}", "long-path/".repeat(40)).into();
+        let mut finder = Finder::new(&registry, Some("b"), |_| None);
+        finder.scroll_preview(3, size());
+        let scroll = finder.preview_scroll;
+        assert!(scroll > 0);
+        let mut surface = UiSurface::new(size());
+        finder.compact = CompactView::List;
+        finder.paint(&mut surface, size());
+        assert_eq!(finder.preview_scroll, scroll);
+        finder.compact = CompactView::Preview;
+        finder.paint(&mut surface, size());
+        assert_eq!(finder.preview_scroll, scroll);
+    }
+
+    #[test]
+    fn metadata_matches_stay_in_their_actual_one_row_excerpt() {
+        let mut registry = registry();
+        registry.panes[0].cwd = "/a/long/directory/with/needle/at/the/end".into();
+        let mut finder = Finder::new(&registry, None, |_| None);
+        finder.set_query("cwd:needle");
+        assert_eq!(finder.results.len(), 1);
+        for width in [12, 29, 60] {
+            let document = &finder.documents[finder.results[0].document];
+            let row = entry::render(
+                document,
+                &finder.terms,
+                &mut finder.matcher,
+                &mut finder.positions,
+                true,
+                width,
+            );
+            assert!(!row.matches.is_empty());
+            assert_eq!(display_width(&row.text), usize::from(width));
+            let matched: String = row
+                .text
+                .chars()
+                .enumerate()
+                .filter_map(|(column, ch)| row.matches.contains(&column).then_some(ch))
+                .collect();
+            assert!("needle".contains(&matched));
+            assert!(matched.len() >= 2);
+        }
+    }
+
+    #[test]
+    fn preview_uses_local_repository_facts_without_exposing_identity_dump() {
+        use bkpr_protocol::{ChangeSummary, ProjectSnapshot, ProjectState, RepositoryInfo};
+        let mut registry = registry();
+        registry.panes[0].id = "private-pane-uuid".into();
+        registry.panes[0].project = Some(ProjectSnapshot {
+            cwd: "/work/project".into(),
+            state: ProjectState::Loading,
+            error: None,
+            repository: Some(RepositoryInfo {
+                name: "project".into(),
+                root: "/work/project".into(),
+                common_dir: "/work/project/.git".into(),
+                git_dir: "/work/project/.git".into(),
+                branch: Some("feature/日本語".into()),
+                head_sha: Some("abcdef1234567890".into()),
+                staged: ChangeSummary {
+                    files: 2,
+                    insertions: 8,
+                    deletions: 3,
+                    binary_files: 1,
+                },
+                unstaged: ChangeSummary::default(),
+                untracked_files: 4,
+                base_ref: Some("main".into()),
+                base_sha: Some("1234567890abcdef".into()),
+                committed: Some(ChangeSummary {
+                    files: 3,
+                    insertions: 20,
+                    deletions: 7,
+                    binary_files: 0,
+                }),
+            }),
+        });
+        let finder = Finder::new(&registry, Some("private-pane-uuid"), |_| None);
+        let document = &finder.documents[finder.results[finder.selected].document];
+        let preview = document
+            .preview
+            .iter()
+            .map(|p| p.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!preview.contains("private-pane-uuid"));
+        assert!(!preview.contains("PID:"));
+        assert!(preview.contains("feature/日本語"));
+        assert!(preview.contains("+8 −3"));
+        assert!(preview.contains("+20 −7"));
+        assert!(
+            document
+                .preview
+                .iter()
+                .any(|p| p.role == Role::Warning && p.text.contains("stale"))
+        );
+        assert!(document.preview.iter().any(|p| p.role == Role::Title));
+        assert!(preview.contains("not available"));
     }
 }

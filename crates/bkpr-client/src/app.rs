@@ -101,7 +101,7 @@ fn raised_material(
     effects: &mut Frame,
     outer: Rect,
     base: u32,
-) {
+) -> bool {
     let local = Rect {
         x: 0,
         y: 0,
@@ -112,13 +112,17 @@ fn raised_material(
         material_caption(frame, local, false),
         material_caption(frame, local, true),
     ];
-    let exclusions = captions.map(|caption| Rect {
+    let body = window::content(frame.size);
+    let exclusions = [body, captions[0], captions[1]].map(|caption| Rect {
         x: outer.x + caption.x,
         y: outer.y + caption.y,
         ..caption
     });
-    let ready = graphics.decorate_window_in_clipped(effects, outer, true, base, &exclusions);
+    let ready = local.width >= 3
+        && local.height >= 3
+        && graphics.decorate_window_in_clipped(effects, outer, true, base, &exclusions);
     material_border(frame, local, !ready, &captions);
+    ready
 }
 
 #[path = "jobs.rs"]
@@ -463,6 +467,15 @@ impl App<'_> {
         }
         self.state.reconcile(&self.registry);
     }
+    fn toggle_chrome(&mut self) {
+        self.chrome_graphics_enabled = !self.chrome_graphics_enabled;
+        self.state.status = if self.chrome_graphics_enabled {
+            "Fancy chrome requested"
+        } else {
+            "Normal chrome"
+        }
+        .into();
+    }
     fn enter_sidebar(&mut self) {
         self.retire_resize("sidebar focused");
         self.selection_focus_lost();
@@ -723,7 +736,16 @@ impl App<'_> {
             width.min(screen.cols.saturating_sub(4).max(1)),
             height.min(screen.rows.saturating_sub(2).max(1)),
         );
-        (placement.outer, placement.content)
+        let content = if self
+            .finder
+            .as_ref()
+            .is_some_and(|finder| finder.is_graphical())
+        {
+            placement.outer
+        } else {
+            placement.content
+        };
+        (placement.outer, content)
     }
     fn open_form(&mut self, kind: FormKind, value: String) {
         self.begin_modal();
@@ -2873,6 +2895,23 @@ impl App<'_> {
             }
             return Ok(false);
         }
+        if self.state.form.is_some() || self.finder.is_some() {
+            if self.state.prefix {
+                self.state.prefix = false;
+                self.state.suppressed.insert(event.key.clone());
+                if self.binding_action(crate::keyguide::Context::CommandPrefix, &event)?
+                    == Some(crate::keyguide::Action::ToggleChrome)
+                {
+                    self.toggle_chrome();
+                }
+                return Ok(false);
+            }
+            if event.action == KeyAction::Press && event.key == "KeyB" && event.modifiers & 2 != 0 {
+                self.state.prefix = true;
+                self.state.suppressed.insert(event.key);
+                return Ok(false);
+            }
+        }
         if self.overlays.escape_target() == Some("ui:modal")
             && crate::keyguide::lookup(self.guide_context(), &event)
                 == Some(crate::keyguide::Action::Cancel)
@@ -3021,15 +3060,7 @@ impl App<'_> {
             }
             match action {
                 Some(Action::Detach) => return Ok(true),
-                Some(Action::ToggleChrome) => {
-                    self.chrome_graphics_enabled = !self.chrome_graphics_enabled;
-                    self.state.status = if self.chrome_graphics_enabled {
-                        "Fancy chrome requested"
-                    } else {
-                        "Normal chrome"
-                    }
-                    .into();
-                }
+                Some(Action::ToggleChrome) => self.toggle_chrome(),
                 Some(Action::StartSearch) => self.begin_search()?,
                 Some(Action::StartHistory) => self.enter_history(rects)?,
                 Some(Action::StartResize) => self.begin_keyboard_resize(size)?,
@@ -3861,6 +3892,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         });
         let mut window_size = None;
         let mut guide_painted = None;
+        let mut form_theme = Theme::default();
         let mut search_surface = UiSurface::new(initial_size);
         let mut window_effects = graphics_frame(initial_size);
         let mut popover_effects = graphics_frame(initial_size);
@@ -4178,7 +4210,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 });
             }
             let popup = consent_open || app.state.form.is_some() || app.finder.is_some();
-            let placement = popup.then(|| {
+            let mut placement = popup.then(|| {
                 if consent_open {
                     let placement = OverlayPlacement::centered(
                         size,
@@ -4190,6 +4222,64 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     app.modal_geometry(size)
                 }
             });
+            let mut finder_cards = None;
+            let mut form_region = None;
+            let mut modal_graphical = false;
+            if !consent_open
+                && let Some((outer, _)) = placement
+                && let Some(finder) = &mut app.finder
+            {
+                if let Some(regions) = crate::finder::Finder::graphic_regions(outer.size(size)) {
+                    let ready = regions.iter().enumerate().all(|(index, (card, body))| {
+                        let absolute = |rect: Rect| Rect {
+                            x: outer.x + rect.x,
+                            y: outer.y + rect.y,
+                            ..rect
+                        };
+                        graphics.decorate_region(
+                            &mut window_effects,
+                            absolute(*card),
+                            absolute(*body),
+                            1 + index as u32 * 1024,
+                            (index == 0).then_some(6),
+                        )
+                    });
+                    if ready {
+                        finder_cards = Some(regions);
+                        modal_graphical = true;
+                    } else {
+                        window_effects.images.clear();
+                        window_effects.placements.clear();
+                    }
+                }
+                finder.set_graphical(finder_cards.is_some());
+                placement = Some(app.modal_geometry(size));
+            }
+            if !consent_open
+                && let Some((outer, inner)) = placement
+                && let Some(form) = &app.state.form
+                && outer.width >= 40
+                && outer.height >= 8
+            {
+                let accent = match &form.kind {
+                    _ if form.error.is_some() => Some(1),
+                    FormKind::RenameWorkspace | FormKind::RenameWindow | FormKind::RenamePane => {
+                        Some(3)
+                    }
+                    FormKind::CreateWorkspace | FormKind::CreateWindow => Some(4),
+                    FormKind::TerminatePane | FormKind::CloseWorkspace | FormKind::CloseWindow => {
+                        Some(1)
+                    }
+                    _ => None,
+                };
+                if graphics.decorate_region(&mut window_effects, outer, inner, 1, accent) {
+                    form_region = Some(accent);
+                    modal_graphical = true;
+                } else {
+                    window_effects.images.clear();
+                    window_effects.placements.clear();
+                }
+            }
             app.overlays.resize(size);
             if let Some((outer, content)) = placement {
                 let return_focus = app
@@ -4261,12 +4351,22 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     );
                 } else if let Some(finder) = &mut app.finder {
                     finder.paint(&mut popup_surface, local);
-                    finder.apply_theme(&mut popup_surface, &theme);
+                    finder.apply_theme(&mut popup_surface, &theme, &app.colors);
                 } else if let Some(form) = &app.state.form {
                     modal(&mut popup_surface, local, form, &app.registry, |pane| {
                         app.views.get(pane).map(|view| &view.metadata)
                     });
-                    theme_modal(&mut popup_surface, &theme, form);
+                    let form_palette = if let Some(accent) = form_region {
+                        crate::appearance::update_region_theme(
+                            &mut form_theme,
+                            &app.colors,
+                            accent,
+                        );
+                        &form_theme
+                    } else {
+                        &theme
+                    };
+                    theme_modal(&mut popup_surface, form_palette, form);
                 }
                 window_surface.apply_theme(
                     &theme,
@@ -4275,13 +4375,27 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 );
                 window_surface.frame.images.clear();
                 window_surface.frame.placements.clear();
-                raised_material(
-                    &graphics,
-                    &mut window_surface.frame,
-                    &mut window_effects,
-                    outer,
-                    1,
-                );
+                if app.finder.is_some() && finder_cards.is_none() {
+                    material_border(
+                        &mut window_surface.frame,
+                        Rect {
+                            x: 0,
+                            y: 0,
+                            width: outer.width,
+                            height: outer.height,
+                        },
+                        true,
+                        &[],
+                    );
+                } else if finder_cards.is_none() && form_region.is_none() {
+                    modal_graphical = raised_material(
+                        &graphics,
+                        &mut window_surface.frame,
+                        &mut window_effects,
+                        outer,
+                        1,
+                    );
+                }
             }
             let tooltip_target = if popup || app.state.prefix || app.search_open() {
                 None
@@ -4304,11 +4418,12 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 size,
                 |pane| app.views.get(pane).map(|view| &view.metadata),
             );
+            let mut popover_graphical = false;
             if let Some(rect) = tooltip {
                 app.popover.apply_theme(&theme);
                 app.popover.surface.frame.images.clear();
                 app.popover.surface.frame.placements.clear();
-                raised_material(
+                popover_graphical = raised_material(
                     &graphics,
                     &mut app.popover.surface.frame,
                     &mut popover_effects,
@@ -4533,39 +4648,71 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 faint: faint_background,
             });
             for layer in app.overlays.layers() {
-                let (frame, rect) = match layer.id {
-                    crate::popover::SURFACE_ID => {
-                        (&app.popover.surface.frame, layer.placement.outer)
-                    }
-                    "ui:guide" => (
-                        &guide_surface.frame,
-                        guide_draw_rect.expect("presented guide has a cell projection"),
-                    ),
-                    "ui:modal" => {
+                if layer.id == "ui:modal"
+                    && let Some(regions) = finder_cards
+                {
+                    for (index, (_, body)) in regions.into_iter().enumerate() {
                         surfaces.push(Surface {
-                            id: "ui:window",
-                            content: SurfaceContent::All,
+                            id: ["ui:modal:input", "ui:modal:results", "ui:modal:preview"][index],
+                            content: SurfaceContent::CellsClipped(body),
                             rect: layer.placement.outer,
-                            frame: &window_surface.frame,
+                            frame: &popup_surface.frame,
                             selection: &[],
                             search: &[],
-                            focused: false,
+                            focused: index == 0 && app.overlays.keyboard_owner() == Some(layer.id),
                             faint: false,
                         });
-                        (&popup_surface.frame, layer.placement.content)
                     }
-                    _ => continue,
-                };
-                surfaces.push(Surface {
-                    id: layer.id,
-                    content: SurfaceContent::All,
-                    rect,
-                    frame,
-                    selection: &[],
-                    search: &[],
-                    focused: app.overlays.keyboard_owner() == Some(layer.id),
-                    faint: faint_background && !layer.policy.modal,
-                });
+                } else {
+                    let (frame, rect, content) = match layer.id {
+                        crate::popover::SURFACE_ID => (
+                            &app.popover.surface.frame,
+                            layer.placement.outer,
+                            if popover_graphical {
+                                SurfaceContent::CellsClipped(window::content(
+                                    app.popover.surface.frame.size,
+                                ))
+                            } else {
+                                SurfaceContent::All
+                            },
+                        ),
+                        "ui:guide" => (
+                            &guide_surface.frame,
+                            guide_draw_rect.expect("presented guide has a cell projection"),
+                            SurfaceContent::All,
+                        ),
+                        "ui:modal" => {
+                            if !modal_graphical {
+                                surfaces.push(Surface {
+                                    id: "ui:window",
+                                    content: SurfaceContent::All,
+                                    rect: layer.placement.outer,
+                                    frame: &window_surface.frame,
+                                    selection: &[],
+                                    search: &[],
+                                    focused: false,
+                                    faint: false,
+                                });
+                            }
+                            (
+                                &popup_surface.frame,
+                                layer.placement.content,
+                                SurfaceContent::All,
+                            )
+                        }
+                        _ => continue,
+                    };
+                    surfaces.push(Surface {
+                        id: layer.id,
+                        content,
+                        rect,
+                        frame,
+                        selection: &[],
+                        search: &[],
+                        focused: app.overlays.keyboard_owner() == Some(layer.id),
+                        faint: faint_background && !layer.policy.modal,
+                    });
+                }
                 let (effects, effects_id) = match layer.id {
                     crate::popover::SURFACE_ID => (&popover_effects, "ui:popover:graphics"),
                     "ui:guide" => (&guide_effects, "ui:guide:graphics"),

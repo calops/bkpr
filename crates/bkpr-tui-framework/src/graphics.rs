@@ -25,7 +25,7 @@ const MAX_COLORS: usize = 32;
 const MAX_IMAGES: usize = 64;
 const MAX_ASSETS: usize = 8;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
-const MAX_DECORATIONS: usize = 5;
+const MAX_DECORATIONS: usize = 11;
 const MAX_DECORATION_CACHE: usize = 16;
 const MAX_DECORATION_BYTES: usize = 8 * 1024 * 1024;
 
@@ -1006,7 +1006,7 @@ mod tests {
         assert!(Arc::ptr_eq(&original, &resized.images[0]));
     }
     #[test]
-    fn finite_guide_materials_are_prewarmed_and_duplicate_variants_are_not_admitted() {
+    fn finite_raised_materials_are_prewarmed_and_duplicate_variants_are_not_admitted() {
         let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
         let host = host();
         let size = Size {
@@ -1030,6 +1030,12 @@ mod tests {
             guide([30; 3]),
             guide([30, 40, 90]),
             guide([90, 80, 30]),
+            guide([45; 3]),
+            guide([30, 70, 80]),
+            guide([70, 30, 30]),
+            guide([30, 70, 30]),
+            guide([70, 60, 30]),
+            guide([30, 40, 100]),
         ];
         graphics.prepare_with_decorations(&host, size, &[], &materials);
         prepared(&mut graphics);
@@ -1040,10 +1046,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .work;
-        assert_eq!(work.decoration_rasters, 5);
-        assert_eq!(work.decoration_entries, 5);
+        assert_eq!(work.decoration_rasters, materials.len());
+        assert_eq!(work.decoration_entries, materials.len());
         // Mode changes select already prepared materials; none schedules work.
-        for style in [materials[2], materials[3], materials[4], materials[2]] {
+        for style in materials[2..].iter().copied().chain([materials[2]]) {
             let mut frame = crate::graphics_frame(size);
             assert!(graphics.decorate_window(
                 &mut frame,
@@ -1057,7 +1063,9 @@ mod tests {
                 0,
             ));
         }
-        graphics.prepare_with_decorations(&host, size, &[], &materials);
+        for cols in [60, 120, 80] {
+            graphics.prepare_with_decorations(&host, Size { cols, ..size }, &[], &materials);
+        }
         assert_eq!(
             graphics.shared.generation.load(Ordering::Acquire),
             generation

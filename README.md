@@ -474,6 +474,15 @@ report unavailable facts. Narrow windows use Tab to cycle input, results and
 details; PageUp/PageDown scroll the preview. Selection activates the actual pane
 identity, not a row number.
 
+On confirmed Kitty-graphics hosts, the finder uses three rounded, beveled cards:
+a terminal-accent-tinted query card and lifted results/preview cards. Wide views
+put results beside the preview; narrower views stack them. Results occupy one
+row, including truthful excerpts when only hidden metadata matched. The preview
+groups available activity, directory, repository, worktree and branch facts.
+Small or unsupported views retain a complete rounded text frame and a
+keyboard-reachable preview. `Ctrl-b g` also works while the finder or a form is open,
+without losing its query, cursor, selection or draft.
+
 Creation has name and directory fields; Tab changes fields and a blank directory
 keeps the exact inherited native path. Blank workspace/window names are chosen
 atomically by the backend together with their first terminal.
@@ -533,7 +542,7 @@ and graphics preparation belong to `bkpr-tui-framework`. `bkpr-client` chooses
 colors/palette recipes, shadow depth, border widths, artwork and overlay content.
 The sidebar is unboxed, normally 38 cells wide, with compact connected rows.
 Confirmed Kitty graphics support and observed colors enable recessed pane
-contours, raised popup shadows, beveled hint cards and bee/hive artwork through
+contours, complete beveled popup/finder surfaces and bee/hive artwork through
 the existing scene renderer. Once a pane material is ready, its textual perimeter
 and title are omitted; application-owned status lines stay untouched. Other hosts
 retain rounded text borders, captions and `●`/`◌` markers.

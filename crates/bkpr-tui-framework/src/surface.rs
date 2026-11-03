@@ -1,12 +1,20 @@
 //! Retained trusted UI text scenes; physical output remains with SceneRenderer.
 use crate::{Rect, Role, Theme, blank, clear, text, window};
-use bkpr_protocol::{Cursor, Frame, Size};
+use bkpr_protocol::{ColorSource, Cursor, Frame, Size};
 
 /// Ordered surface-local semantic regions. Later spans take precedence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RoleSpan {
     pub rect: Rect,
     pub role: Role,
+}
+
+/// Ordered surface-local background overrides. Selection and hover retain their
+/// semantic backgrounds; later spans win for ordinary cells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BackgroundSpan {
+    pub rect: Rect,
+    pub background: ColorSource,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -37,6 +45,7 @@ struct ThemeCache {
     revision: u64,
     base: Role,
     spans: Vec<RoleSpan>,
+    backgrounds: Vec<BackgroundSpan>,
     source: Vec<Intent>,
     applied: Vec<Intent>,
     roles: Vec<Role>,
@@ -93,11 +102,24 @@ impl UiSurface {
     /// Work is retained across identical paint/theme/role inputs; no scene copy
     /// or per-cell color derivation occurs on an unchanged frame.
     pub fn apply_theme(&mut self, theme: &Theme, base: Role, spans: &[RoleSpan]) -> bool {
+        self.apply_theme_with_backgrounds(theme, base, spans, &[])
+    }
+
+    /// Apply background-only materials after resolving semantic roles. Identical
+    /// theme, role and background inputs reuse the retained cell styling.
+    pub fn apply_theme_with_backgrounds(
+        &mut self,
+        theme: &Theme,
+        base: Role,
+        spans: &[RoleSpan],
+        backgrounds: &[BackgroundSpan],
+    ) -> bool {
         if self.theme.as_ref().is_some_and(|cache| {
             !cache.source.is_empty()
                 && cache.revision == theme.revision()
                 && cache.base == base
                 && cache.spans == spans
+                && cache.backgrounds == backgrounds
         }) {
             return false;
         }
@@ -105,6 +127,7 @@ impl UiSurface {
             revision: theme.revision(),
             base,
             spans: Vec::new(),
+            backgrounds: Vec::new(),
             source: Vec::new(),
             applied: Vec::new(),
             roles: Vec::new(),
@@ -168,6 +191,25 @@ impl UiSurface {
             cell.style.bold = source.bold || style.bold;
             cell.style.underline = source.underline.max(style.underline);
         }
+        for span in backgrounds {
+            let rect = span.rect;
+            let color = theme.resolve_background(span.background);
+            for y in rect.y..rect.y.saturating_add(rect.height).min(self.frame.size.rows) {
+                let start = usize::from(y) * usize::from(self.frame.size.cols);
+                let cells = &mut self.frame.rows[usize::from(y)].cells;
+                for x in rect.x..rect.x.saturating_add(rect.width).min(self.frame.size.cols) {
+                    let index = start + usize::from(x);
+                    if cache.source[index].inverse
+                        || matches!(cache.roles[index], Role::Selected | Role::Hover)
+                    {
+                        continue;
+                    }
+                    let cell = &mut cells[usize::from(x)];
+                    cell.style.background = color;
+                    cell.style.background_source = span.background;
+                }
+            }
+        }
         cache.applied.clear();
         cache.applied.extend(
             self.frame
@@ -180,6 +222,8 @@ impl UiSurface {
         cache.base = base;
         cache.spans.clear();
         cache.spans.extend_from_slice(spans);
+        cache.backgrounds.clear();
+        cache.backgrounds.extend_from_slice(backgrounds);
         self.theme = Some(cache);
         true
     }
@@ -246,6 +290,153 @@ mod tests {
             selected,
         }
     }
+    #[test]
+    fn switching_between_independent_themes_restyles_an_unchanged_surface() {
+        let make_theme = |background| {
+            let mut theme = Theme::default();
+            theme.update(&ColorProbe::default(), 0, |_| {
+                let mut style = crate::default_style();
+                style.background = background;
+                style.background_source = ColorSource::Rgb(background);
+                crate::ThemeStyles {
+                    base: std::array::from_fn(|_| style.clone()),
+                    selected: std::array::from_fn(|_| style.clone()),
+                    panel: std::array::from_fn(|_| style.clone()),
+                }
+            });
+            theme
+        };
+        let normal = make_theme([20, 30, 40]);
+        let raised = make_theme([70, 80, 90]);
+        let mut surface = UiSurface::new(size());
+        surface.paint(
+            size(),
+            vec![(
+                Rect {
+                    width: 5,
+                    height: 1,
+                    ..Rect::default()
+                },
+                "draft".into(),
+                false,
+            )],
+            None,
+        );
+        for theme in [&normal, &raised, &normal] {
+            surface.apply_theme(theme, Role::Panel, &[]);
+            assert_eq!(
+                surface.frame.rows[0].cells[0].style.background_source,
+                theme.style(Role::Panel).background_source
+            );
+        }
+    }
+    #[test]
+    fn background_spans_preserve_selection_roles_ink_attributes_and_retained_styling() {
+        let mut surface = UiSurface::new(size());
+        surface.paint(
+            size(),
+            vec![(
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 5,
+                    height: 1,
+                },
+                "abcde".into(),
+                false,
+            )],
+            None,
+        );
+        surface.frame.rows[0].cells[0].style.bold = true;
+        surface.frame.rows[0].cells[0].style.underline = 1;
+        surface.frame.rows[0].cells[1].style.inverse = true;
+        let mut host = ColorProbe {
+            truecolor: true,
+            foreground: Some([230; 3]),
+            background: Some([20; 3]),
+            ..ColorProbe::default()
+        };
+        host.palette.insert(6, [30, 90, 120]);
+        let mut theme = Theme::default();
+        theme.update(&host, 0, |host| {
+            let mut styles = policy(host);
+            for table in [&mut styles.base, &mut styles.panel] {
+                for (role, color) in [(Role::Selected, [40; 3]), (Role::Hover, [60; 3])] {
+                    table[role as usize].background = color;
+                    table[role as usize].background_source = ColorSource::Rgb(color);
+                }
+            }
+            styles
+        });
+        let roles = [
+            RoleSpan {
+                rect: Rect {
+                    x: 2,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                role: Role::Selected,
+            },
+            RoleSpan {
+                rect: Rect {
+                    x: 3,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                role: Role::Hover,
+            },
+            RoleSpan {
+                rect: Rect {
+                    x: 4,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                role: Role::Error,
+            },
+        ];
+        let mut backgrounds = [BackgroundSpan {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: u16::MAX,
+                height: u16::MAX,
+            },
+            background: ColorSource::Palette(6),
+        }];
+        assert!(surface.apply_theme_with_backgrounds(&theme, Role::Panel, &roles, &backgrounds));
+        let row = &surface.frame.rows[0].cells;
+        assert_eq!(row[0].style.background, [30, 90, 120]);
+        assert_eq!(row[0].style.background_source, ColorSource::Palette(6));
+        assert!(row[0].style.bold);
+        assert_eq!(row[0].style.underline, 1);
+        assert_eq!(row[1].style.background, [20; 3]);
+        assert_eq!(row[2].style.background, [40; 3]);
+        assert_eq!(row[3].style.background, [60; 3]);
+        assert_eq!(row[4].style.foreground_source, ColorSource::Palette(1));
+        assert_eq!(row[4].style.background_source, ColorSource::Palette(6));
+        assert!(!surface.apply_theme_with_backgrounds(&theme, Role::Panel, &roles, &backgrounds));
+
+        backgrounds[0].background = ColorSource::Rgb([80, 70, 60]);
+        assert!(surface.apply_theme_with_backgrounds(&theme, Role::Panel, &roles, &backgrounds));
+        assert_eq!(
+            surface.frame.rows[0].cells[0].style.background,
+            [80, 70, 60]
+        );
+        assert_eq!(surface.frame.rows[0].cells[1].style.background, [20; 3]);
+        backgrounds[0].background = ColorSource::Default;
+        assert!(surface.apply_theme_with_backgrounds(&theme, Role::Panel, &roles, &backgrounds));
+        assert_eq!(surface.frame.rows[0].cells[0].style.background, [20; 3]);
+        assert_eq!(
+            surface.frame.rows[0].cells[0].style.background_source,
+            ColorSource::Default
+        );
+        assert!(surface.apply_theme(&theme, Role::Panel, &roles));
+        assert!(!surface.apply_theme(&theme, Role::Panel, &roles));
+    }
+
     #[test]
     fn selection_and_faint_intent_survive_repeated_theme_changes_and_loss() {
         let mut surface = UiSurface::new(size());

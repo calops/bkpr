@@ -1053,3 +1053,57 @@ passing run; the failure was neither hidden nor re-pinned.
 This is Linux, private HOME/XDG/socket, headless Kitty/Xvfb correctness evidence,
 not release latency, GPU FPS or equal physical presentation-cadence evidence.
 It does not establish project-color or sidebar-popup formatting parity.
+
+## Main-aligned finder cards and full raised surfaces
+
+The finder now follows main `9ad93bd`: separate query/results/preview cards,
+40/60 wide or stacked geometry, single-row selected results, truthful
+matched-field excerpts and grouped metadata. The query uses the terminal's cyan
+accent; neutral cards use the fork's six-percent linear-light lift. Forms reuse
+main's mode tints. Bkpr owns these choices; the framework supplies rounded fill,
+all-edge bevels, shadows, source-local cell clipping and retained background
+spans. Three cell surfaces borrow one frame without copying its contents.
+The existing off-thread worker, 16-entry/8-MiB material cache and stretched
+straight-edge resources remain.
+
+Raised highlights now include the surrounding surface color, matching the
+fork's active `bevel_normal` and restoring light-theme upper/left facets.
+A separate retained-theme regression failed when equal local update counters
+kept the old palette, then passed with process-unique resolved-style revisions.
+
+Immutable optimized-debug native pair:
+
+- `target/smoke/finder-overlays/bin-1322281134781673/bkpr`,
+  SHA-256 `0ad78fc2ffad39b384354df75af7d27b7d83c3a830c6ed2fae849bf3da56ce5c`.
+- Matching `bkprd`,
+  SHA-256 `407bb0b330c4e5f25d1982a8c9022b54465b05fc7de18d2a9b72d4487fae1d8b`.
+- `build-snapshot.json` in that evidence root records 26 frontend/manifest
+  hashes and the protected link receipt. All four public executable hashes
+  stayed unchanged. Workspace verification passed 654 top-level tests,
+  fourteen ignored fixtures, strict all-target Clippy and formatting before
+  the backend owner resumed unrelated Core-only work.
+
+`target/smoke/finder-overlays/acceptance.json` records dark/light Kitty and
+dark/light xterm: 64 structured finder captures, 12 form screenshots and
+240 three-pixel raised-edge traces. Screenshots were inspected for wide,
+stacked, light/dark, normal and tinted-form presentation. The workload covers
+120×36, 88×44, 44×20, 28×10 and 160×48, private real Git metadata, Unicode
+editing, preview keys/wheel, active rendering switches, reopening and cancel.
+Literal `FOCUS` bytes subsequently reached exactly the selected stable pane.
+UI keys did not leak, metadata views did not mutate backend layouts, all four
+normal detaches returned zero and restored exact termios/host backgrounds.
+Native processes remained backend-owned until exact-birth fixture cleanup;
+every final cleanup reports no survivors.
+
+Warm navigation added no image payload and static observations added no
+terminal bytes. These are debug correctness/resource observations, not GPU
+latency, release FPS or main-runtime performance-parity claims. `controllers.zip`
+has verified CRC/member hashes and SHA-256
+`7e9f5403a12b81acf0d0c066a81b30d1c63f8a711936e3f2e6d7ffbedf7eec90`.
+Intermediate controller failures remain separate: saturating page navigation
+is not invertible from an intermediate offset; Xvfb's last-client reset can
+race terminal startup. The final controller starts scrolling at the top,
+uses `-noreset`, and replayed all four contexts.
+
+Provider forge/CI/ticket facts and stable backend project-color ordinals
+remain unavailable. This snapshot does not claim sidebar hover/color parity.
