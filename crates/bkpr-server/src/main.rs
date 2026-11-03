@@ -35,8 +35,8 @@ struct Cli {
     cell_width: u32,
     #[arg(long, default_value_t = 16)]
     cell_height: u32,
-    /// Start current argv in a new workspace when no execution is still running.
-    /// Historical workspace layouts and pane records are never replayed or replaced.
+    /// Restore saved owned panes/layout using this current shell command.
+    /// Without argv, startup is read-only and never executes saved history.
     #[arg(last = true)]
     argv: Vec<String>,
 }
@@ -57,14 +57,14 @@ fn run(cli: Cli) -> Result<()> {
         };
         registry.configure_harnesses(&cli.socket, &executable)?;
         registry.configure_agent_forwarding(&cli.socket)?;
-        if !cli.argv.is_empty() {
+        let initial = if !cli.argv.is_empty() {
             let isolated_environment = cli.home.is_some();
             let home = cli
                 .home
                 .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
                 .context("HOME is unavailable; supply --home")?;
             let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
-            registry.bootstrap(PaneSpawnSpec {
+            Some(PaneSpawnSpec {
                 argv: cli.argv,
                 cwd,
                 home,
@@ -76,9 +76,11 @@ fn run(cli: Cli) -> Result<()> {
                     cell_width: cli.cell_width,
                     cell_height: cli.cell_height,
                 },
-            })?;
-        }
-        listener.serve(registry.clone())
+            })
+        } else {
+            None
+        };
+        listener.serve_bootstrap(registry.clone(), initial)
     })();
     // Even startup/bind failures must tear down only the children this daemon owns.
     let cleanup = registry.shutdown();

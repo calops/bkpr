@@ -790,3 +790,66 @@ concrete defects. Native proof is Linux-only; supported-platform acceptance
 elsewhere remains unverified. This does not add cross-workspace execution moves,
 remote endpoints, agent permissions, a recovery picker or CPU-efficiency work.
 
+## Automatic named-session restoration
+
+Cold named startup now restores owned terminals in the saved workspace/window
+identities, nested split positions and hidden membership. Ordinary terminals use
+the current supplied shell in their latest verified directories, not their saved
+arbitrary argv. Verified native conversations still active at shutdown use fixed
+resume adapters with current native configuration and fresh launch/inbox authority.
+Historical descriptors alone do not authorize automatic native resumption.
+
+Private registry schema 4 separates directory observations, active automatic intent
+and historical explicit native recovery. Older records migrate without inventing
+prior native activity. Returning to a shell clears automatic native intent while
+retaining the explicit descriptor. Changed observations checkpoint in the existing
+off-path observer cycle, without an extra debounce delay; graceful shutdown takes
+a fresh observation before teardown. Abrupt loss can miss an unobserved/uncommitted
+change. Terminal contents, arbitrary argv and native settings remain unpersisted.
+
+The server admits authenticated native lifecycle/receiver callbacks during the
+restore batch, but gates ordinary requests and shared-MCP Control. Explicit
+shutdown remains available and cancels/reaps owned startup work. Missing directories
+and native refusal preserve stopped layout/intent without fallback while independent
+terminals restore. No-argv headless startup executes nothing; live attachment never
+repeats restoration.
+
+Evidence is `target/smoke/automatic-restore/{acceptance.json,workspace-checks.log,controllers.zip}`.
+The immutable **debug** pair is `bin/bkpr`
+`85d8df4a0b28504ef5b002416f3a8e7dd77a956fd513c5859e32e93106284522`
+and `bin/bkprd`
+`c06a2ca6c35a45fe7291534975ec1a5314b508c9c3c2af2c776bb84aad357198`.
+The protected incremental link receipt is
+`protected-1308542911030236/result.json`; public outputs were preserved during
+that link. Earlier host server-integration checks can link the public daemon;
+this is not a claim that all Cargo commands isolate public outputs.
+
+| Actual runtime scenario | Observed result | Evidence directory |
+| --- | --- | --- |
+| Named `bkpr -s foo`, graceful restart and second live TUI attachment | Stable session/workspace/window/pane identities, ratios 370/620, latest shell directories, hidden terminal restored, retired unowned execution not replayed; both clients detach normally without another restoration | `shell-1308590023363784` |
+| Abrupt daemon exit plus a removed saved directory | Remaining terminals restore; missing terminal stays stopped in its original layout with its original directory intent; headless inspection does not execute anything | `shell-1308589997490335` |
+| Genuine Omp 18.13.2 | Cold automatic resume loads original conversation text in the same pane with a new launch identity; ordinary anchor shell restores its latest directory | `omp-1308647576792869` |
+| Genuine Codex 0.165.0 | Cold automatic resume loads original thread text in the same pane with a new launch identity; ordinary anchor shell restores its latest directory | `codex-1308647565882097` |
+| Genuine Omp with its private native session file withheld | Native refusal retains recovery intent, does not fall back to a fresh conversation, and exact explicit retry succeeds after restoring that file | `omp-1308647557144912` |
+
+All five final owned-process receipts report zero survivors. Native harness
+children use private HOME/XDG stores, isolated loopback providers and network
+namespaces; no real provider, live session, credentials or native approvals
+participate. These are actual launcher/native output and state checks, not a new
+physical graphics, throughput or latency comparison.
+
+Review regressions failed before their fixes and pass afterward: an older queued
+directory observation could erase a newer authenticated native binding; shared
+Agent Control could bypass startup admission; and closed readiness/error output
+could strand admission or the session lease. Coordinated checks pass **621
+top-level tests**, with fourteen ignored subprocess fixtures, global formatting
+and strict workspace all-target Clippy. Native/process proof remains Linux-only;
+the genuine Claude/Antigravity prerequisites and frontend recovery picker remain
+open.
+
+An existing frontend shutdown race is retained rather than hidden: a pending RPC
+can surface `session is shutting down` as an error even when lifecycle revocation
+is expected. The failed owned fixtures retain that output separately. Final
+automatic-restoration cases detach clients normally before administrative shutdown;
+they do not claim that every concurrent TUI RPC now exits cleanly on daemon stop.
+

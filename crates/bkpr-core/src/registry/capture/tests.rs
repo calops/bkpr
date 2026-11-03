@@ -188,6 +188,20 @@ fn managed_peer_fixture() {
         true
     );
     fs::write(home.join("ready.json"), serde_json::to_vec(&json!({"launch_id":grant.launch_id,"native_pid":child.0.id(),"context":context()["result"]})).unwrap()).unwrap();
+    if home.join("test-rebind-enabled").exists() {
+        await_file(&home.join("rebind"));
+        assert_eq!(
+            wire(
+                &socket,
+                event(CaptureEvent::Bind {
+                    conversation_id: "native-three".into(),
+                    source: ConversationSource::ClaudeHook,
+                })
+            )["ok"],
+            true
+        );
+        fs::write(home.join("rebound"), b"authenticated binding committed").unwrap();
+    }
     await_file(&home.join("background"));
     let mut background = ChildGuard(
         Command::new("/bin/sh")
@@ -625,6 +639,8 @@ fn restored_foreground_facts_are_stripped_and_metadata_writes_do_not_persist_the
     let record = Record {
         version: STORAGE_VERSION,
         recoveries: BTreeMap::new(),
+        directories: BTreeMap::new(),
+        automatic: BTreeMap::new(),
         registry: RegistrySnapshot {
             revision: 1,
             workspaces: Vec::new(),
@@ -867,4 +883,101 @@ fn direct_root_capture_begin_waits_for_real_spawn_publication_without_launcher_r
     await_file(&fixture.home.join("fast-ended"));
     assert_eq!(wire(&fixture.socket, Operation::Shutdown)["ok"], true);
     server.worker.take().unwrap().join().unwrap().unwrap();
+}
+
+#[test]
+fn stale_observation_cannot_replace_newer_authenticated_native_binding() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    fs::write(
+        fixture.home.join("test-rebind-enabled"),
+        b"owned rebind fixture",
+    )
+    .unwrap();
+    registry
+        .configure_harnesses(&fixture.socket, &std::env::current_exe().unwrap())
+        .unwrap();
+    // Control the observation/write boundary, not authentication or process evidence.
+    registry
+        .inner
+        .observer_started
+        .store(true, Ordering::Release);
+    let bound = crate::transport::bind(&fixture.socket).unwrap();
+    let server_registry = registry.clone();
+    let _server = ServerGuard {
+        socket: fixture.socket.clone(),
+        worker: Some(thread::spawn(move || bound.serve(server_registry))),
+    };
+    let wrapper = registry
+        .inner
+        .spawn_environment
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .wrappers
+        .join("claude");
+    let result = registry.request(Request::new(Operation::PaneSpawn {
+        workspace_id: None,
+        window_id: None,
+        expected_revision: None,
+        spec: PaneSpawnSpec {
+            argv: vec![
+                "/bin/sh".into(), "-c".into(),
+                "\"$1\" --ignored --exact registry::capture::tests::managed_peer_fixture --nocapture --test-threads=1; exec sleep 60".into(),
+                "fixture".into(), wrapper.to_str().unwrap().into(),
+            ],
+            cwd: fixture.home.clone(),
+            home: fixture.home.clone(),
+            title: None,
+            isolated_environment: true,
+            size: Size { cols: 80, rows: 24, cell_width: 8, cell_height: 16 },
+        },
+    })).unwrap();
+    let pane_id = result["pane_id"].as_str().unwrap();
+    await_file(&fixture.home.join("ready.json"));
+    {
+        let state = registry.inner.state.lock().unwrap();
+        assert_eq!(
+            state.record.automatic[pane_id].conversation_id,
+            "native-two"
+        );
+        assert!(!state.record.directories.contains_key(pane_id));
+    }
+    // A is a real foreground observation of native-two, queued but not written.
+    registry.observe_processes();
+    assert!(
+        registry
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .pending_directories
+            .contains_key(pane_id)
+    );
+    // The still-running authenticated wrapper binds B through the actual socket.
+    fs::write(
+        fixture.home.join("rebind"),
+        b"bind newer native conversation",
+    )
+    .unwrap();
+    await_file(&fixture.home.join("rebound"));
+    let expected = HarnessRecovery {
+        kind: HarnessKind::Claude,
+        conversation_id: "native-three".into(),
+        cwd: fixture.home.join("native-cwd"),
+    };
+    {
+        let state = registry.inner.state.lock().unwrap();
+        assert_eq!(state.record.recoveries.get(pane_id), Some(&expected));
+        assert_eq!(state.record.automatic.get(pane_id), Some(&expected));
+    }
+    registry.flush_directories().unwrap();
+    let durable = read_record(fixture._root.path()).unwrap().unwrap();
+    assert_eq!(durable.recoveries.get(pane_id), Some(&expected));
+    assert_eq!(
+        durable.automatic.get(pane_id),
+        Some(&expected),
+        "an older queued foreground sample must not demote the newer authenticated binding"
+    );
 }

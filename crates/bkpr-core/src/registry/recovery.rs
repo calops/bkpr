@@ -195,7 +195,9 @@ impl Registry {
                         Ok(())
                     })();
                     match ready {
-                        Ok(()) => (RecoveryStatus::Recoverable, None),
+                        Ok(()) => (RecoveryStatus::Recoverable,
+                            state.failed_restores.contains(id).then(||
+                                format!("automatic native resume exited before verified binding (exit {:?}); saved intent retained", pane.exit_code))),
                         Err(error) => (RecoveryStatus::Unavailable, Some(error.to_string())),
                     }
                 };
@@ -235,13 +237,8 @@ impl Registry {
         origin: Option<(&crate::harness::Launch, &crate::harness::Peer)>,
     ) -> Result<Value> {
         validate(&expected)?;
-        let environment = self
-            .inner
-            .spawn_environment
-            .lock()
-            .unwrap()
-            .clone()
-            .context("managed harnesses are not configured")?;
+        let configured = self.inner.spawn_environment.lock().unwrap().is_some();
+        ensure!(configured, "managed harnesses are not configured");
         let (target, home, isolated_environment, title) = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
@@ -295,37 +292,21 @@ impl Registry {
                 pane.title.clone(),
             )
         };
-        let flag = match expected.kind {
-            HarnessKind::Claude | HarnessKind::Omp => "--resume",
-            HarnessKind::Codex => "resume",
-            HarnessKind::Agy => "--conversation",
-            _ => bail!("harness does not support managed recovery"),
-        };
+        let spec = self.native_resume_spec(
+            &expected,
+            home,
+            isolated_environment,
+            title,
+            Size {
+                cols: 80,
+                rows: 24,
+                cell_width: 8,
+                cell_height: 16,
+            },
+        )?;
         let result = self.spawn_inner(
             target,
-            PaneSpawnSpec {
-                argv: vec![
-                    environment
-                        .executable
-                        .to_str()
-                        .context("configured bkpr executable is not UTF-8")?
-                        .to_owned(),
-                    "run".into(),
-                    expected.kind.as_str().into(),
-                    flag.into(),
-                    expected.conversation_id.clone(),
-                ],
-                cwd: expected.cwd.clone(),
-                home,
-                isolated_environment,
-                title: Some(title),
-                size: Size {
-                    cols: 80,
-                    rows: 24,
-                    cell_width: 8,
-                    cell_height: 16,
-                },
-            },
+            spec,
             Some(ResumeAttempt {
                 source: source.to_owned(),
                 expected,
@@ -340,17 +321,64 @@ impl Registry {
         result["source_pane_id"] = json!(source);
         Ok(result)
     }
+    pub(super) fn native_resume_spec(
+        &self,
+        expected: &HarnessRecovery,
+        home: PathBuf,
+        isolated_environment: bool,
+        title: String,
+        size: Size,
+    ) -> Result<PaneSpawnSpec> {
+        validate(expected)?;
+        let environment = self
+            .inner
+            .spawn_environment
+            .lock()
+            .unwrap()
+            .clone()
+            .context("managed harnesses are not configured")?;
+        let flag = match expected.kind {
+            HarnessKind::Claude | HarnessKind::Omp => "--resume",
+            HarnessKind::Codex => "resume",
+            HarnessKind::Agy => "--conversation",
+            _ => bail!("harness does not support managed recovery"),
+        };
+        Ok(PaneSpawnSpec {
+            argv: vec![
+                environment
+                    .executable
+                    .to_str()
+                    .context("configured bkpr executable is not UTF-8")?
+                    .to_owned(),
+                "run".into(),
+                expected.kind.as_str().into(),
+                flag.into(),
+                expected.conversation_id.clone(),
+            ],
+            cwd: expected.cwd.clone(),
+            home,
+            isolated_environment,
+            title: Some(title),
+            size,
+        })
+    }
     // Caller owns the durable transaction. Only authenticated lifecycle paths call this.
     pub(super) fn recovery_begin(&self, pane_id: &str) -> Result<()> {
         let mut next = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
-            if !state.record.recoveries.contains_key(pane_id) {
+            if !state.record.recoveries.contains_key(pane_id)
+                || state
+                    .resuming
+                    .get(pane_id)
+                    .is_some_and(|attempt| attempt.source == pane_id)
+            {
                 return Ok(());
             }
             state.record.clone()
         };
         next.recoveries.remove(pane_id);
+        next.automatic.remove(pane_id);
         next.registry.revision = next_revision(next.registry.revision)?;
         commit(&self.inner, next, |_| {})?;
         Ok(())
@@ -359,23 +387,36 @@ impl Registry {
         &self,
         launch: &crate::harness::Launch,
         descriptor: HarnessRecovery,
+        active: bool,
     ) -> Result<()> {
         validate(&descriptor)?;
         let pane_id = &launch.grant.pane_id;
         let (mut next, source) = {
-            let state = self.inner.state.lock().unwrap();
+            let mut state = self.inner.state.lock().unwrap();
             healthy(&state)?;
+            // This authenticated binding supersedes earlier sampled role/CWD,
+            // including when its durable descriptor is otherwise unchanged.
+            state.pending_directories.remove(pane_id);
             let source = state
                 .resuming
                 .get(pane_id)
                 .map(|attempt| attempt.source.clone());
-            if state.record.recoveries.get(pane_id) == Some(&descriptor) && source.is_none() {
+            if state.record.recoveries.get(pane_id) == Some(&descriptor)
+                && source.is_none()
+                && state.record.automatic.get(pane_id) == active.then_some(&descriptor)
+            {
                 return Ok(());
             }
             (state.record.clone(), source)
         };
         if let Some(source) = source {
             next.recoveries.remove(&source);
+            next.automatic.remove(&source);
+        }
+        if active {
+            next.automatic.insert(pane_id.clone(), descriptor.clone());
+        } else {
+            next.automatic.remove(pane_id);
         }
         next.recoveries.insert(pane_id.clone(), descriptor);
         next.registry.revision = next_revision(next.registry.revision)?;
@@ -383,6 +424,39 @@ impl Registry {
         commit(&self.inner, next, |state| {
             state.resuming.remove(pane_id);
         })?;
+        Ok(())
+    }
+    pub(super) fn automatic_end(&self, launch: &crate::harness::Launch) -> Result<()> {
+        let mut next = {
+            let mut state = self.inner.state.lock().unwrap();
+            if state.closing {
+                return Ok(());
+            }
+            healthy(&state)?;
+            let Some(native) = launch.managed.conversation.as_ref() else {
+                return Ok(());
+            };
+            directories::end_native(
+                &mut state,
+                &launch.grant.pane_id,
+                launch.grant.kind,
+                &native.id,
+            );
+            if !state
+                .record
+                .automatic
+                .get(&launch.grant.pane_id)
+                .is_some_and(|saved| {
+                    saved.kind == launch.grant.kind && saved.conversation_id == native.id
+                })
+            {
+                return Ok(());
+            }
+            state.record.clone()
+        };
+        next.automatic.remove(&launch.grant.pane_id);
+        next.registry.revision = next_revision(next.registry.revision)?;
+        commit(&self.inner, next, |_| {})?;
         Ok(())
     }
     pub(super) fn revoke_recovery(&self, pane_id: &str) -> Result<()> {
@@ -398,17 +472,21 @@ impl Registry {
             ensure!(
                 !state
                     .resuming
-                    .values()
-                    .any(|attempt| attempt.source == pane_id),
+                    .iter()
+                    .any(|(id, attempt)| id != pane_id && attempt.source == pane_id),
                 "pane busy: native resume in progress"
             );
             let mut next = state.record.clone();
             next.recoveries.remove(pane_id);
+            next.automatic.remove(pane_id);
             if let Some(attempt) = state.resuming.get(pane_id) {
                 next.recoveries.remove(&attempt.source);
+                next.automatic.remove(&attempt.source);
             }
             if next.recoveries == state.record.recoveries {
                 state.closing_panes.insert(pane_id.to_owned());
+                state.resuming.remove(pane_id);
+                state.failed_restores.remove(pane_id);
                 return Ok(());
             }
             next
@@ -416,6 +494,8 @@ impl Registry {
         next.registry.revision = next_revision(next.registry.revision)?;
         commit(&self.inner, next, |state| {
             state.closing_panes.insert(pane_id.to_owned());
+            state.resuming.remove(pane_id);
+            state.failed_restores.remove(pane_id);
         })?;
         Ok(())
     }

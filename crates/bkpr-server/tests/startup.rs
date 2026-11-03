@@ -1,6 +1,7 @@
 use bkpr_protocol::{
-    LayoutNode, Operation, PaneRequest, PaneSpawnSpec, PaneStatus, RegistryResult,
-    RegistrySnapshot, Request, Response, Size,
+    CaptureEvent, CaptureGrant, ConversationSource, HarnessKind, LayoutNode, Operation,
+    PaneRequest, PaneSpawnSpec, PaneStatus, RegistryResult, RegistrySnapshot, Request, Response,
+    Size,
 };
 use std::{
     fs,
@@ -18,6 +19,7 @@ struct Fixture {
     home: PathBuf,
     cwd: PathBuf,
     socket: PathBuf,
+    utility: PathBuf,
 }
 impl Fixture {
     fn new() -> Self {
@@ -35,6 +37,7 @@ impl Fixture {
             home,
             cwd,
             socket,
+            utility: std::env::current_exe().unwrap(),
         }
     }
     fn command(&self, argv: &[&str]) -> Command {
@@ -52,7 +55,7 @@ impl Fixture {
             .arg("--state-root")
             .arg(&self.state)
             .arg("--bkpr")
-            .arg(std::env::current_exe().unwrap())
+            .arg(&self.utility)
             .arg("--home")
             .arg(&self.home)
             .arg("--cwd")
@@ -260,50 +263,114 @@ fn headless_fresh_and_loaded_startup_never_spawns_or_replays_history() {
 }
 
 #[test]
-fn explicit_loaded_bootstrap_preserves_history_and_adds_uniquely_named_current_execution() {
+fn explicit_loaded_bootstrap_restores_owned_layout_with_current_shell_and_latest_cwd() {
     let fixture = Fixture::new();
+    let later = fixture.home.join("later");
     let mut first = fixture.start(&[]);
-    let (workspace, pane) = historical(&fixture, &first);
+    let (workspace, original) = historical(&fixture, &first);
+    fs::create_dir(&later).unwrap();
+    let mut panes = vec![original];
+    for title in ["middle", "last", "hidden"] {
+        let snapshot = first.snapshot();
+        let window = &snapshot.workspaces[0].windows[0];
+        let mut spec = sleeping_spec(&fixture);
+        spec.argv = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!("cd \"$HOME/later\"; printf ready > {title}-cwd-ready; exec sleep 60"),
+        ];
+        spec.title = Some(title.into());
+        let result = first.send(Operation::PaneSpawn {
+            workspace_id: Some(workspace.clone()),
+            window_id: Some(window.id.clone()),
+            expected_revision: Some(window.revision),
+            spec,
+        });
+        panes.push(result["pane_id"].as_str().unwrap().to_owned());
+    }
+    for title in ["middle", "last", "hidden"] {
+        wait_for(&later.join(format!("{title}-cwd-ready")), b"ready");
+    }
+    let snapshot = first.snapshot();
+    let window = &snapshot.workspaces[0].windows[0];
+    let layout = LayoutNode::Split {
+        axis: bkpr_protocol::Axis::Vertical,
+        ratio: 317,
+        first: Box::new(LayoutNode::Leaf {
+            pane_id: panes[0].clone(),
+        }),
+        second: Box::new(LayoutNode::Split {
+            axis: bkpr_protocol::Axis::Horizontal,
+            ratio: 683,
+            first: Box::new(LayoutNode::Leaf {
+                pane_id: panes[1].clone(),
+            }),
+            second: Box::new(LayoutNode::Leaf {
+                pane_id: panes[2].clone(),
+            }),
+        }),
+    };
+    first.send(Operation::LayoutUpdate {
+        workspace_id: workspace.clone(),
+        window_id: window.id.clone(),
+        expected_revision: window.revision,
+        layout: Some(layout.clone()),
+    });
+    let independent_cwd = fixture.home.join("independent");
+    fs::create_dir(&independent_cwd).unwrap();
+    let mut spec = sleeping_spec(&fixture);
+    spec.cwd = independent_cwd.clone();
+    spec.title = Some("independent".into());
+    first.send(Operation::WindowCreate {
+        workspace_id: workspace.clone(),
+        expected_revision: first.snapshot().workspaces[0].revision,
+        name: Some("independent".into()),
+        spec,
+    });
     first.send(Operation::WorkspaceCreate {
-        name: Some("Main 2".into()),
+        name: Some("admin".into()),
         initial: None,
     });
     let before = first.snapshot();
     first.stop();
-    let mut restored = fixture.start(&["/bin/sh", "-c", "printf current > current; exec sleep 60"]);
-    wait_for(&fixture.cwd.join("current"), b"current");
+    let mut restored = fixture.start(&[
+        "/bin/sh",
+        "-c",
+        "pwd -P > restored-cwd; printf current >> current-runs; exec sleep 60",
+    ]);
+    wait_for(&fixture.cwd.join("current-runs"), b"current");
+    wait_for(&later.join("current-runs"), b"currentcurrentcurrent");
+    wait_for(&independent_cwd.join("current-runs"), b"current");
     let after = restored.snapshot();
-    assert_eq!(after.workspaces.len(), before.workspaces.len() + 1);
-    assert_eq!(after.panes.len(), before.panes.len() + 1);
-    for old in &before.workspaces {
-        assert_eq!(
-            serde_json::to_value(after.workspaces.iter().find(|w| w.id == old.id).unwrap())
-                .unwrap(),
-            serde_json::to_value(old).unwrap()
-        );
+    assert_eq!(after.workspaces.len(), before.workspaces.len());
+    assert_eq!(after.panes.len(), before.panes.len());
+    let owned = after.workspaces.iter().find(|w| w.id == workspace).unwrap();
+    assert_eq!(owned.name, "Main");
+    assert_eq!(owned.windows[0].id, before.workspaces[0].windows[0].id);
+    assert_eq!(owned.windows[0].layout, Some(layout));
+    assert_eq!(owned.windows.len(), before.workspaces[0].windows.len());
+    for window in &before.workspaces[0].windows {
+        let current = owned
+            .windows
+            .iter()
+            .find(|candidate| candidate.id == window.id)
+            .unwrap();
+        assert_eq!(current.name, window.name);
+        assert_eq!(current.layout, window.layout);
     }
-    let history = after.panes.iter().find(|p| p.id == pane).unwrap();
-    assert_eq!(history.status, PaneStatus::Stopped);
-    assert_eq!(history.title, "old explicit command");
-    assert_eq!(history.workspace_id.as_deref(), Some(workspace.as_str()));
-    let live = after
-        .panes
-        .iter()
-        .filter(|p| p.status == PaneStatus::Running)
-        .collect::<Vec<_>>();
-    assert_eq!(live.len(), 1);
-    assert_ne!(live[0].id, pane);
-    let boot = after
-        .workspaces
-        .iter()
-        .find(|w| Some(w.id.as_str()) == live[0].workspace_id.as_deref())
-        .unwrap();
-    assert_eq!(boot.name, "Main 3");
+    for old in &before.panes {
+        let pane = after.panes.iter().find(|p| p.id == old.id).unwrap();
+        assert_eq!(pane.status, PaneStatus::Running);
+        assert_eq!(pane.title, old.title);
+        assert_eq!(pane.workspace_id, old.workspace_id);
+        assert_eq!(pane.window_id, old.window_id);
+        assert_eq!(pane.home, old.home);
+    }
     assert_eq!(
-        boot.windows[0].layout,
-        Some(LayoutNode::Leaf {
-            pane_id: live[0].id.clone()
-        })
+        fs::read_to_string(later.join("restored-cwd"))
+            .unwrap()
+            .trim_end(),
+        later.to_str().unwrap()
     );
     assert_eq!(
         fs::read(fixture.cwd.join("original-runs")).unwrap(),
@@ -540,6 +607,25 @@ fn graceful_shutdown_preserves_exact_layout_intent_for_fresh_execution_reopen() 
         peer
     );
     restored.stop();
+    let mut automatic = fixture.start(&["/bin/sh", "-c", "exec sleep 60"]);
+    let after = automatic.snapshot();
+    let retired = after.panes.iter().find(|pane| pane.id == old).unwrap();
+    assert_ne!(retired.status, PaneStatus::Running);
+    assert!(retired.workspace_id.is_none() && retired.window_id.is_none());
+    assert_eq!(
+        after
+            .panes
+            .iter()
+            .filter(|pane| pane.status == PaneStatus::Running)
+            .count(),
+        2,
+        "only still-owned panes may restart; retired and explicitly removed panes stay retired"
+    );
+    assert_eq!(
+        fs::read(fixture.cwd.join("original-runs")).unwrap(),
+        b"original"
+    );
+    automatic.stop();
 }
 
 fn sleeping_spec(fixture: &Fixture) -> PaneSpawnSpec {
@@ -721,4 +807,425 @@ fn last_pane_termination_ends_session_even_when_requester_disconnects_before_res
     daemon.wait_for_exit();
     let mut restarted = fixture.start(&[]);
     restarted.stop();
+}
+
+#[test]
+fn missing_saved_directory_does_not_replace_layout_or_block_independent_shell() {
+    let fixture = Fixture::new();
+    let removed = fixture.home.join("removed");
+    let mut first = fixture.start(&[]);
+    let (workspace, healthy) = historical(&fixture, &first);
+    fs::create_dir(&removed).unwrap();
+    let window = first.snapshot().workspaces[0].windows[0].clone();
+    let mut spec = sleeping_spec(&fixture);
+    spec.cwd = removed.clone();
+    spec.title = Some("missing directory".into());
+    let missing = first.send(Operation::PaneSpawn {
+        workspace_id: Some(workspace.clone()),
+        window_id: Some(window.id),
+        expected_revision: Some(window.revision),
+        spec,
+    })["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let before = first.snapshot();
+    first.stop();
+    fs::remove_dir(&removed).unwrap();
+    let mut restored = fixture.start(&["/bin/sh", "-c", "printf healthy > healthy; exec sleep 60"]);
+    wait_for(&fixture.cwd.join("healthy"), b"healthy");
+    let after = restored.snapshot();
+    assert_eq!(
+        after.workspaces[0].windows[0].layout,
+        before.workspaces[0].windows[0].layout
+    );
+    assert_eq!(after.panes.len(), before.panes.len());
+    assert_eq!(
+        after.panes.iter().find(|p| p.id == healthy).unwrap().status,
+        PaneStatus::Running
+    );
+    let failed = after.panes.iter().find(|p| p.id == missing).unwrap();
+    assert_eq!(failed.status, PaneStatus::Stopped);
+    assert_eq!(failed.cwd, removed);
+    assert_eq!(failed.title, "missing directory");
+    assert_eq!(failed.workspace_id.as_deref(), Some(workspace.as_str()));
+    assert!(restored.child.try_wait().unwrap().is_none());
+    restored.stop();
+    fs::create_dir(&removed).unwrap();
+    let mut retried = fixture.start(&["/bin/sh", "-c", "exec sleep 60"]);
+    let after = retried.snapshot();
+    assert_eq!(
+        after.workspaces[0].windows[0].layout,
+        before.workspaces[0].windows[0].layout
+    );
+    assert!(
+        after
+            .panes
+            .iter()
+            .all(|pane| pane.status == PaneStatus::Running)
+    );
+    retried.stop();
+}
+
+struct NativeFixtureChild(Child);
+impl Drop for NativeFixtureChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+#[ignore = "owned subprocess fixture; requires its explicit private HOME marker"]
+fn owned_native_fixture() {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+    assert_eq!(
+        fs::read(home.join("owned-native-fixture")).unwrap(),
+        b"private"
+    );
+    let socket = PathBuf::from(std::env::var_os("BKPR_SOCKET").unwrap());
+    let begin = request(
+        &socket,
+        Operation::HarnessBegin {
+            kind: HarnessKind::Codex,
+        },
+    )
+    .unwrap();
+    fs::write(
+        home.join("native-fixture-stage"),
+        format!("begin ok={} error={:?}", begin.ok, begin.error),
+    )
+    .unwrap();
+    assert!(begin.ok, "{:?}", begin.error);
+    let grant: CaptureGrant = serde_json::from_value(begin.result.unwrap()).unwrap();
+    let _native = NativeFixtureChild(Command::new(home.join("native/codex"))
+        .args(["-c", "printf ready > \"$HOME/native-ready\"; while test ! -f \"$HOME/release-native\"; do sleep 0.02; done"])
+        .spawn().unwrap());
+    wait_for(&home.join("native-ready"), b"ready");
+    let bind = request(
+        &socket,
+        Operation::HarnessEvent {
+            launch_id: grant.launch_id.clone(),
+            token: grant.token.clone(),
+            event: CaptureEvent::Bind {
+                conversation_id: "owned-native-conversation".into(),
+                source: ConversationSource::CodexResume,
+            },
+        },
+    )
+    .unwrap();
+    fs::write(
+        home.join("native-fixture-stage"),
+        format!("bind ok={} error={:?}", bind.ok, bind.error),
+    )
+    .unwrap();
+    assert!(bind.ok, "{:?}", bind.error);
+    fs::write(
+        home.join("native-bound"),
+        serde_json::to_vec(&grant).unwrap(),
+    )
+    .unwrap();
+    loop {
+        thread::sleep(Duration::from_secs(60));
+    }
+}
+
+#[test]
+fn native_fixed_resume_refusal_preserves_owned_intent_and_independent_restoration() {
+    let mut fixture = Fixture::new();
+    let mut first = fixture.start(&[]);
+    let (workspace, shell) = historical(&fixture, &first);
+    fs::write(fixture.home.join("owned-native-fixture"), b"private").unwrap();
+    let executable = fixture.home.join("codex");
+    std::os::unix::fs::symlink(&fixture.utility, &executable).unwrap();
+    fs::create_dir(fixture.home.join("native")).unwrap();
+    fs::copy("/bin/sh", fixture.home.join("native/codex")).unwrap();
+    let window = first.snapshot().workspaces[0].windows[0].clone();
+    let mut spec = sleeping_spec(&fixture);
+    spec.argv = vec![
+        executable.to_str().unwrap().into(),
+        "--ignored".into(),
+        "--exact".into(),
+        "owned_native_fixture".into(),
+        "--nocapture".into(),
+    ];
+    spec.title = Some("native".into());
+    let native = first.send(Operation::PaneSpawn {
+        workspace_id: Some(workspace.clone()),
+        window_id: Some(window.id),
+        expected_revision: Some(window.revision),
+        spec,
+    })["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !fixture.home.join("native-bound").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "native fixture did not authenticate/bind: {:?}",
+            fs::read_to_string(fixture.home.join("native-fixture-stage"))
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    let before = first.snapshot();
+    let recoveries = first.send(Operation::RecoveryList);
+    assert_eq!(recoveries["recoveries"].as_array().unwrap().len(), 1);
+    first.stop();
+    // A deliberately refusing, owned native adapter. Its actual argv must be the
+    // fixed CURRENT adapter invocation, never the old fixture flags/program.
+    fixture.utility = PathBuf::from("/bin/sh");
+    fs::write(
+        fixture.cwd.join("run"),
+        b"printf '%s\\n' \"$@\" > resumed-argv\nexit 23\n",
+    )
+    .unwrap();
+    let mut restored = fixture.start(&[
+        "/bin/sh",
+        "-c",
+        "printf shell > restored-shell; exec sleep 60",
+    ]);
+    wait_for(
+        &fixture.cwd.join("resumed-argv"),
+        b"codex\nresume\nowned-native-conversation\n",
+    );
+    wait_for(&fixture.cwd.join("restored-shell"), b"shell");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let after = loop {
+        let snapshot = restored.snapshot();
+        if snapshot
+            .panes
+            .iter()
+            .any(|p| p.id == native && p.status == PaneStatus::Stopped)
+        {
+            break snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "refused native execution remained live"
+        );
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(after.panes.len(), before.panes.len());
+    assert_eq!(
+        after.workspaces[0].windows[0].layout,
+        before.workspaces[0].windows[0].layout
+    );
+    assert_eq!(
+        after.panes.iter().find(|p| p.id == shell).unwrap().status,
+        PaneStatus::Running
+    );
+    let failed = after.panes.iter().find(|p| p.id == native).unwrap();
+    assert_eq!(failed.workspace_id.as_deref(), Some(workspace.as_str()));
+    assert!(failed.harness.is_none());
+    let recoveries = restored.send(Operation::RecoveryList);
+    assert_eq!(recoveries["recoveries"].as_array().unwrap().len(), 1);
+    assert_eq!(recoveries["recoveries"][0]["pane_id"], native);
+    assert_eq!(
+        recoveries["recoveries"][0]["harness"]["conversation_id"],
+        "owned-native-conversation"
+    );
+    restored.send(Operation::PaneTerminate { pane_id: shell });
+    assert!(restored.child.try_wait().unwrap().is_none());
+    let remaining = restored.snapshot();
+    assert_eq!(remaining.workspaces.len(), 1);
+    assert_eq!(
+        remaining
+            .panes
+            .iter()
+            .find(|p| p.id == native)
+            .unwrap()
+            .status,
+        PaneStatus::Stopped
+    );
+    restored.stop();
+}
+
+#[test]
+fn restored_last_shell_fast_exit_releases_socket_and_metadata_lease() {
+    let fixture = Fixture::new();
+    let mut first = fixture.start(&[]);
+    historical(&fixture, &first);
+    first.stop();
+    // Do not wait for Inspect: a real last-pane exit may close startup before
+    // any client attaches. The same state/socket must remain reusable.
+    let mut restored = Daemon {
+        child: fixture
+            .command(&["/bin/sh", "-c", "printf exited > fast-exit"])
+            .spawn()
+            .unwrap(),
+        socket: fixture.socket.clone(),
+    };
+    restored.wait_for_exit();
+    wait_for(&fixture.cwd.join("fast-exit"), b"exited");
+    let mut headless = fixture.start(&[]);
+    assert!(headless.snapshot().workspaces.is_empty());
+    headless.stop();
+}
+
+#[test]
+fn shutdown_during_cold_restore_never_leaves_an_owned_startup_process_or_lease() {
+    let fixture = Fixture::new();
+    let mut first = fixture.start(&[]);
+    let (workspace, _) = historical(&fixture, &first);
+    for _ in 0..12 {
+        let window = first.snapshot().workspaces[0].windows[0].clone();
+        first.send(Operation::PaneSpawn {
+            workspace_id: Some(workspace.clone()),
+            window_id: Some(window.id),
+            expected_revision: Some(window.revision),
+            spec: sleeping_spec(&fixture),
+        });
+    }
+    let before = first.snapshot();
+    first.stop();
+    let mut restoring = Daemon {
+        child: fixture
+            .command(&[
+                "/bin/sh",
+                "-c",
+                "printf started > restore-started; exec sleep 60",
+            ])
+            .spawn()
+            .unwrap(),
+        socket: fixture.socket.clone(),
+    };
+    wait_for(&fixture.cwd.join("restore-started"), b"started");
+    // This request is never gated behind bootstrap. It must be safe on either
+    // side of the batch's final commit, with no Inspect/client admission first.
+    restoring.send(Operation::Shutdown);
+    restoring.wait_for_exit();
+    let mut headless = fixture.start(&[]);
+    let stopped = headless.snapshot();
+    assert_eq!(stopped.panes.len(), before.panes.len());
+    assert!(
+        stopped
+            .panes
+            .iter()
+            .all(|pane| pane.status == PaneStatus::Stopped)
+    );
+    assert_eq!(
+        stopped.workspaces[0].windows[0].layout,
+        before.workspaces[0].windows[0].layout
+    );
+    headless.stop();
+}
+
+#[test]
+fn failed_fresh_bootstrap_does_not_publish_ready_or_leave_socket_ownership() {
+    let fixture = Fixture::new();
+    let output = fixture
+        .command(&["/no-such-bkpr-owned-test-shell"])
+        .stdout(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("\"ready\":true"));
+    assert!(!fixture.socket.exists());
+    let mut headless = fixture.start(&[]);
+    assert!(
+        headless
+            .snapshot()
+            .panes
+            .iter()
+            .all(|pane| pane.status != PaneStatus::Running)
+    );
+    headless.stop();
+}
+
+fn closed_output() -> Stdio {
+    let (output, reader) = UnixStream::pair().unwrap();
+    drop(reader);
+    Stdio::from(std::os::fd::OwnedFd::from(output))
+}
+
+fn require_startup_resolution(fixture: &Fixture, daemon: &mut Daemon) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !fixture.socket.exists() && daemon.child.try_wait().unwrap().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "startup never bound its owned socket"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    if request(&fixture.socket, Operation::Inspect).is_ok_and(|response| response.ok) {
+        daemon.stop();
+    } else {
+        while daemon.child.try_wait().unwrap().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "startup logging failure stranded the listener, admission gate and lease"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    assert!(
+        !fixture.socket.exists(),
+        "resolved startup retained socket ownership"
+    );
+}
+
+#[test]
+fn closed_startup_stdout_cannot_strand_control_admission_or_session_ownership() {
+    let fixture = Fixture::new();
+    let mut daemon = Daemon {
+        child: fixture
+            .command(&["/bin/sh", "-c", "exec sleep 60"])
+            .stdout(closed_output())
+            .spawn()
+            .unwrap(),
+        socket: fixture.socket.clone(),
+    };
+    require_startup_resolution(&fixture, &mut daemon);
+    let mut headless = fixture.start(&[]);
+    assert!(
+        headless
+            .snapshot()
+            .panes
+            .iter()
+            .all(|pane| pane.status != PaneStatus::Running)
+    );
+    headless.stop();
+}
+
+#[test]
+fn closed_restore_stderr_cannot_strand_failed_saved_intent_or_session_ownership() {
+    let fixture = Fixture::new();
+    let mut first = fixture.start(&[]);
+    let (workspace, _) = historical(&fixture, &first);
+    let removed = fixture.home.join("removed");
+    fs::create_dir(&removed).unwrap();
+    let window = first.snapshot().workspaces[0].windows[0].clone();
+    let mut spec = sleeping_spec(&fixture);
+    spec.cwd = removed.clone();
+    let missing = first.send(Operation::PaneSpawn {
+        workspace_id: Some(workspace.clone()),
+        window_id: Some(window.id),
+        expected_revision: Some(window.revision),
+        spec,
+    })["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    first.stop();
+    fs::remove_dir(&removed).unwrap();
+    let mut daemon = Daemon {
+        child: fixture
+            .command(&["/bin/sh", "-c", "exec sleep 60"])
+            .stderr(closed_output())
+            .spawn()
+            .unwrap(),
+        socket: fixture.socket.clone(),
+    };
+    require_startup_resolution(&fixture, &mut daemon);
+    let mut headless = fixture.start(&[]);
+    let snapshot = headless.snapshot();
+    let failed = snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.id == missing)
+        .unwrap();
+    assert_eq!(failed.workspace_id.as_deref(), Some(workspace.as_str()));
+    assert_ne!(failed.status, PaneStatus::Running);
+    headless.stop();
 }

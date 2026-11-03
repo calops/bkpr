@@ -91,6 +91,10 @@ impl Registry {
                 } else {
                     None
                 };
+                // Binding remains useful explicit recovery when foreground role
+                // cannot be verified. Only proven activity grants automatic intent.
+                let automatic_binding = descriptor.is_some()
+                    && foreground_context(&launch).is_ok_and(|(active, _)| active);
                 let _transaction = self.inner.transaction.lock().unwrap();
                 self.inner
                     .captures
@@ -100,6 +104,7 @@ impl Registry {
                 if matches!(event, CaptureEvent::End) {
                     // Retire volatile authority even if the agent writer is poisoned.
                     let retired = self.agent_retire(std::slice::from_ref(&launch_id));
+                    let ended_intent = self.automatic_end(&launch);
                     self.inner
                         .captures
                         .lock()
@@ -107,6 +112,7 @@ impl Registry {
                         .event(&launch_id, &token, event)?;
                     let published = self.publish_capture_change(&launch);
                     retired?;
+                    ended_intent?;
                     published?;
                 } else {
                     self.inner.agents.check_health()?;
@@ -146,7 +152,7 @@ impl Registry {
                     }
                     let result = (|| -> Result<()> {
                         if let Some(descriptor) = descriptor {
-                            self.recovery_bind(&launch, descriptor)?;
+                            self.recovery_bind(&launch, descriptor, automatic_binding)?;
                         }
                         self.publish_capture_change(&launch)
                     })();
@@ -484,13 +490,13 @@ impl Registry {
             !state.closing && !pane.shared.finished.load(Ordering::Acquire),
             "pane execution ended"
         );
-        let info = state
-            .record
-            .registry
-            .panes
-            .iter_mut()
-            .find(|p| p.id == id && p.status == PaneStatus::Running)
-            .context("pane execution ended")?;
+        ensure!(
+            state
+                .live
+                .get(id)
+                .is_some_and(|current| Arc::ptr_eq(&current.shared, &pane.shared)),
+            "pane execution replaced"
+        );
         // Observation runs outside locks. Reconcile its cloned binding with push events:
         // a delayed scan must neither resurrect End nor overwrite a newer generation.
         if let Some(observed) = &mut harness
@@ -501,6 +507,24 @@ impl Registry {
             };
             observed.managed = Some(live.managed.clone());
         }
+        let native = harness.as_ref().and_then(|harness| {
+            harness
+                .managed
+                .as_ref()?
+                .conversation
+                .as_ref()
+                .map(|conversation| (harness.kind, conversation.id.as_str()))
+        });
+        if let Some(cwd) = cwd.as_deref() {
+            directories::queue(&mut state, id, pane, cwd, native);
+        }
+        let info = state
+            .record
+            .registry
+            .panes
+            .iter_mut()
+            .find(|p| p.id == id && p.status == PaneStatus::Running)
+            .context("pane execution ended")?;
         if info.foreground_cwd == cwd && info.harness == harness {
             return Ok(());
         }
@@ -609,6 +633,7 @@ impl Registry {
                     }
                     if std::time::Instant::now() >= next_process {
                         registry.observe_processes();
+                        let _ = registry.flush_directories();
                         next_process = std::time::Instant::now() + Duration::from_millis(200);
                     }
                     registry.refresh_status_summaries();
@@ -664,7 +689,7 @@ impl Registry {
             }
         }
     }
-    fn observe_processes(&self) {
+    pub(super) fn observe_processes(&self) {
         let panes = self.running_panes();
         if panes.is_empty() {
             return;
