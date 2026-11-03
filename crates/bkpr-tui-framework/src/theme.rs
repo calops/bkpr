@@ -2,6 +2,10 @@
 //! Palette recipes and visual policy belong to the caller, not the framework.
 use crate::{ColorProbe, default_style};
 use bkpr_protocol::{ColorSource, Style};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// A retained surface can switch between independently updated theme instances.
+static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
@@ -83,7 +87,7 @@ impl Theme {
         self.styles = styles.base;
         self.selected = styles.selected;
         self.panels = styles.panel;
-        self.revision = self.revision.wrapping_add(1);
+        self.revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
         true
     }
     pub fn revision(&self) -> u64 {
@@ -154,6 +158,20 @@ impl Theme {
             &self.panels[role as usize]
         } else {
             self.style(role)
+        }
+    }
+    pub(crate) fn resolve_background(&self, source: ColorSource) -> [u8; 3] {
+        let default = self.defaults().1;
+        match source {
+            ColorSource::Default => default,
+            ColorSource::Palette(index) => self
+                .evidence
+                .ansi
+                .get(usize::from(index))
+                .copied()
+                .flatten()
+                .unwrap_or(default),
+            ColorSource::Rgb(color) => color,
         }
     }
     pub(crate) fn defaults(&self) -> ([u8; 3], [u8; 3]) {

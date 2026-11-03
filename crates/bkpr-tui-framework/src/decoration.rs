@@ -426,7 +426,7 @@ impl Material {
                 let highlight = f64::from(
                     self.style.foreground[c]
                         .max(self.style.background[c])
-                        .max(base[c]),
+                        .max(self.style.surface[c]),
                 );
                 surface
                     + (highlight - surface) * f64::from(self.style.lip_highlight_milli) / 1000.0
@@ -626,6 +626,42 @@ mod tests {
         assert_eq!(frame.placements.len(), 8);
         assert_eq!(frame.images.len(), 1);
         assert!(frame.images[0].pixels.len() < 80 * 24 * 10 * 20 * 4);
+    }
+    #[test]
+    fn raised_light_surfaces_keep_a_visible_upper_left_facet() {
+        let style = DecorationStyle {
+            kind: DecorationKind::RaisedSurface,
+            background: [225, 230, 235],
+            surface: [250; 3],
+            foreground: [25, 30, 35],
+            ..material()
+        };
+        let [width, height] = atlas_size(style, [10, 20]).unwrap();
+        let pixels = rasterize(style, [10, 20]).unwrap();
+        let pixel = |x, y| {
+            let start = ((y * width + x) * 4) as usize;
+            &pixels[start..start + 4]
+        };
+        for sample in [
+            pixel(width / 2, style.inset_px[1]),
+            pixel(style.inset_px[0], height / 2),
+        ] {
+            assert_eq!(sample[3], 255);
+            assert!(
+                sample[..3]
+                    .iter()
+                    .zip(style.background)
+                    .all(|(&channel, base)| channel > base)
+            );
+        }
+        let shade = pixel(width / 2, height - style.inset_px[1] - 1);
+        assert_eq!(shade[3], 255);
+        assert!(
+            shade[..3]
+                .iter()
+                .zip(style.background)
+                .all(|(&channel, base)| channel < base)
+        );
     }
     #[test]
     fn material_does_not_silently_shrink_to_fit_tiny_geometry() {

@@ -7,7 +7,7 @@ pub mod graphics;
 pub mod overlay;
 mod surface;
 pub mod window;
-pub use surface::{RoleSpan, UiSurface};
+pub use surface::{BackgroundSpan, RoleSpan, UiSurface};
 mod theme;
 pub use theme::{Role, Theme, ThemeStyles};
 mod text_input;

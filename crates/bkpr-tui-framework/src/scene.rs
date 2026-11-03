@@ -27,6 +27,10 @@ pub enum SurfaceContent {
     #[default]
     All,
     Cells,
+    /// Opaque cells inside a source-local, half-open clip. The surface origin
+    /// is unchanged; cells outside its frame or viewport are never projected.
+    /// Partial wide glyphs become blank cells rather than split glyphs.
+    CellsClipped(Rect),
     Graphics,
 }
 pub struct Surface<'a> {
@@ -43,6 +47,28 @@ pub struct Surface<'a> {
     /// Client-selected presentation only; canonical styles and image resources stay unchanged.
     pub faint: bool,
 }
+impl Surface<'_> {
+    fn cell_rect(&self) -> Option<Rect> {
+        match self.content {
+            SurfaceContent::Graphics => None,
+            SurfaceContent::All | SurfaceContent::Cells => Some(self.rect),
+            SurfaceContent::CellsClipped(clip) => {
+                let width = self.rect.width.min(self.frame.size.cols);
+                let height = self.rect.height.min(self.frame.size.rows);
+                let left = clip.x.min(width);
+                let top = clip.y.min(height);
+                let right = clip.x.saturating_add(clip.width).min(width);
+                let bottom = clip.y.saturating_add(clip.height).min(height);
+                (left < right && top < bottom).then(|| Rect {
+                    x: self.rect.x.saturating_add(left),
+                    y: self.rect.y.saturating_add(top),
+                    width: right - left,
+                    height: bottom - top,
+                })
+            }
+        }
+    }
+}
 pub struct Scene<'a> {
     pub size: Size,
     pub surfaces: Vec<Surface<'a>>,
@@ -52,7 +78,7 @@ impl Scene<'_> {
         self.surfaces
             .iter()
             .rev()
-            .find(|s| s.content != SurfaceContent::Graphics && s.rect.contains(x, y))
+            .find(|s| s.cell_rect().is_some_and(|rect| rect.contains(x, y)))
             .map(|s| s.id)
     }
     pub fn hit_map(&self) -> HitMap {
@@ -60,8 +86,7 @@ impl Scene<'_> {
             regions: self
                 .surfaces
                 .iter()
-                .filter(|s| s.content != SurfaceContent::Graphics)
-                .map(|s| (s.id.to_owned(), s.rect))
+                .filter_map(|s| s.cell_rect().map(|rect| (s.id.to_owned(), rect)))
                 .collect(),
         }
     }
@@ -566,7 +591,7 @@ pub struct Renderer {
     aliases: HashMap<(String, ImageKey), ImageKey>,
     next_alias: u32,
     canvas: Option<Frame>,
-    layout: Vec<(String, Rect, SurfaceContent)>,
+    layout: Vec<(String, Rect, SurfaceContent, Option<Rect>)>,
     visible: Vec<Vec<Rect>>,
 }
 impl Renderer {
@@ -585,33 +610,37 @@ impl Renderer {
                 bail!("surface outside scene");
             }
         }
-        let changed = self.layout.len() != scene.surfaces.len()
+        let changed = self.canvas.as_ref().is_none_or(|canvas| canvas.size != scene.size)
+            || self.layout.len() != scene.surfaces.len()
             || self
                 .layout
                 .iter()
                 .zip(&scene.surfaces)
-                .any(|((id, rect, content), surface)| {
-                    id != surface.id || *rect != surface.rect || *content != surface.content
+                .any(|((id, rect, content, cells), surface)| {
+                    id != surface.id
+                        || *rect != surface.rect
+                        || *content != surface.content
+                        || *cells != surface.cell_rect()
                 });
         if changed {
             self.layout = scene
                 .surfaces
                 .iter()
-                .map(|s| (s.id.to_owned(), s.rect, s.content))
+                .map(|s| (s.id.to_owned(), s.rect, s.content, s.cell_rect()))
                 .collect();
             self.visible = scene
                 .surfaces
                 .iter()
                 .enumerate()
                 .map(|(index, surface)| {
-                    let mut visible = vec![surface.rect];
+                    let mut visible: Vec<_> = surface.cell_rect().into_iter().collect();
                     for upper in &scene.surfaces[index + 1..] {
-                        if upper.content == SurfaceContent::Graphics {
+                        let Some(cover) = upper.cell_rect() else {
                             continue;
-                        }
+                        };
                         visible = visible
                             .into_iter()
-                            .flat_map(|rect| subtract(rect, upper.rect))
+                            .flat_map(|rect| subtract(rect, cover))
                             .collect();
                     }
                     visible
@@ -650,20 +679,23 @@ impl Renderer {
             if r.width == 0 || r.height == 0 {
                 continue;
             }
-            if surface.content != SurfaceContent::Graphics {
-                occlude(&mut prepared.placements, r, scene.size)?;
+            if let Some(cover) = surface.cell_rect() {
+                occlude(&mut prepared.placements, cover, scene.size)?;
                 compose_cells(canvas, surface, &self.visible[index], host);
             }
             if surface.focused && surface.content != SurfaceContent::Graphics {
                 canvas.cursor.clone_from(&surface.frame.cursor);
                 canvas.cursor.visible &= canvas.cursor.x < r.width && canvas.cursor.y < r.height;
-                canvas.cursor.x += r.x;
-                canvas.cursor.y += r.y;
+                canvas.cursor.x = canvas.cursor.x.saturating_add(r.x);
+                canvas.cursor.y = canvas.cursor.y.saturating_add(r.y);
                 canvas.cursor.visible &= self.visible[index]
                     .iter()
                     .any(|rect| rect.contains(canvas.cursor.x, canvas.cursor.y));
             }
-            if surface.content == SurfaceContent::Cells {
+            if matches!(
+                surface.content,
+                SurfaceContent::Cells | SurfaceContent::CellsClipped(_)
+            ) {
                 continue;
             }
             let mut local = geometry::prepare(surface.frame, r.size(scene.size))?;
@@ -1004,6 +1036,109 @@ mod scene_tests {
         });
         frame
     }
+    #[test]
+    fn clipped_cells_keep_source_origin_and_bound_wide_glyphs_cursor_hits_and_images() {
+        let size = Size {
+            cols: 12,
+            rows: 4,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut native = blank(size);
+        text(&mut native, 0, 1, "............", false);
+        let local = Size { cols: 6, rows: 2, ..size };
+        let mut source = blank(local);
+        text(&mut source, 0, 0, "A界BC", false);
+        source.cursor.visible = true;
+        source.cursor.x = 3;
+        source.cursor.y = 0;
+        let effects = effect_frame(local);
+        source.images = effects.images;
+        source.placements = effects.placements;
+        let mut scene = Scene {
+            size,
+            surfaces: vec![
+                Surface {
+                    id: "native",
+                    rect: Rect { x: 0, y: 0, width: 12, height: 4 },
+                    frame: &native,
+                    content: SurfaceContent::All,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                },
+                Surface {
+                    id: "clipped",
+                    rect: Rect { x: 2, y: 1, width: 6, height: 2 },
+                    frame: &source,
+                    content: SurfaceContent::CellsClipped(Rect {
+                        x: 2, y: 0, width: 3, height: 1,
+                    }),
+                    selection: &[],
+                    search: &[],
+                    focused: true,
+                    faint: false,
+                },
+            ],
+        };
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        let canvas = renderer.canvas.as_ref().unwrap();
+        assert_eq!(canvas.rows[1].cells[3].text, ".");
+        assert_eq!(canvas.rows[1].cells[4].text, " ");
+        assert_eq!(canvas.rows[1].cells[4].width, 1);
+        assert_eq!(canvas.rows[1].cells[5].text, "B");
+        assert_eq!(canvas.rows[1].cells[6].text, "C");
+        assert_eq!(canvas.rows[1].cells[7].text, ".");
+        assert!(canvas.cursor.visible);
+        assert_eq!((canvas.cursor.x, canvas.cursor.y), (5, 1));
+        assert!(terminal.graphics.image_ids.is_empty());
+        let hits = scene.hit_map();
+        for (x, expected) in [(3, "native"), (4, "clipped"), (6, "clipped"), (7, "native")] {
+            assert_eq!(scene.hit_test(x, 1), Some(expected));
+            assert_eq!(hits.hit_test(x, 1), Some(expected));
+        }
+        let mut idle = Vec::new();
+        renderer.render(&mut idle, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        assert!(idle.is_empty());
+        scene.surfaces[1].content = SurfaceContent::CellsClipped(Rect {
+            x: 0, y: 0, width: 1, height: 1,
+        });
+        renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        let canvas = renderer.canvas.as_ref().unwrap();
+        assert_eq!(canvas.rows[1].cells[2].text, "A");
+        assert_eq!(canvas.rows[1].cells[5].text, ".");
+        assert!(!canvas.cursor.visible);
+    }
+
+    #[test]
+    fn clipped_cells_intersect_overflowing_clips_with_source_and_viewport() {
+        let size = Size { cols: 10, rows: 5, cell_width: 8, cell_height: 16 };
+        let source = blank(Size { cols: 3, rows: 2, ..size });
+        let mut surface = Surface {
+            id: "clipped",
+            rect: Rect { x: 2, y: 1, width: 6, height: 3 },
+            frame: &source,
+            content: SurfaceContent::CellsClipped(Rect {
+                x: 1, y: 1, width: u16::MAX, height: u16::MAX,
+            }),
+            selection: &[],
+            search: &[],
+            focused: false,
+            faint: false,
+        };
+        assert_eq!(surface.cell_rect(), Some(Rect { x: 3, y: 2, width: 2, height: 1 }));
+        surface.content = SurfaceContent::CellsClipped(Rect {
+            x: u16::MAX, y: 0, width: u16::MAX, height: 1,
+        });
+        assert_eq!(surface.cell_rect(), None);
+        let scene = Scene { size, surfaces: vec![surface] };
+        assert_eq!(scene.hit_test(2, 1), None);
+        assert_eq!(scene.hit_map().hit_test(2, 1), None);
+    }
+
     #[test]
     fn transparent_effects_preserve_native_cells_cursor_hits_and_idle_damage() {
         let size = Size {

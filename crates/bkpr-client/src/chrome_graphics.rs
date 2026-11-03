@@ -38,8 +38,7 @@ type DecorationEvidence = (
     Option<[u8; 3]>,
     u32,
     u32,
-    Option<[u8; 3]>,
-    Option<[u8; 3]>,
+    [Option<[u8; 3]>; 5],
 );
 
 #[derive(Default)]
@@ -113,7 +112,7 @@ impl PaneGeometry {
 }
 pub(crate) struct ChromeGraphics(
     SvgGraphics,
-    Option<[DecorationStyle; 5]>,
+    Option<[DecorationStyle; 11]>,
     Option<DecorationEvidence>,
     PaneGeometry,
 );
@@ -144,21 +143,33 @@ impl ChromeGraphics {
             host.background,
             size.cell_width,
             size.cell_height,
-            host.palette.get(&3).copied(),
-            host.palette.get(&4).copied(),
+            [1, 2, 3, 4, 6].map(|index| host.palette.get(&index).copied()),
         );
         if self.2 != Some(evidence) {
             self.1 = crate::appearance::decoration_styles(host, size).map(|[pane, popup]| {
                 let guide = |accent| DecorationStyle {
-                    kind: bkpr_tui_framework::decoration::DecorationKind::RaisedSurface,
                     background: crate::appearance::guide_background(host, accent)
                         .unwrap_or(popup.background),
-                    lip_width_milli: (size.cell_width * 120).clamp(750, 2000),
-                    lip_highlight_milli: 240,
-                    lip_shade_milli: 240,
                     ..popup
                 };
-                [pane, popup, guide(None), guide(Some(4)), guide(Some(3))]
+                let region = |accent| DecorationStyle {
+                    background: crate::appearance::region_background(host, accent)
+                        .unwrap_or(popup.background),
+                    ..popup
+                };
+                [
+                    pane,
+                    popup,
+                    guide(None),
+                    guide(Some(4)),
+                    guide(Some(3)),
+                    region(None),
+                    region(Some(6)),
+                    region(Some(1)),
+                    region(Some(2)),
+                    region(Some(3)),
+                    region(Some(4)),
+                ]
             });
             self.2 = Some(evidence);
         }
@@ -280,6 +291,66 @@ impl ChromeGraphics {
         };
         self.0
             .decorate_window_with_geometry(frame, outer, styles[index], base, &[body], geometry)
+    }
+
+    /// Place an independently shaded rounded card with a half-cell-width margin
+    /// on both physical axes. The caller projects only `text_body` as opaque
+    /// cells; the retained atlas fills the rest without a square cell underlay.
+    /// Both rectangles use the destination frame's screen coordinates.
+    pub(crate) fn decorate_region(
+        &self,
+        frame: &mut Frame,
+        card: Rect,
+        text_body: Rect,
+        base: u32,
+        accent: Option<u8>,
+    ) -> bool {
+        if !self.0.is_enabled()
+            || text_body.width == 0
+            || text_body.height == 0
+            || text_body.x < card.x
+            || text_body.y < card.y
+            || u32::from(text_body.x) + u32::from(text_body.width)
+                > u32::from(card.x) + u32::from(card.width)
+            || u32::from(text_body.y) + u32::from(text_body.height)
+                > u32::from(card.y) + u32::from(card.height)
+        {
+            return false;
+        }
+        let Some(styles) = self.1 else {
+            return false;
+        };
+        let index = match accent {
+            None => 5,
+            Some(6) => 6,
+            Some(index @ 1..=4) => 6 + usize::from(index),
+            _ => return false,
+        };
+        let cw = i64::from(frame.size.cell_width);
+        let ch = i64::from(frame.size.cell_height);
+        let margin = (cw + 1) / 2;
+        let geometry = DecorationGeometry {
+            bounds_px: [
+                i64::from(card.x) * cw + margin,
+                i64::from(card.y) * ch + margin,
+                (i64::from(card.x) + i64::from(card.width)) * cw - margin,
+                (i64::from(card.y) + i64::from(card.height)) * ch - margin,
+            ],
+            clip_px: [
+                0,
+                0,
+                u32::from(frame.size.cols) * frame.size.cell_width,
+                u32::from(frame.size.rows) * frame.size.cell_height,
+            ],
+        };
+        self.0.decorate_window_with_geometry(
+            frame,
+            card,
+            styles[index],
+            base,
+            &[text_body],
+            geometry,
+        )
     }
 
     /// Call after fitting an existing two-cell decorative marker, never a label
