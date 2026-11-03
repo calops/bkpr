@@ -49,8 +49,29 @@ struct ManagedRequest<'a> {
 
 struct LeaseState {
     revoked: bool,
+    session_ended: bool,
     next_request: u64,
-    requests: HashMap<u64, UnixStream>,
+    requests: HashMap<u64, ActiveRequest>,
+}
+
+struct ActiveRequest {
+    stream: UnixStream,
+    observational: bool,
+}
+
+fn observational(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::Inspect
+            | Operation::SessionInfo
+            | Operation::Wait { .. }
+            | Operation::RecoveryList
+            | Operation::Pane {
+                request: bkpr_protocol::PaneRequest::Inspect
+                    | bkpr_protocol::PaneRequest::Poll { .. },
+                ..
+            }
+    )
 }
 
 struct Lease {
@@ -62,10 +83,14 @@ impl Lease {
     fn revoke(&self) {
         let mut state = self.state.lock().unwrap();
         state.revoked = true;
-        // Wake outstanding polls and writes. Their outcome remains unknown;
-        // work that has not entered dispatch is rejected without sending bytes.
-        for stream in state.requests.values() {
-            let _ = stream.shutdown(Shutdown::Both);
+        // Observations are cancellable; accepted mutations must drain their
+        // actual reply rather than manufacturing an unknown outcome.
+        for request in state
+            .requests
+            .values()
+            .filter(|request| request.observational)
+        {
+            let _ = request.stream.shutdown(Shutdown::Both);
         }
     }
 }
@@ -86,6 +111,7 @@ impl Endpoint {
                 authority,
                 state: Mutex::new(LeaseState {
                     revoked: false,
+                    session_ended: false,
                     next_request: 0,
                     requests: HashMap::new(),
                 }),
@@ -110,6 +136,10 @@ impl Endpoint {
         self.lease.state.lock().unwrap().revoked
     }
 
+    pub(crate) fn session_ended(&self) -> bool {
+        self.lease.state.lock().unwrap().session_ended
+    }
+
     pub fn ensure_live(&self) -> Result<()> {
         if self.is_revoked() {
             return Err(DetachedBeforeDispatch.into());
@@ -119,46 +149,60 @@ impl Endpoint {
 
     /// Dispatch exactly once; never replay a request after disconnect/takeover.
     pub fn checked(&self, operation: Operation) -> Result<Value> {
-        ensure!(
-            !matches!(
-                &operation,
-                Operation::Client { .. } | Operation::ClientRegister { .. }
-            ),
-            "client authority cannot be nested or registered through an endpoint"
-        );
-        self.ensure_live()?;
-        let mut stream = UnixStream::connect(self.socket.as_path())
-            .with_context(|| format!("connecting to {}", self.socket.display()))?;
-        stream.set_read_timeout(Some(Duration::from_secs(15)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-        let cancellation = stream.try_clone()?;
-        let id = {
-            let mut state = self.lease.state.lock().unwrap();
-            if state.revoked {
-                return Err(DetachedBeforeDispatch.into());
-            }
-            let id = state.next_request;
-            state.next_request = state.next_request.wrapping_add(1);
-            state.requests.insert(id, cancellation);
-            id
-        };
-        let _inflight = Inflight {
-            lease: &self.lease,
-            id,
-        };
-        let response = match &self.lease.authority {
-            Some(authority) => request_stream(
-                &mut stream,
-                &ManagedRequest {
-                    version: PROTOCOL_VERSION,
-                    op: "client",
-                    authority,
-                    request: &operation,
-                },
-            )?,
-            None => request_stream(&mut stream, &Request::new(operation))?,
-        };
-        checked_response(response)
+        let is_observation = observational(&operation);
+        let result = (|| -> Result<Value> {
+            ensure!(
+                !matches!(
+                    &operation,
+                    Operation::Client { .. } | Operation::ClientRegister { .. }
+                ),
+                "client authority cannot be nested or registered through an endpoint"
+            );
+            self.ensure_live()?;
+            let mut stream = UnixStream::connect(self.socket.as_path())
+                .with_context(|| format!("connecting to {}", self.socket.display()))?;
+            stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+            stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+            let cancellation = stream.try_clone()?;
+            let id = {
+                let mut state = self.lease.state.lock().unwrap();
+                if state.revoked {
+                    return Err(DetachedBeforeDispatch.into());
+                }
+                let id = state.next_request;
+                state.next_request = state.next_request.wrapping_add(1);
+                state.requests.insert(
+                    id,
+                    ActiveRequest {
+                        stream: cancellation,
+                        observational: is_observation,
+                    },
+                );
+                id
+            };
+            let _inflight = Inflight {
+                lease: &self.lease,
+                id,
+            };
+            let response = match &self.lease.authority {
+                Some(authority) => request_stream(
+                    &mut stream,
+                    &ManagedRequest {
+                        version: PROTOCOL_VERSION,
+                        op: "client",
+                        authority,
+                        request: &operation,
+                    },
+                )?,
+                None => request_stream(&mut stream, &Request::new(operation))?,
+            };
+            checked_response(response)
+        })();
+        if is_observation {
+            result.map_err(super::observation_error)
+        } else {
+            result
+        }
     }
 }
 
@@ -302,6 +346,11 @@ impl RegisteredClient {
         Ok(())
     }
 
+    pub(crate) fn close_for_shutdown(&mut self) {
+        self.endpoint.lease.state.lock().unwrap().session_ended = true;
+        self.close();
+    }
+
     /// Bounded, nonblocking lifecycle consumption. EOF is authoritative detach,
     /// including EOF without an event. Malformed events fail closed as well.
     pub fn consume_lifecycle(&mut self) -> Result<bool> {
@@ -343,6 +392,9 @@ impl RegisteredClient {
                             event.event == "client_detached",
                             "unsupported client lifecycle event"
                         );
+                        if event.reason == "shutdown" {
+                            self.endpoint.lease.state.lock().unwrap().session_ended = true;
+                        }
                         return Ok(true);
                     }
                 }
@@ -461,6 +513,7 @@ mod tests {
             ok: true,
             result: Some(result),
             error: None,
+            failure: None,
         })
         .unwrap();
         bytes.push(b'\n');
@@ -664,6 +717,10 @@ mod tests {
         let error = worker.join().unwrap().unwrap_err();
         assert!(super::super::outcome_unknown(&error));
         assert!(!detached_before_dispatch(&error));
+        assert!(!super::super::expected_shutdown(
+            &error,
+            endpoint.session_ended()
+        ));
         let error = endpoint
             .checked(Operation::Inspect)
             .unwrap_err()
@@ -692,5 +749,114 @@ mod tests {
         drop(client);
         assert!(endpoint.checked(Operation::Inspect).is_err());
         server.join().unwrap();
+    }
+    #[test]
+    fn authoritative_shutdown_cancels_observation_without_claiming_dispatch_rejection() {
+        let (accepted, observed) = mpsc::channel();
+        let (_directory, socket, server) = fixture(move |mut lifetime, listener| {
+            lifetime
+                .write_all(&response(registration(session())))
+                .unwrap();
+            let (mut control, _) = listener.accept().unwrap();
+            assert!(matches!(
+                read_request(&mut control).operation,
+                Operation::Client { .. }
+            ));
+            lifetime
+                .write_all(b"{\"event\":\"client_detached\",\"reason\":\"shutdown\"}\n")
+                .unwrap();
+            accepted.send(()).unwrap();
+            let mut byte = [0];
+            assert_eq!(control.read(&mut byte).unwrap(), 0);
+        });
+        let mut client = RegisteredClient::register_with_agent_socket(&socket, None).unwrap();
+        let endpoint = client.endpoint().clone();
+        let worker_endpoint = endpoint.clone();
+        let worker = thread::spawn(move || worker_endpoint.checked(Operation::Inspect));
+        observed.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(client.consume_lifecycle().unwrap());
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(super::super::outcome_unknown(&error));
+        assert!(!super::super::shutdown_not_dispatched(&error));
+        assert!(super::super::expected_shutdown(
+            &error,
+            endpoint.session_ended()
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn accepted_mutation_receipts_survive_authoritative_shutdown() {
+        for outcome in ["committed", "failed", "unknown"] {
+            let (accepted, observed) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            let (_directory, socket, server) = fixture(move |mut lifetime, listener| {
+                lifetime
+                    .write_all(&response(registration(session())))
+                    .unwrap();
+                let (mut control, _) = listener.accept().unwrap();
+                assert!(matches!(
+                    read_request(&mut control).operation,
+                    Operation::Client { .. }
+                ));
+                lifetime
+                    .write_all(b"{\"event\":\"client_detached\",\"reason\":\"shutdown\"}\n")
+                    .unwrap();
+                accepted.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(3)).unwrap();
+                let reply = match outcome {
+                    "committed" => response(serde_json::json!({"committed_name":"renamed"})),
+                    _ => {
+                        let mut bytes = serde_json::to_vec(&Response {
+                            version: PROTOCOL_VERSION,
+                            ok: false,
+                            result: None,
+                            error: Some("durable mutation failed".into()),
+                            failure: (outcome == "unknown").then_some(
+                                bkpr_protocol::RequestFailure::SessionClosing {
+                                    outcome: bkpr_protocol::RequestOutcome::Unknown,
+                                },
+                            ),
+                        })
+                        .unwrap();
+                        bytes.push(b'\n');
+                        bytes
+                    }
+                };
+                control.write_all(&reply).unwrap();
+                listener.set_nonblocking(true).unwrap();
+                assert!(
+                    matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+                );
+            });
+            let mut client = RegisteredClient::register_with_agent_socket(&socket, None).unwrap();
+            let endpoint = client.endpoint().clone();
+            let worker_endpoint = endpoint.clone();
+            let worker = thread::spawn(move || {
+                worker_endpoint.checked(Operation::WorkspaceRename {
+                    workspace_id: "owned-workspace".into(),
+                    expected_revision: 7,
+                    name: "renamed".into(),
+                })
+            });
+            observed.recv_timeout(Duration::from_secs(3)).unwrap();
+            assert!(client.consume_lifecycle().unwrap());
+            release.send(()).unwrap();
+            match worker.join().unwrap() {
+                Ok(value) => {
+                    assert_eq!(outcome, "committed");
+                    assert_eq!(value["committed_name"], "renamed");
+                }
+                Err(error) => {
+                    assert_ne!(outcome, "committed");
+                    assert_eq!(super::super::outcome_unknown(&error), outcome == "unknown");
+                    assert!(!super::super::expected_shutdown(
+                        &error,
+                        endpoint.session_ended()
+                    ));
+                }
+            }
+            server.join().unwrap();
+        }
     }
 }

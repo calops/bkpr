@@ -847,6 +847,7 @@ mod tests {
                     ok: false,
                     result: None,
                     error: Some(format!("denied capability {token}")),
+                    failure: None,
                 },
             )
             .unwrap();

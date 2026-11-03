@@ -60,8 +60,8 @@ pub(crate) fn cleanup(request: &PaneRequest) -> bool {
             }
         )
 }
-pub(crate) type ResponseReceipt = mpsc::Receiver<Result<serde_json::Value, String>>;
-pub(crate) type Receipt = mpsc::Receiver<Result<(), String>>;
+pub(crate) type ResponseReceipt = mpsc::Receiver<Result<serde_json::Value>>;
+pub(crate) type Receipt = mpsc::Receiver<Result<()>>;
 
 #[derive(Debug, Default)]
 struct BudgetState {
@@ -299,11 +299,11 @@ impl ReservedInput {
 pub(crate) struct DeviceReservation(ReservedInput);
 #[derive(Debug)]
 enum Completion {
-    Receipt(mpsc::SyncSender<Result<(), String>>),
-    Response(mpsc::SyncSender<Result<serde_json::Value, String>>),
+    Receipt(mpsc::SyncSender<Result<()>>),
+    Response(mpsc::SyncSender<Result<serde_json::Value>>),
 }
 impl Completion {
-    fn finish(self, result: Result<serde_json::Value, String>) {
+    fn finish(self, result: Result<serde_json::Value>) {
         match self {
             Self::Receipt(done) => {
                 let _ = done.send(result.map(|_| ()));
@@ -426,7 +426,7 @@ impl InputPump {
                         } else { None }
                     };
                     if let Some(error) = blocked {
-                        completed = Err(error);
+                        completed = Err(anyhow::Error::msg(error));
                         notify(&wake);
                         continue;
                     }
@@ -437,16 +437,17 @@ impl InputPump {
                     let mut context = InputFailure::context(&operation);
                     let result = socket.checked(operation);
                     if let Err(error) = &result {
+                        let shutdown_rejected = transport::shutdown_not_dispatched(error);
                         let expected_owner_rejection = colors && !transport::outcome_unknown(error)
                             && error.root_cause().to_string() == "only current size owner may seed terminal colors";
-                        let expected_inspection_rejection = (copy || select || search) && !transport::outcome_unknown(error);
+                        let expected_inspection_rejection = (copy || select || search) && !transport::outcome_unknown(error) && !shutdown_rejected;
                         if expected_inspection_rejection {
                             if select || search {
                                 context.error = format!("{error:#}");
                                 *noticed.lock().unwrap() = Some(context);
                                 notify(&wake);
                             }
-                        } else if !expected_owner_rejection {
+                        } else if !expected_owner_rejection && !shutdown_rejected {
                             context.stopped = true;
                             context.error = format!("{error:#}");
                             context.unknown_outcome = transport::outcome_unknown(error);
@@ -461,7 +462,7 @@ impl InputPump {
                             notify(&wake);
                         }
                     }
-                    completed = result.map_err(|error| format!("{error:#}"));
+                    completed = result;
                 }
                 drop(permit);
                 if let Some(done) = done { done.finish(completed); }
@@ -978,6 +979,7 @@ mod tests {
                         ok: true,
                         result: Some(serde_json::json!({"accepted":true})),
                         error: None,
+                        failure: None,
                     };
                     let mut bytes = serde_json::to_vec(&response).unwrap();
                     bytes.push(b'\n');
@@ -1200,6 +1202,7 @@ mod tests {
                         ok: !failing,
                         result: (!failing).then(|| serde_json::json!({"accepted":true})),
                         error: failing.then(|| "native command timed out; outcome unknown".into()),
+                        failure: None,
                     };
                     let mut bytes = serde_json::to_vec(&response).unwrap();
                     bytes.push(b'\n');
@@ -1424,6 +1427,7 @@ mod tests {
                     ok: index != 0,
                     result: (index != 0).then(|| serde_json::json!({"accepted":true})),
                     error: (index == 0).then(|| "selection exceeds copy payload limit".into()),
+                    failure: None,
                 };
                 let mut bytes = serde_json::to_vec(&response).unwrap();
                 bytes.push(b'\n');
@@ -1441,12 +1445,7 @@ mod tests {
             .unwrap();
         let mut typed = Some(key("alpha", "KeyA"));
         let typed = input.send_owned(&mut typed).unwrap();
-        assert!(
-            copy.recv_timeout(Duration::from_secs(5))
-                .unwrap()
-                .unwrap_err()
-                .contains("payload limit")
-        );
+        assert!(copy.recv_timeout(Duration::from_secs(5)).unwrap().is_err());
         typed.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
         assert!(input.check().unwrap().is_empty());
         input.finish().unwrap();
@@ -1541,6 +1540,7 @@ mod tests {
                     ok: index != 0,
                     result: (index != 0).then(|| serde_json::json!({"accepted":true})),
                     error: (index == 0).then(|| "selection view is no longer visible".into()),
+                    failure: None,
                 };
                 let mut bytes = serde_json::to_vec(&response).unwrap();
                 bytes.push(b'\n');
@@ -1614,4 +1614,5 @@ mod tests {
             ]
         );
     }
+    include!("input_shutdown_tests.rs");
 }

@@ -221,6 +221,11 @@ struct ResizeBarrier {
     entered: mpsc::SyncSender<Size>,
     resume: Mutex<mpsc::Receiver<()>>,
 }
+#[cfg(all(test, target_os = "linux"))]
+struct SnapshotBarrier {
+    entered: mpsc::SyncSender<()>,
+    resume: mpsc::Receiver<()>,
+}
 type BeforeTerminate = Arc<dyn Fn() -> Result<()> + Send + Sync>;
 struct Shared {
     authority: Mutex<Authority>,
@@ -252,6 +257,8 @@ struct Shared {
     status_wake: Option<crossbeam_channel::Sender<()>>,
     #[cfg(test)]
     resize_barrier: Mutex<Option<Arc<ResizeBarrier>>>,
+    #[cfg(all(test, target_os = "linux"))]
+    snapshot_barrier: Mutex<Option<SnapshotBarrier>>,
 }
 impl Shared {
     fn notify_status_changed(&self) {
@@ -348,6 +355,8 @@ impl Pane {
             status_wake,
             #[cfg(test)]
             resize_barrier: Mutex::new(None),
+            #[cfg(all(test, target_os = "linux"))]
+            snapshot_barrier: Mutex::new(None),
         });
         let (commands, rx) = crossbeam_channel::bounded(64);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -548,16 +557,14 @@ impl Pane {
             _ => {}
         }
         match &request {
-            Request::Inspect => return self.snapshot(None, 0, 0, &[], false, false),
+            Request::Inspect => return self.snapshot(&request, client.as_ref()),
             Request::Poll {
                 view_id,
-                after,
-                frame_after,
                 resources,
                 snapshot_after,
                 wait_ms,
-                row_deltas,
                 scene_encoding,
+                ..
             } => {
                 if scene_encoding
                     .as_deref()
@@ -568,16 +575,13 @@ impl Pane {
                 if resources.len() > 1024 {
                     bail!("image receipt limit");
                 }
-                self.shared.authority.lock().unwrap().touch(view_id)?;
+                {
+                    let mut authority = self.shared.authority.lock().unwrap();
+                    authority.check_client(view_id, client.as_ref())?;
+                    authority.touch(view_id)?;
+                }
                 self.shared.changes.wait(*snapshot_after, *wait_ms);
-                return self.snapshot(
-                    Some(view_id),
-                    *after,
-                    *frame_after,
-                    resources,
-                    *row_deltas,
-                    scene_encoding.is_some(),
-                );
+                return self.snapshot(&request, client.as_ref());
             }
             Request::Detach { view_id } => self.cancel_clipboard(Some(view_id)),
             Request::Update { view_id, spec }
@@ -881,15 +885,45 @@ impl Pane {
     }
     fn snapshot(
         &self,
-        view: Option<&str>,
-        after: u64,
-        frame_after: u64,
-        resources: &[ImageKey],
-        row_deltas: bool,
-        compact_scene: bool,
+        request: &Request,
+        client: Option<&Arc<registry::sessions::ClientLease>>,
     ) -> Result<Value> {
+        let (view, after, frame_after, resources, row_deltas, compact_scene) = match request {
+            Request::Inspect => (None, 0, 0, &[][..], false, false),
+            Request::Poll {
+                view_id,
+                after,
+                frame_after,
+                resources,
+                row_deltas,
+                scene_encoding,
+                ..
+            } => (
+                Some(view_id.as_str()),
+                *after,
+                *frame_after,
+                resources.as_slice(),
+                *row_deltas,
+                scene_encoding.is_some(),
+            ),
+            _ => unreachable!("only inspection requests produce pane snapshots"),
+        };
         if resources.len() > 1024 {
             bail!("image receipt limit");
+        }
+        #[cfg(all(test, target_os = "linux"))]
+        {
+            let barrier = self.shared.snapshot_barrier.lock().unwrap().take();
+            if let Some(barrier) = barrier {
+                barrier
+                    .entered
+                    .send(())
+                    .context("snapshot test barrier receiver closed")?;
+                barrier
+                    .resume
+                    .recv_timeout(Duration::from_secs(10))
+                    .context("snapshot test barrier was not released")?;
+            }
         }
         // Capture the token before the state: concurrent updates can cause an
         // extra response, but can never be hidden behind a newer change token.
@@ -913,7 +947,11 @@ impl Pane {
             search,
         ) = {
             let mut authority = self.shared.authority.lock().unwrap();
+            if let Some(client) = client {
+                client.ensure_active()?;
+            }
             if let Some(id) = view {
+                authority.check_client(id, client)?;
                 authority.touch(id)?;
             }
             let published = self.shared.published.lock().unwrap();
@@ -2155,6 +2193,8 @@ mod snapshot_tests {
                 status_dirty: AtomicBool::new(false),
                 status_wake: None,
                 resize_barrier: Mutex::new(None),
+                #[cfg(target_os = "linux")]
+                snapshot_barrier: Mutex::new(None),
                 before_terminate: Default::default(),
             }),
             commands,

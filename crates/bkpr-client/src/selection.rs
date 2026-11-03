@@ -470,12 +470,14 @@ impl App<'_> {
             let result = match copy.receipt.try_recv() {
                 Ok(result) => result,
                 Err(mpsc::TryRecvError::Empty) => return Ok(()),
-                Err(mpsc::TryRecvError::Disconnected) => Err(
-                    "selection copy completion disconnected; outcome unknown; not replayed".into(),
-                ),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Err(transport::mark_outcome_unknown(anyhow::anyhow!(
+                        "selection copy completion disconnected; outcome unknown; not replayed"
+                    )))
+                }
             };
             let copy = self.terminal_selection.copies.pop_front().unwrap();
-            let result = result.map_err(anyhow::Error::msg).and_then(|value| {
+            let result = result.and_then(|value| {
                 #[derive(serde::Deserialize)]
                 struct Copied {
                     copied: bool,

@@ -847,9 +847,71 @@ and strict workspace all-target Clippy. Native/process proof remains Linux-only;
 the genuine Claude/Antigravity prerequisites and frontend recovery picker remain
 open.
 
-An existing frontend shutdown race is retained rather than hidden: a pending RPC
+At the automatic-restoration snapshot, a frontend shutdown race was retained rather than hidden: a pending RPC
 can surface `session is shutting down` as an error even when lifecycle revocation
 is expected. The failed owned fixtures retain that output separately. Final
 automatic-restoration cases detach clients normally before administrative shutdown;
 they do not claim that every concurrent TUI RPC now exits cleanly on daemon stop.
+The subsequent [typed shutdown pass](#typed-session-shutdown) addresses that
+expected-shutdown failure and exercises clients without detaching them first.
+
+## Typed session shutdown
+
+The additive protocol-4 `Response.failure` metadata separates known
+`session_closing` rejection before dispatch from `unknown` after dispatch began.
+Only typed backend closing errors receive it; successful replies and unrelated
+errors are not reclassified from global state or text. Decoded requests hold
+response-drain admission through startup cancellation and known closing rejection.
+Managed snapshot checks retain their exact lease's shutdown cause even after view
+removal, without converting takeover/stale-view errors into session shutdown.
+Immutable `SessionInfo` remains available after persistence poison, preserving
+the real CLI's target-validation prerequisite before explicit `Shutdown`.
+
+Clients cancel observational streams but let accepted mutations drain their actual
+responses under existing deadlines. Typed errors survive snapshot pumps, native
+input receipts, retirement and attach rollback. Known undispatched requests and
+observational interruptions backed by a typed closing reply or validated shutdown
+event can exit cleanly. Bare EOF, malformed responses and genuine failed or unknown
+mutations do not become successful results. Later cleanup cannot lend its safe
+cancellation marker to an earlier malformed snapshot or hide another failed action.
+
+Evidence is `target/smoke/session-shutdown/{acceptance.json,workspace-tests.log,workspace-strict.log,controllers.zip}`.
+The immutable **debug** pair is `bin/bkpr`
+`ddba47598ee35415a27737b197354214028a117ff0ab0886925c6e857f0104d6`
+and `bin/bkprd`
+`c70a3d41d17459ba1fe7b4dd8e6f5c006b6a1935d3fcd2f667a984d8f04c00f2`.
+The protected incremental link receipt is
+`protected-1312186005744632/result.json`; it preserves public outputs during that
+link, not during every preceding host Cargo command.
+
+Actual runtime `matrix-1312265720678523/result.json` exercises two iterations
+each of explicit `bkpr stop`, natural last-shell exit through real TUI input,
+last-terminal termination and last-workspace closure. Every case has two attached
+TUIs and five pending observational requests. All **16 client exits and eight
+daemon exits are 0**, exact original termios is restored and no TUI emits `Error:`.
+Exact shell process births disappear. An independent session retains its identity
+and consumes real TUI shell input after every case; normal detach leaves its daemon
+running.
+
+The same matrix verifies failures against the actual backend: an invalid-view
+keyboard mutation returns `ok:false` and CLI exit 1. A controlled Unix proxy forwards
+an accepted workspace rename, then deliberately drops its response. CLI exit 1
+reports outcome unknown/no replay; authoritative name/revision changes and the
+proxy trace prove exactly one dispatch. These failures are not suppressed to make
+shutdown appear clean.
+
+Full workspace checks pass **645 top-level tests**, with fourteen ignored subprocess
+fixtures. After a mechanical renderer context/cache-key refactor, all **97 framework
+tests** pass again; final strict workspace all-target Clippy and global formatting
+pass. Deterministic regressions cover response admission, late lifecycle/registration,
+startup cancellation, persistence failure precedence and stop identity, exact
+managed Poll leases, accepted mutation receipts, attachment rollback and queued
+Select/Search shutdown rejection.
+
+Runtime is Linux host UID 1000, private HOME/XDG/socket roots, real shell PTYs at
+100x32 and inherited AF_INET/AF_INET6 socket denial. Final cleanup reports zero
+surviving owned process births. Build/check jobs remain bounded to eight CPUs/jobs;
+no release benchmark, physical graphics comparison, provider/account/profile
+change, or live session participates. Existing `serde`/`anyhow` and transport/lifetime
+mechanisms suffice; no dependency or second lifecycle service is introduced.
 

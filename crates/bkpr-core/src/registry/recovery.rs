@@ -166,7 +166,7 @@ impl Registry {
                     let ready = (|| -> Result<()> {
                         ensure!(
                             !state.closing && !self.session_end_requested(),
-                            "session is closing"
+                            SessionClosing("session is closing")
                         );
                         ensure!(configured, "managed harnesses are not configured");
                         ensure!(

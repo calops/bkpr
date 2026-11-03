@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
-use bkpr_protocol::{Operation, PROTOCOL_VERSION, Request, Response};
+use bkpr_protocol::{
+    Operation, PROTOCOL_VERSION, Request, RequestFailure, RequestOutcome, Response,
+};
 use serde_json::Value;
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -29,6 +31,65 @@ pub(crate) fn mark_outcome_unknown(error: anyhow::Error) -> anyhow::Error {
     error.context(OutcomeUnknown)
 }
 
+#[derive(Debug)]
+struct SessionClosing(RequestOutcome);
+impl std::fmt::Display for SessionClosing {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("session is shutting down")
+    }
+}
+impl std::error::Error for SessionClosing {}
+
+#[derive(Debug)]
+struct InterruptedObservation;
+impl std::fmt::Display for InterruptedObservation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("observational request interrupted")
+    }
+}
+impl std::error::Error for InterruptedObservation {}
+
+pub(crate) fn shutdown_not_dispatched(error: &anyhow::Error) -> bool {
+    !outcome_unknown(error)
+        && (detached_before_dispatch(error)
+            || matches!(
+                error.downcast_ref::<SessionClosing>(),
+                Some(SessionClosing(RequestOutcome::NotDispatched))
+            ))
+}
+
+pub(crate) fn server_closing(error: &anyhow::Error) -> bool {
+    error.is::<SessionClosing>()
+}
+
+pub(crate) fn expected_shutdown(error: &anyhow::Error, session_ended: bool) -> bool {
+    shutdown_not_dispatched(error)
+        || (error.is::<InterruptedObservation>() && (session_ended || error.is::<SessionClosing>()))
+}
+
+fn observation_error(error: anyhow::Error) -> anyhow::Error {
+    let interrupted = error.is::<SessionClosing>()
+        || error.chain().any(|cause| {
+            cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::UnexpectedEof
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::NotConnected
+                        | std::io::ErrorKind::NotFound
+                )
+            })
+        });
+    if interrupted {
+        error.context(InterruptedObservation)
+    } else {
+        error
+    }
+}
+
 /// Every request is sent once. A disconnected mutation is never replayed.
 pub fn request(socket: &Path, request: &Request) -> Result<Response> {
     let mut stream = UnixStream::connect(socket)
@@ -54,7 +115,12 @@ pub fn request_stream<T: serde::Serialize + ?Sized>(
             writer.flush()?;
         }
         let mut bytes = Vec::new();
-        BufReader::new((&mut *stream).take(96 * 1024 * 1024 + 1)).read_until(b'\n', &mut bytes)?;
+        if BufReader::new((&mut *stream).take(96 * 1024 * 1024 + 1))
+            .read_until(b'\n', &mut bytes)?
+            == 0
+        {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        }
         if bytes.len() > 96 * 1024 * 1024 {
             bail!("server response exceeds scene limit");
         }
@@ -83,7 +149,8 @@ fn validate_response(response: Response) -> Result<Response> {
         response.result.is_some(),
         response.error.is_some(),
     ) {
-        (true, true, false) | (false, false, true) => Ok(response),
+        (true, true, false) if response.failure.is_none() => Ok(response),
+        (false, false, true) => Ok(response),
         _ => bail!("incomplete or contradictory server response"),
     }
 }
@@ -92,7 +159,18 @@ fn checked_response(response: Response) -> Result<Value> {
     if !response.ok {
         let message = response.error.expect("validated rejection has an error");
         let ambiguous = message.contains("outcome unknown");
-        let error = anyhow::Error::msg(message);
+        let error = match response.failure {
+            Some(RequestFailure::SessionClosing { outcome }) => {
+                let unknown = outcome == RequestOutcome::Unknown;
+                let error = anyhow::Error::msg(message).context(SessionClosing(outcome));
+                return Err(if unknown {
+                    error.context(OutcomeUnknown)
+                } else {
+                    error
+                });
+            }
+            None => anyhow::Error::msg(message),
+        };
         return Err(if ambiguous {
             error.context(OutcomeUnknown)
         } else {
@@ -172,5 +250,52 @@ mod tests {
         let error =
             checked(&directory.path().join("absent.sock"), Operation::Shutdown).unwrap_err();
         assert!(!outcome_unknown(&error));
+    }
+    #[test]
+    fn typed_shutdown_rejection_does_not_hide_unknown_or_untyped_failures() {
+        for (failure, unknown, clean) in [
+            (None, false, false),
+            (
+                Some(RequestFailure::SessionClosing {
+                    outcome: RequestOutcome::NotDispatched,
+                }),
+                false,
+                true,
+            ),
+            (
+                Some(RequestFailure::SessionClosing {
+                    outcome: RequestOutcome::Unknown,
+                }),
+                true,
+                false,
+            ),
+        ] {
+            let error = rejected_reply(
+                serde_json::to_vec(&Response {
+                    version: PROTOCOL_VERSION,
+                    ok: false,
+                    result: None,
+                    error: Some("session is shutting down".into()),
+                    failure,
+                })
+                .unwrap(),
+            );
+            assert_eq!(outcome_unknown(&error), unknown);
+            assert_eq!(expected_shutdown(&error, true), clean);
+        }
+        let error = rejected_reply(
+            serde_json::to_vec(&Response {
+                version: PROTOCOL_VERSION,
+                ok: true,
+                result: Some(serde_json::json!({"committed":true})),
+                error: None,
+                failure: Some(RequestFailure::SessionClosing {
+                    outcome: RequestOutcome::NotDispatched,
+                }),
+            })
+            .unwrap(),
+        );
+        assert!(outcome_unknown(&error));
+        assert!(!expected_shutdown(&error, true));
     }
 }
