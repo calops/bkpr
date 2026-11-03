@@ -26,6 +26,12 @@ pub enum AgentWakeOutcome {
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentRequest {
     Whoami,
+    /// Shared typed control; implementation allowlists supported operations.
+    Control {
+        request: Box<crate::Operation>,
+        #[serde(default)]
+        scope: AgentScope,
+    },
     SetTitle {
         title: String,
     },

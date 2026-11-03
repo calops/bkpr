@@ -688,3 +688,59 @@ The coordinated working tree passes **536 top-level tests**, with eight explicit
 
 Verification also repaired two native test-fixture races without changing production lifecycle behavior: pending-client closure now matches the actual client's explicit socket shutdown, and the deferred-completion test blocks request admission rather than holding publication while inspecting registry state. The original stalled test had no remaining descendants and was retired by exact identity; its cleanup receipt is retained. Intermediate failures remain evidence, not successful acceptance.
 
+## Explicit native recovery
+
+The backend now persists authenticated harness kind/native conversation ID/raw
+CWD descriptors in private registry version 3, separately from live capture and
+agent authority. Headless `bkpr resume` lists without execution or daemon
+bootstrap; exact `--pane` selection and shared scoped MCP `control` use the same
+reserved native-resume path. The approved policy is current native configuration:
+no saved argv/model/provider/profile/approval/sandbox replay, provider switching,
+implicit fork or fresh-session fallback. A spawn result remains pending native
+binding, not proof of native restoration.
+
+Evidence is `target/smoke/harness-recovery/acceptance.json` and CRC-checked
+`controllers.zip`. The immutable **debug** pair is `bin/bkpr` SHA-256
+`4a947edf191eabdd03a6be5b7e9cb0deea56e446ae6d6415d8ea7d13d7b957cd`,
+`bin/bkprd` `6ad651c085a411f1df9cd7a6712b20c12c8c3b34e010fa9d74174175f5cd44ec`.
+Protected incremental linking preserves public outputs during linking; no
+release build or performance comparison is involved. Source hashes and the
+build receipt identify the backend cutover independently of concurrent frontend
+work, which is not part of the backend commit.
+
+* `omp-1291324099352526` runs actual Omp 18.13.2 against an owned loopback provider,
+  persists a real user/assistant turn, restarts the daemon and resumes the same
+  native conversation. Saved user and assistant content is visible again, while
+  launch identity changes. Withholding only the fixture's native session file
+  first causes genuine native refusal; the original descriptor remains
+  recoverable, and restoring the file permits a successful explicit retry.
+* `codex-1291151827080890` runs actual Codex 0.165.0 with its genuine app-server
+  and TUI. The exact response-correlated thread binds before the first prompt;
+  an intentional local provider rejection still records the user turn. Daemon
+  restart and native resume preserve that thread and visible user history with
+  fresh launch authority. No MCP function approval is bypassed.
+* Both cases verify read-only listing without revision changes, cleared live
+  facts after restart, duplicate refusal, and no argv/tokens/launch IDs in the
+  registry. Their exact-birth cleanup receipts contain real tracked descendants
+  and zero survivors. Private HOME/XDG/native stores and loopback-only network
+  namespaces exclude user conversation stores, real providers and live sessions.
+
+The preserved Codex failing-before screen,
+`codex-1288498602909478/failure.txt`, reports ambiguous native CWD: the old
+selection treated its same-depth app-server and interactive TUI equally. Role
+classification now excludes the native app-server. Deterministic regressions
+also first failed for exited auxiliary-process inspection and silently
+substituting a supervisor's directory; verified exit is now non-native, while
+missing/ambiguous live native processes fail binding rather than fabricate CWD.
+Additional regressions cover retirement after scope sampling, client detach
+during termination, unaffected sibling-window callbacks, durable-store failure,
+stale/aliased resume reservations, raw directories and unrelated live input.
+
+Final coordinated formatting, workspace tests and strict all-target Clippy pass:
+**569 top-level tests**, nine ignored subprocess fixtures. Native runtime
+acceptance is Linux Omp/Codex only. Claude's offline first-run preflight and
+Antigravity's unapproved Terms/native receiver remain the existing genuine
+acceptance gates. This does not implement a frontend recovery picker, process
+resurrection, persisted terminal contents, remote endpoints or sustained-animation
+CPU-efficiency improvements.
+

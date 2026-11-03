@@ -76,6 +76,10 @@ pub fn command() -> Command {
         )
         .subcommand(Command::new("context").about("Read pane context without starting a daemon"))
         .subcommand(
+            Command::new("resume")
+                .about("List saved conversations read-only; --pane ID explicitly resumes one using current native configuration"),
+        )
+        .subcommand(
             Command::new("request")
                 .about("Send one versioned typed JSON request")
                 .arg(Arg::new("payload").required(true)),
@@ -105,6 +109,13 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches> {
         if matches.get_flag("read-only") || matches.contains_id("clipboard") {
             bail!("frontend options are only valid for a TUI attachment");
         }
+    }
+    if name == "resume"
+        && ["view", "cols", "rows", "cell-width", "cell-height"]
+            .iter()
+            .any(|key| matches.contains_id(key))
+    {
+        bail!("resume accepts only an exact --pane ID and session target options");
     }
     if name == "list"
         && ["session", "socket", "state-root"]
@@ -163,6 +174,33 @@ mod tests {
         assert!(parse(args(&["bkpr", "context", "-d"])).is_err());
         assert!(parse(args(&["bkpr", "list", "-s", "a"])).is_err());
         assert!(parse(args(&["bkpr", "stop", "--home", "/tmp/home"])).is_err());
+    }
+
+    #[test]
+    fn resume_is_read_only_unless_an_exact_pane_is_explicit() {
+        let parsed = parse(args(&["bkpr", "resume"])).unwrap();
+        assert!(parsed.get_one::<String>("pane").is_none());
+        let parsed = parse(args(&[
+            "bkpr", "resume", "--pane", "pane-123", "-s", "work",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.get_one::<String>("pane").unwrap(), "pane-123");
+        assert_eq!(parsed.get_one::<String>("session").unwrap(), "work");
+        for values in [
+            vec!["bkpr", "resume", "pane-123"],
+            vec!["bkpr", "resume", "--pane", "pane-123", "--pane", "other"],
+            vec![
+                "bkpr", "resume", "--pane", "pane-123", "--", "claude", "--resume", "other",
+            ],
+            vec!["bkpr", "resume", "--cwd", "/other"],
+            vec!["bkpr", "resume", "--bkprd", "/other"],
+            vec!["bkpr", "resume", "--home", "/other"],
+            vec!["bkpr", "resume", "--view", "view-123"],
+            vec!["bkpr", "resume", "--cols", "80"],
+            vec!["bkpr", "resume", "-d"],
+        ] {
+            assert!(parse(args(&values)).is_err(), "{values:?}");
+        }
     }
 
     #[test]

@@ -232,20 +232,12 @@ fn validate_envelope<'a>(value: &'a Value, secret: &str) -> Result<&'a Value> {
         .get("request")
         .context("missing private agent request")?;
     ensure!(
-        matches!(
-            request["method"].as_str(),
-            Some(
-                "whoami"
-                    | "set_title"
-                    | "discover_agents"
-                    | "send_message"
-                    | "read_inbox"
-                    | "ack_message"
-                    | "inspect_outbox"
-            )
-        ),
+        request["method"]
+            .as_str()
+            .is_some_and(super::super::agent::public_tool),
         "native tools cannot mutate capture bindings or receiver authority"
     );
+    super::super::agent::validate_control_request(request)?;
     Ok(request)
 }
 
@@ -561,6 +553,27 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(
+            validate_envelope(
+                &json!({"token":"secret","request":{"method":"control","request":{"op":"recovery_list"}}}),
+                "secret"
+            )
+            .is_ok()
+        );
+        for operation in [
+            json!({"op":"shutdown"}),
+            json!({"op":"client","authority":{},"request":{"op":"recovery_list"}}),
+            json!({"op":"recovery_list","argv":["/bin/sh"]}),
+            json!({"op":"pane_resume","pane_id":"pane","expected":{},"argv":["/bin/sh"]}),
+        ] {
+            assert!(
+                validate_envelope(
+                    &json!({"token":"secret","request":{"method":"control","request":operation}}),
+                    "secret"
+                )
+                .is_err()
+            );
+        }
     }
     #[test]
     fn invalid_native_queue_endpoint_is_definitely_not_dispatched() {

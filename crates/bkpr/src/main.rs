@@ -1,5 +1,6 @@
 mod cli;
 mod harness;
+mod recovery;
 mod session;
 
 use anyhow::{Context, Result, bail};
@@ -14,6 +15,7 @@ const HELP: &str = r#"Bkpr — persistent named pane workspaces
        [--home ISOLATED_FIXTURE_HOME] [-- SHELL ARGS...]
   bkpr list
   bkpr stop [-s NAME | --socket PATH]
+  bkpr resume [-s NAME | --socket PATH] [--pane PANE_ID]
   bkpr context [-s NAME | --socket PATH]
   bkpr request [-s NAME | --socket PATH] 'VERSIONED_TYPED_JSON_REQUEST'
   bkpr keyboard --socket PATH --pane PANE_ID --view VIEW_ID '[PHYSICAL_BYTES]'
@@ -28,8 +30,11 @@ not terminate their panes. Client exit/detach preserves daemon and pane processe
 selected session and its programs. Restart restores metadata, not old commands;
 the normal fresh initial shell remains explicit daemon bootstrap behavior.
 Explicit --session overrides inherited BKPR_SOCKET. Headless context/request/
-keyboard otherwise inherit pane routing; normal TUI/stop default to `bkpr`.
+keyboard/resume otherwise inherit pane routing; normal TUI/stop default to `bkpr`.
 Utilities do not initialize the TUI or automatically start a daemon.
+`resume` lists saved native conversations read-only; --pane selects one exact ID.
+Resume uses current native configuration, not saved argv/settings; process start
+is pending authenticated conversation binding, not proof the conversation loaded.
 `run` preserves native arguments and captures supported interactive harnesses in
 an authenticated Bkpr pane. Recognized generic harnesses run without capture.
 `install agy` explicitly registers the launch-scoped context/capture MCP server.
@@ -85,7 +90,7 @@ fn main() -> Result<()> {
         matches.get_one::<PathBuf>("socket").cloned(),
         matches.get_one::<PathBuf>("state-root").cloned(),
         std::env::var_os("BKPR_SOCKET").map(PathBuf::from),
-        matches!(command, "context" | "request" | "keyboard"),
+        matches!(command, "context" | "request" | "keyboard" | "resume"),
         command == "tui",
     )?;
     let payload = || {
@@ -113,6 +118,14 @@ fn main() -> Result<()> {
         "stop" => {
             session::validate_target(&paths)?;
             let result = bkpr_client::transport::checked(&paths.socket, Operation::Shutdown)?;
+            println!("{}", serde_json::to_string(&result)?);
+            Ok(())
+        }
+        "resume" => {
+            let result = recovery::run(
+                &paths,
+                matches.get_one::<String>("pane").map(String::as_str),
+            )?;
             println!("{}", serde_json::to_string(&result)?);
             Ok(())
         }

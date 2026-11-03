@@ -759,6 +759,19 @@ impl Registry {
         self.inner.agents.changed.notify_all();
         result
     }
+    // Caller owns the registry transaction, which also serializes authenticated
+    // End. Recheck both launch capability and durable-agent retirement at admission.
+    pub(super) fn authorize_resume_origin(&self, launch: &Launch) -> Result<()> {
+        self.capture_pane(&launch.grant.pane_id)?;
+        self.inner
+            .captures
+            .lock()
+            .unwrap()
+            .lookup(&launch.grant.launch_id, &launch.grant.token)?;
+        let state = self.inner.agents.state.lock().unwrap();
+        healthy_agents(&state)?;
+        Agents::require_live(&state.store, &launch.grant.launch_id)
+    }
     pub(super) fn agent_request(
         &self,
         launch: Launch,
@@ -801,6 +814,74 @@ impl Registry {
             }
         }
         match request {
+            AgentRequest::Control { request, scope } => {
+                ensure!(
+                    matches!(
+                        &*request,
+                        Operation::RecoveryList | Operation::PaneResume { .. }
+                    ),
+                    "agent control operation is not supported"
+                );
+                ensure!(
+                    scope != AgentScope::Repository,
+                    "repository-scoped recovery control is not supported; explicitly select workspace or session scope"
+                );
+                let contexts = self.agent_contexts(false, id, None, false)?;
+                let own = contexts.get(id).context("live agent context unavailable")?;
+                ensure!(own.active, "live foreground agent context unavailable");
+                {
+                    let state = self.inner.agents.state.lock().unwrap();
+                    healthy_agents(&state)?;
+                    Agents::require_live(&state.store, id)?;
+                    require_scope(scope, own, &state.store)?;
+                }
+                let workspace = if scope == AgentScope::Workspace {
+                    Some(
+                        own.pane
+                            .workspace_id
+                            .clone()
+                            .context("live foreground workspace context unavailable")?,
+                    )
+                } else {
+                    None
+                };
+                match *request {
+                    Operation::RecoveryList => {
+                        let recoveries = self
+                            .recovery_candidates()?
+                            .into_iter()
+                            .filter(|candidate| {
+                                workspace
+                                    .as_ref()
+                                    .is_none_or(|id| candidate.workspace_id.as_ref() == Some(id))
+                            })
+                            .collect::<Vec<_>>();
+                        Ok(
+                            json!({"policy":"current_native_configuration","recoveries":recoveries,"scope":scope}),
+                        )
+                    }
+                    Operation::PaneResume { pane_id, expected } => {
+                        #[cfg(test)]
+                        if let Some(barrier) =
+                            self.inner.control_resume_barrier.lock().unwrap().take()
+                        {
+                            barrier
+                                .entered
+                                .send(())
+                                .context("control test receiver closed")?;
+                            barrier
+                                .resume
+                                .lock()
+                                .unwrap()
+                                .recv_timeout(Duration::from_secs(10))
+                                .context("control test barrier was not released")?;
+                        }
+                        ensure!(is_connected(), "agent control caller disconnected");
+                        self.resume_scoped(&pane_id, expected, workspace, Some((&launch, peer)))
+                    }
+                    _ => unreachable!("allowlisted agent control operation"),
+                }
+            }
             AgentRequest::ReceiverRegister {
                 session_id,
                 mode,

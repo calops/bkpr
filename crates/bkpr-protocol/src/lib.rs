@@ -11,6 +11,8 @@ pub use project::*;
 mod registry;
 pub mod scene_wire;
 pub use registry::*;
+mod recovery;
+pub use recovery::*;
 mod session;
 pub use session::*;
 mod snapshot;

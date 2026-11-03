@@ -98,7 +98,14 @@
 * Show recognition, managed binding and genuine OSC 7501 status separately in sidebar/header/chooser content. Preserve user names; clear stale facts on replacement, shell return and exit; retain a live launch across foreground/background transitions. Push hidden-pane status without opening terminal views.
 * Add explicit `bkpr install agy` and dry-run with conflict protection and native-CLI preservation of unrelated settings. Normal launches do not rewrite harness configuration or approve native onboarding.
 * Share process sampling outside input/render paths and global state locks; use fresh exit-ownership barriers before reaping. Preserve non-UTF-8 Unix directories over the control protocol without corrupting registry state. Keep capture capabilities and live associations out of durable layout records.
-* Stage the matching `bkpr` utility with pane wrappers and honor the pane's inherited socket for headless context/control. Keep remote endpoints, harness recovery and the sustained-animation CPU-efficiency work deferred.
+* Stage the matching `bkpr` utility with pane wrappers and honor the pane's inherited socket for headless context/control. Keep remote endpoints and the sustained-animation CPU-efficiency work deferred.
+
+### Native harness recovery
+
+* Persist only authenticated native harness kind, conversation ID and raw working directory in private registry version 3. Upgrade older layout records without inventing native bindings; keep tokens, launch/inbox authority, terminal contents and native settings out of recovery storage.
+* Add read-only headless `bkpr resume`, exact `--pane` selection and allowlisted shared-MCP `control` listing/resume. Default agent control to live execution-workspace scope; explicit session/all remain daemon-local, with no repository scope or arbitrary command execution.
+* Resume through fixed native adapters with current configuration, fresh authority and explicit pending-binding results. Preserve original intent until the selected native conversation binds; reject stale/duplicate/destructive races and never replay saved argv, select a provider or silently fall back to a fresh session.
+* Recovery remains explicit native-conversation restoration, not process/terminal-content resurrection. A frontend picker and the existing genuine Claude/Antigravity native acceptance gates remain open.
 
 ### Native agent communication
 
@@ -112,7 +119,7 @@
 
 * Publish transient backend-owned local project/Git snapshots for pane directories, with independent worktree HEADs and shared canonical repository identity. Keep Git work off input/render paths and expose loading, non-repository, error and unknown-base states instead of fabricating ready/zero results.
 * Annotate pane headers/sidebar with project, worktree and branch; add `Ctrl-b i` focused project details with Unicode wrapping and arrow scrolling. Show local staged/unstaged/untracked data and whole HEAD-versus-merge-base committed totals without renaming panes or reclassifying workspaces.
-* Include the same cached project facts in authenticated `whoami` and detailed discovery. Resolve repository scope from ready backend snapshots rather than launching Git during agent requests. Forge/CI metadata, PR-target diffs and process/harness recovery remain unavailable.
+* Include the same cached project facts in authenticated `whoami` and detailed discovery. Resolve repository scope from ready backend snapshots rather than launching Git during agent requests. Forge/CI metadata, PR-target diffs and exact process/terminal-content restoration remain unavailable.
 * Preflight-reject tracked paths selecting configured executable Git `clean`/`process` filters, including clean working trees where dirtiness checks could invoke them. Report an explicit statistics error and label retained values stale rather than silently alter filter semantics. Disable fsmonitor, external diff and textconv for metadata commands; this is not an adversarial repository sandbox against concurrent configuration/attribute changes.
 
 ## Previous implementation — unreleased historical notes

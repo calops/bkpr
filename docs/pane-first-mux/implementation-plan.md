@@ -176,6 +176,43 @@ One fair reactor bounds connections to 32 and payload buffers to 2 MiB. Two fixe
 
 The socket and its separate advisory lease stay daemon-owned at zero clients. Explicit unlock handles inherited descriptions, stale recovery requires a definite refused connection under that lease, and cleanup is inode-aware and disarmed after retirement. Fixture-isolated execs never receive the socket. Persistent SSH/Git configuration, profile mutation, remote endpoint enrollment and agent selection from input/size/clipboard state are outside this boundary.
 
+### Explicit native recovery boundary
+
+Keep the useful recovery intent from the source ledger, not main's KDL,
+native-owner publication, session claims or saved launcher recipes. The native
+registry owns a bounded version-3 map of authenticated harness kind, native
+conversation ID and byte-preserving working directory. Older layout records
+upgrade with no invented bindings; live capture/agent authority is never
+restored from storage. Existing `serde`/`serde_json`, `fs2`, atomic private
+storage, spawn reservations and `clap` cover this boundary without a new
+persistence framework or dependency.
+
+The approved policy is **current native configuration**. Omp's own session
+manager may restore recorded model/thinking/service-tier state; its runtime
+approval flags are not a Bkpr recovery contract. Codex requires a compatible
+current provider/configuration for its exact native thread. Claude and
+Antigravity retain their native resume and approval semantics. Save no old argv,
+model/provider/profile/approval/sandbox flags; never switch provider, fork or
+start a fresh conversation on refusal.
+
+`recovery_list` distinguishes live, eligible and unavailable intent without
+native-store/provider preflight. `pane_resume` requires the unchanged selected
+descriptor, reserves the native kind/ID across aliases and starts only fixed
+native adapters through the configured matching `bkpr run`. Successful exec is
+reported as pending native binding. The original descriptor transfers only
+after the matching authenticated native ID binds with fresh launch/inbox
+authority; failure retains recoverable intent. Existing projection determines
+in-place replacement versus a new workspace, without replacing a running shell.
+
+Headless `bkpr resume` never bootstraps or mutates on listing. Shared MCP
+`control` allowlists these same two operations, defaults to the authenticated
+execution workspace and supports explicit daemon-local session/all scope.
+Repository scope and arbitrary commands are rejected. Revalidate caller and
+selected binding at spawn reservation; explicit destruction removes intent,
+while daemon shutdown and ordinary harness return preserve it. Persistence
+runs on verified lifecycle transitions, not recurring sampler/status updates.
+A frontend picker remains a separate client feature.
+
 
 ## Contracts to make concrete
 
@@ -194,7 +231,7 @@ Define identity epochs, revision ordering, subscriptions/coalescing, resnapshot,
 
 ## Delivery sequence
 
-The local implementation now includes the seven-crate split, pinned safe SDK integration, typed version-2 control, independent PTYs, persisted workspace/layout metadata, bounded view authority, the retained-framework sidebar/forms/choosers and native harness capture. These are implemented portions of stages 2–5, not completion of every requirement below. Endpoint-qualified remote references, remaining rich metadata/agent services, execution recovery, a second independent frontend and supported-product packaging remain future work. The [engine report](engine-proof.md) separates measured acceptance from unresolved gates.
+The local implementation now includes the seven-crate split, pinned safe SDK integration, typed version-4 control, independent PTYs, persisted workspace/layout metadata, bounded view authority, the retained-framework sidebar/forms/choosers, native harness capture/communication and explicit native conversation recovery. These are implemented portions of stages 2–5, not completion of every requirement below. Endpoint-qualified remote references, forge/CI services, a recovery picker, a second independent frontend and supported-product packaging remain future work. The [engine report](engine-proof.md) separates measured acceptance from unresolved gates.
 
 ### Current priority: restore Bkpr's main-branch frontend
 

@@ -4,6 +4,7 @@ use crate::{Pane, SpawnSpec};
 mod agents;
 mod capture;
 mod project;
+mod recovery;
 pub(crate) mod sessions;
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::*;
@@ -20,13 +21,14 @@ use std::{
     time::Duration,
 };
 use uuid::Uuid;
-const STORAGE_VERSION: u32 = 2;
+const STORAGE_VERSION: u32 = 3;
 const MAX_RECORD: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Record {
     version: u32,
     registry: RegistrySnapshot,
+    recoveries: BTreeMap<String, HarnessRecovery>,
 }
 // Persistence is an explicit intent whitelist, not serialization of live facts.
 // Borrow the record: a metadata write need not copy every foreground observation.
@@ -34,6 +36,7 @@ struct Record {
 struct DurableRecord<'a> {
     version: u32,
     registry: DurableRegistry<'a>,
+    recoveries: &'a BTreeMap<String, HarnessRecovery>,
 }
 #[derive(Serialize)]
 struct DurableRegistry<'a> {
@@ -85,6 +88,9 @@ struct State {
     spawning: usize,
     spawn_workspaces: BTreeSet<String>,
     closing_workspaces: BTreeSet<String>,
+    closing_panes: BTreeSet<String>,
+    closing_document_panes: BTreeSet<String>,
+    resuming: BTreeMap<String, recovery::ResumeAttempt>,
     closing: bool,
     durability_error: Option<String>,
 }
@@ -117,6 +123,10 @@ struct Inner {
     spawn_barrier: Mutex<Option<Arc<SpawnBarrier>>>,
     #[cfg(test)]
     persist_barrier: Mutex<Option<Arc<SpawnBarrier>>>,
+    #[cfg(test)]
+    capture_admission_wait: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
+    #[cfg(test)]
+    control_resume_barrier: Mutex<Option<Arc<SpawnBarrier>>>,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -286,11 +296,18 @@ impl SpawnTarget {
 struct SpawnReservation {
     inner: Arc<Inner>,
     workspace_id: Option<String>,
+    resume_pane: Option<String>,
+    committed: bool,
 }
 impl Drop for SpawnReservation {
     fn drop(&mut self) {
         let mut state = self.inner.state.lock().unwrap();
         state.spawning -= 1;
+        if !self.committed
+            && let Some(id) = &self.resume_pane
+        {
+            state.resuming.remove(id);
+        }
         if let Some(workspace_id) = &self.workspace_id {
             state.spawn_workspaces.remove(workspace_id);
         }
@@ -365,6 +382,7 @@ impl Registry {
         let fresh = stored.is_none();
         let mut record = stored.unwrap_or(Record {
             version: STORAGE_VERSION,
+            recoveries: BTreeMap::new(),
             registry: RegistrySnapshot {
                 revision: 0,
                 workspaces: Vec::new(),
@@ -412,6 +430,9 @@ impl Registry {
                     spawning: 0,
                     spawn_workspaces: BTreeSet::new(),
                     closing_workspaces: BTreeSet::new(),
+                    closing_panes: BTreeSet::new(),
+                    closing_document_panes: BTreeSet::new(),
+                    resuming: BTreeMap::new(),
                     closing: false,
                     durability_error: None,
                 }),
@@ -438,6 +459,10 @@ impl Registry {
                 spawn_barrier: Mutex::new(None),
                 #[cfg(test)]
                 persist_barrier: Mutex::new(None),
+                #[cfg(test)]
+                capture_admission_wait: Mutex::new(None),
+                #[cfg(test)]
+                control_resume_barrier: Mutex::new(None),
             }),
             fresh,
             lifecycle_owner: true,
@@ -531,6 +556,8 @@ impl Registry {
                 bail!("client operations require authenticated attachment transport")
             }
             Operation::Inspect => Ok(json!({"registry":self.snapshot()?})),
+            Operation::RecoveryList => self.recovery_list(),
+            Operation::PaneResume { pane_id, expected } => self.resume(&pane_id, expected),
             Operation::HarnessBegin { .. }
             | Operation::HarnessEvent { .. }
             | Operation::HarnessContext { .. }
@@ -821,6 +848,15 @@ impl Registry {
         )
     }
     fn spawn(&self, target: SpawnTarget, spec: PaneSpawnSpec) -> Result<Value> {
+        self.spawn_inner(target, spec, None, None)
+    }
+    fn spawn_inner(
+        &self,
+        target: SpawnTarget,
+        spec: PaneSpawnSpec,
+        resume: Option<recovery::ResumeAttempt>,
+        origin: Option<(&crate::harness::Launch, &crate::harness::Peer)>,
+    ) -> Result<Value> {
         valid_size(spec.size)?;
         ensure!(
             !spec.argv.is_empty()
@@ -853,8 +889,14 @@ impl Registry {
             project: Some(project::loading(&spec.cwd)),
             isolated_environment: spec.isolated_environment,
         };
+        if let Some((launch, peer)) = origin {
+            crate::harness::validate_callback(peer, launch)?;
+        }
         {
             let _transaction = self.inner.transaction.lock().unwrap();
+            if let Some((launch, _)) = origin {
+                self.authorize_resume_origin(launch)?;
+            }
             let mut state = self.inner.state.lock().unwrap();
             healthy(&state)?;
             ensure!(!state.closing, "daemon is shutting down");
@@ -889,6 +931,9 @@ impl Registry {
                 "pane limit"
             );
             target.check(&state)?;
+            if let Some(resume) = &resume {
+                recovery::check_resume(&state, &self.inner.captures.lock().unwrap(), resume)?;
+            }
             if let Some(workspace_id) = &workspace_id {
                 workspace_available(&state, workspace_id)?;
             }
@@ -897,11 +942,16 @@ impl Registry {
             if let Some(workspace_id) = &workspace_id {
                 state.spawn_workspaces.insert(workspace_id.clone());
             }
+            if let Some(resume) = &resume {
+                state.resuming.insert(id.clone(), resume.clone());
+            }
             state.spawning += 1;
         }
-        let _reservation = SpawnReservation {
+        let mut reservation = SpawnReservation {
             inner: self.inner.clone(),
             workspace_id: workspace_id.clone(),
+            resume_pane: resume.as_ref().map(|_| id.clone()),
+            committed: false,
         };
         #[cfg(test)]
         {
@@ -949,6 +999,19 @@ impl Registry {
             ssh_agent_socket,
         );
         let pane = spawned?;
+        let weak = Arc::downgrade(&self.inner);
+        let terminating_id = id.clone();
+        *pane.shared.before_terminate.lock().unwrap() = Some(Arc::new(move || {
+            let Some(inner) = weak.upgrade() else {
+                return Ok(());
+            };
+            Registry {
+                inner,
+                fresh: false,
+                lifecycle_owner: false,
+            }
+            .revoke_recovery(&terminating_id)
+        }));
         let result = (|| -> Result<RegistrySnapshot> {
             let _transaction = self.inner.transaction.lock().unwrap();
             let current = {
@@ -957,6 +1020,9 @@ impl Registry {
                 ensure!(!state.closing, "daemon is shutting down");
                 ensure!(!self.session_end_requested(), "session has ended");
                 target.check(&state)?;
+                if let Some(resume) = &resume {
+                    recovery::check_resume_reserved(&state, resume, &id)?;
+                }
                 state.record.clone()
             };
             let next = spawn_record(current, info, &target)?;
@@ -964,6 +1030,9 @@ impl Registry {
                 state.live.insert(id.clone(), pane.clone());
             })
         })();
+        if result.is_ok() {
+            reservation.committed = true;
+        }
         if result.is_err() {
             let _ = pane.request(PaneRequest::Shutdown);
         }
@@ -989,7 +1058,7 @@ impl Registry {
         {
             callback();
         }
-        drop(_reservation);
+        drop(reservation);
         let registry = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
@@ -1093,6 +1162,10 @@ impl Registry {
             healthy(&state)?;
             ensure!(!state.closing, "daemon is shutting down");
             ensure!(!self.session_end_requested(), "session has ended");
+            ensure!(
+                !state.resuming.values().any(|attempt| attempt.source == id),
+                "pane busy: native resume in progress"
+            );
             let info = state
                 .record
                 .registry
@@ -1139,6 +1212,7 @@ impl Registry {
             w.revision = next_revision(w.revision)?;
         }
         next.registry.panes.retain(|pane| pane.id != id);
+        next.recoveries.remove(id);
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
         let registry = commit(&self.inner, next, |state| {
@@ -1148,6 +1222,7 @@ impl Registry {
                     .store(true, std::sync::atomic::Ordering::Release);
             }
             state.live.remove(id);
+            state.closing_panes.remove(id);
         })?;
         Ok(json!({"registry":registry,"pane_id":id}))
     }
@@ -1167,6 +1242,7 @@ impl Registry {
             (status, p.exit_code.map(|code| code as i32))
         };
         self.inner.captures.lock().unwrap().retire_pane(id);
+        self.inner.state.lock().unwrap().resuming.remove(id);
         let agent_retirement = self.inner.agents.retire_pane(id);
         {
             let mut published = pane.shared.published.lock().unwrap();
@@ -1231,7 +1307,7 @@ impl Registry {
         window_id: Option<&str>,
         revision: u64,
     ) -> Result<Value> {
-        let panes = {
+        let (panes, closing_documents) = {
             let _transaction = self.inner.transaction.lock().unwrap();
             let mut state = self.inner.state.lock().unwrap();
             healthy(&state)?;
@@ -1285,8 +1361,37 @@ impl Registry {
                 })
                 .filter_map(|p| state.live.get(&p.id).cloned())
                 .collect::<Vec<_>>();
+            let removed = state
+                .record
+                .registry
+                .panes
+                .iter()
+                .filter(|pane| {
+                    pane.workspace_id.as_deref() == Some(workspace_id)
+                        && window_id.is_none_or(|id| pane.window_id.as_deref() == Some(id))
+                })
+                .map(|pane| pane.id.clone())
+                .collect::<BTreeSet<_>>();
+            ensure!(
+                !state.resuming.iter().any(|(id, attempt)| removed.contains(&attempt.source) && !removed.contains(id)),
+                "workspace busy: native resume in progress"
+            );
+            let mut next = state.record.clone();
+            next.recoveries.retain(|id, _| !removed.contains(id));
+            for (id, attempt) in &state.resuming {
+                if removed.contains(id) {
+                    next.recoveries.remove(&attempt.source);
+                }
+            }
+            if next.recoveries != state.record.recoveries {
+                next.registry.revision = next_revision(next.registry.revision)?;
+                drop(state);
+                commit(&self.inner, next, |_| {})?;
+                state = self.inner.state.lock().unwrap();
+            }
             state.closing_workspaces.insert(workspace_id.to_owned());
-            panes
+            state.closing_document_panes.extend(removed.iter().cloned());
+            (panes, removed)
         };
         // Native waits must not hold the durable writer or global state locks.
         let mut failures = Vec::new();
@@ -1345,12 +1450,13 @@ impl Registry {
                 "close executions completed but document persistence failed; restart required",
             )
         })();
-        self.inner
-            .state
-            .lock()
-            .unwrap()
-            .closing_workspaces
-            .remove(workspace_id);
+        {
+            let mut state = self.inner.state.lock().unwrap();
+            state.closing_workspaces.remove(workspace_id);
+            state
+                .closing_document_panes
+                .retain(|id| !closing_documents.contains(id));
+        }
         let drained = self.drain_completions();
         self.notify_session_end();
         let registry = result.context("close may already have terminated executions; inspect durable registry before another action")?;
@@ -1783,6 +1889,17 @@ fn validate_record(record: &Record) -> Result<()> {
             "invalid persisted pane paths"
         );
     }
+    ensure!(
+        record.recoveries.len() <= r.panes.len(),
+        "recovery descriptor limit"
+    );
+    for (id, descriptor) in &record.recoveries {
+        ensure!(
+            r.panes.iter().any(|pane| &pane.id == id),
+            "recovery refers to unknown pane"
+        );
+        recovery::validate(descriptor)?;
+    }
     let mut ids = BTreeSet::new();
     for w in &r.workspaces {
         ensure!(
@@ -1855,10 +1972,10 @@ fn read_record(root: &Path) -> Result<Option<Record>> {
     ensure!(bytes.len() as u64 <= MAX_RECORD, "registry file limit");
     let mut value: Value = serde_json::from_slice(&bytes)
         .context("decode registry (never discard unreadable metadata)")?;
-    let upgraded = value["version"] == 1;
+    let upgraded = matches!(value["version"].as_u64(), Some(1 | 2));
     // LEGACY_COMPAT(next-major): one-shot v1 metadata upgrade, not a wire/runtime shim.
     // Window IDs reuse their workspace UUID in a distinct typed identity domain.
-    if upgraded {
+    if value["version"] == 1 {
         let registry = value["registry"]
             .as_object_mut()
             .context("invalid legacy registry")?;
@@ -1934,6 +2051,12 @@ fn read_record(root: &Path) -> Result<Option<Record>> {
         registry.insert("panes".into(), Value::Array(panes));
         value["version"] = json!(STORAGE_VERSION);
     }
+    // LEGACY_COMPAT(next-major): schema 2 had no durable authenticated binding.
+    // Never promote its optional live harness facts into recovery authority.
+    if upgraded {
+        value["version"] = json!(STORAGE_VERSION);
+        value["recoveries"] = json!({});
+    }
     let record: Record = serde_json::from_value(value).context("decode registry metadata")?;
     validate_record(&record)?;
     if upgraded {
@@ -1945,6 +2068,7 @@ fn persist(root: &Path, record: &Record) -> Result<()> {
     let mut temporary = tempfile::NamedTempFile::new_in(root)?;
     let durable = DurableRecord {
         version: record.version,
+        recoveries: &record.recoveries,
         registry: DurableRegistry {
             revision: record.registry.revision,
             workspaces: &record.registry.workspaces,

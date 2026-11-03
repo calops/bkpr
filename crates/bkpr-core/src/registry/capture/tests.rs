@@ -104,6 +104,14 @@ fn managed_peer_fixture() {
     );
     assert_eq!(reply["ok"], true, "begin: {reply}");
     let grant: CaptureGrant = serde_json::from_value(reply["result"].clone()).unwrap();
+    let recoveries = wire(&socket, Operation::RecoveryList);
+    assert!(
+        recoveries["result"]["recoveries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|candidate| candidate["pane_id"] != grant.pane_id)
+    );
     assert_eq!(
         wire(
             &socket,
@@ -138,6 +146,15 @@ fn managed_peer_fixture() {
         )["ok"],
         false
     );
+    let native = home.join("native/claude");
+    let nested = home.join("nested/claude");
+    let mut child = ChildGuard(Command::new(&native)
+        .args(["-c", r#"printf '\033]7501;state=working:app=claude\007'; "$1" -c '"$1" --ignored --exact registry::capture::tests::nested_peer_fixture --nocapture --test-threads=1; result=$?; exit "$result"' nested "$2"; while [ ! -f "$HOME/release-native" ]; do sleep 0.02; done"#, "native"])
+        .arg(&nested).arg(std::env::current_exe().unwrap())
+        .env("FIXTURE_CAPTURE_TOKEN", &grant.token).env("FIXTURE_CAPTURE_LAUNCH", &grant.launch_id)
+        .current_dir(home.join("native-cwd"))
+        .spawn().unwrap());
+    await_file(&home.join("nested-result.json"));
     for id in ["native-one", "native-one", "native-two"] {
         assert_eq!(
             wire(
@@ -160,15 +177,16 @@ fn managed_peer_fixture() {
         )
     };
     assert_eq!(context()["result"]["session_id"], "native-two");
-    let native = home.join("native/claude");
-    let nested = home.join("nested/claude");
-    let mut child = ChildGuard(Command::new(&native)
-        .args(["-c", r#"printf '\033]7501;state=working:app=claude\007'; "$1" -c '"$1" --ignored --exact registry::capture::tests::nested_peer_fixture --nocapture --test-threads=1; result=$?; exit "$result"' nested "$2"; while [ ! -f "$HOME/release-native" ]; do sleep 0.02; done"#, "native"])
-        .arg(&nested).arg(std::env::current_exe().unwrap())
-        .env("FIXTURE_CAPTURE_TOKEN", &grant.token).env("FIXTURE_CAPTURE_LAUNCH", &grant.launch_id)
-        .current_dir(home.join("native-cwd"))
-        .spawn().unwrap());
-    await_file(&home.join("nested-result.json"));
+    assert_eq!(
+        wire(
+            &socket,
+            event(CaptureEvent::Bind {
+                conversation_id: "native-two".into(),
+                source: ConversationSource::ClaudeHook,
+            })
+        )["ok"],
+        true
+    );
     fs::write(home.join("ready.json"), serde_json::to_vec(&json!({"launch_id":grant.launch_id,"native_pid":child.0.id(),"context":context()["result"]})).unwrap()).unwrap();
     await_file(&home.join("background"));
     let mut background = ChildGuard(
@@ -294,6 +312,20 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
     resume.send(()).unwrap();
     let result = spawning.join().unwrap().unwrap();
     let pane_id = result["pane_id"].as_str().unwrap().to_owned();
+    {
+        let _transaction = registry.inner.transaction.lock().unwrap();
+        let mut previous = registry.inner.state.lock().unwrap().record.clone();
+        previous.recoveries.insert(
+            pane_id.clone(),
+            HarnessRecovery {
+                kind: HarnessKind::Claude,
+                conversation_id: "obsolete-before-fresh-begin".into(),
+                cwd: fixture.home.clone(),
+            },
+        );
+        previous.registry.revision = next_revision(previous.registry.revision).unwrap();
+        commit(&registry.inner, previous, |_| {}).unwrap();
+    }
     // The initial wrapper has already been allowed to connect, before dispatch starts.
     let server_registry = registry.clone();
     let mut server = ServerGuard {
@@ -376,7 +408,16 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
     let serialized = serde_json::to_string(&snapshot).unwrap();
     assert!(!serialized.contains(&grant.token));
     let durable = fs::read_to_string(fixture._root.path().join("registry.json")).unwrap();
-    assert!(!durable.contains(&grant.token) && !durable.contains("native-two"));
+    assert!(!durable.contains(&grant.token) && !durable.contains(&grant.launch_id));
+    let saved: Value = serde_json::from_str(&durable).unwrap();
+    assert_eq!(
+        saved["recoveries"][&pane_id]["conversation_id"],
+        "native-two"
+    );
+    assert_eq!(
+        saved["recoveries"][&pane_id]["cwd"],
+        fixture.home.join("native-cwd").to_str().unwrap()
+    );
     assert_eq!(
         wire(
             &fixture.socket,
@@ -520,6 +561,10 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
     );
     assert!(registry.inner.captures.lock().unwrap().launches.is_empty());
     assert!(fixture.snapshot(&pane_id).program_status.is_empty());
+    let saved = registry.recovery_candidates().unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].harness.conversation_id, "native-two");
+    assert_eq!(saved[0].status, RecoveryStatus::Unavailable);
     assert_eq!(wire(&fixture.socket, Operation::Shutdown)["ok"], true);
     server.worker.take().unwrap().join().unwrap().unwrap();
 }
@@ -579,6 +624,7 @@ fn restored_foreground_facts_are_stripped_and_metadata_writes_do_not_persist_the
     // Simulate older/untrusted on-disk live facts: reopening never adopts them.
     let record = Record {
         version: STORAGE_VERSION,
+        recoveries: BTreeMap::new(),
         registry: RegistrySnapshot {
             revision: 1,
             workspaces: Vec::new(),
@@ -713,3 +759,112 @@ fn non_utf8_foreground_cwd_round_trips_without_poisoning_or_persisting_live_fact
 
 #[path = "status_tests.rs"]
 mod status_tests;
+
+#[test]
+#[ignore = "subprocess-only fast root capture fixture with explicit private HOME"]
+fn fast_root_capture_fixture() {
+    let home = fixture_home().expect("fast capture fixture requires private HOME");
+    let socket = PathBuf::from(std::env::var_os("BKPR_SOCKET").unwrap());
+    let reply = wire(
+        &socket,
+        Operation::HarnessBegin {
+            kind: HarnessKind::Claude,
+        },
+    );
+    assert_eq!(reply["ok"], true, "fast root begin: {reply}");
+    let grant: CaptureGrant = serde_json::from_value(reply["result"].clone()).unwrap();
+    fs::write(home.join("fast-grant"), grant.pane_id.as_bytes()).unwrap();
+    await_file(&home.join("fast-end"));
+    assert_eq!(
+        wire(
+            &socket,
+            Operation::HarnessEvent {
+                launch_id: grant.launch_id,
+                token: grant.token,
+                event: CaptureEvent::End,
+            }
+        )["ok"],
+        true
+    );
+    fs::write(home.join("fast-ended"), b"ended").unwrap();
+}
+
+#[test]
+fn direct_root_capture_begin_waits_for_real_spawn_publication_without_launcher_retry() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    registry
+        .configure_harnesses(&fixture.socket, &std::env::current_exe().unwrap())
+        .unwrap();
+    registry
+        .inner
+        .observer_started
+        .store(true, Ordering::Release);
+    let wrapper = registry
+        .inner
+        .spawn_environment
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .wrappers
+        .join("claude");
+    let bound = crate::transport::bind(&fixture.socket).unwrap();
+    let server_registry = registry.clone();
+    let mut server = ServerGuard {
+        socket: fixture.socket.clone(),
+        worker: Some(thread::spawn(move || bound.serve(server_registry))),
+    };
+    let (entered, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (resume, resume_rx) = std::sync::mpsc::sync_channel(1);
+    *registry.inner.persist_barrier.lock().unwrap() = Some(Arc::new(SpawnBarrier {
+        entered,
+        resume: Mutex::new(resume_rx),
+    }));
+    let (admitted, admitted_rx) = std::sync::mpsc::sync_channel(1);
+    *registry.inner.capture_admission_wait.lock().unwrap() = Some(admitted);
+    let request = Request::new(Operation::PaneSpawn {
+        workspace_id: None,
+        window_id: None,
+        expected_revision: None,
+        spec: PaneSpawnSpec {
+            argv: vec![
+                wrapper.to_str().unwrap().into(),
+                "--ignored".into(),
+                "--exact".into(),
+                "registry::capture::tests::fast_root_capture_fixture".into(),
+                "--nocapture".into(),
+                "--test-threads=1".into(),
+            ],
+            cwd: fixture.home.clone(),
+            home: fixture.home.clone(),
+            title: None,
+            isolated_environment: true,
+            size: Size {
+                cols: 80,
+                rows: 24,
+                cell_width: 8,
+                cell_height: 16,
+            },
+        },
+    });
+    let spawning_registry = registry.clone();
+    let spawning = thread::spawn(move || spawning_registry.request(request));
+    let publication_blocked = entered_rx.recv_timeout(Duration::from_secs(8));
+    let capture_waiting = admitted_rx.recv_timeout(Duration::from_secs(8));
+    let premature_grant = fixture.home.join("fast-grant").exists();
+    let _ = resume.send(());
+    let result = spawning.join().unwrap().unwrap();
+    publication_blocked.unwrap();
+    capture_waiting.unwrap();
+    assert!(!premature_grant);
+    await_file(&fixture.home.join("fast-grant"));
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("fast-grant")).unwrap(),
+        result["pane_id"].as_str().unwrap()
+    );
+    fs::write(fixture.home.join("fast-end"), b"end").unwrap();
+    await_file(&fixture.home.join("fast-ended"));
+    assert_eq!(wire(&fixture.socket, Operation::Shutdown)["ok"], true);
+    server.worker.take().unwrap().join().unwrap().unwrap();
+}

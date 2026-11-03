@@ -58,7 +58,9 @@ The remaining frontend parity pass restores main's overlays and static graphics-
 
 - [ ] Explore opt-in persistent terminal history: readable/searchable screens and scrollback after pane exit or backend restart. Define storage budgets, retention, deletion, encryption/privacy requirements and a clear distinction from recovery metadata; output may contain secrets. Reference: <https://muxy.app/docs/2.x/features/server#history>.
 
-- [ ] Design recovery selection and harness resume behavior against the new registry. A picker should distinguish live panes from recoverable executions. Investigate whether harnesses already restore model/permission/launch flags before persisting them. Reuse useful main recovery/adapter code, but do not inherit its session IDs, KDL schema or native-owner model as authority.
+- [x] Add explicit backend/launcher native harness recovery: authenticated native ID/raw-CWD descriptors in private registry v3, read-only `bkpr resume` listing and exact `--pane` selection, plus allowlisted scoped shared-MCP control. Resume uses current native configuration and fresh launch/inbox authority, never saved argv/model/provider/approval flags. Stale/duplicate/closed intent is rejected; native refusal is not a fresh-session fallback.
+
+- [ ] Add a frontend recovery picker using `recovery_list` and exact `pane_resume` descriptors. Distinguish live, recoverable and unavailable candidates; show current-native-configuration policy and pending native binding honestly. Backend eligibility is not proof the native store/provider/permissions can resume; do not replay arbitrary commands or infer success from process creation.
 
 - [x] Restore local project metadata through backend-owned, event-driven worktree caches: canonical repository identity, independent branch/HEAD, staged/unstaged/untracked summaries and committed merge-base totals. Show focused details with `Ctrl-b i` and share authoritative context through MCP. See [runtime evidence and limits](docs/pane-first-mux/engine-proof.md#local-project-metadata).
 

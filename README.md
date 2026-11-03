@@ -13,9 +13,9 @@ This is development code, not a production release. Workspace layouts and pane
 metadata survive daemon restarts; running processes and terminal contents do not.
 Foreground harness recognition, managed native conversation capture and OSC 7501
 status are available in the TUI, together with launch-scoped context, discovery
-and durable peer communication. Local Git/project snapshots are available; forge/CI
-metadata and harness recovery selection are not implemented yet. Earlier release
-notes describe the former implementation, not features available on this branch.
+and durable peer communication. Local Git/project snapshots and explicit native
+harness recovery are available; forge/CI metadata is not implemented yet. Earlier
+release notes describe the former implementation, not this branch.
 
 Current `main` and the native-terminal fork are useful starting material when a
 domain comes into scope, not frozen specifications or compatibility obligations.
@@ -252,16 +252,57 @@ diagnostics. Backgrounding a job hides its foreground identity; resuming it can
 restore the same live binding. Returning to the shell or replacing/exiting a
 launch clears stale facts.
 
-Capture grants are private, launch-scoped and not persisted. Layout recovery
-does not yet restore harness associations. Process recognition and foreground
-directories are sampled off the input/render path; OSC summaries are pushed even
-for panes with no active view. Linux managed capture requires kernel peer-PIDFD
-support and fails closed when unavailable. macOS capture is not runtime-verified.
+Capture grants are private, launch-scoped and not persisted. Only authenticated
+native conversation IDs and their working directories become recovery metadata.
+Process recognition and foreground directories are sampled off the input/render
+path; OSC summaries are pushed even for panes with no active view. Linux managed
+capture requires kernel peer-PIDFD support and fails closed when unavailable.
+macOS capture is not runtime-verified.
 
 Wrappers depend on their PATH entry surviving shell/direnv changes; they do not
 rewrite those environments to force interception. Explicit `bkpr run` remains
 available through the matching executable. Native first-run trust, account and
 terms prompts remain the user's responsibility; Bkpr does not approve them.
+
+### Explicit harness recovery
+
+Start or attach to the named session normally, then inspect its saved native
+conversations without starting a TUI or executing anything:
+
+```sh
+bkpr --session work resume
+bkpr --session work resume --pane PANE_ID
+```
+
+Replace `PANE_ID` with an exact ID from the list. Headless `resume` never starts
+a daemon; if it is stopped, open `bkpr --session work` first. A candidate is
+`live`, `recoverable` or `unavailable`, with a reason where applicable.
+`recoverable` means an explicit attempt is eligible, not that Bkpr has verified
+the native conversation store, account, provider or first-run permissions.
+
+Resume uses the saved native ID and raw working directory with **current native
+configuration**. It does not save or replay old commands, model/provider/profile
+flags, approvals or sandbox settings. The harness may restore its own session
+state; incompatible or missing native state remains a native refusal. Bkpr
+never switches provider, forks, retries or starts a fresh conversation as a
+fallback. Claude/Omp use native `--resume`, Codex uses `resume`, and Antigravity
+uses `--conversation`; their normal native approval requirements still apply.
+
+The result reports `pending_native_binding`, not proof that the conversation has
+loaded. A successful authenticated native bind transfers the saved descriptor
+to the new pane with fresh launch/inbox authority. Startup failure leaves the
+original descriptor available. Stale selections and concurrent duplicate
+resumes are rejected, including two pane records for the same conversation.
+A stopped projected pane is replaced in its window; a detached historical
+record creates a workspace. Running shells are never replaced implicitly.
+
+Only the harness kind, native ID and working directory are added to the private
+version-3 registry. Terminal contents, live grants and native settings are not
+recovery records. Explicit pane/workspace destruction removes recovery intent;
+ordinary harness return and daemon restart retain the last verified binding.
+This is explicit native-conversation recovery, not process resurrection or a
+frontend recovery picker.
+See [native runtime evidence and remaining harness gates](docs/pane-first-mux/engine-proof.md#explicit-native-recovery).
 
 ### Agent communication
 
@@ -280,12 +321,20 @@ available communication tools. No persistent Omp configuration is changed.
 | `read_inbox` | This recipient's unacknowledged messages, with pagination |
 | `ack_message` | Explicit processed acknowledgement |
 | `inspect_outbox` | Sender-only delivery/read/ack/expiry metadata, never bodies |
+| `control` | Allowlisted native recovery listing/resume, with authenticated scope |
 
 Discovery excludes self. `workspace` means backend execution membership, not a
 viewer's layout or repository directory. Explicit `session` and `all` scopes are
 limited to this daemon; `repository` compares canonical common Git directories
 from current foreground CWD and fails closed when unknown. Remote discovery is
 not implemented.
+
+Recovery control accepts `{request: {op: "recovery_list"}}` or
+`{request: {op: "pane_resume", pane_id, expected}}`, using the unchanged `harness`
+descriptor from a fresh listing as `expected`. It defaults to the caller's live
+execution workspace; explicit `session`/`all` cover this daemon only.
+`repository` scope and arbitrary operations/commands are not supported by
+`control`.
 
 Sends require a sender-scoped `idempotency_key`. Retrying the same recipient,
 text and scope returns its original receipt; changing any of them conflicts.

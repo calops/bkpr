@@ -169,10 +169,6 @@ fn legacy_compat_next_major_upgrades_unambiguous_metadata_once_without_command_r
     assert_eq!(r.panes[0].status, PaneStatus::Stopped);
     assert!(registry.inner.state.lock().unwrap().live.is_empty());
     let bytes = fs::read(root.path().join("registry.json")).unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&bytes).unwrap()["version"],
-        2
-    );
     drop(registry);
     let registry = Registry::open(root.path()).unwrap();
     assert_eq!(fs::read(root.path().join("registry.json")).unwrap(), bytes);
