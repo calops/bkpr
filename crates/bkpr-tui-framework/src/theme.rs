@@ -160,8 +160,13 @@ impl Theme {
             self.style(role)
         }
     }
+    pub(crate) fn resolve_foreground(&self, source: ColorSource) -> [u8; 3] {
+        self.resolve_color(source, self.defaults().0)
+    }
     pub(crate) fn resolve_background(&self, source: ColorSource) -> [u8; 3] {
-        let default = self.defaults().1;
+        self.resolve_color(source, self.defaults().1)
+    }
+    fn resolve_color(&self, source: ColorSource, default: [u8; 3]) -> [u8; 3] {
         match source {
             ColorSource::Default => default,
             ColorSource::Palette(index) => self

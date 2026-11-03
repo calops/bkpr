@@ -4,6 +4,7 @@
 //! bounded worker caches survive so re-enabling reuses prepared resources.
 use crate::ColorProbe;
 use crate::decoration::{self, DecorationGeometry, DecorationStyle, PreparedDecoration};
+use crate::joined::{JoinedCache, JoinedSurface, OpaqueSpan, PreparedJoined};
 use bkpr_protocol::{ColorSource, Frame, Image, ImageLayer, PixelFormat, Placement, Size};
 use resvg::{tiny_skia, usvg};
 use std::{
@@ -43,6 +44,7 @@ struct Config {
     len: usize,
     cell: [u32; 2],
     decorations: [Option<DecorationStyle>; MAX_DECORATIONS],
+    joined: Option<JoinedSurface>,
 }
 impl Config {
     fn new(size: Size, span: [u16; 2]) -> Option<Self> {
@@ -58,6 +60,7 @@ impl Config {
             len: 0,
             cell: [size.cell_width, size.cell_height],
             decorations: [None; MAX_DECORATIONS],
+            joined: None,
         })
     }
     fn add(&mut self, rgb: Option<[u8; 3]>) {
@@ -92,10 +95,17 @@ struct PreparationWork {
     decoration_entries: usize,
     decoration_bytes: usize,
 }
+struct Publication {
+    generation: u64,
+    entries: Vec<Entry>,
+    decorations: Vec<PreparedDecoration>,
+    joined: Option<Arc<PreparedJoined>>,
+}
+
 #[derive(Default)]
 struct State {
     desired: Option<(u64, Config)>,
-    published: Option<(u64, Vec<Entry>, Vec<PreparedDecoration>)>,
+    published: Option<Publication>,
     stop: bool,
     #[cfg(test)]
     work: PreparationWork,
@@ -116,8 +126,12 @@ pub struct SvgGraphics {
     worker: Option<JoinHandle<()>>,
     wake: UnixStream,
     config: Option<Config>,
+    core_ready: bool,
     ready: Vec<Entry>,
     decorations: Vec<PreparedDecoration>,
+    joined_request: Option<JoinedSurface>,
+    joined: Option<Arc<PreparedJoined>>,
+    joined_cache: JoinedCache,
     foreground: Option<[u8; 3]>,
     palette: HashMap<usize, [u8; 3]>,
     color_revision: Option<u64>,
@@ -162,8 +176,12 @@ impl SvgGraphics {
             worker: Some(worker),
             wake,
             config: None,
+            core_ready: false,
             ready: Vec::new(),
             decorations: Vec::new(),
+            joined_request: None,
+            joined: None,
+            joined_cache: JoinedCache::default(),
             foreground: None,
             palette: HashMap::new(),
             color_revision: None,
@@ -222,6 +240,7 @@ impl SvgGraphics {
             .flatten();
         if let Some(config) = next.as_mut() {
             let mut count = 0;
+            config.joined = self.joined_request;
             for style in decorations {
                 if config.decorations[..count].contains(&Some(*style)) {
                     continue;
@@ -238,7 +257,10 @@ impl SvgGraphics {
             }
             // Canonicalize order so row movement cannot invalidate raster work.
             config.colors[..config.len].sort_unstable();
-            if config.len == 0 && config.decorations.iter().all(Option::is_none) {
+            if config.len == 0
+                && config.decorations.iter().all(Option::is_none)
+                && config.joined.is_none()
+            {
                 next = None;
             }
         }
@@ -249,14 +271,36 @@ impl SvgGraphics {
         if next == self.config {
             return;
         }
+        let mut previous_materials = self.config;
+        let mut next_materials = next;
+        if let Some(config) = previous_materials.as_mut() {
+            config.joined = None;
+        }
+        if let Some(config) = next_materials.as_mut() {
+            config.joined = None;
+        }
+        if previous_materials != next_materials {
+            self.ready.clear();
+            self.decorations.clear();
+            self.core_ready = false;
+        }
+        self.joined = next.and_then(|config| {
+            config
+                .joined
+                .and_then(|request| self.joined_cache.get(request, config.cell))
+        });
+        let complete = self.core_ready
+            && next.is_some_and(|config| config.joined.is_none() || self.joined.is_some());
         self.config = next;
-        self.ready.clear();
-        self.decorations.clear();
         let generation = self.shared.generation.fetch_add(1, Ordering::AcqRel) + 1;
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.desired = next.map(|config| (generation, config));
+        state.desired = if complete {
+            None
+        } else {
+            next.map(|config| (generation, config))
+        };
         state.published = None;
-        if next.is_some() {
+        if state.desired.is_some() {
             self.shared.changed.notify_one();
         }
     }
@@ -290,11 +334,21 @@ impl SvgGraphics {
             .unwrap_or_else(|e| e.into_inner())
             .published
             .take();
-        if let Some((generation, entries, decorations)) = published
+        if let Some(Publication {
+            generation,
+            entries,
+            decorations,
+            joined,
+        }) = published
             && generation == self.shared.generation.load(Ordering::Acquire)
         {
             self.ready = entries;
             self.decorations = decorations;
+            self.core_ready = true;
+            if let Some(prepared) = &joined {
+                self.joined_cache.remember(prepared);
+            }
+            self.joined = joined;
             return Ok(true);
         }
         Ok(false)
@@ -345,6 +399,43 @@ impl SvgGraphics {
             .iter()
             .find(|entry| entry.style == style)
             .is_some_and(|entry| entry.place_with_geometry(frame, rect, base, exclusions, geometry))
+    }
+
+    /// Queue one rounded two-rectangle union on the existing coalescing worker.
+    /// Normal SVG/material readiness is preserved when only this request changes.
+    pub fn prepare_joined(&mut self, request: Option<JoinedSurface>) {
+        self.joined_request = request;
+        if !self.enabled {
+            return;
+        }
+        let Some(mut config) = self.config else {
+            return;
+        };
+        config.joined = request;
+        self.configure(Some(config));
+    }
+
+    pub fn joined_ready(&self) -> bool {
+        self.joined.is_some()
+    }
+
+    pub fn joined_opaque_spans(&self) -> &[OpaqueSpan] {
+        self.joined
+            .as_ref()
+            .map_or(&[], |joined| joined.spans.as_slice())
+    }
+
+    /// Append shared pixels only; caller retains complete glyph/cursor authority.
+    /// Reserve 8192 placement IDs. False leaves the frame untouched.
+    pub fn decorate_joined(
+        &self,
+        frame: &mut Frame,
+        base: u32,
+        exclusions: &[crate::Rect],
+    ) -> bool {
+        self.joined
+            .as_ref()
+            .is_some_and(|joined| joined.place(frame, base, exclusions))
     }
 
     /// Append a shared image and placement in local surface coordinates. The
@@ -470,6 +561,7 @@ fn run(
     let mut masks: Option<Masks> = None;
     let mut decoration_cache: VecDeque<PreparedDecoration> = VecDeque::new();
     let mut decoration_bytes = 0;
+    let mut joined_cache = JoinedCache::default();
     loop {
         let (generation, config) = {
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -647,6 +739,12 @@ fn run(
             published_bytes += image_bytes;
             decorations.push(entry);
         }
+        let joined = config.joined.and_then(|request| {
+            if !current(&shared, generation) {
+                return None;
+            }
+            joined_cache.prepare(request, config.cell, resource_generation, &mut next_id)
+        });
         #[cfg(test)]
         {
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -660,7 +758,12 @@ fn run(
         if !current(&shared, generation) {
             continue;
         }
-        state.published = Some((generation, entries, decorations));
+        state.published = Some(Publication {
+            generation,
+            entries,
+            decorations,
+            joined,
+        });
         drop(state);
         loop {
             match notify.write(&[1]) {
@@ -815,6 +918,52 @@ mod tests {
             lip_highlight_milli: 240,
             lip_shade_milli: 240,
         }
+    }
+    #[test]
+    fn joined_requests_preserve_existing_materials_and_reopen_shared_worker_pixels() {
+        let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
+        let host = host();
+        let size = Size {
+            cols: 60,
+            rows: 20,
+            cell_width: 4,
+            cell_height: 8,
+        };
+        let style = material();
+        graphics.prepare_with_decorations(&host, size, &[], &[style]);
+        prepared(&mut graphics);
+        let original_icon = Arc::clone(&graphics.ready[0].image);
+        let original_material = Arc::clone(&graphics.decorations[0].image);
+        let request = JoinedSurface {
+            rects_px: [[60, 16, 180, 112], [20, 48, 66, 64]],
+            style: DecorationStyle {
+                kind: decoration::DecorationKind::RaisedSurface,
+                inset_px: [0, 0],
+                radius_px: 6,
+                sigma_milli: 1200,
+                offset_milli: [1400; 2],
+                ..style
+            },
+        };
+        graphics.prepare_joined(Some(request));
+        assert!(!graphics.joined_ready());
+        assert!(Arc::ptr_eq(&original_icon, &graphics.ready[0].image));
+        assert!(Arc::ptr_eq(
+            &original_material,
+            &graphics.decorations[0].image
+        ));
+        prepared(&mut graphics);
+        assert!(graphics.joined_ready());
+        let original = Arc::clone(graphics.joined.as_ref().unwrap());
+        graphics.prepare_joined(None);
+        assert!(!graphics.joined_ready());
+        graphics.prepare_joined(Some(request));
+        assert!(graphics.joined_ready());
+        assert!(Arc::ptr_eq(&original, graphics.joined.as_ref().unwrap()));
+        assert!(Arc::ptr_eq(
+            &original_material,
+            &graphics.decorations[0].image
+        ));
     }
     #[test]
     fn presentation_toggle_retains_cached_pixels_and_never_overrides_capability_loss() {

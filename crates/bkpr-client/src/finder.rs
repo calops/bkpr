@@ -19,9 +19,11 @@ use unicode_width::UnicodeWidthChar;
 // Presentation follows main 9ad93bd's finder.rs/finder_entry.rs and pane tooltip
 // grouping (Copyright (c) 2026 Rémi Labeyrie, MIT); no legacy transport is reused.
 mod entry;
-mod preview;
-use bkpr_tui_framework::{BackgroundSpan, ColorProbe, Role, RoleSpan, TextInput, Theme, UiSurface};
-use preview::{Paragraph, PreviewLine};
+use crate::metadata::{self, Paragraph, PreviewLine, ProjectSpan};
+use crate::project_colors::ProjectPalette;
+use bkpr_tui_framework::{
+    BackgroundSpan, ColorProbe, ForegroundSpan, Role, RoleSpan, TextInput, Theme, UiSurface,
+};
 
 /// Execution membership, not a guess from another workspace's projected layout.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,7 +88,7 @@ struct Value {
 impl Value {
     fn new(field: Field, text: &str) -> Self {
         // Published metadata is untrusted terminal text, not escape sequences.
-        let text = preview::clean(text);
+        let text = metadata::clean(text);
         let chars = text
             .graphemes(true)
             .map(|g| g.chars().next().unwrap())
@@ -115,6 +117,7 @@ struct Document {
     harness_visible: bool,
     status_visible: bool,
     project_stale: bool,
+    project_slot: Option<u32>,
     preview: Vec<Paragraph>,
 }
 impl Document {
@@ -349,6 +352,8 @@ pub struct Finder {
     preview_key: Option<(u64, String, u16)>,
     graphical: bool,
     roles: Vec<RoleSpan>,
+    projects: Vec<ProjectSpan>,
+    foregrounds: Vec<ForegroundSpan>,
     match_cells: Vec<(u16, u16)>,
 }
 impl Finder {
@@ -376,6 +381,8 @@ impl Finder {
             preview_key: None,
             graphical: false,
             roles: Vec::new(),
+            projects: Vec::new(),
+            foregrounds: Vec::new(),
             match_cells: Vec::new(),
         };
         finder.update_registry(registry, snapshot);
@@ -451,7 +458,8 @@ impl Finder {
                     .project
                     .as_ref()
                     .is_some_and(|project| project.state != bkpr_protocol::ProjectState::Ready),
-                preview: preview::content(pane, registry, known),
+                project_slot: pane.project.as_ref().and_then(|project| project.color_slot),
+                preview: metadata::content(pane, registry, known),
             };
             // First value is always the title, including for an unnamed pane.
             document.values.push(Value::new(
@@ -706,7 +714,7 @@ impl Finder {
             return;
         }
         self.preview_lines.clear();
-        preview::wrap(&document.preview, width, &mut self.preview_lines);
+        metadata::wrap(&document.preview, width, &mut self.preview_lines);
         self.preview_key = Some((revision, document.target.pane_id.clone(), width));
     }
     fn scroll_preview(&mut self, delta: isize, size: Size) {
@@ -873,6 +881,7 @@ impl Finder {
             }
         }
         self.roles.clear();
+        self.projects.clear();
         let mut lines = Vec::new();
         let title = self.input.error().map_or_else(
             || {
@@ -991,15 +1000,26 @@ impl Finder {
                     layout.list.width,
                 );
                 push_line(&mut lines, layout.list, row, entry.text, selected);
-                self.roles
-                    .extend(entry.roles.into_iter().map(|span| RoleSpan {
-                        rect: Rect {
-                            x: layout.list.x + span.rect.x,
-                            y: layout.list.y + row,
-                            ..span.rect
-                        },
-                        role: span.role,
-                    }));
+                for span in entry.spans {
+                    match span {
+                        entry::Span::Role(span) => self.roles.push(RoleSpan {
+                            rect: Rect {
+                                x: layout.list.x + span.rect.x,
+                                y: layout.list.y + row,
+                                ..span.rect
+                            },
+                            role: span.role,
+                        }),
+                        entry::Span::Project(rect) => self.projects.push(ProjectSpan {
+                            rect: Rect {
+                                x: layout.list.x + rect.x,
+                                y: layout.list.y + row,
+                                ..rect
+                            },
+                            slot: document.project_slot,
+                        }),
+                    }
+                }
                 if self.hovered.as_ref() == Some(&document.target.pane_id) && !selected {
                     self.roles.push(RoleSpan {
                         rect: Rect {
@@ -1033,6 +1053,23 @@ impl Finder {
                     line.role,
                     false,
                 );
+                self.roles.extend(line.spans.iter().map(|span| RoleSpan {
+                    rect: Rect {
+                        x: layout.preview.x + span.rect.x,
+                        y: layout.preview.y + index as u16,
+                        ..span.rect
+                    },
+                    role: span.role,
+                }));
+                self.projects
+                    .extend(line.projects.iter().map(|span| ProjectSpan {
+                        rect: Rect {
+                            x: layout.preview.x + span.rect.x,
+                            y: layout.preview.y + index as u16,
+                            ..span.rect
+                        },
+                        slot: span.slot,
+                    }));
             }
         }
         if let Some(footer) = layout.footer {
@@ -1072,7 +1109,13 @@ impl Finder {
         }
     }
 
-    pub(crate) fn apply_theme(&self, surface: &mut UiSurface, theme: &Theme, host: &ColorProbe) {
+    pub(crate) fn apply_theme(
+        &mut self,
+        surface: &mut UiSurface,
+        theme: &Theme,
+        host: &ColorProbe,
+        palette: &ProjectPalette,
+    ) {
         let backgrounds = Self::graphic_regions(surface.frame.size)
             .filter(|_| self.graphical)
             .map(|regions| {
@@ -1088,12 +1131,28 @@ impl Finder {
                     ),
                 })
             });
-        surface.apply_theme_with_backgrounds(
+        self.foregrounds.clear();
+        let muted = theme.ink(Role::Muted, false);
+        let roles_len = self.roles.len();
+        for project in &self.projects {
+            let (role, foreground) = palette.ink(project.slot, muted);
+            self.roles.push(RoleSpan {
+                rect: project.rect,
+                role,
+            });
+            self.foregrounds.push(ForegroundSpan {
+                rect: project.rect,
+                foreground,
+            });
+        }
+        surface.apply_theme_with_colors(
             theme,
             Role::Panel,
             &self.roles,
+            &self.foregrounds,
             backgrounds.as_ref().map_or(&[], |spans| &spans[..]),
         );
+        self.roles.truncate(roles_len);
     }
 }
 
@@ -1299,7 +1358,12 @@ mod tests {
         let mut surface = UiSurface::new(size);
         let mut theme = Theme::default();
         finder.paint(&mut surface, size);
-        finder.apply_theme(&mut surface, &theme, &ColorProbe::default());
+        finder.apply_theme(
+            &mut surface,
+            &theme,
+            &ColorProbe::default(),
+            &Default::default(),
+        );
         let cursor = surface.frame.cursor.clone();
         let selected = finder.selected_target().cloned();
         let (x, y) = finder.match_cells[0];
@@ -1318,7 +1382,7 @@ mod tests {
             assert!(crate::appearance::update_theme(&mut theme, &host));
             let previous = surface.frame.rows[y].cells[x].style.background_source;
             finder.paint(&mut surface, size);
-            finder.apply_theme(&mut surface, &theme, &host);
+            finder.apply_theme(&mut surface, &theme, &host, &Default::default());
             let matched = &surface.frame.rows[y].cells[x];
             assert!(matched.style.bold);
             assert_eq!(matched.style.underline, 1);
@@ -1329,7 +1393,7 @@ mod tests {
             // A second unchanged render must retain themed title attributes,
             // even though fuzzy-match emphasis is cleared and rebuilt.
             finder.paint(&mut surface, size);
-            finder.apply_theme(&mut surface, &theme, &host);
+            finder.apply_theme(&mut surface, &theme, &host, &Default::default());
             assert!(surface.frame.rows[0].cells[0].style.bold);
             assert!(surface.frame.rows[y].cells[x].style.bold);
         }
@@ -1668,6 +1732,7 @@ mod tests {
         let mut registry = registry();
         registry.panes[0].id = "private-pane-uuid".into();
         registry.panes[0].project = Some(ProjectSnapshot {
+            color_slot: None,
             cwd: "/work/project".into(),
             state: ProjectState::Loading,
             error: None,

@@ -1,6 +1,7 @@
 use crate::tiling;
+use crate::{metadata::ProjectSpan, project_colors::ProjectPalette};
 use bkpr_protocol::*;
-use bkpr_tui_framework::{Rect, Role, RoleSpan, Theme, UiSurface};
+use bkpr_tui_framework::{BackgroundSpan, ForegroundSpan, Rect, Role, RoleSpan, Theme, UiSurface};
 use std::collections::HashMap;
 #[path = "sidebar.rs"]
 mod sidebar;
@@ -500,12 +501,25 @@ fn execution_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>) -> &'static
     }
 }
 
-fn harness_icon(kind: HarnessKind) -> &'static str {
+pub(crate) fn harness_icon(kind: HarnessKind) -> &'static str {
     match kind {
         HarnessKind::Omp => "\u{f03ff}",
         HarnessKind::Claude => "\u{ec82}",
-        HarnessKind::Codex => "\u{e969}",
+        HarnessKind::Codex => "\u{ec81}",
         _ => "\u{f120}",
+    }
+}
+
+pub(crate) fn harness_role(kind: HarnessKind) -> Role {
+    match kind {
+        HarnessKind::Omp => Role::Secondary,
+        HarnessKind::Codex | HarnessKind::Aider => Role::Success,
+        HarnessKind::Claude | HarnessKind::Goose => Role::Warning,
+        HarnessKind::Agy => Role::Info,
+        HarnessKind::Cline => Role::BrightInfo,
+        HarnessKind::Copilot => Role::BrightAccent,
+        HarnessKind::Opencode => Role::Accent,
+        HarnessKind::Cursor => Role::Base,
     }
 }
 
@@ -527,20 +541,22 @@ fn pane_activity(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>) -> &'static s
 }
 
 fn sidebar_pane_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>, width: usize) -> String {
+    let status = bkpr_tui_framework::window::fit(pane_activity(pane, snapshot), width as u16);
+    let suffix_width = unicode_width::UnicodeWidthStr::width(status.as_str());
     let icon = recognized_harness(pane, snapshot).map(|harness| harness_icon(harness.kind));
-    let prefix = icon.map(|icon| format!("{icon} ")).unwrap_or_default();
-    let status = pane_activity(pane, snapshot);
-    let suffix = if status.is_empty() {
-        String::new()
-    } else {
-        format!(" {status} ")
-    };
-    let reserved = unicode_width::UnicodeWidthStr::width(prefix.as_str())
-        + unicode_width::UnicodeWidthStr::width(suffix.as_str());
+    // Main keeps the whole logo and its trailing spacer, or omits both. Never
+    // let a narrow row display a clipped logo without its wide-glyph clearance.
+    let prefix = icon
+        .filter(|icon| {
+            unicode_width::UnicodeWidthStr::width(*icon) < width.saturating_sub(suffix_width)
+        })
+        .map(|icon| format!("{icon} "))
+        .unwrap_or_default();
+    let reserved = unicode_width::UnicodeWidthStr::width(prefix.as_str()) + suffix_width;
     let name = bkpr_tui_framework::window::fit(&pane.title, width.saturating_sub(reserved) as u16);
     let padding =
         width.saturating_sub(reserved + unicode_width::UnicodeWidthStr::width(name.as_str()));
-    format!("{prefix}{name}{}{suffix}", " ".repeat(padding))
+    format!("{prefix}{name}{}{status}", " ".repeat(padding))
 }
 
 fn pane_tree(state: &Controller, registry: &RegistrySnapshot, index: usize) -> (bool, bool) {
@@ -600,10 +616,8 @@ fn sidebar_branch(pane: &PaneInfo, width: u16) -> String {
             + unicode_width::UnicodeWidthStr::width(stale)
             + 2) as u16,
     );
-    format!(
-        "\u{f062c} {}{counts}{stale}",
-        bkpr_tui_framework::window::fit(branch, available)
-    )
+    let branch = bkpr_tui_framework::window::fit(branch, available);
+    format!("\u{f062c} {branch}{counts}{stale}")
 }
 
 fn project_label(project: &ProjectSnapshot) -> String {
@@ -801,6 +815,7 @@ pub fn chrome<'a>(
     pane_status: impl Fn(&str) -> Option<&'static str>,
     snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
     history: impl Fn(&str) -> Option<(u64, u64)>,
+    project_spans: &mut Vec<ProjectSpan>,
 ) -> Vec<(SidebarTarget, u16)> {
     let ChromeContext {
         size,
@@ -810,6 +825,7 @@ pub fn chrome<'a>(
         pane_graphics,
         guide_rows,
     } = context;
+    project_spans.clear();
     let (sidebar, _) = screen_geometry(size);
     let mut hit = Vec::new();
     let mut lines = Vec::new();
@@ -833,6 +849,7 @@ pub fn chrome<'a>(
     {
         let selected =
             state.sidebar.active && entry.target.is_some() && entry.target == state.sidebar.cursor;
+        let row = index as u16 + 2;
         let label = match entry.kind {
             SidebarRowKind::Workspace { index, collapsed } => {
                 let workspace = &registry.workspaces[index];
@@ -849,25 +866,42 @@ pub fn chrome<'a>(
                     if pane.workspace_id.as_ref() != Some(&workspace.id) {
                         continue;
                     }
-                    if let Some(repository) = pane
-                        .project
-                        .as_ref()
-                        .and_then(|project| project.repository.as_ref())
+                    if let Some(project) = &pane.project
+                        && let Some(repository) = &project.repository
                         && !repositories
                             .iter()
-                            .any(|(identity, _)| *identity == &repository.common_dir)
+                            .any(|(identity, _, _)| *identity == &repository.common_dir)
                     {
-                        repositories.push((&repository.common_dir, repository.name.as_str()));
+                        repositories.push((
+                            &repository.common_dir,
+                            repository.name.as_str(),
+                            project.color_slot,
+                        ));
                     }
                 }
-                format!(
-                    "│ {}",
-                    repositories
-                        .iter()
-                        .map(|(_, name)| *name)
-                        .collect::<Vec<_>>()
-                        .join(" · ")
-                )
+                let mut label = String::from("│ ");
+                let mut column = 3usize;
+                for (position, (_, name, slot)) in repositories.into_iter().enumerate() {
+                    if position > 0 {
+                        label.push_str(" · ");
+                        column += 3;
+                    }
+                    let columns = unicode_width::UnicodeWidthStr::width(name);
+                    if column < usize::from(sidebar.width) && columns > 0 {
+                        project_spans.push(ProjectSpan {
+                            rect: Rect {
+                                x: column as u16,
+                                y: row,
+                                width: columns.min(usize::from(sidebar.width) - column) as u16,
+                                height: 1,
+                            },
+                            slot,
+                        });
+                    }
+                    label.push_str(name);
+                    column += columns;
+                }
+                label
             }
             SidebarRowKind::Window {
                 workspace,
@@ -891,6 +925,16 @@ pub fn chrome<'a>(
                 let (grouped, last) = pane_tree(state, registry, index);
                 let lead = if last { "╰─╴" } else { "├─╴" };
                 let indent = if grouped { "  " } else { "" };
+                let marker_x = if grouped { 6 } else { 4 };
+                project_spans.push(ProjectSpan {
+                    rect: Rect {
+                        x: marker_x,
+                        y: row,
+                        width: 2.min(sidebar.width.saturating_sub(marker_x)),
+                        height: 1,
+                    },
+                    slot: pane.project.as_ref().and_then(|project| project.color_slot),
+                });
                 format!(
                     "{indent}{lead}{} {}",
                     if projected { "●" } else { "◌" },
@@ -905,17 +949,15 @@ pub fn chrome<'a>(
                 let (grouped, last) = pane_tree(state, registry, index);
                 let lead = if last { "     " } else { "│    " };
                 let indent = if grouped { "  " } else { "" };
-                format!(
-                    "{indent}{lead}{}",
-                    sidebar_branch(
-                        &registry.panes[index],
-                        sidebar.width.saturating_sub(if grouped { 8 } else { 6 })
-                    )
-                )
+                let pane = &registry.panes[index];
+                let branch = sidebar_branch(
+                    pane,
+                    sidebar.width.saturating_sub(if grouped { 8 } else { 6 }),
+                );
+                format!("{indent}{lead}{branch}")
             }
             SidebarRowKind::Spacer => String::new(),
         };
-        let row = index as u16 + 2;
         lines.push(line(
             1,
             row,
@@ -1024,6 +1066,9 @@ pub(crate) fn theme_chrome<'a>(
     theme: &Theme,
     context: ChromeContext<'_>,
     snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
+    palette: &ProjectPalette,
+    projects: &[ProjectSpan],
+    foregrounds: &mut Vec<ForegroundSpan>,
 ) {
     let ChromeContext {
         state,
@@ -1045,6 +1090,15 @@ pub(crate) fn theme_chrome<'a>(
     let size = surface.frame.size;
     let sidebar = screen_geometry(size).0;
     let mut spans = Vec::new();
+    let mut backgrounds = Vec::new();
+    foregrounds.clear();
+    let muted = theme.ink(Role::Muted, false);
+    // Main inherits bright tree guides throughout the selected pane's workspace,
+    // including when the sidebar itself does not own keyboard focus.
+    let selected_group = match state.sidebar.cursor.as_ref() {
+        Some(SidebarTarget::Pane { workspace, .. }) => Some(workspace.as_str()),
+        _ => None,
+    };
     spans.push(RoleSpan {
         rect: Rect {
             height: 1,
@@ -1094,14 +1148,51 @@ pub(crate) fn theme_chrome<'a>(
                 width: sidebar.width.saturating_sub(1),
                 height: 1,
             },
-            role: if entry.target.is_some() && entry.target == state.sidebar.hover {
-                Role::Hover
-            } else {
-                role
-            },
+            role,
         });
+        let row_rect = Rect {
+            x: 1,
+            y: index as u16 + 2,
+            width: sidebar.width.saturating_sub(1),
+            height: 1,
+        };
         if entry.target.is_some() && entry.target == state.sidebar.hover {
-            continue;
+            backgrounds.push(BackgroundSpan {
+                rect: row_rect,
+                background: theme.background(Role::Hover, false),
+            });
+        }
+        let selected =
+            state.sidebar.active && entry.target.is_some() && entry.target == state.sidebar.cursor;
+        let inherited = entry
+            .target
+            .as_ref()
+            .is_some_and(|target| selected_group == Some(target.workspace()));
+        let (guide_x, guide_width) = match entry.kind {
+            SidebarRowKind::Projects { .. } => (1, 2),
+            SidebarRowKind::Pane { index, .. } | SidebarRowKind::Detail { index } => (
+                if pane_tree(state, registry, index).0 {
+                    3
+                } else {
+                    1
+                },
+                3,
+            ),
+            _ => (1, 0),
+        };
+        if guide_width > 0 {
+            spans.push(RoleSpan {
+                rect: Rect {
+                    x: guide_x,
+                    width: guide_width.min(sidebar.width.saturating_sub(guide_x)),
+                    ..row_rect
+                },
+                role: if selected || inherited {
+                    Role::Base
+                } else {
+                    Role::Muted
+                },
+            });
         }
         if let SidebarRowKind::Detail { index: pane_index } = entry.kind
             && let Some(project) = &registry.panes[pane_index].project
@@ -1169,22 +1260,13 @@ pub(crate) fn theme_chrome<'a>(
                         width: 2,
                         height: 1,
                     },
-                    role: match harness.kind {
-                        HarnessKind::Omp => Role::Secondary,
-                        HarnessKind::Codex | HarnessKind::Aider => Role::Success,
-                        HarnessKind::Claude | HarnessKind::Goose => Role::Warning,
-                        HarnessKind::Agy => Role::Info,
-                        HarnessKind::Cline => Role::BrightInfo,
-                        HarnessKind::Copilot => Role::BrightAccent,
-                        HarnessKind::Opencode => Role::Accent,
-                        HarnessKind::Cursor => Role::Base,
-                    },
+                    role: harness_role(harness.kind),
                 });
             }
             if let Some(status) = harness_status(pane, known) {
                 spans.push(RoleSpan {
                     rect: Rect {
-                        x: sidebar.width.saturating_sub(2),
+                        x: sidebar.width.saturating_sub(1),
                         y: index as u16 + 2,
                         width: 1,
                         height: 1,
@@ -1263,7 +1345,18 @@ pub(crate) fn theme_chrome<'a>(
             role: Role::Muted,
         });
     }
-    surface.apply_theme(theme, Role::Base, &spans);
+    for project in projects {
+        let (role, foreground) = palette.ink(project.slot, muted);
+        spans.push(RoleSpan {
+            rect: project.rect,
+            role,
+        });
+        foregrounds.push(ForegroundSpan {
+            rect: project.rect,
+            foreground,
+        });
+    }
+    surface.apply_theme_with_colors(theme, Role::Base, &spans, foregrounds, &backgrounds);
 }
 pub(crate) fn project_detail_lines(
     size: Size,
@@ -1607,6 +1700,235 @@ pub(crate) fn theme_modal(surface: &mut UiSurface, theme: &Theme, form: &Form) {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn codex_sidebar_logo_keeps_its_spacer_and_requires_current_identity() {
+        let (mut pane, mut snapshot) = capture_fixture();
+        pane.harness.as_mut().unwrap().kind = HarnessKind::Codex;
+        pane.title = "日本語".into();
+        for width in 0..12 {
+            let label = sidebar_pane_label(&pane, Some(&snapshot), width);
+            assert!(unicode_width::UnicodeWidthStr::width(label.as_str()) <= width);
+            assert_eq!(label.contains('\u{ec81}'), width >= 2);
+            if width >= 2 {
+                assert!(label.starts_with("\u{ec81} "));
+            }
+        }
+        snapshot.program_identity.as_mut().unwrap().birth = "stale".into();
+        assert!(!sidebar_pane_label(&pane, Some(&snapshot), 20).contains('\u{ec81}'));
+        pane.status = PaneStatus::Exited;
+        assert!(!sidebar_pane_label(&pane, None, 20).contains('\u{ec81}'));
+    }
+
+    #[test]
+    fn native_project_markers_keep_full_ink_while_branch_metadata_stays_muted() {
+        let (mut pane, snapshot) = capture_fixture();
+        let mut project = project_fixture();
+        project.color_slot = Some(1);
+        pane.project = Some(project);
+        let registry = capture_registry(&pane);
+        let state = Controller::new(&registry);
+        let mut surface = capture_surface();
+        let host = bkpr_tui_framework::ColorProbe::default();
+        let mut theme = Theme::default();
+        crate::appearance::update_theme(&mut theme, &host);
+        let mut palette = ProjectPalette::default();
+        palette.update(&host, 2);
+        let size = surface.frame.size;
+        let context = || ChromeContext {
+            size,
+            state: &state,
+            registry: &registry,
+            rects: &[],
+            pane_graphics: &[],
+            guide_rows: 0,
+        };
+        let mut projects = Vec::new();
+        chrome(
+            &mut surface,
+            context(),
+            |_| None,
+            |_| Some(&snapshot),
+            |_| None,
+            &mut projects,
+        );
+        theme_chrome(
+            &mut surface,
+            &theme,
+            context(),
+            |_| Some(&snapshot),
+            &palette,
+            &projects,
+            &mut Vec::new(),
+        );
+        let pane_y = state
+            .sidebar
+            .rows
+            .iter()
+            .position(|row| matches!(row.kind, SidebarRowKind::Pane { .. }))
+            .unwrap()
+            + 2;
+        let marker = surface.frame.rows[pane_y]
+            .cells
+            .iter()
+            .find(|cell| matches!(cell.text.as_str(), "●" | "◌"))
+            .unwrap();
+        assert_eq!(
+            marker.style.foreground_source,
+            bkpr_protocol::ColorSource::Palette(5)
+        );
+        assert!(!marker.style.faint && !marker.style.bold);
+        let detail_y = state
+            .sidebar
+            .rows
+            .iter()
+            .position(|row| matches!(row.kind, SidebarRowKind::Detail { .. }))
+            .unwrap()
+            + 2;
+        let branch = &surface.frame.rows[detail_y].cells[6];
+        assert_eq!(
+            branch.style.foreground_source,
+            theme.ink(Role::Muted, false)
+        );
+        assert!(branch.style.faint);
+    }
+
+    #[test]
+    fn sidebar_hover_composes_semantic_inks_and_selection_wins() {
+        let (mut pane, snapshot) = capture_fixture();
+        pane.harness.as_mut().unwrap().kind = HarnessKind::Codex;
+        pane.harness_status = Some(working_record(Some("codex")));
+        pane.project = Some(project_fixture());
+        pane.project
+            .as_mut()
+            .unwrap()
+            .repository
+            .as_mut()
+            .unwrap()
+            .committed = Some(ChangeSummary {
+            insertions: 10,
+            deletions: 4,
+            ..ChangeSummary::default()
+        });
+        let registry = capture_registry(&pane);
+        let mut state = Controller::new(&registry);
+        let target = SidebarTarget::Pane {
+            workspace: "work".into(),
+            pane: pane.id.clone(),
+        };
+        let mut surface = capture_surface();
+        let size = surface.frame.size;
+        let host = bkpr_tui_framework::ColorProbe {
+            truecolor: true,
+            foreground: Some([220; 3]),
+            background: Some([20; 3]),
+            ..Default::default()
+        };
+        let mut theme = Theme::default();
+        crate::appearance::update_theme(&mut theme, &host);
+        for (active, hovered) in [(false, false), (true, true), (false, true)] {
+            state.sidebar.active = active;
+            state.sidebar.cursor = Some(target.clone());
+            state.sidebar.hover = hovered.then(|| target.clone());
+            let context = || ChromeContext {
+                size,
+                state: &state,
+                registry: &registry,
+                rects: &[],
+                pane_graphics: &[],
+                guide_rows: 0,
+            };
+            chrome(
+                &mut surface,
+                context(),
+                |_| None,
+                |_| Some(&snapshot),
+                |_| None,
+                &mut Vec::new(),
+            );
+            theme_chrome(
+                &mut surface,
+                &theme,
+                context(),
+                |_| Some(&snapshot),
+                &Default::default(),
+                &[],
+                &mut Vec::new(),
+            );
+            let pane_y = state
+                .sidebar
+                .rows
+                .iter()
+                .position(|row| matches!(row.kind, SidebarRowKind::Pane { .. }))
+                .unwrap()
+                + 2;
+            let cells = &surface.frame.rows[pane_y].cells;
+            let logo = cells.iter().find(|cell| cell.text == "\u{ec81}").unwrap();
+            assert_eq!(
+                logo.style.foreground_source,
+                theme.ink(Role::Success, active)
+            );
+            let status = cells.iter().find(|cell| cell.text == "\u{f0150}").unwrap();
+            assert_eq!(
+                status.style.foreground_source,
+                theme.ink(Role::Warning, active)
+            );
+            let background = if active {
+                theme.background(Role::Base, true)
+            } else if hovered {
+                theme.background(Role::Hover, false)
+            } else {
+                theme.background(Role::Base, false)
+            };
+            assert_eq!(logo.style.background_source, background);
+            assert_eq!(
+                cells[1].style.foreground_source,
+                theme.ink(Role::Base, active)
+            );
+            let detail = &surface.frame.rows[pane_y + 1].cells;
+            let added = detail.iter().find(|cell| cell.text == "+").unwrap();
+            let removed = detail.iter().find(|cell| cell.text == "-").unwrap();
+            assert_eq!(
+                added.style.foreground_source,
+                theme.ink(Role::Success, active)
+            );
+            assert_eq!(
+                removed.style.foreground_source,
+                theme.ink(Role::Error, active)
+            );
+            assert_eq!(added.style.background_source, background);
+        }
+        state.sidebar.active = false;
+        state.sidebar.cursor = Some(SidebarTarget::Workspace("work".into()));
+        let context = ChromeContext {
+            size,
+            state: &state,
+            registry: &registry,
+            rects: &[],
+            pane_graphics: &[],
+            guide_rows: 0,
+        };
+        // A retained frame must lose the inherited bright guides without repaint.
+        theme_chrome(
+            &mut surface,
+            &theme,
+            context,
+            |_| Some(&snapshot),
+            &Default::default(),
+            &[],
+            &mut Vec::new(),
+        );
+        let pane_y = state
+            .sidebar
+            .rows
+            .iter()
+            .position(|row| matches!(row.kind, SidebarRowKind::Pane { .. }))
+            .unwrap()
+            + 2;
+        assert_eq!(
+            surface.frame.rows[pane_y].cells[1].style.foreground_source,
+            theme.ink(Role::Muted, false)
+        );
+    }
+    #[test]
     fn pane_body_reserves_all_chrome_edges_without_losing_tiny_content() {
         let outer = Rect {
             x: 24,
@@ -1698,6 +2020,7 @@ mod tests {
             |_| None,
             |_| None,
             |_| None,
+            &mut Vec::new(),
         );
         let sidebar = screen_geometry(size).0;
         let status_y = size.rows - guide_rows - 1;
@@ -1723,6 +2046,7 @@ mod tests {
     }
     fn project_fixture() -> ProjectSnapshot {
         ProjectSnapshot {
+            color_slot: None,
             cwd: "/repo/linked/日本語".into(),
             state: ProjectState::Ready,
             repository: Some(RepositoryInfo {
@@ -2089,6 +2413,7 @@ mod tests {
             |_| None,
             |_| None,
             |_| None,
+            &mut Vec::new(),
         );
         assert!(!hit.iter().any(
             |(target, _)| matches!(target, SidebarTarget::Pane { pane, .. } if pane == "closed")
@@ -2222,6 +2547,7 @@ mod tests {
             |_| None,
             |_| Some(snapshot),
             |_| None,
+            &mut Vec::new(),
         )
     }
 
@@ -2266,6 +2592,7 @@ mod tests {
                 |_| None,
                 |_| None,
                 |_| None,
+                &mut Vec::new(),
             );
             let LayoutNode::Split { ratio, .. } =
                 registry.workspaces[0].windows[0].layout.as_mut().unwrap()
@@ -2292,6 +2619,7 @@ mod tests {
                 |_| None,
                 |_| None,
                 |_| None,
+                &mut Vec::new(),
             );
             let mut fresh = capture_surface();
             chrome(
@@ -2307,6 +2635,7 @@ mod tests {
                 |_| None,
                 |_| None,
                 |_| None,
+                &mut Vec::new(),
             );
             assert_eq!(
                 surface.frame, fresh.frame,
@@ -2351,6 +2680,7 @@ mod tests {
                     |_| None,
                     |_| None,
                     |_| None,
+                    &mut Vec::new(),
                 );
             };
             paint(&mut surface, &[]);
@@ -2510,6 +2840,7 @@ mod tests {
             |_| None,
             |_| None,
             |_| None,
+            &mut Vec::new(),
         );
         assert!(hits.iter().any(
             |(target, _)| matches!(target, SidebarTarget::Pane { pane, .. } if pane == "pane")
@@ -2530,6 +2861,7 @@ mod tests {
             |_| None,
             |_| None,
             |_| None,
+            &mut Vec::new(),
         );
         assert_ne!(surface.frame, working_frame);
     }

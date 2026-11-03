@@ -126,6 +126,21 @@ impl<'a> Git<'a> {
             if output.status.code() == Some(128)
                 && String::from_utf8_lossy(&output.stderr).contains("not a git repository")
             {
+                // A linked worktree whose .git target is unavailable reports the
+                // same status/text as a normal nonrepository. An existing marker
+                // (including a broken symlink) makes this an unknown/error, not
+                // proof that its live canonical reservation can be released.
+                for ancestor in self.cwd.ancestors() {
+                    let marker = ancestor.join(".git");
+                    match std::fs::symlink_metadata(&marker) {
+                        Ok(_) => bail!("git discovery: {}", diagnostic(&output.stderr)),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            return Err(error)
+                                .with_context(|| format!("inspecting {}", marker.display()));
+                        }
+                    }
+                }
                 return Ok(None);
             }
             bail!("git discovery: {}", diagnostic(&output.stderr));

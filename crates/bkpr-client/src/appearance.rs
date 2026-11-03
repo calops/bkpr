@@ -30,8 +30,7 @@ pub(crate) fn decoration_styles(host: &ColorProbe, size: Size) -> Option<[Decora
     let thickness = cw.div_ceil(2).min(ch - 1);
     let popup_radius = (cw * 2 - thickness).min(ch - thickness);
     let pane_radius = (cw * 3 / 2).min(2 * cw).min(2 * ch);
-    let offset = ((luminance(fg) - luminance(bg)) * 255.0 * 0.06).round() as i16;
-    let surface = bg.map(|channel| (i16::from(channel) - offset).clamp(0, 255) as u8);
+    let surface = surface(fg, bg);
     let sigma_milli = (cw * 300).max(750);
     let support = (cw * 350 + sigma_milli * 5 + 1000).div_ceil(1000);
     let padding = [support.div_ceil(cw) * cw, support.div_ceil(ch) * ch];
@@ -62,6 +61,58 @@ pub(crate) fn decoration_styles(host: &ColorProbe, size: Size) -> Option<[Decora
             ..recessed
         },
     ])
+}
+
+/// Physical passive-card attachment from retained fork 18890b23 joined.rs.
+/// The bridge overlaps by one radius before the generic contour removes seams.
+pub(crate) fn joined_surface(
+    size: Size,
+    popup: bkpr_tui_framework::Rect,
+    item: bkpr_tui_framework::Rect,
+    style: DecorationStyle,
+) -> Option<bkpr_tui_framework::joined::JoinedSurface> {
+    let cw = i32::try_from(size.cell_width).ok()?;
+    let ch = i32::try_from(size.cell_height).ok()?;
+    if !(2..=512).contains(&cw) || !(2..=512).contains(&ch) {
+        return None;
+    }
+    let margin_x = cw - (cw + 1) / 2;
+    let vertical_pad = ((cw + 3) / 4).min(ch / 8);
+    let radius = i32::try_from(style.radius_px).ok()?;
+    let popup_px = [
+        i32::from(popup.x) * cw + margin_x,
+        i32::from(popup.y) * ch + ch - vertical_pad,
+        (i32::from(popup.x) + i32::from(popup.width)) * cw - margin_x,
+        (i32::from(popup.y) + i32::from(popup.height)) * ch - ch + vertical_pad,
+    ];
+    if popup_px[2] - popup_px[0] < 2 * radius
+        || popup_px[3] - popup_px[1] < 2 * radius
+        || item.width == 0
+        || item.height == 0
+    {
+        return None;
+    }
+    let mut item_px = [
+        i32::from(item.x) * cw + margin_x,
+        (i32::from(item.y) * ch - vertical_pad).max(0),
+        (i32::from(item.x) + i32::from(item.width)) * cw - margin_x,
+        (i32::from(item.y) + i32::from(item.height)) * ch + vertical_pad,
+    ];
+    if u32::from(item.x) + u32::from(item.width) <= u32::from(popup.x) + 1 {
+        item_px[2] = popup_px[0] + radius;
+    } else if u32::from(popup.x) + u32::from(popup.width) <= u32::from(item.x) + 1 {
+        item_px[0] = popup_px[2] - radius;
+    } else {
+        return None;
+    }
+    Some(bkpr_tui_framework::joined::JoinedSurface {
+        rects_px: [popup_px, item_px],
+        style: DecorationStyle {
+            inset_px: [0, 0],
+            outset_px: [0, 0],
+            ..style
+        },
+    })
 }
 const ROLES: [Role; 15] = [
     Role::Base,
@@ -134,10 +185,7 @@ impl Recipe<'_> {
             self.evidence.foreground,
             self.evidence.background,
         ) {
-            // MAIN's signed six-percent shift moves every channel away from the
-            // observed ink, without imposing a dark/light/chromatic classification.
-            let offset = ((luminance(fg) - luminance(bg)) * 255.0 * 0.06).round() as i16;
-            let surface = bg.map(|channel| (i16::from(channel) - offset).clamp(0, 255) as u8);
+            let surface = surface(fg, bg);
             for style in &mut self.styles {
                 style.background = surface;
                 style.background_source = ColorSource::Rgb(surface);
@@ -322,7 +370,7 @@ fn encoded(value: f64) -> u8 {
     };
     (value * 255.0).round().clamp(0.0, 255.0) as u8
 }
-fn blend(fg: [u8; 3], bg: [u8; 3], percent: u16) -> [u8; 3] {
+pub(crate) fn blend(fg: [u8; 3], bg: [u8; 3], percent: u16) -> [u8; 3] {
     std::array::from_fn(|index| {
         ((u16::from(fg[index]) * percent + u16::from(bg[index]) * (100 - percent) + 50) / 100) as u8
     })
@@ -340,6 +388,13 @@ fn linear_luminance(rgb: [f64; 3]) -> f64 {
 }
 fn luminance(color: [u8; 3]) -> f64 {
     linear_luminance(color.map(linear))
+}
+
+pub(crate) fn surface(fg: [u8; 3], bg: [u8; 3]) -> [u8; 3] {
+    // MAIN's signed six-percent shift moves every channel away from the
+    // observed ink, without imposing a dark/light/chromatic classification.
+    let offset = ((luminance(fg) - luminance(bg)) * 255.0 * 0.06).round() as i16;
+    bg.map(|channel| (i16::from(channel) - offset).clamp(0, 255) as u8)
 }
 
 #[cfg(test)]
@@ -365,6 +420,43 @@ mod tests {
         assert_ne!(styles, decoration_styles(&host, size).unwrap());
         host.background = None;
         assert!(decoration_styles(&host, size).is_none());
+    }
+    #[test]
+    fn passive_join_uses_main_pixel_margins_and_bridges_either_side() {
+        use bkpr_tui_framework::Rect;
+        let size = Size {
+            cols: 100,
+            rows: 30,
+            cell_width: 10,
+            cell_height: 20,
+        };
+        let host = ColorProbe {
+            foreground: Some([230; 3]),
+            background: Some([20; 3]),
+            truecolor: true,
+            ..ColorProbe::default()
+        };
+        let style = decoration_styles(&host, size).unwrap()[1];
+        let popup = Rect {
+            x: 20,
+            y: 3,
+            width: 30,
+            height: 12,
+        };
+        let item = Rect {
+            x: 0,
+            y: 7,
+            width: 20,
+            height: 2,
+        };
+        let joined = joined_surface(size, popup, item, style).unwrap();
+        assert_eq!(joined.rects_px, [[205, 78, 495, 282], [5, 138, 220, 182]]);
+        assert_eq!(joined.style.inset_px, [0, 0]);
+        assert_eq!(joined.style.outset_px, [0, 0]);
+        let right_item = Rect { x: 50, ..item };
+        let joined = joined_surface(size, popup, right_item, style).unwrap();
+        assert_eq!(joined.rects_px[1], [480, 138, 695, 182]);
+        assert!(joined_surface(size, popup, Rect { x: 25, ..item }, style).is_none());
     }
     #[test]
     fn partial_evidence_and_capability_loss_retain_native_sources() {

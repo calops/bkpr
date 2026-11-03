@@ -243,7 +243,7 @@ impl TerminalGuard {
         let mut out = std::io::stdout();
         write!(
             out,
-            "\x1b[?1049h\x1b[?2004h\x1b[?1004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1bP+q5463\x1b\\\x1bP+q524742\x1b\\\x1b[?u\x1b[?5522$p\x1b[?2031$p"
+            "\x1b[?1049h\x1b[?2004h\x1b[?1004h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1bP+q5463\x1b\\\x1bP+q524742\x1b\\\x1b[?u\x1b[?5522$p\x1b[?2031$p"
         )?;
         guard.prepare_background_query();
         out.write_all(&ColorProbe::query())?;
@@ -749,8 +749,8 @@ impl Renderer {
             }
         }
         self.aliases.retain(|key, _| retained.contains(key));
-        // Rebuild live resource receipts after layer clipping, including newly
-        // derived fragments, so hidden images cannot outlive their placements.
+        // Rebuild visible resource requirements after layer clipping. The renderer
+        // may retain bounded inactive projections only while their source survives.
         prepared.original.clear();
         prepared.derived.clear();
         for (index, p) in prepared.placements.iter_mut().enumerate() {
