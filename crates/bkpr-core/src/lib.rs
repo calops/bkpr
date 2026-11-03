@@ -221,6 +221,7 @@ struct ResizeBarrier {
     entered: mpsc::SyncSender<Size>,
     resume: Mutex<mpsc::Receiver<()>>,
 }
+type BeforeTerminate = Arc<dyn Fn() -> Result<()> + Send + Sync>;
 struct Shared {
     authority: Mutex<Authority>,
     published: Mutex<Published>,
@@ -239,6 +240,7 @@ struct Shared {
     finished: AtomicBool,
     forgotten: AtomicBool,
     on_finish: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    before_terminate: Mutex<Option<BeforeTerminate>>,
     resize_wake: crossbeam_channel::Sender<()>,
     root: Mutex<Option<harness_process::Process>>,
     spawn_environment: Option<harness::SpawnEnvironment>,
@@ -325,6 +327,7 @@ impl Pane {
             finished: AtomicBool::new(false),
             forgotten: AtomicBool::new(false),
             on_finish: Mutex::new(None),
+            before_terminate: Mutex::new(None),
             resize_wake,
             root: Mutex::new(None),
             spawn_environment,
@@ -1633,6 +1636,13 @@ fn run_pane(
                         continue;
                     }
                     if matches!(&command.mutation, Mutation::Terminate) {
+                        let before_terminate = shared.before_terminate.lock().unwrap().clone();
+                        if let Some(before_terminate) = before_terminate
+                            && let Err(error) = before_terminate()
+                        {
+                            let _ = command.result.send(Err(format!("{error:#}")));
+                            continue;
+                        }
                         *termination_reply = Some(command.result);
                         // portable-pty's writer Drop emits LF/VEOF. Reap the
                         // process first so closing cannot type into a live app.
@@ -2130,6 +2140,7 @@ mod snapshot_tests {
                 status_dirty: AtomicBool::new(false),
                 status_wake: None,
                 resize_barrier: Mutex::new(None),
+                before_terminate: Default::default(),
             }),
             commands,
         }

@@ -209,6 +209,12 @@ fn recognize(executable: &Path, args: &[OsString]) -> Option<HarnessKind> {
     }
 }
 pub(crate) fn kind(pid: i32) -> Result<Option<HarnessKind>> {
+    match live_kind(pid) {
+        Err(_) if process(pid)?.is_none() => Ok(None),
+        result => result,
+    }
+}
+fn live_kind(pid: i32) -> Result<Option<HarnessKind>> {
     let executable = platform::executable(pid)?;
     let name = executable_name(&executable)
         .ok_or_else(|| anyhow::anyhow!("process executable identity unavailable"))?;
@@ -224,6 +230,42 @@ pub(crate) fn kind(pid: i32) -> Result<Option<HarnessKind>> {
         };
     }
     Ok(recognize(&executable, &[]))
+}
+/// The managed Codex supervisor owns both an app-server and the interactive TUI.
+/// Classify the verified executable's argv role, not foreground/status output.
+pub(crate) fn binding_kind(pid: i32) -> Result<Option<HarnessKind>> {
+    match live_binding_kind(pid) {
+        Err(_) if process(pid)?.is_none() => Ok(None),
+        result => result,
+    }
+}
+fn live_binding_kind(pid: i32) -> Result<Option<HarnessKind>> {
+    let kind = kind(pid)?;
+    if kind != Some(HarnessKind::Codex) {
+        return Ok(kind);
+    }
+    let executable = platform::executable(pid)?;
+    let args = platform::arguments(pid)?;
+    let command = if matches!(
+        executable_name(&executable),
+        Some("node" | "nodejs" | "bun")
+    ) {
+        let entry =
+            js_entrypoint(&args)?.ok_or_else(|| anyhow::anyhow!("Codex entrypoint unavailable"))?;
+        let index = args
+            .iter()
+            .position(|argument| argument == entry)
+            .ok_or_else(|| anyhow::anyhow!("Codex entrypoint argv changed"))?;
+        args.get(index + 1)
+    } else {
+        anyhow::ensure!(!args.is_empty(), "Codex argv unavailable");
+        args.get(1)
+    };
+    if command.is_some_and(|command| command == "app-server") {
+        Ok(None)
+    } else {
+        Ok(kind)
+    }
 }
 pub(crate) fn is_launcher(pid: i32, executable: &Path, kind: HarnessKind) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;

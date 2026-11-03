@@ -39,6 +39,13 @@ pub enum Operation {
     },
     ClientDetach,
     Inspect,
+    /// Enumerate saved native conversations without starting executions.
+    RecoveryList,
+    /// Start a fresh managed execution for an explicitly selected saved binding.
+    PaneResume {
+        pane_id: String,
+        expected: crate::HarnessRecovery,
+    },
     HarnessBegin {
         kind: HarnessKind,
     },

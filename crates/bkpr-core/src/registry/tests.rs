@@ -526,6 +526,8 @@ mod clipboard_tests;
 mod completion_tests;
 #[path = "forget_tests.rs"]
 mod forget_tests;
+#[path = "recovery_tests.rs"]
+mod recovery_tests;
 #[path = "reopen_tests.rs"]
 mod reopen_tests;
 #[path = "resize_tests.rs"]

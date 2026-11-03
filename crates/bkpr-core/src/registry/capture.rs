@@ -58,26 +58,106 @@ impl Registry {
                     .lookup(&launch_id, &token)?;
                 self.agent_request(launch, peer, request, is_connected)
             }
-            Operation::HarnessBegin { kind } => self.begin_capture(peer, kind),
+            Operation::HarnessBegin { kind } => self.begin_capture(peer, kind, is_connected),
             Operation::HarnessEvent {
                 launch_id,
                 token,
                 event,
             } => {
-                self.inner.agents.check_health()?;
                 let launch = self
                     .inner
                     .captures
                     .lock()
                     .unwrap()
                     .lookup(&launch_id, &token)?;
-                harness::validate_callback(peer, &launch)?;
-                self.capture_pane(&launch.grant.pane_id)?;
+                let chain = harness::validate_callback(peer, &launch)?;
+                // Process/CWD observation stays outside every registry/agent writer.
+                let descriptor = if let CaptureEvent::Bind {
+                    conversation_id, ..
+                } = &event
+                {
+                    let cwd = binding_cwd(&launch, &chain)?;
+                    let descriptor = HarnessRecovery {
+                        kind: launch.grant.kind,
+                        conversation_id: conversation_id.clone(),
+                        cwd,
+                    };
+                    recovery::validate(&descriptor)?;
+                    Some(descriptor)
+                } else {
+                    None
+                };
+                let _transaction = self.inner.transaction.lock().unwrap();
+                self.inner
+                    .captures
+                    .lock()
+                    .unwrap()
+                    .lookup(&launch_id, &token)?;
                 if matches!(event, CaptureEvent::End) {
-                    self.agent_retire(std::slice::from_ref(&launch_id))?;
+                    // Retire volatile authority even if the agent writer is poisoned.
+                    let retired = self.agent_retire(std::slice::from_ref(&launch_id));
+                    self.inner
+                        .captures
+                        .lock()
+                        .unwrap()
+                        .event(&launch_id, &token, event)?;
+                    let published = self.publish_capture_change(&launch);
+                    retired?;
+                    published?;
+                } else {
+                    self.inner.agents.check_health()?;
+                    self.capture_pane(&launch.grant.pane_id)?;
+                    if let Some(descriptor) = &descriptor {
+                        let state = self.inner.state.lock().unwrap();
+                        if let Some(attempt) = state.resuming.get(&launch.grant.pane_id) {
+                            ensure!(
+                                attempt.expected.kind == descriptor.kind
+                                    && attempt.expected.conversation_id
+                                        == descriptor.conversation_id,
+                                "native resume bound a different conversation"
+                            );
+                        }
+                        ensure!(
+                            !state
+                                .resuming
+                                .iter()
+                                .any(|(id, attempt)| id != &launch.grant.pane_id
+                                    && attempt.expected.kind == descriptor.kind
+                                    && attempt.expected.conversation_id
+                                        == descriptor.conversation_id),
+                            "native conversation resume is reserved"
+                        );
+                    }
+                    if let Err(error) = self.agent_capture_event(&launch_id, &token, event) {
+                        if self.inner.agents.check_health().is_err() {
+                            self.inner
+                                .captures
+                                .lock()
+                                .unwrap()
+                                .event(&launch_id, &token, CaptureEvent::End)
+                                .ok();
+                            let _ = self.publish_capture_change(&launch);
+                        }
+                        return Err(error);
+                    }
+                    let result = (|| -> Result<()> {
+                        if let Some(descriptor) = descriptor {
+                            self.recovery_bind(&launch, descriptor)?;
+                        }
+                        self.publish_capture_change(&launch)
+                    })();
+                    if let Err(error) = result {
+                        self.inner
+                            .captures
+                            .lock()
+                            .unwrap()
+                            .event(&launch_id, &token, CaptureEvent::End)
+                            .ok();
+                        let _ = self.agent_retire(std::slice::from_ref(&launch_id));
+                        let _ = self.publish_capture_change(&launch);
+                        return Err(error);
+                    }
                 }
-                self.agent_capture_event(&launch_id, &token, event)?;
-                self.publish_capture_change(&launch)?;
                 Ok(json!({"accepted":true}))
             }
             Operation::HarnessContext { launch_id, token } => {
@@ -118,6 +198,11 @@ impl Registry {
         let state = self.inner.state.lock().unwrap();
         healthy(&state)?;
         ensure!(!state.closing, "daemon is shutting down");
+        ensure!(!state.closing_panes.contains(pane_id), "pane is closing");
+        ensure!(
+            !state.closing_document_panes.contains(pane_id),
+            "pane document is closing"
+        );
         ensure!(
             state
                 .record
@@ -137,7 +222,12 @@ impl Registry {
         );
         Ok(pane.clone())
     }
-    fn begin_capture(&self, peer: &Peer, kind: HarnessKind) -> Result<Value> {
+    fn begin_capture(
+        &self,
+        peer: &Peer,
+        kind: HarnessKind,
+        is_connected: &dyn Fn() -> bool,
+    ) -> Result<Value> {
         self.inner.agents.check_health()?;
         ensure!(kind.is_managed(), "harness is recognition-only");
         let environment = self
@@ -147,27 +237,63 @@ impl Registry {
             .unwrap()
             .clone()
             .context("managed harnesses are not configured")?;
-        let caller = peer.current()?;
+        let mut caller = peer.current()?;
         ensure!(
-            proc::is_launcher(caller.pid, &environment.executable, kind)?,
-            "capture begin requires selected bkpr launcher"
+            caller.tty != 0 && proc::is_launcher(caller.pid, &environment.executable, kind)?,
+            "capture begin requires selected bkpr launcher on a PTY"
         );
-        let panes = self.running_panes();
-        let mut selected = None;
-        for (id, pane, root) in panes {
-            if !proc::foreground(&caller, &root) {
-                continue;
+        ensure!(is_connected(), "capture caller disconnected");
+        let select = |caller: &Process| -> Result<Option<(String, Pane, Process)>> {
+            let mut selected = None;
+            for (id, pane, root) in self.running_panes() {
+                if !proc::foreground(caller, &root) {
+                    continue;
+                }
+                let Ok(chain) = harness::ancestry(caller, &root) else {
+                    continue;
+                };
+                harness::reject_nested(&chain[1..], kind, true)?;
+                ensure!(selected.is_none(), "ambiguous capture pane");
+                selected = Some((id, pane, root));
             }
-            let Ok(chain) = harness::ancestry(&caller, &root) else {
-                continue;
-            };
-            harness::reject_nested(&chain[1..], kind, true)?;
-            ensure!(selected.is_none(), "ambiguous capture pane");
-            selected = Some((id, pane, root));
+            Ok(selected)
+        };
+        let mut selected = select(&caller)?;
+        if selected.is_none() {
+            // A fast root can request capture before spawn_with_id returns, so
+            // no pending root need exist yet. Waiting confers no authority.
+            let state = self.inner.state.lock().unwrap();
+            healthy(&state)?;
+            #[cfg(test)]
+            if state.spawning > 0
+                && let Some(entered) = self.inner.capture_admission_wait.lock().unwrap().take()
+            {
+                let _ = entered.try_send(());
+            }
+            let (state, deadline) = self
+                .inner
+                .changed
+                .wait_timeout_while(state, Duration::from_secs(8), |state| {
+                    state.spawning > 0 && !state.closing && state.durability_error.is_none()
+                })
+                .unwrap();
+            healthy(&state)?;
+            ensure!(!state.closing, "daemon is shutting down");
+            ensure!(
+                !deadline.timed_out() || state.spawning == 0,
+                "capture admission timed out while pane spawn is pending"
+            );
+            drop(state);
+            ensure!(is_connected(), "capture caller disconnected");
+            caller = peer.current()?;
+            ensure!(
+                caller.tty != 0 && proc::is_launcher(caller.pid, &environment.executable, kind)?,
+                "capture caller changed during pane admission"
+            );
+            selected = select(&caller)?;
         }
         let (id, pane, root) =
             selected.context("capture caller is not a live foreground pane descendant")?;
-        let cwd = proc::cwd(caller.pid)?.context("capture working directory unavailable")?;
         // Validate existing live roots without holding the capability store over process I/O.
         let existing = self
             .inner
@@ -183,6 +309,17 @@ impl Registry {
                 bail!("nested managed launch");
             }
         }
+        ensure!(is_connected(), "capture caller disconnected before grant");
+        caller = peer.current()?;
+        ensure!(
+            proc::is_launcher(caller.pid, &environment.executable, kind)?
+                && proc::foreground(&caller, &root),
+            "capture caller changed before grant"
+        );
+        let chain = harness::ancestry(&caller, &root)?;
+        harness::reject_nested(&chain[1..], kind, true)?;
+        let cwd = proc::cwd(caller.pid)?.context("capture working directory unavailable")?;
+        let transaction = self.inner.transaction.lock().unwrap();
         self.capture_pane(&id)?;
         let grant =
             self.inner
@@ -208,10 +345,21 @@ impl Registry {
                 .captures
                 .lock()
                 .unwrap()
-                .launches
-                .remove(&grant.launch_id);
+                .event(&grant.launch_id, &grant.token, CaptureEvent::End)
+                .ok();
             return Err(error);
         }
+        if let Err(error) = self.recovery_begin(&id) {
+            self.inner
+                .captures
+                .lock()
+                .unwrap()
+                .event(&grant.launch_id, &grant.token, CaptureEvent::End)
+                .ok();
+            let _ = self.agent_retire(std::slice::from_ref(&grant.launch_id));
+            return Err(error);
+        }
+        drop(transaction);
         if let Err(error) = self.publish_facts(
             &id,
             &pane,
@@ -229,8 +377,8 @@ impl Registry {
                 .captures
                 .lock()
                 .unwrap()
-                .launches
-                .remove(&grant.launch_id);
+                .event(&grant.launch_id, &grant.token, CaptureEvent::End)
+                .ok();
             let _ = self.agent_retire(std::slice::from_ref(&grant.launch_id));
             return Err(error);
         }
@@ -238,7 +386,6 @@ impl Registry {
     }
     fn publish_capture_change(&self, original: &Launch) -> Result<()> {
         let pane = self.capture_pane(&original.grant.pane_id)?;
-        let _transaction = self.inner.transaction.lock().unwrap();
         let mut state = self.inner.state.lock().unwrap();
         ensure!(
             !state.closing && !pane.shared.finished.load(Ordering::Acquire),
@@ -668,6 +815,64 @@ impl Registry {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests;
+
+fn binding_cwd(launch: &Launch, callback_chain: &[Process]) -> Result<PathBuf> {
+    // Native hooks may call directly, while IPC adapters report from the supervisor.
+    // Neither case may silently replace the native child's CWD with the wrapper's.
+    for process in callback_chain {
+        if proc::binding_kind(process.pid)? == Some(launch.grant.kind) {
+            let cwd = proc::cwd(process.pid)?.context("native working directory unavailable")?;
+            ensure!(
+                proc::live(callback_chain),
+                "native callback lineage changed during binding"
+            );
+            return Ok(cwd);
+        }
+    }
+    let table = proc::fresh_snapshot()?;
+    let root = table
+        .get(&launch.root.pid)
+        .filter(|root| root.identity == launch.root.identity)
+        .context("launch root exited during binding")?;
+    let mut selected: Option<(usize, &Process)> = None;
+    let mut ambiguous = false;
+    for candidate in table.values() {
+        let Some(chain) = proc::lineage(candidate, root, &table) else {
+            continue;
+        };
+        if proc::binding_kind(candidate.pid)? != Some(launch.grant.kind) {
+            continue;
+        }
+        let mut nested = false;
+        for ancestor in chain.iter().skip(1).take(chain.len().saturating_sub(2)) {
+            if proc::kind(ancestor.pid)?.is_some() {
+                nested = true;
+                break;
+            }
+        }
+        if nested {
+            continue;
+        }
+        match selected {
+            Some((depth, _)) if depth < chain.len() => {}
+            Some((depth, _)) if depth == chain.len() => ambiguous = true,
+            _ => {
+                selected = Some((chain.len(), candidate));
+                ambiguous = false;
+            }
+        }
+    }
+    ensure!(!ambiguous, "native working directory is ambiguous");
+    let native = selected
+        .map(|(_, process)| process)
+        .context("native process unavailable during binding")?;
+    let cwd = proc::cwd(native.pid)?.context("native working directory unavailable")?;
+    ensure!(
+        proc::lineage(native, &launch.pane_root, &table).is_some_and(|chain| proc::live(&chain)),
+        "native process lineage changed during binding"
+    );
+    Ok(cwd)
+}
 
 fn foreground_context(launch: &Launch) -> Result<(bool, Option<PathBuf>)> {
     let table = proc::fresh_snapshot()?;
