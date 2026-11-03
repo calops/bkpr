@@ -3,6 +3,7 @@
 //! uses only pane-first protocol facts, without the old Zellij overlay transport.
 use crate::controller::SidebarTarget;
 use bkpr_protocol::{PaneInfo, PaneSnapshot, PaneStatus, ProjectSnapshot, RegistrySnapshot, Size};
+use bkpr_tui_framework::overlay::Placement;
 use bkpr_tui_framework::{
     Rect, Role, RoleSpan, Theme, UiSurface,
     window::{self, Border},
@@ -334,8 +335,9 @@ impl Popover {
         };
     }
     /// Return screen placement; frame coordinates are local to that rect. Add
-    /// Surface { id: SURFACE_ID, rect, frame: &self.surface.frame, focused: false,
-    /// selection: &[], search: &[] } after pane/chrome surfaces, before modals.
+    /// Surface { id: SURFACE_ID, content: SurfaceContent::All, rect,
+    /// frame: &self.surface.frame, focused: false, faint: false,
+    /// selection: &[], search: &[] } after pane/chrome, before modals.
     pub fn paint<'a>(
         &mut self,
         registry: &RegistrySnapshot,
@@ -412,7 +414,8 @@ impl Popover {
             .unwrap_or(1)
             .saturating_add(2)
             .clamp(24, 64) as u16;
-        let probe = window::beside(screen, sidebar_width, anchor_row, preferred_width, 24)?;
+        let probe =
+            Placement::beside(screen, sidebar_width, anchor_row, preferred_width, 24)?.outer;
         let local = Size {
             cols: probe.width,
             rows: probe.height,
@@ -428,13 +431,14 @@ impl Popover {
                 0
             })
             .clamp(1, 24) as u16;
-        let rect = window::beside(
+        let rect = Placement::beside(
             screen,
             sidebar_width,
             anchor_row,
             preferred_width,
             desired_height,
-        )?;
+        )?
+        .outer;
         let local = Size {
             cols: rect.width,
             rows: rect.height,

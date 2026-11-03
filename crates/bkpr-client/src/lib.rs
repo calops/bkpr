@@ -1,6 +1,7 @@
 //! TUI application and typed local daemon transport. No backend implementation
 //! dependency is linked into a frontend.
 mod app;
+mod appearance;
 mod chrome_graphics;
 mod controller;
 mod finder;

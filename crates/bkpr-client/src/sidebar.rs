@@ -1,4 +1,4 @@
-use bkpr_protocol::{LayoutNode, PaneStatus, RegistrySnapshot};
+use bkpr_protocol::{LayoutNode, PaneStatus, ProjectState, RegistrySnapshot};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -29,6 +29,9 @@ pub enum RowKind {
     Workspace {
         index: usize,
         collapsed: bool,
+    },
+    Projects {
+        index: usize,
     },
     Window {
         workspace: usize,
@@ -100,19 +103,36 @@ impl Sidebar {
                 if collapsed {
                     continue;
                 }
-                for (window_index, window) in workspace.windows.iter().enumerate() {
-                    let collapsed = self.collapsed_windows.contains(&window.id);
+                if registry.panes.iter().any(|pane| {
+                    pane.workspace_id.as_ref() == Some(&workspace.id)
+                        && pane
+                            .project
+                            .as_ref()
+                            .is_some_and(|project| project.repository.is_some())
+                }) {
                     self.rows.push(Row {
-                        target: Some(SidebarTarget::Window {
-                            workspace: workspace.id.clone(),
-                            window: window.id.clone(),
-                        }),
-                        kind: RowKind::Window {
-                            workspace: index,
-                            index: window_index,
-                            collapsed,
-                        },
+                        target: Some(SidebarTarget::Workspace(workspace.id.clone())),
+                        kind: RowKind::Projects { index },
                     });
+                }
+                for (window_index, window) in workspace.windows.iter().enumerate() {
+                    // A lone window is still an exact backend identity, but does not
+                    // need an extra visual/navigation level between workspace and pane.
+                    let grouped = workspace.windows.len() > 1;
+                    let collapsed = grouped && self.collapsed_windows.contains(&window.id);
+                    if grouped {
+                        self.rows.push(Row {
+                            target: Some(SidebarTarget::Window {
+                                workspace: workspace.id.clone(),
+                                window: window.id.clone(),
+                            }),
+                            kind: RowKind::Window {
+                                workspace: index,
+                                index: window_index,
+                                collapsed,
+                            },
+                        });
+                    }
                     if collapsed {
                         continue;
                     }
@@ -152,7 +172,13 @@ impl Sidebar {
                                 projected: visible,
                             },
                         });
-                        if pane.project.is_some() {
+                        if pane.project.as_ref().is_some_and(|project| {
+                            project.repository.is_some()
+                                || matches!(
+                                    project.state,
+                                    ProjectState::Loading | ProjectState::Error
+                                )
+                        }) {
                             self.rows.push(Row {
                                 target: Some(target),
                                 kind: RowKind::Detail { index },
@@ -168,16 +194,30 @@ impl Sidebar {
                 return SidebarTarget::Workspace(workspace.into());
             }
             match window {
-                Some(window) if !self.collapsed_windows.contains(window) && focused.is_some() => {
+                Some(window)
+                    if focused.is_some()
+                        && (!self.collapsed_windows.contains(window)
+                            || registry.workspaces.iter().any(|entry| {
+                                entry.id == workspace && entry.windows.len() == 1
+                            })) =>
+                {
                     SidebarTarget::Pane {
                         workspace: workspace.into(),
                         pane: focused.unwrap().into(),
                     }
                 }
-                Some(window) => SidebarTarget::Window {
-                    workspace: workspace.into(),
-                    window: window.into(),
-                },
+                Some(window)
+                    if registry
+                        .workspaces
+                        .iter()
+                        .any(|entry| entry.id == workspace && entry.windows.len() > 1) =>
+                {
+                    SidebarTarget::Window {
+                        workspace: workspace.into(),
+                        window: window.into(),
+                    }
+                }
+                Some(_) => SidebarTarget::Workspace(workspace.into()),
                 None => SidebarTarget::Workspace(workspace.into()),
             }
         });
@@ -347,6 +387,9 @@ impl Sidebar {
                     workspace: workspace.clone(),
                     window,
                 });
+            } else if collapsed.unwrap_or(true) {
+                self.collapsed.insert(workspace.clone());
+                self.cursor = Some(SidebarTarget::Workspace(workspace.clone()));
             }
         } else {
             let workspace = cursor.workspace().to_owned();
@@ -460,6 +503,36 @@ mod tests {
             })
         );
     }
+    #[test]
+    fn lone_window_elision_keeps_pane_identity_and_folds_its_workspace() {
+        let registry = registry();
+        let mut sidebar = Sidebar::default();
+        sidebar.reconcile(&registry, Some("b"), Some("three"), Some("third"));
+        let pane = SidebarTarget::Pane {
+            workspace: "b".into(),
+            pane: "third".into(),
+        };
+        assert_eq!(sidebar.cursor.as_ref(), Some(&pane));
+        assert!(!sidebar.rows.iter().any(|row| matches!(&row.target,
+            Some(SidebarTarget::Window { workspace, .. }) if workspace == "b")));
+        assert!(
+            sidebar
+                .rows
+                .iter()
+                .any(|row| row.target.as_ref() == Some(&pane))
+        );
+        sidebar.enter();
+        sidebar.fold(Some(true));
+        sidebar.reconcile(&registry, Some("b"), Some("three"), Some("third"));
+        assert_eq!(sidebar.cursor, Some(SidebarTarget::Workspace("b".into())));
+        assert!(
+            !sidebar
+                .rows
+                .iter()
+                .any(|row| row.target.as_ref() == Some(&pane))
+        );
+    }
+
     #[test]
     fn manual_scrolling_survives_unchanged_focus_until_keyboard_navigation_reveals_cursor() {
         let mut registry = registry();

@@ -168,6 +168,7 @@ dependencies = [
  "signal-hook",
  "tempfile",
  "termwiz",
+ "textwrap",
  "unicode-segmentation",
  "unicode-width",
 ]
@@ -1792,6 +1793,15 @@ dependencies = [
  "wezterm-dynamic",
  "wezterm-input-types",
  "winapi",
+]
+
+[[package]]
+name = "textwrap"
+version = "0.16.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ecfad6c3abc80a577f2b91c1e412ee57e7a060d430b553c1b0c940974ebcd49"
+dependencies = [
+ "unicode-width",
 ]
 
 [[package]]

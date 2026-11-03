@@ -1,12 +1,6 @@
-//! Retained trusted UI text and divider scenes; physical output remains with SceneRenderer.
+//! Retained trusted UI text scenes; physical output remains with SceneRenderer.
 use crate::{Rect, Role, Theme, blank, clear, text, window};
 use bkpr_protocol::{Cursor, Frame, Size};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Divider {
-    pub rect: Rect,
-    pub vertical: bool,
-}
 
 /// Ordered surface-local semantic regions. Later spans take precedence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,7 +47,6 @@ struct ThemeCache {
 pub struct UiSurface {
     pub frame: Frame,
     lines: Vec<window::TextLine>,
-    dividers: Vec<Divider>,
     theme: Option<ThemeCache>,
 }
 impl UiSurface {
@@ -61,36 +54,22 @@ impl UiSurface {
         Self {
             frame: blank(size),
             lines: Vec::new(),
-            dividers: Vec::new(),
             theme: None,
         }
     }
     pub fn paint(&mut self, size: Size, lines: Vec<window::TextLine>, cursor: Option<Cursor>) {
-        self.paint_parts(size, lines, Vec::new(), cursor);
-    }
-    pub fn paint_parts(
-        &mut self,
-        size: Size,
-        lines: Vec<window::TextLine>,
-        dividers: Vec<Divider>,
-        cursor: Option<Cursor>,
-    ) {
         let resized = self.frame.size != size;
-        let repaint = resized || self.lines != lines || self.dividers != dividers;
+        let repaint = resized || self.lines != lines;
         if repaint {
             self.restore_theme();
         }
         if self.frame.size != size {
             self.frame = blank(size);
             self.lines.clear();
-            self.dividers.clear();
         }
-        if self.lines != lines || self.dividers != dividers {
+        if self.lines != lines {
             for (rect, _, _) in self.lines.iter().chain(&lines) {
                 clear(&mut self.frame, *rect);
-            }
-            for divider in self.dividers.iter().chain(&dividers) {
-                clear(&mut self.frame, divider.rect);
             }
             for (rect, label, selected) in &lines {
                 let width = rect.width.min(size.cols.saturating_sub(rect.x));
@@ -102,23 +81,6 @@ impl UiSurface {
                     *selected,
                 );
             }
-            for divider in &dividers {
-                let rect = divider.rect;
-                let width = rect.width.min(size.cols.saturating_sub(rect.x));
-                let label = if divider.vertical { "│" } else { "─" }.repeat(usize::from(width));
-                for y in rect.y..rect.y.saturating_add(rect.height).min(size.rows) {
-                    text(&mut self.frame, rect.x, y, &label, false);
-                    for cell in self.frame.rows[usize::from(y)]
-                        .cells
-                        .iter_mut()
-                        .skip(usize::from(rect.x))
-                        .take(usize::from(width))
-                    {
-                        cell.style.faint = true;
-                    }
-                }
-            }
-            self.dividers = dividers;
             self.lines = lines;
         }
         self.frame.cursor.visible = false;
@@ -264,24 +226,33 @@ mod tests {
             true,
         )]
     }
+    // Deliberately tiny caller policy: these tests exercise retention, not an
+    // application's palette/contrast recipe.
+    fn policy(host: &ColorProbe) -> crate::ThemeStyles {
+        let mut base = std::array::from_fn(|_| crate::default_style());
+        base[Role::Error as usize].foreground_source = ColorSource::Palette(1);
+        base[Role::Muted as usize].faint = true;
+        let mut selected = base.clone();
+        for style in &mut selected {
+            style.inverse = !host.truecolor;
+            if host.truecolor {
+                style.background = host.background.unwrap();
+                style.background_source = ColorSource::Rgb(style.background);
+            }
+        }
+        crate::ThemeStyles {
+            panel: base.clone(),
+            base,
+            selected,
+        }
+    }
     #[test]
     fn selection_and_faint_intent_survive_repeated_theme_changes_and_loss() {
         let mut surface = UiSurface::new(size());
-        surface.paint_parts(
-            size(),
-            selected(),
-            vec![Divider {
-                rect: Rect {
-                    x: 0,
-                    y: 2,
-                    width: 5,
-                    height: 1,
-                },
-                vertical: false,
-            }],
-            None,
-        );
+        surface.paint(size(), selected(), None);
+        surface.frame.rows[2].cells[0].style.faint = true;
         let mut theme = Theme::default();
+        theme.update(&ColorProbe::default(), 0, policy);
         surface.apply_theme(&theme, Role::Base, &[]);
         assert!(surface.frame.rows[1].cells[0].style.inverse);
         assert!(surface.frame.rows[2].cells[0].style.faint);
@@ -291,16 +262,16 @@ mod tests {
             background: Some([20, 20, 20]),
             ..ColorProbe::default()
         };
-        theme.update(&host);
+        theme.update(&host, 0, policy);
         surface.apply_theme(&theme, Role::Base, &[]);
         assert!(!surface.frame.rows[1].cells[0].style.inverse);
         let first = surface.frame.rows[1].cells[0].style.background;
         host.background = Some([40, 25, 70]);
-        theme.update(&host);
+        theme.update(&host, 0, policy);
         surface.apply_theme(&theme, Role::Base, &[]);
         assert_ne!(surface.frame.rows[1].cells[0].style.background, first);
         host.truecolor = false;
-        theme.update(&host);
+        theme.update(&host, 0, policy);
         surface.apply_theme(&theme, Role::Base, &[]);
         assert!(surface.frame.rows[1].cells[0].style.inverse);
         assert!(surface.frame.rows[2].cells[0].style.faint);
@@ -313,7 +284,8 @@ mod tests {
     #[test]
     fn repaint_clears_selection_and_clipped_roles_cover_blank_panel_cells() {
         let mut surface = UiSurface::new(size());
-        let theme = Theme::default();
+        let mut theme = Theme::default();
+        theme.update(&ColorProbe::default(), 0, policy);
         surface.paint(size(), selected(), None);
         surface.apply_theme(&theme, Role::Panel, &[]);
         surface.paint(

@@ -6,6 +6,7 @@ pub(super) fn transition(
     style: &Style,
     frame: &Frame,
     host: &ColorProbe,
+    physical_background: Option<[u8; 3]>,
 ) -> Result<()> {
     if previous.is_none() {
         write!(out, "\x1b[0m")?;
@@ -20,6 +21,7 @@ pub(super) fn transition(
             false,
             frame,
             host,
+            physical_background,
         )?;
     }
     if previous.is_none_or(|old| {
@@ -32,6 +34,7 @@ pub(super) fn transition(
             true,
             frame,
             host,
+            physical_background,
         )?;
     }
     // SGR 22 resets both intensities. Reapply the complete target pair when

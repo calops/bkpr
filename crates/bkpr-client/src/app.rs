@@ -6,6 +6,10 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use bkpr_protocol::*;
+use bkpr_tui_framework::overlay::{
+    OverlayStack, Placement as OverlayPlacement, PointerPhase, PointerRoute,
+    Policy as OverlayPolicy,
+};
 use bkpr_tui_framework::{ClientEvent, *};
 use std::{
     cell::RefCell,
@@ -17,6 +21,105 @@ use std::{
     time::{Duration, Instant},
 };
 use termwiz::input::{InputEvent, InputParser, Modifiers, MouseButtons};
+
+fn material_caption(frame: &Frame, rect: Rect, bottom: bool) -> Rect {
+    let y = rect.y
+        + if bottom {
+            rect.height.saturating_sub(1)
+        } else {
+            0
+        };
+    let width = if rect.width >= 3 && usize::from(y) < frame.rows.len() {
+        frame.rows[usize::from(y)].cells
+            [usize::from(rect.x + 1)..usize::from(rect.x + rect.width - 1)]
+            .iter()
+            .rposition(|cell| !matches!(cell.text.as_str(), " " | "─"))
+            .map_or(0, |index| index as u16 + 1)
+    } else {
+        0
+    };
+    Rect {
+        x: rect.x + 1,
+        y,
+        width,
+        height: 1,
+    }
+}
+
+fn material_border(frame: &mut Frame, rect: Rect, visible: bool, captions: &[Rect]) {
+    if rect.width < 3 || rect.height < 3 {
+        return;
+    }
+    let right = rect.x + rect.width - 1;
+    let bottom = rect.y + rect.height - 1;
+    let mut paint = |x: u16, y: u16, glyph: &str| {
+        if captions
+            .iter()
+            .any(|caption| caption.y == y && x >= caption.x && x < caption.x + caption.width)
+        {
+            return;
+        }
+        let cell = &mut frame.rows[usize::from(y)].cells[usize::from(x)];
+        cell.text.clear();
+        cell.width = 1;
+        cell.hyperlink = None;
+        cell.text.push_str(if visible { glyph } else { " " });
+    };
+    for x in rect.x..=right {
+        paint(
+            x,
+            rect.y,
+            if x == rect.x {
+                "╭"
+            } else if x == right {
+                "╮"
+            } else {
+                "─"
+            },
+        );
+        paint(
+            x,
+            bottom,
+            if x == rect.x {
+                "╰"
+            } else if x == right {
+                "╯"
+            } else {
+                "─"
+            },
+        );
+    }
+    for y in rect.y + 1..bottom {
+        paint(rect.x, y, "│");
+        paint(right, y, "│");
+    }
+}
+
+fn raised_material(
+    graphics: &crate::chrome_graphics::ChromeGraphics,
+    frame: &mut Frame,
+    effects: &mut Frame,
+    outer: Rect,
+    base: u32,
+) {
+    let local = Rect {
+        x: 0,
+        y: 0,
+        width: frame.size.cols,
+        height: frame.size.rows,
+    };
+    let captions = [
+        material_caption(frame, local, false),
+        material_caption(frame, local, true),
+    ];
+    let exclusions = captions.map(|caption| Rect {
+        x: outer.x + caption.x,
+        y: outer.y + caption.y,
+        ..caption
+    });
+    let ready = graphics.decorate_window_in_clipped(effects, outer, true, base, &exclusions);
+    material_border(frame, local, !ready, &captions);
+}
 
 #[path = "jobs.rs"]
 mod jobs;
@@ -263,10 +366,14 @@ struct DeviceResponse {
 #[derive(Default)]
 struct GuideCache {
     key: Option<(crate::keyguide::Context, u16, u16, u16)>,
-    footer: String,
-    expanded: Vec<String>,
-    footer_roles: Vec<RoleSpan>,
-    expanded_roles: Vec<RoleSpan>,
+    content: crate::keyguide::Guide,
+}
+struct OverlayFocus {
+    workspace: Option<String>,
+    window: Option<String>,
+    pane: Option<String>,
+    sidebar: bool,
+    cursor: Option<SidebarTarget>,
 }
 struct App<'a> {
     socket: &'a Endpoint,
@@ -303,14 +410,59 @@ struct App<'a> {
     search: search::State,
     finder: Option<crate::finder::Finder>,
     popover: crate::popover::Popover,
-    modal_rect: Option<Rect>,
+    overlays: OverlayStack<OverlayFocus>,
     guide: GuideCache,
+    chrome_graphics_enabled: bool,
     notified_focus: Option<(String, String)>,
     focus_out_pending: HashSet<(String, String)>,
     lease_pending: HashSet<String>,
     host_focused: bool,
 }
 impl App<'_> {
+    fn begin_modal(&mut self) {
+        if self.state.form.is_none() && self.finder.is_none() {
+            self.overlays.remove("ui:modal");
+        }
+        self.overlays.present(
+            "ui:modal",
+            OverlayPlacement {
+                outer: Rect::default(),
+                content: Rect::default(),
+            },
+            OverlayPolicy::MODAL,
+            Some(OverlayFocus {
+                workspace: self.state.workspace.clone(),
+                window: self.state.window.clone(),
+                pane: self.state.focused.clone(),
+                sidebar: self.state.sidebar.active,
+                cursor: self.state.sidebar.cursor.clone(),
+            }),
+        );
+        self.overlays.remove(crate::popover::SURFACE_ID);
+        self.overlays.remove("ui:guide");
+    }
+    fn cancel_modal(&mut self) {
+        // A dispatched or ambiguous operation cannot be unsent. Keep its result
+        // correlated rather than claiming that cancellation aborted it.
+        if self
+            .state
+            .form
+            .as_ref()
+            .is_some_and(|form| form.pending.is_some() || form.ambiguous)
+        {
+            return;
+        }
+        self.state.cancel();
+        self.finder = None;
+        if let Some(focus) = self.overlays.remove("ui:modal") {
+            self.state.workspace = focus.workspace;
+            self.state.window = focus.window;
+            self.state.focused = focus.pane;
+            self.state.sidebar.active = focus.sidebar;
+            self.state.sidebar.cursor = focus.cursor;
+        }
+        self.state.reconcile(&self.registry);
+    }
     fn enter_sidebar(&mut self) {
         self.retire_resize("sidebar focused");
         self.selection_focus_lost();
@@ -325,7 +477,7 @@ impl App<'_> {
             .form
             .as_ref()
             .is_some_and(|form| form.pending.is_some() || form.ambiguous)
-            && !matches!(action, Action::Cancel | Action::Detach)
+            && !matches!(action, Action::Detach)
         {
             return false;
         }
@@ -436,84 +588,73 @@ impl App<'_> {
             | (u16::from(self.state.sidebar.active) << 6)
             | (u16::from(self.resize_dragging()) << 7)
             | (u16::from(!self.state.status.is_empty()) << 8);
-        let width = size
-            .cols
-            .saturating_sub(screen_geometry(size).0.width)
-            .clamp(1, 64);
+        let sidebar_columns = screen_geometry(size).0.width;
         let key = (context, size.cols, size.rows, flags);
         if self.guide.key != Some(key) {
-            let footer_columns = if self.state.status.is_empty() {
-                size.cols
-            } else {
-                size.cols / 2
-            };
-            let footer = crate::keyguide::footer_with(context, footer_columns as usize, |action| {
-                self.supports_action(action)
-            });
-            let expanded = crate::keyguide::expanded_with(
+            let content = crate::keyguide::render_with(
                 context,
-                width.saturating_sub(2) as usize,
-                size.rows.saturating_sub(4) as usize,
+                sidebar_columns,
+                size.cols,
+                {
+                    let available = size.rows.saturating_sub(2);
+                    let tree_rows = available.div_ceil(2).min(4);
+                    available.saturating_sub(tree_rows).saturating_sub(2) as usize
+                },
                 |action| self.supports_action(action),
             );
-            let (footer_roles, expanded_roles) =
-                crate::keyguide::roles_with(context, &footer, &expanded, |action| {
-                    self.supports_action(action)
-                });
             self.guide = GuideCache {
                 key: Some(key),
-                footer,
-                expanded,
-                footer_roles,
-                expanded_roles,
+                content,
             };
         }
     }
-    fn guide_geometry(&self, size: Size, tooltip: Option<Rect>, modal: bool) -> Option<Rect> {
+    fn guide_geometry(&self, size: Size, modal: bool) -> Option<Rect> {
         if modal
-            || !(self.state.prefix || self.state.sidebar.active)
-            || self.guide.expanded.is_empty()
+            || !matches!(
+                self.guide_context(),
+                crate::keyguide::Context::Application
+                    | crate::keyguide::Context::CommandPrefix
+                    | crate::keyguide::Context::Sidebar { .. }
+                    | crate::keyguide::Context::History
+                    | crate::keyguide::Context::Search
+                    | crate::keyguide::Context::Resize
+            )
+            || self.guide.content.expanded.is_empty()
         {
             return None;
         }
-        let width = size
-            .cols
-            .saturating_sub(screen_geometry(size).0.width)
-            .min(64);
-        let height = u16::try_from(self.guide.expanded.len())
+        let width = self.guide.content.columns;
+        let height = u16::try_from(self.guide.content.expanded.len())
             .unwrap_or(u16::MAX)
             .saturating_add(2)
-            .min(size.rows.saturating_sub(1));
-        if width < 16 || height == 0 {
+            .min(size.rows);
+        if width < 4 || height < 3 {
             return None;
         }
-        let mut rect = Rect {
-            x: size.cols - width,
-            y: size.rows - 1 - height,
+        let rect = Rect {
+            x: screen_geometry(size).0.x,
+            y: size.rows - height,
             width,
             height,
         };
-        if let Some(tooltip) = tooltip
-            && rect.x < tooltip.x.saturating_add(tooltip.width)
-            && tooltip.x < rect.x.saturating_add(rect.width)
-            && rect.y < tooltip.y.saturating_add(tooltip.height)
-            && tooltip.y < rect.y.saturating_add(rect.height)
-        {
-            if tooltip.y >= height {
-                rect.y = tooltip.y - height;
-            } else if tooltip
-                .y
-                .saturating_add(tooltip.height)
-                .saturating_add(height)
-                < size.rows
-            {
-                rect.y = tooltip.y + tooltip.height;
-            } else {
-                return None;
-            }
-        }
         Some(rect)
     }
+    fn guide_rows(&self, size: Size) -> u16 {
+        self.guide_geometry(size, false)
+            .map_or(0, |rect| size.rows.saturating_sub(rect.y))
+    }
+
+    fn guide_accent(&self) -> Option<u8> {
+        match self.guide_context() {
+            crate::keyguide::Context::Sidebar { .. } => Some(4),
+            crate::keyguide::Context::CommandPrefix
+            | crate::keyguide::Context::Resize
+            | crate::keyguide::Context::History
+            | crate::keyguide::Context::Search => Some(3),
+            _ => None,
+        }
+    }
+
     fn local_repeat(&self, event: &KeyEvent) -> bool {
         use crate::keyguide::{self, Action, Context};
         let context = self.guide_context();
@@ -527,6 +668,7 @@ impl App<'_> {
             && event.text.chars().any(|ch| !ch.is_control()))
     }
     fn begin_finder(&mut self) {
+        self.begin_modal();
         self.retire_resize("finder opened");
         self.selection_focus_lost();
         self.close_search();
@@ -540,9 +682,10 @@ impl App<'_> {
     fn finder_intent(&mut self, intent: crate::finder::FinderIntent) -> Result<()> {
         match intent {
             crate::finder::FinderIntent::None => {}
-            crate::finder::FinderIntent::Cancel => self.finder = None,
+            crate::finder::FinderIntent::Cancel => self.cancel_modal(),
             crate::finder::FinderIntent::Activate(target) => {
                 self.finder = None;
+                self.overlays.remove("ui:modal");
                 if let Some(workspace) = target.workspace_id {
                     self.activate_sidebar(SidebarTarget::Pane {
                         workspace,
@@ -558,7 +701,10 @@ impl App<'_> {
     }
     fn modal_geometry(&self, screen: Size) -> (Rect, Rect) {
         let (width, height) = if self.finder.is_some() {
-            (120, 40)
+            (
+                screen.cols.saturating_mul(4) / 5,
+                (screen.rows.saturating_mul(3) / 4).min(36),
+            )
         } else {
             match self.state.form.as_ref().map(|form| &form.kind) {
                 Some(FormKind::CreateWorkspace | FormKind::CreateWindow) => (76, 12),
@@ -572,26 +718,15 @@ impl App<'_> {
                 _ => (112, screen.rows.saturating_sub(4)),
             }
         };
-        let rect = window::centered(
+        let placement = OverlayPlacement::centered(
             screen,
             width.min(screen.cols.saturating_sub(4).max(1)),
             height.min(screen.rows.saturating_sub(2).max(1)),
         );
-        let inset = window::content(Size {
-            cols: rect.width,
-            rows: rect.height,
-            ..screen
-        });
-        (
-            rect,
-            Rect {
-                x: rect.x + inset.x,
-                y: rect.y + inset.y,
-                ..inset
-            },
-        )
+        (placement.outer, placement.content)
     }
     fn open_form(&mut self, kind: FormKind, value: String) {
+        self.begin_modal();
         self.finder = None;
         self.popover.hide();
         self.retire_resize("modal opened");
@@ -2519,7 +2654,9 @@ impl App<'_> {
         }
         self.state.suppressed.insert(event.key.clone());
         self.state.status.clear();
-        let page = (screen_geometry(size).0.height.saturating_sub(2) / 2).max(1) as isize;
+        self.refresh_guide(size);
+        let page = (sidebar_content_rows(screen_geometry(size).0, self.guide_rows(size)) / 2).max(1)
+            as isize;
         match action {
             Some(Action::LeaveSidebar) => self.state.sidebar.active = false,
             Some(Action::Navigate(direction)) => self.state.sidebar.navigate(match direction {
@@ -2736,6 +2873,14 @@ impl App<'_> {
             }
             return Ok(false);
         }
+        if self.overlays.escape_target() == Some("ui:modal")
+            && crate::keyguide::lookup(self.guide_context(), &event)
+                == Some(crate::keyguide::Action::Cancel)
+        {
+            self.state.suppressed.insert(event.key.clone());
+            self.cancel_modal();
+            return Ok(false);
+        }
         if self.state.form.is_some() {
             use crate::keyguide::{self, Action, Context, Navigation};
             self.selection_focus_lost();
@@ -2744,11 +2889,7 @@ impl App<'_> {
             let context = form.context();
             let action = keyguide::lookup(context, &event);
             if action == Some(Action::Cancel) {
-                if form.pending.is_some() {
-                    self.selection_epoch = self.selection_epoch.wrapping_add(1);
-                }
-                self.state.cancel();
-                self.state.reconcile(&self.registry);
+                self.cancel_modal();
                 return Ok(false);
             }
             if form.pending.is_some() || form.ambiguous {
@@ -2880,6 +3021,15 @@ impl App<'_> {
             }
             match action {
                 Some(Action::Detach) => return Ok(true),
+                Some(Action::ToggleChrome) => {
+                    self.chrome_graphics_enabled = !self.chrome_graphics_enabled;
+                    self.state.status = if self.chrome_graphics_enabled {
+                        "Fancy chrome requested"
+                    } else {
+                        "Normal chrome"
+                    }
+                    .into();
+                }
                 Some(Action::StartSearch) => self.begin_search()?,
                 Some(Action::StartHistory) => self.enter_history(rects)?,
                 Some(Action::StartResize) => self.begin_keyboard_resize(size)?,
@@ -3116,6 +3266,73 @@ impl App<'_> {
                 _ => None,
             }
         };
+        if origin.is_none() {
+            let phase = if wheel {
+                PointerPhase::Wheel
+            } else {
+                match action {
+                    MouseAction::Press => PointerPhase::Press,
+                    MouseAction::Release => PointerPhase::Release,
+                    MouseAction::Motion => PointerPhase::Motion,
+                }
+            };
+            let route = self.overlays.route_pointer(mouse.x, mouse.y, phase);
+            if !matches!(
+                route,
+                PointerRoute::Target {
+                    id: crate::popover::SURFACE_ID,
+                    ..
+                }
+            ) && mouse.x >= screen_geometry(size).0.width
+            {
+                self.state.sidebar.pointer_row = None;
+                self.state.sidebar.hover(None);
+            }
+            match route {
+                PointerRoute::Dismiss("ui:modal") => {
+                    self.cancel_modal();
+                    return Ok(());
+                }
+                PointerRoute::Target {
+                    id: "ui:modal",
+                    content: true,
+                } if self.finder.is_some()
+                    && !self
+                        .consent
+                        .as_ref()
+                        .is_some_and(|consent| !consent.state.allowed && !consent.state.sent) =>
+                {
+                    let rect = self.overlays.layer("ui:modal").unwrap().placement.content;
+                    let event = MouseEvent {
+                        x: f32::from(mouse.x - rect.x),
+                        y: f32::from(mouse.y - rect.y),
+                        button: event_button,
+                        action,
+                        modifiers: u16::from(selection::mouse_modifiers(mouse.modifiers)),
+                    };
+                    let intent = self
+                        .finder
+                        .as_mut()
+                        .unwrap()
+                        .handle_mouse(&event, rect.size(size));
+                    self.finder_intent(intent)?;
+                    return Ok(());
+                }
+                PointerRoute::Target {
+                    id: crate::popover::SURFACE_ID,
+                    ..
+                } => {
+                    match button {
+                        MouseButton::WheelUp => self.popover.scroll_by(-3),
+                        MouseButton::WheelDown => self.popover.scroll_by(3),
+                        _ => {}
+                    }
+                    return Ok(());
+                }
+                PointerRoute::Pass => {}
+                _ => return Ok(()),
+            }
+        }
         if matches!(&captured, Some(PointerCapture::Ui)) && !wheel {
             return Ok(());
         }
@@ -3125,43 +3342,7 @@ impl App<'_> {
                 .consent
                 .as_ref()
                 .is_some_and(|consent| !consent.state.allowed && !consent.state.sent);
-        // Complete an already accepted native gesture even if a modal acquired
-        // focus afterward; never start a native gesture through a modal.
-        if origin.is_none()
-            && self.finder.is_some()
-            && !self
-                .consent
-                .as_ref()
-                .is_some_and(|consent| !consent.state.allowed && !consent.state.sent)
-        {
-            if let Some(rect) = self.modal_rect
-                && rect.contains(mouse.x, mouse.y)
-            {
-                let event = MouseEvent {
-                    x: f32::from(mouse.x - rect.x),
-                    y: f32::from(mouse.y - rect.y),
-                    button: event_button,
-                    action,
-                    modifiers: u16::from(selection::mouse_modifiers(mouse.modifiers)),
-                };
-                let intent = self
-                    .finder
-                    .as_mut()
-                    .unwrap()
-                    .handle_mouse(&event, rect.size(size));
-                self.finder_intent(intent)?;
-            }
-            return Ok(());
-        }
         if modal && !(origin.is_some() && action == MouseAction::Release) {
-            return Ok(());
-        }
-        if origin.is_none() && hits.hit_test(mouse.x, mouse.y) == Some(crate::popover::SURFACE_ID) {
-            match button {
-                MouseButton::WheelUp => self.popover.scroll_by(-3),
-                MouseButton::WheelDown => self.popover.scroll_by(3),
-                _ => {}
-            }
             return Ok(());
         }
         if origin.is_none()
@@ -3439,6 +3620,8 @@ impl App<'_> {
             self.notify_focus()?;
             return Ok(());
         }
+        let response = terminal.observe_background_reply(response, out)?;
+        let response = response.as_ref();
         terminal.theme_reply(response, out)?;
         self.color_reply(response);
         if self.consent.is_none()
@@ -3635,8 +3818,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         search: search::State::default(),
         finder: None,
         popover: crate::popover::Popover::new(initial_size),
-        modal_rect: None,
+        overlays: OverlayStack::default(),
         guide: GuideCache::default(),
+        chrome_graphics_enabled: true,
         notified_focus: None,
         focus_out_pending: HashSet::new(),
         lease_pending: HashSet::new(),
@@ -3653,10 +3837,12 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         let mut demux = ReplyDemux::default();
         let mut last_input = Instant::now();
         let mut theme = Theme::default();
-        let mut footer_roles = Vec::new();
+        let mut guide_theme = Theme::default();
         let mut guide_roles = Vec::new();
         let mut chrome_markers = Vec::new();
         let mut marker_sources = Vec::with_capacity(16);
+        let mut pane_graphics = Vec::new();
+        let mut next_pane_graphics = Vec::new();
         let mut chrome_surface = UiSurface::new(initial_size);
         let mut popup_surface = UiSurface::new(Size {
             cols: 1,
@@ -3676,6 +3862,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         let mut window_size = None;
         let mut guide_painted = None;
         let mut search_surface = UiSurface::new(initial_size);
+        let mut window_effects = graphics_frame(initial_size);
+        let mut popover_effects = graphics_frame(initial_size);
+        let mut guide_effects = graphics_frame(initial_size);
         let mut placeholders = HashMap::<String, UiSurface>::new();
         loop {
             if client.consume_lifecycle()? {
@@ -3700,15 +3889,21 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 app.state.reconcile(&app.registry);
             }
             let size = dimensions()?;
+            for frame in [
+                &mut window_effects,
+                &mut popover_effects,
+                &mut guide_effects,
+            ] {
+                frame.size = size;
+                frame.images.clear();
+                frame.placements.clear();
+            }
             app.state.sidebar.reconcile(
                 &app.registry,
                 app.state.workspace.as_deref(),
                 app.state.window.as_deref(),
                 app.state.focused.as_deref(),
             );
-            app.state
-                .sidebar
-                .viewport(screen_geometry(size).0.height.saturating_sub(2) as usize);
             app.validate_resize(size);
             let rects = app.rects(size);
             app.sync_views(size, &rects)?;
@@ -3792,6 +3987,10 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             }
             app.resize_hint();
             app.refresh_guide(size);
+            let guide_rows = app.guide_rows(size);
+            app.state
+                .sidebar
+                .viewport(sidebar_content_rows(screen_geometry(size).0, guide_rows));
             let workspace_hits = chrome(
                 &mut chrome_surface,
                 crate::controller::ChromeContext {
@@ -3799,7 +3998,8 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     state: &app.state,
                     registry: &app.registry,
                     rects: &rects,
-                    guide: &app.guide.footer,
+                    pane_graphics: &pane_graphics,
+                    guide_rows,
                 },
                 |pane| app.badge(pane),
                 |pane| app.views.get(pane).map(|view| &view.metadata),
@@ -3813,36 +4013,18 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                         .map(|(target, _)| target),
                 );
             }
-            theme.update(&app.colors);
-            let guide_width = unicode_width::UnicodeWidthStr::width(app.guide.footer.as_str());
-            let mut status_width = 0;
-            if !app.state.status.is_empty() {
-                let available = usize::from(size.cols).saturating_sub(guide_width + 3);
-                for ch in app.state.status.chars() {
-                    let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                    if status_width + width > available {
-                        break;
-                    }
-                    status_width += width;
-                }
-                status_width += 3;
-            }
-            footer_roles.clear();
-            footer_roles.extend(app.guide.footer_roles.iter().map(|span| RoleSpan {
-                rect: Rect {
-                    x: span.rect.x.saturating_add(status_width as u16),
-                    y: size.rows.saturating_sub(1),
-                    ..span.rect
-                },
-                role: span.role,
-            }));
+            crate::appearance::update_theme(&mut theme, &app.colors);
             theme_chrome(
                 &mut chrome_surface,
                 &theme,
-                &app.state,
-                &app.registry,
-                &rects,
-                &footer_roles,
+                crate::controller::ChromeContext {
+                    size,
+                    state: &app.state,
+                    registry: &app.registry,
+                    rects: &rects,
+                    pane_graphics: &pane_graphics,
+                    guide_rows,
+                },
                 |pane| app.views.get(pane).map(|view| &view.metadata),
             );
             chrome_markers.clear();
@@ -3856,13 +4038,27 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 .rows
                 .iter()
                 .skip(app.state.sidebar.scroll)
-                .take(usize::from(size.rows.saturating_sub(3)))
+                .take(sidebar_content_rows(screen_geometry(size).0, guide_rows))
                 .enumerate()
             {
                 let (artwork, col) = match entry.kind {
-                    SidebarRowKind::Workspace { .. } => (crate::chrome_graphics::Artwork::Hive, 2),
-                    SidebarRowKind::Pane { .. } => (crate::chrome_graphics::Artwork::Bee, 6),
-                    SidebarRowKind::Window { .. }
+                    SidebarRowKind::Workspace { .. } => (crate::chrome_graphics::Artwork::Hive, 1),
+                    SidebarRowKind::Pane { index, projected } => {
+                        let grouped = app.registry.workspaces.iter().any(|workspace| {
+                            app.registry.panes[index].workspace_id.as_ref() == Some(&workspace.id)
+                                && workspace.windows.len() > 1
+                        });
+                        (
+                            if projected {
+                                crate::chrome_graphics::Artwork::Bee
+                            } else {
+                                crate::chrome_graphics::Artwork::BeeHidden
+                            },
+                            if grouped { 6 } else { 4 },
+                        )
+                    }
+                    SidebarRowKind::Projects { .. }
+                    | SidebarRowKind::Window { .. }
                     | SidebarRowKind::Detail { .. }
                     | SidebarRowKind::Spacer => continue,
                 };
@@ -3880,7 +4076,55 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 }
                 chrome_markers.push((artwork, col, row, source));
             }
+            graphics.set_enabled(app.chrome_graphics_enabled);
             graphics.prepare(&app.colors, size, &marker_sources);
+            graphics.prepare_panes(size, &rects);
+            next_pane_graphics.clear();
+            for (index, (_, rect)) in rects.iter().enumerate() {
+                if rect.width >= 3 && rect.height >= 3 {
+                    let ready = graphics.decorate_pane(
+                        &mut chrome_surface.frame,
+                        *rect,
+                        index,
+                        0x10000 + (index as u32) * 64,
+                    );
+                    if ready {
+                        next_pane_graphics.push(*rect);
+                    }
+                }
+            }
+            if pane_graphics != next_pane_graphics {
+                std::mem::swap(&mut pane_graphics, &mut next_pane_graphics);
+                // Readiness is display-list data, not destructive glyph edits.
+                // Repaint once on transition before the single physical write.
+                chrome(
+                    &mut chrome_surface,
+                    crate::controller::ChromeContext {
+                        size,
+                        state: &app.state,
+                        registry: &app.registry,
+                        rects: &rects,
+                        pane_graphics: &pane_graphics,
+                        guide_rows,
+                    },
+                    |pane| app.badge(pane),
+                    |pane| app.views.get(pane).map(|view| &view.metadata),
+                    |pane| app.history(pane),
+                );
+                theme_chrome(
+                    &mut chrome_surface,
+                    &theme,
+                    crate::controller::ChromeContext {
+                        size,
+                        state: &app.state,
+                        registry: &app.registry,
+                        rects: &rects,
+                        pane_graphics: &pane_graphics,
+                        guide_rows,
+                    },
+                    |pane| app.views.get(pane).map(|view| &view.metadata),
+                );
+            }
             for &(artwork, col, row, source) in &chrome_markers {
                 graphics.decorate(
                     &mut chrome_surface.frame,
@@ -3936,29 +4180,42 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             let popup = consent_open || app.state.form.is_some() || app.finder.is_some();
             let placement = popup.then(|| {
                 if consent_open {
-                    let rect = window::centered(
+                    let placement = OverlayPlacement::centered(
                         size,
                         size.cols.saturating_sub(4).clamp(1, 82),
                         size.rows.min(6),
                     );
-                    let inset = window::content(Size {
-                        cols: rect.width,
-                        rows: rect.height,
-                        ..size
-                    });
-                    (
-                        rect,
-                        Rect {
-                            x: rect.x + inset.x,
-                            y: rect.y + inset.y,
-                            ..inset
-                        },
-                    )
+                    (placement.outer, placement.content)
                 } else {
                     app.modal_geometry(size)
                 }
             });
-            app.modal_rect = placement.map(|(_, content)| content);
+            app.overlays.resize(size);
+            if let Some((outer, content)) = placement {
+                let return_focus = app
+                    .overlays
+                    .layer("ui:modal")
+                    .is_none()
+                    .then(|| OverlayFocus {
+                        workspace: app.state.workspace.clone(),
+                        window: app.state.window.clone(),
+                        pane: app.state.focused.clone(),
+                        sidebar: app.state.sidebar.active,
+                        cursor: app.state.sidebar.cursor.clone(),
+                    });
+                app.overlays.present(
+                    "ui:modal",
+                    OverlayPlacement { outer, content },
+                    OverlayPolicy {
+                        dismiss_on_outside: !consent_open,
+                        dismiss_on_escape: !consent_open,
+                        ..OverlayPolicy::MODAL
+                    },
+                    return_focus,
+                );
+            } else {
+                app.overlays.remove("ui:modal");
+            }
             if let Some((outer, inner)) = placement {
                 let local = Size {
                     cols: outer.width,
@@ -4016,6 +4273,15 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     Role::Panel,
                     &window::theme_spans(window_surface.frame.size),
                 );
+                window_surface.frame.images.clear();
+                window_surface.frame.placements.clear();
+                raised_material(
+                    &graphics,
+                    &mut window_surface.frame,
+                    &mut window_effects,
+                    outer,
+                    1,
+                );
             }
             let tooltip_target = if popup || app.state.prefix || app.search_open() {
                 None
@@ -4038,55 +4304,117 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 size,
                 |pane| app.views.get(pane).map(|view| &view.metadata),
             );
-            if tooltip.is_some() {
+            if let Some(rect) = tooltip {
                 app.popover.apply_theme(&theme);
+                app.popover.surface.frame.images.clear();
+                app.popover.surface.frame.placements.clear();
+                raised_material(
+                    &graphics,
+                    &mut app.popover.surface.frame,
+                    &mut popover_effects,
+                    rect,
+                    1,
+                );
+                app.overlays.present(
+                    crate::popover::SURFACE_ID,
+                    OverlayPlacement::framed(rect, size),
+                    OverlayPolicy::PASSIVE,
+                    None,
+                );
+            } else {
+                app.overlays.remove(crate::popover::SURFACE_ID);
             }
-            let guide_rect = app.guide_geometry(size, tooltip, popup);
+            let guide_rect = app.guide_geometry(size, popup);
+            let mut guide_draw_rect = None;
             if let Some(rect) = guide_rect {
-                let local = rect.size(size);
-                let key = (app.guide.key, local);
-                if guide_painted != Some(key) {
-                    let mut rows = window::border_rows(
-                        local,
-                        app.guide_context().title(),
-                        window::Border::Rounded,
+                let body = Rect {
+                    x: rect.x + 2,
+                    y: rect.y + 1,
+                    width: rect.width.saturating_sub(4),
+                    height: rect.height.saturating_sub(2),
+                };
+                let rich = rect.width >= 8
+                    && graphics.decorate_guide(
+                        &mut guide_effects,
+                        rect,
+                        body,
+                        1,
+                        app.guide_accent(),
                     );
-                    let content = window::content(local);
-                    guide_roles.clear();
-                    guide_roles.extend_from_slice(&window::theme_spans(local));
-                    if local.cols >= 3 && local.rows >= 3 {
-                        guide_roles.push(RoleSpan {
-                            rect: Rect {
-                                x: 1,
+                let draw_rect = if rich { body } else { rect };
+                guide_draw_rect = Some(draw_rect);
+                let local = draw_rect.size(size);
+                let key = (app.guide.key, local, rich);
+                if guide_painted != Some(key) {
+                    let (mut rows, content) = if rich {
+                        (
+                            Vec::new(),
+                            Rect {
+                                x: 0,
                                 y: 0,
-                                width: (unicode_width::UnicodeWidthStr::width(
-                                    app.guide_context().title(),
-                                ) as u16)
-                                    .min(local.cols - 2),
-                                height: 1,
+                                width: local.cols,
+                                height: local.rows,
                             },
-                            role: Role::Title,
-                        });
+                        )
+                    } else {
+                        (
+                            window::border_rows(
+                                local,
+                                app.guide_context().title(),
+                                window::Border::Rounded,
+                            ),
+                            window::content(local),
+                        )
+                    };
+                    guide_roles.clear();
+                    if !rich {
+                        guide_roles.extend_from_slice(&window::theme_spans(local));
+                        if local.cols >= 3 && local.rows >= 3 {
+                            guide_roles.push(RoleSpan {
+                                rect: Rect {
+                                    x: 1,
+                                    y: 0,
+                                    width: (unicode_width::UnicodeWidthStr::width(
+                                        app.guide_context().title(),
+                                    ) as u16)
+                                        .min(local.cols - 2),
+                                    height: 1,
+                                },
+                                role: Role::Title,
+                            });
+                        }
                     }
                     guide_roles.push(RoleSpan {
                         rect: content,
-                        role: Role::Muted,
+                        role: Role::Base,
                     });
-                    guide_roles.extend(app.guide.expanded_roles.iter().map(|span| RoleSpan {
-                        rect: Rect {
-                            x: span.rect.x + content.x,
-                            y: span.rect.y + content.y,
-                            ..span.rect
-                        },
-                        role: span.role,
+                    guide_roles.extend(app.guide.content.expanded_roles.iter().map(|span| {
+                        RoleSpan {
+                            rect: Rect {
+                                x: if rich {
+                                    span.rect.x.saturating_sub(1)
+                                } else {
+                                    span.rect.x + content.x
+                                },
+                                y: span.rect.y + content.y,
+                                ..span.rect
+                            },
+                            role: span.role,
+                        }
                     }));
                     rows.extend(
                         app.guide
+                            .content
                             .expanded
                             .iter()
                             .take(usize::from(content.height))
                             .enumerate()
                             .map(|(y, text)| {
+                                let text = if rich {
+                                    text[1..text.len() - 1].to_owned()
+                                } else {
+                                    text.clone()
+                                };
                                 (
                                     Rect {
                                         x: content.x,
@@ -4094,7 +4422,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                                         width: content.width,
                                         height: 1,
                                     },
-                                    text.clone(),
+                                    text,
                                     false,
                                 )
                             }),
@@ -4102,12 +4430,48 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     guide_surface.paint(local, rows, None);
                     guide_painted = Some(key);
                 }
-                guide_surface.apply_theme(&theme, Role::Panel, &guide_roles);
+                crate::appearance::update_guide_theme(
+                    &mut guide_theme,
+                    &app.colors,
+                    app.guide_accent(),
+                );
+                guide_surface.apply_theme(&guide_theme, Role::Panel, &guide_roles);
+                guide_surface.frame.images.clear();
+                guide_surface.frame.placements.clear();
+                app.overlays.present(
+                    "ui:guide",
+                    OverlayPlacement::framed(rect, size),
+                    OverlayPolicy::PASSIVE,
+                    None,
+                );
+            } else {
+                app.overlays.remove("ui:guide");
             }
-            let searching = app.search_overlay(&mut search_surface, size);
+            let search_rect = rects
+                .iter()
+                .find(|(id, _)| app.state.focused.as_ref() == Some(id))
+                .map(|(_, rect)| {
+                    let body = content(*rect);
+                    let bottom = rect.y + rect.height.saturating_sub(1);
+                    Rect {
+                        x: rect.x,
+                        y: if body.y + body.height <= bottom {
+                            bottom
+                        } else {
+                            rect.y
+                        },
+                        width: rect.width,
+                        height: u16::from(rect.height > 1),
+                    }
+                });
+            let searching = search_rect.is_some_and(|rect| {
+                rect.height > 0 && app.search_overlay(&mut search_surface, rect.size(size))
+            });
             app.theme_search(&mut search_surface, &theme);
+            let faint_background = popup && crate::appearance::MODAL_BACKGROUND_FAINT;
             let mut surfaces = vec![Surface {
                 id: "ui:chrome",
+                content: SurfaceContent::Cells,
                 rect: Rect {
                     x: 0,
                     y: 0,
@@ -4118,6 +4482,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 selection: &[],
                 search: &[],
                 focused: false,
+                faint: faint_background,
             }];
             for (id, rect) in &rects {
                 let rect = content(*rect);
@@ -4132,10 +4497,12 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 {
                     surfaces.push(Surface {
                         id,
+                        content: SurfaceContent::All,
                         rect,
                         frame,
                         selection: app.selection_spans(id),
                         search: app.search_spans(id),
+                        faint: faint_background,
                         focused: !popup
                             && !searching
                             && !app.state.sidebar.active
@@ -4150,57 +4517,87 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     });
                 }
             }
-            if let Some(rect) = tooltip {
+            surfaces.push(Surface {
+                id: "ui:chrome:graphics",
+                content: SurfaceContent::Graphics,
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: size.cols,
+                    height: size.rows,
+                },
+                frame: &chrome_surface.frame,
+                selection: &[],
+                search: &[],
+                focused: false,
+                faint: faint_background,
+            });
+            for layer in app.overlays.layers() {
+                let (frame, rect) = match layer.id {
+                    crate::popover::SURFACE_ID => {
+                        (&app.popover.surface.frame, layer.placement.outer)
+                    }
+                    "ui:guide" => (
+                        &guide_surface.frame,
+                        guide_draw_rect.expect("presented guide has a cell projection"),
+                    ),
+                    "ui:modal" => {
+                        surfaces.push(Surface {
+                            id: "ui:window",
+                            content: SurfaceContent::All,
+                            rect: layer.placement.outer,
+                            frame: &window_surface.frame,
+                            selection: &[],
+                            search: &[],
+                            focused: false,
+                            faint: false,
+                        });
+                        (&popup_surface.frame, layer.placement.content)
+                    }
+                    _ => continue,
+                };
                 surfaces.push(Surface {
-                    id: crate::popover::SURFACE_ID,
+                    id: layer.id,
+                    content: SurfaceContent::All,
                     rect,
-                    frame: &app.popover.surface.frame,
+                    frame,
+                    selection: &[],
+                    search: &[],
+                    focused: app.overlays.keyboard_owner() == Some(layer.id),
+                    faint: faint_background && !layer.policy.modal,
+                });
+                let (effects, effects_id) = match layer.id {
+                    crate::popover::SURFACE_ID => (&popover_effects, "ui:popover:graphics"),
+                    "ui:guide" => (&guide_effects, "ui:guide:graphics"),
+                    "ui:modal" => (&window_effects, "ui:modal:graphics"),
+                    _ => continue,
+                };
+                surfaces.push(Surface {
+                    id: effects_id,
+                    content: SurfaceContent::Graphics,
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        width: size.cols,
+                        height: size.rows,
+                    },
+                    frame: effects,
                     selection: &[],
                     search: &[],
                     focused: false,
-                });
-            }
-            if let Some(rect) = guide_rect {
-                surfaces.push(Surface {
-                    id: "ui:guide",
-                    rect,
-                    frame: &guide_surface.frame,
-                    selection: &[],
-                    search: &[],
-                    focused: false,
-                });
-            }
-            if let Some((outer, inner)) = placement {
-                surfaces.push(Surface {
-                    id: "ui:window",
-                    rect: outer,
-                    frame: &window_surface.frame,
-                    selection: &[],
-                    search: &[],
-                    focused: false,
-                });
-                surfaces.push(Surface {
-                    id: "ui:modal",
-                    rect: inner,
-                    frame: &popup_surface.frame,
-                    selection: &[],
-                    search: &[],
-                    focused: true,
+                    faint: faint_background && !layer.policy.modal,
                 });
             }
             if searching && !popup {
                 surfaces.push(Surface {
                     id: "ui:search",
-                    rect: Rect {
-                        x: 0,
-                        y: size.rows.saturating_sub(1),
-                        width: size.cols,
-                        height: 1,
-                    },
+                    content: SurfaceContent::All,
+                    rect: search_rect.expect("search overlay has an owning pane footer"),
                     frame: &search_surface.frame,
                     selection: &[],
                     search: &[],
                     focused: true,
+                    faint: false,
                 });
             }
             let scene = Scene { size, surfaces };
@@ -4208,6 +4605,23 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             if client.consume_lifecycle()? {
                 return Ok(());
             }
+            // The application chooses the matte; the framework owns its physical
+            // lifetime. Prepared requests alone are not visible pane materials.
+            let background = if app.chrome_graphics_enabled
+                && !pane_graphics.is_empty()
+                && app.colors.truecolor
+                && app.colors.foreground.is_some()
+            {
+                match (app.colors.background, theme.background(Role::Base, false)) {
+                    (Some(original), ColorSource::Rgb(matte)) => {
+                        Some(TerminalBackground { original, matte })
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            terminal.set_background(&mut out, background)?;
             renderer.render(&mut out, &scene, &app.colors, &mut terminal)?;
             let mut fds = vec![
                 libc::pollfd {
@@ -4346,6 +4760,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     }
                     _ => {}
                 }
+            }
+            if app.color_query_pending {
+                terminal.prepare_background_query();
             }
             app.flush_color_query(&mut out)?;
         }
@@ -4556,6 +4973,40 @@ fn detach_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rich_material_clears_frame_labels_without_touching_application_cells() {
+        let size = Size {
+            cols: 18,
+            rows: 8,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let mut frame = blank(size);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: size.cols,
+            height: size.rows,
+        };
+        text(&mut frame, 1, 0, "日本語 title", false);
+        text(&mut frame, 1, 1, "native content", false);
+        let application = frame.rows[1].clone();
+        material_border(&mut frame, rect, false, &[]);
+        assert_eq!(frame.rows[1].cells[1..17], application.cells[1..17]);
+        assert!(
+            frame.rows[0]
+                .cells
+                .iter()
+                .all(|cell| cell.text == " " && cell.width == 1)
+        );
+        assert!(
+            frame.rows[7]
+                .cells
+                .iter()
+                .all(|cell| cell.text == " " && cell.width == 1)
+        );
+    }
+
     fn fixture<'a>() -> (App<'a>, updates::Capture) {
         let registry = RegistrySnapshot {
             revision: 0,
@@ -4614,8 +5065,9 @@ mod tests {
                 search: search::State::default(),
                 finder: None,
                 popover: crate::popover::Popover::new(size()),
-                modal_rect: None,
+                overlays: OverlayStack::default(),
                 guide: GuideCache::default(),
+                chrome_graphics_enabled: true,
                 notified_focus: None,
                 focus_out_pending: HashSet::new(),
                 lease_pending: HashSet::new(),
@@ -4623,6 +5075,49 @@ mod tests {
             },
             received,
         )
+    }
+
+    #[test]
+    fn passive_guide_tracks_ownership_and_sidebar_fit_without_application_input() {
+        let (mut app, received) = fixture();
+        let size = Size {
+            cols: 120,
+            rows: 36,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        app.state.sidebar.active = false;
+        app.refresh_guide(size);
+        let sidebar = screen_geometry(size).0;
+        let normal = app.guide_geometry(size, false).unwrap();
+        assert_eq!(normal.x, sidebar.x);
+        assert!(normal.width <= sidebar.width);
+        assert_eq!(normal.y + normal.height, size.rows);
+        assert_eq!(app.guide_accent(), None);
+        app.options.read_only = true;
+        assert_eq!(app.guide_accent(), None);
+        app.state.prefix = true;
+        app.refresh_guide(size);
+        assert_eq!(app.guide_accent(), Some(3));
+        assert!(app.guide_geometry(size, false).is_some());
+        app.state.prefix = false;
+        app.state.sidebar.active = true;
+        app.refresh_guide(size);
+        assert_eq!(app.guide_accent(), Some(4));
+        assert_eq!(app.guide_geometry(size, false).unwrap().x, sidebar.x);
+        assert!(app.guide_geometry(size, true).is_none());
+        app.state.sidebar.active = false;
+        let narrow = Size {
+            cols: 30,
+            rows: 18,
+            ..size
+        };
+        app.refresh_guide(narrow);
+        let overflow = app.guide_geometry(narrow, false).unwrap();
+        assert_eq!(overflow.x, screen_geometry(narrow).0.x);
+        assert!(overflow.width > screen_geometry(narrow).0.width);
+        assert!(overflow.width <= narrow.cols);
+        assert!(received.try_recv().is_err());
     }
 
     #[test]
@@ -4896,6 +5391,37 @@ mod tests {
                 request: PaneRequest::Key { event, .. }, ..
             } if event.key == name));
         }
+    }
+    #[test]
+    fn modal_cancel_restores_sidebar_context_and_pending_submit_keeps_ownership() {
+        let (mut app, captured) = fixture();
+        unavailable_fixture(&mut app);
+        app.state.sidebar.active = true;
+        app.state.sidebar.cursor = Some(SidebarTarget::Workspace("history".into()));
+        let focus = app.state.focused.clone();
+        app.open_form(FormKind::RenameWorkspace, "name".into());
+        app.state.sidebar.active = false;
+        app.state.sidebar.cursor = None;
+        app.state.form.as_mut().unwrap().pending = Some("accepted-request".into());
+        app.key(key("Escape"), &mut Vec::new(), size(), &[])
+            .unwrap();
+        assert!(app.state.form.is_some());
+        assert_eq!(app.overlays.keyboard_owner(), Some("ui:modal"));
+        app.state.form.as_mut().unwrap().pending = None;
+        app.key(key("Escape"), &mut Vec::new(), size(), &[])
+            .unwrap();
+        assert!(app.state.form.is_none());
+        assert_eq!(app.state.focused, focus);
+        assert!(app.state.sidebar.active);
+        assert_eq!(
+            app.state.sidebar.cursor,
+            Some(SidebarTarget::Workspace("history".into()))
+        );
+        assert_eq!(app.overlays.keyboard_owner(), None);
+        assert!(
+            captured.try_recv().is_err(),
+            "modal keys must not reach a native pane"
+        );
     }
 
     #[test]
@@ -5326,7 +5852,8 @@ mod tests {
                 state: &app.state,
                 registry: &app.registry,
                 rects: &rects,
-                guide: "",
+                pane_graphics: &[],
+                guide_rows: 0,
             },
             |_| None,
             |_| None,
@@ -5348,6 +5875,7 @@ mod tests {
             size,
             surfaces: vec![Surface {
                 id: "ui:chrome",
+                content: SurfaceContent::All,
                 rect: Rect {
                     x: 0,
                     y: 0,
@@ -5358,6 +5886,7 @@ mod tests {
                 selection: &[],
                 search: &[],
                 focused: false,
+                faint: false,
             }],
         };
         let hits = scene.hit_map();
@@ -5413,6 +5942,7 @@ mod tests {
             let frame = blank(size);
             let mut surfaces = vec![Surface {
                 id: "ui:chrome",
+                content: SurfaceContent::All,
                 rect: Rect {
                     x: 0,
                     y: 0,
@@ -5423,15 +5953,18 @@ mod tests {
                 selection: &[],
                 search: &[],
                 focused: false,
+                faint: false,
             }];
             for (pane, rect) in &rects {
                 surfaces.push(Surface {
                     id: pane,
+                    content: SurfaceContent::All,
                     rect: content(*rect),
                     frame: &frame,
                     selection: &[],
                     search: &[],
                     focused: false,
+                    faint: false,
                 });
             }
             let hits = Scene { size, surfaces }.hit_map();
@@ -5464,6 +5997,23 @@ mod tests {
             }
             Ok(())
         }
+    }
+    #[test]
+    fn outside_modal_click_cancels_without_starting_a_native_gesture() {
+        let (mut app, capture) = fixture();
+        let pointer = PointerFixture::new(&mut app);
+        app.open_form(FormKind::ChoosePane, String::new());
+        let placement = OverlayPlacement::centered(pointer.size, 30, 10);
+        app.overlays
+            .present("ui:modal", placement, OverlayPolicy::MODAL, None);
+        let native = content(pointer.rects[0].1);
+        pointer.send(&mut app, 0, native.x + 1, native.y + 1, false);
+        assert!(app.state.form.is_none());
+        pointer.send(&mut app, 0, native.x + 2, native.y + 2, true);
+        assert!(
+            captured_mouse(&capture).is_empty(),
+            "dismissal press/release leaked through"
+        );
     }
     fn captured_mouse(capture: &updates::Capture) -> Vec<(String, String, MouseEvent)> {
         let mut events = Vec::new();
@@ -7158,16 +7708,29 @@ mod tests {
             server.join().unwrap();
             assert_eq!(app.registry.workspaces[0].windows[0].revision, 9);
             let final_divider = resize_divider(&app, pointer.size);
-            assert_eq!(
-                final_divider.x,
-                if drag {
-                    screen_geometry(pointer.size).1.x + 1
-                } else {
-                    initial.x + 11
-                }
-            );
+            if drag {
+                let mut final_rects = Vec::new();
+                layout_rects(
+                    app.registry.workspaces[0].windows[0].layout.as_ref(),
+                    screen_geometry(pointer.size).1,
+                    &mut final_rects,
+                );
+                let pane = final_rects
+                    .iter()
+                    .find(|(id, _)| id == "focused-pane")
+                    .unwrap()
+                    .1;
+                let native = content(pane);
+                assert_eq!(native.width, 1, "clamp must preserve a native input column");
+                assert!(native.x > pane.x && native.x + native.width < pane.x + pane.width);
+                assert!(
+                    !final_divider.contains(native.x, native.y),
+                    "resize hit covers the surviving native column"
+                );
+            } else {
+                assert_eq!(final_divider.x, initial.x + 11);
+            }
             assert_eq!(app.state.focused.as_deref(), Some("focused-pane"));
-            assert_eq!(app.state.status, "Resize finished");
             assert!(
                 capture.try_recv().is_err(),
                 "resize input leaked to an application"

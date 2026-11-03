@@ -1,6 +1,9 @@
 //! Bounded off-thread SVG icon preparation for ordinary Scene image resources.
 //! No terminal output, uploads, protocol parser, or application artwork lives here.
+//! Presentation can be disabled independently of host capability evidence;
+//! bounded worker caches survive so re-enabling reuses prepared resources.
 use crate::ColorProbe;
+use crate::decoration::{self, DecorationGeometry, DecorationStyle, PreparedDecoration};
 use bkpr_protocol::{ColorSource, Frame, Image, ImageLayer, PixelFormat, Placement, Size};
 use resvg::{tiny_skia, usvg};
 use std::{
@@ -22,6 +25,9 @@ const MAX_COLORS: usize = 32;
 const MAX_IMAGES: usize = 64;
 const MAX_ASSETS: usize = 8;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
+const MAX_DECORATIONS: usize = 5;
+const MAX_DECORATION_CACHE: usize = 16;
+const MAX_DECORATION_BYTES: usize = 8 * 1024 * 1024;
 
 /// Trusted embedded path artwork. IDs must be unique within this preparer.
 pub struct SvgAsset {
@@ -35,6 +41,8 @@ struct Config {
     height: u32,
     colors: [[u8; 3]; MAX_COLORS],
     len: usize,
+    cell: [u32; 2],
+    decorations: [Option<DecorationStyle>; MAX_DECORATIONS],
 }
 impl Config {
     fn new(size: Size, span: [u16; 2]) -> Option<Self> {
@@ -48,6 +56,8 @@ impl Config {
             height,
             colors: [[0; 3]; MAX_COLORS],
             len: 0,
+            cell: [size.cell_width, size.cell_height],
+            decorations: [None; MAX_DECORATIONS],
         })
     }
     fn add(&mut self, rgb: Option<[u8; 3]>) {
@@ -74,11 +84,21 @@ impl Entry {
             && self.image.height == config.height
     }
 }
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PreparationWork {
+    decoration_rasters: usize,
+    decoration_hits: usize,
+    decoration_entries: usize,
+    decoration_bytes: usize,
+}
 #[derive(Default)]
 struct State {
     desired: Option<(u64, Config)>,
-    published: Option<(u64, Vec<Entry>)>,
+    published: Option<(u64, Vec<Entry>, Vec<PreparedDecoration>)>,
     stop: bool,
+    #[cfg(test)]
+    work: PreparationWork,
 }
 struct Shared {
     state: Mutex<State>,
@@ -90,12 +110,14 @@ struct Shared {
 /// The caller registers wake_fd with its existing poll loop, invokes drain on
 /// readability, and repaints when drain returns true. No terminal I/O occurs.
 pub struct SvgGraphics {
+    enabled: bool,
     span: [u16; 2],
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
     wake: UnixStream,
     config: Option<Config>,
     ready: Vec<Entry>,
+    decorations: Vec<PreparedDecoration>,
     foreground: Option<[u8; 3]>,
     palette: HashMap<usize, [u8; 3]>,
     color_revision: Option<u64>,
@@ -134,12 +156,14 @@ impl SvgGraphics {
             .name("bkpr-svg".into())
             .spawn(move || run(target, notify, assets, resource_generation))?;
         Ok(Self {
+            enabled: true,
             span: [columns, rows],
             shared,
             worker: Some(worker),
             wake,
             config: None,
             ready: Vec::new(),
+            decorations: Vec::new(),
             foreground: None,
             palette: HashMap::new(),
             color_revision: None,
@@ -149,9 +173,43 @@ impl SvgGraphics {
         self.wake.as_raw_fd()
     }
 
+    /// Enable or disable this preparer's presentation without changing terminal
+    /// capability evidence. Disabling revokes placements and pending work while
+    /// retaining the worker's bounded caches. Re-enable before the next prepare.
+    /// Returns whether the requested presentation state changed.
+    pub fn set_enabled(&mut self, enabled: bool) -> bool {
+        if self.enabled == enabled {
+            return false;
+        }
+        self.enabled = enabled;
+        if !enabled {
+            self.configure(None);
+        }
+        true
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// Cheap bounded comparison; parsing, masks, tinting and cache eviction are
     /// worker-only. Pass the actual marker foreground sources, never a theme.
     pub fn prepare(&mut self, host: &ColorProbe, size: Size, sources: &[ColorSource]) {
+        self.prepare_with_decorations(host, size, sources, &[]);
+    }
+
+    /// Prepare caller-owned materials on the same coalescing SVG worker.
+    /// No colors, depth, border width or terminal capability is inferred.
+    pub fn prepare_with_decorations(
+        &mut self,
+        host: &ColorProbe,
+        size: Size,
+        sources: &[ColorSource],
+        decorations: &[DecorationStyle],
+    ) {
+        if !self.enabled {
+            return;
+        }
         if self.color_revision != Some(host.revision) {
             self.foreground = host.foreground;
             self.palette.clone_from(&host.palette);
@@ -163,26 +221,44 @@ impl SvgGraphics {
             .then(|| Config::new(size, self.span))
             .flatten();
         if let Some(config) = next.as_mut() {
+            let mut count = 0;
+            for style in decorations {
+                if config.decorations[..count].contains(&Some(*style)) {
+                    continue;
+                }
+                if count == MAX_DECORATIONS {
+                    break;
+                }
+                config.decorations[count] = Some(*style);
+                count += 1;
+            }
             config.add(self.foreground);
             for source in sources {
                 config.add(self.resolve(*source));
             }
             // Canonicalize order so row movement cannot invalidate raster work.
             config.colors[..config.len].sort_unstable();
-            if config.len == 0 {
+            if config.len == 0 && config.decorations.iter().all(Option::is_none) {
                 next = None;
             }
         }
+        self.configure(next);
+    }
+
+    fn configure(&mut self, next: Option<Config>) {
         if next == self.config {
             return;
         }
         self.config = next;
         self.ready.clear();
+        self.decorations.clear();
         let generation = self.shared.generation.fetch_add(1, Ordering::AcqRel) + 1;
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         state.desired = next.map(|config| (generation, config));
         state.published = None;
-        self.shared.changed.notify_one();
+        if next.is_some() {
+            self.shared.changed.notify_one();
+        }
     }
     fn resolve(&self, source: ColorSource) -> Option<[u8; 3]> {
         match source {
@@ -214,13 +290,61 @@ impl SvgGraphics {
             .unwrap_or_else(|e| e.into_inner())
             .published
             .take();
-        if let Some((generation, entries)) = published
+        if let Some((generation, entries, decorations)) = published
             && generation == self.shared.generation.load(Ordering::Acquire)
         {
             self.ready = entries;
+            self.decorations = decorations;
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// Place a prepared contour only in a reserved window perimeter.
+    pub fn decorate_window(
+        &self,
+        frame: &mut Frame,
+        rect: crate::Rect,
+        style: DecorationStyle,
+        base: u32,
+    ) -> bool {
+        self.decorations
+            .iter()
+            .find(|entry| entry.style == style)
+            .is_some_and(|entry| entry.place(frame, rect, base))
+    }
+
+    /// Cut caller-owned semantic regions out of material pixels. Reserve 64
+    /// placement IDs at `base`; overflow/fragmentation retains the text fallback.
+    pub fn decorate_window_clipped(
+        &self,
+        frame: &mut Frame,
+        rect: crate::Rect,
+        style: DecorationStyle,
+        base: u32,
+        exclusions: &[crate::Rect],
+    ) -> bool {
+        self.decorations
+            .iter()
+            .find(|entry| entry.style == style)
+            .is_some_and(|entry| entry.place_clipped(frame, rect, base, exclusions))
+    }
+
+    /// Place a prepared contour in physical pixels with caller-owned clipping.
+    /// This changes neither raster/cache identity nor the native cell rectangle.
+    pub fn decorate_window_with_geometry(
+        &self,
+        frame: &mut Frame,
+        rect: crate::Rect,
+        style: DecorationStyle,
+        base: u32,
+        exclusions: &[crate::Rect],
+        geometry: DecorationGeometry,
+    ) -> bool {
+        self.decorations
+            .iter()
+            .find(|entry| entry.style == style)
+            .is_some_and(|entry| entry.place_with_geometry(frame, rect, base, exclusions, geometry))
     }
 
     /// Append a shared image and placement in local surface coordinates. The
@@ -344,6 +468,8 @@ fn run(
     let mut cache_bytes = 0;
     let mut next_id = 1u32;
     let mut masks: Option<Masks> = None;
+    let mut decoration_cache: VecDeque<PreparedDecoration> = VecDeque::new();
+    let mut decoration_bytes = 0;
     loop {
         let (generation, config) = {
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -438,6 +564,95 @@ fn run(
                 entries.push(entry);
             }
         }
+        let mut decorations = Vec::new();
+        let mut published_bytes = 0;
+        for style in config.decorations.into_iter().flatten() {
+            if !current(&shared, generation) {
+                break;
+            }
+            let Some([width, height]) = decoration::atlas_size(style, config.cell) else {
+                continue;
+            };
+            let Some(image_bytes) = (width as usize)
+                .checked_mul(height as usize)
+                .and_then(|pixels| pixels.checked_mul(4))
+            else {
+                continue;
+            };
+            if image_bytes > MAX_DECORATION_BYTES
+                || published_bytes + image_bytes > MAX_DECORATION_BYTES
+            {
+                continue;
+            }
+            let entry = if let Some(index) = decoration_cache
+                .iter()
+                .position(|entry| entry.style == style && entry.cell == config.cell)
+            {
+                let entry = decoration_cache.remove(index).unwrap();
+                decoration_cache.push_back(entry.clone());
+                #[cfg(test)]
+                {
+                    shared
+                        .state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .work
+                        .decoration_hits += 1;
+                }
+                entry
+            } else {
+                let Some(pixels) = decoration::rasterize(style, config.cell) else {
+                    continue;
+                };
+                #[cfg(test)]
+                {
+                    shared
+                        .state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .work
+                        .decoration_rasters += 1;
+                }
+                if !current(&shared, generation) {
+                    break;
+                }
+                let Some(following) = next_id.checked_add(1) else {
+                    return;
+                };
+                let entry = PreparedDecoration {
+                    style,
+                    cell: config.cell,
+                    image: Arc::new(Image {
+                        id: next_id,
+                        generation: resource_generation,
+                        width,
+                        height,
+                        format: PixelFormat::Rgba,
+                        pixels,
+                    }),
+                };
+                next_id = following;
+                while decoration_cache.len() >= MAX_DECORATION_CACHE
+                    || decoration_bytes + image_bytes > MAX_DECORATION_BYTES
+                {
+                    let Some(old) = decoration_cache.pop_front() else {
+                        break;
+                    };
+                    decoration_bytes -= old.image.pixels.len();
+                }
+                decoration_bytes += image_bytes;
+                decoration_cache.push_back(entry.clone());
+                entry
+            };
+            published_bytes += image_bytes;
+            decorations.push(entry);
+        }
+        #[cfg(test)]
+        {
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.work.decoration_entries = decoration_cache.len();
+            state.work.decoration_bytes = decoration_bytes;
+        }
         let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.stop {
             return;
@@ -445,7 +660,7 @@ fn run(
         if !current(&shared, generation) {
             continue;
         }
-        state.published = Some((generation, entries));
+        state.published = Some((generation, entries, decorations));
         drop(state);
         loop {
             match notify.write(&[1]) {
@@ -583,5 +798,398 @@ mod tests {
         let frame = placed(&graphics, 32);
         assert_eq!(frame.images[0].width, 64);
         assert_eq!(frame.images[0].height, 20);
+    }
+    fn material() -> DecorationStyle {
+        DecorationStyle {
+            kind: decoration::DecorationKind::Recessed,
+            background: [30; 3],
+            surface: [20; 3],
+            foreground: [200; 3],
+            inset_px: [5, 5],
+            outset_px: [0, 0],
+            radius_px: 10,
+            sigma_milli: 3000,
+            offset_milli: [3500, 3500],
+            shadow_opacity_milli: 720,
+            lip_width_milli: 1200,
+            lip_highlight_milli: 240,
+            lip_shade_milli: 240,
+        }
+    }
+    #[test]
+    fn presentation_toggle_retains_cached_pixels_and_never_overrides_capability_loss() {
+        let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
+        let mut host = host();
+        let size = Size {
+            cols: 12,
+            rows: 8,
+            ..size(10)
+        };
+        let rect = crate::Rect {
+            x: 0,
+            y: 0,
+            width: size.cols,
+            height: size.rows,
+        };
+        let geometry = DecorationGeometry {
+            bounds_px: [0, 0, 120, 160],
+            clip_px: [0, 0, 120, 160],
+        };
+        graphics.prepare_with_decorations(&host, size, &[], &[material()]);
+        prepared(&mut graphics);
+        let mut first = crate::blank(size);
+        crate::text(&mut first, 1, 1, "native body", false);
+        assert!(graphics.place(&mut first, 7, [0, 0], [0, 0], ColorSource::Default, 1));
+        assert!(graphics.decorate_window(&mut first, rect, material(), 64));
+        let icon = Arc::clone(&first.images[0]);
+        let atlas = Arc::clone(&first.images[1]);
+        let work = graphics.shared.state.lock().unwrap().work;
+
+        assert!(graphics.set_enabled(false));
+        let generation = graphics.shared.generation.load(Ordering::Acquire);
+        // Disabled preparation must not enqueue even a changed raster request.
+        for width in [11, 12, 10] {
+            graphics.prepare_with_decorations(
+                &host,
+                Size {
+                    cell_width: width,
+                    ..size
+                },
+                &[ColorSource::Rgb([1, 2, 3])],
+                &[DecorationStyle {
+                    surface: [90; 3],
+                    ..material()
+                }],
+            );
+        }
+        assert_eq!(
+            graphics.shared.generation.load(Ordering::Acquire),
+            generation
+        );
+        let state = graphics.shared.state.lock().unwrap();
+        assert!(state.desired.is_none());
+        assert!(state.published.is_none());
+        assert_eq!(state.work, work);
+        drop(state);
+        assert!(!graphics.set_enabled(false));
+        assert!(host.graphics.supported());
+        // Existing application content/resources are never removed or changed.
+        let mut native = first.clone();
+        assert!(!graphics.place(&mut native, 7, [0, 0], [0, 0], ColorSource::Default, 2));
+        assert!(!graphics.decorate_window(&mut native, rect, material(), 128));
+        assert!(!graphics.decorate_window_clipped(&mut native, rect, material(), 128, &[]));
+        assert!(!graphics.decorate_window_with_geometry(
+            &mut native,
+            rect,
+            material(),
+            128,
+            &[],
+            geometry,
+        ));
+        assert_eq!(native, first);
+
+        assert!(graphics.set_enabled(true));
+        graphics.prepare_with_decorations(&host, size, &[], &[material()]);
+        prepared(&mut graphics);
+        let mut restored = crate::blank(size);
+        assert!(graphics.place(&mut restored, 7, [0, 0], [0, 0], ColorSource::Default, 1));
+        assert!(graphics.decorate_window(&mut restored, rect, material(), 64));
+        assert!(Arc::ptr_eq(&icon, &restored.images[0]));
+        assert!(Arc::ptr_eq(&atlas, &restored.images[1]));
+        assert_eq!(
+            graphics
+                .shared
+                .state
+                .lock()
+                .unwrap()
+                .work
+                .decoration_rasters,
+            work.decoration_rasters
+        );
+
+        // Toggling back on is a preference, not fabricated capability evidence.
+        host.graphics = crate::GraphicsProbe::default();
+        graphics.prepare_with_decorations(&host, size, &[], &[material()]);
+        graphics.set_enabled(false);
+        graphics.set_enabled(true);
+        graphics.prepare_with_decorations(&host, size, &[], &[material()]);
+        let mut plain = crate::blank(size);
+        let original = plain.clone();
+        assert!(!graphics.place(&mut plain, 7, [0, 0], [0, 0], ColorSource::Default, 1));
+        assert!(!graphics.decorate_window(&mut plain, rect, material(), 64));
+        assert_eq!(plain, original);
+        assert!(!host.graphics.supported());
+        assert!(graphics.shared.state.lock().unwrap().desired.is_none());
+    }
+
+    #[test]
+    fn disabling_revokes_an_undrained_worker_publication() {
+        let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
+        let host = host();
+        graphics.prepare_with_decorations(&host, size(10), &[], &[material()]);
+        let mut poll = libc::pollfd {
+            fd: graphics.wake_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
+        assert!(graphics.shared.state.lock().unwrap().published.is_some());
+        graphics.set_enabled(false);
+        assert!(!graphics.drain().unwrap());
+        assert!(graphics.ready.is_empty());
+        assert!(graphics.decorations.is_empty());
+        graphics.set_enabled(true);
+        graphics.prepare_with_decorations(&host, size(10), &[], &[material()]);
+        prepared(&mut graphics);
+        assert!(!placed(&graphics, 10).images.is_empty());
+        assert_eq!(
+            graphics
+                .shared
+                .state
+                .lock()
+                .unwrap()
+                .work
+                .decoration_rasters,
+            1
+        );
+    }
+
+    #[test]
+    fn large_many_windows_share_sparse_atlas_and_screen_resize_is_ready_immediately() {
+        let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
+        let host = host();
+        let large = Size {
+            cols: 240,
+            rows: 72,
+            cell_width: 10,
+            cell_height: 20,
+        };
+        graphics.prepare_with_decorations(&host, large, &[], &[material()]);
+        prepared(&mut graphics);
+        let mut frame = crate::blank(large);
+        for index in 0..32 {
+            assert!(graphics.decorate_window(
+                &mut frame,
+                crate::Rect {
+                    x: index % 8 * 30,
+                    y: index / 8 * 18,
+                    width: 29,
+                    height: 17,
+                },
+                material(),
+                u32::from(index) * 8
+            ));
+        }
+        assert_eq!(frame.images.len(), 1);
+        let [width, height] = decoration::atlas_size(material(), [10, 20]).unwrap();
+        assert_eq!(frame.images[0].pixels.len(), (width * height * 4) as usize);
+        assert_eq!(frame.placements.len(), 32 * 8);
+        let original = Arc::clone(&frame.images[0]);
+        let smaller = Size {
+            cols: 120,
+            rows: 40,
+            ..large
+        };
+        graphics.prepare_with_decorations(&host, smaller, &[], &[material()]);
+        let mut resized = crate::blank(smaller);
+        assert!(graphics.decorate_window(
+            &mut resized,
+            crate::Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 40,
+            },
+            material(),
+            1
+        ));
+        assert!(Arc::ptr_eq(&original, &resized.images[0]));
+    }
+    #[test]
+    fn finite_guide_materials_are_prewarmed_and_duplicate_variants_are_not_admitted() {
+        let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
+        let host = host();
+        let size = Size {
+            cols: 80,
+            rows: 24,
+            ..size(10)
+        };
+        let pane = material();
+        let shadow = DecorationStyle {
+            kind: decoration::DecorationKind::Raised,
+            ..pane
+        };
+        let guide = |background| DecorationStyle {
+            kind: decoration::DecorationKind::RaisedSurface,
+            background,
+            ..shadow
+        };
+        let materials = [
+            pane,
+            shadow,
+            guide([30; 3]),
+            guide([30, 40, 90]),
+            guide([90, 80, 30]),
+        ];
+        graphics.prepare_with_decorations(&host, size, &[], &materials);
+        prepared(&mut graphics);
+        let generation = graphics.shared.generation.load(Ordering::Acquire);
+        let work = graphics
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .work;
+        assert_eq!(work.decoration_rasters, 5);
+        assert_eq!(work.decoration_entries, 5);
+        // Mode changes select already prepared materials; none schedules work.
+        for style in [materials[2], materials[3], materials[4], materials[2]] {
+            let mut frame = crate::graphics_frame(size);
+            assert!(graphics.decorate_window(
+                &mut frame,
+                crate::Rect {
+                    x: 4,
+                    y: 4,
+                    width: 30,
+                    height: 10
+                },
+                style,
+                0,
+            ));
+        }
+        graphics.prepare_with_decorations(&host, size, &[], &materials);
+        assert_eq!(
+            graphics.shared.generation.load(Ordering::Acquire),
+            generation
+        );
+        assert_eq!(
+            graphics
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .work,
+            work,
+        );
+
+        let mut deduplicated = SvgGraphics::new(ASSETS, 2, 1).unwrap();
+        let repeated = [pane, shadow, materials[2], materials[2], materials[2]];
+        deduplicated.prepare_with_decorations(&host, size, &[], &repeated);
+        prepared(&mut deduplicated);
+        let generation = deduplicated.shared.generation.load(Ordering::Acquire);
+        let work = deduplicated
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .work;
+        assert_eq!(work.decoration_rasters, 3);
+        assert_eq!(work.decoration_entries, 3);
+        deduplicated.prepare_with_decorations(&host, size, &[], &repeated[..3]);
+        assert_eq!(
+            deduplicated.shared.generation.load(Ordering::Acquire),
+            generation
+        );
+    }
+    #[test]
+    fn material_work_is_bounded_and_screen_resize_does_not_schedule_it() {
+        let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
+        let host = host();
+        let work = |graphics: &SvgGraphics| {
+            graphics
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .work
+        };
+        let size = Size {
+            cols: 120,
+            rows: 40,
+            ..size(10)
+        };
+        graphics.prepare_with_decorations(&host, size, &[], &[material()]);
+        prepared(&mut graphics);
+        let cold = work(&graphics);
+        assert_eq!(cold.decoration_rasters, 1);
+        assert_eq!(cold.decoration_hits, 0);
+        assert_eq!(cold.decoration_entries, 1);
+        let generation = graphics.shared.generation.load(Ordering::Acquire);
+        for cols in [80, 100, 120, 180, 240, 120] {
+            graphics.prepare_with_decorations(&host, Size { cols, ..size }, &[], &[material()]);
+        }
+        assert_eq!(
+            graphics.shared.generation.load(Ordering::Acquire),
+            generation
+        );
+        assert_eq!(work(&graphics), cold);
+
+        // A material revisit reuses pixels; a new material computes once.
+        let mut changed = material();
+        changed.surface = [40; 3];
+        graphics.prepare_with_decorations(&host, size, &[], &[changed]);
+        prepared(&mut graphics);
+        graphics.prepare_with_decorations(&host, size, &[], &[material()]);
+        prepared(&mut graphics);
+        assert_eq!(work(&graphics).decoration_rasters, 2);
+        assert_eq!(work(&graphics).decoration_hits, 1);
+
+        // More unique materials than the entry budget must evict, not grow.
+        for value in 50..70 {
+            changed.surface = [value; 3];
+            graphics.prepare_with_decorations(&host, size, &[], &[changed]);
+            prepared(&mut graphics);
+            let current = work(&graphics);
+            assert!(current.decoration_entries <= MAX_DECORATION_CACHE);
+            assert!(current.decoration_bytes <= MAX_DECORATION_BYTES);
+        }
+        let before = work(&graphics).decoration_rasters;
+        graphics.prepare_with_decorations(&host, size, &[], &[material()]);
+        prepared(&mut graphics);
+        assert_eq!(work(&graphics).decoration_rasters, before + 1);
+    }
+    #[test]
+    fn material_and_cell_changes_revoke_old_pixels_and_capability_loss_is_plain() {
+        let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
+        let mut host = host();
+        let size = Size {
+            cols: 12,
+            rows: 8,
+            cell_width: 10,
+            cell_height: 20,
+        };
+        let rect = crate::Rect {
+            x: 0,
+            y: 0,
+            width: 12,
+            height: 8,
+        };
+        let mut style = material();
+        graphics.prepare_with_decorations(&host, size, &[], &[style]);
+        prepared(&mut graphics);
+        let mut first = crate::blank(size);
+        assert!(graphics.decorate_window(&mut first, rect, style, 1));
+        style.surface = [210, 180, 160];
+        graphics.prepare_with_decorations(&host, size, &[], &[style]);
+        let mut pending = crate::blank(size);
+        assert!(!graphics.decorate_window(&mut pending, rect, style, 1));
+        prepared(&mut graphics);
+        assert!(graphics.decorate_window(&mut pending, rect, style, 1));
+        assert_ne!(first.images[0].key(), pending.images[0].key());
+        let resized = Size {
+            cell_width: 11,
+            ..size
+        };
+        graphics.prepare_with_decorations(&host, resized, &[], &[style]);
+        let mut frame = crate::blank(resized);
+        assert!(!graphics.decorate_window(&mut frame, rect, style, 1));
+        prepared(&mut graphics);
+        assert!(graphics.decorate_window(&mut frame, rect, style, 1));
+        host.graphics = crate::GraphicsProbe::default();
+        graphics.prepare_with_decorations(&host, resized, &[], &[style]);
+        let mut plain = crate::blank(resized);
+        let original = plain.clone();
+        assert!(!graphics.decorate_window(&mut plain, rect, style, 1));
+        assert_eq!(plain, original);
     }
 }

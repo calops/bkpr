@@ -37,14 +37,15 @@ fn length(rect: Rect, axis: Axis) -> u16 {
 }
 
 fn boundary(usable: u16, ratio: u16) -> u16 {
-    ((u32::from(usable) * u32::from(ratio)) / 1000).clamp(1, u32::from(usable - 1)) as u16
+    ((u32::from(usable) * u32::from(ratio)) / 1000).clamp(2, u32::from(usable - 2)) as u16
 }
 
-/// The ratio divides the usable cells after reserving one real divider cell.
+/// Adjacent frame rectangles overlap on one shared divider cell. Their inset
+/// native bodies remain disjoint; no extra gutter sits between the borders.
 /// Unrepresentable splits collapse to their first subtree in every consumer.
 pub(crate) fn partition(rect: Rect, axis: Axis, ratio: u16) -> Option<(Rect, Rect, Rect)> {
     let rect = visible_area(rect);
-    if rect.width == 0 || rect.height == 0 || length(rect, axis) < 3 {
+    if rect.width < 3 || rect.height < 3 || length(rect, axis) < 5 {
         return None;
     }
     let usable = length(rect, axis) - 1;
@@ -52,7 +53,7 @@ pub(crate) fn partition(rect: Rect, axis: Axis, ratio: u16) -> Option<(Rect, Rec
     Some(match axis {
         Axis::Horizontal => (
             Rect {
-                width: first,
+                width: first + 1,
                 ..rect
             },
             Rect {
@@ -61,14 +62,14 @@ pub(crate) fn partition(rect: Rect, axis: Axis, ratio: u16) -> Option<(Rect, Rec
                 ..rect
             },
             Rect {
-                x: rect.x + first + 1,
-                width: usable - first,
+                x: rect.x + first,
+                width: usable - first + 1,
                 ..rect
             },
         ),
         Axis::Vertical => (
             Rect {
-                height: first,
+                height: first + 1,
                 ..rect
             },
             Rect {
@@ -77,8 +78,8 @@ pub(crate) fn partition(rect: Rect, axis: Axis, ratio: u16) -> Option<(Rect, Rec
                 ..rect
             },
             Rect {
-                y: rect.y + first + 1,
-                height: usable - first,
+                y: rect.y + first,
+                height: usable - first + 1,
                 ..rect
             },
         ),
@@ -124,14 +125,13 @@ pub(crate) fn dividers(layout: Option<&LayoutNode>, area: Rect, out: &mut Vec<Sp
     }
 }
 
-// One column and a header plus one application row are useful leaf minima.
-// Nested splits include their own real divider. Saturation handles deep trees.
+// Reserve the client-selected frame and one application cell per leaf.
+// Adjacent subtrees share their border cell; saturation handles deep trees.
 fn minimum(layout: &LayoutNode, axis: Axis) -> u16 {
     match layout {
-        LayoutNode::Leaf { .. } => match axis {
-            Axis::Horizontal => 1,
-            Axis::Vertical => 2,
-        },
+        LayoutNode::Leaf { .. } => crate::appearance::PANE_BORDER
+            .saturating_mul(2)
+            .saturating_add(1),
         LayoutNode::Split {
             axis: split_axis,
             first,
@@ -141,7 +141,7 @@ fn minimum(layout: &LayoutNode, axis: Axis) -> u16 {
             let a = minimum(first, axis);
             let b = minimum(second, axis);
             if *split_axis == axis {
-                a.saturating_add(b).saturating_add(1)
+                a.saturating_add(b.saturating_sub(1))
             } else {
                 a.max(b)
             }
@@ -211,12 +211,12 @@ fn resize(
         return None;
     }
     let usable = length(visible_area(split.area), *axis) - 1;
-    let a = minimum(first, *axis);
-    let b = minimum(second, *axis);
+    let a = minimum(first, *axis).saturating_sub(1);
+    let b = minimum(second, *axis).saturating_sub(1);
     let (low, high) = if u32::from(a) + u32::from(b) <= u32::from(usable) {
         (a, usable - b)
     } else {
-        (1, usable - 1)
+        (2, usable - 2)
     };
     let current = boundary(usable, *ratio);
     if target == i32::from(current) {
@@ -231,12 +231,12 @@ fn resize(
     }
     // Work in native thousandths, not a transient cell-only layout. At very
     // large widths some cell positions cannot be represented by the protocol.
-    let min_ratio = if low == 1 {
+    let min_ratio = if low == 2 {
         1
     } else {
         ceil_ratio(u32::from(low), usable).max(1)
     };
-    let max_ratio = if high == usable - 1 {
+    let max_ratio = if high == usable - 2 {
         999
     } else {
         (ceil_ratio(u32::from(high) + 1, usable) - 1).min(999)
@@ -402,34 +402,31 @@ mod tests {
         result
     }
 
-    fn assert_coverage(layout: &LayoutNode, area: Rect) {
+    fn assert_native_ownership(layout: &LayoutNode, area: Rect) {
         let area = visible_area(area);
         let panes = projected(layout, area);
         let splits = boundaries(layout, area);
         let mut covered = HashSet::new();
-        for rect in panes
-            .iter()
-            .map(|(_, rect)| *rect)
-            .chain(splits.iter().map(|s| s.divider))
-        {
-            for y in rect.y..rect.y + rect.height {
-                for x in rect.x..rect.x + rect.width {
-                    assert!(area.contains(x, y), "projection escapes the layout area");
+        for (_, frame) in panes {
+            let body = crate::controller::content(frame);
+            for y in body.y..body.y + body.height {
+                for x in body.x..body.x + body.width {
                     assert!(
-                        covered.insert((x, y)),
-                        "pane or divider overlaps another projection"
+                        area.contains(x, y),
+                        "native projection escapes the layout area"
+                    );
+                    assert!(covered.insert((x, y)), "two applications own one cell");
+                    assert!(
+                        !splits.iter().any(|split| split.divider.contains(x, y)),
+                        "resize hit geometry covers native input"
                     );
                 }
             }
         }
-        assert_eq!(
-            covered.len(),
-            usize::from(area.width) * usize::from(area.height)
-        );
     }
 
     #[test]
-    fn pane_and_real_divider_cells_cover_nested_and_tiny_layouts_exactly_once() {
+    fn native_bodies_and_resize_hits_stay_disjoint_in_nested_and_tiny_layouts() {
         for tree in [
             nested(),
             split(Axis::Horizontal, 1, nested(), leaf("e")),
@@ -437,8 +434,26 @@ mod tests {
         ] {
             for width in 0..25 {
                 for height in 0..15 {
-                    assert_coverage(&tree, area(width, height));
+                    assert_native_ownership(&tree, area(width, height));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn both_split_orientations_have_one_shared_cell_between_native_bodies() {
+        for axis in [Axis::Horizontal, Axis::Vertical] {
+            for ratio in [1, 250, 500, 750, 999] {
+                let rect = area(80, 36);
+                let tree = split(axis, ratio, leaf("a"), leaf("b"));
+                let panes = projected(&tree, rect);
+                let a = crate::controller::content(panes[0].1);
+                let b = crate::controller::content(panes[1].1);
+                match axis {
+                    Axis::Horizontal => assert_eq!(a.x + a.width + 1, b.x),
+                    Axis::Vertical => assert_eq!(a.y + a.height + 1, b.y),
+                }
+                assert_native_ownership(&tree, rect);
             }
         }
     }
@@ -476,21 +491,20 @@ mod tests {
             boundaries(&right, rect)[0].divider.x,
             original[0].divider.x + 1
         );
-        assert_coverage(&right, rect);
+        assert_native_ownership(&right, rect);
     }
 
     #[test]
     fn pointer_native_ratio_round_trips_keep_exact_representable_boundaries() {
         for axis in [Axis::Horizontal, Axis::Vertical] {
-            for length in 6..80 {
+            for length in 7..80 {
                 let rect = match axis {
                     Axis::Horizontal => area(length, 8),
                     Axis::Vertical => area(8, length),
                 };
                 let tree = split(axis, 500, leaf("a"), leaf("b"));
                 let old = boundaries(&tree, rect).remove(0);
-                // Vertical leaves retain both header and content.
-                let low = if axis == Axis::Vertical { 2 } else { 1 };
+                let low = minimum(&leaf("a"), axis);
                 let high = length - 1 - low;
                 for target in low..=high {
                     let (x, y) = match axis {
@@ -505,7 +519,7 @@ mod tests {
                     let divider = boundaries(&persisted, rect).remove(0);
                     assert!(divider.divider.contains(x, y));
                     assert!(drag(&persisted, &divider, x, y).is_none());
-                    assert_coverage(&persisted, rect);
+                    assert_native_ownership(&persisted, rect);
                 }
             }
         }
@@ -513,24 +527,32 @@ mod tests {
 
     #[test]
     fn drag_and_large_nudges_clamp_to_useful_nested_subtree_minima() {
+        let assert_framed_cell = |pane: Rect, axis: Axis| {
+            let body = crate::controller::content(pane);
+            assert!(body.x > pane.x && body.y > pane.y);
+            assert!(body.x + body.width < pane.x + pane.width);
+            assert!(body.y + body.height < pane.y + pane.height);
+            assert!(body.width > 0 && body.height > 0);
+            assert_eq!(length(body, axis), 1);
+        };
         let rect = area(21, 15);
         let tree = nested();
         let root = boundaries(&tree, rect).remove(0);
         let left = drag(&tree, &root, 0, 0).unwrap();
         let panes = projected(&left, rect);
-        assert_eq!(panes[0].1.width, 1);
+        assert_framed_cell(panes[0].1, Axis::Horizontal);
         let end = nudge(&tree, rect, "a", Direction::Right, u16::MAX).unwrap();
         let panes = projected(&end, rect);
-        assert_eq!(panes[2].1.width, 1);
-        assert_eq!(panes[3].1.width, 1);
+        assert_framed_cell(panes[2].1, Axis::Horizontal);
+        assert_framed_cell(panes[3].1, Axis::Horizontal);
         assert!(nudge(&end, rect, "a", Direction::Right, 1).is_none());
         let top = nudge(&tree, rect, "a", Direction::Up, u16::MAX).unwrap();
-        assert_eq!(projected(&top, rect)[0].1.height, 2);
+        assert_framed_cell(projected(&top, rect)[0].1, Axis::Vertical);
         assert!(nudge(&top, rect, "b", Direction::Up, 1).is_none());
         let bottom = nudge(&tree, rect, "b", Direction::Down, u16::MAX).unwrap();
-        assert_eq!(projected(&bottom, rect)[1].1.height, 2);
+        assert_framed_cell(projected(&bottom, rect)[1].1, Axis::Vertical);
         assert!(nudge(&bottom, rect, "a", Direction::Down, 1).is_none());
-        assert_coverage(&end, rect);
+        assert_native_ownership(&end, rect);
     }
 
     #[test]
@@ -541,7 +563,7 @@ mod tests {
             split(Axis::Vertical, 500, leaf("a"), leaf("b")),
             leaf("hidden"),
         );
-        let rect = area(2, 12);
+        let rect = area(crate::appearance::PANE_BORDER * 2 + 1, 12);
         let splits = boundaries(&tree, rect);
         assert_eq!(splits.len(), 1);
         assert_eq!(splits[0].path, [false]);
@@ -556,7 +578,7 @@ mod tests {
         assert_eq!(boundaries(&moved, rect)[0].divider.y, rect.y + 8);
         assert!(nudge(&tree, rect, "hidden", Direction::Down, 1).is_none());
         assert!(nudge(&tree, rect, "a", Direction::Left, 1).is_none());
-        assert_coverage(&moved, rect);
+        assert_native_ownership(&moved, rect);
     }
 
     #[test]
@@ -606,12 +628,14 @@ mod tests {
                     height: u16::MAX,
                 };
                 let (a, divider, b) = partition(rect, axis, ratio).unwrap();
+                let a = crate::controller::content(a);
+                let b = crate::controller::content(b);
                 assert_eq!(
-                    u32::from(length(a, axis))
-                        + u32::from(length(divider, axis))
-                        + u32::from(length(b, axis)),
+                    u32::from(length(a, axis)) + u32::from(length(b, axis)) + 3,
                     u32::from(u16::MAX)
                 );
+                assert!(!divider.contains(a.x, a.y));
+                assert!(!divider.contains(b.x, b.y));
             }
         }
         assert!(
@@ -633,7 +657,7 @@ mod tests {
             width: 100,
             height: 100,
         };
-        assert_coverage(&nested(), rect);
+        assert_native_ownership(&nested(), rect);
         let rect = Rect {
             x: 0,
             y: 0,

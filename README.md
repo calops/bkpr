@@ -483,18 +483,44 @@ submissions retain their fields and diagnostics; an unknown outcome blocks blind
 resubmission. Modal targets stay bound to their original identities through
 background focus or registry changes.
 
+Unsubmitted forms and the finder cancel on an outside mouse press, consuming the
+whole gesture rather than clicking through to a pane. Outside wheel/motion and
+resize retain the draft. Escape restores the original client-local context.
+Pending or ambiguous submissions cannot be unsent; cancellation remains blocked.
+Focused overlays faint the underlying text without changing canonical pane
+styles or images. Passive cards and the key guide never take keyboard focus.
+
 Hovering or keyboard-selecting sidebar items opens passive, scrollable metadata.
 It uses supplied registry facts and already-held snapshots, never hidden view
 attachments or provider/filesystem work on the render path. Project data retains
 loading/error/stale labels, and contradictory foreground identities hide retired
-harness facts. Contextual hints use the same typed binding table as dispatch;
-the command prefix expands the guide when space permits.
+harness facts. Contextual hints always use a passive popup populated from the
+same effective bindings as dispatch. It stays left-anchored inside the sidebar,
+overflowing only when the visible content needs more width. Sidebar mode uses
+a blue tint; prefix, resize and history/search modes use a yellow tint.
+
+Complete key aliases share a content-sized gutter with word-wrapped descriptions.
+The whole visible table is centered when there is spare space; the gutter itself
+is not forced to the card midpoint. A hint is shown whole or omitted with an
+overflow indication, preserving lifecycle explanations. Keycap colors come from
+layout spans, not parsing rendered descriptions.
 
 Chrome follows each client's reported terminal foreground, background and ANSI
 palette. Confirmed `Tc`/`RGB` support plus observed foreground/background enables
-subdued RGB surfaces, readable muted text, selection shading and palette-derived
-accents. Sidebar, headers, popups, focused fields, hints and artwork share the
-framework theme; application pane styles are not themed.
+subdued RGB surfaces, muted text, selection shading and palette-derived
+accents. Sidebar, pane fallbacks, popups, focused fields, hints and artwork share
+Bkpr's client-owned style policy; canonical application styles are not themed.
+
+`Ctrl-b g` switches decorative chrome between fancy and rounded text rendering.
+This preference does not disable application-owned graphics or alter pane sizes.
+With confirmed graphics/color support and ready pane contours, the framework
+temporarily makes the host's default background match the sidebar matte while
+rendering native pane defaults in their original normal background. Logical
+color observations remain separate from that physical override. Fallback and
+detach restore the exact original host background.
+Ready graphical frame cells also use that normal pane background beneath the
+atlas. Its opaque outer mask supplies the sidebar matte, while the opened parts
+of horizontal border cells retain the pane color instead of exposing a dark strip.
 
 Supporting hosts notify live theme changes through mode 2031; Bkpr re-queries
 colors without polling and restores the original confirmed notification setting
@@ -502,14 +528,31 @@ on detach. Missing replies or unconfirmed truecolor retain native default colors
 ANSI accents, inverse selection and underlined hover instead of a guessed dark
 theme. Terminal names and RGB color replies alone do not establish truecolor.
 
-Reusable text surfaces, editing, window decoration, clipping, capability probes
-and SVG preparation belong to `bkpr-tui-framework`; Bkpr content, action semantics
-and artwork selection belong to `bkpr-client`. Confirmed Kitty graphics support
-and observed colors enable static bee/hive artwork, prepared off-thread and sent
-through the existing scene renderer. Other hosts retain readable `[]`/`<>`
-markers, fold/status glyphs and the same interactions. Pixel recessed/raised
-frames and decorative animation remain separate work; this is not general
-terminal-graphics acceptance.
+Reusable text surfaces, editing, overlay lifecycle, clipping, capability probes
+and graphics preparation belong to `bkpr-tui-framework`. `bkpr-client` chooses
+colors/palette recipes, shadow depth, border widths, artwork and overlay content.
+The sidebar is unboxed, normally 38 cells wide, with compact connected rows.
+Confirmed Kitty graphics support and observed colors enable recessed pane
+contours, raised popup shadows, beveled hint cards and bee/hive artwork through
+the existing scene renderer. Once a pane material is ready, its textual perimeter
+and title are omitted; application-owned status lines stay untouched. Other hosts
+retain rounded text borders, captions and `●`/`◌` markers.
+
+Normal-sized panes share a one-cell separator in both orientations and presentation
+modes, rather than reserving two borders plus another divider. PTY size, pointer
+coordinates and resize minima use that same content geometry. Unrepresentable
+splits display their first subtree without changing backend layouts or processes;
+expansion restores the hidden projections. Tiny panes retain a usable native cell.
+Sparse multi-cell corner/edge atlases retain the requested radius and blur without
+full-pane images. The worker prerenders them into a bounded 16-entry/8-MiB material
+cache; straight edges use single stretched placements, including representable
+clipped fragments, instead of per-cell textures. Live consumers hold shared asset
+references separately. Transparent graphics-only layers preserve native cells,
+cursor and hit testing; shadow pixels can shade edge content without changing
+canonical terminal state.
+Decorative animation and a command palette are outside the current main-parity pass.
+Forge/PR/CI card data and refresh still need a backend-owned contract; the
+frontend does not query providers or invent those facts.
 
 ### Workspace, window and pane controls
 

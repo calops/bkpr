@@ -2,7 +2,8 @@
 //! belong to the terminal UI framework; this wrapper owns only marker policy.
 use bkpr_protocol::{ColorSource, Frame, Size};
 use bkpr_tui_framework::{
-    ColorProbe,
+    ColorProbe, Rect,
+    decoration::{DecorationGeometry, DecorationStyle},
     graphics::{SvgAsset, SvgGraphics},
 };
 use std::{io, os::fd::RawFd};
@@ -27,14 +28,100 @@ static ASSETS: &[SvgAsset] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Artwork {
     Bee,
+    BeeHidden,
     Hive,
 }
 
-pub(crate) struct ChromeGraphics(SvgGraphics);
+type DecorationEvidence = (
+    bool,
+    Option<[u8; 3]>,
+    Option<[u8; 3]>,
+    u32,
+    u32,
+    Option<[u8; 3]>,
+    Option<[u8; 3]>,
+);
+
+#[derive(Default)]
+struct PaneGeometry {
+    cell: [u32; 2],
+    rects: Vec<Rect>,
+    placements: Vec<DecorationGeometry>,
+}
+
+impl PaneGeometry {
+    fn prepare(&mut self, size: Size, rects: &[(String, Rect)]) {
+        let cell = [size.cell_width, size.cell_height];
+        if self.cell == cell
+            && self.rects.len() == rects.len()
+            && self
+                .rects
+                .iter()
+                .zip(rects)
+                .all(|(old, (_, rect))| old == rect)
+        {
+            return;
+        }
+        self.cell = cell;
+        self.rects.clear();
+        self.rects.extend(rects.iter().map(|(_, rect)| *rect));
+        self.placements.clear();
+        let [cw, ch] = cell;
+        let excess = i64::from(ch.saturating_sub(cw));
+        for rect in &self.rects {
+            let left = u32::from(rect.x);
+            let top = u32::from(rect.y);
+            let right = left + u32::from(rect.width);
+            let bottom = top + u32::from(rect.height);
+            let mut shared = [false; 4];
+            for other in &self.rects {
+                if std::ptr::eq(rect, other) {
+                    continue;
+                }
+                let ol = u32::from(other.x);
+                let ot = u32::from(other.y);
+                let or = ol + u32::from(other.width);
+                let ob = ot + u32::from(other.height);
+                // Native split frames overlap by one cell. A corner-only
+                // contact does not own any part of the straight separator.
+                if bottom.min(ob).saturating_sub(top.max(ot)) > 1 {
+                    shared[0] |= or == left + 1;
+                    shared[2] |= ol + 1 == right;
+                }
+                if right.min(or).saturating_sub(left.max(ol)) > 1 {
+                    shared[1] |= ob == top + 1;
+                    shared[3] |= ot + 1 == bottom;
+                }
+            }
+            let [left, top, right, bottom] = [left * cw, top * ch, right * cw, bottom * ch];
+            self.placements.push(DecorationGeometry {
+                bounds_px: [
+                    i64::from(left),
+                    i64::from(top) - if shared[1] { (excess + 1) / 2 } else { excess },
+                    i64::from(right),
+                    i64::from(bottom) + if shared[3] { excess / 2 } else { excess },
+                ],
+                clip_px: [
+                    left + if shared[0] { cw / 2 } else { 0 },
+                    top + if shared[1] { ch / 2 } else { 0 },
+                    right - if shared[2] { cw - cw / 2 } else { 0 },
+                    bottom - if shared[3] { ch - ch / 2 } else { 0 },
+                ],
+            });
+        }
+    }
+}
+pub(crate) struct ChromeGraphics(
+    SvgGraphics,
+    Option<[DecorationStyle; 5]>,
+    Option<DecorationEvidence>,
+    PaneGeometry,
+);
 impl ChromeGraphics {
     pub(crate) fn new() -> io::Result<Self> {
         std::hint::black_box(NOTICES);
-        SvgGraphics::new(ASSETS, 2, 1).map(Self)
+        SvgGraphics::new(ASSETS, 2, 1)
+            .map(|graphics| Self(graphics, None, None, PaneGeometry::default()))
     }
     pub(crate) fn wake_fd(&self) -> RawFd {
         self.0.wake_fd()
@@ -42,8 +129,157 @@ impl ChromeGraphics {
     pub(crate) fn drain(&mut self) -> io::Result<bool> {
         self.0.drain()
     }
+    /// Select decorative presentation only; native pane images and actual host
+    /// capability evidence are independent. Call before preparing each frame.
+    pub(crate) fn set_enabled(&mut self, enabled: bool) -> bool {
+        self.0.set_enabled(enabled)
+    }
     pub(crate) fn prepare(&mut self, host: &ColorProbe, size: Size, sources: &[ColorSource]) {
-        self.0.prepare(host, size, sources);
+        if !self.0.is_enabled() {
+            return;
+        }
+        let evidence = (
+            host.truecolor,
+            host.foreground,
+            host.background,
+            size.cell_width,
+            size.cell_height,
+            host.palette.get(&3).copied(),
+            host.palette.get(&4).copied(),
+        );
+        if self.2 != Some(evidence) {
+            self.1 = crate::appearance::decoration_styles(host, size).map(|[pane, popup]| {
+                let guide = |accent| DecorationStyle {
+                    kind: bkpr_tui_framework::decoration::DecorationKind::RaisedSurface,
+                    background: crate::appearance::guide_background(host, accent)
+                        .unwrap_or(popup.background),
+                    lip_width_milli: (size.cell_width * 120).clamp(750, 2000),
+                    lip_highlight_milli: 240,
+                    lip_shade_milli: 240,
+                    ..popup
+                };
+                [pane, popup, guide(None), guide(Some(4)), guide(Some(3))]
+            });
+            self.2 = Some(evidence);
+        }
+        self.0.prepare_with_decorations(
+            host,
+            size,
+            sources,
+            self.1.as_ref().map_or(&[], |styles| styles.as_slice()),
+        );
+    }
+
+    /// Cache complete native split geometry; unchanged renders allocate nothing.
+    pub(crate) fn prepare_panes(&mut self, size: Size, rects: &[(String, Rect)]) {
+        if self.0.is_enabled() {
+            self.3.prepare(size, rects);
+        }
+    }
+
+    pub(crate) fn decorate_pane(
+        &self,
+        frame: &mut Frame,
+        rect: Rect,
+        index: usize,
+        base: u32,
+    ) -> bool {
+        self.3
+            .rects
+            .get(index)
+            .is_some_and(|cached| *cached == rect)
+            && self.3.placements.get(index).is_some_and(|geometry| {
+                self.decorate_window_with_geometry(frame, rect, false, base, &[], *geometry)
+            })
+    }
+    /// Add static material without changing text/cursor/native geometry.
+    /// Raised output needs a root-sized graphics-only frame for its outer halo.
+    /// Callers provide semantic title/caption cutouts and reserve 64 IDs.
+    /// A false result leaves their complete text-border fallback untouched.
+    pub(crate) fn decorate_window_in_clipped(
+        &self,
+        frame: &mut Frame,
+        rect: Rect,
+        raised: bool,
+        base: u32,
+        exclusions: &[Rect],
+    ) -> bool {
+        self.1.is_some_and(|styles| {
+            self.0.decorate_window_clipped(
+                frame,
+                rect,
+                styles[usize::from(raised)],
+                base,
+                exclusions,
+            )
+        })
+    }
+
+    /// Place a pane contour without moving its native content rectangle.
+    /// Pixel bounds translate cached curves; the clip owns shared separators.
+    pub(crate) fn decorate_window_with_geometry(
+        &self,
+        frame: &mut Frame,
+        rect: Rect,
+        raised: bool,
+        base: u32,
+        exclusions: &[Rect],
+        geometry: DecorationGeometry,
+    ) -> bool {
+        self.1.is_some_and(|styles| {
+            self.0.decorate_window_with_geometry(
+                frame,
+                rect,
+                styles[usize::from(raised)],
+                base,
+                exclusions,
+                geometry,
+            )
+        })
+    }
+
+    /// Paint main's rounded guide surface around its retained text body.
+    /// The logical outer cells remain available for overlay hit testing only.
+    pub(crate) fn decorate_guide(
+        &self,
+        frame: &mut Frame,
+        outer: Rect,
+        body: Rect,
+        base: u32,
+        accent: Option<u8>,
+    ) -> bool {
+        if !self.0.is_enabled() {
+            return false;
+        }
+        let Some(styles) = self.1 else {
+            return false;
+        };
+        let cw = frame.size.cell_width;
+        let ch = frame.size.cell_height;
+        let padding = cw.div_ceil(2).min(ch);
+        let mx = i64::from(2 * cw - padding);
+        let my = i64::from(ch - padding);
+        let geometry = DecorationGeometry {
+            bounds_px: [
+                i64::from(outer.x) * i64::from(cw) + mx,
+                i64::from(outer.y) * i64::from(ch) + my,
+                (i64::from(outer.x) + i64::from(outer.width)) * i64::from(cw) - mx,
+                (i64::from(outer.y) + i64::from(outer.height)) * i64::from(ch) - my,
+            ],
+            clip_px: [
+                0,
+                0,
+                u32::from(frame.size.cols) * cw,
+                u32::from(frame.size.rows) * ch,
+            ],
+        };
+        let index = match accent {
+            Some(4) => 3,
+            Some(3) => 4,
+            _ => 2,
+        };
+        self.0
+            .decorate_window_with_geometry(frame, outer, styles[index], base, &[body], geometry)
     }
 
     /// Call after fitting an existing two-cell decorative marker, never a label
@@ -75,8 +311,8 @@ impl ChromeGraphics {
             return false;
         }
         let marker = match artwork {
-            Artwork::Bee => ["<", ">"],
-            Artwork::Hive => ["[", "]"],
+            Artwork::Bee | Artwork::Hive => ["●", " "],
+            Artwork::BeeHidden => ["◌", " "],
         };
         if !cells
             .iter()
@@ -97,7 +333,7 @@ impl ChromeGraphics {
         }
         let Some(source) = source else { return false };
         let (id, x, offset_x) = match artwork {
-            Artwork::Bee => (1, i32::from(col), 0),
+            Artwork::Bee | Artwork::BeeHidden => (1, i32::from(col), 0),
             // MAIN positions the hive half a cell left into its tree gutter.
             Artwork::Hive => (2, i32::from(col) - 1, frame.size.cell_width / 2),
         };
@@ -122,6 +358,242 @@ impl ChromeGraphics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preference_toggle_restores_markers_and_disables_every_material_path() {
+        let mut host = ColorProbe::default();
+        let query = host.graphics.begin();
+        let query = std::str::from_utf8(&query).unwrap();
+        let id = query.split("i=").nth(1).unwrap().split(',').next().unwrap();
+        host.feed(format!("graphics;Gi={id};OK").as_bytes());
+        host.feed(b"10;rgb:ffff/ffff/ffff");
+        host.feed(b"11;rgb:2222/2222/2222");
+        host.truecolor = true;
+        let size = Size {
+            cols: 80,
+            rows: 24,
+            cell_width: 10,
+            cell_height: 20,
+        };
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
+        let geometry = DecorationGeometry {
+            bounds_px: [0, 0, 800, 480],
+            clip_px: [0, 0, 800, 480],
+        };
+        let guide = Rect {
+            x: 10,
+            y: 4,
+            width: 40,
+            height: 12,
+        };
+        let body = Rect {
+            x: 12,
+            y: 5,
+            width: 36,
+            height: 10,
+        };
+        let mut chrome = ChromeGraphics::new().unwrap();
+        let prepared = |chrome: &mut ChromeGraphics| {
+            let mut poll = libc::pollfd {
+                fd: chrome.wake_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
+            assert!(chrome.drain().unwrap());
+        };
+        chrome.prepare(&host, size, &[]);
+        chrome.prepare_panes(size, &[("pane".into(), rect)]);
+        prepared(&mut chrome);
+        let mut markers = Vec::new();
+        for artwork in [Artwork::Hive, Artwork::Bee, Artwork::BeeHidden] {
+            let mut frame = bkpr_tui_framework::blank(size);
+            let marker = if artwork == Artwork::BeeHidden {
+                "◌"
+            } else {
+                "●"
+            };
+            bkpr_tui_framework::text(&mut frame, 1, 1, &format!("{marker} label"), false);
+            let original = frame.clone();
+            assert!(chrome.decorate(&mut frame, artwork, 1, 1, Some(ColorSource::Default), 1));
+            let image = std::sync::Arc::clone(&frame.images[0]);
+            markers.push((artwork, frame, original, image));
+        }
+        let mut rich = bkpr_tui_framework::blank(size);
+        assert!(chrome.decorate_pane(&mut rich, rect, 0, 64));
+        for raised in [false, true] {
+            assert!(chrome.decorate_window_in_clipped(&mut rich, rect, raised, 128, &[]));
+            assert!(chrome.decorate_window_with_geometry(
+                &mut rich,
+                rect,
+                raised,
+                192,
+                &[],
+                geometry,
+            ));
+        }
+        for accent in [None, Some(4), Some(3)] {
+            assert!(chrome.decorate_guide(&mut rich, guide, body, 256, accent));
+        }
+
+        chrome.set_enabled(false);
+        chrome.prepare(&host, size, &[]);
+        chrome.prepare_panes(size, &[]);
+        for (artwork, frame, original, _) in &mut markers {
+            frame.images.clear();
+            frame.placements.clear();
+            assert!(!chrome.decorate(frame, *artwork, 1, 1, Some(ColorSource::Default), 1));
+            assert_eq!(frame, original);
+        }
+        let mut plain = bkpr_tui_framework::blank(size);
+        bkpr_tui_framework::text(&mut plain, 1, 1, "retained title and content", false);
+        let original = plain.clone();
+        assert!(!chrome.decorate_pane(&mut plain, rect, 0, 64));
+        for raised in [false, true] {
+            assert!(!chrome.decorate_window_in_clipped(&mut plain, rect, raised, 128, &[]));
+            assert!(!chrome.decorate_window_with_geometry(
+                &mut plain,
+                rect,
+                raised,
+                192,
+                &[],
+                geometry,
+            ));
+        }
+        for accent in [None, Some(4), Some(3)] {
+            assert!(!chrome.decorate_guide(&mut plain, guide, body, 256, accent));
+        }
+        assert_eq!(plain, original);
+        assert!(host.graphics.supported());
+
+        chrome.set_enabled(true);
+        chrome.prepare(&host, size, &[]);
+        prepared(&mut chrome);
+        for (artwork, frame, _, image) in &mut markers {
+            assert!(chrome.decorate(frame, *artwork, 1, 1, Some(ColorSource::Default), 1));
+            assert!(std::sync::Arc::ptr_eq(image, &frame.images[0]));
+        }
+        assert!(chrome.decorate_pane(&mut plain, rect, 0, 64));
+    }
+
+    #[test]
+    fn compact_geometry_caches_nested_t_neighbors_and_odd_pixel_ownership() {
+        let size = Size {
+            cols: 40,
+            rows: 24,
+            cell_width: 9,
+            cell_height: 20,
+        };
+        let rects = vec![
+            (
+                "left".into(),
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 21,
+                    height: 24,
+                },
+            ),
+            (
+                "upper".into(),
+                Rect {
+                    x: 20,
+                    y: 0,
+                    width: 20,
+                    height: 13,
+                },
+            ),
+            (
+                "lower".into(),
+                Rect {
+                    x: 20,
+                    y: 12,
+                    width: 20,
+                    height: 12,
+                },
+            ),
+        ];
+        let mut cache = PaneGeometry::default();
+        cache.prepare(size, &rects);
+        assert_eq!(
+            cache.placements,
+            [
+                DecorationGeometry {
+                    bounds_px: [0, -11, 189, 491],
+                    clip_px: [0, 0, 184, 480]
+                },
+                DecorationGeometry {
+                    bounds_px: [180, -11, 360, 265],
+                    clip_px: [184, 0, 360, 250]
+                },
+                DecorationGeometry {
+                    bounds_px: [180, 234, 360, 491],
+                    clip_px: [184, 250, 360, 480]
+                },
+            ]
+        );
+        let rect_storage = cache.rects.as_ptr();
+        let placement_storage = cache.placements.as_ptr();
+        cache.prepare(size, &rects);
+        assert_eq!(cache.rects.as_ptr(), rect_storage);
+        assert_eq!(cache.placements.as_ptr(), placement_storage);
+        // The fork saturates excess height: unusually wide cells never produce
+        // inverse contour translations or unsigned subtraction underflow.
+        cache.prepare(
+            Size {
+                cell_width: 20,
+                cell_height: 9,
+                ..size
+            },
+            &rects,
+        );
+        assert_eq!(cache.placements[1].bounds_px, [400, 0, 800, 117]);
+        assert_eq!(cache.placements[2].bounds_px, [400, 108, 800, 216]);
+    }
+
+    #[test]
+    fn corner_only_contacts_do_not_translate_or_clip_a_straight_edge() {
+        let size = Size {
+            cols: 20,
+            rows: 20,
+            cell_width: 9,
+            cell_height: 20,
+        };
+        let rects = vec![
+            (
+                "upper".into(),
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 10,
+                    height: 10,
+                },
+            ),
+            (
+                "corner".into(),
+                Rect {
+                    x: 9,
+                    y: 9,
+                    width: 10,
+                    height: 10,
+                },
+            ),
+        ];
+        let mut cache = PaneGeometry::default();
+        cache.prepare(size, &rects);
+        assert_eq!(
+            cache.placements[0],
+            DecorationGeometry {
+                bounds_px: [0, -11, 90, 211],
+                clip_px: [0, 0, 90, 200],
+            }
+        );
+    }
+
     #[test]
     fn unready_artwork_preserves_marker_label_and_cursor() {
         let chrome = ChromeGraphics::new().unwrap();
@@ -160,14 +632,14 @@ mod tests {
             cell_width: 10,
             cell_height: 20,
         });
-        bkpr_tui_framework::text(&mut frame, 0, 0, "▾ [] Workspace", false);
-        bkpr_tui_framework::text(&mut frame, 0, 1, "  ▾ ▪ Window", false);
-        bkpr_tui_framework::text(&mut frame, 0, 2, "    ● <> Terminal", false);
+        bkpr_tui_framework::text(&mut frame, 0, 0, " ● Workspace", false);
+        bkpr_tui_framework::text(&mut frame, 0, 1, "    ● Terminal", false);
+        bkpr_tui_framework::text(&mut frame, 0, 2, "    ◌ Hidden", false);
         let original = frame.clone();
         assert!(!chrome.decorate(
             &mut frame,
             Artwork::Hive,
-            2,
+            1,
             0,
             Some(ColorSource::Default),
             1
@@ -175,10 +647,18 @@ mod tests {
         assert!(!chrome.decorate(
             &mut frame,
             Artwork::Bee,
-            6,
-            2,
+            4,
+            1,
             Some(ColorSource::Default),
             2
+        ));
+        assert!(!chrome.decorate(
+            &mut frame,
+            Artwork::BeeHidden,
+            4,
+            2,
+            Some(ColorSource::Default),
+            3
         ));
         assert_eq!(frame, original);
     }

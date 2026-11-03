@@ -1140,7 +1140,7 @@ mod tests {
         ] {
             host.foreground = Some(foreground);
             host.background = Some(background);
-            assert!(theme.update(&host));
+            assert!(crate::appearance::update_theme(&mut theme, &host));
             let previous = surface.frame.rows[y].cells[x].style.background_source;
             finder.paint(&mut surface, size);
             finder.apply_theme(&mut surface, &theme);
