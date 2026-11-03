@@ -145,3 +145,59 @@ fn explicit_termination_does_not_type_eof_into_a_live_raw_child() {
         "termination must signal/reap, not inject a line and EOF"
     );
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn final_multibyte_screen_survives_partial_output_batch_at_process_exit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let expected = "PTY-TAIL-e\u{301}-👨‍👩‍👧‍👦";
+    let pane = Pane::spawn(SpawnSpec {
+        argv: vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!("printf '%65549s' ''; printf '\\033[2J\\033[H%s' '{expected}'"),
+        ],
+        home: home.path().into(),
+        cwd: home.path().into(),
+        size: Size {
+            cols: 80,
+            rows: 24,
+            cell_width: 8,
+            cell_height: 16,
+        },
+        isolated_process: false,
+        isolated_environment: true,
+    })
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut snapshot = loop {
+        let snapshot = pane.request(Request::Inspect).unwrap();
+        if snapshot["lifecycle"] == "exited" {
+            break snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "finite output child did not exit"
+        );
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(snapshot["exit_code"], 0);
+    let frame: Frame = serde_json::from_value(snapshot["frame"].take()).unwrap();
+    let lines: Vec<String> = frame
+        .rows
+        .into_iter()
+        .map(|row| {
+            let mut line: String = row.cells.iter().map(|cell| cell.text.as_str()).collect();
+            line.truncate(line.trim_end_matches(' ').len());
+            line
+        })
+        .collect();
+    let mut expected_lines = vec![String::new(); 24];
+    expected_lines[0] = expected.into();
+    assert_eq!(lines, expected_lines);
+}

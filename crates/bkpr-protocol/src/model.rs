@@ -1,3 +1,4 @@
+use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,7 +106,7 @@ pub struct Row {
 pub struct Cell {
     /// Renderable grapheme text. Engine-recognized Kitty graphics placeholders
     /// are empty: their resolved graphics are represented by frame placements.
-    pub text: String,
+    pub text: CompactString,
     pub width: u8,
     pub style: Style,
     pub hyperlink: Option<String>,

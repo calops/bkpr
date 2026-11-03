@@ -77,9 +77,9 @@ impl Resources {
                 }
                 // Native placements, not Unicode placeholders, are authoritative.
                 let text = if placeholders && graphemes.first() == Some(&'\u{10eeee}') {
-                    String::new()
+                    Default::default()
                 } else {
-                    graphemes.iter().collect()
+                    graphemes.iter().copied().collect()
                 };
                 let style = cell.style()?;
                 let foreground = rgb(cell.fg_color()?.unwrap_or(colors.foreground));

@@ -8,6 +8,11 @@
 * Use the stable launch-local MCP name `bkpr` for Claude, Codex and Omp instead of a launch-ID suffix. Keep authentication launch-scoped and persistent configuration untouched.
 * Preserve the active keyboard layout when decoding Kitty control keys instead of substituting the alternate PC-101 key. Fix AZERTY Ctrl-W becoming Ctrl-Z while ordinary text remains correct.
 
+### Performance
+
+* Keep short terminal-cell graphemes inline with `compact_str`, avoiding their individual text allocations during extraction, cloning and client scene expansion. Preserve arbitrary Unicode through heap fallback and the existing JSON wire format. Matched release benchmarks and remaining CPU gaps are recorded in the engine report; no frame cap, extra delay or slower recognition polling is introduced.
+* Cover final combining and long Unicode grapheme output after a partial-buffer native PTY exit with an actual lifecycle regression.
+
 ### Breaking branch replacement
 
 * `feat/pane-first-mux` replaces the previous runtime with seven focused crates: `bkpr`, `bkpr-client`, `bkpr-tui-framework`, `bkpr-server` (the `bkprd` executable), `bkpr-core`, `bkpr-protocol` and `bkpr-terminal-engine`. There is no legacy launcher, plugin, binary alias or compatibility track on this branch.
@@ -88,7 +93,7 @@
 * On cold named-session startup with current bootstrap argv, restore saved owned terminals in their original workspaces/windows, nested layouts and hidden membership. Start current shells in verified saved directories or resume verified active native conversations through fixed current-configuration adapters with fresh authority; never replay arbitrary old commands. Direct `bkprd` without argv stays headless, and live attachment never repeats restoration.
 * Add uppercase `Ctrl-b R` to confirm a fresh configured shell in an unavailable pane's selected-workspace position. Preserve the old record and other workspaces, use revision-guarded atomic replacement, keep failure/unknown outcomes honest and block read-only clients. Retained directories never silently fall back; confirmation offers an explicit current-directory choice. `Ctrl-b n` remains a new split. This does not restore processes, harness conversations or durable terminal history.
 * Paint bounded changed-cell spans rather than whole composed rows, avoiding redundant static sidebar output while preserving wide/combining text, styles, links, erasure, graphics and cursor behavior.
-* Keep sustained-animation CPU efficiency explicitly deferred; no frame throttling or fidelity reduction is introduced to conceal it.
+* Track sustained-animation CPU efficiency with matched release benchmarks. Inline cell storage reduces measured allocation cost, but the large Zellij gap remains open; no frame throttling or fidelity reduction is introduced to conceal it.
 
 ### Native scrollback navigation
 

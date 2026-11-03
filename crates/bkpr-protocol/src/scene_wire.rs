@@ -368,7 +368,7 @@ pub fn decode(value: Value) -> Result<DecodedScene> {
                 let hyperlink = link.map(|id| &scene.hyperlinks[id as usize]);
                 let mut push = |text: &str, width| {
                     cells.push(Cell {
-                        text: text.to_owned(),
+                        text: text.into(),
                         width,
                         style: style.clone(),
                         hyperlink: hyperlink.cloned(),

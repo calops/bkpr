@@ -227,7 +227,7 @@ Actual `cmatrix 2.0 -u 1` uses a 240×79 pane, three-second warmup and ten-secon
 
 The equal-outer-window control genuinely pins the old pane at 240×79 before enlarging its window, keeps its no-input/no-clipboard sizing lease alive and confirms actual consumer geometry. It also introduces blank padding and the old renderer's associated clear/reset behavior, so it is not a pure isolation of host raster size. It establishes that outer-window/projection geometry materially affects this software fixture; it does not prove that every cadence difference is caused by Kitty. Source burst rates stay near 89/s. Final new-client maximum sampled gaps were 35.38 and 35.20 ms; no supported capability or update fidelity was disabled to obtain them.
 
-The CPU-efficiency gap to Zellij remains explicitly deferred in TODO. The new UI has measurable larger-window presentation and two-process memory costs; there is no claim that the architecture cutover solved sustained-animation efficiency. Future profiling should separate native extraction, encoding, composition and physical drawing rather than silently throttle animation.
+At this checkpoint the CPU-efficiency gap to Zellij remained deferred. The architecture cutover did not solve sustained-animation efficiency; the later CPU-efficiency section records the subsequent diagnostic and optimization work without silently throttling animation.
 
 Evidence: `performance/editor/comparison-final.json`, content-addressed `*-candidate-bc750e1fcf1d/` runs, `performance/animation/comparison.json`, `performance/animation-equal-window/`, immutable old/full-UI binaries and `comparison-before-cell-spans.json` in both workload directories. Baselines remain SHA-256 `e75528a281d9e127e8a39dfaff96c9c3f04c7e6a2b3f2849cc6b507b92c97fb4`; earlier measured candidates are retained separately. No compilation or other owned heavy workload ran during performance captures.
 
@@ -1107,3 +1107,68 @@ uses `-noreset`, and replayed all four contexts.
 
 Provider forge/CI/ticket facts and stable backend project-color ordinals
 remain unavailable. This snapshot does not claim sidebar hover/color parity.
+
+## CPU-efficiency: measured inline cell storage
+
+The sustained-output CPU gap is real. The diagnostic-only evidence is in
+`target/smoke/cpu-diagnostics/findings.json`; optimization experiments, immutable
+release controls and acceptance receipts are in `target/smoke/cpu-optimization/`.
+The retained change replaces each `Cell.text` heap-backed `String` with the
+maintained `compact_str` crate's `CompactString`. On this x86-64 target it has the
+same 24-byte object size, keeps short UTF-8 text inline and spills longer grapheme
+clusters to the heap. There is no truncation, Unicode substitution, JSON-wire
+change, frame cap, added delay or slower process-recognition interval.
+
+Two separately controlled comparisons isolate the server and client effects.
+The server comparison uses the earlier identical frontend; the client comparison
+uses one captured newer frontend source tree and a fixed optimized server.
+Do not add the two reductions or interpret these as one cumulative old/new pair.
+Each row averages two unprofiled release runs, with the same 240×79 native pane
+and exact offered source bytes/deadlines. CPU sums only mux processes; 100% is
+one logical CPU.
+
+| Changed component | Workload | Control CPU | Inline CPU | Matched Zellij CPU |
+| --- | --- | ---: | ---: | ---: |
+| Server, earlier frontend | Dense redraws | 33.34% | 27.25% | 12.21% |
+| Server, earlier frontend | Recorded `cmatrix` replay | 151.69% | 148.13% | 13.40% |
+| Client, captured newer frontend and fixed inline server | Dense redraws | 30.62% | 27.26% | 12.05% |
+| Client, captured newer frontend and fixed inline server | Recorded `cmatrix` replay | 151.49% | 144.98% | 14.30% |
+
+Client controls are SHA-256 `4e67c4fc2d920e83469cdcf5449a1f0c010d9fded82abf582ad6ab2d4d22990a`
+(heap) and `b681c4420923d7d90e93c186bd500bc23a02bcc20e1fafe9699617f033218f71`
+(inline); both use server `969e57a7a4608ec6d0cfbb70ace42121d4174589574f0b0f774d3a104d8e9072`.
+`client-control-builds.json` records the captured source identities and protected
+link receipts. All four pre-existing public debug/release binaries remained
+unchanged. The source capture predates a connected-popup-only frontend correction;
+these CPU cases never open a popup, and both controls use identical captured UI.
+
+The dense source offers 300 frames at 30 Hz; the replay preserves the original
+recording's byte stream and deadlines rather than generating new random matrix
+output. All twelve final client/control cases passed exact complete-source,
+native geometry, final full-grid and exact-birth cleanup checks. These are CPU
+measurements, not physical-terminal FPS, pixel parity for every intermediate
+frame or proof of equal presentation cadence. Products use CPUs 8–15, software
+rendering 16–23 and observers 24–27; CPU affinity is not exclusive reservation.
+No owned compilation or other heavy fixture ran during the measurements.
+
+The actual-PTY EOF checks cover 16,383, 16,384, 16,385 and 65,549-byte prefixes
+followed by a final Unicode screen, including combining marks and a grapheme
+longer than the inline capacity. All final complete frames matched before and
+after the retained change. The permanent lifecycle regression checks final
+Unicode output after partial-buffer termination, not storage representation.
+The coordinated workspace receipt in `target/smoke/sidebar-popups/workspace-checks.log`
+includes that regression, 669 top-level passing tests and 14 explicit ignored
+fixtures; strict all-target Clippy and rustfmt also passed.
+
+Rejected experiments remain explicit: moving the scene JSON subtree reduced
+client work but increased backend publications and total CPU; opportunistic
+already-available PTY read batching did not improve total CPU; reusable procstat
+buffers with the unchanged recognition interval did not reduce idle CPU. None
+of these candidates is retained. Their individual receipts remain in
+`scene-move-experiment.json`, `reader-experiment.json` and
+`idle-buffer-experiment.json`.
+
+Animation still costs about ten times the matched Zellij control. Generic scene
+JSON materialization/re-decoding, allocation, full-grid extraction and
+connection/thread churn remain candidates; host-wide process sampling remains a
+separate idle cost. This is measurable progress, not near-Zellij acceptance.
