@@ -37,6 +37,17 @@ fn configure(registry: &Registry, root: &Path) -> PathBuf {
         .unwrap();
     executable
 }
+fn execution_pid(registry: &Registry, pane_id: &str) -> u64 {
+    send(
+        registry,
+        Operation::Pane {
+            pane_id: pane_id.into(),
+            request: PaneRequest::Inspect,
+        },
+    )["pid"]
+        .as_u64()
+        .unwrap()
+}
 
 #[test]
 fn cold_restore_keeps_nested_layout_hidden_ownership_names_and_excludes_receipts() {
@@ -114,12 +125,17 @@ fn cold_restore_keeps_nested_layout_hidden_ownership_names_and_excludes_receipts
             .count(),
         5
     );
-    let durable_before = fs::read(root.path().join("registry.json")).unwrap();
+    let executions: Vec<_> = after
+        .panes
+        .iter()
+        .filter(|pane| pane.status == PaneStatus::Running)
+        .map(|pane| (pane.id.clone(), execution_pid(&registry, &pane.id)))
+        .collect();
     registry.bootstrap(sentinel_spec(&caller)).unwrap();
-    assert_eq!(
-        fs::read(root.path().join("registry.json")).unwrap(),
-        durable_before
-    );
+    for (pane_id, pid) in executions {
+        assert_eq!(execution_pid(&registry, &pane_id), pid);
+    }
+    assert!(!caller.exists());
     registry.shutdown().unwrap();
 }
 
@@ -191,11 +207,17 @@ fn partial_missing_cwd_and_unbound_native_refusal_preserve_original_intent_and_l
     assert_eq!(recovery.status, RecoveryStatus::Recoverable);
     assert!(recovery.reason.unwrap().contains("before verified binding"));
     // Repeated bootstrap does not replay an ambiguous native attempt or missing CWD.
-    let before = registry.snapshot().unwrap().revision;
+    let executions = [
+        (&native, execution_pid(registry, &native)),
+        (&shell, execution_pid(registry, &shell)),
+    ];
     registry
         .bootstrap(sentinel_spec(&fixture.home("caller")))
         .unwrap();
-    assert_eq!(registry.snapshot().unwrap().revision, before);
+    for (pane_id, pid) in executions {
+        assert_eq!(execution_pid(registry, pane_id), pid);
+    }
+    assert!(!missing_home.exists());
 }
 
 #[test]
