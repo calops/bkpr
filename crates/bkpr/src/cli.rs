@@ -74,7 +74,16 @@ pub fn command() -> Command {
         .subcommand(
             Command::new("stop").about("Stop only the selected session and its pane processes"),
         )
-        .subcommand(Command::new("context").about("Read pane context without starting a daemon"))
+        .subcommand(
+            Command::new("context")
+                .about("Read live pane identity and labels without starting a daemon")
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .action(ArgAction::SetTrue)
+                        .help("Emit compact machine-readable JSON instead of indented JSON"),
+                ),
+        )
         .subcommand(
             Command::new("resume")
                 .about("List saved conversations read-only; --pane ID explicitly resumes one using current native configuration"),
@@ -116,6 +125,13 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches> {
             .any(|key| matches.contains_id(key))
     {
         bail!("resume accepts only an exact --pane ID and session target options");
+    }
+    if name == "context"
+        && ["view", "cols", "rows", "cell-width", "cell-height"]
+            .iter()
+            .any(|key| matches.contains_id(key))
+    {
+        bail!("context does not accept view or terminal geometry options");
     }
     if name == "list"
         && ["session", "socket", "state-root"]
@@ -174,6 +190,9 @@ mod tests {
         assert!(parse(args(&["bkpr", "context", "-d"])).is_err());
         assert!(parse(args(&["bkpr", "list", "-s", "a"])).is_err());
         assert!(parse(args(&["bkpr", "stop", "--home", "/tmp/home"])).is_err());
+        assert!(parse(args(&["bkpr", "context", "--view", "v"])).is_err());
+        assert!(parse(args(&["bkpr", "context", "--cols", "80"])).is_err());
+        assert!(parse(args(&["bkpr", "resume", "--json"])).is_err());
     }
 
     #[test]

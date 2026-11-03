@@ -1,6 +1,8 @@
 //! Canonical terminal scenes and versioned backend registry protocol.
 mod agent;
 pub use agent::*;
+mod context;
+pub use context::*;
 mod harness;
 pub use harness::*;
 mod model;

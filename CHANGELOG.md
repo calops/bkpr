@@ -22,6 +22,12 @@
 * Bind managed views, queued native callbacks, device grants and sizing to revocable client authority. Retire it on EOF, owner exit or detach, including fork-inherited lifetime sockets. Inject trusted logical session ID/name snapshots before pane exec.
 * Move daemon bootstrap out of the terminal-client library into the launcher. Keep headless tools nonbootstrapping, separate lifetime/watch/input admission, and keep process/CWD scans off managed per-key authentication.
 
+### Native pane context
+
+* Inject canonical immutable session, pane and workspace identities before every native exec. Reserve automatic workspace names before process startup, include pending names in metadata-only creation and release failed reservations without blocking unrelated workspaces.
+* Replace the old whole-registry context forwarding helper with typed live `context` queries. Default selection verifies the caller's process birth, ancestry and controlling PTY; explicit `--pane` selects exact same-user live metadata. Add compact `--json`, keeping default output indented and headless.
+* Read current labels and execution membership without trusting inherited names, client focus or borrowed projections. Reject stopped/closing/foreign/nested-PTY contexts; retain immutable old process snapshots after rename or membership changes. No native settings, input/view authority, persisted credentials or new dependencies are introduced.
+
 ### Native SSH-agent forwarding
 
 * Give ordinary managed panes a stable daemon-owned agent socket. Select the latest live activated attachment, including explicit absence; registration and unselected detach do not reroute signing. Retain the listener at zero clients and fall back only when the selected attachment retires.

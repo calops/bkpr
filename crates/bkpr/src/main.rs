@@ -1,4 +1,5 @@
 mod cli;
+mod context;
 mod harness;
 mod recovery;
 mod session;
@@ -16,7 +17,7 @@ const HELP: &str = r#"Bkpr — persistent named pane workspaces
   bkpr list
   bkpr stop [-s NAME | --socket PATH]
   bkpr resume [-s NAME | --socket PATH] [--pane PANE_ID]
-  bkpr context [-s NAME | --socket PATH]
+  bkpr context [-s NAME | --socket PATH] [--pane PANE_ID] [--json]
   bkpr request [-s NAME | --socket PATH] 'VERSIONED_TYPED_JSON_REQUEST'
   bkpr keyboard --socket PATH --pane PANE_ID --view VIEW_ID '[PHYSICAL_BYTES]'
   bkpr run HARNESS [--] ARGS...
@@ -35,6 +36,8 @@ Utilities do not initialize the TUI or automatically start a daemon.
 `resume` lists saved native conversations read-only; --pane selects one exact ID.
 Resume uses current native configuration, not saved argv/settings; process start
 is pending authenticated conversation binding, not proof the conversation loaded.
+`context` reads current execution membership from the caller's verified native PTY,
+not inherited labels or client focus. Outside a pane, select an exact --pane ID.
 `run` preserves native arguments and captures supported interactive harnesses in
 an authenticated Bkpr pane. Recognized generic harnesses run without capture.
 `install agy` explicitly registers the launch-scoped context/capture MCP server.
@@ -109,11 +112,14 @@ fn main() -> Result<()> {
         }
         "context" => {
             session::validate_target(&paths)?;
-            println!(
-                "{}",
-                serde_json::to_string(&bkpr_client::context(&paths.socket)?)?
-            );
-            Ok(())
+            context::execute(
+                &paths.socket,
+                matches.get_one::<String>("pane").cloned(),
+                matches
+                    .subcommand_matches("context")
+                    .context("missing context command arguments")?
+                    .get_flag("json"),
+            )
         }
         "stop" => {
             session::validate_target(&paths)?;

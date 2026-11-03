@@ -3,6 +3,7 @@
 use crate::{Pane, SpawnSpec};
 mod agents;
 mod capture;
+mod context;
 mod project;
 mod recovery;
 pub(crate) mod sessions;
@@ -87,6 +88,7 @@ struct State {
     live: BTreeMap<String, Pane>,
     spawning: usize,
     spawn_workspaces: BTreeSet<String>,
+    spawn_workspace_names: BTreeMap<String, String>,
     closing_workspaces: BTreeSet<String>,
     closing_panes: BTreeSet<String>,
     closing_document_panes: BTreeSet<String>,
@@ -310,6 +312,7 @@ impl Drop for SpawnReservation {
         }
         if let Some(workspace_id) = &self.workspace_id {
             state.spawn_workspaces.remove(workspace_id);
+            state.spawn_workspace_names.remove(workspace_id);
         }
         self.inner.changed.notify_all();
         drop(state);
@@ -429,6 +432,7 @@ impl Registry {
                     live: BTreeMap::new(),
                     spawning: 0,
                     spawn_workspaces: BTreeSet::new(),
+                    spawn_workspace_names: BTreeMap::new(),
                     closing_workspaces: BTreeSet::new(),
                     closing_panes: BTreeSet::new(),
                     closing_document_panes: BTreeSet::new(),
@@ -556,6 +560,12 @@ impl Registry {
                 bail!("client operations require authenticated attachment transport")
             }
             Operation::Inspect => Ok(json!({"registry":self.snapshot()?})),
+            Operation::Context {
+                pane_id: Some(pane_id),
+            } => self.pane_context(&pane_id),
+            Operation::Context { pane_id: None } => {
+                bail!("automatic pane context requires OS-authenticated transport")
+            }
             Operation::RecoveryList => self.recovery_list(),
             Operation::PaneResume { pane_id, expected } => self.resume(&pane_id, expected),
             Operation::HarnessBegin { .. }
@@ -607,7 +617,6 @@ impl Registry {
                         .iter()
                         .filter(|id| !r.workspaces.iter().any(|w| &w.id == *id))
                         .count();
-                    drop(state);
                     ensure!(
                         r.workspaces.len() + pending < MAX_WORKSPACES,
                         "workspace limit"
@@ -615,8 +624,12 @@ impl Registry {
                     let name = available_name(
                         name.as_deref(),
                         "Workspace",
-                        r.workspaces.iter().map(|w| w.name.as_str()),
+                        r.workspaces
+                            .iter()
+                            .map(|w| w.name.as_str())
+                            .chain(state.spawn_workspace_names.values().map(String::as_str)),
                     )?;
+                    drop(state);
                     r.workspaces.push(Workspace {
                         id: id.clone(),
                         name,
@@ -852,7 +865,7 @@ impl Registry {
     }
     fn spawn_inner(
         &self,
-        target: SpawnTarget,
+        mut target: SpawnTarget,
         spec: PaneSpawnSpec,
         resume: Option<recovery::ResumeAttempt>,
         origin: Option<(&crate::harness::Launch, &crate::harness::Peer)>,
@@ -892,7 +905,7 @@ impl Registry {
         if let Some((launch, peer)) = origin {
             crate::harness::validate_callback(peer, launch)?;
         }
-        {
+        let workspace = {
             let _transaction = self.inner.transaction.lock().unwrap();
             if let Some((launch, _)) = origin {
                 self.authorize_resume_origin(launch)?;
@@ -937,16 +950,62 @@ impl Registry {
             if let Some(workspace_id) = &workspace_id {
                 workspace_available(&state, workspace_id)?;
             }
+            // Resolve automatic labels once, including in-flight workspaces.
+            // Only this short reservation transaction owns name allocation.
+            let pending_name = if let SpawnTarget::CreateWorkspace {
+                name, bootstrap, ..
+            } = &mut target
+            {
+                let resolved = available_name(
+                    name.as_deref(),
+                    if *bootstrap { "Main" } else { "Workspace" },
+                    state
+                        .record
+                        .registry
+                        .workspaces
+                        .iter()
+                        .map(|w| w.name.as_str())
+                        .chain(state.spawn_workspace_names.values().map(String::as_str)),
+                )?;
+                *name = Some(resolved.clone());
+                Some(resolved)
+            } else {
+                None
+            };
+            let workspace = workspace_id
+                .as_ref()
+                .map(|id| -> Result<_> {
+                    let name = match &pending_name {
+                        Some(name) => name.clone(),
+                        None => state
+                            .record
+                            .registry
+                            .workspaces
+                            .iter()
+                            .find(|w| &w.id == id)
+                            .context("unknown workspace")?
+                            .name
+                            .clone(),
+                    };
+                    Ok((id.clone(), name))
+                })
+                .transpose()?;
             // Validate the exact layout and revisions before argv can execute.
             spawn_record(state.record.clone(), info.clone(), &target)?;
             if let Some(workspace_id) = &workspace_id {
                 state.spawn_workspaces.insert(workspace_id.clone());
+                if let Some(name) = pending_name {
+                    state
+                        .spawn_workspace_names
+                        .insert(workspace_id.clone(), name);
+                }
             }
             if let Some(resume) = &resume {
                 state.resuming.insert(id.clone(), resume.clone());
             }
             state.spawning += 1;
-        }
+            workspace
+        };
         let mut reservation = SpawnReservation {
             inner: self.inner.clone(),
             workspace_id: workspace_id.clone(),
@@ -992,10 +1051,13 @@ impl Registry {
             self.inner.view_budget.clone(),
             environment,
             Some(self.inner.status_wake.clone()),
-            Some((
-                self.inner.session.session_id.clone(),
-                self.inner.session.name.clone(),
-            )),
+            Some(crate::SpawnContext {
+                session: (
+                    self.inner.session.session_id.clone(),
+                    self.inner.session.name.clone(),
+                ),
+                workspace,
+            }),
             ssh_agent_socket,
         );
         let pane = spawned?;
@@ -1563,18 +1625,10 @@ fn remove_layout_pane(layout: LayoutNode, pane_id: &str) -> Option<LayoutNode> {
 }
 fn spawn_record(mut next: Record, info: PaneInfo, target: &SpawnTarget) -> Result<Record> {
     if let SpawnTarget::CreateWorkspace {
-        workspace_id,
-        name,
-        bootstrap,
-        ..
+        workspace_id, name, ..
     } = target
     {
-        let base = if *bootstrap { "Main" } else { "Workspace" };
-        let name = available_name(
-            name.as_deref(),
-            base,
-            next.registry.workspaces.iter().map(|w| w.name.as_str()),
-        )?;
+        let name = name.clone().context("workspace name was not reserved")?;
         next.registry.workspaces.push(Workspace {
             id: workspace_id.clone(),
             name,

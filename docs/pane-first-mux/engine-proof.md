@@ -744,3 +744,49 @@ acceptance gates. This does not implement a frontend recovery picker, process
 resurrection, persisted terminal contents, remote endpoints or sustained-animation
 CPU-efficiency improvements.
 
+## Native pane context
+
+The prior native executable reproduced both gaps in
+`target/smoke/pane-context/before-1293292917934274/result.json`: session/pane
+snapshots were present but both workspace variables were empty, while an outside
+`context` call returned the entire registry rather than a verified live pane.
+
+The replacement shares one canonical pre-exec context across bootstrap,
+workspace/window creation, append, reopen and native recovery. Pending automatic
+workspace names are reserved before exec and also excluded from metadata-only
+automatic naming; explicit duplicate labels remain allowed. Session/pane and
+optional workspace environment values are immutable process snapshots, not
+authority. Typed live context instead verifies the OS peer's birth, ancestry and
+controlling PTY, revalidates the runtime and reads current canonical labels.
+Bounded startup readiness uses existing spawning state/Condvar, not polling or
+an extra context service. The launcher now owns presentation; the obsolete
+whole-registry frontend helper is removed.
+
+Evidence is `target/smoke/pane-context/{acceptance.json,workspace-checks.log,controllers.zip}`.
+The immutable **debug** client/utility is `bin/bkpr` SHA-256
+`087f18a38081f158ac29687fe606377d7c9f0ee50aeb47c063c101113493a489`;
+the daemon is `bin/bkprd`
+`c83bc667e895f5f70155911f62dd6c757f308eb9e669bf4dc09b8b03a5dea4f0`.
+The protected incremental link receipt is
+`protected-1293659472242395/result.json`; public outputs are preserved during
+that link. No release build, renderer comparison or throughput claim is made.
+
+`native-1293758818268033` executes actual native shells and `bkpr context --json`
+against private daemon/HOME/XDG roots. Immediate child context succeeds before
+spawn publication; snapshots match canonical IDs and Unicode labels. Renaming
+workspace/window/pane changes live query labels while the running shell's
+original environment stays unchanged. Spoofed inherited pane IDs are ignored.
+Hidden layouts and a second client's borrowed projection retain execution
+membership. A nested PTY and an outside automatic caller fail closed; explicit
+standalone context is unassigned, and terminated context is unavailable.
+Concurrent native and metadata-only auto-named creation yields distinct
+canonical names that match the actual children. Exact-birth cleanup tracks real
+descendants and reports zero survivors.
+
+Coordinated checks pass **581 top-level tests**, with twelve ignored subprocess
+fixtures, global formatting and strict workspace all-target Clippy. Static
+reviews of name-reservation lifecycle and peer/context authority found no
+concrete defects. Native proof is Linux-only; supported-platform acceptance
+elsewhere remains unverified. This does not add cross-workspace execution moves,
+remote endpoints, agent permissions, a recovery picker or CPU-efficiency work.
+

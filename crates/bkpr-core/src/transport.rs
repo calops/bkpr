@@ -304,7 +304,7 @@ impl BoundSocket {
                             Operation::Client { authority, request: operation } => {
                                 registry.client_request(authority, *operation, &stream)?
                             }
-                            operation @ (Operation::HarnessBegin { .. } | Operation::HarnessEvent { .. }
+                            operation @ (Operation::Context { .. } | Operation::HarnessBegin { .. } | Operation::HarnessEvent { .. }
                             | Operation::HarnessContext { .. } | Operation::Agent { .. }) => {
                                 let peer = authenticated_peer(&stream)?;
                                 registry.request_authenticated_cancellable(Request::new(operation), &peer, &|| peer_connected(&stream))?

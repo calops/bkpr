@@ -167,13 +167,51 @@ Client registration keeps a dedicated lifetime connection. Takeover, disconnect
 or owner-process exit revokes managed views and pending authority without
 requiring another client to acknowledge. Credentials are ephemeral, process-bound
 and never written to pane environments or session records. Ordinary pane execs
-receive immutable `BKPR_SESSION_ID` and `BKPR_SESSION_NAME` snapshots. On Linux,
-managed clients require kernel `SO_PEERPIDFD` support and fail before takeover
-when that prerequisite is unavailable.
+receive immutable canonical session/pane/workspace snapshots described below.
+On Linux, managed clients require kernel `SO_PEERPIDFD` support and fail before
+takeover when that prerequisite is unavailable.
 
 Client admission is bounded to 32 per daemon; views to 128 per daemon and 32 per
 pane. Lifetime connections, pane waits, registry watchers and controls have
 separate capacity, so admitted waiting views do not consume input/control slots.
+
+### Pane context
+
+Every native pane exec receives `BKPR_SESSION_ID`, `BKPR_SESSION_NAME` and
+`BKPR_PANE_ID`. Panes with execution-workspace membership also receive
+`BKPR_WORKSPACE_ID` and `BKPR_WORKSPACE_NAME`; standalone panes leave that pair
+unset. These are immutable process snapshots, not credentials. Names are
+resolved before exec, including concurrent automatically named workspaces.
+Parent Bkpr/multiplexer context is removed before the new binding is injected.
+
+Read the current labels and execution membership instead of relying on old
+environment values after a rename or layout change:
+
+```sh
+# Inside the actual native pane:
+bkpr context --json
+
+# Outside a pane, select an exact live pane in the chosen session:
+bkpr --session work context --pane PANE_ID --json
+```
+
+The default output is indented JSON; `--json` emits compact JSON. The response
+contains logical session/daemon identities, pane ID/title, current workspace and
+window IDs/names, and registry revision. It does not include native agent
+credentials, terminal contents or client focus.
+
+Automatic selection verifies the caller's process birth, native ancestry and
+controlling PTY. Same-PTY background jobs work; stale environment IDs, an outer
+pane inherited by a nested PTY, and outside callers do not select a pane.
+Hidden or borrowed projections do not change canonical execution membership.
+Stopped/closing/unknown executions are unavailable, not guessed from history.
+Use the existing versioned `request`/`inspect` API for the whole registry.
+
+Context queries remain headless and never start a daemon. Existing processes
+keep their old environment; existing daemons keep their old code. Use a fresh
+session name or explicitly restart the daemon to exercise the new exec/context
+behavior. Linux runtime evidence and platform limits are recorded in the
+[engine report](docs/pane-first-mux/engine-proof.md#native-pane-context).
 
 ### SSH agent forwarding
 

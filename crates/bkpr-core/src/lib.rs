@@ -245,6 +245,7 @@ struct Shared {
     root: Mutex<Option<harness_process::Process>>,
     spawn_environment: Option<harness::SpawnEnvironment>,
     session: Option<(String, String)>,
+    workspace: Option<(String, String)>,
     ssh_agent_socket: Option<PathBuf>,
     status_reset: AtomicBool,
     status_dirty: AtomicBool,
@@ -273,6 +274,10 @@ pub struct SpawnSpec {
     pub cwd: PathBuf,
     pub isolated_environment: bool,
 }
+struct SpawnContext {
+    session: (String, String),
+    workspace: Option<(String, String)>,
+}
 impl Pane {
     pub fn spawn(spec: SpawnSpec) -> Result<Self> {
         Self::spawn_with_id(
@@ -291,7 +296,7 @@ impl Pane {
         view_budget: Arc<authority::ViewBudget>,
         spawn_environment: Option<harness::SpawnEnvironment>,
         status_wake: Option<crossbeam_channel::Sender<()>>,
-        session: Option<(String, String)>,
+        context: Option<SpawnContext>,
         ssh_agent_socket: Option<PathBuf>,
     ) -> Result<Self> {
         valid_size(spec.size)?;
@@ -310,6 +315,10 @@ impl Pane {
         if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 {
             return Err(std::io::Error::last_os_error().into());
         }
+        let (session, workspace) = match context {
+            Some(context) => (Some(context.session), context.workspace),
+            None => (None, None),
+        };
         let (resize_wake, resize_events) = crossbeam_channel::bounded(1);
         let shared = Arc::new(Shared {
             authority: Mutex::new(Authority::with_budget(view_budget)),
@@ -332,6 +341,7 @@ impl Pane {
             root: Mutex::new(None),
             spawn_environment,
             session,
+            workspace,
             ssh_agent_socket,
             status_reset: AtomicBool::new(false),
             status_dirty: AtomicBool::new(false),
@@ -1311,6 +1321,10 @@ fn run_pane(
             cmd.env("BKPR_SESSION_ID", id);
             cmd.env("BKPR_SESSION_NAME", name);
         }
+        if let Some((id, name)) = &shared.workspace {
+            cmd.env("BKPR_WORKSPACE_ID", id);
+            cmd.env("BKPR_WORKSPACE_NAME", name);
+        }
         if let Some(environment) = &shared.spawn_environment {
             cmd.env("BKPR_SOCKET", &environment.socket);
             cmd.env("BKPR_HARNESS_WRAPPER_DIR", &environment.wrappers);
@@ -2136,6 +2150,7 @@ mod snapshot_tests {
                 spawn_environment: None,
                 ssh_agent_socket: None,
                 session: None,
+                workspace: None,
                 status_reset: AtomicBool::new(false),
                 status_dirty: AtomicBool::new(false),
                 status_wake: None,
