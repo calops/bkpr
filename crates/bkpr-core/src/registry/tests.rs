@@ -524,6 +524,9 @@ fn normal_home_and_environment_are_preserved_and_initial_cwd_is_recorded() {
 mod clipboard_tests;
 #[path = "completion_tests.rs"]
 mod completion_tests;
+#[cfg(target_os = "linux")]
+#[path = "context_exec_tests.rs"]
+mod context_exec_tests;
 #[path = "forget_tests.rs"]
 mod forget_tests;
 #[path = "recovery_tests.rs"]

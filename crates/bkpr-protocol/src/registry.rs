@@ -39,6 +39,10 @@ pub enum Operation {
     },
     ClientDetach,
     Inspect,
+    /// Query live execution membership; omission selects the authenticated OS peer's pane.
+    Context {
+        pane_id: Option<String>,
+    },
     /// Enumerate saved native conversations without starting executions.
     RecoveryList,
     /// Start a fresh managed execution for an explicitly selected saved binding.

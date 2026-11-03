@@ -164,6 +164,37 @@ The version-2 transport adds `SessionInfo`, a dedicated `ClientRegister` lifetim
 
 Keep existing synchronous Unix transport and narrow OS credential/exit observers rather than adding another async runtime. Linux retains a kernel peer pidfd; ordinary managed requests validate cheap kernel identity/liveness instead of scanning process/CWD/argv state on each key. Pane exec receives trusted immutable logical session ID/name, not client credentials. Actual scope/TTY/takeover acceptance and platform limits are recorded in the engine report; remote endpoint aggregation and cross-daemon agent discovery remain future work.
 
+### Exec snapshots and live pane context
+
+Main `9ad93bd`, `context.rs::{current,current_pane}`, supplies the useful intent:
+live canonical labels/membership take precedence over stale inherited workspace
+names. Its Zellij-pane fallback, native-owner publication files and advisory
+owner registry do not carry over. The native daemon already owns the execution
+registry; protocol-4 `Context` reads that authority directly.
+
+Every registry spawn path shares a private `SpawnContext` bundle. Session/pane
+and optional execution-workspace snapshots are injected before native exec;
+the existing full-prefix environment clearing removes outer context first.
+Automatic workspace names are reserved once under the short transaction,
+including metadata-only creation. Pending labels participate in allocation,
+explicit duplicate labels remain allowed and RAII releases failed reservations.
+No locks span PTY/FS startup; snapshots do not become persisted authority or
+recurring render/input work.
+
+Default lookup verifies the actual IPC peer's birth, ancestry and controlling
+PTY, including immediate root exec before publication. Existing spawning state
+and the Condvar provide bounded readiness; final lookup revalidates the live
+runtime and reads current labels. Explicit live pane selection is same-user
+private-socket metadata, not a new agent/view/device permission. Background
+same-PTY jobs work; nested or detached/foreign/stale peers fail closed. Borrowed
+projections never supply execution membership.
+
+Existing `serde`, `clap`, process-birth sampling and spawn reservations cover this
+Bkpr-specific boundary. No new generic context service, cache or dependency is
+needed. The launcher owns headless presentation; the obsolete frontend
+whole-registry forwarding helper is removed. Shared MCP `whoami` keeps its
+existing authenticated launch context, with no expanded agent-control allowlist.
+
 ### SSH-agent forwarding boundary
 
 Main `9ad93bd809f8fb0dbd0c28bcbc267a682a21430b`, `crates/bkpr/src/agent_relay.rs`, was inspected rather than ported. Its final-launcher cleanup can remove the stable socket while detached panes survive. The replacement drops launcher-side relay helpers, route sidecars, recursive relay discovery and whole-frame parsing; the daemon owns one listener and the existing process-bound attachment lease owns selection.

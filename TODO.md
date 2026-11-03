@@ -72,6 +72,8 @@ The remaining frontend parity pass restores main's overlays and static graphics-
 
 - [x] Implement daemon-owned SSH-agent forwarding separately from input, size and clipboard ownership. Latest live activated client selects the source, including explicit absence; stable sockets survive zero clients, generations cancel old I/O without replay, and raw Unix paths are preserved. Actual OpenSSH signing and physical Kitty clients cover source changes, detach/takeover, inherited-FD owner exit and source replacement without touching user SSH/Git configuration.
 
+- [x] Restore complete immutable native session/pane/workspace exec snapshots and typed live `bkpr context [--pane ID] [--json]`. Reserve canonical automatic workspace names before exec, clear inherited context and derive default lookup from verified OS peer birth/ancestry/PTY rather than stale variables or client focus. Verify rename/layout/projection independence, pending publication, standalone/stopped/foreign boundaries and concurrent names without adding a service or dependency.
+
 - [ ] Explore a bounded cross-instance cache for expensive decorative raster assets if measurements justify it. Reuse suitable strip/corner/color-resolution ideas from the fork, but keep native image IDs, placements and live upload state client-local. Use versioned keys, atomic writes, resource limits and XDG cache storage.
 
 - [ ] After main-branch frontend parity, separately consider passive agent lifecycle animation. Decorative animation is explicitly outside the current pass; main does not have it. Any later proposal must preserve semantic authority, cursor/focus/pointer ownership and process termination responsiveness, and establish actual terminal support and performance before choosing a rendering strategy.

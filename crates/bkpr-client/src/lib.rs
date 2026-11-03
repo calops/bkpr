@@ -27,11 +27,6 @@ pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()>
 pub fn run(socket: &Path, options: Options) -> Result<()> {
     app::run(socket, options)
 }
-pub fn context(socket: &Path) -> Result<RegistrySnapshot> {
-    let response: RegistryResult =
-        serde_json::from_value(transport::checked(socket, Operation::Inspect)?)?;
-    Ok(response.registry)
-}
 
 /// Physical decoder probe: ordered acceptance, never child processing or replay.
 pub fn keyboard(socket: &Path, pane: &str, view: &str, bytes: &[u8]) -> Result<()> {

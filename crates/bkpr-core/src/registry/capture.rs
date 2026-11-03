@@ -45,6 +45,10 @@ impl Registry {
             "unsupported protocol version"
         );
         match request.operation {
+            Operation::Context {
+                pane_id: Some(pane_id),
+            } => self.pane_context(&pane_id),
+            Operation::Context { pane_id: None } => self.context_for_peer(peer),
             Operation::Agent {
                 launch_id,
                 token,
