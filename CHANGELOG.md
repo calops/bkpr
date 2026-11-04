@@ -14,6 +14,7 @@
 * Cover final combining and long Unicode grapheme output after a partial-buffer native PTY exit with an actual lifecycle regression.
 * Replace native JSON request/response, pane-scene and client-lifetime streams with typed Planus binary messages. Keep scene reception zero-copy through shared byte slices; validate complete updates before expanding cells/resources or changing the displayed baseline. CLI/MCP/provider and persistence JSON remain separate boundaries.
 * Wire family 5 requires a matching client/server pair. Reject incompatible families, required capabilities and malformed unions before dispatch; preserve existing sessions, typed shutdown outcomes, cancellation and non-replayable mutations. Do not automatically restart a live version-4 daemon.
+* Reduce native snapshot extraction work through the existing SDK's raw-codepoint and reusable UTF-8 APIs instead of repeatedly querying and converting grapheme codepoints for every cell. Preserve Unicode clusters, native widths, image placeholders and snapshot cadence; matched client-plus-daemon release CPU results are recorded in the engine report.
 
 ### Breaking branch replacement
 

@@ -1362,3 +1362,77 @@ The exact source/build/binary receipts are in
 `drivers/stages/paired-1362541717915134/`. `findings.json` and
 `measurements.json` retain individual counters, byte hashes and limitations.
 Every case and the stage watchdog report zero surviving owned births.
+
+## Post-Planus scalar and UTF-8 cell extraction
+
+The fresh post-Planus replay profile uses a ten-second, 997 Hz user-space
+CPU-clock capture. Inherited counters cover future workers; decoded weights
+include only the original daemon/client TGIDs. All 6,637 sampled leaf addresses
+resolve across 1,106 daemon threads and two client threads. Rust/Zig
+unwinding remains shallow, so inclusive stacks aren't reliable CPU budgets.
+Snapshot extraction alone accounts for 23.0% of daemon leaf samples, before
+native cell getters. Client composition, style comparison and scene expansion
+also remain substantial. These sample weights aren't benchmark CPU percentages.
+
+`Resources::capture` now reads ordinary non-spacer codepoints through the
+existing SDK's raw-cell API. Actual clusters use `graphemes_utf8` with one
+reusable string instead of a UTF-32 buffer and a second Rust encoding pass.
+The previous safe `graphemes_buf` wrapper also queried the length again after
+our own query. Raw content tags distinguish scalar text from clusters and are
+reused for background provenance. The cluster bound stays 65,536 codepoints;
+native spacer handling, Unicode ownership, widths, colors, links, authoritative
+Kitty placements and snapshot cadence stay unchanged. No dependency, bindings,
+native patch or wire-family change is needed.
+
+### Matched release CPU
+
+The final twelve actual Kitty captures alternate variant/workload order, with
+three repetitions per pair and workload. Both pairs use identical frozen Planus
+frontend/framework sources, the same SDK and symbolized release settings.
+Only the engine extraction file differs. The native pane is 240x79 cells inside
+the same 280x81 outer TUI. Dense output offers 300 frames at 30 Hz; the replay
+preserves all 9,745,690 source bytes and captured deadlines.
+
+CPU sums only the birth-matched client and daemon user/system counters.
+100% means one logical core; producer, emulator and observer CPU are excluded.
+
+| Workload | Original extraction | Scalar/UTF-8 extraction | CPU reduction |
+| --- | ---: | ---: | ---: |
+| Dense full-screen redraws | 23.06% | 22.16% | 3.9% |
+| Recorded `cmatrix` replay | 80.76% | 76.83% | 4.9% |
+
+Every final case passes exact finite-source, native geometry, complete final
+Kitty terminal-content and exact-birth cleanup checks. There is no frame cap,
+extra delay or slower polling. This is a small CPU improvement, not physical
+FPS, presentation-cadence parity or a solved Zellij efficiency gap.
+
+### Correctness and experiment limits
+
+The final shared worktree passes 738 top-level tests, plus one isolated
+subprocess success, with 14 explicit ignored fixtures. Strict all-target Clippy
+and workspace formatting pass. Tests execute as the real host UID; only
+compilation uses protected private output mounts. Builds use eight jobs on
+CPUs 0-7, with 3/4 GiB memory pressure/limit and no swap. Existing public
+executables remain byte-identical across those protected builds.
+
+Actual private-daemon comparison preserves the entire original Unicode frame:
+an 81-byte combining cluster, subsequent ASCII, native ZWJ segmentation and
+widths, empty continuations and trailing cells. Initial smoke assertions wrongly
+assumed a joined two-cell ZWJ emoji; the pinned parser's original and candidate
+frames both split it identically. The corrected full-frame comparison is kept
+alongside those failed observations, without changing parser behavior.
+
+A style-ID lookup cache was rejected: dense CPU improved, but all three replay
+samples worsened. The intermediate UTF-8-only extraction and its valid profile
+are retained separately. An additional final profile failed at the perf ACK-pipe
+startup handshake before releasing the workload gate; it has no surviving owned
+processes and supplies no final hotspot-shift claim. The fresh initial profile
+and unprofiled final CPU measurements remain independent evidence.
+
+Evidence is under `target/smoke/post-planus-profile/`: `findings.json`,
+`matched-scalar/result.json`, `final-checks-summary.json`,
+`scalar-unicode-differential.json`, immutable pair manifests and archived
+controller/source captures. No owned compilation or other owned GUI fixture
+runs during CPU captures; live sessions, user settings and providers aren't used.
+The next measured candidates are control-worker scene/run scratch allocations,
+native dirty-row reuse and client composition/style comparison.
