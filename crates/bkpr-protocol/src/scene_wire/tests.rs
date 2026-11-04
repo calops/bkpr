@@ -147,6 +147,79 @@ fn exact_unicode_styles_sources_images_and_diagnostic_bridge() {
 }
 
 #[test]
+fn alternating_styles_and_links_preserve_empty_rows_and_cell_layouts() {
+    let mut expected = fixture();
+    expected.size.cols = 64;
+    expected.size.rows = 4;
+    let first = expected.rows[0].cells[0].clone();
+    let mut second = first.clone();
+    second.style.italic = false;
+    second.hyperlink = None;
+    let alternating = Row {
+        cells: (0..64)
+            .map(|index| {
+                let mut cell = if (index / 2) % 2 == 0 {
+                    first.clone()
+                } else {
+                    second.clone()
+                };
+                cell.hyperlink = if index % 2 == 0 {
+                    first.hyperlink.clone()
+                } else {
+                    None
+                };
+                cell.text = if index % 3 == 0 { "" } else { "x" }.into();
+                cell.width = if index % 3 == 0 { 0 } else { 1 };
+                cell
+            })
+            .collect(),
+    };
+    let empty_same = Row {
+        cells: vec![
+            Cell {
+                text: "".into(),
+                width: 0,
+                ..second
+            };
+            64
+        ],
+    };
+    let empty_changed = Row {
+        cells: vec![
+            Cell {
+                text: "".into(),
+                width: 1,
+                ..first.clone()
+            };
+            64
+        ],
+    };
+    let cluster = format!("e{}", "\u{301}".repeat(40));
+    let resumed = Row {
+        cells: (0..64)
+            .map(|index| Cell {
+                text: if index % 2 == 0 {
+                    cluster.as_str()
+                } else {
+                    "x"
+                }
+                .into(),
+                ..first.clone()
+            })
+            .collect(),
+    };
+    expected.rows = vec![alternating, empty_same, empty_changed, resumed];
+    let bytes = encode(&expected, 4, None, 0, &[]).unwrap();
+    let mut actual = None;
+    let mut revision = 0;
+    decode(&bytes)
+        .unwrap()
+        .apply(&mut revision, &mut actual)
+        .unwrap();
+    assert_eq!(actual.as_ref(), Some(&expected));
+}
+
+#[test]
 fn deltas_reuse_only_matching_baselines_and_generation_receipts() {
     let original = fixture();
     let baseline = (4, Arc::new(original.clone()));
