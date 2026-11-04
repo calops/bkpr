@@ -316,8 +316,24 @@ impl Attached {
             .map(Some)
     }
     fn scene(&mut self, update: scene_wire::DecodedScene) -> Result<()> {
+        let retained = self
+            .metadata
+            .image_refs
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let incoming = update.image_keys().collect::<HashSet<_>>();
+        anyhow::ensure!(
+            retained
+                .iter()
+                .all(|key| self.images.contains_key(key) || incoming.contains(key)),
+            "missing normalized image generation"
+        );
         update.apply(&mut self.revision, &mut self.frame)?;
-        let frame = self.frame.as_mut().context("decoded scene missing")?;
+        let frame = self
+            .frame
+            .as_mut()
+            .expect("a decoded scene supplies a frame");
         if frame.alternate_screen {
             self.history = false;
         }
@@ -325,7 +341,6 @@ impl Attached {
             self.images.insert(image.key(), image);
         }
         let resources = &self.metadata.image_refs;
-        let retained = resources.iter().copied().collect::<HashSet<_>>();
         self.images.retain(|key, _| retained.contains(key));
         frame.images = resources
             .iter()
@@ -333,21 +348,24 @@ impl Attached {
                 self.images
                     .get(key)
                     .cloned()
-                    .context("missing normalized image generation")
+                    .expect("resource preflight succeeded")
             })
-            .collect::<Result<_>>()?;
+            .collect();
         Ok(())
     }
     fn apply(&mut self, snapshot: Snapshot) -> Result<()> {
-        self.metadata = snapshot.metadata;
+        let previous_metadata = std::mem::replace(&mut self.metadata, snapshot.metadata);
+        if let Some(scene) = snapshot.scene
+            && let Err(error) = self.scene(scene)
+        {
+            self.metadata = previous_metadata;
+            return Err(error);
+        }
         self.clipboard_id = self
             .metadata
             .clipboard
             .as_ref()
             .map(|p| p.request_id.clone());
-        if let Some(scene) = snapshot.scene {
-            self.scene(scene)?;
-        }
         Ok(())
     }
 }
@@ -5695,11 +5713,7 @@ mod tests {
 
     #[test]
     fn confirmed_reopen_uses_client_shell_policy_and_explicit_directory_on_background_lane() {
-        use std::{
-            io::{BufRead, BufReader},
-            os::unix::net::UnixListener,
-            thread,
-        };
+        use std::{os::unix::net::UnixListener, thread};
         for (use_client_cwd, has_foreground_cwd) in [(false, true), (false, false), (true, true)] {
             let directory = tempfile::tempdir().unwrap();
             let socket = directory.path().join("reopen.sock");
@@ -5717,22 +5731,16 @@ mod tests {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
-                let mut bytes = Vec::new();
-                BufReader::new(&mut stream)
-                    .read_until(b'\n', &mut bytes)
-                    .unwrap();
-                let request: Request = serde_json::from_slice(&bytes).unwrap();
-                writeln!(
-                    stream,
-                    "{}",
-                    serde_json::to_string(&Response {
+                let request = transport::test_wire::read_request(&mut stream).unwrap();
+                transport::test_wire::write_response(
+                    &mut stream,
+                    &Response {
                         version: PROTOCOL_VERSION,
                         failure: None,
                         ok: false,
                         result: None,
                         error: Some("fixture rejected spawn".into()),
-                    })
-                    .unwrap()
+                    },
                 )
                 .unwrap();
                 request
@@ -5954,10 +5962,8 @@ mod tests {
                 view_timeout_ms: 5000,
                 poll_wait_max_ms: 1000,
                 row_deltas: true,
-                scene_encodings: vec!["compact_v1".into()],
+                scene_encodings: vec!["planus_v1".into()],
             },
-            row_delta: None,
-            scene: None,
         };
         app.views.insert(
             pane.into(),
@@ -5980,6 +5986,90 @@ mod tests {
         );
         app.state.focused = Some(pane.into());
         app.notified_focus = Some((pane.into(), view.into()));
+    }
+    #[test]
+    fn rejected_scene_keeps_metadata_frame_resources_and_clipboard_unchanged() {
+        for invalid_baseline in [true, false] {
+            let (mut app, _received) = fixture();
+            attach_fixture(&mut app);
+            let attached = app.views.get_mut("focused-pane").unwrap();
+            attached.clipboard_id = Some("pending-request".into());
+            attached.history = true;
+            let before = attached.frame.clone().unwrap();
+            let before_metadata = serde_json::to_value(&attached.metadata).unwrap();
+            let mut next = before.clone();
+            next.rows[0].cells[0].text = "λ".into();
+            next.alternate_screen = true;
+            let baseline = invalid_baseline.then(|| (0, Arc::new(before.clone())));
+            let bytes = scene_wire::encode(&next, 2, baseline.as_ref(), 0, &[]).unwrap();
+            let mut metadata = attached.metadata.clone();
+            metadata.revision = 2;
+            metadata.snapshot_revision += 1;
+            metadata.lifecycle = "exited".into();
+            if !invalid_baseline {
+                metadata.image_refs.push(ImageKey {
+                    id: 7,
+                    generation: 9,
+                });
+            }
+            let update = Snapshot {
+                metadata,
+                scene: Some(scene_wire::decode(&bytes).unwrap()),
+            };
+            assert!(attached.apply(update).is_err());
+            assert_eq!(
+                serde_json::to_value(&attached.metadata).unwrap(),
+                before_metadata
+            );
+            assert_eq!(attached.revision, 1);
+            assert_eq!(attached.frame.as_ref(), Some(&before));
+            assert!(attached.images.is_empty());
+            assert!(attached.history);
+            assert_eq!(attached.clipboard_id.as_deref(), Some("pending-request"));
+        }
+    }
+
+    #[test]
+    fn scene_resource_generation_replacement_retires_only_the_old_cache_entry() {
+        let (mut app, _received) = fixture();
+        attach_fixture(&mut app);
+        let attached = app.views.get_mut("focused-pane").unwrap();
+        let old = Arc::new(Image {
+            id: 7,
+            generation: 1,
+            width: 1,
+            height: 1,
+            format: PixelFormat::Rgba,
+            pixels: vec![1, 2, 3, 255],
+        });
+        let new = Arc::new(Image {
+            id: 7,
+            generation: 2,
+            width: 1,
+            height: 1,
+            format: PixelFormat::Rgba,
+            pixels: vec![4, 5, 6, 255],
+        });
+        attached.images.insert(old.key(), old.clone());
+        let mut next = attached.frame.clone().unwrap();
+        next.rows[0].cells[0].text = "N".into();
+        next.images.push(new.clone());
+        let bytes = scene_wire::encode(&next, 2, None, 0, &[old.key()]).unwrap();
+        let mut metadata = attached.metadata.clone();
+        metadata.revision = 2;
+        metadata.image_refs = vec![new.key()];
+        attached
+            .apply(Snapshot {
+                metadata,
+                scene: Some(scene_wire::decode(&bytes).unwrap()),
+            })
+            .unwrap();
+        assert_eq!(attached.revision, 2);
+        assert!(!attached.images.contains_key(&old.key()));
+        assert_eq!(attached.images[&new.key()].pixels, new.pixels);
+        let frame = attached.frame.as_ref().unwrap();
+        assert_eq!(frame.rows[0].cells[0].text.as_str(), "N");
+        assert_eq!(frame.images, vec![new]);
     }
     fn physical_keys(app: &mut App<'_>, bytes: &[u8]) -> Result<()> {
         let mut parser = InputParser::new();
@@ -6940,18 +7030,13 @@ mod tests {
     }
     #[test]
     fn attach_slot_ownership_is_independent_of_nested_poll_unknown_marker() {
-        use std::io::BufRead;
         for detached in [true, false] {
             let directory = tempfile::tempdir().unwrap();
             let socket = directory.path().join("cleanup.sock");
             let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
             let server = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
-                let mut request = Vec::new();
-                std::io::BufReader::new(stream.try_clone().unwrap())
-                    .read_until(b'\n', &mut request)
-                    .unwrap();
-                let request: Request = serde_json::from_slice(&request).unwrap();
+                let request = transport::test_wire::read_request(&mut stream).unwrap();
                 assert!(matches!(
                     request.operation,
                     Operation::Pane {
@@ -6962,13 +7047,11 @@ mod tests {
                 let response = Response {
                     version: PROTOCOL_VERSION,
                     ok: detached,
-                    result: detached.then(|| serde_json::json!({"detached":true})),
+                    result: detached.then(|| serde_json::json!({"detached":true}).into()),
                     error: (!detached).then(|| "cleanup rejected".into()),
                     failure: None,
                 };
-                let mut response = serde_json::to_vec(&response).unwrap();
-                response.push(b'\n');
-                stream.write_all(&response).unwrap();
+                transport::test_wire::write_response(&mut stream, &response).unwrap();
             });
             let initial = if detached {
                 transport::mark_outcome_unknown(anyhow::anyhow!("initial poll EOF"))
@@ -7814,15 +7897,12 @@ mod tests {
     }
 
     fn read_resize_request(stream: &mut std::os::unix::net::UnixStream) -> Operation {
-        use std::io::{BufRead, BufReader};
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        let mut bytes = Vec::new();
-        BufReader::new(stream)
-            .read_until(b'\n', &mut bytes)
-            .unwrap();
-        serde_json::from_slice::<Request>(&bytes).unwrap().operation
+        transport::test_wire::read_request(stream)
+            .unwrap()
+            .operation
     }
 
     fn accept_resize_request(registry: &mut RegistrySnapshot, operation: &Operation) {
@@ -7853,10 +7933,9 @@ mod tests {
     }
 
     fn resize_reply(stream: &mut std::os::unix::net::UnixStream, registry: &RegistrySnapshot) {
-        writeln!(
+        transport::test_wire::write_response(
             stream,
-            "{}",
-            serde_json::to_string(&Response {
+            &Response {
                 version: PROTOCOL_VERSION,
                 failure: None,
                 ok: true,
@@ -7867,11 +7946,11 @@ mod tests {
                         workspace_id: None,
                         window_id: None,
                     })
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
                 ),
                 error: None,
-            })
-            .unwrap()
+            },
         )
         .unwrap();
     }
@@ -8030,17 +8109,15 @@ mod tests {
                 blocked.recv_timeout(Duration::from_secs(5)).unwrap();
                 match outcome {
                     "conflict" => {
-                        writeln!(
-                            stream,
-                            "{}",
-                            serde_json::to_string(&Response {
+                        transport::test_wire::write_response(
+                            &mut stream,
+                            &Response {
                                 version: PROTOCOL_VERSION,
                                 failure: None,
                                 ok: false,
                                 result: None,
                                 error: Some("window revision conflict".into()),
-                            })
-                            .unwrap()
+                            },
                         )
                         .unwrap();
                     }
@@ -8376,17 +8453,15 @@ mod tests {
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let operation = read_resize_request(&mut stream);
-            writeln!(
-                stream,
-                "{}",
-                serde_json::to_string(&Response {
+            transport::test_wire::write_response(
+                &mut stream,
+                &Response {
                     version: PROTOCOL_VERSION,
                     failure: None,
                     ok: false,
                     result: None,
                     error: Some("fixture rejected layout".into()),
-                })
-                .unwrap()
+                },
             )
             .unwrap();
             operation
@@ -8448,17 +8523,15 @@ mod tests {
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let request = read_resize_request(&mut stream);
-            writeln!(
-                stream,
-                "{}",
-                serde_json::to_string(&Response {
+            transport::test_wire::write_response(
+                &mut stream,
+                &Response {
                     version: PROTOCOL_VERSION,
                     failure: None,
                     ok: false,
                     result: None,
                     error: Some("fixture revision rejection".into()),
-                })
-                .unwrap()
+                },
             )
             .unwrap();
             request
@@ -8615,34 +8688,30 @@ mod tests {
             0,
             "Detach overtook unacknowledged policy revocation"
         );
-        writeln!(
-            policy,
-            "{}",
-            serde_json::to_string(&Response {
+        transport::test_wire::write_response(
+            &mut policy,
+            &Response {
                 version: PROTOCOL_VERSION,
                 failure: None,
                 ok: true,
-                result: Some(serde_json::Value::Bool(true)),
+                result: Some(serde_json::Value::Bool(true).into()),
                 error: None,
-            })
-            .unwrap()
+            },
         )
         .unwrap();
         let mut detach = accept();
         assert!(matches!(read_resize_request(&mut detach), Operation::Pane {
             pane_id, request: PaneRequest::Detach { view_id },
         } if pane_id == "focused-pane" && view_id == "focused-view"));
-        writeln!(
-            detach,
-            "{}",
-            serde_json::to_string(&Response {
+        transport::test_wire::write_response(
+            &mut detach,
+            &Response {
                 version: PROTOCOL_VERSION,
                 failure: None,
                 ok: true,
-                result: Some(serde_json::Value::Bool(true)),
+                result: Some(serde_json::Value::Bool(true).into()),
                 error: None,
-            })
-            .unwrap()
+            },
         )
         .unwrap();
         worker.join().unwrap();

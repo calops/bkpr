@@ -32,6 +32,8 @@ fn last_view_detaches_without_killing_and_explicit_termination_reaps_stopped_job
     };
     let first = pane
         .request(Request::Attach { spec: spec.clone() })
+        .unwrap()
+        .into_json()
         .unwrap()["view_id"]
         .as_str()
         .unwrap()
@@ -45,10 +47,13 @@ fn last_view_detaches_without_killing_and_explicit_termination_reaps_stopped_job
         .trim()
         .parse::<i32>()
         .unwrap();
-    let shell_pid = pane.request(Request::Inspect).unwrap()["pid"]
+    let shell_pid = pane.request(Request::Inspect).unwrap().into_json().unwrap()["pid"]
         .as_u64()
         .unwrap() as i32;
-    pane.request(Request::Detach { view_id: first }).unwrap();
+    pane.request(Request::Detach { view_id: first })
+        .unwrap()
+        .into_json()
+        .unwrap();
     assert_eq!(
         unsafe { libc::kill(shell_pid, 0) },
         0,
@@ -59,11 +64,17 @@ fn last_view_detaches_without_killing_and_explicit_termination_reaps_stopped_job
         0,
         "detaching must preserve its job"
     );
-    let second = pane.request(Request::Attach { spec }).unwrap()["view_id"]
+    let second = pane
+        .request(Request::Attach { spec })
+        .unwrap()
+        .into_json()
+        .unwrap()["view_id"]
         .as_str()
         .unwrap()
         .to_owned();
     pane.request(Request::Terminate { view_id: second })
+        .unwrap()
+        .into_json()
         .unwrap();
     assert_eq!(
         unsafe { libc::kill(shell_pid, 0) },
@@ -76,7 +87,7 @@ fn last_view_detaches_without_killing_and_explicit_termination_reaps_stopped_job
         "stopped-session job must be killed and reaped"
     );
     assert_eq!(
-        pane.request(Request::Inspect).unwrap()["lifecycle"],
+        pane.request(Request::Inspect).unwrap().into_json().unwrap()["lifecycle"],
         "terminated"
     );
     std::fs::remove_dir_all(home).unwrap();
@@ -125,6 +136,8 @@ fn explicit_termination_does_not_type_eof_into_a_live_raw_child() {
                 clipboard: false,
             },
         })
+        .unwrap()
+        .into_json()
         .unwrap()["view_id"]
         .as_str()
         .unwrap()
@@ -133,12 +146,17 @@ fn explicit_termination_does_not_type_eof_into_a_live_raw_child() {
         view_id: view_id.clone(),
         data: b"kept".to_vec(),
     })
+    .unwrap()
+    .into_json()
     .unwrap();
     while std::fs::read(&input).unwrap() != b"kept" {
         assert!(Instant::now() < deadline, "raw child did not receive input");
         thread::sleep(Duration::from_millis(2));
     }
-    pane.request(Request::Terminate { view_id }).unwrap();
+    pane.request(Request::Terminate { view_id })
+        .unwrap()
+        .into_json()
+        .unwrap();
     assert_eq!(
         std::fs::read(input).unwrap(),
         b"kept",
@@ -176,7 +194,7 @@ fn final_multibyte_screen_survives_partial_output_batch_at_process_exit() {
     .unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut snapshot = loop {
-        let snapshot = pane.request(Request::Inspect).unwrap();
+        let snapshot = pane.request(Request::Inspect).unwrap().into_json().unwrap();
         if snapshot["lifecycle"] == "exited" {
             break snapshot;
         }

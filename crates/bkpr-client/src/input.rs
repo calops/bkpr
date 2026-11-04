@@ -885,14 +885,9 @@ mod tests {
     use super::*;
     use bkpr_protocol::{
         ClipboardContent, ClipboardResponse, ClipboardResult, KeyAction, KeyEvent,
-        PROTOCOL_VERSION, Request, Response,
+        PROTOCOL_VERSION, Response,
     };
-    use std::{
-        io::{BufRead, BufReader},
-        os::unix::net::UnixListener,
-        path::PathBuf,
-        time::Duration,
-    };
+    use std::{os::unix::net::UnixListener, path::PathBuf, time::Duration};
 
     fn key(pane: &str, name: &str) -> Operation {
         Operation::Pane {
@@ -939,11 +934,7 @@ mod tests {
                     stream
                         .set_read_timeout(Some(Duration::from_secs(5)))
                         .unwrap();
-                    let mut bytes = Vec::new();
-                    BufReader::new(stream.try_clone().unwrap())
-                        .read_until(b'\n', &mut bytes)
-                        .unwrap();
-                    let request: Request = serde_json::from_slice(&bytes).unwrap();
+                    let request = transport::test_wire::read_request(&mut stream).unwrap();
                     observed.send(request.operation.clone()).unwrap();
                     match request.operation {
                         Operation::Pane {
@@ -977,13 +968,11 @@ mod tests {
                     let response = Response {
                         version: PROTOCOL_VERSION,
                         ok: true,
-                        result: Some(serde_json::json!({"accepted":true})),
+                        result: Some(serde_json::json!({"accepted":true}).into()),
                         error: None,
                         failure: None,
                     };
-                    let mut bytes = serde_json::to_vec(&response).unwrap();
-                    bytes.push(b'\n');
-                    stream.write_all(&bytes).unwrap();
+                    transport::test_wire::write_response(&mut stream, &response).unwrap();
                 }));
             }
             for worker in workers {
@@ -1182,11 +1171,7 @@ mod tests {
                 let observed = observed.clone();
                 let gate = gate.clone();
                 workers.push(thread::spawn(move || {
-                    let mut bytes = Vec::new();
-                    BufReader::new(stream.try_clone().unwrap())
-                        .read_until(b'\n', &mut bytes)
-                        .unwrap();
-                    let request: Request = serde_json::from_slice(&bytes).unwrap();
+                    let request = transport::test_wire::read_request(&mut stream).unwrap();
                     let failing = matches!(&request.operation, Operation::Pane {
                         pane_id, request: PaneRequest::Key { event, .. },
                     } if pane_id == "alpha" && event.key == "KeyA");
@@ -1200,13 +1185,11 @@ mod tests {
                     let response = Response {
                         version: PROTOCOL_VERSION,
                         ok: !failing,
-                        result: (!failing).then(|| serde_json::json!({"accepted":true})),
+                        result: (!failing).then(|| serde_json::json!({"accepted":true}).into()),
                         error: failing.then(|| "native command timed out; outcome unknown".into()),
                         failure: None,
                     };
-                    let mut bytes = serde_json::to_vec(&response).unwrap();
-                    bytes.push(b'\n');
-                    stream.write_all(&bytes).unwrap();
+                    transport::test_wire::write_response(&mut stream, &response).unwrap();
                 }));
             }
             for worker in workers {
@@ -1400,11 +1383,7 @@ mod tests {
         let server = thread::spawn(move || {
             for index in 0..2 {
                 let (mut stream, _) = listener.accept().unwrap();
-                let mut bytes = Vec::new();
-                BufReader::new(stream.try_clone().unwrap())
-                    .read_until(b'\n', &mut bytes)
-                    .unwrap();
-                let request: Request = serde_json::from_slice(&bytes).unwrap();
+                let request = transport::test_wire::read_request(&mut stream).unwrap();
                 if index == 0 {
                     assert!(matches!(
                         request.operation,
@@ -1425,13 +1404,11 @@ mod tests {
                 let response = Response {
                     version: PROTOCOL_VERSION,
                     ok: index != 0,
-                    result: (index != 0).then(|| serde_json::json!({"accepted":true})),
+                    result: (index != 0).then(|| serde_json::json!({"accepted":true}).into()),
                     error: (index == 0).then(|| "selection exceeds copy payload limit".into()),
                     failure: None,
                 };
-                let mut bytes = serde_json::to_vec(&response).unwrap();
-                bytes.push(b'\n');
-                stream.write_all(&bytes).unwrap();
+                transport::test_wire::write_response(&mut stream, &response).unwrap();
             }
         });
         let input = InputPump::new(&Endpoint::unmanaged(&path)).unwrap();
@@ -1460,11 +1437,8 @@ mod tests {
         let (received, copy_seen) = mpsc::sync_channel(1);
         let (close, closed) = mpsc::sync_channel(1);
         let server = thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut bytes = Vec::new();
-            let mut reader = BufReader::new(stream);
-            reader.read_until(b'\n', &mut bytes).unwrap();
-            let request: Request = serde_json::from_slice(&bytes).unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = transport::test_wire::read_request(&mut stream).unwrap();
             assert!(matches!(
                 request.operation,
                 Operation::Pane {
@@ -1512,11 +1486,7 @@ mod tests {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
-                let mut bytes = Vec::new();
-                BufReader::new(stream.try_clone().unwrap())
-                    .read_until(b'\n', &mut bytes)
-                    .unwrap();
-                let request: Request = serde_json::from_slice(&bytes).unwrap();
+                let request = transport::test_wire::read_request(&mut stream).unwrap();
                 if index == 0 {
                     assert!(matches!(
                         request.operation,
@@ -1538,13 +1508,11 @@ mod tests {
                 let response = Response {
                     version: PROTOCOL_VERSION,
                     ok: index != 0,
-                    result: (index != 0).then(|| serde_json::json!({"accepted":true})),
+                    result: (index != 0).then(|| serde_json::json!({"accepted":true}).into()),
                     error: (index == 0).then(|| "selection view is no longer visible".into()),
                     failure: None,
                 };
-                let mut bytes = serde_json::to_vec(&response).unwrap();
-                bytes.push(b'\n');
-                stream.write_all(&bytes).unwrap();
+                transport::test_wire::write_response(&mut stream, &response).unwrap();
             }
             keys
         });

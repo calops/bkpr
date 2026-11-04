@@ -245,7 +245,10 @@ fn native_close_durability_failure_reports_completed_side_effects_and_suspends_c
             .is_err()
     );
     assert_eq!(
-        pane.request(PaneRequest::Inspect).unwrap()["lifecycle"],
+        pane.request(PaneRequest::Inspect)
+            .unwrap()
+            .into_json()
+            .unwrap()["lifecycle"],
         "terminated"
     );
     assert!(!registry.session_end_requested());
@@ -461,7 +464,7 @@ fn review_regression_window_close_drains_sibling_normal_completion() {
         std::thread::sleep(Duration::from_millis(5));
     };
     drop(held);
-    let result = worker.join().unwrap().unwrap();
+    let result = worker.join().unwrap().unwrap().into_json().unwrap();
     assert!(
         deferred,
         "did not exercise completion during the close reservation"

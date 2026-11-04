@@ -15,7 +15,11 @@ fn size(cols: u16) -> Size {
     }
 }
 fn send(registry: &Registry, op: Operation) -> Value {
-    registry.request(Request::new(op)).unwrap()
+    registry
+        .request(Request::new(op))
+        .unwrap()
+        .into_json()
+        .unwrap()
 }
 fn create(registry: &Registry, name: &str) -> String {
     send(

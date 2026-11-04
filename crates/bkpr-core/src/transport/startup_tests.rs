@@ -12,11 +12,13 @@ use std::{
 fn wire(socket: &Path, operation: Operation) -> Result<Value> {
     let mut stream = UnixStream::connect(socket)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    serde_json::to_writer(&mut stream, &Request::new(operation))?;
-    stream.write_all(b"\n")?;
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
-    Ok(serde_json::from_str(&line)?)
+    wire::write_frame(
+        &mut stream,
+        Kind::Request,
+        Codec::new().encode_request(&Request::new(operation))?,
+    )?;
+    let bytes = wire::read_frame(&mut stream, Kind::Response, MAX_RESPONSE)?;
+    Ok(serde_json::to_value(wire::decode_response(&bytes)?)?)
 }
 
 struct NativeChild(Child);
@@ -90,26 +92,31 @@ fn startup_control_peer_fixture() {
         stream
             .set_read_timeout(Some(Duration::from_secs(8)))
             .unwrap();
-        serde_json::to_writer(
+        let request = Request::new(Operation::Agent {
+            launch_id: grant.launch_id,
+            token: grant.token,
+            request: AgentRequest::Control {
+                scope: AgentScope::Session,
+                request: Box::new(Operation::PaneResume {
+                    pane_id: target["pane_id"].as_str().unwrap().into(),
+                    expected: serde_json::from_value(target["expected"].clone()).unwrap(),
+                }),
+            },
+        });
+        wire::write_frame(
             &mut stream,
-            &Request::new(Operation::Agent {
-                launch_id: grant.launch_id,
-                token: grant.token,
-                request: AgentRequest::Control {
-                    scope: AgentScope::Session,
-                    request: Box::new(Operation::PaneResume {
-                        pane_id: target["pane_id"].as_str().unwrap().into(),
-                        expected: serde_json::from_value(target["expected"].clone()).unwrap(),
-                    }),
-                },
-            }),
+            Kind::Request,
+            Codec::new().encode_request(&request).unwrap(),
         )
         .unwrap();
-        stream.write_all(b"\n").unwrap();
         fs::write(home.join("control-sent"), b"sent").unwrap();
-        let mut reply = String::new();
-        BufReader::new(stream).read_line(&mut reply).unwrap();
-        fs::write(home.join("control-result"), reply).unwrap();
+        let bytes = wire::read_frame(&mut stream, Kind::Response, MAX_RESPONSE).unwrap();
+        let reply = wire::decode_response(&bytes).unwrap();
+        fs::write(
+            home.join("control-result"),
+            serde_json::to_vec(&reply).unwrap(),
+        )
+        .unwrap();
     }
     loop {
         thread::sleep(Duration::from_secs(60));
@@ -176,6 +183,8 @@ fn agent_control_cannot_consume_a_saved_pane_while_automatic_batch_is_pending() 
                 name: Some(name.into()),
                 initial: Some(spec(home)),
             }))
+            .unwrap()
+            .into_json()
             .unwrap();
         created.push(result);
     }

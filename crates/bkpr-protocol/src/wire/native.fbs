@@ -1,0 +1,425 @@
+// Native control transport. Generated with planus-cli =1.3.0.
+// Root tables are selected by the authenticated fixed frame kind.
+namespace native_wire;
+
+enum HarnessKind : ubyte { Claude, Codex, Omp, Agy, Opencode, Cursor, Copilot, Aider, Cline, Goose }
+enum ConversationSource : ubyte { ClaudeHook, OmpExtension, CodexStart, CodexResume, CodexFork, AgyMcp }
+enum AgentScope : ubyte { Workspace, Session, Repository, All }
+enum AgentReceiverMode : ubyte { ActiveTurn, FutureTurn }
+enum Axis : ubyte { Horizontal, Vertical }
+enum ClipboardLocation : ubyte { Standard, Selection, Primary }
+enum ClipboardResult : ubyte { Success, Denied, Unsupported, Busy, InvalidData, IoError }
+enum KeyAction : ubyte { Press, Release, Repeat }
+enum MouseButton : ubyte { None, Left, Middle, Right, WheelUp, WheelDown, WheelLeft, WheelRight, Back, Forward }
+enum MouseAction : ubyte { Press, Release, Motion }
+enum SelectionAction : ubyte { Press, Drag, Release, Clear, Tick }
+enum RequestOutcome : ubyte { NotDispatched, Unknown }
+struct Rgb { r:ubyte; g:ubyte; b:ubyte; }
+table Size {
+  cols:ushort;
+  rows:ushort;
+  cell_width:uint;
+  cell_height:uint;
+}
+table ImageKey {
+  id:uint;
+  generation:ulong;
+}
+table ViewSpec {
+  size:Size (required);
+  interactive:bool;
+  visible:bool;
+  input:bool;
+  clipboard:bool;
+}
+table ClientAuthority {
+  client_id:string (required);
+  token:string (required);
+}
+table PaneSpawnSpec {
+  argv:[string] (required);
+  cwd:[ubyte] (required);
+  home:[ubyte] (required);
+  size:Size (required);
+  title:string;
+  isolated_environment:bool;
+}
+table HarnessRecovery {
+  kind:HarnessKind;
+  conversation_id:string (required);
+  cwd:[ubyte] (required);
+}
+table ClipboardContent {
+  mime:string (required);
+  data:[ubyte] (required);
+}
+table ClipboardResponse {
+  result:ClipboardResult;
+  contents:[ClipboardContent] (required);
+  available:[string] (required);
+  remember:bool;
+}
+table KeyEvent {
+  key:string (required);
+  modifiers:ushort;
+  text:string (required);
+  action:KeyAction;
+  unshifted_codepoint:uint;
+}
+table MouseEvent {
+  x:float;
+  y:float;
+  modifiers:ushort;
+  button:MouseButton;
+  action:MouseAction;
+}
+table SelectionEvent {
+  action:SelectionAction;
+  x:float;
+  y:float;
+  modifiers:ubyte;
+  time_ms:ulong;
+}
+table ClientEvent {
+  event:string (required);
+  reason:string (required);
+}
+table OperationSessionInfo {
+
+}
+table OperationClientRegister {
+  session_id:string (required);
+  daemon_id:string (required);
+}
+table OperationClient {
+  authority:ClientAuthority (required);
+  request:Operation (required);
+}
+table OperationClientActivate {
+  detach_others:bool;
+  agent_socket:[ubyte];
+}
+table OperationClientDetach {
+
+}
+table OperationInspect {
+
+}
+table OperationContext {
+  pane_id:string;
+}
+table OperationRecoveryList {
+
+}
+table OperationPaneResume {
+  pane_id:string (required);
+  expected:HarnessRecovery (required);
+}
+table OperationHarnessBegin {
+  kind:HarnessKind;
+}
+table OperationHarnessEvent {
+  launch_id:string (required);
+  token:string (required);
+  event:CaptureEvent (required);
+}
+table OperationHarnessContext {
+  launch_id:string (required);
+  token:string (required);
+}
+table OperationAgent {
+  launch_id:string (required);
+  token:string (required);
+  request:AgentRequest (required);
+}
+table OperationWorkspaceCreate {
+  name:string;
+  initial:PaneSpawnSpec;
+}
+table OperationWorkspaceRename {
+  workspace_id:string (required);
+  expected_revision:ulong;
+  name:string (required);
+}
+table OperationWorkspaceClose {
+  workspace_id:string (required);
+  expected_revision:ulong;
+}
+table OperationWindowCreate {
+  workspace_id:string (required);
+  expected_revision:ulong;
+  name:string;
+  spec:PaneSpawnSpec (required);
+}
+table OperationWindowRename {
+  workspace_id:string (required);
+  window_id:string (required);
+  expected_revision:ulong;
+  name:string (required);
+}
+table OperationWindowClose {
+  workspace_id:string (required);
+  window_id:string (required);
+  expected_revision:ulong;
+}
+table OperationPaneSpawn {
+  workspace_id:string;
+  window_id:string;
+  expected_revision:OptionalU64;
+  spec:PaneSpawnSpec (required);
+}
+table OperationPaneReopen {
+  workspace_id:string (required);
+  window_id:string (required);
+  expected_revision:ulong;
+  pane_id:string (required);
+  spec:PaneSpawnSpec (required);
+}
+table OperationPaneTerminate {
+  pane_id:string (required);
+}
+table OperationPaneForget {
+  pane_id:string (required);
+}
+table OperationPaneRename {
+  pane_id:string (required);
+  title:string (required);
+}
+// Optional unions use nullable wrappers with required contents. Planus treats a
+// missing union value slot as absent even when its discriminator is nonzero.
+table OptionalLayout { value:LayoutNode (required); }
+table OperationLayoutUpdate {
+  workspace_id:string (required);
+  window_id:string (required);
+  expected_revision:ulong;
+  layout:OptionalLayout;
+}
+table OperationPane {
+  pane_id:string (required);
+  request:PaneRequest (required);
+}
+table OperationWait {
+  after:ulong;
+  wait_ms:ulong;
+}
+table OperationShutdown {
+
+}
+union Operation { OperationSessionInfo, OperationClientRegister, OperationClient, OperationClientActivate, OperationClientDetach, OperationInspect, OperationContext, OperationRecoveryList, OperationPaneResume, OperationHarnessBegin, OperationHarnessEvent, OperationHarnessContext, OperationAgent, OperationWorkspaceCreate, OperationWorkspaceRename, OperationWorkspaceClose, OperationWindowCreate, OperationWindowRename, OperationWindowClose, OperationPaneSpawn, OperationPaneReopen, OperationPaneTerminate, OperationPaneForget, OperationPaneRename, OperationLayoutUpdate, OperationPane, OperationWait, OperationShutdown }
+table PaneRequestInspect {
+
+}
+table PaneRequestAttach {
+  spec:ViewSpec (required);
+}
+table PaneRequestUpdate {
+  view_id:string (required);
+  spec:ViewSpec (required);
+}
+table PaneRequestDetach {
+  view_id:string (required);
+}
+table PaneRequestPoll {
+  view_id:string (required);
+  after:ulong;
+  frame_after:ulong;
+  resources:[ImageKey] (required);
+  snapshot_after:ulong;
+  wait_ms:ulong;
+  row_deltas:bool;
+  scene_encoding:string;
+}
+table PaneRequestPin {
+  view_id:string (required);
+  size:Size;
+}
+table PaneRequestInput {
+  view_id:string (required);
+  data:[ubyte] (required);
+}
+table PaneRequestPaste {
+  view_id:string (required);
+  data:[ubyte] (required);
+}
+table PaneRequestPasteContents {
+  view_id:string (required);
+  contents:[ClipboardContent] (required);
+  location:ClipboardLocation;
+  allow_unsafe:bool;
+}
+table PaneRequestKey {
+  view_id:string (required);
+  event:KeyEvent (required);
+}
+table PaneRequestMouse {
+  view_id:string (required);
+  event:MouseEvent (required);
+}
+table PaneRequestFocus {
+  view_id:string (required);
+  focused:bool;
+}
+table PaneRequestScroll {
+  view_id:string (required);
+  delta:long;
+}
+table PaneRequestSelect {
+  view_id:string (required);
+  event:SelectionEvent (required);
+}
+table PaneRequestCopySelection {
+  view_id:string (required);
+}
+table PaneRequestSearch {
+  view_id:string (required);
+  action:SearchAction (required);
+}
+table PaneRequestClipboard {
+  view_id:string (required);
+  request_id:string (required);
+  response:ClipboardResponse (required);
+}
+table PaneRequestColors {
+  view_id:string (required);
+  foreground:Rgb (required);
+  background:Rgb (required);
+  cursor:Rgb;
+  palette:OptionalPalette;
+}
+table PaneRequestTerminate {
+  view_id:string (required);
+}
+table PaneRequestShutdown {
+
+}
+union PaneRequest { PaneRequestInspect, PaneRequestAttach, PaneRequestUpdate, PaneRequestDetach, PaneRequestPoll, PaneRequestPin, PaneRequestInput, PaneRequestPaste, PaneRequestPasteContents, PaneRequestKey, PaneRequestMouse, PaneRequestFocus, PaneRequestScroll, PaneRequestSelect, PaneRequestCopySelection, PaneRequestSearch, PaneRequestClipboard, PaneRequestColors, PaneRequestTerminate, PaneRequestShutdown }
+table SearchActionQuery {
+  text:string (required);
+}
+table SearchActionNext {
+
+}
+table SearchActionPrevious {
+
+}
+table SearchActionClear {
+
+}
+union SearchAction { SearchActionQuery, SearchActionNext, SearchActionPrevious, SearchActionClear }
+table LayoutNodeLeaf {
+  pane_id:string (required);
+}
+table LayoutNodeSplit {
+  axis:Axis;
+  ratio:ushort;
+  first:LayoutNode (required);
+  second:LayoutNode (required);
+}
+union LayoutNode { LayoutNodeLeaf, LayoutNodeSplit }
+table CaptureEventBind {
+  conversation_id:string (required);
+  source:ConversationSource;
+}
+table CaptureEventError {
+  message:string (required);
+}
+table CaptureEventEnd {
+
+}
+union CaptureEvent { CaptureEventBind, CaptureEventError, CaptureEventEnd }
+table AgentRequestWhoami {
+
+}
+table AgentRequestControl {
+  request:Operation (required);
+  scope:AgentScope;
+}
+table AgentRequestSetTitle {
+  title:string (required);
+}
+table AgentRequestDiscoverAgents {
+  scope:AgentScope;
+  detail:bool;
+}
+table AgentRequestSendMessage {
+  to:string (required);
+  text:string (required);
+  idempotency_key:string (required);
+  scope:AgentScope;
+}
+table AgentRequestReadInbox {
+  after:string;
+  limit:OptionalUsize;
+}
+table AgentRequestAckMessage {
+  ids:[string] (required);
+}
+table AgentRequestInspectOutbox {
+  message_id:string;
+  after:string;
+  limit:OptionalUsize;
+}
+table AgentRequestReceiverRegister {
+  session_id:string (required);
+  mode:AgentReceiverMode;
+  pid:uint;
+}
+table AgentRequestReceiverSubscribe {
+  receiver_id:string (required);
+  wait_ms:ulong;
+}
+table AgentRequestWakeValidate {
+  receiver_id:string (required);
+  notification_id:string (required);
+  generation:ulong;
+}
+table AgentRequestWakeOutcome {
+  receiver_id:string (required);
+  notification_id:string (required);
+  generation:ulong;
+  outcome:AgentWakeOutcome (required);
+}
+union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome }
+table AgentWakeOutcomeAccepted {
+
+}
+table AgentWakeOutcomeFailed {
+  reason:string (required);
+}
+table AgentWakeOutcomeUnknown {
+  reason:string (required);
+}
+union AgentWakeOutcome { AgentWakeOutcomeAccepted, AgentWakeOutcomeFailed, AgentWakeOutcomeUnknown }
+table RequestFailureSessionClosing {
+  outcome:RequestOutcome;
+}
+union RequestFailure { RequestFailureSessionClosing }
+table OptionalU64 {
+  value:ulong;
+}
+table OptionalPalette {
+  value:[Rgb] (required);
+}
+table OptionalUsize {
+  value:ulong;
+}
+
+// Exact JSON number domains, without a JSON text representation.
+table NullValue {}
+table BoolValue { value:bool; }
+table SignedValue { value:long; }
+table UnsignedValue { value:ulong; }
+table FloatValue { value:double; }
+table StringValue { value:string (required); }
+table ArrayValue { values:[Value] (required); }
+table Entry { key:string (required); value:Value (required); }
+table ObjectValue { entries:[Entry] (required); }
+union ValueBody { NullValue, BoolValue, SignedValue, UnsignedValue, FloatValue, StringValue, ArrayValue, ObjectValue }
+table Value { body:ValueBody (required); }
+table ControlPayload { value:Value (required); }
+table PanePayload { metadata:Value (required); scene:[ubyte]; }
+union Payload { ControlPayload, PanePayload }
+table Request { version:uint; operation:Operation (required); }
+table OptionalPayload { value:Payload (required); }
+table OptionalFailure { value:RequestFailure (required); }
+table Response { version:uint; ok:bool; result:OptionalPayload; error:string; failure:OptionalFailure; }

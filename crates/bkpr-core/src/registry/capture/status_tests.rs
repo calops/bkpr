@@ -86,6 +86,8 @@ fn registry_watcher_receives_hidden_harness_status_without_admitting_any_views()
             name: Some("not attached".into()),
             initial: None,
         }))
+        .unwrap()
+        .into_json()
         .unwrap()["workspace_id"]
         .as_str()
         .unwrap()
@@ -115,6 +117,8 @@ fn registry_watcher_receives_hidden_harness_status_without_admitting_any_views()
                 },
             },
         }))
+        .unwrap()
+        .into_json()
         .unwrap();
     let pane_id = result["pane_id"].as_str().unwrap();
     let pane = fixture.registry.capture_pane(pane_id).unwrap();
@@ -147,6 +151,8 @@ fn registry_watcher_receives_hidden_harness_status_without_admitting_any_views()
                     after: revision,
                     wait_ms: 1000,
                 }))
+                .unwrap()
+                .into_json()
                 .unwrap();
             let snapshot: RegistryResult = serde_json::from_value(response).unwrap();
             revision = snapshot.registry.revision;

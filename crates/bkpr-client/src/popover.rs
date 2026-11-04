@@ -610,8 +610,6 @@ mod tests {
                 row_deltas: false,
                 scene_encodings: Vec::new(),
             },
-            row_delta: None,
-            scene: None,
             selection: None,
             search: None,
         }

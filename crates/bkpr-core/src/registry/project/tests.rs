@@ -33,6 +33,8 @@ impl Fixture {
                     isolated_environment: true,
                 },
             }))
+            .unwrap()
+            .into_json()
             .unwrap();
         Self {
             registry,
@@ -159,6 +161,8 @@ fn live_project_metadata_is_neither_durable_nor_restored_as_a_live_fact() {
             pane_id: fixture.pane.clone(),
             title: "durability boundary".into(),
         }))
+        .unwrap()
+        .into_json()
         .unwrap();
     let bytes = fs::read(fixture._state.path().join("registry.json")).unwrap();
     let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -633,7 +637,10 @@ fn native_completion_retires_project_metadata() {
         .get(&fixture.pane)
         .unwrap()
         .clone();
-    pane.request(PaneRequest::Shutdown).unwrap();
+    pane.request(PaneRequest::Shutdown)
+        .unwrap()
+        .into_json()
+        .unwrap();
     fixture.registry.record_completion(&fixture.pane).unwrap();
     let snapshot = fixture.registry.snapshot().unwrap();
     let pane = snapshot

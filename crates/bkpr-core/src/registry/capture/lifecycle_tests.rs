@@ -45,6 +45,8 @@ fn seed_launch_command(
                 },
             },
         }))
+        .unwrap()
+        .into_json()
         .unwrap();
     let id = result["pane_id"].as_str().unwrap().to_owned();
     let pane = fixture.registry.capture_pane(&id).unwrap();
@@ -211,6 +213,8 @@ fn first_and_after_last_pane_observe_real_foreground_cwd_without_manual_refresh(
                     },
                 },
             }))
+            .unwrap()
+            .into_json()
             .unwrap();
         let id = result["pane_id"].as_str().unwrap();
         let deadline = Instant::now() + Duration::from_secs(8);
@@ -232,6 +236,8 @@ fn first_and_after_last_pane_observe_real_foreground_cwd_without_manual_refresh(
             .request(Request::new(Operation::PaneTerminate {
                 pane_id: id.into(),
             }))
+            .unwrap()
+            .into_json()
             .unwrap();
         // Wait for the previous observation owner to retire before exercising restart.
         let deadline = Instant::now() + Duration::from_secs(8);
@@ -267,6 +273,8 @@ fn authenticated_bind_storage_failure_revokes_capture_and_poison_does_not_stop_n
     fixture
         .registry
         .request_authenticated(event("verified-first"), &peer)
+        .unwrap()
+        .into_json()
         .unwrap();
     // Native turn-boundary callbacks repeat the same facts. With unrelated
     // project publication stopped, neither durability nor registry revision changes.
@@ -276,6 +284,8 @@ fn authenticated_bind_storage_failure_revokes_capture_and_poison_does_not_stop_n
     fixture
         .registry
         .request_authenticated(event("verified-first"), &peer)
+        .unwrap()
+        .into_json()
         .unwrap();
     assert_eq!(
         fixture.registry.snapshot().unwrap().revision,
@@ -349,6 +359,8 @@ fn authenticated_end_revokes_even_if_agent_retirement_storage_fails_and_keeps_ve
             }),
             &peer,
         )
+        .unwrap()
+        .into_json()
         .unwrap();
     let path = fixture._root.path().join("agents/state.json");
     fs::remove_file(&path).unwrap();
@@ -501,12 +513,16 @@ fn agent_recovery_control_defaults_to_live_workspace_and_cannot_resume_foreign_o
             control(Operation::RecoveryList, AgentScope::Workspace),
             &peer,
         )
+        .unwrap()
+        .into_json()
         .unwrap();
     assert_eq!(local["recoveries"].as_array().unwrap().len(), 1);
     assert_eq!(local["recoveries"][0]["pane_id"], saved[0].0);
     let wider = fixture
         .registry
         .request_authenticated(control(Operation::RecoveryList, AgentScope::Session), &peer)
+        .unwrap()
+        .into_json()
         .unwrap();
     assert_eq!(wider["recoveries"].as_array().unwrap().len(), 2);
     let before = fixture.registry.snapshot().unwrap().panes.len();
@@ -545,20 +561,22 @@ fn agent_recovery_control_defaults_to_live_workspace_and_cannot_resume_foreign_o
 }
 
 fn bind_native(registry: &Registry, grant: &CaptureGrant, peer: &Peer, id: &str) -> Result<Value> {
-    registry.request_authenticated(
-        Request::new(Operation::HarnessEvent {
-            launch_id: grant.launch_id.clone(),
-            token: grant.token.clone(),
-            event: CaptureEvent::Bind {
-                conversation_id: id.into(),
-                source: match grant.kind {
-                    HarnessKind::Codex => ConversationSource::CodexResume,
-                    _ => ConversationSource::ClaudeHook,
+    registry
+        .request_authenticated(
+            Request::new(Operation::HarnessEvent {
+                launch_id: grant.launch_id.clone(),
+                token: grant.token.clone(),
+                event: CaptureEvent::Bind {
+                    conversation_id: id.into(),
+                    source: match grant.kind {
+                        HarnessKind::Codex => ConversationSource::CodexResume,
+                        _ => ConversationSource::ClaudeHook,
+                    },
                 },
-            },
-        }),
-        peer,
-    )
+            }),
+            peer,
+        )
+        .and_then(Payload::into_json)
 }
 fn own_windows(registry: &Registry, panes: &[String]) -> (String, Vec<String>) {
     let workspace = Uuid::new_v4().to_string();
@@ -656,6 +674,8 @@ fn view_detach_during_termination_durability_never_strands_live_capture_or_loses
                 },
             },
         }))
+        .unwrap()
+        .into_json()
         .unwrap();
     let view = attached["view_id"].as_str().unwrap().to_owned();
     let (entered, entered_rx) = std::sync::mpsc::sync_channel(1);

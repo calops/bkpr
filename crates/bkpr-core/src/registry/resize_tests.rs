@@ -35,10 +35,12 @@ impl Drop for ReleaseClipboard {
     }
 }
 fn pane_request(registry: &Registry, pane_id: &str, request: PaneRequest) -> Result<Value> {
-    registry.request(Request::new(Operation::Pane {
-        pane_id: pane_id.into(),
-        request,
-    }))
+    registry
+        .request(Request::new(Operation::Pane {
+            pane_id: pane_id.into(),
+            request,
+        }))
+        .and_then(Payload::into_json)
 }
 fn policy_spec(cols: u16) -> ViewSpec {
     ViewSpec {

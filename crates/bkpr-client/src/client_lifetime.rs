@@ -1,14 +1,18 @@
-use super::{checked_response, request_stream, validate_response};
-use anyhow::{Context, Result, ensure};
-use bkpr_protocol::{
-    ClientAuthority, ClientEvent, Operation, PROTOCOL_VERSION, Request, Response, SessionInfo,
+use super::{
+    checked_payload_response, checked_response, request_client_stream, request_stream,
+    validate_response,
 };
-use serde::{Deserialize, Serialize};
+use anyhow::{Context, Result, bail, ensure};
+use bkpr_protocol::{
+    ClientAuthority, Operation, PaneSnapshot, Payload, Request, SessionInfo, scene_wire,
+    wire::{self, Codec, Kind},
+};
+use serde::Deserialize;
 use serde_json::Value;
 use std::{
     collections::HashMap,
     ffi::OsString,
-    io::{Read, Write},
+    io::Read,
     net::Shutdown,
     os::{
         fd::{AsRawFd, RawFd},
@@ -19,7 +23,7 @@ use std::{
     time::Duration,
 };
 
-const MAX_LIFETIME_LINE: usize = 64 * 1024;
+const MAX_LIFETIME_PAYLOAD: usize = 64 * 1024;
 const LIFECYCLE_READ_BUDGET: usize = 16 * 1024;
 
 #[derive(Debug)]
@@ -35,16 +39,6 @@ impl std::error::Error for DetachedBeforeDispatch {}
 /// remains an unknown outcome and must never be reported as undispatched.
 pub fn detached_before_dispatch(error: &anyhow::Error) -> bool {
     error.is::<DetachedBeforeDispatch>() && !super::outcome_unknown(error)
-}
-
-/// Same wire envelope as Request(Operation::Client), without cloning secrets
-/// or allocating a Box for each key, poll, or other managed request.
-#[derive(Serialize)]
-struct ManagedRequest<'a> {
-    version: u32,
-    op: &'static str,
-    authority: &'a ClientAuthority,
-    request: &'a Operation,
 }
 
 struct LeaseState {
@@ -149,8 +143,13 @@ impl Endpoint {
 
     /// Dispatch exactly once; never replay a request after disconnect/takeover.
     pub fn checked(&self, operation: Operation) -> Result<Value> {
+        self.checked_payload(operation)?.into_json()
+    }
+
+    /// Dispatch without converting binary pane scenes into diagnostic JSON.
+    pub fn checked_payload(&self, operation: Operation) -> Result<Payload> {
         let is_observation = observational(&operation);
-        let result = (|| -> Result<Value> {
+        let result = (|| -> Result<Payload> {
             ensure!(
                 !matches!(
                     &operation,
@@ -185,24 +184,45 @@ impl Endpoint {
                 id,
             };
             let response = match &self.lease.authority {
-                Some(authority) => request_stream(
-                    &mut stream,
-                    &ManagedRequest {
-                        version: PROTOCOL_VERSION,
-                        op: "client",
-                        authority,
-                        request: &operation,
-                    },
-                )?,
+                Some(authority) => request_client_stream(&mut stream, authority, &operation)?,
                 None => request_stream(&mut stream, &Request::new(operation))?,
             };
-            checked_response(response)
+            checked_payload_response(response)
         })();
         if is_observation {
             result.map_err(super::observation_error)
         } else {
             result
         }
+    }
+
+    /// Decode owned scene bytes directly, before the poller advances its cursors.
+    pub fn checked_scene(
+        &self,
+        operation: Operation,
+    ) -> Result<(PaneSnapshot, Option<scene_wire::DecodedScene>)> {
+        let Payload::Pane(payload) = self.checked_payload(operation)? else {
+            bail!("pane response omitted native scene payload");
+        };
+        let metadata: PaneSnapshot =
+            serde_json::from_value(payload.metadata).context("decoding pane snapshot metadata")?;
+        ensure!(
+            metadata.frame.is_none(),
+            "native pane metadata must not contain a JSON frame"
+        );
+        let scene = payload
+            .scene
+            .as_deref()
+            .map(scene_wire::decode)
+            .transpose()
+            .context("decoding native pane scene")?;
+        if let Some(scene) = &scene {
+            ensure!(
+                scene.revision == metadata.revision,
+                "native pane scene revision does not match snapshot metadata"
+            );
+        }
+        Ok((metadata, scene))
     }
 }
 
@@ -274,17 +294,17 @@ impl RegisteredClient {
             session_id: session.session.session_id.clone(),
             daemon_id: session.session.daemon_id.clone(),
         });
-        {
-            let mut writer = std::io::BufWriter::new(&mut lifetime);
-            serde_json::to_writer(&mut writer, &request)?;
-            writer.write_all(b"\n")?;
-            writer.flush()?;
-        }
+        let mut codec = Codec::new();
+        wire::write_frame(
+            &mut lifetime,
+            Kind::Request,
+            codec.encode_request(&request)?,
+        )?;
         // Read exactly the ACK: a coalesced takeover event must remain on the
         // socket so the frontend's lifecycle descriptor is still readable.
-        let line = registration_line(&mut lifetime)?;
-        let response: Response =
-            serde_json::from_slice(&line).context("decoding client registration response")?;
+        let bytes = wire::read_frame(&mut lifetime, Kind::Response, MAX_LIFETIME_PAYLOAD)?;
+        let response =
+            wire::decode_response_owned(bytes).context("decoding client registration response")?;
         let registered: RegistrationReply =
             serde_json::from_value(checked_response(validate_response(response)?)?)
                 .context("decoding registered client identity")?;
@@ -374,36 +394,47 @@ impl RegisteredClient {
     fn read_lifecycle(&mut self) -> Result<bool> {
         let stream = self.lifetime.as_mut().unwrap();
         let mut bytes = [0; 1024];
-        for _ in 0..LIFECYCLE_READ_BUDGET / bytes.len() {
-            match stream.read(&mut bytes) {
+        let mut budget = LIFECYCLE_READ_BUDGET;
+        let mut reads = LIFECYCLE_READ_BUDGET / bytes.len();
+        loop {
+            let target = if self.pending.len() < wire::HEADER_LEN {
+                wire::HEADER_LEN
+            } else {
+                wire::HEADER_LEN
+                    + wire::frame_payload_len(
+                        &self.pending[..wire::HEADER_LEN],
+                        Kind::ClientEvent,
+                        MAX_LIFETIME_PAYLOAD,
+                    )?
+            };
+            if self.pending.len() == target {
+                let event = wire::decode_client_event(&self.pending[wire::HEADER_LEN..])
+                    .context("decoding client lifecycle event")?;
+                ensure!(
+                    event.event == "client_detached",
+                    "unsupported client lifecycle event"
+                );
+                if event.reason == "shutdown" {
+                    self.endpoint.lease.state.lock().unwrap().session_ended = true;
+                }
+                return Ok(true);
+            }
+            if budget == 0 || reads == 0 {
+                return Ok(false);
+            }
+            let length = (target - self.pending.len()).min(bytes.len()).min(budget);
+            reads -= 1;
+            match stream.read(&mut bytes[..length]) {
                 Ok(0) => return Ok(true),
                 Ok(count) => {
-                    let end = bytes[..count].iter().position(|byte| *byte == b'\n');
-                    let length = end.map_or(count, |index| index + 1);
-                    ensure!(
-                        self.pending.len() + length <= MAX_LIFETIME_LINE,
-                        "client lifecycle event exceeds limit"
-                    );
-                    self.pending.extend_from_slice(&bytes[..length]);
-                    if end.is_some() {
-                        let event: ClientEvent = serde_json::from_slice(&self.pending)
-                            .context("decoding client lifecycle event")?;
-                        ensure!(
-                            event.event == "client_detached",
-                            "unsupported client lifecycle event"
-                        );
-                        if event.reason == "shutdown" {
-                            self.endpoint.lease.state.lock().unwrap().session_ended = true;
-                        }
-                        return Ok(true);
-                    }
+                    self.pending.extend_from_slice(&bytes[..count]);
+                    budget -= count;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error).context("reading client lifetime"),
             }
         }
-        Ok(false)
     }
 
     pub fn detach(&mut self) -> Result<()> {
@@ -429,57 +460,11 @@ impl Drop for RegisteredClient {
     }
 }
 
-fn registration_line(stream: &mut UnixStream) -> Result<Vec<u8>> {
-    let mut line = Vec::new();
-    let mut bytes = [0u8; 1024];
-    loop {
-        // Peek without consuming future lifecycle events. The descriptor is
-        // exclusively owned here and remains valid for the entire recv call.
-        let count = unsafe {
-            libc::recv(
-                stream.as_raw_fd(),
-                bytes.as_mut_ptr().cast(),
-                bytes.len(),
-                libc::MSG_PEEK,
-            )
-        };
-        if count < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error).context("reading client registration response");
-        }
-        ensure!(
-            count > 0,
-            "server closed client registration before newline"
-        );
-        let count = count as usize;
-        let end = bytes[..count].iter().position(|byte| *byte == b'\n');
-        let length = end.map_or(count, |index| index + 1);
-        ensure!(
-            line.len() + length <= MAX_LIFETIME_LINE,
-            "client registration response exceeds limit"
-        );
-        stream
-            .read_exact(&mut bytes[..length])
-            .context("reading client registration response")?;
-        line.extend_from_slice(&bytes[..length]);
-        if end.is_some() {
-            return Ok(line);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        io::{BufRead, BufReader},
-        os::unix::net::UnixListener,
-        sync::mpsc,
-        thread,
-    };
+    use bkpr_protocol::{ClientEvent, PROTOCOL_VERSION, Response};
+    use std::{io::Write, os::unix::net::UnixListener, sync::mpsc, thread};
 
     #[test]
     fn source_capture_resolves_relative_raw_paths_and_preserves_intentional_absence() {
@@ -507,17 +492,91 @@ mod tests {
         }
     }
 
+    fn reply(response: Response) -> Vec<u8> {
+        let mut codec = Codec::new();
+        wire::encode_frame(Kind::Response, codec.encode_response(&response).unwrap()).unwrap()
+    }
+
     fn response(result: Value) -> Vec<u8> {
-        let mut bytes = serde_json::to_vec(&Response {
-            version: bkpr_protocol::PROTOCOL_VERSION,
+        reply(Response {
+            version: PROTOCOL_VERSION,
             ok: true,
-            result: Some(result),
+            result: Some(result.into()),
             error: None,
             failure: None,
         })
-        .unwrap();
-        bytes.push(b'\n');
-        bytes
+    }
+
+    fn detached(reason: &str) -> Vec<u8> {
+        let mut codec = Codec::new();
+        wire::encode_frame(
+            Kind::ClientEvent,
+            codec
+                .encode_client_event(&ClientEvent {
+                    event: "client_detached".into(),
+                    reason: reason.into(),
+                })
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn lifecycle_pair() -> (RegisteredClient, UnixStream) {
+        let (lifetime, server) = UnixStream::pair().unwrap();
+        lifetime.set_nonblocking(true).unwrap();
+        (
+            RegisteredClient {
+                endpoint: Endpoint::unmanaged(Path::new("unused.sock")),
+                session: session(),
+                lifetime: Some(lifetime),
+                pending: Vec::new(),
+                activation_attempted: false,
+                agent_socket: None,
+            },
+            server,
+        )
+    }
+
+    #[test]
+    fn fragmented_lifecycle_header_and_payload_preserve_authoritative_shutdown() {
+        let (mut client, mut server) = lifecycle_pair();
+        let bytes = detached("shutdown");
+        for fragment in bytes[..bytes.len() - 1].chunks(3) {
+            server.write_all(fragment).unwrap();
+            assert!(!client.consume_lifecycle().unwrap());
+            assert!(!client.endpoint().is_revoked());
+        }
+        server.write_all(&bytes[bytes.len() - 1..]).unwrap();
+        assert!(client.consume_lifecycle().unwrap());
+        assert!(client.endpoint().is_revoked());
+        assert!(client.endpoint().session_ended());
+    }
+
+    #[test]
+    fn invalid_lifecycle_frames_fail_closed_without_claiming_shutdown() {
+        let mut codec = Codec::new();
+        let oversized = ClientEvent {
+            event: "client_detached".into(),
+            reason: "x".repeat(MAX_LIFETIME_PAYLOAD),
+        };
+        let cases = [
+            wire::encode_frame(Kind::Response, &[0]).unwrap(),
+            wire::encode_frame(Kind::ClientEvent, &[0]).unwrap(),
+            wire::encode_frame(
+                Kind::ClientEvent,
+                codec.encode_client_event(&oversized).unwrap(),
+            )
+            .unwrap()[..wire::HEADER_LEN]
+                .to_vec(),
+        ];
+        for bytes in cases {
+            let (mut client, mut server) = lifecycle_pair();
+            server.write_all(&bytes).unwrap();
+            assert!(client.consume_lifecycle().is_err());
+            assert!(client.endpoint().is_revoked());
+            assert!(!client.endpoint().session_ended());
+            assert!(client.consume_lifecycle().unwrap());
+        }
     }
 
     fn registration(session: SessionInfo) -> Value {
@@ -531,9 +590,8 @@ mod tests {
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
-        let mut line = Vec::new();
-        BufReader::new(stream).read_until(b'\n', &mut line).unwrap();
-        serde_json::from_slice(&line).unwrap()
+        let bytes = wire::read_frame(stream, Kind::Request, wire::MAX_REQUEST).unwrap();
+        wire::decode_request(&bytes).unwrap()
     }
 
     fn fixture(
@@ -573,7 +631,7 @@ mod tests {
         let (finish, finished) = mpsc::channel();
         let (_directory, socket, server) = fixture(move |mut lifetime, _| {
             let mut bytes = response(registration(session()));
-            bytes.extend_from_slice(b"{\"event\":\"client_detached\",\"reason\":\"takeover\"}\n");
+            bytes.extend_from_slice(&detached("takeover"));
             lifetime.write_all(&bytes).unwrap();
             // Keep the descriptor open: EOF must not conceal an ACK reader
             // accidentally swallowing the coalesced lifecycle event.
@@ -762,9 +820,7 @@ mod tests {
                 read_request(&mut control).operation,
                 Operation::Client { .. }
             ));
-            lifetime
-                .write_all(b"{\"event\":\"client_detached\",\"reason\":\"shutdown\"}\n")
-                .unwrap();
+            lifetime.write_all(&detached("shutdown")).unwrap();
             accepted.send(()).unwrap();
             let mut byte = [0];
             assert_eq!(control.read(&mut byte).unwrap(), 0);
@@ -799,29 +855,22 @@ mod tests {
                     read_request(&mut control).operation,
                     Operation::Client { .. }
                 ));
-                lifetime
-                    .write_all(b"{\"event\":\"client_detached\",\"reason\":\"shutdown\"}\n")
-                    .unwrap();
+                lifetime.write_all(&detached("shutdown")).unwrap();
                 accepted.send(()).unwrap();
                 released.recv_timeout(Duration::from_secs(3)).unwrap();
                 let reply = match outcome {
                     "committed" => response(serde_json::json!({"committed_name":"renamed"})),
-                    _ => {
-                        let mut bytes = serde_json::to_vec(&Response {
-                            version: PROTOCOL_VERSION,
-                            ok: false,
-                            result: None,
-                            error: Some("durable mutation failed".into()),
-                            failure: (outcome == "unknown").then_some(
-                                bkpr_protocol::RequestFailure::SessionClosing {
-                                    outcome: bkpr_protocol::RequestOutcome::Unknown,
-                                },
-                            ),
-                        })
-                        .unwrap();
-                        bytes.push(b'\n');
-                        bytes
-                    }
+                    _ => reply(Response {
+                        version: PROTOCOL_VERSION,
+                        ok: false,
+                        result: None,
+                        error: Some("durable mutation failed".into()),
+                        failure: (outcome == "unknown").then_some(
+                            bkpr_protocol::RequestFailure::SessionClosing {
+                                outcome: bkpr_protocol::RequestOutcome::Unknown,
+                            },
+                        ),
+                    }),
                 };
                 control.write_all(&reply).unwrap();
                 listener.set_nonblocking(true).unwrap();

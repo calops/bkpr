@@ -506,8 +506,14 @@ rows preserve status, repository/worktree details, semantic colors and stale/err
 labels. Workspace summaries group linked worktrees without repeating the project
 name. These popups use already-held facts, never hidden view attachments or
 provider/filesystem work on the render path. Contradictory foreground identities
-hide retired harness facts. Contextual hints always use a passive popup populated from the
-same effective bindings as dispatch. It stays left-anchored inside the sidebar,
+hide retired harness facts. The popup's first content row aligns with its source
+item. Confirmed RGB clients use main's linear-light lifted material consistently
+across the highlighted item, card and border cells; tree guides disappear inside
+that item and return when the popup closes. Limited-color clients retain native
+inverse keyboard selection.
+
+Contextual hints always use a passive popup populated from the same effective
+bindings as dispatch. It stays left-anchored inside the sidebar,
 overflowing only when the visible content needs more width. Sidebar mode uses
 a blue tint; prefix, resize and history/search modes use a yellow tint.
 
@@ -839,11 +845,17 @@ read-only display; assume the same user without a new permissions framework.
 
 ### Requests and explicit shutdown
 
-Requests use protocol version 4. Registry operations target workspaces, their
-independent windows and owned panes; terminal/view operations are pane-scoped.
-Active-window selection belongs to each client. Older daemons reject this
-protocol before attachment or takeover; stop only an owned test session and
-start a fresh one with the matching launcher/server pair.
+Native client/server connections use binary Planus wire family 5. Registry
+operations target workspaces, their independent windows and owned panes;
+terminal/view operations are pane-scoped. Active-window selection belongs to
+each client. The `request` utility still accepts and prints JSON; that is its
+human-facing boundary, not the socket format.
+
+Use a matching launcher/server pair. Existing version-4 sessions stay running
+and remain usable with their matching old client; a version-5 client refuses
+attachment or takeover rather than restarting or replacing them. Retain the
+old binaries for those sessions, or explicitly stop the intended session before
+starting a fresh one. Recovery records keep their existing private schema.
 
 Client registration does not select an SSH agent. The attaching client captures
 its original `SSH_AUTH_SOCK` locally, resolving relative paths against its
@@ -855,9 +867,9 @@ Source paths are ephemeral, redacted from request debug output and never session
 ```sh
 "$CARGO_TARGET_DIR/debug/bkpr" context --socket "$BKPR_RUN/control.sock"
 "$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
-  '{"version":4,"op":"inspect"}'
+  '{"version":5,"op":"inspect"}'
 "$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
-  '{"version":4,"op":"shutdown"}'
+  '{"version":5,"op":"shutdown"}'
 ```
 
 Check `ok` and `error` before treating an operation as successful. Shutdown closes
@@ -886,7 +898,7 @@ stopped. Older metadata upgrades without inventing active native bindings;
 ambiguous foreign-workspace ownership is rejected without replacing the record.
 
 Retired metadata can be explicitly forgotten with
-`{"version":4,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
+`{"version":5,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
 has stopped, every layout reference has been removed and all its views detached.
 This releases record capacity; it is not termination or automatic history pruning.
 

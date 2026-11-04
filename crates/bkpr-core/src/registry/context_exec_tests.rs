@@ -318,7 +318,7 @@ fn pending_names_are_reserved_for_exec_without_blocking_unrelated_workspaces() {
     );
 
     drop(release);
-    let accepted = worker.join().unwrap().unwrap();
+    let accepted = worker.join().unwrap().unwrap().into_json().unwrap();
     let accepted_id = pane_id(&accepted);
     assert_canonical(registry, &accepted_id, &home);
     assert_eq!(
@@ -601,6 +601,10 @@ fn inherited_context_is_stripped_without_clobbering_user_settings_or_standalone_
         ] {
             assert!(!fields.contains_key(key));
         }
-        unowned.request(PaneRequest::Shutdown).unwrap();
+        unowned
+            .request(PaneRequest::Shutdown)
+            .unwrap()
+            .into_json()
+            .unwrap();
     }
 }

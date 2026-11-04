@@ -5,7 +5,6 @@ use bkpr_protocol::{
 };
 use std::{
     fs,
-    io::{BufRead, BufReader, Write},
     os::unix::{fs::PermissionsExt, net::UnixStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -41,7 +40,9 @@ impl Fixture {
         }
     }
     fn command(&self, argv: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_bkprd"));
+        let executable = std::env::var_os("BKPR_TEST_SERVER")
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_bkprd").into());
+        let mut command = Command::new(executable);
         command
             .env_clear()
             .env(
@@ -103,7 +104,7 @@ impl Daemon {
             "daemon rejected fixture request: {:?}",
             response.error
         );
-        response.result.unwrap()
+        response.result.unwrap().into_json().unwrap()
     }
     fn snapshot(&self) -> RegistrySnapshot {
         let response: RegistryResult =
@@ -152,11 +153,21 @@ fn request(socket: &Path, operation: Operation) -> anyhow::Result<Response> {
     let mut stream = UnixStream::connect(socket)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    serde_json::to_writer(&mut stream, &Request::new(operation))?;
-    stream.write_all(b"\n")?;
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
-    Ok(serde_json::from_str(&line)?)
+    send_request(&mut stream, operation)?;
+    read_response(&mut stream)
+}
+fn send_request(stream: &mut UnixStream, operation: Operation) -> anyhow::Result<()> {
+    let mut codec = bkpr_protocol::wire::Codec::new();
+    let bytes = codec.encode_request(&Request::new(operation))?;
+    bkpr_protocol::wire::write_frame(stream, bkpr_protocol::wire::Kind::Request, bytes)
+}
+fn read_response(stream: &mut impl std::io::Read) -> anyhow::Result<Response> {
+    let bytes = bkpr_protocol::wire::read_frame(
+        stream,
+        bkpr_protocol::wire::Kind::Response,
+        96 * 1024 * 1024,
+    )?;
+    bkpr_protocol::wire::decode_response_owned(bytes)
 }
 fn wait_for(path: &Path, bytes: &[u8]) {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -676,19 +687,15 @@ fn last_explicit_workspace_close_notifies_lifetime_and_reaps_standalone_without_
     lifetime
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    serde_json::to_writer(
+    send_request(
         &mut lifetime,
-        &Request::new(Operation::ClientRegister {
+        Operation::ClientRegister {
             session_id: identity["session"]["session_id"].as_str().unwrap().into(),
             daemon_id: identity["session"]["daemon_id"].as_str().unwrap().into(),
-        }),
+        },
     )
     .unwrap();
-    lifetime.write_all(b"\n").unwrap();
-    let mut lifetime = BufReader::new(lifetime);
-    let mut line = String::new();
-    lifetime.read_line(&mut line).unwrap();
-    let registered: Response = serde_json::from_str(&line).unwrap();
+    let registered = read_response(&mut lifetime).unwrap();
     assert!(registered.ok, "{:?}", registered.error);
     let standalone = daemon.send(Operation::PaneSpawn {
         workspace_id: None,
@@ -713,11 +720,15 @@ fn last_explicit_workspace_close_notifies_lifetime_and_reaps_standalone_without_
     // Keep the lifetime open and send no acknowledgement. Shutdown cannot wait
     // for client participation, or for this reader to drain its event.
     daemon.wait_for_exit();
-    line.clear();
-    lifetime.read_line(&mut line).unwrap();
-    let event: serde_json::Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(event["event"], "client_detached");
-    assert_eq!(event["reason"], "shutdown");
+    let bytes = bkpr_protocol::wire::read_frame(
+        &mut lifetime,
+        bkpr_protocol::wire::Kind::ClientEvent,
+        8192,
+    )
+    .unwrap();
+    let event = bkpr_protocol::wire::decode_client_event(&bytes).unwrap();
+    assert_eq!(event.event, "client_detached");
+    assert_eq!(event.reason, "shutdown");
     #[cfg(target_os = "linux")]
     assert!(
         !Path::new("/proc")
@@ -760,19 +771,15 @@ fn administrative_documents_detach_and_layout_removal_do_not_end_session() {
     lifetime
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    serde_json::to_writer(
+    send_request(
         &mut lifetime,
-        &Request::new(Operation::ClientRegister {
+        Operation::ClientRegister {
             session_id: identity["session"]["session_id"].as_str().unwrap().into(),
             daemon_id: identity["session"]["daemon_id"].as_str().unwrap().into(),
-        }),
+        },
     )
     .unwrap();
-    lifetime.write_all(b"\n").unwrap();
-    let mut lifetime = BufReader::new(lifetime);
-    let mut line = String::new();
-    lifetime.read_line(&mut line).unwrap();
-    assert!(serde_json::from_str::<Response>(&line).unwrap().ok);
+    assert!(read_response(&mut lifetime).unwrap().ok);
     drop(lifetime);
     let after = daemon.snapshot();
     assert_eq!(after.workspaces.len(), 2);
@@ -794,14 +801,13 @@ fn last_pane_termination_ends_session_even_when_requester_disconnects_before_res
     let mut daemon = fixture.start(&["/bin/sh", "-c", "exec sleep 60"]);
     let snapshot = daemon.snapshot();
     let mut stream = UnixStream::connect(&fixture.socket).unwrap();
-    serde_json::to_writer(
+    send_request(
         &mut stream,
-        &Request::new(Operation::PaneTerminate {
+        Operation::PaneTerminate {
             pane_id: snapshot.panes[0].id.clone(),
-        }),
+        },
     )
     .unwrap();
-    stream.write_all(b"\n").unwrap();
     // No response read and no lifetime acknowledgement can gate session teardown.
     drop(stream);
     daemon.wait_for_exit();
@@ -897,7 +903,8 @@ fn owned_native_fixture() {
     )
     .unwrap();
     assert!(begin.ok, "{:?}", begin.error);
-    let grant: CaptureGrant = serde_json::from_value(begin.result.unwrap()).unwrap();
+    let grant: CaptureGrant =
+        serde_json::from_value(begin.result.unwrap().into_json().unwrap()).unwrap();
     let _native = NativeFixtureChild(Command::new(home.join("native/codex"))
         .args(["-c", "printf ready > \"$HOME/native-ready\"; while test ! -f \"$HOME/release-native\"; do sleep 0.02; done"])
         .spawn().unwrap());

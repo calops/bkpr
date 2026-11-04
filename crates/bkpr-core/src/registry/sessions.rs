@@ -124,8 +124,10 @@ impl ClientLease {
             event: "client_detached".into(),
             reason: reason.into(),
         };
-        if let Ok(mut bytes) = serde_json::to_vec(&event) {
-            bytes.push(b'\n');
+        let mut codec = bkpr_protocol::wire::Codec::new();
+        if let Ok(bytes) = codec.encode_client_event(&event).and_then(|payload| {
+            bkpr_protocol::wire::encode_frame(bkpr_protocol::wire::Kind::ClientEvent, payload)
+        }) {
             crate::transport::send_lifetime_event(&self.lifetime, &bytes);
         }
         let _ = self.lifetime.shutdown(std::net::Shutdown::Both);
@@ -263,7 +265,7 @@ impl Registry {
         authority: ClientAuthority,
         operation: Operation,
         stream: &UnixStream,
-    ) -> Result<Value> {
+    ) -> Result<Payload> {
         let client = {
             let clients = self.inner.clients.lock().unwrap();
             self.request_admission()?;
@@ -282,10 +284,12 @@ impl Registry {
             Operation::ClientActivate {
                 detach_others,
                 agent_socket,
-            } => self.activate_client(&client, detach_others, agent_socket),
+            } => self
+                .activate_client(&client, detach_others, agent_socket)
+                .map(Payload::Control),
             Operation::ClientDetach => {
                 self.detach_client(&client, "detached");
-                Ok(json!({"detached":true}))
+                Ok(Payload::Control(json!({"detached":true})))
             }
             Operation::Client { .. }
             | Operation::ClientRegister { .. }

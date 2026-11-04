@@ -8,13 +8,19 @@ fn wire(socket: &Path, request: Request) -> Value {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    serde_json::to_writer(&mut stream, &request).unwrap();
-    stream.write_all(b"\n").unwrap();
-    let mut bytes = Vec::new();
-    BufReader::new(stream)
-        .read_until(b'\n', &mut bytes)
-        .unwrap();
-    serde_json::from_slice(&bytes).unwrap()
+    let version = request.version;
+    let mut codec = Codec::new();
+    let mut frame = wire::encode_frame(
+        Kind::Request,
+        codec
+            .encode_request(&Request::new(request.operation))
+            .unwrap(),
+    )
+    .unwrap();
+    frame[4..8].copy_from_slice(&version.to_le_bytes());
+    stream.write_all(&frame).unwrap();
+    let bytes = wire::read_frame(&mut stream, Kind::Response, MAX_RESPONSE).unwrap();
+    serde_json::to_value(wire::decode_response(&bytes).unwrap()).unwrap()
 }
 
 #[cfg(target_os = "linux")]
@@ -43,6 +49,8 @@ fn explicit_shutdown_stops_poisoned_daemon_and_reaps_live_pane_even_when_respons
                 },
             },
         }))
+        .unwrap()
+        .into_json()
         .unwrap();
     let pane_id = created["pane_id"].as_str().unwrap().to_owned();
     let pid = registry
@@ -50,6 +58,8 @@ fn explicit_shutdown_stops_poisoned_daemon_and_reaps_live_pane_even_when_respons
             pane_id,
             request: PaneRequest::Inspect,
         }))
+        .unwrap()
+        .into_json()
         .unwrap()["pid"]
         .as_i64()
         .unwrap() as i32;
@@ -158,6 +168,8 @@ fn session_end_before_or_during_waker_registration_never_loses_shutdown() {
                 name: None,
                 initial: Some(native_spec(root.path())),
             }))
+            .unwrap()
+            .into_json()
             .unwrap();
         let close = Request::new(Operation::WorkspaceClose {
             workspace_id: created["workspace_id"].as_str().unwrap().into(),
@@ -168,7 +180,11 @@ fn session_end_before_or_during_waker_registration_never_loses_shutdown() {
         let socket = root.path().join("daemon.sock");
         let bound = bind(&socket).unwrap();
         if before_registration {
-            registry.request(close.clone()).unwrap();
+            registry
+                .request(close.clone())
+                .unwrap()
+                .into_json()
+                .unwrap();
             assert!(registry.session_end_requested());
         }
         let serving = registry.clone();
@@ -179,7 +195,7 @@ fn session_end_before_or_during_waker_registration_never_loses_shutdown() {
         if !before_registration {
             // Deliberately race the serve setup: registration must either observe
             // this committed flag or receive its callback; neither may be lost.
-            registry.request(close).unwrap();
+            registry.request(close).unwrap().into_json().unwrap();
         }
         finished_rx
             .recv_timeout(Duration::from_secs(5))
@@ -203,6 +219,8 @@ fn last_window_close_returns_truthful_success_and_stops_without_followup_request
             name: None,
             initial: Some(native_spec(root.path())),
         }))
+        .unwrap()
+        .into_json()
         .unwrap();
     let socket = root.path().join("daemon.sock");
     let bound = bind(&socket).unwrap();
@@ -242,9 +260,13 @@ fn session_shutdown_during_client_registration_preserves_response_then_lifetime_
             name: None,
             initial: Some(native_spec(root.path())),
         }))
+        .unwrap()
+        .into_json()
         .unwrap();
     let identity = registry
         .request(Request::new(Operation::SessionInfo))
+        .unwrap()
+        .into_json()
         .unwrap();
     let (mut server, client) = UnixStream::pair().unwrap();
     client
@@ -265,31 +287,30 @@ fn session_shutdown_during_client_registration_preserves_response_then_lifetime_
             workspace_id: workspace["id"].as_str().unwrap().into(),
             expected_revision: workspace["revision"].as_u64().unwrap(),
         }))
+        .unwrap()
+        .into_json()
         .unwrap();
     assert!(registry.session_end_requested());
     registry.shutdown().unwrap();
-    serde_json::to_writer(
+    let initial = super::response(Ok(Payload::Control(response)), true);
+    let mut codec = Codec::new();
+    wire::write_frame(
         &mut server,
-        &json!({
-            "version": PROTOCOL_VERSION, "ok": true, "result": response,
-        }),
+        Kind::Response,
+        codec.encode_response(&initial).unwrap(),
     )
     .unwrap();
-    server.write_all(b"\n").unwrap();
     lease.handshake_complete();
-    let mut reader = BufReader::new(client);
-    let mut line = String::new();
-    reader.read_line(&mut line).unwrap();
-    let initial: Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(initial["ok"], true);
-    assert!(initial["result"]["client"].is_object());
-    line.clear();
-    reader.read_line(&mut line).unwrap();
-    let event: Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(event["event"], "client_detached");
-    assert_eq!(event["reason"], "shutdown");
-    line.clear();
-    assert_eq!(reader.read_line(&mut line).unwrap(), 0);
+    let mut reader = client;
+    let bytes = wire::read_frame(&mut reader, Kind::Response, MAX_RESPONSE).unwrap();
+    let initial = wire::decode_response(&bytes).unwrap();
+    assert!(initial.ok);
+    assert!(initial.result.unwrap().into_json().unwrap()["client"].is_object());
+    let bytes = wire::read_frame(&mut reader, Kind::ClientEvent, MAX_RESPONSE).unwrap();
+    let event = wire::decode_client_event(&bytes).unwrap();
+    assert_eq!(event.event, "client_detached");
+    assert_eq!(event.reason, "shutdown");
+    assert_eq!(reader.read(&mut [0]).unwrap(), 0);
 }
 
 #[test]
@@ -320,7 +341,7 @@ fn review_regression_response_deadline_bounds_continuing_partial_progress() {
     consumer.join().unwrap();
     let error = result.expect_err("partial progress reset the complete response deadline");
     assert!(matches!(
-        error.kind(),
+        error.downcast_ref::<std::io::Error>().unwrap().kind(),
         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
     ));
 }
@@ -448,6 +469,8 @@ fn pending_registry_read_and_last_pane_or_document_close_keep_their_successful_r
                 name: None,
                 initial: Some(native_spec(root.path())),
             }))
+            .unwrap()
+            .into_json()
             .unwrap();
         let after = created["registry"]["revision"].as_u64().unwrap();
         let socket = root.path().join("daemon.sock");
@@ -482,13 +505,16 @@ fn pending_registry_read_and_last_pane_or_document_close_keep_their_successful_r
         worker.join().unwrap().unwrap();
         assert!(closed.ok, "{closed:?}");
         assert!(closed.failure.is_none());
-        assert_eq!(closed.result.unwrap()["registry"]["workspaces"], json!([]));
+        assert_eq!(
+            closed.result.unwrap().into_json().unwrap()["registry"]["workspaces"],
+            json!([])
+        );
         assert!(waited.ok, "{waited:?}");
         assert!(waited.failure.is_none());
         // A finite read timeout may win before native close finishes; either
         // valid snapshot must remain a successful read, not become a mutation error.
         assert!(
-            waited.result.unwrap()["registry"]["revision"]
+            waited.result.unwrap().into_json().unwrap()["registry"]["revision"]
                 .as_u64()
                 .unwrap()
                 >= after

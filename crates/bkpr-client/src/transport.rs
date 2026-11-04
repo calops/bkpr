@@ -1,14 +1,11 @@
 use anyhow::{Context, Result, bail};
 use bkpr_protocol::{
-    Operation, PROTOCOL_VERSION, Request, RequestFailure, RequestOutcome, Response,
+    ClientAuthority, Operation, PROTOCOL_VERSION, Payload, Request, RequestFailure, RequestOutcome,
+    Response,
+    wire::{self, Codec, Kind},
 };
 use serde_json::Value;
-use std::{
-    io::{BufRead, BufReader, Read, Write},
-    os::unix::net::UnixStream,
-    path::Path,
-    time::Duration,
-};
+use std::{io::Write, os::unix::net::UnixStream, path::Path, time::Duration};
 
 #[path = "client_lifetime.rs"]
 mod client_lifetime;
@@ -101,38 +98,45 @@ pub fn request(socket: &Path, request: &Request) -> Result<Response> {
 
 /// A caller-owned connection allows cancellation by shutting down a cloned socket.
 /// Configure read/write deadlines before dispatch; no request is replayed.
-pub fn request_stream<T: serde::Serialize + ?Sized>(
+pub fn request_stream(stream: &mut UnixStream, request: &Request) -> Result<Response> {
+    let mut codec = Codec::new();
+    let payload = codec.encode_request(request).context(OutcomeUnknown)?;
+    request_encoded_stream(stream, payload)
+}
+
+fn request_client_stream(
     stream: &mut UnixStream,
-    request: &T,
+    authority: &ClientAuthority,
+    operation: &Operation,
 ) -> Result<Response> {
+    let mut codec = Codec::new();
+    let payload = codec
+        .encode_client_request(authority, operation)
+        .context(OutcomeUnknown)?;
+    request_encoded_stream(stream, payload)
+}
+
+fn request_encoded_stream(stream: &mut UnixStream, payload: &[u8]) -> Result<Response> {
     // A missing or invalid reply cannot establish whether a mutation executed.
     // Keep that uncertainty typed through caller error contexts.
     let response = (|| -> Result<Response> {
         {
             let mut writer = std::io::BufWriter::new(&mut *stream);
-            serde_json::to_writer(&mut writer, request)?;
-            writer.write_all(b"\n")?;
+            wire::write_frame(&mut writer, Kind::Request, payload)?;
             writer.flush()?;
         }
-        let mut bytes = Vec::new();
-        if BufReader::new((&mut *stream).take(96 * 1024 * 1024 + 1))
-            .read_until(b'\n', &mut bytes)?
-            == 0
-        {
-            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
-        }
-        if bytes.len() > 96 * 1024 * 1024 {
-            bail!("server response exceeds scene limit");
-        }
-        let response: Response =
-            serde_json::from_slice(&bytes).context("decoding server response")?;
-        validate_response(response)
+        let bytes = wire::read_frame(stream, Kind::Response, wire::MAX_RESPONSE)?;
+        validate_response(wire::decode_response_owned(bytes).context("decoding server response")?)
     })();
     response.context(OutcomeUnknown)
 }
 pub fn checked(socket: &Path, operation: Operation) -> Result<Value> {
-    let response = request(socket, &Request::new(operation))?;
-    checked_response(response)
+    checked_payload(socket, operation)?.into_json()
+}
+
+/// Preserve native pane scene bytes for callers that do not need diagnostic JSON.
+pub fn checked_payload(socket: &Path, operation: Operation) -> Result<Payload> {
+    checked_payload_response(request(socket, &Request::new(operation))?)
 }
 
 /// Dispatch once on a connection whose lifetime and deadlines the caller owns.
@@ -156,6 +160,10 @@ fn validate_response(response: Response) -> Result<Response> {
 }
 
 fn checked_response(response: Response) -> Result<Value> {
+    checked_payload_response(response)?.into_json()
+}
+
+fn checked_payload_response(response: Response) -> Result<Payload> {
     if !response.ok {
         let message = response.error.expect("validated rejection has an error");
         let ambiguous = message.contains("outcome unknown");
@@ -183,9 +191,29 @@ fn checked_response(response: Response) -> Result<Value> {
 }
 
 #[cfg(test)]
+pub(crate) mod test_wire {
+    use super::*;
+    use std::io::Read;
+
+    pub(crate) fn read_request(stream: &mut impl Read) -> Result<Request> {
+        wire::decode_request(&wire::read_frame(stream, Kind::Request, wire::MAX_REQUEST)?)
+    }
+
+    pub(crate) fn write_response(stream: &mut impl Write, response: &Response) -> Result<()> {
+        let mut codec = Codec::new();
+        wire::write_frame(stream, Kind::Response, codec.encode_response(response)?)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{os::unix::net::UnixListener, thread};
+
+    fn reply(response: Response) -> Vec<u8> {
+        let mut codec = Codec::new();
+        wire::encode_frame(Kind::Response, codec.encode_response(&response).unwrap()).unwrap()
+    }
 
     fn rejected_reply(reply: Vec<u8>) -> anyhow::Error {
         let directory = tempfile::tempdir().unwrap();
@@ -196,13 +224,13 @@ mod tests {
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
-            let mut request = Vec::new();
-            BufReader::new(&mut stream)
-                .read_until(b'\n', &mut request)
-                .unwrap();
+            let bytes = wire::read_frame(&mut stream, Kind::Request, wire::MAX_REQUEST).unwrap();
             // The fixture has accepted a real mutation before losing/corrupting
             // its reply; the client cannot infer that it is safe to replay.
-            let _: Request = serde_json::from_slice(&request).unwrap();
+            assert!(matches!(
+                wire::decode_request(&bytes).unwrap().operation,
+                Operation::Shutdown
+            ));
             stream.write_all(&reply).unwrap();
         });
         let error = checked(&socket, Operation::Shutdown).unwrap_err();
@@ -212,13 +240,31 @@ mod tests {
 
     #[test]
     fn lost_or_invalid_mutation_replies_keep_unknown_outcome_through_context() {
+        let success = Response {
+            version: PROTOCOL_VERSION,
+            ok: true,
+            result: Some(serde_json::json!({}).into()),
+            error: None,
+            failure: None,
+        };
+        let mut truncated = reply(success.clone());
+        truncated.pop();
+        let mut wrong_family = reply(success.clone());
+        wrong_family[4..8].copy_from_slice(&(PROTOCOL_VERSION + 1).to_le_bytes());
         let cases = [
             Vec::new(),
-            br#"{"version":2,"ok":true,"result":"#.to_vec(),
-            format!(r#"{{"version":{},"ok":true,"result":{{}}}}"#, PROTOCOL_VERSION + 1).into_bytes(),
-            format!(r#"{{"version":{PROTOCOL_VERSION},"ok":true}}"#).into_bytes(),
-            format!(r#"{{"version":{PROTOCOL_VERSION},"ok":true,"result":{{}},"error":"contradiction"}}"#).into_bytes(),
-            format!(r#"{{"version":{PROTOCOL_VERSION},"ok":false,"error":"rejected","result":{{}}}}"#).into_bytes(),
+            wire::encode_frame(Kind::Response, &[0]).unwrap(),
+            wire::encode_frame(Kind::Request, &[0]).unwrap(),
+            truncated,
+            wrong_family,
+            reply(Response {
+                result: None,
+                ..success.clone()
+            }),
+            reply(Response {
+                error: Some("contradiction".into()),
+                ..success
+            }),
         ];
         for reply in cases {
             let error = rejected_reply(reply).context("dispatching the user's command");
@@ -235,10 +281,13 @@ mod tests {
                 true,
             ),
         ] {
-            let reply = serde_json::to_vec(&serde_json::json!({
-                "version": PROTOCOL_VERSION, "ok": false, "error": message
-            }))
-            .unwrap();
+            let reply = reply(Response {
+                version: PROTOCOL_VERSION,
+                ok: false,
+                result: None,
+                error: Some(message.into()),
+                failure: None,
+            });
             let error = rejected_reply(reply);
             assert_eq!(outcome_unknown(&error), unknown, "{error:#}");
         }
@@ -270,31 +319,25 @@ mod tests {
                 false,
             ),
         ] {
-            let error = rejected_reply(
-                serde_json::to_vec(&Response {
-                    version: PROTOCOL_VERSION,
-                    ok: false,
-                    result: None,
-                    error: Some("session is shutting down".into()),
-                    failure,
-                })
-                .unwrap(),
-            );
+            let error = rejected_reply(reply(Response {
+                version: PROTOCOL_VERSION,
+                ok: false,
+                result: None,
+                error: Some("session is shutting down".into()),
+                failure,
+            }));
             assert_eq!(outcome_unknown(&error), unknown);
             assert_eq!(expected_shutdown(&error, true), clean);
         }
-        let error = rejected_reply(
-            serde_json::to_vec(&Response {
-                version: PROTOCOL_VERSION,
-                ok: true,
-                result: Some(serde_json::json!({"committed":true})),
-                error: None,
-                failure: Some(RequestFailure::SessionClosing {
-                    outcome: RequestOutcome::NotDispatched,
-                }),
-            })
-            .unwrap(),
-        );
+        let error = rejected_reply(reply(Response {
+            version: PROTOCOL_VERSION,
+            ok: true,
+            result: Some(serde_json::json!({"committed":true}).into()),
+            error: None,
+            failure: Some(RequestFailure::SessionClosing {
+                outcome: RequestOutcome::NotDispatched,
+            }),
+        }));
         assert!(outcome_unknown(&error));
         assert!(!expected_shutdown(&error, true));
     }
