@@ -2,6 +2,7 @@ mod cli;
 mod context;
 mod harness;
 mod recovery;
+mod remote;
 mod session;
 
 use anyhow::{Context, Result, bail};
@@ -20,6 +21,8 @@ const HELP: &str = r#"Bkpr — persistent named pane workspaces
   bkpr context [-s NAME | --socket PATH] [--pane PANE_ID] [--json]
   bkpr request [-s NAME | --socket PATH] 'VERSIONED_TYPED_JSON_REQUEST'
   bkpr keyboard --socket PATH --pane PANE_ID --view VIEW_ID '[PHYSICAL_BYTES]'
+  bkpr remote --ssh HOST --session NAME [--ssh-config PATH] [--helper REMOTE_EXECUTABLE]
+       inspect | request 'OPERATION_JSON' [--forward-agent] | connect [--forward-agent] [-d]
   bkpr run HARNESS [--] ARGS...
   bkpr install agy
 
@@ -36,6 +39,11 @@ intent without a fallback; direct bkprd startup without argv stays headless.
 Explicit --session overrides inherited BKPR_SOCKET. Headless context/request/
 keyboard/resume otherwise inherit pane routing; normal TUI/stop default to `bkpr`.
 Utilities do not initialize the TUI or automatically start a daemon.
+`remote` addresses one existing remote session, without local routing or bootstrap.
+`inspect` validates session identity read-only, without attaching or forwarding agents.
+`connect` keeps a single attachment for bounded Operation JSON lines; only connect
+accepts -d takeover. SSH host keys must already be trusted; agent forwarding is
+disabled unless explicitly requested by a remote request or connect invocation.
 `resume` lists saved native conversations read-only; --pane selects one exact ID.
 Resume uses current native configuration, not saved argv/settings; process start
 is pending authenticated conversation binding, not proof the conversation loaded.
@@ -85,6 +93,12 @@ fn main() -> Result<()> {
         }
     };
     let command = matches.subcommand_name().unwrap_or("tui");
+    if command == "__remote-helper" {
+        return remote::serve_helper();
+    }
+    if command == "remote" {
+        return remote::execute(&matches);
+    }
     let roots = session::Roots::inherited()?;
     if command == "list" {
         println!("{}", serde_json::to_string(&session::list(&roots)?)?);

@@ -360,7 +360,7 @@ Define identity epochs, revision ordering, subscriptions/coalescing, resnapshot,
 
 ## Delivery sequence
 
-The local implementation now includes the seven-crate split, pinned safe SDK integration, typed Planus wire-family-6 control, independent PTYs, atomic multi-pane creation/placement, persisted workspace/layout metadata, bounded view authority, the retained-framework sidebar/forms/choosers, native harness capture/communication and explicit native conversation recovery. These are implemented portions of stages 2–5, not completion of every requirement below. Endpoint-qualified remote references, forge/CI services, a recovery picker, a second independent frontend and supported-product packaging remain future work. The [engine report](engine-proof.md) separates measured acceptance from unresolved gates.
+The local implementation now includes the seven-crate split, pinned safe SDK integration, typed Planus wire-family-6 control, independent PTYs, atomic multi-pane creation/placement, persisted workspace/layout metadata, bounded view authority, the retained-framework sidebar/forms/choosers, native harness capture/communication, explicit native conversation recovery and a single-existing-session SSH backend/headless connection. These are implemented portions of stages 2–6, not completion of every requirement below. Remote TUI attachment and endpoint-qualified composition, forge/CI services, a recovery picker, a second independent frontend and supported-product packaging remain future work. The [engine report](engine-proof.md) separates measured acceptance from unresolved gates.
 
 ### Current priority: restore Bkpr's main-branch frontend
 
@@ -424,7 +424,87 @@ Restore remaining project/forge/CI enrichment after core TUI workflows, preservi
 
 ### 6. Authenticated remote endpoints
 
-Run the endpoint API locally and over actual SSH stdio without a transport PTY. Define trust/enrollment, endpoint reinstall/identity rotation, scoped permissions and disconnect semantics. Show local and remote panes in one layout while execution/metadata stay on their owning endpoints. Test binary images/input/clipboard, latency, flow control, drops, stale grants, ambiguous mutations and resnapshot; reconnect must not blindly replay input. Viewing a remote pane doesn't merge agent discovery or credential trust domains.
+#### First milestone: connect to one existing remote session
+
+The backend milestone is implemented through `RemoteSession` and `bkpr remote`;
+its [actual SSH proof](engine-proof.md#remote-session-backend-and-headless-connection)
+records exact binaries, bounds, native authority, failure behavior and limits.
+Native family 6 and durable schema 4 remain unchanged. This is not completion
+of the later TUI or aggregation milestones.
+
+Backend/headless support comes first. A compatible launcher/helper must already
+be installed on the remote host and the selected session must already be running.
+Connecting does not install software, create/restart a daemon, restore saved
+programs or merge local state. The remote daemon remains the sole owner of its
+panes, layouts, processes, harnesses, agent services and metadata. No TUI work or
+cross-session workspace routing is required by this milestone.
+
+One local attachment owns one persistent system OpenSSH stdio connection with no
+transport PTY and one remote helper process. The helper resolves the exact name
+against remote private session state, returns stable session/current-daemon
+identities and opens every native Unix connection from that same process. This
+preserves native PID/birth-bound registration and request authority at the remote
+daemon boundary; the authenticated SSH/helper lifetime is the cross-host trust
+boundary, not a claim that a local desktop PID exists remotely. Pin the handshake
+identity through native registration. Do not reuse a ControlMaster shared with
+other attachments, issue SSH commands per request or expose the daemon as an
+unrestricted TCP service.
+
+Use maintained [Yamux](https://docs.rs/yamux/0.14.1/yamux/) for independent bounded
+streams rather than implementing framing, credits and stream lifecycle ourselves.
+Its default aggregate receive window is too large for this boundary; explicitly
+bound windows, stream counts, queued opens, socket buffers and diagnostic bytes.
+Reserve lifetime/control capacity apart from observations and split sending into
+fair small chunks. A transport-confined current-thread Tokio runtime handles
+SSH pipes and stream I/O; the native daemon, engine and existing local request
+path remain synchronous. A connector returning local Unix stream pairs retains
+the current cancellation, descriptor polling and cloned-endpoint interfaces.
+Native Planus frames remain opaque binary bytes, including scenes/resources,
+input/paste and clipboard messages.
+
+The separate Planus remote-control protocol has its own version and bounded
+admission header. It associates the requested name, native family/capabilities,
+connection nonce, returned identity and optional remote agent source before
+activation. A reserved control stream provides correlated heartbeat/lease
+handling independently of scene backpressure. Expired leases, malformed control,
+EOF and helper/SSH death retire the attachment and its views, not the session or
+programs. Accepted mutations may complete; a lost result remains unknown and is
+never replayed. Reconnection is an explicit fresh attachment/resnapshot, not
+transparent continuation with old input queues, tokens or grants.
+
+OpenSSH owns encryption, authentication, host verification, aliases and
+ProxyJump. Require known host keys and noninteractive authentication; do not
+change profiles, known-hosts or credentials. Dynamic session names travel only
+in framed control data, not interpolated shell commands. `--ssh-config` selects
+a per-invocation config without modifying it. Agent forwarding is off by default;
+explicit opt-in uses OpenSSH's existing forwarding and the helper's remote
+`SSH_AUTH_SOCK`, never a local pathname or a second Bkpr agent-transport subsystem.
+Remote native harness callbacks continue directly to the remote Unix socket
+with their real OS/process/PTY authority; viewing a remote session grants no
+local harness impersonation or merged agent discovery.
+
+Identity-only inspection performs the remote handshake without native client
+registration or activation, so it does not consume a native slot, select an
+agent source or take over clients. Only persistent connection accepts `-d`.
+Normal connected requests use native managed client authority. Local `BKPR_*`
+launch/context variables are removed before SSH exec; harness/agent operations
+are rejected before opening a remote request channel rather than forwarding
+local credentials or falling back to an administrative connection.
+
+Acceptance must use actual isolated SSH and an already-running compatible
+daemon: exact names, identity replacement, absent/stopped/unsafe targets,
+host-key/helper/family failures, binary scenes and exact input/clipboard bytes,
+simultaneous polls/input/control, resource backpressure, mutation reply loss,
+helper/network failure, fresh reconnect and opt-in disposable-agent signing.
+Prove detach leaves the original pane births alive and cleanup leaves no owned
+processes. Keep observations and static design claims distinct.
+
+#### Later milestones
+
+Add TUI attachment only after the backend connection architecture and failure
+semantics are accepted. Mixing workspaces from different local/remote sessions
+is a later UX/design decision; do not assume mixed-session pane layouts,
+aggregation or a local federation service in this first connection API.
 
 ### 7. Supported products and packaging
 

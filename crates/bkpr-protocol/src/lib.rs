@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 pub use snapshot::*;
 mod payload;
 pub use payload::*;
+pub mod remote_wire;
 pub mod wire;
 pub const PROTOCOL_VERSION: u32 = 6;
 /// Maximum aggregate input, paste or clipboard-response payload accepted per request.

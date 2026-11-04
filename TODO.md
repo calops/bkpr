@@ -2,7 +2,7 @@
 
 The native replacement branch is governed by the [implementation plan](docs/pane-first-mux/implementation-plan.md). `main` and the Zellij fork are starting code, not immutable designs or regression suites. Reuse, refactor or rewrite relevant pieces when their domain comes into scope.
 
-Current frontend priority is Bkpr's own main-branch product layer, including supporting fork edits—not general Zellij parity: functional sidebar, Bkpr popups/forms/finder, contextual effective-binding hints, window decorations, then Kitty-graphics chrome. Backend launch/session/lifetime work proceeds alongside it. Forge/PR/CI enrichment and remote endpoints come later; browser/web, GUI and mobile remain deferred.
+Current frontend priority is Bkpr's own main-branch product layer, including supporting fork edits—not general Zellij parity: functional sidebar, Bkpr popups/forms/finder, contextual effective-binding hints, window decorations, then Kitty-graphics chrome. The backend can now connect to one existing remote session through a headless API; remote TUI integration and workspace aggregation remain deferred for architecture/UX review. Forge/PR/CI enrichment comes later; browser/web, GUI and mobile remain deferred.
 
 The remaining frontend parity pass restores main's overlays and static graphics-backed window chrome, not new UI features. The framework owns generic graphics/overlay mechanisms; Bkpr chooses colors, palette recipes, shadow depth, border widths and other visual policy, plus overlay content and actions. Decorative animation and a command palette are explicitly outside this pass.
 
@@ -66,7 +66,11 @@ The current CPU-efficiency level is accepted for now; further optimization is de
 
 - [ ] After main-branch frontend parity, consider a command palette for searchable actions, workspace/pane navigation, shortcuts and saved commands. This is a new feature, not a substitute for main's overlays or part of the current pass. Share typed action dispatch with CLI/MCP and UI controls; keep action search distinct from metadata search, scope focus per client and confirm destructive operations.
 
-- [ ] Implement remote panes/workspaces with actual local and SSH endpoints in one layout. Execution, terminal state and authoritative metadata stay on the owning endpoint; layout/view state does not confer workspace or agent authority. Design enrollment, authentication, framing, cancellation, reconnect/resnapshot and stale-grant handling explicitly. No session-per-tab restriction or SSH-in-a-pane substitute. Reference: <https://muxy.app/docs/2.x/features/remote-servers>.
+- [x] Connect to one existing remote session through a backend/headless API first. Keep its processes, layouts, harnesses and metadata on its owning host. Use one persistent no-PTY OpenSSH connection, one remote helper and the existing native client authority/lifetime contract; validate identity, bound multiplexing/backpressure and preserve unknown mutation outcomes without replay. No remote install/bootstrap or TUI integration in this milestone. All 27 required actual-SSH cases pass, including saturated observations, independent remote lease expiry, explicit daemon replacement and pre-existing daemon survival; see [the remote-session proof](docs/pane-first-mux/engine-proof.md#remote-session-backend-and-headless-connection).
+
+- [ ] Add TUI attachment to a single remote session after backend architecture and failure behavior are accepted.
+
+- [ ] Design later UX for using workspaces from different local/remote sessions together. Do not make aggregation, mixed-session layouts or a local federation daemon prerequisites for remote session connection. Preserve normal same-user use through each owner, native harness/agent trust boundaries and independent process lifetime. Reference: <https://muxy.app/docs/2.x/features/remote-servers>.
 
 - [ ] Explore opt-in persistent terminal history: readable/searchable screens and scrollback after pane exit or backend restart. Define storage budgets, retention, deletion, encryption/privacy requirements and a clear distinction from recovery metadata; output may contain secrets. Reference: <https://muxy.app/docs/2.x/features/server#history>.
 

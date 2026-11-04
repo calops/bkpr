@@ -16,6 +16,8 @@ status are available in the TUI, together with launch-scoped context, discovery
 and durable peer communication. Local Git/project snapshots and explicit native
 harness recovery are available; forge/CI metadata is not implemented yet. Earlier
 release notes describe the former implementation, not this branch.
+Headless SSH connections to existing remote sessions are available. Remote TUI
+attachment and cross-session workspace aggregation are not implemented.
 
 Current `main` and the native-terminal fork are useful starting material when a
 domain comes into scope, not frozen specifications or compatibility obligations.
@@ -194,6 +196,65 @@ takeover when that prerequisite is unavailable.
 Client admission is bounded to 32 per daemon; views to 128 per daemon and 32 per
 pane. Lifetime connections, pane waits, registry watchers and controls have
 separate capacity, so admitted waiting views do not consume input/control slots.
+
+### Remote sessions: backend and headless API
+
+Connect to one **already-running** named session on another host. The remote
+daemon owns its panes, processes, layouts, harnesses and metadata. This does not
+open a remote TUI, start or install a daemon, or add remote workspaces to the
+local sidebar.
+
+```sh
+# Identity discovery without native client registration or activation.
+bkpr remote --ssh devbox --session work inspect
+
+# One persistent attachment; Operation JSON objects in, JSON-line results out.
+bkpr remote --ssh devbox --session work connect
+
+# Query the full registry, then disconnect at EOF without closing its panes.
+printf '%s\n' '{"op":"inspect"}' | \
+  bkpr remote --ssh devbox --session work connect
+
+# A single operation through a short-lived managed attachment.
+bkpr remote --ssh devbox --session work request '{"op":"inspect"}'
+```
+
+Both hosts need a compatible native Bkpr build; the remote `bkpr` must support
+the helper. Native wire family 6 is unchanged. Unavailable or incompatible
+sessions fail without bootstrap or restart.
+
+System OpenSSH supplies host aliases, identities and ProxyJump. Authentication
+is noninteractive: establish host-key trust and make credentials available
+beforehand. No PTY or shared ControlMaster is used. `--ssh-config PATH` selects
+a per-invocation config; `--helper /absolute/remote/path/to/bkpr` selects a helper
+outside the remote noninteractive PATH. The SSH login shell must accept
+POSIX-style executable quoting. Session names travel in the binary handshake,
+not in the shell command.
+
+Only persistent `connect` accepts `-d` / `--detach-others`. Takeover retires other
+remote attachments after the new one is ready, without closing their programs.
+Identity-only `inspect` does not select an agent source or disturb clients.
+Normal `connect` and `request` are managed attachments, including the existing
+latest-attachment SSH-agent selection rules.
+
+Agent forwarding is off even if SSH config enables it. Explicit
+`--forward-agent` on `connect` or `request` uses OpenSSH forwarding and the remote
+forwarded socket, never a local pathname. Grant it only to trusted hosts. Bkpr
+launch credentials and pane-context variables are removed from the SSH child's
+environment. Remote harness callbacks retain their own native pane authority.
+
+The Rust `bkpr_client::remote::RemoteSession` API exposes pinned identity,
+a concurrent native `Endpoint`, lifecycle polling and disconnect.
+`RemoteSession::inspect` performs nonactivating discovery. Scene, image, input
+and clipboard frames remain binary through one bounded multiplexed SSH
+connection; JSON is only the CLI boundary. Harness/agent authority is rejected
+before transport, and managed operations never fall back to administrative
+shutdown or another privileged route.
+
+Disconnecting or losing SSH retires this client's views, not the remote panes.
+There is no automatic reconnect or mutation replay. A mutation accepted before
+its reply was lost returns an **unknown outcome**, not a successful-looking
+acknowledgement. Reconnect explicitly and inspect state before deciding what to do.
 
 ### Pane context
 

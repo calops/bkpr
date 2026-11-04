@@ -94,6 +94,58 @@ pub fn command() -> Command {
                 .arg(Arg::new("payload").required(true)),
         )
         .subcommand(
+            Command::new("remote")
+                .about("Connect headlessly to one existing named session over SSH")
+                .subcommand_required(true)
+                .arg(
+                    Arg::new("ssh")
+                        .long("ssh")
+                        .global(true)
+                        .value_name("HOST"),
+                )
+                .arg(
+                    Arg::new("ssh-config")
+                        .long("ssh-config")
+                        .global(true)
+                        .value_name("PATH")
+                        .value_parser(value_parser!(PathBuf)),
+                )
+                .arg(
+                    Arg::new("helper")
+                        .long("helper")
+                        .global(true)
+                        .value_name("REMOTE_EXECUTABLE")
+                        .value_parser(value_parser!(PathBuf)),
+                )
+                .arg(
+                    Arg::new("forward-agent")
+                        .long("forward-agent")
+                        .global(true)
+                        .action(ArgAction::SetTrue)
+                        .help("Explicitly forward the SSH agent using OpenSSH"),
+                )
+                .subcommand(Command::new("inspect").about("Validate existing remote session identity read-only"))
+                .subcommand(
+                    Command::new("request")
+                        .about("Send one typed native Operation, without replay")
+                        .arg(Arg::new("payload").required(true)),
+                )
+                .subcommand(
+                    Command::new("connect")
+                        .about("Keep one attachment for a bounded JSON-lines Operation console"),
+                ),
+        )
+        .subcommand(
+            Command::new("__remote-helper")
+                .hide(true)
+                .arg(
+                    Arg::new("stdio")
+                        .long("stdio")
+                        .required(true)
+                        .action(ArgAction::SetTrue),
+                ),
+        )
+        .subcommand(
             Command::new("keyboard")
                 .about("Send an explicit physical keyboard probe")
                 .arg(Arg::new("payload").required(true)),
@@ -104,8 +156,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches> {
     let matches = command().try_get_matches_from(args)?;
     let name = matches.subcommand_name().unwrap_or("tui");
     if name != "tui" {
-        if matches.get_flag("detach-others") {
-            bail!("--detach-others is only valid for a TUI attachment");
+        if matches.get_flag("detach-others") && name != "remote" {
+            bail!("--detach-others is only valid for an attachment");
         }
         if matches.get_many::<OsString>("shell").is_some() {
             bail!("shell arguments are only valid for a TUI attachment");
@@ -117,6 +169,42 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches> {
         }
         if matches.get_flag("read-only") || matches.contains_id("clipboard") {
             bail!("frontend options are only valid for a TUI attachment");
+        }
+    }
+    if matches!(name, "remote" | "__remote-helper") {
+        for option in [
+            "socket",
+            "state-root",
+            "pane",
+            "view",
+            "cols",
+            "rows",
+            "cell-width",
+            "cell-height",
+        ] {
+            if matches.contains_id(option) {
+                bail!("--{option} cannot target a remote connection");
+            }
+        }
+        if name == "remote" {
+            let remote = matches
+                .subcommand_matches("remote")
+                .context("missing remote command")?;
+            remote
+                .get_one::<String>("ssh")
+                .context("remote requires --ssh HOST")?;
+            if matches.get_flag("detach-others") && remote.subcommand_name() != Some("connect") {
+                bail!("--detach-others is only valid for remote connect");
+            }
+            if remote.get_flag("forward-agent") && remote.subcommand_name() == Some("inspect") {
+                bail!("remote inspect does not forward an SSH agent");
+            }
+            let session = matches
+                .get_one::<String>("session")
+                .context("remote requires an exact --session NAME")?;
+            crate::session::validate_name(session)?;
+        } else if matches.contains_id("session") {
+            bail!("the remote helper accepts only --stdio; the target is carried by its handshake");
         }
     }
     if name == "resume"
@@ -178,6 +266,191 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn remote_is_explicit_exact_headless_and_accepts_initial_takeover() {
+        let parsed = parse(args(&[
+            "bkpr",
+            "remote",
+            "--ssh",
+            "user@alias",
+            "--session",
+            "a / λ",
+            "--ssh-config",
+            "/tmp/private-ssh-config",
+            "--forward-agent",
+            "-d",
+            "connect",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.get_one::<String>("session").unwrap(), "a / λ");
+        assert!(parsed.get_flag("detach-others"));
+        let remote = parsed.subcommand_matches("remote").unwrap();
+        assert_eq!(remote.get_one::<String>("ssh").unwrap(), "user@alias");
+        assert!(remote.get_flag("forward-agent"));
+        assert_eq!(
+            remote.get_one::<PathBuf>("ssh-config").unwrap(),
+            &PathBuf::from("/tmp/private-ssh-config")
+        );
+        assert_eq!(remote.subcommand_name(), Some("connect"));
+        let inspect = parse(args(&[
+            "bkpr",
+            "remote",
+            "--ssh",
+            "alias",
+            "--session",
+            "a / λ",
+            "inspect",
+        ]))
+        .unwrap();
+        assert!(!inspect.get_flag("detach-others"));
+        assert!(
+            !inspect
+                .subcommand_matches("remote")
+                .unwrap()
+                .get_flag("forward-agent")
+        );
+        for values in [
+            vec![
+                "bkpr",
+                "remote",
+                "--ssh",
+                "alias",
+                "--session",
+                "name",
+                "-d",
+                "inspect",
+            ],
+            vec![
+                "bkpr",
+                "remote",
+                "--ssh",
+                "alias",
+                "--session",
+                "name",
+                "-d",
+                "request",
+                "{\"op\":\"inspect\"}",
+            ],
+            vec![
+                "bkpr",
+                "remote",
+                "--ssh",
+                "alias",
+                "--session",
+                "name",
+                "--forward-agent",
+                "inspect",
+            ],
+        ] {
+            assert!(parse(args(&values)).is_err(), "{values:?}");
+        }
+        for values in [
+            vec!["bkpr", "remote", "--ssh", "alias", "inspect"],
+            vec!["bkpr", "remote", "--session", "name", "inspect"],
+            vec![
+                "bkpr",
+                "remote",
+                "--ssh",
+                "alias",
+                "--session",
+                "bad\nname",
+                "inspect",
+            ],
+            vec![
+                "bkpr",
+                "remote",
+                "--ssh",
+                "alias",
+                "--session",
+                "name",
+                "tui",
+            ],
+            vec![
+                "bkpr",
+                "remote",
+                "--ssh",
+                "alias",
+                "--session",
+                "name",
+                "--pane",
+                "p",
+                "inspect",
+            ],
+            vec![
+                "bkpr",
+                "remote",
+                "--ssh",
+                "alias",
+                "--session",
+                "name",
+                "--read-only",
+                "inspect",
+            ],
+            vec![
+                "bkpr",
+                "remote",
+                "--ssh",
+                "alias",
+                "--socket",
+                "/tmp/socket",
+                "inspect",
+            ],
+            vec![
+                "bkpr",
+                "remote",
+                "--ssh",
+                "alias",
+                "--session",
+                "name",
+                "--cwd",
+                "/tmp",
+                "inspect",
+            ],
+            vec![
+                "bkpr",
+                "remote",
+                "--ssh",
+                "alias",
+                "--session",
+                "name",
+                "--bkprd",
+                "/tmp/server",
+                "inspect",
+            ],
+            vec![
+                "bkpr",
+                "remote",
+                "--ssh",
+                "alias",
+                "--session",
+                "name",
+                "--",
+                "sh",
+            ],
+        ] {
+            assert!(parse(args(&values)).is_err(), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn helper_has_only_the_fixed_stdio_invocation() {
+        assert!(parse(args(&["bkpr", "__remote-helper", "--stdio"])).is_ok());
+        for values in [
+            vec!["bkpr", "__remote-helper"],
+            vec!["bkpr", "__remote-helper", "--stdio", "--session", "name"],
+            vec![
+                "bkpr",
+                "__remote-helper",
+                "--stdio",
+                "--socket",
+                "/tmp/socket",
+            ],
+            vec!["bkpr", "__remote-helper", "--stdio", "-d"],
+        ] {
+            assert!(parse(args(&values)).is_err(), "{values:?}");
+        }
     }
 
     #[test]
