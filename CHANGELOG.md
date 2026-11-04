@@ -26,6 +26,12 @@
 * Expose the native daemon, TUI, typed version-6 control protocol and keyboard client. Backend-owned workspaces contain independent windows/layouts and owned panes; layout-only removal or client detach does not terminate a process. Metadata persists, but process and terminal-content recovery is not implemented. Forge/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
 * Native graphics initial-presentation gates remain unaccepted. This replacement is not production acceptance and does not modify installed applications or live sessions.
 
+### Remote sessions
+
+* Connect to one existing named session through system OpenSSH with `bkpr remote` and the reusable `RemoteSession` API. Keep remote processes, layouts, harnesses and metadata on their owning host; do not bootstrap, install, restart or aggregate sessions.
+* Multiplex opaque native binary streams through one no-PTY SSH connection and one remote helper. Reuse native process-bound client authority, pinned session/daemon identities, bounded observation/control/lifetime admission and an independently enforced remote lease.
+* Add nonactivating identity inspection, persistent headless JSON-line control and one-shot managed requests. Keep `-d` exclusive to persistent connection, forwarding explicit, launch credentials local and failed/unknown mutations nonreplayable. Native family 6 and durable schema 4 stay unchanged; remote TUI attachment remains deferred.
+
 ### Native named sessions
 
 * Restore `--session/-s` with default `bkpr`, exact UTF-8 names and separate daemon/state roots. Add read-only `bkpr list` and explicitly targeted `bkpr stop`; serialize concurrent bootstrap and validate stored/live identity without automatically restarting a live incompatible server.

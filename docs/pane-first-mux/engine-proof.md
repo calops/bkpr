@@ -1840,3 +1840,100 @@ to `final.png` and visually inspected.
 `target/smoke/atomic-pane-placement/`. Fixtures use private HOME/XDG/socket roots,
 deny Internet sockets and never touch live sessions, user profiles or providers.
 
+## Remote-session backend and headless connection
+
+The first remote milestone connects to **one existing named session**. There is
+no local federation daemon, remote bootstrap/install/restart, TUI integration or
+mixed-session workspace composition. The owning remote daemon retains process,
+layout, harness, recovery and metadata authority.
+
+`bkpr_client::remote::RemoteSession` owns one system OpenSSH child and exposes a
+concurrent native `Endpoint`, pinned session information, lifecycle polling and
+disconnect. `bkpr remote` provides identity-only `inspect`, persistent JSON-line
+`connect` and one-shot `request`. Inspection never registers or activates a
+native client; only persistent connection accepts takeover. Normal requests are
+managed attachments, not an administrative fallback.
+
+One remote `bkpr __remote-helper --stdio` opens every native Unix socket for an
+attachment, preserving the native helper-PID/birth-bound authorization contract.
+Creating a separate SSH command per native RPC would change that peer identity.
+Native harness callbacks remain remote-pane callbacks; the remote endpoint
+rejects local harness/agent authority before opening a transport channel.
+
+System OpenSSH supplies authentication, strict host-key trust and user host/
+identity/ProxyJump configuration. Maintained Yamux 0.14.1 multiplexes the binary
+stdio stream; a current-thread Tokio runtime is confined to the connector/helper,
+not the native daemon. Native family 6 and durable schema 4 are unchanged.
+A separate bounded Planus remote-control family 1 negotiates the exact session,
+daemon identity, capabilities, connection nonce and heartbeat lease.
+
+Admission reserves 79 observation streams, 15 controls and one native lifetime
+stream, alongside the mux control stream. The shared receive window is 24 MiB,
+copy chunks are 16 KiB and retained SSH stderr is limited to 16 KiB. Independent
+heartbeat send/read deadlines enforce a remote lease without depending on sshd's
+keepalive configuration. Disconnect revokes views and drains accepted mutations
+under a bounded deadline; network loss never fabricates success or triggers
+reconnect/replay. SSH stderr is drained after child exit under its own deadline.
+
+Forwarding is off even if SSH config enables it. Explicit forwarding uses the
+remote OpenSSH socket and the existing native attachment-selected agent route,
+not a local pathname or a second agent bridge. The SSH child cannot inherit
+local `BKPR_*` authority or context. A real hostile SendEnv/AcceptEnv fixture
+reproduced the leak before that scrub; evidence retains variable names only.
+
+**Exercised debug acceptance**, not WAN or rendering-performance measurement:
+
+* `target/smoke/remote-sessions/verification/compiled-1407002429921643/manifest.json`
+  freezes client `a86d4846f260d5e03101017224fa7178d18945953a982bee17a778f4dc156de0`,
+  server `9ec81984c84e15815cfc0705e6a93265f99937f1f8a516838469f6e874df7d00`
+  and the standalone public-SDK probe compiled from exact Cargo JSON artifact
+  paths. The 178-file source capture includes the shared frontend snapshot before
+  later toast work; that later work is not covered by these checks.
+* Formatting, strict workspace/all-target Clippy, doctests and protected
+  incremental debug compilation pass. Host-UID1000 workspace execution passes
+  805 top-level tests plus one isolated subprocess, with fourteen explicit
+  ignored fixtures. Builds use eight jobs/CPUs and the existing local target/SDK.
+  Protected runs preserve their current public debug/release executable hashes.
+* `actual-ssh-identity-acceptance/acceptance.json` passes all 27 required cases through
+  actual private OpenSSH/sshd. The daemon is the **pre-existing compatible**
+  family-6 atomic-placement build, SHA-256 `4b576a624034dc40d5782121b331841b82c31c2b9ca6ddf32db9b655d6ef1da3`.
+  Session ID, daemon identity/birth and original pane birth survive every
+  disconnect, takeover, helper death and application partition without restart.
+* Exact Unicode/slash names, absent/stopped/unsafe/symlink targets, changed host
+  keys, missing/noisy/incompatible helpers and actual-PTY helper refusal pass.
+  Inspection succeeds at all 32 occupied native client slots without changing
+  their IDs, views or the original pane's cryptographically verified agent source.
+* Canonical binary scenes, ordered key/raw/paste input, exact binary clipboard
+  bytes, atomic two-pane placement and real pane-native context callbacks pass.
+  With 31 registry waits and 48 pane polls held, the next observation rejects
+  admission while real key/input and lifecycle control remain responsive.
+* Default forwarding refuses signing despite private SSH config enabling it.
+  Explicit forwarding signs from the original remote pane; the disposable public
+  key verifies the signature before and after nonactivating inspection.
+* Both the local SDK and its real SSH child are stopped by exact-birth pidfds.
+  The remote helper exits and native views retire in about 5.05 seconds while
+  both local births remain stopped and sshd remains running. Original panes
+  survive; stale input is rejected without changing received PTY bytes.
+* A gated reply is lost only after direct native inspection confirms one durable
+  workspace creation. The caller reports unknown outcome, does not replay and
+  reconnects with fresh client/view identities. The persistent CLI reuses one SSH
+  child/helper for multiple commands and leaves panes alive at EOF.
+* A separate owned daemon restarts at the same named socket with the same logical
+  session and a new daemon identity. The old endpoint cannot create a workspace
+  on that replacement; explicit fresh attachment gets a new client identity and
+  succeeds. The original compatibility-test session and its pane stay running.
+
+The SSH fixture uses a private user/mount namespace and owned chroot, separate
+local/remote HOME/XDG roots, private accounts/keys/known-hosts and real PTYs.
+Permission-sensitive workspace tests run separately as host UID1000, not that
+namespace's UID0. Final inner/outer receipts have zero owned survivors, no
+forwarded sockets and removed private credentials/rootfs. No live session,
+provider, real signing identity, user shell profile or persistent setting is used.
+
+Evidence, exact source hashes and archived reproduction controllers are under
+`target/smoke/remote-sessions/`. This is loopback OpenSSH acceptance, not a second
+physical host/WAN, macOS, remote TUI, or genuine native-model/harness onboarding
+claim. Genuine copied harness-token proof is explicitly unexercised here;
+existing authenticated capture/peer-binding regressions pass in the workspace
+suite. Those limits do not gate the scoped connection milestone.
+

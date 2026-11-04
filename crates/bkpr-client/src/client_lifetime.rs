@@ -88,19 +88,44 @@ impl Lease {
         }
     }
 }
+/// Admission classes let remote observations exhaust only their own capacity.
+#[derive(Clone, Copy)]
+pub(crate) enum ConnectionPurpose {
+    Lifetime,
+    Control,
+    Observation,
+}
+
+pub(crate) trait Connector: Send + Sync {
+    fn connect(&self, purpose: ConnectionPurpose) -> Result<UnixStream>;
+    fn remote(&self) -> bool {
+        false
+    }
+}
+
+struct LocalConnector(PathBuf);
+impl Connector for LocalConnector {
+    fn connect(&self, _purpose: ConnectionPurpose) -> Result<UnixStream> {
+        UnixStream::connect(&self.0).with_context(|| format!("connecting to {}", self.0.display()))
+    }
+}
 
 /// Immutable destination and launch-local authority. Clones share revocation;
 /// they do not keep the dedicated attachment lifetime connection alive.
 #[derive(Clone)]
 pub struct Endpoint {
-    socket: Arc<PathBuf>,
+    connector: Arc<dyn Connector>,
     lease: Arc<Lease>,
 }
 
 impl Endpoint {
     fn new(socket: &Path, authority: Option<ClientAuthority>) -> Self {
+        Self::from_connector(Arc::new(LocalConnector(socket.to_owned())), authority)
+    }
+
+    fn from_connector(connector: Arc<dyn Connector>, authority: Option<ClientAuthority>) -> Self {
         Self {
-            socket: Arc::new(socket.to_owned()),
+            connector,
             lease: Arc::new(Lease {
                 authority,
                 state: Mutex::new(LeaseState {
@@ -157,9 +182,24 @@ impl Endpoint {
                 ),
                 "client authority cannot be nested or registered through an endpoint"
             );
+            ensure!(
+                !self.connector.remote()
+                    || !matches!(
+                        &operation,
+                        Operation::HarnessBegin { .. }
+                            | Operation::HarnessEvent { .. }
+                            | Operation::HarnessContext { .. }
+                            | Operation::Agent { .. }
+                    ),
+                "remote managed endpoint cannot carry native harness or agent authority"
+            );
             self.ensure_live()?;
-            let mut stream = UnixStream::connect(self.socket.as_path())
-                .with_context(|| format!("connecting to {}", self.socket.display()))?;
+            let purpose = if is_observation {
+                ConnectionPurpose::Observation
+            } else {
+                ConnectionPurpose::Control
+            };
+            let mut stream = self.connector.connect(purpose)?;
             stream.set_read_timeout(Some(Duration::from_secs(15)))?;
             stream.set_write_timeout(Some(Duration::from_secs(5)))?;
             let cancellation = stream.try_clone()?;
@@ -281,13 +321,27 @@ impl RegisteredClient {
         let session: SessionReply =
             serde_json::from_value(super::checked(socket, Operation::SessionInfo)?)
                 .context("decoding server session identity")?;
+        Self::register_connector(
+            Arc::new(LocalConnector(socket.to_owned())),
+            session.session,
+            agent_socket,
+        )
+    }
+
+    /// Register against an already-validated identity. In particular remote
+    /// registration must never probe/rebase to a replacement daemon.
+    pub(crate) fn register_connector(
+        connector: Arc<dyn Connector>,
+        expected: SessionInfo,
+        agent_socket: Option<PathBuf>,
+    ) -> Result<Self> {
+        let session = SessionReply { session: expected };
         bkpr_protocol::valid_session_name(&session.session.name)?;
         ensure!(
             !session.session.session_id.is_empty() && !session.session.daemon_id.is_empty(),
             "server omitted session or daemon identity"
         );
-        let mut lifetime = UnixStream::connect(socket)
-            .with_context(|| format!("connecting to {}", socket.display()))?;
+        let mut lifetime = connector.connect(ConnectionPurpose::Lifetime)?;
         lifetime.set_read_timeout(Some(Duration::from_secs(15)))?;
         lifetime.set_write_timeout(Some(Duration::from_secs(5)))?;
         let request = Request::new(Operation::ClientRegister {
@@ -320,7 +374,7 @@ impl RegisteredClient {
         lifetime.set_write_timeout(None)?;
         lifetime.set_nonblocking(true)?;
         Ok(Self {
-            endpoint: Endpoint::new(socket, Some(registered.client)),
+            endpoint: Endpoint::from_connector(connector, Some(registered.client)),
             session: registered.session,
             lifetime: Some(lifetime),
             pending: Vec::new(),
@@ -334,6 +388,15 @@ impl RegisteredClient {
     }
     pub fn session(&self) -> &SessionInfo {
         &self.session
+    }
+    pub(crate) fn client_id(&self) -> &str {
+        &self
+            .endpoint
+            .lease
+            .authority
+            .as_ref()
+            .expect("registered client retains its native authority")
+            .client_id
     }
     pub fn lifetime_fd(&self) -> RawFd {
         self.lifetime.as_ref().map_or(-1, AsRawFd::as_raw_fd)
@@ -664,6 +727,70 @@ mod tests {
         });
         assert!(RegisteredClient::register_with_agent_socket(&socket, None).is_err());
         server.join().unwrap();
+    }
+    #[test]
+    fn pinned_connector_registers_exact_welcome_identity_without_reprobing() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("pinned.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let (mut lifetime, _) = listener.accept().unwrap();
+            let Operation::ClientRegister {
+                session_id,
+                daemon_id,
+            } = read_request(&mut lifetime).operation
+            else {
+                panic!("pinned registration must not re-probe SessionInfo");
+            };
+            assert_eq!(session_id, session().session_id);
+            assert_eq!(daemon_id, session().daemon_id);
+            let mut replacement = session();
+            replacement.daemon_id = "replacement-daemon".into();
+            lifetime
+                .write_all(&response(registration(replacement)))
+                .unwrap();
+            let mut byte = [0];
+            assert_eq!(lifetime.read(&mut byte).unwrap(), 0);
+            listener.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        });
+        assert!(
+            RegisteredClient::register_connector(Arc::new(LocalConnector(socket)), session(), None)
+                .is_err()
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn remote_endpoint_rejects_harness_and_agent_envelopes_before_opening_stream() {
+        struct NoAuthority;
+        impl Connector for NoAuthority {
+            fn remote(&self) -> bool {
+                true
+            }
+            fn connect(&self, _: ConnectionPurpose) -> Result<UnixStream> {
+                panic!("authority must be rejected before connecting");
+            }
+        }
+        let endpoint = Endpoint::from_connector(Arc::new(NoAuthority), None);
+        for operation in [
+            Operation::HarnessBegin {
+                kind: bkpr_protocol::HarnessKind::Omp,
+            },
+            Operation::HarnessContext {
+                launch_id: "copied".into(),
+                token: "copied".into(),
+            },
+            Operation::Agent {
+                launch_id: "copied".into(),
+                token: "copied".into(),
+                request: bkpr_protocol::AgentRequest::Whoami,
+            },
+        ] {
+            assert!(endpoint.checked(operation).is_err());
+        }
     }
 
     #[test]

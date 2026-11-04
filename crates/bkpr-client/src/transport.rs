@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::{io::Write, os::unix::net::UnixStream, path::Path, time::Duration};
 
 #[path = "client_lifetime.rs"]
-mod client_lifetime;
+pub(crate) mod client_lifetime;
 pub use client_lifetime::{Endpoint, RegisteredClient, detached_before_dispatch};
 
 #[derive(Debug)]
@@ -20,7 +20,7 @@ impl std::fmt::Display for OutcomeUnknown {
 }
 impl std::error::Error for OutcomeUnknown {}
 
-pub(crate) fn outcome_unknown(error: &anyhow::Error) -> bool {
+pub fn outcome_unknown(error: &anyhow::Error) -> bool {
     error.is::<OutcomeUnknown>()
 }
 
