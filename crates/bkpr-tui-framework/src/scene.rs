@@ -31,6 +31,10 @@ pub enum SurfaceContent {
     /// is unchanged; cells outside its frame or viewport are never projected.
     /// Partial wide glyphs become blank cells rather than split glyphs.
     CellsClipped(Rect),
+    /// Source-local cells with the same bounds as `CellsClipped`, retaining
+    /// earlier intersecting graphics below text instead of removing them.
+    /// Later opaque surfaces still occlude both these cells and their underlay.
+    CellsWithUnderlay(Rect),
     Graphics,
 }
 pub struct Surface<'a> {
@@ -52,7 +56,7 @@ impl Surface<'_> {
         match self.content {
             SurfaceContent::Graphics => None,
             SurfaceContent::All | SurfaceContent::Cells => Some(self.rect),
-            SurfaceContent::CellsClipped(clip) => {
+            SurfaceContent::CellsClipped(clip) | SurfaceContent::CellsWithUnderlay(clip) => {
                 let width = self.rect.width.min(self.frame.size.cols);
                 let height = self.rect.height.min(self.frame.size.rows);
                 let left = clip.x.min(width);
@@ -255,6 +259,17 @@ impl TerminalGuard {
 /// clipped/rescaled visible fragments allocate raster bytes, with the original
 /// sampler phase retained even across several overlapping UI layers.
 fn occlude(placements: &mut Vec<geometry::Projection>, cover: Rect, size: Size) -> Result<()> {
+    clip_projections(placements, cover, size, false)
+}
+
+/// Retain the existing sampler and resources when moving covered material below
+/// text. Both opaque clipping and text underlays use this one fragment path.
+fn clip_projections(
+    placements: &mut Vec<geometry::Projection>,
+    cover: Rect,
+    size: Size,
+    underlay: bool,
+) -> Result<()> {
     let cover = geometry::Rect {
         x: u32::from(cover.x) * size.cell_width,
         y: u32::from(cover.y) * size.cell_height,
@@ -263,6 +278,10 @@ fn occlude(placements: &mut Vec<geometry::Projection>, cover: Rect, size: Size) 
     };
     let mut output = Vec::with_capacity(placements.len());
     for p in placements.drain(..) {
+        if underlay && p.z < 0 {
+            output.push(p);
+            continue;
+        }
         let x = p.col * size.cell_width + p.offset_x;
         let y = p.row * size.cell_height + p.offset_y;
         let (width, height) = if let Some(k) = p.derived {
@@ -283,17 +302,25 @@ fn occlude(placements: &mut Vec<geometry::Projection>, cover: Rect, size: Size) 
             output.push(p);
             continue;
         }
+        if underlay && left == x && top == y && right == x + width && bottom == y + height {
+            output.push(geometry::Projection { z: p.z + i32::MIN / 2, ..p });
+            continue;
+        }
         let fragments = [
             (x, y, width, top - y),
             (x, bottom, width, y + height - bottom),
             (x, top, left - x, bottom - top),
             (right, top, x + width - right, bottom - top),
+            (left, top, if underlay { right - left } else { 0 }, bottom - top),
         ];
-        for (fx, fy, fw, fh) in fragments {
+        for (part, (fx, fy, fw, fh)) in fragments.into_iter().enumerate() {
             if fw == 0 || fh == 0 {
                 continue;
             }
             let mut fragment = p;
+            if part == 4 {
+                fragment.z += i32::MIN / 2;
+            }
             fragment.col = fx / size.cell_width;
             fragment.row = fy / size.cell_height;
             fragment.offset_x = fx % size.cell_width;
@@ -663,6 +690,10 @@ impl Renderer {
             );
         }
         canvas.cursor.visible = false;
+        // No owner (or a clipped owner) must not reuse a previous surface's
+        // hidden anchor. Out-of-bounds coordinates carry no physical position.
+        canvas.cursor.x = scene.size.cols;
+        canvas.cursor.y = scene.size.rows;
         let mut prepared = geometry::Prepared {
             images: HashMap::new(),
             original: HashSet::new(),
@@ -673,28 +704,50 @@ impl Renderer {
         // Native image depth is pane-local. Preserve each Kitty text/background
         // band, but rank images by scene layer before their local depth so a
         // pane cannot paint over a later transparent effect with an extreme z.
-        let mut depths = [i32::MIN, i32::MIN / 2, -1];
+        // A common ordinal also preserves scene ordering when an above-text
+        // fragment is moved into the below-text band by a later cell underlay.
+        let mut depth = 0_i32;
         for (index, surface) in scene.surfaces.iter().enumerate() {
             let r = surface.rect;
             if r.width == 0 || r.height == 0 {
                 continue;
             }
             if let Some(cover) = surface.cell_rect() {
-                occlude(&mut prepared.placements, cover, scene.size)?;
+                if matches!(surface.content, SurfaceContent::CellsWithUnderlay(_)) {
+                    clip_projections(&mut prepared.placements, cover, scene.size, true)?;
+                } else {
+                    occlude(&mut prepared.placements, cover, scene.size)?;
+                }
                 compose_cells(canvas, surface, &self.visible[index], host);
             }
             if surface.focused && surface.content != SurfaceContent::Graphics {
-                canvas.cursor.clone_from(&surface.frame.cursor);
-                canvas.cursor.visible &= canvas.cursor.x < r.width && canvas.cursor.y < r.height;
-                canvas.cursor.x = canvas.cursor.x.saturating_add(r.x);
-                canvas.cursor.y = canvas.cursor.y.saturating_add(r.y);
-                canvas.cursor.visible &= self.visible[index]
-                    .iter()
-                    .any(|rect| rect.contains(canvas.cursor.x, canvas.cursor.y));
+                let cursor = &surface.frame.cursor;
+                let x = cursor.x.saturating_add(r.x);
+                let y = cursor.y.saturating_add(r.y);
+                if cursor.x < r.width
+                    && cursor.y < r.height
+                    && surface.cell_rect().is_some_and(|rect| rect.contains(x, y))
+                {
+                    // A passive plate may cover the owner's cells without
+                    // owning focus. Keep its logical position for hidden
+                    // cursor trails; only the visible glyph is occluded.
+                    canvas.cursor.clone_from(cursor);
+                    canvas.cursor.x = x;
+                    canvas.cursor.y = y;
+                    canvas.cursor.visible &= self.visible[index]
+                        .iter()
+                        .any(|rect| rect.contains(x, y));
+                } else {
+                    canvas.cursor.visible = false;
+                    canvas.cursor.x = scene.size.cols;
+                    canvas.cursor.y = scene.size.rows;
+                }
             }
             if matches!(
                 surface.content,
-                SurfaceContent::Cells | SurfaceContent::CellsClipped(_)
+                SurfaceContent::Cells
+                    | SurfaceContent::CellsClipped(_)
+                    | SurfaceContent::CellsWithUnderlay(_)
             ) {
                 continue;
             }
@@ -731,10 +784,10 @@ impl Renderer {
                 } else {
                     2
                 };
-                depths[band] = depths[band]
-                    .checked_add(1)
+                depth = depth.checked_add(1).context("scene image depth capacity exhausted")?;
+                p.z = [i32::MIN, i32::MIN / 2, 0][band]
+                    .checked_add(depth)
                     .context("scene image depth capacity exhausted")?;
-                p.z = depths[band];
                 p.image = mapping[&p.image];
                 if let Some(key) = p.derived {
                     p.derived = Some(geometry::DerivedKey {
@@ -1007,6 +1060,214 @@ mod scene_tests {
             text
         );
     }
+    #[test]
+    fn hidden_focus_anchor_finishes_physical_output_across_navigation_and_focus_changes() {
+        let size = Size {
+            cols: 16,
+            rows: 6,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut native = blank(Size { cols: 12, ..size });
+        text(&mut native, 0, 0, "native", false);
+        native.cursor.x = 2;
+        native.cursor.y = 1;
+        native.cursor.visible = true;
+        let mut sidebar = blank(Size { cols: 4, ..size });
+        text(&mut sidebar, 1, 2, "one", true);
+        sidebar.cursor.x = 1;
+        sidebar.cursor.y = 2;
+        let mut popup = blank(Size { cols: 7, rows: 3, ..size });
+        text(&mut popup, 0, 0, "details", false);
+        popup.cursor.x = 1;
+        popup.cursor.y = 1;
+        popup.cursor.visible = true;
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        let paint = |renderer: &mut Renderer,
+                     terminal: &mut TerminalGuard,
+                     sidebar: &Frame,
+                     popup: &Frame,
+                     focus: &str| {
+            let scene = Scene {
+                size,
+                surfaces: vec![
+                    Surface {
+                        id: "native",
+                        rect: Rect { x: 4, y: 0, width: 12, height: 6 },
+                        frame: &native,
+                        selection: &[],
+                        search: &[],
+                        focused: focus == "native",
+                        faint: false,
+                        content: SurfaceContent::All,
+                    },
+                    Surface {
+                        id: "sidebar",
+                        rect: Rect { x: 0, y: 0, width: 4, height: 6 },
+                        frame: sidebar,
+                        selection: &[],
+                        search: &[],
+                        focused: focus == "sidebar",
+                        faint: false,
+                        content: SurfaceContent::Cells,
+                    },
+                    Surface {
+                        id: "popup",
+                        rect: Rect { x: 7, y: 2, width: 7, height: 3 },
+                        frame: popup,
+                        selection: &[],
+                        search: &[],
+                        focused: focus == "modal",
+                        faint: false,
+                        content: SurfaceContent::Cells,
+                    },
+                ],
+            };
+            let mut bytes = Vec::new();
+            renderer.render(&mut bytes, &scene, &ColorProbe::default(), terminal).unwrap();
+            String::from_utf8(bytes).unwrap()
+        };
+        let first = paint(&mut renderer, &mut terminal, &sidebar, &popup, "sidebar");
+        assert!(first.ends_with("\x1b[3;2H\x1b[?2026l"));
+        assert!(!first.contains("\x1b[?25h"));
+        assert!(!renderer.canvas.as_ref().unwrap().cursor.visible);
+        assert!(paint(&mut renderer, &mut terminal, &sidebar, &popup, "sidebar").is_empty());
+
+        // A keyboard selection can move without changing any painted cell.
+        sidebar.cursor.y = 4;
+        let moved = paint(&mut renderer, &mut terminal, &sidebar, &popup, "sidebar");
+        assert!(moved.ends_with("\x1b[5;2H\x1b[?2026l"));
+        assert!(!moved.contains("\x1b[?25h"));
+        assert_eq!(moved.matches('H').count(), 1);
+        text(&mut popup, 0, 2, "updated", false);
+        let metadata = paint(&mut renderer, &mut terminal, &sidebar, &popup, "sidebar");
+        assert!(metadata.ends_with("\x1b[5;2H\x1b[?2026l"));
+        assert!(!metadata.contains("\x1b[?25h"));
+
+        let modal = paint(&mut renderer, &mut terminal, &sidebar, &popup, "modal");
+        assert!(modal.contains("\x1b[4;9H\x1b[?25h"));
+        assert!(renderer.canvas.as_ref().unwrap().cursor.visible);
+        let pane = paint(&mut renderer, &mut terminal, &sidebar, &popup, "native");
+        assert!(pane.contains("\x1b[2;7H\x1b[?25h"));
+        assert!(renderer.canvas.as_ref().unwrap().cursor.visible);
+        let restored = paint(&mut renderer, &mut terminal, &sidebar, &popup, "sidebar");
+        assert!(restored.ends_with("\x1b[5;2H\x1b[?2026l"));
+        assert!(!restored.contains("\x1b[?25h"));
+        assert!(!renderer.canvas.as_ref().unwrap().cursor.visible);
+        assert!(paint(&mut renderer, &mut terminal, &sidebar, &popup, "sidebar").is_empty());
+    }
+    #[test]
+    fn hidden_focus_anchor_respects_cell_clip_and_source_bounds() {
+        let size = Size {
+            cols: 10,
+            rows: 4,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut source = blank(Size { cols: 6, rows: 2, ..size });
+        text(&mut source, 0, 0, "A界BC", false);
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        for (x, expected) in [(3, Some(5)), (1, None), (3, Some(5)), (6, None)] {
+            source.cursor.x = x;
+            let scene = Scene {
+                size,
+                surfaces: vec![Surface {
+                    id: "clipped",
+                    rect: Rect { x: 2, y: 1, width: 6, height: 2 },
+                    frame: &source,
+                    content: SurfaceContent::CellsClipped(Rect {
+                        x: 2, y: 0, width: 3, height: 1,
+                    }),
+                    selection: &[],
+                    search: &[],
+                    focused: true,
+                    faint: false,
+                }],
+            };
+            let mut bytes = Vec::new();
+            renderer.render(&mut bytes, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+            let output = String::from_utf8(bytes).unwrap();
+            let canvas = renderer.canvas.as_ref().unwrap();
+            assert!(!canvas.cursor.visible);
+            assert!(!output.contains("\x1b[?25h"));
+            // The half-visible wide glyph remains blank, independently of the
+            // focused hidden position.
+            assert_eq!(canvas.rows[1].cells[4].text, " ");
+            assert_eq!(canvas.rows[1].cells[4].width, 1);
+            if let Some(x) = expected {
+                assert_eq!((canvas.cursor.x, canvas.cursor.y), (x, 1));
+                assert!(output.ends_with("\x1b[2;6H\x1b[?2026l"));
+            } else {
+                assert_eq!((canvas.cursor.x, canvas.cursor.y), (size.cols, size.rows));
+                assert!(!output.contains('H'));
+            }
+        }
+    }
+    #[test]
+    fn passive_opaque_plate_preserves_hidden_anchor_but_occludes_visible_cursor() {
+        let size = Size {
+            cols: 10,
+            rows: 6,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut sidebar = blank(size);
+        text(&mut sidebar, 1, 2, "selected", true);
+        sidebar.cursor.x = 1;
+        sidebar.cursor.y = 2;
+        let mut plate = blank(size);
+        text(&mut plate, 1, 2, "selected", false);
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        for visible in [false, true] {
+            sidebar.cursor.visible = visible;
+            let scene = Scene {
+                size,
+                surfaces: vec![
+                    Surface {
+                        id: "sidebar",
+                        rect: Rect { x: 0, y: 0, width: 10, height: 6 },
+                        frame: &sidebar,
+                        content: SurfaceContent::Cells,
+                        selection: &[],
+                        search: &[],
+                        focused: true,
+                        faint: false,
+                    },
+                    Surface {
+                        id: "passive-joined-anchor",
+                        rect: Rect { x: 0, y: 0, width: 10, height: 6 },
+                        frame: &plate,
+                        content: SurfaceContent::CellsClipped(Rect {
+                            x: 1, y: 2, width: 8, height: 1,
+                        }),
+                        selection: &[],
+                        search: &[],
+                        focused: false,
+                        faint: false,
+                    },
+                ],
+            };
+            let mut bytes = Vec::new();
+            renderer.render(&mut bytes, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+            let output = String::from_utf8(bytes).unwrap();
+            let canvas = renderer.canvas.as_ref().unwrap();
+            assert_eq!((canvas.cursor.x, canvas.cursor.y), (1, 2));
+            assert!(!canvas.cursor.visible);
+            assert!(!canvas.rows[2].cells[1].style.inverse);
+            assert!(!output.contains("\x1b[?25h"));
+            if !visible {
+                assert!(output.ends_with("\x1b[3;2H\x1b[?2026l"));
+            } else {
+                // Revealing the source cursor under an unchanged passive
+                // plate changes neither its hidden anchor nor physical output.
+                assert!(output.is_empty());
+            }
+        }
+    }
+
     fn effect_frame(size: Size) -> Frame {
         let mut frame = graphics_frame(size);
         frame.images.push(Arc::new(Image {
@@ -1038,6 +1299,10 @@ mod scene_tests {
     }
     #[test]
     fn clipped_cells_keep_source_origin_and_bound_wide_glyphs_cursor_hits_and_images() {
+        for content in [
+            SurfaceContent::CellsClipped as fn(Rect) -> SurfaceContent,
+            SurfaceContent::CellsWithUnderlay,
+        ] {
         let size = Size {
             cols: 12,
             rows: 4,
@@ -1072,7 +1337,7 @@ mod scene_tests {
                     id: "clipped",
                     rect: Rect { x: 2, y: 1, width: 6, height: 2 },
                     frame: &source,
-                    content: SurfaceContent::CellsClipped(Rect {
+                    content: content(Rect {
                         x: 2, y: 0, width: 3, height: 1,
                     }),
                     selection: &[],
@@ -1103,7 +1368,7 @@ mod scene_tests {
         let mut idle = Vec::new();
         renderer.render(&mut idle, &scene, &ColorProbe::default(), &mut terminal).unwrap();
         assert!(idle.is_empty());
-        scene.surfaces[1].content = SurfaceContent::CellsClipped(Rect {
+        scene.surfaces[1].content = content(Rect {
             x: 0, y: 0, width: 1, height: 1,
         });
         renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
@@ -1111,17 +1376,22 @@ mod scene_tests {
         assert_eq!(canvas.rows[1].cells[2].text, "A");
         assert_eq!(canvas.rows[1].cells[5].text, ".");
         assert!(!canvas.cursor.visible);
+        }
     }
 
     #[test]
     fn clipped_cells_intersect_overflowing_clips_with_source_and_viewport() {
+        for content in [
+            SurfaceContent::CellsClipped as fn(Rect) -> SurfaceContent,
+            SurfaceContent::CellsWithUnderlay,
+        ] {
         let size = Size { cols: 10, rows: 5, cell_width: 8, cell_height: 16 };
         let source = blank(Size { cols: 3, rows: 2, ..size });
         let mut surface = Surface {
             id: "clipped",
             rect: Rect { x: 2, y: 1, width: 6, height: 3 },
             frame: &source,
-            content: SurfaceContent::CellsClipped(Rect {
+            content: content(Rect {
                 x: 1, y: 1, width: u16::MAX, height: u16::MAX,
             }),
             selection: &[],
@@ -1130,13 +1400,14 @@ mod scene_tests {
             faint: false,
         };
         assert_eq!(surface.cell_rect(), Some(Rect { x: 3, y: 2, width: 2, height: 1 }));
-        surface.content = SurfaceContent::CellsClipped(Rect {
+        surface.content = content(Rect {
             x: u16::MAX, y: 0, width: u16::MAX, height: 1,
         });
         assert_eq!(surface.cell_rect(), None);
         let scene = Scene { size, surfaces: vec![surface] };
         assert_eq!(scene.hit_test(2, 1), None);
         assert_eq!(scene.hit_map().hit_test(2, 1), None);
+        }
     }
 
     #[test]
@@ -1360,6 +1631,224 @@ mod scene_tests {
             }
         }
         pixels
+    }
+
+    /// Inspect emitted Kitty placements after decoding them with the native
+    /// consumer, using the existing phase-preserving raster projection.
+    fn native_material_pixels(frame: &Frame) -> Vec<Option<([u8; 4], bool)>> {
+        let size = frame.size;
+        let width = (u32::from(size.cols) * size.cell_width) as usize;
+        let height = (u32::from(size.rows) * size.cell_height) as usize;
+        let mut pixels = vec![None; width * height];
+        let prepared = geometry::prepare(frame, size).unwrap();
+        for p in prepared.placements {
+            let (w, h) = if let Some(key) = p.derived {
+                (key.visible.width, key.visible.height)
+            } else if let Some((cols, rows)) = p.cells {
+                (cols * size.cell_width - p.offset_x, rows * size.cell_height - p.offset_y)
+            } else {
+                (p.source.width, p.source.height)
+            };
+            let key = p.derived.unwrap_or(geometry::DerivedKey {
+                image: p.image,
+                source: p.source,
+                width: w,
+                height: h,
+                visible: geometry::Rect { x: 0, y: 0, width: w, height: h },
+            });
+            let rgba = geometry::raster(prepared.images[&p.image], key).unwrap();
+            let left = (p.col * size.cell_width + p.offset_x) as usize;
+            let top = (p.row * size.cell_height + p.offset_y) as usize;
+            for y in 0..h as usize {
+                for x in 0..w as usize {
+                    let destination = &mut pixels[(top + y) * width + left + x];
+                    assert!(destination.is_none(), "feedback duplicated material/shadows");
+                    *destination = Some((
+                        rgba[(y * w as usize + x) * 4..][..4].try_into().unwrap(),
+                        p.z >= 0,
+                    ));
+                }
+            }
+        }
+        pixels
+    }
+
+    #[test]
+    fn feedback_underlays_preserve_native_pixels_sampling_identity_and_popup_occlusion() {
+        use bkpr_terminal_engine::Terminal;
+        let size = Size { cols: 7, rows: 5, cell_width: 4, cell_height: 6 };
+        let rect = Rect { x: 0, y: 0, width: 7, height: 5 };
+        let vertical = Rect { x: 3, y: 0, width: 1, height: 5 };
+        let horizontal = Rect { x: 0, y: 2, width: 7, height: 1 };
+        let popup_rect = Rect { x: 3, y: 2, width: 2, height: 1 };
+        for (image_width, image_height) in [(20, 24), (7, 5)] {
+            let mut native = blank(size);
+            text(&mut native, 0, 4, "native", false);
+            native.cursor.visible = true;
+            native.cursor.x = 1;
+            native.cursor.y = 4;
+            let mut material = graphics_frame(size);
+            material.images.push(Arc::new(Image {
+                id: 91,
+                generation: 7,
+                width: image_width,
+                height: image_height,
+                format: PixelFormat::Rgba,
+                pixels: (0..image_width * image_height)
+                    .flat_map(|i| [(i * 17) as u8, (i * 31) as u8, (i * 47) as u8, 128])
+                    .collect(),
+            }));
+            material.placements.push(Placement {
+                image_id: 91, generation: 7, placement_id: 1,
+                col: 1, row: 0, offset_x: 1, offset_y: 2,
+                width: 20, height: 24,
+                source_x: 0, source_y: 0,
+                source_width: image_width, source_height: image_height,
+                layer: ImageLayer::AboveText, z: i32::MAX,
+            });
+            let source = Arc::clone(&material.images[0]);
+            let canonical = material.placements.clone();
+            let mut feedback = blank(size);
+            let mut style = default_style();
+            style.foreground_source = ColorSource::Palette(6);
+            style.foreground = feedback.palette[6];
+            crate::window::paint_edge_feedback(&mut feedback, &[vertical, horizontal], &style);
+            let mut popup = blank(popup_rect.size(size));
+            text(&mut popup, 0, 0, "PP", false);
+            let mut scene = Scene {
+                size,
+                surfaces: vec![
+                    Surface {
+                        id: "native", rect, frame: &native, content: SurfaceContent::All,
+                        selection: &[], search: &[], focused: true, faint: false,
+                    },
+                    Surface {
+                        id: "material", rect, frame: &material, content: SurfaceContent::Graphics,
+                        selection: &[], search: &[], focused: false, faint: false,
+                    },
+                ],
+            };
+            let mut renderer = Renderer::default();
+            let mut terminal = terminal();
+            let mut consumer = Terminal::new(Size { rows: size.rows + 1, ..size }).unwrap();
+            let mut output = Vec::new();
+            renderer.render(&mut output, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+            consumer.feed(&output).unwrap();
+            let baseline = native_material_pixels(&consumer.snapshot().unwrap());
+            let alias = renderer.aliases[&("material".into(), source.key())];
+            for (id, segment) in [("vertical", vertical), ("horizontal", horizontal)] {
+                scene.surfaces.push(Surface {
+                    id, rect, frame: &feedback, content: SurfaceContent::CellsWithUnderlay(segment),
+                    selection: &[], search: &[], focused: false, faint: false,
+                });
+            }
+            output.clear();
+            renderer.render(&mut output, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+            consumer.feed(&output).unwrap();
+            let snapshot = consumer.snapshot().unwrap();
+            let actual = native_material_pixels(&snapshot);
+            assert_eq!(snapshot.rows[2].cells[3].text, "┼");
+            let width = usize::from(size.cols) * size.cell_width as usize;
+            for (index, (before, after)) in baseline.iter().zip(&actual).enumerate() {
+                assert_eq!(before.map(|p| p.0), after.map(|p| p.0), "material pixel {index} changed");
+                if let Some((_, above)) = after {
+                    let x = (index % width) as u16 / size.cell_width as u16;
+                    let y = (index / width) as u16 / size.cell_height as u16;
+                    assert_eq!(*above, !vertical.contains(x, y) && !horizontal.contains(x, y));
+                }
+            }
+            assert!(terminal.graphics.projections.iter().all(|p| p.image == alias));
+            assert_eq!(renderer.aliases[&("material".into(), source.key())], alias);
+            assert!(Arc::ptr_eq(&material.images[0], &source));
+            assert_eq!(material.placements, canonical);
+            assert!(renderer.canvas.as_ref().unwrap().cursor.visible);
+            assert_eq!(scene.hit_test(3, 2), Some("horizontal"));
+            output.clear();
+            renderer.render(&mut output, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+            assert!(output.is_empty(), "retained feedback should be idle");
+            scene.surfaces.push(Surface {
+                id: "popup", rect: popup_rect, frame: &popup, content: SurfaceContent::Cells,
+                selection: &[], search: &[], focused: false, faint: false,
+            });
+            renderer.render(&mut output, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+            consumer.feed(&output).unwrap();
+            let snapshot = consumer.snapshot().unwrap();
+            let covered = native_material_pixels(&snapshot);
+            for (index, (before, after)) in actual.iter().zip(&covered).enumerate() {
+                let x = (index % width) as u16 / size.cell_width as u16;
+                let y = (index / width) as u16 / size.cell_height as u16;
+                assert_eq!(*after, if popup_rect.contains(x, y) { None } else { *before });
+            }
+            assert_eq!(snapshot.rows[2].cells[3].text, "P");
+            assert_eq!(scene.hit_map().hit_test(3, 2), Some("popup"));
+            // Normal opaque cells must still remove, not demote, images.
+            scene.surfaces.pop();
+            scene.surfaces[2].content = SurfaceContent::CellsClipped(vertical);
+            scene.surfaces[3].content = SurfaceContent::CellsClipped(horizontal);
+            output.clear();
+            renderer.render(&mut output, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+            consumer.feed(&output).unwrap();
+            let opaque = native_material_pixels(&consumer.snapshot().unwrap());
+            for (index, (before, after)) in baseline.iter().zip(&opaque).enumerate() {
+                let x = (index % width) as u16 / size.cell_width as u16;
+                let y = (index / width) as u16 / size.cell_height as u16;
+                assert_eq!(*after, if vertical.contains(x, y) || horizontal.contains(x, y) {
+                    None
+                } else {
+                    *before
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn feedback_demotes_only_earlier_above_text_material_in_original_scene_order() {
+        let size = Size { cols: 2, rows: 2, cell_width: 4, cell_height: 6 };
+        let rect = Rect { x: 0, y: 0, width: 2, height: 2 };
+        let first = effect_frame(size);
+        let mut second = effect_frame(size);
+        second.placements[0].layer = ImageLayer::BelowText;
+        let third = effect_frame(size);
+        let later = effect_frame(size);
+        let mut background = effect_frame(size);
+        background.placements[0].layer = ImageLayer::BelowBackground;
+        let feedback = blank(size);
+        let image_surface = |id, frame| Surface {
+            id, rect, frame, content: SurfaceContent::Graphics,
+            selection: &[], search: &[], focused: false, faint: false,
+        };
+        let scene = Scene {
+            size,
+            surfaces: vec![
+                image_surface("background", &background),
+                image_surface("first", &first),
+                image_surface("second", &second),
+                image_surface("third", &third),
+                Surface {
+                    id: "feedback", rect, frame: &feedback,
+                    content: SurfaceContent::CellsWithUnderlay(rect),
+                    selection: &[], search: &[], focused: false, faint: false,
+                },
+                image_surface("later", &later),
+            ],
+        };
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        renderer.render(&mut Vec::new(), &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        let depth = |id: &str| {
+            let key = renderer.aliases[&(id.to_owned(), first.images[0].key())];
+            let projections: Vec<_> = terminal.graphics.projections.iter()
+                .filter(|p| p.image == key).collect();
+            assert_eq!(projections.len(), 1, "fully covered images need no fragmentation");
+            assert!(projections[0].derived.is_none(), "full demotion must retain resource identity");
+            projections[0].z
+        };
+        assert!(depth("background") < i32::MIN / 2);
+        assert!(depth("first") >= i32::MIN / 2);
+        assert!(depth("first") < depth("second"));
+        assert!(depth("second") < depth("third"));
+        assert!(depth("third") < 0);
+        assert!(depth("later") >= 0, "later graphics must not be demoted retroactively");
     }
 
     #[test]

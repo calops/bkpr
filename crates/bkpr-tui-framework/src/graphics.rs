@@ -218,6 +218,8 @@ impl SvgGraphics {
 
     /// Prepare caller-owned materials on the same coalescing SVG worker.
     /// No colors, depth, border width or terminal capability is inferred.
+    /// Exact published icons and materials remain usable while missing variants
+    /// prepare; changed colors, styles and cell geometry never reuse stale pixels.
     pub fn prepare_with_decorations(
         &mut self,
         host: &ColorProbe,
@@ -271,6 +273,19 @@ impl SvgGraphics {
         if next == self.config {
             return;
         }
+        let generation = self.shared.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let published = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .published
+            .take();
+        if let Some(publication) = published
+            && publication.generation == generation - 1
+        {
+            self.publish(publication);
+        }
         let mut previous_materials = self.config;
         let mut next_materials = next;
         if let Some(config) = previous_materials.as_mut() {
@@ -280,10 +295,22 @@ impl SvgGraphics {
             config.joined = None;
         }
         if previous_materials != next_materials {
-            self.ready.clear();
-            self.decorations.clear();
+            // Completion applies to the whole request, but residency belongs to
+            // each exact resource. A new color must not withdraw other icons or
+            // unchanged contours while the worker prepares the missing variant.
             self.core_ready = false;
         }
+        self.ready.retain(|entry| {
+            next.is_some_and(|config| {
+                config.colors[..config.len].contains(&entry.rgb)
+                    && entry.matches(entry.asset_id, &config, entry.rgb)
+            })
+        });
+        self.decorations.retain(|entry| {
+            next.is_some_and(|config| {
+                entry.cell == config.cell && config.decorations.contains(&Some(entry.style))
+            })
+        });
         self.joined = next.and_then(|config| {
             config
                 .joined
@@ -292,7 +319,6 @@ impl SvgGraphics {
         let complete = self.core_ready
             && next.is_some_and(|config| config.joined.is_none() || self.joined.is_some());
         self.config = next;
-        let generation = self.shared.generation.fetch_add(1, Ordering::AcqRel) + 1;
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         state.desired = if complete {
             None
@@ -334,24 +360,23 @@ impl SvgGraphics {
             .unwrap_or_else(|e| e.into_inner())
             .published
             .take();
-        if let Some(Publication {
-            generation,
-            entries,
-            decorations,
-            joined,
-        }) = published
-            && generation == self.shared.generation.load(Ordering::Acquire)
+        if let Some(publication) = published
+            && publication.generation == self.shared.generation.load(Ordering::Acquire)
         {
-            self.ready = entries;
-            self.decorations = decorations;
-            self.core_ready = true;
-            if let Some(prepared) = &joined {
-                self.joined_cache.remember(prepared);
-            }
-            self.joined = joined;
+            self.publish(publication);
             return Ok(true);
         }
         Ok(false)
+    }
+
+    fn publish(&mut self, publication: Publication) {
+        self.ready = publication.entries;
+        self.decorations = publication.decorations;
+        self.core_ready = true;
+        if let Some(prepared) = &publication.joined {
+            self.joined_cache.remember(prepared);
+        }
+        self.joined = publication.joined;
     }
 
     /// Place a prepared contour only in a reserved window perimeter.
@@ -919,6 +944,119 @@ mod tests {
             lip_shade_milli: 240,
         }
     }
+    #[test]
+    fn changed_requests_keep_exact_published_icons_and_contours_until_missing_variants_are_ready() {
+        let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
+        let host = host();
+        let size = Size {
+            cols: 12,
+            rows: 8,
+            ..size(10)
+        };
+        let rect = crate::Rect {
+            x: 0,
+            y: 0,
+            width: size.cols,
+            height: size.rows,
+        };
+        let fixed = ColorSource::Rgb([10, 20, 30]);
+        let added = ColorSource::Rgb([40, 50, 60]);
+        let style = material();
+        let old = DecorationStyle {
+            surface: [50; 3],
+            ..style
+        };
+        let new = DecorationStyle {
+            surface: [70; 3],
+            ..style
+        };
+        let place = |graphics: &SvgGraphics, frame: &mut Frame, source| {
+            graphics.place(frame, 7, [0, 0], [0, 0], source, 1)
+        };
+        graphics.prepare_with_decorations(&host, size, &[fixed], &[style, old]);
+        prepared(&mut graphics);
+        let mut first = crate::blank(size);
+        assert!(place(&graphics, &mut first, ColorSource::Default));
+        assert!(place(&graphics, &mut first, fixed));
+        assert!(graphics.decorate_window(&mut first, rect, style, 64));
+        assert!(graphics.decorate_window(&mut first, rect, old, 128));
+
+        graphics.prepare_with_decorations(&host, size, &[fixed, added], &[style, new]);
+        let mut pending = crate::blank(size);
+        assert!(place(&graphics, &mut pending, ColorSource::Default));
+        assert!(place(&graphics, &mut pending, fixed));
+        assert!(graphics.decorate_window(&mut pending, rect, style, 64));
+        for (original, retained) in first.images.iter().zip(&pending.images) {
+            assert!(Arc::ptr_eq(original, retained));
+        }
+        assert!(!place(&graphics, &mut pending, added));
+        assert!(!graphics.decorate_window(&mut pending, rect, new, 128));
+        assert!(!graphics.decorate_window(&mut pending, rect, old, 128));
+
+        prepared(&mut graphics);
+        let mut complete = crate::blank(size);
+        assert!(place(&graphics, &mut complete, ColorSource::Default));
+        assert!(place(&graphics, &mut complete, fixed));
+        assert!(graphics.decorate_window(&mut complete, rect, style, 64));
+        for (retained, published) in pending.images.iter().zip(&complete.images) {
+            assert!(Arc::ptr_eq(retained, published));
+        }
+        assert!(place(&graphics, &mut complete, added));
+        assert!(
+            complete.images[3]
+                .pixels
+                .chunks_exact(4)
+                .all(|pixel| pixel[..3] == [40, 50, 60])
+        );
+        assert!(graphics.decorate_window(&mut complete, rect, new, 128));
+        assert_ne!(first.images[3].key(), complete.images[4].key());
+    }
+
+    #[test]
+    fn joined_request_adopts_undrained_matching_icons_and_contours_immediately() {
+        let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
+        let host = host();
+        let size = Size {
+            cols: 60,
+            rows: 20,
+            cell_width: 4,
+            cell_height: 8,
+        };
+        let style = material();
+        graphics.prepare_with_decorations(&host, size, &[], &[style]);
+        let mut poll = libc::pollfd {
+            fd: graphics.wake_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
+        graphics.prepare_joined(Some(JoinedSurface {
+            rects_px: [[60, 16, 180, 112], [20, 48, 66, 64]],
+            style: DecorationStyle {
+                kind: decoration::DecorationKind::RaisedSurface,
+                inset_px: [0, 0],
+                radius_px: 6,
+                sigma_milli: 1200,
+                offset_milli: [1400; 2],
+                ..style
+            },
+        }));
+        let mut frame = crate::blank(size);
+        assert!(graphics.place(&mut frame, 7, [0, 0], [0, 0], ColorSource::Default, 1));
+        assert!(graphics.decorate_window(
+            &mut frame,
+            crate::Rect {
+                x: 0,
+                y: 0,
+                width: size.cols,
+                height: size.rows,
+            },
+            style,
+            64,
+        ));
+        assert!(!graphics.joined_ready());
+    }
+
     #[test]
     fn joined_requests_preserve_existing_materials_and_reopen_shared_worker_pixels() {
         let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();

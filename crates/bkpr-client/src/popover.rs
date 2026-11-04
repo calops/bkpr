@@ -245,6 +245,7 @@ pub struct Popover {
     roles: Vec<RoleSpan>,
     projects: Vec<ProjectSpan>,
     foregrounds: Vec<ForegroundSpan>,
+    graphical: bool,
 }
 impl Popover {
     pub fn new(screen: Size) -> Self {
@@ -263,8 +264,18 @@ impl Popover {
             roles: Vec::new(),
             projects: Vec::new(),
             foregrounds: Vec::new(),
+            graphical: false,
         }
     }
+    pub(crate) fn set_graphical(&mut self, graphical: bool) -> bool {
+        if self.graphical == graphical {
+            return false;
+        }
+        self.graphical = graphical;
+        self.paint_key = None;
+        true
+    }
+
     pub fn hide(&mut self) {
         self.content_key = None;
         self.content = None;
@@ -363,8 +374,14 @@ impl Popover {
             .unwrap_or(1)
             .saturating_add(4)
             .clamp(24, 64) as u16;
-        let probe =
-            Placement::beside(screen, sidebar_width, anchor_row, preferred_width, 24)?.outer;
+        // Align the first content row, not the card's framing row, with the item.
+        // Tiny-screen above/below placement still excludes the actual source row.
+        let popup_row = if screen.cols.saturating_sub(sidebar_width) >= 4 {
+            anchor_row.saturating_sub(1)
+        } else {
+            anchor_row
+        };
+        let probe = Placement::beside(screen, sidebar_width, popup_row, preferred_width, 24)?.outer;
         let local = Size {
             cols: probe.width,
             rows: probe.height,
@@ -385,7 +402,7 @@ impl Popover {
         let rect = Placement::beside(
             screen,
             sidebar_width,
-            anchor_row,
+            popup_row,
             preferred_width,
             desired_height,
         )?
@@ -406,7 +423,11 @@ impl Popover {
         let body_height = usize::from(inner.height).saturating_sub(usize::from(footer));
         self.max_scroll = wrapped.len().saturating_sub(body_height);
         self.scroll = self.scroll.min(self.max_scroll);
-        let mut lines = window::border_rows(local, " Details ", Border::Rounded);
+        let mut lines = if self.graphical {
+            Vec::new()
+        } else {
+            window::border_rows(local, " Details ", Border::Rounded)
+        };
         self.roles = window::theme_spans(local).to_vec();
         self.projects.clear();
         if local.cols >= 3 && local.rows >= 3 {
@@ -868,5 +889,82 @@ mod tests {
                 .iter()
                 .any(|row| row.text == "Branch · /tree/b" && row.role == Role::Warning)
         );
+    }
+    #[test]
+    fn beside_popup_aligns_its_first_content_row_and_keeps_tiny_anchor_visible() {
+        let registry = registry();
+        let target = SidebarTarget::Pane {
+            workspace: "work".into(),
+            pane: "terminal".into(),
+        };
+        let screen = Size {
+            cols: 100,
+            rows: 40,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let mut popup = Popover::new(screen);
+        for anchor in [2, 7, 12] {
+            let outer = popup
+                .paint(&registry, Some(&target), anchor, 24, screen, |_| None)
+                .unwrap();
+            assert_eq!(popup.body_rect().unwrap().y, anchor);
+            assert!(outer.y + outer.height <= screen.rows);
+        }
+        let tiny = Size {
+            cols: 3,
+            rows: 6,
+            ..screen
+        };
+        let outer = popup
+            .paint(&registry, Some(&target), 3, 3, tiny, |_| None)
+            .unwrap();
+        assert!(outer.y > 3 || outer.y + outer.height <= 3);
+    }
+    #[test]
+    fn graphical_padding_is_blank_and_rounded_fallback_returns_without_content_change() {
+        let registry = registry();
+        let target = SidebarTarget::Pane {
+            workspace: "work".into(),
+            pane: "terminal".into(),
+        };
+        let screen = Size {
+            cols: 100,
+            rows: 40,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let mut popup = Popover::new(screen);
+        let mut original_content = None;
+        for graphical in [false, true, false] {
+            popup.set_graphical(graphical);
+            popup
+                .paint(&registry, Some(&target), 4, 24, screen, |_| None)
+                .unwrap();
+            let frame = &popup.surface.frame;
+            let top = &frame.rows[0].cells;
+            if graphical {
+                assert!(top.iter().all(|cell| cell.text == " "));
+                assert!(frame.rows.iter().all(|row| row.cells[0].text == " "));
+            } else {
+                assert_eq!(top[0].text, "╭");
+                assert_eq!(top.last().unwrap().text, "╮");
+                assert_eq!(frame.rows.last().unwrap().cells[0].text, "╰");
+            }
+            let content = frame.rows[1..frame.rows.len() - 1]
+                .iter()
+                .map(|row| {
+                    row.cells[1..row.cells.len() - 1]
+                        .iter()
+                        .map(|cell| cell.text.as_str())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>();
+            if let Some(original) = &original_content {
+                assert_eq!(&content, original);
+            } else {
+                original_content = Some(content);
+            }
+        }
     }
 }

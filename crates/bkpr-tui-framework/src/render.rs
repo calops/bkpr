@@ -520,6 +520,10 @@ fn draw_prepared(
         out.flush()?;
         return Ok(());
     }
+    // Placement/source retirement belongs to the same physical update as its
+    // replacement. Deleting before this boundary exposes an empty-image frame
+    // when the write spans flushes, even if every raster remains GPU-resident.
+    write!(out, "\x1b[?2026h\x1b[?25l\x1b[0m")?;
     for (_, id) in graphics
         .image_ids
         .extract_if(|key, _| !prepared.images.contains_key(key))
@@ -542,7 +546,6 @@ fn draw_prepared(
             resource.placed = false;
         }
     }
-    write!(out, "\x1b[?2026h\x1b[?25l\x1b[0m")?;
     let visible_rows = frame.rows.len().min(viewport.rows as usize);
     let mut previous_style: Option<&Style> = None;
     for y in 0..viewport.rows as usize {
@@ -691,25 +694,28 @@ fn draw_prepared(
     graphics.text.colors = Some(colors);
     graphics.text.palette.clone_from(&frame.palette);
     graphics.projections = prepared.placements;
-    if frame.cursor.visible && frame.cursor.x < viewport.cols && frame.cursor.y < viewport.rows {
-        let shape = match frame.cursor.shape {
-            CursorShape::Block | CursorShape::Hollow => 2,
-            CursorShape::Underline => 4,
-            CursorShape::Bar => 6,
-        } - u8::from(frame.cursor.blinking);
-        write!(
-            out,
-            "\x1b[{shape} q\x1b[{};{}H\x1b[?25h",
-            frame.cursor.y + 1,
-            frame.cursor.x + 1
-        )?;
-        if graphics.text.physical_cursor_color != Some(frame.cursor.color) {
-            if let Some([r, g, b]) = frame.cursor.color {
-                write!(out, "\x1b]12;#{r:02x}{g:02x}{b:02x}\x1b\\")?;
-            } else {
-                write!(out, "\x1b]112\x1b\\")?;
+    if frame.cursor.x < viewport.cols && frame.cursor.y < viewport.rows {
+        if frame.cursor.visible {
+            let shape = match frame.cursor.shape {
+                CursorShape::Block | CursorShape::Hollow => 2,
+                CursorShape::Underline => 4,
+                CursorShape::Bar => 6,
+            } - u8::from(frame.cursor.blinking);
+            write!(out, "\x1b[{shape} q")?;
+        }
+        // Text, graphics placements and passive chrome all move the physical
+        // cursor. Restore the focused anchor even when DECTCEM remains hidden.
+        write!(out, "\x1b[{};{}H", frame.cursor.y + 1, frame.cursor.x + 1)?;
+        if frame.cursor.visible {
+            write!(out, "\x1b[?25h")?;
+            if graphics.text.physical_cursor_color != Some(frame.cursor.color) {
+                if let Some([r, g, b]) = frame.cursor.color {
+                    write!(out, "\x1b]12;#{r:02x}{g:02x}{b:02x}\x1b\\")?;
+                } else {
+                    write!(out, "\x1b]112\x1b\\")?;
+                }
+                graphics.text.physical_cursor_color = Some(frame.cursor.color);
             }
-            graphics.text.physical_cursor_color = Some(frame.cursor.color);
         }
     }
     graphics.text.cursor = Some(frame.cursor.clone());
@@ -769,7 +775,18 @@ pub fn decode_input(
                     .into_iter()
                     .filter_map(client_input),
             ),
-            InputPart::Reply(reply) => events.push(ClientEvent::Reply(reply)),
+            InputPart::Reply(reply) => {
+                // A complete framed report cannot continue the preceding key.
+                // Resolve a pending legacy Escape before its structured release
+                // or another report changes the key's input owner.
+                events.extend(
+                    parser
+                        .parse_as_vec(&[], false)
+                        .into_iter()
+                        .filter_map(client_input),
+                );
+                events.push(ClientEvent::Reply(reply));
+            }
         }
     }
     if !more {
@@ -1975,6 +1992,30 @@ mod tests {
             matches!(events.as_slice(), [ClientEvent::Legacy(InputEvent::Mouse(mouse))]
             if mouse.x == 0 && mouse.y == 0)
         );
+    }
+    #[test]
+    fn pending_escape_precedes_structured_key_release_and_mouse_release() {
+        let wire = b"\x1b\x1b[27;1:3u\x1b[<0;4;4m";
+        for split in 0..=wire.len() {
+            let mut parser = InputParser::new();
+            let mut demux = ReplyDemux::default();
+            let mut events = decode_input(&mut parser, demux.feed(&wire[..split]), true);
+            events.extend(decode_input(&mut parser, demux.feed(&wire[split..]), true));
+            events.extend(decode_input(&mut parser, Vec::new(), false));
+            assert!(
+                matches!(events.as_slice(), [
+                    ClientEvent::Legacy(InputEvent::Key(press)),
+                    ClientEvent::Reply(release),
+                    ClientEvent::Legacy(InputEvent::Mouse(mouse)),
+                ] if press.key == KeyCode::Escape
+                    && release.strip_prefix(b"key;").is_some_and(|payload| {
+                        kitty_key(payload).is_ok_and(|key| key.key == "Escape"
+                            && key.action == bkpr_protocol::KeyAction::Release)
+                    })
+                    && mouse.mouse_buttons.is_empty()),
+                "input order changed at wire split {split}"
+            );
+        }
     }
     #[test]
     fn malformed_zero_sgr_coordinates_cannot_become_top_left_clicks() {

@@ -391,11 +391,14 @@ pub fn layout_rects(layout: Option<&LayoutNode>, rect: Rect, result: &mut Vec<(S
         None => {}
     }
 }
-pub fn screen_geometry(size: Size) -> (Rect, Rect) {
-    // Main's launcher defaults to 38 cells. On small terminals retain room
-    // for the native application instead of imposing the full preferred width.
+pub fn screen_geometry(size: Size, preferred_columns: Option<u16>) -> (Rect, Rect) {
+    // Main's launcher defaults to 38 cells, shrinking automatically on small
+    // terminals. A dragged width instead leaves at least three native cells.
     let sidebar = if size.cols >= 24 {
-        38.min(size.cols / 2)
+        preferred_columns.map_or_else(
+            || 38.min(size.cols / 2),
+            |columns| columns.clamp(3, size.cols - 3),
+        )
     } else {
         0
     };
@@ -791,6 +794,20 @@ fn line(
         selected,
     )
 }
+pub(crate) fn sidebar_popup_target(state: &Controller, blocked: bool) -> Option<&SidebarTarget> {
+    if blocked || state.form.is_some() || state.prefix {
+        None
+    } else {
+        state.sidebar.hover.as_ref().or_else(|| {
+            state
+                .sidebar
+                .active
+                .then_some(state.sidebar.cursor.as_ref())
+                .flatten()
+        })
+    }
+}
+
 pub struct ChromeContext<'a> {
     pub size: Size,
     pub state: &'a Controller,
@@ -800,6 +817,8 @@ pub struct ChromeContext<'a> {
     pub pane_graphics: &'a [Rect],
     /// Rows from the passive guide's top through the sidebar's bottom.
     pub guide_rows: u16,
+    /// The visible passive popup and its shared item/card surface color.
+    pub sidebar_popup: Option<(&'a SidebarTarget, ColorSource)>,
 }
 
 /// Keep chrome text, hit targets, artwork and keyboard paging in one viewport.
@@ -824,11 +843,22 @@ pub fn chrome<'a>(
         rects,
         pane_graphics,
         guide_rows,
+        sidebar_popup,
     } = context;
     project_spans.clear();
-    let (sidebar, _) = screen_geometry(size);
+    let (sidebar, _) = screen_geometry(size, state.sidebar.preferred_columns);
     let mut hit = Vec::new();
     let mut lines = Vec::new();
+    // Hidden cursors still determine terminal cursor trails. Only a rendered
+    // keyboard selection supplies an anchor; passive hover cards never do.
+    let mut cursor = Cursor {
+        x: size.cols,
+        y: size.rows,
+        visible: false,
+        blinking: false,
+        shape: CursorShape::Block,
+        color: None,
+    };
     if sidebar.width > 0 && sidebar.height > 0 {
         lines.push(line(
             1,
@@ -847,9 +877,19 @@ pub fn chrome<'a>(
         .take(available)
         .enumerate()
     {
-        let selected =
-            state.sidebar.active && entry.target.is_some() && entry.target == state.sidebar.cursor;
         let row = index as u16 + 2;
+        let highlighted =
+            sidebar_popup.is_some_and(|(target, _)| entry.target.as_ref() == Some(target));
+        // A confirmed RGB plate owns its selection background. Limited-color
+        // clients retain native inverse selection instead of losing the cue.
+        let plate = highlighted
+            && sidebar_popup
+                .is_some_and(|(_, background)| matches!(background, ColorSource::Rgb(_)));
+        let selected = !plate
+            && state.sidebar.active
+            && entry.target.is_some()
+            && entry.target == state.sidebar.cursor;
+        let mut marker_x = 1;
         let label = match entry.kind {
             SidebarRowKind::Workspace { index, collapsed } => {
                 let workspace = &registry.workspaces[index];
@@ -879,7 +919,7 @@ pub fn chrome<'a>(
                         ));
                     }
                 }
-                let mut label = String::from("│ ");
+                let mut label = String::from(if highlighted { "  " } else { "│ " });
                 let mut column = 3usize;
                 for (position, (_, name, slot)) in repositories.into_iter().enumerate() {
                     if position > 0 {
@@ -908,6 +948,7 @@ pub fn chrome<'a>(
                 index,
                 collapsed,
             } => {
+                marker_x = 3;
                 let window = &registry.workspaces[workspace].windows[index];
                 format!(
                     "  {} {} {}",
@@ -923,9 +964,15 @@ pub fn chrome<'a>(
             SidebarRowKind::Pane { index, projected } => {
                 let pane = &registry.panes[index];
                 let (grouped, last) = pane_tree(state, registry, index);
-                let lead = if last { "╰─╴" } else { "├─╴" };
+                let lead = if highlighted {
+                    "   "
+                } else if last {
+                    "╰─╴"
+                } else {
+                    "├─╴"
+                };
                 let indent = if grouped { "  " } else { "" };
-                let marker_x = if grouped { 6 } else { 4 };
+                marker_x = if grouped { 6 } else { 4 };
                 project_spans.push(ProjectSpan {
                     rect: Rect {
                         x: marker_x,
@@ -947,7 +994,11 @@ pub fn chrome<'a>(
             }
             SidebarRowKind::Detail { index } => {
                 let (grouped, last) = pane_tree(state, registry, index);
-                let lead = if last { "     " } else { "│    " };
+                let lead = if highlighted || last {
+                    "     "
+                } else {
+                    "│    "
+                };
                 let indent = if grouped { "  " } else { "" };
                 let pane = &registry.panes[index];
                 let branch = sidebar_branch(
@@ -958,6 +1009,20 @@ pub fn chrome<'a>(
             }
             SidebarRowKind::Spacer => String::new(),
         };
+        if state.sidebar.active
+            && entry.target.is_some()
+            && entry.target == state.sidebar.cursor
+            && marker_x < sidebar.width
+            && matches!(
+                entry.kind,
+                SidebarRowKind::Workspace { .. }
+                    | SidebarRowKind::Window { .. }
+                    | SidebarRowKind::Pane { .. }
+            )
+        {
+            cursor.x = marker_x;
+            cursor.y = row;
+        }
         lines.push(line(
             1,
             row,
@@ -1055,7 +1120,7 @@ pub fn chrome<'a>(
             false,
         ));
     }
-    surface.paint(size, lines, None);
+    surface.paint(size, lines, Some(cursor));
     hit
 }
 
@@ -1076,6 +1141,7 @@ pub(crate) fn theme_chrome<'a>(
         rects,
         pane_graphics,
         guide_rows,
+        sidebar_popup,
         ..
     } = context;
     fn activity_role(status: &ProgramStatus) -> Role {
@@ -1088,7 +1154,7 @@ pub(crate) fn theme_chrome<'a>(
         }
     }
     let size = surface.frame.size;
-    let sidebar = screen_geometry(size).0;
+    let sidebar = screen_geometry(size, state.sidebar.preferred_columns).0;
     let mut spans = Vec::new();
     let mut backgrounds = Vec::new();
     foregrounds.clear();
@@ -1156,10 +1222,17 @@ pub(crate) fn theme_chrome<'a>(
             width: sidebar.width.saturating_sub(1),
             height: 1,
         };
-        if entry.target.is_some() && entry.target == state.sidebar.hover {
+        let background = sidebar_popup
+            .filter(|(target, _)| entry.target.as_ref() == Some(*target))
+            .map(|(_, background)| background)
+            .or_else(|| {
+                (entry.target.is_some() && entry.target == state.sidebar.hover)
+                    .then(|| theme.background(Role::Hover, false))
+            });
+        if let Some(background) = background {
             backgrounds.push(BackgroundSpan {
                 rect: row_rect,
-                background: theme.background(Role::Hover, false),
+                background,
             });
         }
         let selected =
@@ -1700,6 +1773,87 @@ pub(crate) fn theme_modal(surface: &mut UiSurface, theme: &Theme, form: &Form) {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn sidebar_hidden_cursor_tracks_navigation_icons_and_scrolled_item_not_details() {
+        let (mut pane, snapshot) = capture_fixture();
+        pane.project = Some(project_fixture());
+        let mut registry = capture_registry(&pane);
+        registry.workspaces[0]
+            .windows
+            .push(window("other-window", None));
+        let size = Size {
+            rows: 9,
+            ..capture_surface().frame.size
+        };
+        let mut surface = UiSurface::new(size);
+        let mut state = Controller::new(&registry);
+        state.sidebar.enter();
+        state
+            .sidebar
+            .select(SidebarTarget::Workspace("work".into()));
+        let (sidebar, _) = screen_geometry(size, state.sidebar.preferred_columns);
+        let guide_rows = 2;
+        state
+            .sidebar
+            .viewport(sidebar_content_rows(sidebar, guide_rows));
+        for (column, icon) in [(1, "●"), (3, "▾"), (6, "●")] {
+            let popup = state.sidebar.cursor.clone().unwrap();
+            let hits = chrome(
+                &mut surface,
+                ChromeContext {
+                    size,
+                    state: &state,
+                    registry: &registry,
+                    rects: &[],
+                    pane_graphics: &[],
+                    guide_rows,
+                    sidebar_popup: Some((&popup, ColorSource::Rgb([40, 50, 60]))),
+                },
+                |_| None,
+                |_| Some(&snapshot),
+                |_| None,
+                &mut Vec::new(),
+            );
+            let row = hits.iter().find(|(target, _)| target == &popup).unwrap().1;
+            let cursor = &surface.frame.cursor;
+            assert_eq!((cursor.x, cursor.y), (column, row));
+            assert!(!cursor.visible);
+            assert_eq!(
+                surface.frame.rows[row as usize].cells[column as usize].text,
+                icon
+            );
+            if column == 6 {
+                assert!(state.sidebar.scroll > 0);
+                // The same target's branch-detail row is painted immediately
+                // below the item, but must not become its physical anchor.
+                assert!(hits.iter().any(|(target, y)| target == &popup && *y > row));
+            }
+            state.sidebar.navigate(1);
+        }
+        state.sidebar.active = false;
+        chrome(
+            &mut surface,
+            ChromeContext {
+                size,
+                state: &state,
+                registry: &registry,
+                rects: &[],
+                pane_graphics: &[],
+                guide_rows,
+                sidebar_popup: None,
+            },
+            |_| None,
+            |_| Some(&snapshot),
+            |_| None,
+            &mut Vec::new(),
+        );
+        assert!(!surface.frame.cursor.visible);
+        assert_eq!(
+            (surface.frame.cursor.x, surface.frame.cursor.y),
+            (size.cols, size.rows)
+        );
+    }
+
+    #[test]
     fn codex_sidebar_logo_keeps_its_spacer_and_requires_current_identity() {
         let (mut pane, mut snapshot) = capture_fixture();
         pane.harness.as_mut().unwrap().kind = HarnessKind::Codex;
@@ -1734,6 +1888,7 @@ mod tests {
         palette.update(&host, 2);
         let size = surface.frame.size;
         let context = || ChromeContext {
+            sidebar_popup: None,
             size,
             state: &state,
             registry: &registry,
@@ -1829,6 +1984,7 @@ mod tests {
             state.sidebar.cursor = Some(target.clone());
             state.sidebar.hover = hovered.then(|| target.clone());
             let context = || ChromeContext {
+                sidebar_popup: None,
                 size,
                 state: &state,
                 registry: &registry,
@@ -1899,6 +2055,7 @@ mod tests {
         state.sidebar.active = false;
         state.sidebar.cursor = Some(SidebarTarget::Workspace("work".into()));
         let context = ChromeContext {
+            sidebar_popup: None,
             size,
             state: &state,
             registry: &registry,
@@ -1928,6 +2085,51 @@ mod tests {
             theme.ink(Role::Muted, false)
         );
     }
+    #[test]
+    fn sidebar_geometry_clamps_width_without_leaving_gaps_or_starving_native_cells() {
+        for cols in 0..=120 {
+            let size = Size {
+                cols,
+                rows: 30,
+                cell_width: 9,
+                cell_height: 18,
+            };
+            for preferred in [None, Some(0), Some(3), Some(19), Some(67), Some(u16::MAX)] {
+                let (sidebar, native) = screen_geometry(size, preferred);
+                assert_eq!((sidebar.x, sidebar.y, native.y), (0, 0, 0));
+                assert_eq!((sidebar.height, native.height), (size.rows, size.rows));
+                assert_eq!(native.x, sidebar.width);
+                assert_eq!(sidebar.width + native.width, cols);
+                if cols < 24 {
+                    assert_eq!(sidebar.width, 0);
+                } else if let Some(preferred) = preferred {
+                    assert_eq!(sidebar.width, preferred.clamp(3, cols - 3));
+                    assert!(native.width >= 3);
+                } else {
+                    assert_eq!(sidebar.width, 38.min(cols / 2));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn requested_sidebar_width_survives_clamping_and_temporary_hiding() {
+        let mut sidebar = Sidebar::default();
+        sidebar.preferred_columns = Some(67);
+        for (cols, visible_width) in [(120, 67), (50, 47), (23, 0), (0, 0), (120, 67)] {
+            let size = Size {
+                cols,
+                rows: 30,
+                cell_width: 9,
+                cell_height: 18,
+            };
+            let (visible, _) = screen_geometry(size, sidebar.preferred_columns);
+            sidebar.viewport(sidebar_content_rows(visible, 0));
+            assert_eq!(visible.width, visible_width);
+            assert_eq!(sidebar.preferred_columns, Some(67));
+        }
+    }
+
     #[test]
     fn pane_body_reserves_all_chrome_edges_without_losing_tiny_content() {
         let outer = Rect {
@@ -1964,7 +2166,7 @@ mod tests {
         let (pane, snapshot) = capture_fixture();
         let mut surface = capture_surface();
         let hits = capture_chrome(&mut surface, &pane, &snapshot);
-        let sidebar = screen_geometry(surface.frame.size).0;
+        let sidebar = screen_geometry(surface.frame.size, None).0;
         assert!(!hits.is_empty());
         for (target, y) in hits {
             assert!(
@@ -2010,6 +2212,7 @@ mod tests {
         let hits = chrome(
             &mut surface,
             ChromeContext {
+                sidebar_popup: None,
                 size,
                 state: &state,
                 registry: &registry,
@@ -2022,7 +2225,7 @@ mod tests {
             |_| None,
             &mut Vec::new(),
         );
-        let sidebar = screen_geometry(size).0;
+        let sidebar = screen_geometry(size, state.sidebar.preferred_columns).0;
         let status_y = size.rows - guide_rows - 1;
         assert!(!hits.is_empty());
         assert!(hits.iter().all(|(_, y)| *y < status_y));
@@ -2403,6 +2606,7 @@ mod tests {
         let hit = chrome(
             &mut surface,
             ChromeContext {
+                sidebar_popup: None,
                 size,
                 state: &Controller::new(&registry),
                 registry: &registry,
@@ -2531,10 +2735,11 @@ mod tests {
         let registry = capture_registry(pane);
         let state = Controller::new(&registry);
         let size = surface.frame.size;
-        let (_, rect) = screen_geometry(size);
+        let (_, rect) = screen_geometry(size, state.sidebar.preferred_columns);
         chrome(
             surface,
             ChromeContext {
+                sidebar_popup: None,
                 size,
                 state: &state,
                 registry: &registry,
@@ -2570,7 +2775,7 @@ mod tests {
             let state = Controller::new(&registry);
             let mut surface = capture_surface();
             let size = surface.frame.size;
-            let (_, area) = screen_geometry(size);
+            let (_, area) = screen_geometry(size, state.sidebar.preferred_columns);
             let mut rects = Vec::new();
             layout_rects(
                 registry.workspaces[0].windows[0].layout.as_ref(),
@@ -2580,6 +2785,7 @@ mod tests {
             chrome(
                 &mut surface,
                 ChromeContext {
+                    sidebar_popup: None,
                     size,
                     state: &state,
                     registry: &registry,
@@ -2607,6 +2813,7 @@ mod tests {
             chrome(
                 &mut surface,
                 ChromeContext {
+                    sidebar_popup: None,
                     size,
                     state: &state,
                     registry: &registry,
@@ -2623,6 +2830,7 @@ mod tests {
             chrome(
                 &mut fresh,
                 ChromeContext {
+                    sidebar_popup: None,
                     size,
                     state: &state,
                     registry: &registry,
@@ -2656,7 +2864,7 @@ mod tests {
             let state = Controller::new(&registry);
             let mut surface = capture_surface();
             let size = surface.frame.size;
-            let area = screen_geometry(size).1;
+            let area = screen_geometry(size, state.sidebar.preferred_columns).1;
             let mut rects = Vec::new();
             layout_rects(
                 registry.workspaces[0].windows[0].layout.as_ref(),
@@ -2668,6 +2876,7 @@ mod tests {
                 chrome(
                     surface,
                     ChromeContext {
+                        sidebar_popup: None,
                         size,
                         state: &state,
                         registry: &registry,
@@ -2828,6 +3037,7 @@ mod tests {
         let hits = chrome(
             &mut surface,
             ChromeContext {
+                sidebar_popup: None,
                 size,
                 state: &state,
                 registry: &registry,
@@ -2849,6 +3059,7 @@ mod tests {
         chrome(
             &mut surface,
             ChromeContext {
+                sidebar_popup: None,
                 size,
                 state: &state,
                 registry: &registry,
@@ -3092,5 +3303,153 @@ mod tests {
                 .all(|row| row.cells.len() == size.cols as usize)
         );
         assert!(painted_text(&surface).contains("clipped"));
+    }
+    #[test]
+    fn popup_highlight_clears_guides_and_shares_one_background_then_restores() {
+        let (mut pane, snapshot) = capture_fixture();
+        pane.project = Some(project_fixture());
+        let registry = capture_registry(&pane);
+        let mut state = Controller::new(&registry);
+        let target = SidebarTarget::Pane {
+            workspace: "work".into(),
+            pane: pane.id.clone(),
+        };
+        state.sidebar.cursor = Some(target.clone());
+        let mut surface = capture_surface();
+        let size = surface.frame.size;
+        let host = bkpr_tui_framework::ColorProbe {
+            truecolor: true,
+            foreground: Some([220; 3]),
+            background: Some([20; 3]),
+            ..Default::default()
+        };
+        let mut theme = Theme::default();
+        let mut raised = Theme::default();
+        crate::appearance::update_theme(&mut theme, &host);
+        crate::appearance::update_region_theme(&mut raised, &host, None);
+        let raised_bg = raised.background(Role::Panel, false);
+        assert_ne!(raised_bg, theme.background(Role::Base, false));
+        for (visible, keyboard) in [(true, false), (true, true), (false, false)] {
+            state.sidebar.active = keyboard;
+            state.sidebar.hover = (visible && !keyboard).then(|| target.clone());
+            let context = || ChromeContext {
+                size,
+                state: &state,
+                registry: &registry,
+                rects: &[],
+                pane_graphics: &[],
+                guide_rows: 0,
+                sidebar_popup: sidebar_popup_target(&state, !visible)
+                    .map(|target| (target, raised_bg)),
+            };
+            let mut projects = Vec::new();
+            chrome(
+                &mut surface,
+                context(),
+                |_| None,
+                |_| Some(&snapshot),
+                |_| None,
+                &mut projects,
+            );
+            theme_chrome(
+                &mut surface,
+                &theme,
+                context(),
+                |_| Some(&snapshot),
+                &ProjectPalette::default(),
+                &projects,
+                &mut Vec::new(),
+            );
+            let sidebar = screen_geometry(size, state.sidebar.preferred_columns).0;
+            for (index, entry) in state.sidebar.rows.iter().enumerate() {
+                if entry.target.as_ref() != Some(&target) {
+                    continue;
+                }
+                let cells = &surface.frame.rows[index + 2].cells;
+                let expected = if visible {
+                    raised_bg
+                } else {
+                    theme.background(Role::Base, false)
+                };
+                assert!(
+                    cells[1..usize::from(sidebar.width)]
+                        .iter()
+                        .all(|cell| cell.style.background_source == expected)
+                );
+                if visible {
+                    assert!(cells[1..4].iter().all(|cell| cell.text == " "));
+                } else if matches!(entry.kind, SidebarRowKind::Pane { .. }) {
+                    assert!(
+                        cells[1..4]
+                            .iter()
+                            .any(|cell| matches!(cell.text.as_str(), "╰" | "├"))
+                    );
+                }
+            }
+            assert_eq!(
+                surface.frame.rows[0].cells[1].style.background_source,
+                theme.background(Role::Base, false)
+            );
+        }
+    }
+    #[test]
+    fn popup_keeps_native_keyboard_selection_when_rgb_is_unavailable() {
+        let (pane, snapshot) = capture_fixture();
+        let registry = capture_registry(&pane);
+        let mut state = Controller::new(&registry);
+        state.sidebar.active = true;
+        let target = SidebarTarget::Pane {
+            workspace: "work".into(),
+            pane: pane.id.clone(),
+        };
+        state.sidebar.cursor = Some(target.clone());
+        let mut surface = capture_surface();
+        let size = surface.frame.size;
+        let mut theme = Theme::default();
+        crate::appearance::update_theme(&mut theme, &Default::default());
+        let context = || ChromeContext {
+            size,
+            state: &state,
+            registry: &registry,
+            rects: &[],
+            pane_graphics: &[],
+            guide_rows: 0,
+            sidebar_popup: Some((&target, ColorSource::Default)),
+        };
+        chrome(
+            &mut surface,
+            context(),
+            |_| None,
+            |_| Some(&snapshot),
+            |_| None,
+            &mut Vec::new(),
+        );
+        theme_chrome(
+            &mut surface,
+            &theme,
+            context(),
+            |_| Some(&snapshot),
+            &ProjectPalette::default(),
+            &[],
+            &mut Vec::new(),
+        );
+        let row = state
+            .sidebar
+            .rows
+            .iter()
+            .position(|entry| matches!(entry.kind, SidebarRowKind::Pane { .. }))
+            .unwrap()
+            + 2;
+        assert!(
+            surface.frame.rows[row]
+                .cells
+                .iter()
+                .any(|cell| cell.text != " " && cell.style.inverse)
+        );
+        assert!(
+            surface.frame.rows[row].cells[1..4]
+                .iter()
+                .all(|cell| cell.text == " ")
+        );
     }
 }

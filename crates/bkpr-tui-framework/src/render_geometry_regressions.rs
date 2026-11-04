@@ -497,6 +497,120 @@ fn aggregate_visible_pixels_are_bounded_before_allocation_or_output() {
 }
 
 #[test]
+fn image_variant_switches_and_retirement_stay_inside_the_physical_update() {
+    let mut frame = scene();
+    frame.images = vec![
+        image(1, 4, 4, [255, 0, 0, 255].repeat(16)),
+        image(2, 4, 4, [0, 255, 0, 255].repeat(16)),
+        image(3, 2, 2, [0, 0, 255, 255].repeat(4)),
+    ];
+    let mut scaled = placement(1, 11, 9);
+    scaled.source_width = 2;
+    scaled.source_height = 2;
+    scaled.col = 2;
+    let mut unchanged = placement(3, 2, 2);
+    unchanged.col = 4;
+    frame.placements = vec![placement(1, 4, 4), scaled, unchanged];
+    let mut graphics = GraphicsState::new(100);
+    let mut terminal = consumer(&frame);
+    let render = |frame: &Frame, graphics: &mut GraphicsState, terminal: &mut Terminal| {
+        let mut output = Vec::new();
+        draw(
+            &mut output,
+            frame,
+            frame.size,
+            "",
+            &ColorProbe::default(),
+            graphics,
+        )
+        .unwrap();
+        assert!(output.starts_with(b"\x1b[?2026h"));
+        assert!(output.ends_with(b"\x1b[?2026l"));
+        for chunk in output.chunks(64 * 1024) {
+            terminal.feed(chunk).unwrap();
+        }
+        String::from_utf8(output).unwrap()
+    };
+    render(&frame, &mut graphics, &mut terminal);
+    for p in &mut frame.placements[..2] {
+        p.image_id = 2;
+    }
+    render(&frame, &mut graphics, &mut terminal);
+    let original_ids = graphics.image_ids.clone();
+    let derived_ids = graphics
+        .derived_ids
+        .iter()
+        .map(|(key, resource)| (*key, resource.id))
+        .collect::<HashMap<_, _>>();
+    let native_id = graphics.image_ids[&frame.images[2].key()];
+    for id in [1, 2, 1, 2] {
+        for p in &mut frame.placements[..2] {
+            p.image_id = id;
+        }
+        let output = render(&frame, &mut graphics, &mut terminal);
+        assert!(!output.contains("\x1b_Ga=t,"));
+        assert!(!output.contains("\x1b_Ga=d,d=I,"));
+        assert_eq!(graphics.image_ids, original_ids);
+        assert_eq!(
+            graphics
+                .derived_ids
+                .iter()
+                .map(|(key, resource)| (*key, resource.id))
+                .collect::<HashMap<_, _>>(),
+            derived_ids
+        );
+        let snapshot = terminal.snapshot().unwrap();
+        assert_eq!(snapshot.placements.len(), 3);
+        let native = snapshot.placements.iter().find(|p| p.col == 4).unwrap();
+        assert_eq!(
+            pixel(placed_image(&snapshot, native), 0, 0),
+            [0, 0, 255, 255]
+        );
+    }
+
+    // Replacing a generation must retire both its original and inactive raster,
+    // without changing the unrelated native resource or retaining stale pixels.
+    let old_key = frame.images[0].key();
+    frame.images[0] = Arc::new(Image {
+        id: 1,
+        generation: 2,
+        width: 4,
+        height: 4,
+        format: PixelFormat::Rgba,
+        pixels: [255, 255, 0, 255].repeat(16),
+    });
+    for p in &mut frame.placements[..2] {
+        p.image_id = 1;
+        p.generation = 2;
+    }
+    let output = render(&frame, &mut graphics, &mut terminal);
+    assert!(output.contains(&format!("\x1b_Ga=d,d=I,i={},", original_ids[&old_key])));
+    for (key, id) in &derived_ids {
+        if key.image == old_key {
+            assert!(output.contains(&format!("\x1b_Ga=d,d=I,i={id},")));
+        }
+    }
+    assert!(!graphics.image_ids.contains_key(&old_key));
+    assert!(graphics.derived_ids.keys().all(|key| key.image != old_key));
+    assert_eq!(graphics.image_ids[&frame.images[2].key()], native_id);
+    let snapshot = terminal.snapshot().unwrap();
+    for p in snapshot.placements.iter().filter(|p| p.col != 4) {
+        assert_eq!(pixel(placed_image(&snapshot, p), 0, 0), [255, 255, 0, 255]);
+    }
+
+    let resident_ids = graphics.all_ids().copied().collect::<Vec<_>>();
+    frame.images.clear();
+    frame.placements.clear();
+    let output = render(&frame, &mut graphics, &mut terminal);
+    for id in resident_ids {
+        assert!(output.contains(&format!("\x1b_Ga=d,d=I,i={id},")));
+    }
+    assert_eq!(graphics.all_ids().count(), 0);
+    assert_eq!(graphics.derived_bytes, 0);
+    assert!(terminal.snapshot().unwrap().placements.is_empty());
+}
+
+#[test]
 fn inactive_projection_count_is_bounded_without_evicting_current_pixels() {
     let mut frame = scene();
     frame.size = Size {

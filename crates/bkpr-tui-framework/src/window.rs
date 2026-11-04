@@ -1,7 +1,7 @@
 //! Terminal-default, cell-based decorations for existing local scene frames.
 //! No terminal output or graphics capabilities are assumed here.
 use crate::{Rect, Role, RoleSpan, text};
-use bkpr_protocol::{Frame, Size};
+use bkpr_protocol::{Frame, Size, Style};
 use unicode_width::UnicodeWidthChar;
 
 pub type TextLine = (Rect, String, bool);
@@ -240,6 +240,97 @@ pub fn decorate(frame: &mut Frame, title: &str, border: Border) -> Rect {
     content(frame.size)
 }
 
+/// Paint connected, single-cell edge strips into an existing root-sized frame.
+/// The caller owns clearing/caching the frame and projecting only the strips;
+/// unrelated cells, resources and cursor state are unchanged. No palette or
+/// terminal capability policy is imposed here.
+///
+/// Connection rules adapted from bkpr-zellij d7b40a37, tab/resize_feedback.rs.
+///
+/// MIT License
+/// Copyright (c) 2020 Zellij contributors
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+///
+/// The above copyright notice and this permission notice shall be included in all
+/// copies or substantial portions of the Software.
+///
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+/// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+pub fn paint_edge_feedback(frame: &mut Frame, segments: &[Rect], style: &Style) {
+    let size = frame.size;
+    // Query the small strip list directly instead of allocating a second canvas
+    // or a per-cell map alongside the caller's retained frame.
+    let axes = |x: u16, y: u16| {
+        if x >= size.cols || y >= size.rows {
+            return 0;
+        }
+        segments
+            .iter()
+            .filter(|s| s.contains(x, y))
+            .fold(0, |axes, s| axes | if s.width == 1 { 1 } else { 2 })
+    };
+    for segment in segments {
+        for y in segment.y..segment.y.saturating_add(segment.height).min(size.rows) {
+            let Some(row) = frame.rows.get_mut(usize::from(y)) else {
+                continue;
+            };
+            for x in segment.x..segment.x.saturating_add(segment.width).min(size.cols) {
+                let Some(cell) = row.cells.get_mut(usize::from(x)) else {
+                    continue;
+                };
+                let own = axes(x, y);
+                let mut connections = 0;
+                // Adjacent endpoints connect even when normalization places
+                // them beside, rather than directly on, a crossing strip.
+                for (neighbor, axis, bit) in [
+                    (y.checked_sub(1).map(|y| (x, y)), 1, 1),
+                    (y.checked_add(1).map(|y| (x, y)), 1, 2),
+                    (x.checked_sub(1).map(|x| (x, y)), 2, 4),
+                    (x.checked_add(1).map(|x| (x, y)), 2, 8),
+                ] {
+                    if let Some((nx, ny)) = neighbor {
+                        let other = axes(nx, ny);
+                        if other != 0 && (own | other) & axis != 0 {
+                            connections |= bit;
+                        }
+                    }
+                }
+                let glyph = match connections {
+                    5 => '┘',
+                    9 => '└',
+                    6 => '┐',
+                    10 => '┌',
+                    7 => '┤',
+                    11 => '├',
+                    13 => '┴',
+                    14 => '┬',
+                    15 => '┼',
+                    4 | 8 | 12 => '─',
+                    1..=3 => '│',
+                    _ if own == 2 => '─',
+                    _ => '│',
+                };
+                cell.text.clear();
+                cell.text.push(glyph);
+                cell.width = 1;
+                cell.style.clone_from(style);
+                cell.hyperlink = None;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +341,175 @@ mod tests {
             cell_width: 0,
             cell_height: 0,
         }
+    }
+    #[test]
+    fn edge_feedback_connects_crossings_corners_tees_and_adjacent_endpoints() {
+        let vertical = Rect {
+            x: 2,
+            y: 0,
+            width: 1,
+            height: 5,
+        };
+        let horizontal = Rect {
+            x: 0,
+            y: 2,
+            width: 5,
+            height: 1,
+        };
+        for (v, h, expected) in [
+            (vertical, horizontal, "┼"),
+            (
+                vertical,
+                Rect {
+                    x: 2,
+                    width: 3,
+                    ..horizontal
+                },
+                "├",
+            ),
+            (
+                vertical,
+                Rect {
+                    width: 3,
+                    ..horizontal
+                },
+                "┤",
+            ),
+            (
+                Rect {
+                    height: 3,
+                    ..vertical
+                },
+                horizontal,
+                "┴",
+            ),
+            (
+                Rect {
+                    y: 2,
+                    height: 3,
+                    ..vertical
+                },
+                horizontal,
+                "┬",
+            ),
+            (
+                Rect {
+                    y: 2,
+                    height: 3,
+                    ..vertical
+                },
+                Rect {
+                    x: 2,
+                    width: 3,
+                    ..horizontal
+                },
+                "┌",
+            ),
+            (
+                Rect {
+                    y: 2,
+                    height: 3,
+                    ..vertical
+                },
+                Rect {
+                    width: 3,
+                    ..horizontal
+                },
+                "┐",
+            ),
+            (
+                Rect {
+                    height: 3,
+                    ..vertical
+                },
+                Rect {
+                    x: 2,
+                    width: 3,
+                    ..horizontal
+                },
+                "└",
+            ),
+            (
+                Rect {
+                    height: 3,
+                    ..vertical
+                },
+                Rect {
+                    width: 3,
+                    ..horizontal
+                },
+                "┘",
+            ),
+            (
+                vertical,
+                Rect {
+                    x: 3,
+                    width: 2,
+                    ..horizontal
+                },
+                "├",
+            ),
+        ] {
+            let mut frame = crate::blank(size(5, 5));
+            let style = crate::default_style();
+            paint_edge_feedback(&mut frame, &[v, h], &style);
+            assert_eq!(frame.rows[2].cells[2].text, expected);
+        }
+    }
+
+    #[test]
+    fn edge_feedback_clips_overflow_and_retains_unrelated_cells_cursor_and_style_policy() {
+        let mut frame = crate::blank(size(5, 3));
+        text(&mut frame, 0, 0, "keep", false);
+        frame.cursor.visible = true;
+        let cursor = frame.cursor.clone();
+        let untouched = frame.rows[0].clone();
+        let mut style = crate::default_style();
+        style.foreground_source = bkpr_protocol::ColorSource::Palette(6);
+        style.background_source = bkpr_protocol::ColorSource::Rgb([20, 30, 40]);
+        style.background = [20, 30, 40];
+        style.bold = true;
+        let segments = [
+            Rect {
+                x: 4,
+                y: 1,
+                width: 1,
+                height: u16::MAX,
+            },
+            Rect {
+                x: 0,
+                y: 2,
+                width: u16::MAX,
+                height: 1,
+            },
+            Rect {
+                x: u16::MAX,
+                y: u16::MAX,
+                width: u16::MAX,
+                height: u16::MAX,
+            },
+            Rect {
+                x: 1,
+                y: 1,
+                width: 0,
+                height: 1,
+            },
+        ];
+        paint_edge_feedback(&mut frame, &segments, &style);
+        assert_eq!(frame.rows[0], untouched);
+        assert_eq!(frame.rows[1].cells[0].text, " ");
+        assert_eq!(frame.rows[2].cells[4].text, "┘");
+        assert_eq!(frame.rows[2].cells[4].style, style);
+        assert_eq!(frame.cursor, cursor);
+        let cells = frame.rows[2].cells.as_ptr();
+        let glyph = frame.rows[2].cells[4].text.as_ptr();
+        paint_edge_feedback(&mut frame, &segments, &style);
+        assert_eq!(frame.rows[2].cells.as_ptr(), cells);
+        assert_eq!(frame.rows[2].cells[4].text.as_ptr(), glyph);
+        // Resource-only and incompletely populated frames remain safe.
+        frame.rows.truncate(1);
+        paint_edge_feedback(&mut frame, &segments, &style);
+        paint_edge_feedback(&mut crate::graphics_frame(size(5, 3)), &segments, &style);
     }
     #[test]
     fn title_clipping_keeps_wide_and_combining_glyphs() {

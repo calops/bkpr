@@ -190,9 +190,18 @@ impl ChromeGraphics {
 
     /// Request the single main-like passive item/details material. Geometry
     /// changes do not invalidate finder/guide/perimeter raster caches.
-    pub(crate) fn prepare_joined(&mut self, size: Size, popup: Option<(Rect, Rect)>) {
+    pub(crate) fn prepare_joined(
+        &mut self,
+        size: Size,
+        popup: Option<(Rect, Rect)>,
+        background: [u8; 3],
+    ) {
         let request = popup.and_then(|(popup, item)| {
-            crate::appearance::joined_surface(size, popup, item, self.1?[1])
+            let style = DecorationStyle {
+                background,
+                ..self.1?[1]
+            };
+            crate::appearance::joined_surface(size, popup, item, style)
         });
         self.0.prepare_joined(request);
     }
@@ -379,18 +388,23 @@ impl ChromeGraphics {
         )
     }
 
-    /// Call after fitting an existing two-cell decorative marker, never a label
-    /// or semantic status glyph. Unready/unsupported restores its text fallback.
+    /// Replace only an existing two-cell decorative marker, never a label or
+    /// semantic status glyph. Unready/unsupported restores its text fallback.
+    /// The root-sized resource-only `artwork_frame` must be composed after
+    /// passive sidebar contours and before true modal content. The hive extends
+    /// half a cell into the border gutter; marker-cell cutouts would crop it.
     pub(crate) fn decorate(
         &self,
         frame: &mut Frame,
+        artwork_frame: &mut Frame,
         artwork: Artwork,
-        col: u16,
-        row: u16,
+        position: [u16; 2],
         source: Option<ColorSource>,
         placement_id: u32,
     ) -> bool {
-        if col.checked_add(2).is_none_or(|end| end > frame.size.cols)
+        let [col, row] = position;
+        if artwork_frame.size != frame.size
+            || col.checked_add(2).is_none_or(|end| end > frame.size.cols)
             || row >= frame.size.rows
             || (artwork == Artwork::Hive && col == 0)
         {
@@ -435,7 +449,7 @@ impl ChromeGraphics {
             Artwork::Hive => (2, i32::from(col) - 1, frame.size.cell_width / 2),
         };
         if !self.0.place(
-            frame,
+            artwork_frame,
             id,
             [x, i32::from(row)],
             [offset_x, 0],
@@ -455,6 +469,133 @@ impl ChromeGraphics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hive_retains_full_gutter_extent_in_a_resource_only_layer() {
+        for cell_width in [9, 10] {
+            let mut host = ColorProbe::default();
+            let query = host.graphics.begin();
+            let query = std::str::from_utf8(&query).unwrap();
+            let id = query.split("i=").nth(1).unwrap().split(',').next().unwrap();
+            host.feed(format!("graphics;Gi={id};OK").as_bytes());
+            host.feed(b"10;rgb:ffff/ffff/ffff");
+            host.feed(b"11;rgb:2222/2222/2222");
+            host.truecolor = true;
+            let size = Size {
+                cols: 20,
+                rows: 4,
+                cell_width,
+                cell_height: 20,
+            };
+            let mut chrome = ChromeGraphics::new().unwrap();
+            chrome.prepare(&host, size, &[]);
+            let mut poll = libc::pollfd {
+                fd: chrome.wake_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
+            assert!(chrome.drain().unwrap());
+            let mut frame = bkpr_tui_framework::blank(size);
+            bkpr_tui_framework::text(&mut frame, 0, 1, "│● Workspace !", false);
+            bkpr_tui_framework::text(&mut frame, 0, 2, "│● Selected !", true);
+            frame.cursor.x = 1;
+            frame.cursor.y = 2;
+            let original = frame.clone();
+            let mut effects = bkpr_tui_framework::graphics_frame(size);
+            for row in [1, 2] {
+                assert!(chrome.decorate(
+                    &mut frame,
+                    &mut effects,
+                    Artwork::Hive,
+                    [1, row],
+                    Some(ColorSource::Default),
+                    u32::from(row),
+                ));
+            }
+            assert!(effects.rows.is_empty());
+            assert!(!effects.cursor.visible);
+            assert_eq!(effects.images.len(), 1);
+            assert_eq!(effects.placements.len(), 2);
+            assert!(frame.images.is_empty());
+            assert!(frame.placements.is_empty());
+            assert_eq!(frame.cursor, original.cursor);
+            let mut expected = original;
+            for row in [1, 2] {
+                expected.rows[row].cells[1].text = " ".into();
+            }
+            assert_eq!(frame, expected);
+            for placement in &effects.placements {
+                assert_eq!(placement.col, 0);
+                assert_eq!(placement.offset_x, cell_width / 2);
+                assert_eq!(placement.width, 2 * cell_width);
+                assert_eq!(placement.height, size.cell_height);
+                assert_eq!(placement.source_x, 0);
+                assert_eq!(placement.source_y, 0);
+                assert_eq!(placement.source_width, placement.width);
+                assert_eq!(placement.source_height, placement.height);
+                assert_eq!(placement.layer, bkpr_protocol::ImageLayer::AboveText);
+                assert_eq!(placement.z, 0);
+                assert!(placement.offset_x + placement.width < 3 * cell_width);
+            }
+            // The SVG has real ink to the left of the logical marker cells:
+            // clipping the border column would remove it, not just transparency.
+            let image = &effects.images[0];
+            assert_eq!(image.format, bkpr_protocol::PixelFormat::Rgba);
+            let gutter_width = cell_width - cell_width / 2;
+            assert!(
+                image
+                    .pixels
+                    .chunks_exact(4)
+                    .enumerate()
+                    .any(|(index, pixel)| {
+                        (index % image.width as usize) < gutter_width as usize && pixel[3] != 0
+                    })
+            );
+        }
+    }
+
+    #[test]
+    fn artwork_rejects_out_of_bounds_mismatched_and_semantic_markers() {
+        let chrome = ChromeGraphics::new().unwrap();
+        let size = Size {
+            cols: 8,
+            rows: 2,
+            cell_width: 10,
+            cell_height: 20,
+        };
+        let mut frame = bkpr_tui_framework::blank(size);
+        bkpr_tui_framework::text(&mut frame, 1, 0, "! Status", false);
+        let original = frame.clone();
+        let mut effects = bkpr_tui_framework::graphics_frame(size);
+        for (col, row) in [(1, 0), (0, 0), (7, 0), (1, 2)] {
+            assert!(!chrome.decorate(
+                &mut frame,
+                &mut effects,
+                Artwork::Hive,
+                [col, row],
+                Some(ColorSource::Default),
+                1,
+            ));
+        }
+        assert_eq!(frame, original);
+        assert!(effects.images.is_empty());
+        assert!(effects.placements.is_empty());
+        bkpr_tui_framework::text(&mut frame, 1, 0, "● ", false);
+        effects.size.cell_width += 1;
+        let original = frame.clone();
+        assert!(!chrome.decorate(
+            &mut frame,
+            &mut effects,
+            Artwork::Hive,
+            [1, 0],
+            Some(ColorSource::Default),
+            1,
+        ));
+        assert_eq!(frame, original);
+        assert!(effects.images.is_empty());
+        assert!(effects.placements.is_empty());
+    }
+
     #[test]
     fn preference_toggle_restores_markers_and_disables_every_material_path() {
         let mut host = ColorProbe::default();
@@ -509,6 +650,7 @@ mod tests {
         let mut markers = Vec::new();
         for artwork in [Artwork::Hive, Artwork::Bee, Artwork::BeeHidden] {
             let mut frame = bkpr_tui_framework::blank(size);
+            let mut effects = bkpr_tui_framework::graphics_frame(size);
             let marker = if artwork == Artwork::BeeHidden {
                 "◌"
             } else {
@@ -516,9 +658,16 @@ mod tests {
             };
             bkpr_tui_framework::text(&mut frame, 1, 1, &format!("{marker} label"), false);
             let original = frame.clone();
-            assert!(chrome.decorate(&mut frame, artwork, 1, 1, Some(ColorSource::Default), 1));
-            let image = std::sync::Arc::clone(&frame.images[0]);
-            markers.push((artwork, frame, original, image));
+            assert!(chrome.decorate(
+                &mut frame,
+                &mut effects,
+                artwork,
+                [1, 1],
+                Some(ColorSource::Default),
+                1,
+            ));
+            let image = std::sync::Arc::clone(&effects.images[0]);
+            markers.push((artwork, frame, effects, original, image));
         }
         let mut rich = bkpr_tui_framework::blank(size);
         assert!(chrome.decorate_pane(&mut rich, rect, 0, 64));
@@ -540,10 +689,17 @@ mod tests {
         chrome.set_enabled(false);
         chrome.prepare(&host, size, &[]);
         chrome.prepare_panes(size, &[]);
-        for (artwork, frame, original, _) in &mut markers {
-            frame.images.clear();
-            frame.placements.clear();
-            assert!(!chrome.decorate(frame, *artwork, 1, 1, Some(ColorSource::Default), 1));
+        for (artwork, frame, effects, original, _) in &mut markers {
+            effects.images.clear();
+            effects.placements.clear();
+            assert!(!chrome.decorate(
+                frame,
+                effects,
+                *artwork,
+                [1, 1],
+                Some(ColorSource::Default),
+                1,
+            ));
             assert_eq!(frame, original);
         }
         let mut plain = bkpr_tui_framework::blank(size);
@@ -570,9 +726,16 @@ mod tests {
         chrome.set_enabled(true);
         chrome.prepare(&host, size, &[]);
         prepared(&mut chrome);
-        for (artwork, frame, _, image) in &mut markers {
-            assert!(chrome.decorate(frame, *artwork, 1, 1, Some(ColorSource::Default), 1));
-            assert!(std::sync::Arc::ptr_eq(image, &frame.images[0]));
+        for (artwork, frame, effects, _, image) in &mut markers {
+            assert!(chrome.decorate(
+                frame,
+                effects,
+                *artwork,
+                [1, 1],
+                Some(ColorSource::Default),
+                1,
+            ));
+            assert!(std::sync::Arc::ptr_eq(image, &effects.images[0]));
         }
         assert!(chrome.decorate_pane(&mut plain, rect, 0, 64));
     }
@@ -702,19 +865,20 @@ mod tests {
         });
         bkpr_tui_framework::text(&mut frame, 1, 0, "● label", false);
         let original = frame.clone();
+        let mut effects = bkpr_tui_framework::graphics_frame(frame.size);
         assert!(!chrome.decorate(
             &mut frame,
+            &mut effects,
             Artwork::Bee,
-            1,
-            0,
+            [1, 0],
             Some(ColorSource::Default),
             1
         ));
         assert!(!chrome.decorate(
             &mut frame,
+            &mut effects,
             Artwork::Hive,
-            1,
-            0,
+            [1, 0],
             Some(ColorSource::Default),
             2
         ));
@@ -733,27 +897,28 @@ mod tests {
         bkpr_tui_framework::text(&mut frame, 0, 1, "    ● Terminal", false);
         bkpr_tui_framework::text(&mut frame, 0, 2, "    ◌ Hidden", false);
         let original = frame.clone();
+        let mut effects = bkpr_tui_framework::graphics_frame(frame.size);
         assert!(!chrome.decorate(
             &mut frame,
+            &mut effects,
             Artwork::Hive,
-            1,
-            0,
+            [1, 0],
             Some(ColorSource::Default),
             1
         ));
         assert!(!chrome.decorate(
             &mut frame,
+            &mut effects,
             Artwork::Bee,
-            4,
-            1,
+            [4, 1],
             Some(ColorSource::Default),
             2
         ));
         assert!(!chrome.decorate(
             &mut frame,
+            &mut effects,
             Artwork::BeeHidden,
-            4,
-            2,
+            [4, 2],
             Some(ColorSource::Default),
             3
         ));
