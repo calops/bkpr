@@ -16852,8 +16852,10 @@ pub struct OperationPaneSpawn{
         pub window_id: ::core::option::Option<::planus::alloc::string::String>,
         /// The field `expected_revision` in the table `OperationPaneSpawn`
         pub expected_revision: ::core::option::Option<::planus::alloc::boxed::Box<self::OptionalU64>>,
-        /// The field `spec` in the table `OperationPaneSpawn`
-        pub spec: ::planus::alloc::boxed::Box<self::PaneSpawnSpec>,}
+        /// The field `panes` in the table `OperationPaneSpawn`
+        pub panes: ::planus::alloc::vec::Vec<self::PaneSpawnEntry>,
+        /// The field `layout` in the table `OperationPaneSpawn`
+        pub layout: ::core::option::Option<::planus::alloc::boxed::Box<self::OptionalSpawnLayout>>,}
 
 
 #[allow(clippy::derivable_impls)]
@@ -16863,7 +16865,8 @@ impl ::core::default::Default for OperationPaneSpawn {
         workspace_id: ::core::default::Default::default(),
         window_id: ::core::default::Default::default(),
         expected_revision: ::core::default::Default::default(),
-        spec: ::core::default::Default::default(),
+        panes: ::core::default::Default::default(),
+        layout: ::core::default::Default::default(),
         
         }
     }
@@ -16883,15 +16886,16 @@ impl OperationPaneSpawn {
         field_workspace_id: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
         field_window_id: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
         field_expected_revision: impl ::planus::WriteAsOptional<::planus::Offset<self::OptionalU64>>,
-        field_spec: impl ::planus::WriteAs<::planus::Offset<self::PaneSpawnSpec>>,
+        field_panes: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::PaneSpawnEntry>]>>,
+        field_layout: impl ::planus::WriteAsOptional<::planus::Offset<self::OptionalSpawnLayout>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_workspace_id = field_workspace_id.prepare(builder);let prepared_window_id = field_window_id.prepare(builder);let prepared_expected_revision = field_expected_revision.prepare(builder);let prepared_spec = field_spec.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_workspace_id = field_workspace_id.prepare(builder);let prepared_window_id = field_window_id.prepare(builder);let prepared_expected_revision = field_expected_revision.prepare(builder);let prepared_panes = field_panes.prepare(builder);let prepared_layout = field_layout.prepare(builder);
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<12> = ::core::default::Default::default();
-        if prepared_workspace_id.is_some() {table_writer.write_entry::<::planus::Offset<str>>(0);}if prepared_window_id.is_some() {table_writer.write_entry::<::planus::Offset<str>>(1);}if prepared_expected_revision.is_some() {table_writer.write_entry::<::planus::Offset<self::OptionalU64>>(2);}table_writer.write_entry::<::planus::Offset<self::PaneSpawnSpec>>(3);
+        let mut table_writer: ::planus::table_writer::TableWriter::<14> = ::core::default::Default::default();
+        if prepared_workspace_id.is_some() {table_writer.write_entry::<::planus::Offset<str>>(0);}if prepared_window_id.is_some() {table_writer.write_entry::<::planus::Offset<str>>(1);}if prepared_expected_revision.is_some() {table_writer.write_entry::<::planus::Offset<self::OptionalU64>>(2);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::PaneSpawnEntry>]>>(3);if prepared_layout.is_some() {table_writer.write_entry::<::planus::Offset<self::OptionalSpawnLayout>>(4);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_workspace_id) = prepared_workspace_id {object_writer.write::<_, _, 4>(&prepared_workspace_id);}if let ::core::option::Option::Some(prepared_window_id) = prepared_window_id {object_writer.write::<_, _, 4>(&prepared_window_id);}if let ::core::option::Option::Some(prepared_expected_revision) = prepared_expected_revision {object_writer.write::<_, _, 4>(&prepared_expected_revision);}object_writer.write::<_, _, 4>(&prepared_spec);
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_workspace_id) = prepared_workspace_id {object_writer.write::<_, _, 4>(&prepared_workspace_id);}if let ::core::option::Option::Some(prepared_window_id) = prepared_window_id {object_writer.write::<_, _, 4>(&prepared_window_id);}if let ::core::option::Option::Some(prepared_expected_revision) = prepared_expected_revision {object_writer.write::<_, _, 4>(&prepared_expected_revision);}object_writer.write::<_, _, 4>(&prepared_panes);if let ::core::option::Option::Some(prepared_layout) = prepared_layout {object_writer.write::<_, _, 4>(&prepared_layout);}
                 
             });
         }builder.current_offset()
@@ -16935,7 +16939,11 @@ impl ::planus::WriteAsOffset<OperationPaneSpawn> for OperationPaneSpawn {
             
         
             
-            &self.spec,
+            &self.panes,
+            
+        
+            
+            &self.layout,
             
         
         )
@@ -17135,10 +17143,10 @@ impl<
     )
 >
 {
-    /// Setter for the [`spec` field](OperationPaneSpawn#structfield.spec).
+    /// Setter for the [`panes` field](OperationPaneSpawn#structfield.panes).
     #[inline]
     #[allow(clippy::type_complexity)]
-    pub fn spec<T3>(self, value: T3) -> OperationPaneSpawnBuilder<(
+    pub fn panes<T3>(self, value: T3) -> OperationPaneSpawnBuilder<(
     
         T0,
     
@@ -17149,7 +17157,7 @@ impl<
         T3,
     
     )>
-    where T3: ::planus::WriteAs<::planus::Offset<self::PaneSpawnSpec>>
+    where T3: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::PaneSpawnEntry>]>>
     {
         
         let (
@@ -17177,6 +17185,98 @@ impl<
     
 }
 
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+> OperationPaneSpawnBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )
+>
+{
+    /// Setter for the [`layout` field](OperationPaneSpawn#structfield.layout).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn layout<T4>(self, value: T4) -> OperationPaneSpawnBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+    )>
+    where T4: ::planus::WriteAsOptional<::planus::Offset<self::OptionalSpawnLayout>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        ) = self.0;OperationPaneSpawnBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`layout` field](OperationPaneSpawn#structfield.layout) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn layout_as_null(self) -> OperationPaneSpawnBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+        (),
+    )>
+    {
+        self.layout(())
+    }
+    
+}
+
 
 
 impl<
@@ -17189,6 +17289,8 @@ impl<
     
         T3,
     
+        T4,
+    
 > OperationPaneSpawnBuilder<(
     
         T0,
@@ -17198,6 +17300,8 @@ impl<
         T2,
     
         T3,
+    
+        T4,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [OperationPaneSpawn].
@@ -17217,7 +17321,9 @@ impl<
     
         T2: ::planus::WriteAsOptional<::planus::Offset<self::OptionalU64>>,
     
-        T3: ::planus::WriteAs<::planus::Offset<self::PaneSpawnSpec>>,
+        T3: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::PaneSpawnEntry>]>>,
+    
+        T4: ::planus::WriteAsOptional<::planus::Offset<self::OptionalSpawnLayout>>,
     
 > ::planus::WriteAs<::planus::Offset<OperationPaneSpawn>> for OperationPaneSpawnBuilder<(
     
@@ -17228,6 +17334,8 @@ impl<
         T2,
     
         T3,
+    
+        T4,
     
 )> {
     type Prepared = ::planus::Offset<OperationPaneSpawn>;
@@ -17246,7 +17354,9 @@ impl<
     
         T2: ::planus::WriteAsOptional<::planus::Offset<self::OptionalU64>>,
     
-        T3: ::planus::WriteAs<::planus::Offset<self::PaneSpawnSpec>>,
+        T3: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::PaneSpawnEntry>]>>,
+    
+        T4: ::planus::WriteAsOptional<::planus::Offset<self::OptionalSpawnLayout>>,
     
 > ::planus::WriteAsOptional<::planus::Offset<OperationPaneSpawn>> for OperationPaneSpawnBuilder<(
     
@@ -17257,6 +17367,8 @@ impl<
         T2,
     
         T3,
+    
+        T4,
     
 )> {
     type Prepared = ::planus::Offset<OperationPaneSpawn>;
@@ -17275,7 +17387,9 @@ impl<
     
         T2: ::planus::WriteAsOptional<::planus::Offset<self::OptionalU64>>,
     
-        T3: ::planus::WriteAs<::planus::Offset<self::PaneSpawnSpec>>,
+        T3: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::PaneSpawnEntry>]>>,
+    
+        T4: ::planus::WriteAsOptional<::planus::Offset<self::OptionalSpawnLayout>>,
     
 > ::planus::WriteAsOffset<OperationPaneSpawn> for OperationPaneSpawnBuilder<(
     
@@ -17286,6 +17400,8 @@ impl<
         T2,
     
         T3,
+    
+        T4,
     
 )> {
     #[inline]
@@ -17301,6 +17417,8 @@ impl<
             
                 v3,
             
+                v4,
+            
         ) = &self.0;OperationPaneSpawn::create(
             builder,
             
@@ -17311,6 +17429,8 @@ impl<
                 v2,
             
                 v3,
+            
+                v4,
             
         )
     }
@@ -17364,13 +17484,26 @@ impl<'a> OperationPaneSpawnRef<'a> {
             
         }
     
-        /// Getter for the [`spec` field](OperationPaneSpawn#structfield.spec).
+        /// Getter for the [`panes` field](OperationPaneSpawn#structfield.panes).
         #[inline]
-        pub fn spec(&self) -> ::planus::Result<self::PaneSpawnSpecRef<'a>> {
+        pub fn panes(&self) -> ::planus::Result<::planus::Vector<'a, ::planus::Result<self::PaneSpawnEntryRef<'a>>>> {
             
             
               
-              self.0.access_required(3, "OperationPaneSpawn", "spec")
+              self.0.access_required(3, "OperationPaneSpawn", "panes")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`layout` field](OperationPaneSpawn#structfield.layout).
+        #[inline]
+        pub fn layout(&self) -> ::planus::Result<::core::option::Option<self::OptionalSpawnLayoutRef<'a>>> {
+            
+            
+              
+              self.0.access(4, "OperationPaneSpawn", "layout")
               
             
             
@@ -17388,7 +17521,9 @@ impl<'a> ::core::fmt::Debug for OperationPaneSpawnRef<'a> {
                 f.field("window_id", &field_window_id);
             }if let ::core::option::Option::Some(field_expected_revision) = self.expected_revision().transpose() {
                 f.field("expected_revision", &field_expected_revision);
-            }f.field("spec", &self.spec());
+            }f.field("panes", &self.panes());if let ::core::option::Option::Some(field_layout) = self.layout().transpose() {
+                f.field("layout", &field_layout);
+            }
         f.finish()
     }
 }
@@ -17411,7 +17546,13 @@ impl<'a> ::core::convert::TryFrom<OperationPaneSpawnRef<'a>> for OperationPaneSp
                                 } else {
                                     ::core::option::Option::None
                                 }
-                            ,spec: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.spec()?)?),
+                            ,panes: value.panes()?.to_vec_result()?,layout: 
+                                if let ::core::option::Option::Some(layout) = value.layout()? {
+                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(layout)?))
+                                } else {
+                                    ::core::option::Option::None
+                                }
+                            ,
         })
     }
 }
@@ -17478,10 +17619,694 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationPaneSpawnRef<'a> {
 }
 
     
+/// The table `PaneSpawnEntry` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PaneSpawnEntry` in the file `crates/bkpr-protocol/src/wire/native.fbs:172`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PaneSpawnEntry{
+    
+        /// The field `reference` in the table `PaneSpawnEntry`
+        pub reference: ::planus::alloc::string::String,
+        /// The field `spec` in the table `PaneSpawnEntry`
+        pub spec: ::planus::alloc::boxed::Box<self::PaneSpawnSpec>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PaneSpawnEntry {
+    fn default() -> Self {
+        Self {
+        reference: ::core::default::Default::default(),
+        spec: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl PaneSpawnEntry {
+    /// Creates a [PaneSpawnEntryBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PaneSpawnEntryBuilder<()> {
+        PaneSpawnEntryBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_reference: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_spec: impl ::planus::WriteAs<::planus::Offset<self::PaneSpawnSpec>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_reference = field_reference.prepare(builder);let prepared_spec = field_spec.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::PaneSpawnSpec>>(1);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_reference);object_writer.write::<_, _, 4>(&prepared_spec);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PaneSpawnEntry>> for PaneSpawnEntry {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PaneSpawnEntry> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PaneSpawnEntry>> for PaneSpawnEntry {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PaneSpawnEntry>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PaneSpawnEntry> for PaneSpawnEntry {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PaneSpawnEntry> {
+        PaneSpawnEntry::create(
+            builder,
+        
+            
+            &self.reference,
+            
+        
+            
+            &self.spec,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PaneSpawnEntry] type.
+///
+/// Can be created using the [PaneSpawnEntry::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PaneSpawnEntryBuilder<State>(State);
+
+impl<
+    
+> PaneSpawnEntryBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`reference` field](PaneSpawnEntry#structfield.reference).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn reference<T0>(self, value: T0) -> PaneSpawnEntryBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        PaneSpawnEntryBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> PaneSpawnEntryBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`spec` field](PaneSpawnEntry#structfield.spec).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn spec<T1>(self, value: T1) -> PaneSpawnEntryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<self::PaneSpawnSpec>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;PaneSpawnEntryBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> PaneSpawnEntryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PaneSpawnEntry].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PaneSpawnEntry>
+        where Self: ::planus::WriteAsOffset<PaneSpawnEntry>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::PaneSpawnSpec>>,
+    
+> ::planus::WriteAs<::planus::Offset<PaneSpawnEntry>> for PaneSpawnEntryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<PaneSpawnEntry>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PaneSpawnEntry> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::PaneSpawnSpec>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<PaneSpawnEntry>> for PaneSpawnEntryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<PaneSpawnEntry>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PaneSpawnEntry>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::PaneSpawnSpec>>,
+    
+> ::planus::WriteAsOffset<PaneSpawnEntry> for PaneSpawnEntryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PaneSpawnEntry> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;PaneSpawnEntry::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PaneSpawnEntry].
+#[derive(Copy, Clone)]
+pub struct PaneSpawnEntryRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PaneSpawnEntryRef<'a> {
+    
+        /// Getter for the [`reference` field](PaneSpawnEntry#structfield.reference).
+        #[inline]
+        pub fn reference(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "PaneSpawnEntry", "reference")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`spec` field](PaneSpawnEntry#structfield.spec).
+        #[inline]
+        pub fn spec(&self) -> ::planus::Result<self::PaneSpawnSpecRef<'a>> {
+            
+            
+              
+              self.0.access_required(1, "PaneSpawnEntry", "spec")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for PaneSpawnEntryRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PaneSpawnEntryRef");
+        f.field("reference", &self.reference());f.field("spec", &self.spec());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PaneSpawnEntryRef<'a>> for PaneSpawnEntry {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: PaneSpawnEntryRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            reference: ::core::convert::Into::into(value.reference()?),spec: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.spec()?)?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PaneSpawnEntryRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PaneSpawnEntryRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PaneSpawnEntryRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PaneSpawnEntry>> for PaneSpawnEntry {
+    type Value = ::planus::Offset<PaneSpawnEntry>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PaneSpawnEntry>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PaneSpawnEntryRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PaneSpawnEntryRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `OptionalSpawnLayout` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `OptionalSpawnLayout` in the file `crates/bkpr-protocol/src/wire/native.fbs:176`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct OptionalSpawnLayout{
+    
+        /// The field `value` in the table `OptionalSpawnLayout`
+        pub value: self::SpawnLayoutNode,}
+
+
+
+impl OptionalSpawnLayout {
+    /// Creates a [OptionalSpawnLayoutBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> OptionalSpawnLayoutBuilder<()> {
+        OptionalSpawnLayoutBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_value: impl ::planus::WriteAsUnion<self::SpawnLayoutNode>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_value = field_value.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::SpawnLayoutNode>>(1);table_writer.write_entry::<u8>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_value.offset());object_writer.write::<_, _, 1>(&prepared_value.tag());
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<OptionalSpawnLayout>> for OptionalSpawnLayout {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<OptionalSpawnLayout> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<OptionalSpawnLayout>> for OptionalSpawnLayout {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<OptionalSpawnLayout>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<OptionalSpawnLayout> for OptionalSpawnLayout {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<OptionalSpawnLayout> {
+        OptionalSpawnLayout::create(
+            builder,
+        
+            
+            &self.value,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [OptionalSpawnLayout] type.
+///
+/// Can be created using the [OptionalSpawnLayout::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct OptionalSpawnLayoutBuilder<State>(State);
+
+impl<
+    
+> OptionalSpawnLayoutBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`value` field](OptionalSpawnLayout#structfield.value).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn value<T0>(self, value: T0) -> OptionalSpawnLayoutBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsUnion<self::SpawnLayoutNode>
+    {
+        OptionalSpawnLayoutBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> OptionalSpawnLayoutBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [OptionalSpawnLayout].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<OptionalSpawnLayout>
+        where Self: ::planus::WriteAsOffset<OptionalSpawnLayout>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::SpawnLayoutNode>,
+    
+> ::planus::WriteAs<::planus::Offset<OptionalSpawnLayout>> for OptionalSpawnLayoutBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<OptionalSpawnLayout>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<OptionalSpawnLayout> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::SpawnLayoutNode>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<OptionalSpawnLayout>> for OptionalSpawnLayoutBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<OptionalSpawnLayout>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<OptionalSpawnLayout>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::SpawnLayoutNode>,
+    
+> ::planus::WriteAsOffset<OptionalSpawnLayout> for OptionalSpawnLayoutBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<OptionalSpawnLayout> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;OptionalSpawnLayout::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [OptionalSpawnLayout].
+#[derive(Copy, Clone)]
+pub struct OptionalSpawnLayoutRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> OptionalSpawnLayoutRef<'a> {
+    
+        /// Getter for the [`value` field](OptionalSpawnLayout#structfield.value).
+        #[inline]
+        pub fn value(&self) -> ::planus::Result<self::SpawnLayoutNodeRef<'a>> {
+            
+            
+              
+              self.0.access_union_required(0, "OptionalSpawnLayout", "value")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for OptionalSpawnLayoutRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("OptionalSpawnLayoutRef");
+        f.field("value", &self.value());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<OptionalSpawnLayoutRef<'a>> for OptionalSpawnLayout {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: OptionalSpawnLayoutRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            value: ::core::convert::TryInto::try_into(value.value()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for OptionalSpawnLayoutRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for OptionalSpawnLayoutRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[OptionalSpawnLayoutRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<OptionalSpawnLayout>> for OptionalSpawnLayout {
+    type Value = ::planus::Offset<OptionalSpawnLayout>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<OptionalSpawnLayout>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for OptionalSpawnLayoutRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[OptionalSpawnLayoutRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The table `OperationPaneReopen` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OperationPaneReopen` in the file `crates/bkpr-protocol/src/wire/native.fbs:171`
+/// * Table `OperationPaneReopen` in the file `crates/bkpr-protocol/src/wire/native.fbs:177`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -18197,7 +19022,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationPaneReopenRef<'a> {
 /// The table `OperationPaneTerminate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OperationPaneTerminate` in the file `crates/bkpr-protocol/src/wire/native.fbs:178`
+/// * Table `OperationPaneTerminate` in the file `crates/bkpr-protocol/src/wire/native.fbs:184`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -18502,7 +19327,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationPaneTerminateRef<'a> {
 /// The table `OperationPaneForget` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OperationPaneForget` in the file `crates/bkpr-protocol/src/wire/native.fbs:181`
+/// * Table `OperationPaneForget` in the file `crates/bkpr-protocol/src/wire/native.fbs:187`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -18807,7 +19632,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationPaneForgetRef<'a> {
 /// The table `OperationPaneRename` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OperationPaneRename` in the file `crates/bkpr-protocol/src/wire/native.fbs:184`
+/// * Table `OperationPaneRename` in the file `crates/bkpr-protocol/src/wire/native.fbs:190`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -19196,7 +20021,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationPaneRenameRef<'a> {
 /// The table `OptionalLayout` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalLayout` in the file `crates/bkpr-protocol/src/wire/native.fbs:190`
+/// * Table `OptionalLayout` in the file `crates/bkpr-protocol/src/wire/native.fbs:196`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -19491,7 +20316,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalLayoutRef<'a> {
 /// The table `OperationLayoutUpdate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OperationLayoutUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:191`
+/// * Table `OperationLayoutUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:197`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -20118,7 +20943,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationLayoutUpdateRef<'a> {
 /// The table `OperationPane` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OperationPane` in the file `crates/bkpr-protocol/src/wire/native.fbs:197`
+/// * Table `OperationPane` in the file `crates/bkpr-protocol/src/wire/native.fbs:203`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -20496,7 +21321,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationPaneRef<'a> {
 /// The table `OperationWait` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OperationWait` in the file `crates/bkpr-protocol/src/wire/native.fbs:201`
+/// * Table `OperationWait` in the file `crates/bkpr-protocol/src/wire/native.fbs:207`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -20909,7 +21734,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationWaitRef<'a> {
 /// The table `OperationShutdown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OperationShutdown` in the file `crates/bkpr-protocol/src/wire/native.fbs:205`
+/// * Table `OperationShutdown` in the file `crates/bkpr-protocol/src/wire/native.fbs:211`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -21135,7 +21960,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationShutdownRef<'a> {
 /// The union `Operation` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Operation` in the file `crates/bkpr-protocol/src/wire/native.fbs:208`
+/// * Union `Operation` in the file `crates/bkpr-protocol/src/wire/native.fbs:214`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -22438,7 +23263,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for OperationRef<'a> {
 /// The table `PaneRequestInspect` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestInspect` in the file `crates/bkpr-protocol/src/wire/native.fbs:209`
+/// * Table `PaneRequestInspect` in the file `crates/bkpr-protocol/src/wire/native.fbs:215`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -22664,7 +23489,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestInspectRef<'a> {
 /// The table `PaneRequestAttach` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestAttach` in the file `crates/bkpr-protocol/src/wire/native.fbs:212`
+/// * Table `PaneRequestAttach` in the file `crates/bkpr-protocol/src/wire/native.fbs:218`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -22969,7 +23794,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestAttachRef<'a> {
 /// The table `PaneRequestUpdate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:215`
+/// * Table `PaneRequestUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:221`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -23358,7 +24183,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestUpdateRef<'a> {
 /// The table `PaneRequestDetach` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestDetach` in the file `crates/bkpr-protocol/src/wire/native.fbs:219`
+/// * Table `PaneRequestDetach` in the file `crates/bkpr-protocol/src/wire/native.fbs:225`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -23663,7 +24488,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestDetachRef<'a> {
 /// The table `PaneRequestPoll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPoll` in the file `crates/bkpr-protocol/src/wire/native.fbs:222`
+/// * Table `PaneRequestPoll` in the file `crates/bkpr-protocol/src/wire/native.fbs:228`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -24886,7 +25711,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPollRef<'a> {
 /// The table `PaneRequestPin` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPin` in the file `crates/bkpr-protocol/src/wire/native.fbs:232`
+/// * Table `PaneRequestPin` in the file `crates/bkpr-protocol/src/wire/native.fbs:238`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -25296,7 +26121,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPinRef<'a> {
 /// The table `PaneRequestInput` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestInput` in the file `crates/bkpr-protocol/src/wire/native.fbs:236`
+/// * Table `PaneRequestInput` in the file `crates/bkpr-protocol/src/wire/native.fbs:242`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -25685,7 +26510,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestInputRef<'a> {
 /// The table `PaneRequestPaste` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPaste` in the file `crates/bkpr-protocol/src/wire/native.fbs:240`
+/// * Table `PaneRequestPaste` in the file `crates/bkpr-protocol/src/wire/native.fbs:246`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -26074,7 +26899,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPasteRef<'a> {
 /// The table `PaneRequestPasteContents` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPasteContents` in the file `crates/bkpr-protocol/src/wire/native.fbs:244`
+/// * Table `PaneRequestPasteContents` in the file `crates/bkpr-protocol/src/wire/native.fbs:250`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -26693,7 +27518,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPasteContentsRef<'a> {
 /// The table `PaneRequestKey` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestKey` in the file `crates/bkpr-protocol/src/wire/native.fbs:250`
+/// * Table `PaneRequestKey` in the file `crates/bkpr-protocol/src/wire/native.fbs:256`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -27082,7 +27907,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestKeyRef<'a> {
 /// The table `PaneRequestMouse` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestMouse` in the file `crates/bkpr-protocol/src/wire/native.fbs:254`
+/// * Table `PaneRequestMouse` in the file `crates/bkpr-protocol/src/wire/native.fbs:260`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -27471,7 +28296,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestMouseRef<'a> {
 /// The table `PaneRequestFocus` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestFocus` in the file `crates/bkpr-protocol/src/wire/native.fbs:258`
+/// * Table `PaneRequestFocus` in the file `crates/bkpr-protocol/src/wire/native.fbs:264`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -27873,7 +28698,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestFocusRef<'a> {
 /// The table `PaneRequestScroll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestScroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:262`
+/// * Table `PaneRequestScroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:268`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -28275,7 +29100,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestScrollRef<'a> {
 /// The table `PaneRequestSelect` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestSelect` in the file `crates/bkpr-protocol/src/wire/native.fbs:266`
+/// * Table `PaneRequestSelect` in the file `crates/bkpr-protocol/src/wire/native.fbs:272`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -28664,7 +29489,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestSelectRef<'a> {
 /// The table `PaneRequestCopySelection` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestCopySelection` in the file `crates/bkpr-protocol/src/wire/native.fbs:270`
+/// * Table `PaneRequestCopySelection` in the file `crates/bkpr-protocol/src/wire/native.fbs:276`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -28969,7 +29794,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestCopySelectionRef<'a> {
 /// The table `PaneRequestSearch` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestSearch` in the file `crates/bkpr-protocol/src/wire/native.fbs:273`
+/// * Table `PaneRequestSearch` in the file `crates/bkpr-protocol/src/wire/native.fbs:279`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -29347,7 +30172,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestSearchRef<'a> {
 /// The table `PaneRequestClipboard` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestClipboard` in the file `crates/bkpr-protocol/src/wire/native.fbs:277`
+/// * Table `PaneRequestClipboard` in the file `crates/bkpr-protocol/src/wire/native.fbs:283`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -29830,7 +30655,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestClipboardRef<'a> {
 /// The table `PaneRequestColors` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestColors` in the file `crates/bkpr-protocol/src/wire/native.fbs:282`
+/// * Table `PaneRequestColors` in the file `crates/bkpr-protocol/src/wire/native.fbs:288`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -30579,7 +31404,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestColorsRef<'a> {
 /// The table `PaneRequestTerminate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestTerminate` in the file `crates/bkpr-protocol/src/wire/native.fbs:289`
+/// * Table `PaneRequestTerminate` in the file `crates/bkpr-protocol/src/wire/native.fbs:295`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -30884,7 +31709,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestTerminateRef<'a> {
 /// The table `PaneRequestShutdown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestShutdown` in the file `crates/bkpr-protocol/src/wire/native.fbs:292`
+/// * Table `PaneRequestShutdown` in the file `crates/bkpr-protocol/src/wire/native.fbs:298`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -31110,7 +31935,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestShutdownRef<'a> {
 /// The union `PaneRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:295`
+/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:301`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -32069,7 +32894,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PaneRequestRef<'a> {
 /// The table `SearchActionQuery` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:296`
+/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:302`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -32374,7 +33199,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionQueryRef<'a> {
 /// The table `SearchActionNext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:299`
+/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:305`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -32600,7 +33425,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionNextRef<'a> {
 /// The table `SearchActionPrevious` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:302`
+/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:308`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -32826,7 +33651,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionPreviousRef<'a> {
 /// The table `SearchActionClear` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:305`
+/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:311`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -33052,7 +33877,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionClearRef<'a> {
 /// The union `SearchAction` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:308`
+/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:314`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -33323,7 +34148,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SearchActionRef<'a> {
 /// The table `LayoutNodeLeaf` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:309`
+/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:315`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -33628,7 +34453,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeLeafRef<'a> {
 /// The table `LayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:312`
+/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:318`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -34226,7 +35051,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeSplitRef<'a> {
 /// The union `LayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:318`
+/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:324`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -34408,10 +35233,1446 @@ impl<'a> ::planus::VectorReadUnion<'a> for LayoutNodeRef<'a> {
 
 
     
+/// The table `SpawnLayoutNodeExisting` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:325`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct SpawnLayoutNodeExisting{
+    
+        /// The field `pane_id` in the table `SpawnLayoutNodeExisting`
+        pub pane_id: ::planus::alloc::string::String,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for SpawnLayoutNodeExisting {
+    fn default() -> Self {
+        Self {
+        pane_id: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl SpawnLayoutNodeExisting {
+    /// Creates a [SpawnLayoutNodeExistingBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> SpawnLayoutNodeExistingBuilder<()> {
+        SpawnLayoutNodeExistingBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_pane_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_pane_id = field_pane_id.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_pane_id);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<SpawnLayoutNodeExisting>> for SpawnLayoutNodeExisting {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeExisting> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<SpawnLayoutNodeExisting>> for SpawnLayoutNodeExisting {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<SpawnLayoutNodeExisting>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<SpawnLayoutNodeExisting> for SpawnLayoutNodeExisting {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeExisting> {
+        SpawnLayoutNodeExisting::create(
+            builder,
+        
+            
+            &self.pane_id,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [SpawnLayoutNodeExisting] type.
+///
+/// Can be created using the [SpawnLayoutNodeExisting::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct SpawnLayoutNodeExistingBuilder<State>(State);
+
+impl<
+    
+> SpawnLayoutNodeExistingBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`pane_id` field](SpawnLayoutNodeExisting#structfield.pane_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn pane_id<T0>(self, value: T0) -> SpawnLayoutNodeExistingBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        SpawnLayoutNodeExistingBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> SpawnLayoutNodeExistingBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [SpawnLayoutNodeExisting].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeExisting>
+        where Self: ::planus::WriteAsOffset<SpawnLayoutNodeExisting>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAs<::planus::Offset<SpawnLayoutNodeExisting>> for SpawnLayoutNodeExistingBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<SpawnLayoutNodeExisting>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeExisting> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<SpawnLayoutNodeExisting>> for SpawnLayoutNodeExistingBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<SpawnLayoutNodeExisting>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<SpawnLayoutNodeExisting>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOffset<SpawnLayoutNodeExisting> for SpawnLayoutNodeExistingBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeExisting> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;SpawnLayoutNodeExisting::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [SpawnLayoutNodeExisting].
+#[derive(Copy, Clone)]
+pub struct SpawnLayoutNodeExistingRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> SpawnLayoutNodeExistingRef<'a> {
+    
+        /// Getter for the [`pane_id` field](SpawnLayoutNodeExisting#structfield.pane_id).
+        #[inline]
+        pub fn pane_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "SpawnLayoutNodeExisting", "pane_id")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for SpawnLayoutNodeExistingRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("SpawnLayoutNodeExistingRef");
+        f.field("pane_id", &self.pane_id());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<SpawnLayoutNodeExistingRef<'a>> for SpawnLayoutNodeExisting {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: SpawnLayoutNodeExistingRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            pane_id: ::core::convert::Into::into(value.pane_id()?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for SpawnLayoutNodeExistingRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for SpawnLayoutNodeExistingRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[SpawnLayoutNodeExistingRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<SpawnLayoutNodeExisting>> for SpawnLayoutNodeExisting {
+    type Value = ::planus::Offset<SpawnLayoutNodeExisting>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<SpawnLayoutNodeExisting>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeExistingRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[SpawnLayoutNodeExistingRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `SpawnLayoutNodeNew` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:328`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct SpawnLayoutNodeNew{
+    
+        /// The field `reference` in the table `SpawnLayoutNodeNew`
+        pub reference: ::planus::alloc::string::String,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for SpawnLayoutNodeNew {
+    fn default() -> Self {
+        Self {
+        reference: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl SpawnLayoutNodeNew {
+    /// Creates a [SpawnLayoutNodeNewBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> SpawnLayoutNodeNewBuilder<()> {
+        SpawnLayoutNodeNewBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_reference: impl ::planus::WriteAs<::planus::Offset<str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_reference = field_reference.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_reference);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<SpawnLayoutNodeNew>> for SpawnLayoutNodeNew {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeNew> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<SpawnLayoutNodeNew>> for SpawnLayoutNodeNew {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<SpawnLayoutNodeNew>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<SpawnLayoutNodeNew> for SpawnLayoutNodeNew {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeNew> {
+        SpawnLayoutNodeNew::create(
+            builder,
+        
+            
+            &self.reference,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [SpawnLayoutNodeNew] type.
+///
+/// Can be created using the [SpawnLayoutNodeNew::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct SpawnLayoutNodeNewBuilder<State>(State);
+
+impl<
+    
+> SpawnLayoutNodeNewBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`reference` field](SpawnLayoutNodeNew#structfield.reference).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn reference<T0>(self, value: T0) -> SpawnLayoutNodeNewBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        SpawnLayoutNodeNewBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> SpawnLayoutNodeNewBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [SpawnLayoutNodeNew].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeNew>
+        where Self: ::planus::WriteAsOffset<SpawnLayoutNodeNew>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAs<::planus::Offset<SpawnLayoutNodeNew>> for SpawnLayoutNodeNewBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<SpawnLayoutNodeNew>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeNew> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<SpawnLayoutNodeNew>> for SpawnLayoutNodeNewBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<SpawnLayoutNodeNew>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<SpawnLayoutNodeNew>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOffset<SpawnLayoutNodeNew> for SpawnLayoutNodeNewBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeNew> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;SpawnLayoutNodeNew::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [SpawnLayoutNodeNew].
+#[derive(Copy, Clone)]
+pub struct SpawnLayoutNodeNewRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> SpawnLayoutNodeNewRef<'a> {
+    
+        /// Getter for the [`reference` field](SpawnLayoutNodeNew#structfield.reference).
+        #[inline]
+        pub fn reference(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "SpawnLayoutNodeNew", "reference")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for SpawnLayoutNodeNewRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("SpawnLayoutNodeNewRef");
+        f.field("reference", &self.reference());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<SpawnLayoutNodeNewRef<'a>> for SpawnLayoutNodeNew {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: SpawnLayoutNodeNewRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            reference: ::core::convert::Into::into(value.reference()?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for SpawnLayoutNodeNewRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for SpawnLayoutNodeNewRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[SpawnLayoutNodeNewRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<SpawnLayoutNodeNew>> for SpawnLayoutNodeNew {
+    type Value = ::planus::Offset<SpawnLayoutNodeNew>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<SpawnLayoutNodeNew>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeNewRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[SpawnLayoutNodeNewRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `SpawnLayoutNodeSplit` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:331`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct SpawnLayoutNodeSplit{
+    
+        /// The field `axis` in the table `SpawnLayoutNodeSplit`
+        pub axis: self::Axis,
+        /// The field `ratio` in the table `SpawnLayoutNodeSplit`
+        pub ratio: u16,
+        /// The field `first` in the table `SpawnLayoutNodeSplit`
+        pub first: self::SpawnLayoutNode,
+        /// The field `second` in the table `SpawnLayoutNodeSplit`
+        pub second: self::SpawnLayoutNode,}
+
+
+
+impl SpawnLayoutNodeSplit {
+    /// Creates a [SpawnLayoutNodeSplitBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> SpawnLayoutNodeSplitBuilder<()> {
+        SpawnLayoutNodeSplitBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_axis: impl ::planus::WriteAsDefault<self::Axis, self::Axis>,
+        field_ratio: impl ::planus::WriteAsDefault<u16, u16>,
+        field_first: impl ::planus::WriteAsUnion<self::SpawnLayoutNode>,
+        field_second: impl ::planus::WriteAsUnion<self::SpawnLayoutNode>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_axis = field_axis.prepare(builder, &self::Axis::Horizontal);let prepared_ratio = field_ratio.prepare(builder, &0);let prepared_first = field_first.prepare(builder);let prepared_second = field_second.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<16> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::SpawnLayoutNode>>(3);table_writer.write_entry::<::planus::Offset<self::SpawnLayoutNode>>(5);if prepared_ratio.is_some() {table_writer.write_entry::<u16>(1);}if prepared_axis.is_some() {table_writer.write_entry::<self::Axis>(0);}table_writer.write_entry::<u8>(2);table_writer.write_entry::<u8>(4);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_first.offset());object_writer.write::<_, _, 4>(&prepared_second.offset());if let ::core::option::Option::Some(prepared_ratio) = prepared_ratio {object_writer.write::<_, _, 2>(&prepared_ratio);}if let ::core::option::Option::Some(prepared_axis) = prepared_axis {object_writer.write::<_, _, 1>(&prepared_axis);}object_writer.write::<_, _, 1>(&prepared_first.tag());object_writer.write::<_, _, 1>(&prepared_second.tag());
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<SpawnLayoutNodeSplit>> for SpawnLayoutNodeSplit {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeSplit> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<SpawnLayoutNodeSplit>> for SpawnLayoutNodeSplit {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<SpawnLayoutNodeSplit>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<SpawnLayoutNodeSplit> for SpawnLayoutNodeSplit {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeSplit> {
+        SpawnLayoutNodeSplit::create(
+            builder,
+        
+            
+            self.axis,
+            
+        
+            
+            self.ratio,
+            
+        
+            
+            &self.first,
+            
+        
+            
+            &self.second,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [SpawnLayoutNodeSplit] type.
+///
+/// Can be created using the [SpawnLayoutNodeSplit::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct SpawnLayoutNodeSplitBuilder<State>(State);
+
+impl<
+    
+> SpawnLayoutNodeSplitBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`axis` field](SpawnLayoutNodeSplit#structfield.axis).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn axis<T0>(self, value: T0) -> SpawnLayoutNodeSplitBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<self::Axis, self::Axis>
+    {
+        SpawnLayoutNodeSplitBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`axis` field](SpawnLayoutNodeSplit#structfield.axis) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn axis_as_default(self) -> SpawnLayoutNodeSplitBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.axis(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> SpawnLayoutNodeSplitBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`ratio` field](SpawnLayoutNodeSplit#structfield.ratio).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn ratio<T1>(self, value: T1) -> SpawnLayoutNodeSplitBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u16, u16>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;SpawnLayoutNodeSplitBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`ratio` field](SpawnLayoutNodeSplit#structfield.ratio) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn ratio_as_default(self) -> SpawnLayoutNodeSplitBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.ratio(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> SpawnLayoutNodeSplitBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`first` field](SpawnLayoutNodeSplit#structfield.first).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn first<T2>(self, value: T2) -> SpawnLayoutNodeSplitBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsUnion<self::SpawnLayoutNode>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;SpawnLayoutNodeSplitBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> SpawnLayoutNodeSplitBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`second` field](SpawnLayoutNodeSplit#structfield.second).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn second<T3>(self, value: T3) -> SpawnLayoutNodeSplitBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAsUnion<self::SpawnLayoutNode>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;SpawnLayoutNodeSplitBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+> SpawnLayoutNodeSplitBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [SpawnLayoutNodeSplit].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeSplit>
+        where Self: ::planus::WriteAsOffset<SpawnLayoutNodeSplit>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::Axis, self::Axis>,
+    
+        T1: ::planus::WriteAsDefault<u16, u16>,
+    
+        T2: ::planus::WriteAsUnion<self::SpawnLayoutNode>,
+    
+        T3: ::planus::WriteAsUnion<self::SpawnLayoutNode>,
+    
+> ::planus::WriteAs<::planus::Offset<SpawnLayoutNodeSplit>> for SpawnLayoutNodeSplitBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    type Prepared = ::planus::Offset<SpawnLayoutNodeSplit>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeSplit> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::Axis, self::Axis>,
+    
+        T1: ::planus::WriteAsDefault<u16, u16>,
+    
+        T2: ::planus::WriteAsUnion<self::SpawnLayoutNode>,
+    
+        T3: ::planus::WriteAsUnion<self::SpawnLayoutNode>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<SpawnLayoutNodeSplit>> for SpawnLayoutNodeSplitBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    type Prepared = ::planus::Offset<SpawnLayoutNodeSplit>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<SpawnLayoutNodeSplit>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::Axis, self::Axis>,
+    
+        T1: ::planus::WriteAsDefault<u16, u16>,
+    
+        T2: ::planus::WriteAsUnion<self::SpawnLayoutNode>,
+    
+        T3: ::planus::WriteAsUnion<self::SpawnLayoutNode>,
+    
+> ::planus::WriteAsOffset<SpawnLayoutNodeSplit> for SpawnLayoutNodeSplitBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<SpawnLayoutNodeSplit> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        ) = &self.0;SpawnLayoutNodeSplit::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [SpawnLayoutNodeSplit].
+#[derive(Copy, Clone)]
+pub struct SpawnLayoutNodeSplitRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> SpawnLayoutNodeSplitRef<'a> {
+    
+        /// Getter for the [`axis` field](SpawnLayoutNodeSplit#structfield.axis).
+        #[inline]
+        pub fn axis(&self) -> ::planus::Result<self::Axis> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "SpawnLayoutNodeSplit", "axis")
+              
+            
+            ?.unwrap_or(self::Axis::Horizontal))
+            
+        }
+    
+        /// Getter for the [`ratio` field](SpawnLayoutNodeSplit#structfield.ratio).
+        #[inline]
+        pub fn ratio(&self) -> ::planus::Result<u16> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "SpawnLayoutNodeSplit", "ratio")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`first` field](SpawnLayoutNodeSplit#structfield.first).
+        #[inline]
+        pub fn first(&self) -> ::planus::Result<self::SpawnLayoutNodeRef<'a>> {
+            
+            
+              
+              self.0.access_union_required(2, "SpawnLayoutNodeSplit", "first")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`second` field](SpawnLayoutNodeSplit#structfield.second).
+        #[inline]
+        pub fn second(&self) -> ::planus::Result<self::SpawnLayoutNodeRef<'a>> {
+            
+            
+              
+              self.0.access_union_required(4, "SpawnLayoutNodeSplit", "second")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for SpawnLayoutNodeSplitRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("SpawnLayoutNodeSplitRef");
+        f.field("axis", &self.axis());f.field("ratio", &self.ratio());f.field("first", &self.first());f.field("second", &self.second());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<SpawnLayoutNodeSplitRef<'a>> for SpawnLayoutNodeSplit {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: SpawnLayoutNodeSplitRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            axis: ::core::convert::TryInto::try_into(value.axis()?)?,ratio: ::core::convert::TryInto::try_into(value.ratio()?)?,first: ::core::convert::TryInto::try_into(value.first()?)?,second: ::core::convert::TryInto::try_into(value.second()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for SpawnLayoutNodeSplitRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for SpawnLayoutNodeSplitRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[SpawnLayoutNodeSplitRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<SpawnLayoutNodeSplit>> for SpawnLayoutNodeSplit {
+    type Value = ::planus::Offset<SpawnLayoutNodeSplit>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<SpawnLayoutNodeSplit>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeSplitRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[SpawnLayoutNodeSplitRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The union `SpawnLayoutNode` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:337`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize)]
+pub enum SpawnLayoutNode{
+    
+        /// The variant of type `SpawnLayoutNodeExisting` in the union `SpawnLayoutNode`
+        SpawnLayoutNodeExisting(::planus::alloc::boxed::Box<self::SpawnLayoutNodeExisting>),
+    
+        /// The variant of type `SpawnLayoutNodeNew` in the union `SpawnLayoutNode`
+        SpawnLayoutNodeNew(::planus::alloc::boxed::Box<self::SpawnLayoutNodeNew>),
+    
+        /// The variant of type `SpawnLayoutNodeSplit` in the union `SpawnLayoutNode`
+        SpawnLayoutNodeSplit(::planus::alloc::boxed::Box<self::SpawnLayoutNodeSplit>),
+    
+}
+
+
+impl SpawnLayoutNode {
+    /// Creates a [SpawnLayoutNodeBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> SpawnLayoutNodeBuilder<::planus::Uninitialized> {
+        SpawnLayoutNodeBuilder(::planus::Uninitialized)
+    }
+
+    #[inline]
+    pub fn create_spawn_layout_node_existing(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::SpawnLayoutNodeExisting>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(1, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_spawn_layout_node_new(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::SpawnLayoutNodeNew>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(2, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_spawn_layout_node_split(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::SpawnLayoutNodeSplit>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(3, value.prepare(builder).downcast())
+    }
+
+    
+}
+
+
+
+impl ::planus::WriteAsUnion<SpawnLayoutNode> for SpawnLayoutNode {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<Self> {
+        match self {
+            Self::SpawnLayoutNodeExisting(value) => Self::create_spawn_layout_node_existing(builder, value),
+            Self::SpawnLayoutNodeNew(value) => Self::create_spawn_layout_node_new(builder, value),
+            Self::SpawnLayoutNodeSplit(value) => Self::create_spawn_layout_node_split(builder, value),
+            
+        }
+    }
+}
+
+
+impl ::planus::WriteAsOptionalUnion<SpawnLayoutNode> for SpawnLayoutNode {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<Self>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+
+/// Builder for serializing an instance of the [SpawnLayoutNode] type.
+///
+/// Can be created using the [SpawnLayoutNode::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct SpawnLayoutNodeBuilder<T>(T);
+
+impl SpawnLayoutNodeBuilder<::planus::Uninitialized> {
+    /// Creates an instance of the [`SpawnLayoutNodeExisting` variant](SpawnLayoutNode#variant.SpawnLayoutNodeExisting).
+    #[inline]
+    pub fn spawn_layout_node_existing<T>(
+        self,
+        value: T,
+    ) -> SpawnLayoutNodeBuilder<::planus::Initialized<1, T>>
+        where T: ::planus::WriteAsOffset<self::SpawnLayoutNodeExisting> {
+        SpawnLayoutNodeBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`SpawnLayoutNodeNew` variant](SpawnLayoutNode#variant.SpawnLayoutNodeNew).
+    #[inline]
+    pub fn spawn_layout_node_new<T>(
+        self,
+        value: T,
+    ) -> SpawnLayoutNodeBuilder<::planus::Initialized<2, T>>
+        where T: ::planus::WriteAsOffset<self::SpawnLayoutNodeNew> {
+        SpawnLayoutNodeBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`SpawnLayoutNodeSplit` variant](SpawnLayoutNode#variant.SpawnLayoutNodeSplit).
+    #[inline]
+    pub fn spawn_layout_node_split<T>(
+        self,
+        value: T,
+    ) -> SpawnLayoutNodeBuilder<::planus::Initialized<3, T>>
+        where T: ::planus::WriteAsOffset<self::SpawnLayoutNodeSplit> {
+        SpawnLayoutNodeBuilder(::planus::Initialized(value))
+    }
+
+    
+}
+
+impl<const N: u8, T> SpawnLayoutNodeBuilder<::planus::Initialized<N, T>> {
+    /// Finish writing the builder to get an [UnionOffset](::planus::UnionOffset) to a serialized [SpawnLayoutNode].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<SpawnLayoutNode>
+        where Self: ::planus::WriteAsUnion<SpawnLayoutNode>
+    {
+        ::planus::WriteAsUnion::prepare(&self, builder)
+    }
+}
+
+impl<T> ::planus::WriteAsUnion<SpawnLayoutNode> for SpawnLayoutNodeBuilder<::planus::Initialized<1, T>>
+    where T: ::planus::WriteAsOffset<self::SpawnLayoutNodeExisting>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<SpawnLayoutNode> {
+        ::planus::UnionOffset::new(1, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<SpawnLayoutNode> for SpawnLayoutNodeBuilder<::planus::Initialized<1, T>>
+    where T: ::planus::WriteAsOffset<self::SpawnLayoutNodeExisting>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<SpawnLayoutNode>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<SpawnLayoutNode> for SpawnLayoutNodeBuilder<::planus::Initialized<2, T>>
+    where T: ::planus::WriteAsOffset<self::SpawnLayoutNodeNew>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<SpawnLayoutNode> {
+        ::planus::UnionOffset::new(2, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<SpawnLayoutNode> for SpawnLayoutNodeBuilder<::planus::Initialized<2, T>>
+    where T: ::planus::WriteAsOffset<self::SpawnLayoutNodeNew>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<SpawnLayoutNode>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<SpawnLayoutNode> for SpawnLayoutNodeBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::SpawnLayoutNodeSplit>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<SpawnLayoutNode> {
+        ::planus::UnionOffset::new(3, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<SpawnLayoutNode> for SpawnLayoutNodeBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::SpawnLayoutNodeSplit>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<SpawnLayoutNode>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+
+
+/// Reference to a deserialized [SpawnLayoutNode].
+#[derive(Copy, Clone, Debug)]
+pub enum SpawnLayoutNodeRef<'a>{
+    SpawnLayoutNodeExisting(self::SpawnLayoutNodeExistingRef<'a>),
+    SpawnLayoutNodeNew(self::SpawnLayoutNodeNewRef<'a>),
+    SpawnLayoutNodeSplit(self::SpawnLayoutNodeSplitRef<'a>),
+    
+}
+
+
+impl<'a> ::core::convert::TryFrom<SpawnLayoutNodeRef<'a>> for SpawnLayoutNode {
+    type Error = ::planus::Error;
+
+    fn try_from(value: SpawnLayoutNodeRef<'a>) -> ::planus::Result<Self> {
+        ::core::result::Result::Ok(match value {
+            
+                SpawnLayoutNodeRef::SpawnLayoutNodeExisting(value) => Self::SpawnLayoutNodeExisting(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                SpawnLayoutNodeRef::SpawnLayoutNodeNew(value) => Self::SpawnLayoutNodeNew(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                SpawnLayoutNodeRef::SpawnLayoutNodeSplit(value) => Self::SpawnLayoutNodeSplit(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+        })
+    }
+}
+
+
+
+impl<'a> ::planus::TableReadUnion<'a> for SpawnLayoutNodeRef<'a> {
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        match tag {
+            1 => ::core::result::Result::Ok(Self::SpawnLayoutNodeExisting(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::SpawnLayoutNodeNew(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::SpawnLayoutNodeSplit(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+        }
+    }
+}
+
+
+
+impl<'a> ::planus::VectorReadUnion<'a> for SpawnLayoutNodeRef<'a> {
+    const VECTOR_NAME: &'static str = "[SpawnLayoutNodeRef]";
+}
+
+
+    
 /// The table `CaptureEventBind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:319`
+/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:338`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -34813,7 +37074,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventBindRef<'a> {
 /// The table `CaptureEventError` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:323`
+/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:342`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -35118,7 +37379,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventErrorRef<'a> {
 /// The table `CaptureEventEnd` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:326`
+/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:345`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -35344,7 +37605,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventEndRef<'a> {
 /// The union `CaptureEvent` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:329`
+/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:348`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -35572,7 +37833,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for CaptureEventRef<'a> {
 /// The table `AgentRequestWhoami` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:330`
+/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:349`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -35798,7 +38059,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWhoamiRef<'a> {
 /// The table `AgentRequestControl` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:333`
+/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:352`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -36189,7 +38450,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestControlRef<'a> {
 /// The table `AgentRequestSetTitle` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:337`
+/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:356`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -36494,7 +38755,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSetTitleRef<'a> {
 /// The table `AgentRequestDiscoverAgents` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:340`
+/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:359`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -36907,7 +39168,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestDiscoverAgentsRef<'a> {
 /// The table `AgentRequestSendMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:344`
+/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:363`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -37511,7 +39772,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSendMessageRef<'a> {
 /// The table `AgentRequestReadInbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:350`
+/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:369`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -37936,7 +40197,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadInboxRef<'a> {
 /// The table `AgentRequestAckMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:354`
+/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:373`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -38241,7 +40502,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestAckMessageRef<'a> {
 /// The table `AgentRequestInspectOutbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:357`
+/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:376`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -38779,7 +41040,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestInspectOutboxRef<'a> {
 /// The table `AgentRequestReceiverRegister` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:362`
+/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:381`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -39290,7 +41551,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverRegisterRef<'a> {
 /// The table `AgentRequestReceiverSubscribe` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:367`
+/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:386`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -39692,7 +41953,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverSubscribeRef<'a> {
 /// The table `AgentRequestWakeValidate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:371`
+/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:390`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -40190,7 +42451,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeValidateRef<'a> {
 /// The table `AgentRequestWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:376`
+/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:395`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -40779,7 +43040,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeOutcomeRef<'a> {
 /// The union `AgentRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:382`
+/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:401`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -41394,7 +43655,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentRequestRef<'a> {
 /// The table `AgentWakeOutcomeAccepted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:383`
+/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:402`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -41620,7 +43881,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeAcceptedRef<'a> {
 /// The table `AgentWakeOutcomeFailed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:386`
+/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:405`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -41925,7 +44186,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeFailedRef<'a> {
 /// The table `AgentWakeOutcomeUnknown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:389`
+/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:408`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -42230,7 +44491,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeUnknownRef<'a> {
 /// The union `AgentWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:392`
+/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:411`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -42458,7 +44719,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentWakeOutcomeRef<'a> {
 /// The table `RequestFailureSessionClosing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:393`
+/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:412`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -42774,7 +45035,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureSessionClosingRef<'a> {
 /// The union `RequestFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:396`
+/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:415`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -42916,7 +45177,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for RequestFailureRef<'a> {
 /// The table `OptionalU64` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:397`
+/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:416`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -43232,7 +45493,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalU64Ref<'a> {
 /// The table `OptionalPalette` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:400`
+/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:419`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -43537,7 +45798,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPaletteRef<'a> {
 /// The table `OptionalUsize` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:403`
+/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:422`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -43853,7 +46114,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalUsizeRef<'a> {
 /// The table `NullValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:408`
+/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:427`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -44079,7 +46340,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NullValueRef<'a> {
 /// The table `BoolValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:409`
+/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:428`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -44395,7 +46656,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for BoolValueRef<'a> {
 /// The table `SignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:410`
+/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:429`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -44711,7 +46972,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SignedValueRef<'a> {
 /// The table `UnsignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:411`
+/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:430`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -45027,7 +47288,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for UnsignedValueRef<'a> {
 /// The table `FloatValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:412`
+/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:431`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -45343,7 +47604,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FloatValueRef<'a> {
 /// The table `StringValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:413`
+/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:432`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -45648,7 +47909,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for StringValueRef<'a> {
 /// The table `ArrayValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:414`
+/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:433`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -45953,7 +48214,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ArrayValueRef<'a> {
 /// The table `Entry` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:415`
+/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:434`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -46331,7 +48592,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for EntryRef<'a> {
 /// The table `ObjectValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:416`
+/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:435`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -46636,7 +48897,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ObjectValueRef<'a> {
 /// The union `ValueBody` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:417`
+/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:436`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -47079,7 +49340,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ValueBodyRef<'a> {
 /// The table `Value` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:418`
+/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:437`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -47374,7 +49635,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ValueRef<'a> {
 /// The table `ControlPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:419`
+/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:438`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -47669,7 +49930,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ControlPayloadRef<'a> {
 /// The table `PanePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:420`
+/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:439`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -48062,7 +50323,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PanePayloadRef<'a> {
 /// The union `Payload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:421`
+/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:440`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -48247,7 +50508,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PayloadRef<'a> {
 /// The table `Request` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:422`
+/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:441`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -48636,7 +50897,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestRef<'a> {
 /// The table `OptionalPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:423`
+/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:442`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -48931,7 +51192,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPayloadRef<'a> {
 /// The table `OptionalFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:424`
+/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:443`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -49226,7 +51487,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalFailureRef<'a> {
 /// The table `Response` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:425`
+/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:444`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize

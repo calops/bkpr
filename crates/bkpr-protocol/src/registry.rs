@@ -1,6 +1,6 @@
 use crate::{CaptureEvent, HarnessInfo, HarnessKind, PROTOCOL_VERSION, PaneRequest, Size};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Request {
@@ -101,7 +101,8 @@ pub enum Operation {
         workspace_id: Option<String>,
         window_id: Option<String>,
         expected_revision: Option<u64>,
-        spec: PaneSpawnSpec,
+        panes: Vec<PaneSpawnEntry>,
+        layout: Option<SpawnLayoutNode>,
     },
     /// Replace an unavailable pane in its owning window; never replay saved argv.
     PaneReopen {
@@ -159,6 +160,27 @@ impl std::fmt::Debug for Operation {
         redact(&mut value);
         std::fmt::Debug::fmt(&value, f)
     }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaneSpawnEntry {
+    pub reference: String,
+    pub spec: PaneSpawnSpec,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SpawnLayoutNode {
+    Existing {
+        pane_id: String,
+    },
+    New {
+        reference: String,
+    },
+    Split {
+        axis: Axis,
+        ratio: u16,
+        first: Box<SpawnLayoutNode>,
+        second: Box<SpawnLayoutNode>,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaneSpawnSpec {
@@ -277,6 +299,8 @@ pub enum RequestOutcome {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RegistryResult {
     pub registry: RegistrySnapshot,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub created_panes: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

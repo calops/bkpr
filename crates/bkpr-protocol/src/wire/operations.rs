@@ -276,7 +276,8 @@ pub(super) fn write_operation(
             workspace_id,
             window_id,
             expected_revision,
-            spec,
+            panes,
+            layout,
         } => {
             let workspace_id = workspace_id
                 .as_ref()
@@ -303,13 +304,31 @@ pub(super) fn write_operation(
                     Ok(g::OptionalU64::create(builder, value))
                 })
                 .transpose()?;
-            let spec = write_pane_spawn_spec(builder, spec, budget, depth + 1)?;
+            budget.vector(panes.len(), std::mem::size_of::<PaneSpawnEntry>())?;
+            let mut entries = Vec::with_capacity(panes.len());
+            for entry in panes {
+                budget.node(depth + 1)?;
+                budget.bytes(entry.reference.len())?;
+                let reference = builder.create_string(&entry.reference);
+                let spec = write_pane_spawn_spec(builder, &entry.spec, budget, depth + 2)?;
+                entries.push(g::PaneSpawnEntry::create(builder, reference, spec));
+            }
+            let panes = builder.create_vector(&entries);
+            let layout = layout
+                .as_ref()
+                .map(|layout| -> Result<_> {
+                    budget.node(depth + 1)?;
+                    let value = write_spawn_layout_node(builder, layout, budget, depth + 2)?;
+                    Ok(g::OptionalSpawnLayout::create(builder, value))
+                })
+                .transpose()?;
             let offset = g::OperationPaneSpawn::create(
                 builder,
                 workspace_id,
                 window_id,
                 expected_revision,
-                spec,
+                panes,
+                layout,
             );
             g::Operation::create_operation_pane_spawn(builder, offset)
         }
@@ -639,7 +658,30 @@ pub(super) fn read_operation(
                 .expected_revision()?
                 .map(|value| -> Result<_> { Ok(value.value()?) })
                 .transpose()?,
-            spec: read_pane_spawn_spec(value.spec()?, budget, depth + 1)?,
+            panes: {
+                let entries = value.panes()?;
+                budget.vector(entries.len(), std::mem::size_of::<PaneSpawnEntry>())?;
+                entries
+                    .iter()
+                    .map(|entry| {
+                        budget.node(depth + 1)?;
+                        let entry = entry?;
+                        let reference = entry.reference()?;
+                        budget.bytes(reference.len())?;
+                        Ok(PaneSpawnEntry {
+                            reference: reference.to_owned(),
+                            spec: read_pane_spawn_spec(entry.spec()?, budget, depth + 2)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            },
+            layout: value
+                .layout()?
+                .map(|layout| {
+                    budget.node(depth + 1)?;
+                    read_spawn_layout_node(layout.value()?, budget, depth + 2)
+                })
+                .transpose()?,
         },
         g::OperationRef::OperationPaneReopen(value) => Operation::PaneReopen {
             workspace_id: {
@@ -773,6 +815,71 @@ pub(super) fn read_layout_node(
             ratio: value.ratio()?,
             first: Box::new(read_layout_node(value.first()?, budget, depth + 1)?),
             second: Box::new(read_layout_node(value.second()?, budget, depth + 1)?),
+        },
+    })
+}
+
+fn write_spawn_layout_node(
+    builder: &mut Builder,
+    value: &SpawnLayoutNode,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<UnionOffset<g::SpawnLayoutNode>> {
+    budget.node(depth)?;
+    Ok(match value {
+        SpawnLayoutNode::Existing { pane_id } => {
+            budget.bytes(pane_id.len())?;
+            let pane_id = builder.create_string(pane_id);
+            let offset = g::SpawnLayoutNodeExisting::create(builder, pane_id);
+            g::SpawnLayoutNode::create_spawn_layout_node_existing(builder, offset)
+        }
+        SpawnLayoutNode::New { reference } => {
+            budget.bytes(reference.len())?;
+            let reference = builder.create_string(reference);
+            let offset = g::SpawnLayoutNodeNew::create(builder, reference);
+            g::SpawnLayoutNode::create_spawn_layout_node_new(builder, offset)
+        }
+        SpawnLayoutNode::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => {
+            let first = write_spawn_layout_node(builder, first, budget, depth + 1)?;
+            let second = write_spawn_layout_node(builder, second, budget, depth + 1)?;
+            let offset =
+                g::SpawnLayoutNodeSplit::create(builder, write_axis(*axis), *ratio, first, second);
+            g::SpawnLayoutNode::create_spawn_layout_node_split(builder, offset)
+        }
+    })
+}
+
+pub(super) fn read_spawn_layout_node(
+    value: g::SpawnLayoutNodeRef<'_>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<SpawnLayoutNode> {
+    budget.node(depth)?;
+    Ok(match value {
+        g::SpawnLayoutNodeRef::SpawnLayoutNodeExisting(value) => SpawnLayoutNode::Existing {
+            pane_id: {
+                let text = value.pane_id()?;
+                budget.bytes(text.len())?;
+                text.to_owned()
+            },
+        },
+        g::SpawnLayoutNodeRef::SpawnLayoutNodeNew(value) => SpawnLayoutNode::New {
+            reference: {
+                let text = value.reference()?;
+                budget.bytes(text.len())?;
+                text.to_owned()
+            },
+        },
+        g::SpawnLayoutNodeRef::SpawnLayoutNodeSplit(value) => SpawnLayoutNode::Split {
+            axis: read_axis(value.axis()?),
+            ratio: value.ratio()?,
+            first: Box::new(read_spawn_layout_node(value.first()?, budget, depth + 1)?),
+            second: Box::new(read_spawn_layout_node(value.second()?, budget, depth + 1)?),
         },
     })
 }

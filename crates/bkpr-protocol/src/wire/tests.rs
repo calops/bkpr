@@ -108,19 +108,23 @@ fn every_operation_and_optional_presence_roundtrips() {
         workspace_id: None,
         window_id: None,
         expected_revision: None,
-        spec: PaneSpawnSpec {
-            argv: vec!["日本語\0🦀".into()],
-            cwd: "/tmp/native".into(),
-            home: "/tmp/native".into(),
-            size: Size {
-                cols: 17,
-                rows: 17,
-                cell_width: 17,
-                cell_height: 17,
+        panes: vec![PaneSpawnEntry {
+            reference: "日本語\0🦀".into(),
+            spec: PaneSpawnSpec {
+                argv: vec!["日本語\0🦀".into()],
+                cwd: "/tmp/native".into(),
+                home: "/tmp/native".into(),
+                size: Size {
+                    cols: 17,
+                    rows: 17,
+                    cell_width: 17,
+                    cell_height: 17,
+                },
+                title: None,
+                isolated_environment: true,
             },
-            title: None,
-            isolated_environment: true,
-        },
+        }],
+        layout: None,
     });
     assert_request(Operation::PaneReopen {
         workspace_id: "日本語\0🦀".into(),
@@ -274,19 +278,25 @@ fn every_operation_and_optional_presence_roundtrips() {
         workspace_id: Some("日本語\0🦀".into()),
         window_id: Some("日本語\0🦀".into()),
         expected_revision: Some(u64::MAX),
-        spec: PaneSpawnSpec {
-            argv: vec!["日本語\0🦀".into()],
-            cwd: "/tmp/native".into(),
-            home: "/tmp/native".into(),
-            size: Size {
-                cols: 17,
-                rows: 17,
-                cell_width: 17,
-                cell_height: 17,
+        panes: vec![PaneSpawnEntry {
+            reference: "日本語\0🦀".into(),
+            spec: PaneSpawnSpec {
+                argv: vec!["日本語\0🦀".into()],
+                cwd: "/tmp/native".into(),
+                home: "/tmp/native".into(),
+                size: Size {
+                    cols: 17,
+                    rows: 17,
+                    cell_width: 17,
+                    cell_height: 17,
+                },
+                title: Some("日本語\0🦀".into()),
+                isolated_environment: true,
             },
-            title: Some("日本語\0🦀".into()),
-            isolated_environment: true,
-        },
+        }],
+        layout: Some(SpawnLayoutNode::New {
+            reference: "日本語\0🦀".into(),
+        }),
     });
     assert_request(Operation::PaneReopen {
         workspace_id: "日本語\0🦀".into(),
@@ -867,6 +877,223 @@ fn malformed_optional_layout_cannot_become_a_layout_clear() {
 }
 
 #[test]
+fn malformed_optional_spawn_layout_cannot_become_absent() {
+    let mut codec = Codec::new();
+    let request = Request::new(Operation::PaneSpawn {
+        workspace_id: Some("workspace".into()),
+        window_id: Some("window".into()),
+        expected_revision: Some(7),
+        panes: vec![spawn_entry("new")],
+        layout: Some(SpawnLayoutNode::New {
+            reference: "new".into(),
+        }),
+    });
+    let valid = codec.encode_request(&request).unwrap().to_vec();
+    let (_, operation) = root_field(&valid, 2);
+    let operation = indirect(&valid, operation);
+    let (_, wrapper) = table_field(&valid, operation, 4);
+    let wrapper = indirect(&valid, wrapper);
+    for discriminator in [0, 1, 2, 3, 255] {
+        for missing_value in [false, true] {
+            if !missing_value && matches!(discriminator, 1..=3) {
+                continue;
+            }
+            let mut malformed = valid.clone();
+            let (_, tag) = table_field(&malformed, wrapper, 0);
+            let (entry, _) = table_field(&malformed, wrapper, 1);
+            malformed[tag] = discriminator;
+            if missing_value {
+                malformed[entry..entry + 2].fill(0);
+            }
+            assert!(decode_request(&malformed).is_err());
+        }
+    }
+}
+
+#[test]
+fn required_spawn_entries_and_recursive_layout_values_fail_closed() {
+    let mut codec = Codec::new();
+    let request = Request::new(Operation::PaneSpawn {
+        workspace_id: Some("workspace".into()),
+        window_id: Some("window".into()),
+        expected_revision: Some(7),
+        panes: vec![spawn_entry("new")],
+        layout: Some(SpawnLayoutNode::Split {
+            axis: Axis::Horizontal,
+            ratio: 500,
+            first: Box::new(SpawnLayoutNode::Existing {
+                pane_id: "existing".into(),
+            }),
+            second: Box::new(SpawnLayoutNode::New {
+                reference: "new".into(),
+            }),
+        }),
+    });
+    let valid = codec.encode_request(&request).unwrap().to_vec();
+    let (_, operation) = root_field(&valid, 2);
+    let operation = indirect(&valid, operation);
+    let (_, entries) = table_field(&valid, operation, 3);
+    let entries = indirect(&valid, entries);
+    let entry = indirect(&valid, entries + 4);
+    let (_, wrapper) = table_field(&valid, operation, 4);
+    let wrapper = indirect(&valid, wrapper);
+    let (_, layout) = table_field(&valid, wrapper, 1);
+    let layout = indirect(&valid, layout);
+    let (_, existing) = table_field(&valid, layout, 3);
+    let existing = indirect(&valid, existing);
+    let (_, new) = table_field(&valid, layout, 5);
+    let new = indirect(&valid, new);
+    for (table, slot) in [
+        (operation, 3), // Required batch vector.
+        (entry, 0),     // Required local reference.
+        (entry, 1),     // Required spawn specification.
+        (layout, 3),    // Required first child value.
+        (layout, 5),    // Required second child value.
+        (existing, 0),  // Required existing-leaf pane ID.
+        (new, 0),       // Required new-leaf reference.
+    ] {
+        let mut malformed = valid.clone();
+        let (entry, _) = table_field(&malformed, table, slot);
+        malformed[entry..entry + 2].fill(0);
+        assert!(decode_request(&malformed).is_err());
+    }
+    for slot in [2, 4] {
+        let mut malformed = valid.clone();
+        let (_, tag) = table_field(&malformed, layout, slot);
+        malformed[tag] = 255;
+        assert!(decode_request(&malformed).is_err());
+    }
+}
+
+#[test]
+fn spawn_layout_decode_and_encode_obey_aggregate_and_depth_budgets() {
+    let mut builder = Builder::new();
+    let reference = builder.create_string("x".repeat(64));
+    let leaf = g::SpawnLayoutNodeNew::create(&mut builder, reference);
+    let mut layout = g::SpawnLayoutNode::create_spawn_layout_node_new(&mut builder, leaf);
+    // Repeated offsets are tiny on the wire but must not expand exponentially.
+    for _ in 0..10 {
+        let split =
+            g::SpawnLayoutNodeSplit::create(&mut builder, g::Axis::Horizontal, 500, layout, layout);
+        layout = g::SpawnLayoutNode::create_spawn_layout_node_split(&mut builder, split);
+    }
+    let root = g::OptionalSpawnLayout::create(&mut builder, layout);
+    let root = g::OptionalSpawnLayoutRef::read_as_root(builder.finish(root, None)).unwrap();
+    assert!(
+        operations::read_spawn_layout_node(root.value().unwrap(), &mut Budget::new(1024), 0)
+            .is_err()
+    );
+    let mut layout = SpawnLayoutNode::New {
+        reference: "new".into(),
+    };
+    for _ in 0..130 {
+        layout = SpawnLayoutNode::Split {
+            axis: Axis::Vertical,
+            ratio: 500,
+            first: Box::new(SpawnLayoutNode::Existing {
+                pane_id: "existing".into(),
+            }),
+            second: Box::new(layout),
+        };
+    }
+    assert!(
+        Codec::new()
+            .encode_request(&Request::new(Operation::PaneSpawn {
+                workspace_id: Some("workspace".into()),
+                window_id: Some("window".into()),
+                expected_revision: Some(7),
+                panes: vec![spawn_entry("new")],
+                layout: Some(layout),
+            }))
+            .is_err()
+    );
+}
+
+fn spawn_entry(reference: &str) -> PaneSpawnEntry {
+    PaneSpawnEntry {
+        reference: reference.into(),
+        spec: PaneSpawnSpec {
+            argv: vec!["/bin/sh".into()],
+            cwd: "/tmp".into(),
+            home: "/tmp".into(),
+            size: Size {
+                cols: 80,
+                rows: 24,
+                cell_width: 8,
+                cell_height: 16,
+            },
+            title: None,
+            isolated_environment: true,
+        },
+    }
+}
+
+#[test]
+fn mixed_spawn_layout_and_result_mapping_roundtrip() {
+    assert_request(Operation::PaneSpawn {
+        workspace_id: Some("workspace".into()),
+        window_id: Some("window".into()),
+        expected_revision: Some(7),
+        panes: vec![spawn_entry("codex"), spawn_entry("claude")],
+        layout: Some(SpawnLayoutNode::Split {
+            axis: Axis::Horizontal,
+            ratio: 500,
+            first: Box::new(SpawnLayoutNode::Existing {
+                pane_id: "existing".into(),
+            }),
+            second: Box::new(SpawnLayoutNode::Split {
+                axis: Axis::Vertical,
+                ratio: 600,
+                first: Box::new(SpawnLayoutNode::New {
+                    reference: "codex".into(),
+                }),
+                second: Box::new(SpawnLayoutNode::New {
+                    reference: "claude".into(),
+                }),
+            }),
+        }),
+    });
+    let result = RegistryResult {
+        registry: RegistrySnapshot {
+            revision: 8,
+            workspaces: vec![],
+            panes: vec![],
+        },
+        created_panes: [
+            ("codex".into(), "pane-one".into()),
+            ("claude".into(), "pane-two".into()),
+        ]
+        .into(),
+        pane_id: None,
+        workspace_id: Some("workspace".into()),
+        window_id: Some("window".into()),
+    };
+    let response = Response {
+        version: PROTOCOL_VERSION,
+        ok: true,
+        result: Some(serde_json::to_value(&result).unwrap().into()),
+        error: None,
+        failure: None,
+    };
+    let mut codec = Codec::new();
+    let decoded = decode_response(codec.encode_response(&response).unwrap()).unwrap();
+    let decoded: RegistryResult =
+        serde_json::from_value(decoded.result.unwrap().into_json().unwrap()).unwrap();
+    assert_eq!(decoded.created_panes, result.created_panes);
+    assert!(decoded.pane_id.is_none());
+    let mut absent = serde_json::to_value(&result).unwrap();
+    absent.as_object_mut().unwrap().remove("created_panes");
+    let absent: RegistryResult = serde_json::from_value(absent).unwrap();
+    assert!(absent.created_panes.is_empty());
+    assert!(
+        serde_json::to_value(absent)
+            .unwrap()
+            .get("created_panes")
+            .is_none()
+    );
+}
+
+#[test]
 fn malformed_optional_result_and_failure_cannot_become_absent() {
     let mut codec = Codec::new();
     for (slot, response) in [
@@ -1097,20 +1324,24 @@ fn non_utf8_spawn_recovery_and_agent_socket_paths_are_raw_and_lossless() {
     assert_request(Operation::PaneSpawn {
         workspace_id: None,
         window_id: None,
-        expected_revision: Some(0),
-        spec: PaneSpawnSpec {
-            argv: vec![],
-            cwd: path.clone(),
-            home: path,
-            size: Size {
-                cols: 80,
-                rows: 24,
-                cell_width: 8,
-                cell_height: 16,
+        expected_revision: None,
+        panes: vec![PaneSpawnEntry {
+            reference: "raw-path".into(),
+            spec: PaneSpawnSpec {
+                argv: vec![],
+                cwd: path.clone(),
+                home: path,
+                size: Size {
+                    cols: 80,
+                    rows: 24,
+                    cell_width: 8,
+                    cell_height: 16,
+                },
+                title: Some(String::new()),
+                isolated_environment: false,
             },
-            title: Some(String::new()),
-            isolated_environment: false,
-        },
+        }],
+        layout: None,
     });
 }
 

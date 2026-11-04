@@ -8176,6 +8176,7 @@ mod tests {
                 result: Some(
                     serde_json::to_value(RegistryResult {
                         registry: registry.clone(),
+                        created_panes: Default::default(),
                         pane_id: None,
                         workspace_id: None,
                         window_id: None,

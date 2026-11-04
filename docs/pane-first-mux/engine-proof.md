@@ -20,7 +20,7 @@ Linux [process cleanup](../../crates/bkpr-core/src/process_tree.rs) is scoped to
 
 ### IPC and resources
 
-The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses Planus binary wire family 5 for typed workspace/window registry operations, one-shot client source publication and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. A fixed admission header checks family, message kind, required capabilities and the 8 MiB request / 96 MiB response bounds before allocating the payload. Control capacity remains reserved independently of long polls. These remain same-user local boundaries, not authenticated remote enrollment.
+The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses Planus binary wire family 6 for typed workspace/window registry operations, atomic pane creation/placement, one-shot client source publication and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. A fixed admission header checks family, message kind, required capabilities and the 8 MiB request / 96 MiB response bounds before allocating the payload. Control capacity remains reserved independently of long polls. These remain same-user local boundaries, not authenticated remote enrollment.
 
 Clients receive compact lossless binary scene runs and whole-row deltas on snapshot workers. Image receipts include ID and generation, avoiding stale pixels or needless retransmission. The received allocation owns borrowed scene slices; complete validation precedes expanded native cells/resources and failure-atomic application. CLI/MCP/provider and persistence JSON are not the native wire format. Workspace/window/pane metadata and revisioned layouts persist; terminal contents and processes do not. Restored records without runtimes are explicitly Stopped. Sustained-animation CPU work remains measured separately below.
 
@@ -1772,3 +1772,71 @@ Evidence is in `target/smoke/run-buffer-reuse/`: `findings.json`,
 `matched/result.json`, `verification-summary.json`, complete compressed codec
 records, native phase receipts and archived reproduction sources. No live user
 session, provider or persistent setting participates.
+
+## Atomic pane creation and placement
+
+Native wire family 6 replaces single-spec `pane_spawn` with a batch of named
+process specs and an explicit final layout. Existing and new leaves occupy
+distinct namespaces; the result maps local references to committed pane IDs.
+Workspace/window creation, reopen and restore retain their public shapes and
+share the same reservation/start/commit engine. TUI splitting uses one request,
+not a visible default layout followed by a separate placement CAS.
+
+The complete structural request, ownership/CAS, capacity and bounded durable
+candidate are validated before child setup. Every HOME/CWD is prepared before
+the first child executes; startup and rollback never hold global registry
+locks. A workspace reservation lasts through final validation, durable write,
+record/live-handle publication and callback installation. Unrelated workspace
+changes merge at commit. Partial startup or failed durable commit reaps
+unpublished children without changing the visible layout or consuming older
+restore intent. OS command side effects and directory preparation are not
+atomic or reversible. Failed persistence still poisons all commit paths; an
+error after rename/fsync does not prove an unchanged durable file.
+
+**Debug acceptance**, not a performance claim:
+
+* `target/smoke/atomic-pane-placement/verification/compiled-1397815169830048/manifest.json`
+  freezes the matching family-6 pair: client SHA-256
+  `be59df2ef2b7f644783e5f94b42eeed645c487ab598c31e270fa07aec261f92c`,
+  server `4b576a624034dc40d5782121b331841b82c31c2b9ca6ddf32db9b655d6ef1da3`.
+  Public debug/release executables remain byte-identical. Builds use the local
+  incremental target, eight jobs/CPUs, a 4-GiB memory ceiling and no release build.
+* Workspace tests pass as host UID 1000: 768 top-level successes, one additional
+  isolated-subprocess success and fourteen explicitly ignored fixtures.
+  Formatting, strict all-target Clippy, doctests and the protected debug build
+  pass. Deterministic regressions cover admission before execution, later
+  filesystem prerequisite failure, ownership/ref/layout boundaries, batch
+  capacity, partial exec failure/reaping, unrelated-workspace responsiveness,
+  final CAS, shutdown, early exit, persistence poison and retained restore intent.
+* `run-1398246679808064/acceptance.json` passes nineteen actual CLI/backend cases.
+  Real Kitty TUI left/right and top/bottom splits each advance their window
+  revision once. The attached client then shows an existing pane left, Codex
+  top-right and Claude bottom-right from one batch request. Production `bkpr run`
+  launchers authenticate both capture kinds using private credential-free native
+  stand-ins; no model, conversation readiness or notification readiness is claimed.
+* Wait subscribers record five horizontal, five vertical and eight multi-pane
+  snapshots. Each target has exactly two observed layouts: old and final, with
+  consecutive window revisions and no subscriber error. These samples are
+  observation evidence, not an OS-atomicity proof; the single publication and
+  barrier regressions enforce the intermediate-state invariant.
+* Stale revisions, invalid ownership/references/layouts and invalid later specs
+  reject before execution. A later exec failure returns error with no new
+  registry panes/layout; the first command's filesystem side effect was observed,
+  demonstrating why process rollback is not side-effect rollback. Failed durable
+  publication returns error, rejects subsequent writes, keeps immutable identity
+  readable and allows targeted cleanup while preserving its real failure exit.
+  All final fixture cleanup records contain zero surviving owned process births.
+
+The first native controller incorrectly assumed global `--pane` selected a TUI
+workspace; the CLI uses that flag for headless pane tools, while TUI startup
+selects its first usable workspace. Its multi-pane screen wait timed out despite
+correct backend layout/capture state. The corrected controller uses ordinary
+workspace navigation and keeps the actual client attached throughout creation;
+no production behavior was relaxed. `final.xwd` was converted with ImageMagick
+to `final.png` and visually inspected.
+
+`verification-summary.json`, the raw check/runtime receipts, actual framebuffer,
+`checked-sources.zip` and archived controller sources live under
+`target/smoke/atomic-pane-placement/`. Fixtures use private HOME/XDG/socket roots,
+deny Internet sockets and never touch live sessions, user profiles or providers.
+

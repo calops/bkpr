@@ -863,16 +863,94 @@ Whole-workspace references across sessions or remote endpoints are still planned
 not implemented routing. They will allow normal use through the owner, not
 read-only display; assume the same user without a new permissions framework.
 
+### Atomic pane creation and placement
+
+`pane_spawn` creates one or more ordinary processes and their final window layout
+in one request. Each entry in `panes` has a unique request-local `reference` and
+the usual `PaneSpawnSpec`. Layout leaves distinguish existing `pane_id` values
+from new references; callers do not need to allocate backend IDs.
+
+For example, this request leaves an existing pane on the left and places Codex
+top-right and Claude bottom-right. Replace the owner IDs, window revision and
+paths with current values from `inspect`; submit the JSON with `bkpr request`.
+The managed commands use the normal launchers, not a separate agent-spawn API:
+
+```json
+{
+  "version": 6,
+  "op": "pane_spawn",
+  "workspace_id": "WORKSPACE_ID",
+  "window_id": "WINDOW_ID",
+  "expected_revision": 7,
+  "panes": [
+    {
+      "reference": "codex",
+      "spec": {
+        "argv": ["bkpr", "run", "codex"],
+        "cwd": "/work/project",
+        "home": "/home/alice",
+        "size": {"cols": 80, "rows": 24, "cell_width": 8, "cell_height": 16}
+      }
+    },
+    {
+      "reference": "claude",
+      "spec": {
+        "argv": ["bkpr", "run", "claude"],
+        "cwd": "/work/project",
+        "home": "/home/alice",
+        "size": {"cols": 80, "rows": 24, "cell_width": 8, "cell_height": 16}
+      }
+    }
+  ],
+  "layout": {
+    "kind": "split", "axis": "horizontal", "ratio": 500,
+    "first": {"kind": "existing", "pane_id": "LEFT_PANE_ID"},
+    "second": {
+      "kind": "split", "axis": "vertical", "ratio": 500,
+      "first": {"kind": "new", "reference": "codex"},
+      "second": {"kind": "new", "reference": "claude"}
+    }
+  }
+}
+```
+
+The result's `created_panes` maps each reference to its new pane ID, alongside
+the committed registry. Every new pane must appear exactly once in a bound
+layout; existing leaves must belong to that exact workspace/window. Omitting an
+existing pane hides its projection without terminating it. Unowned administrative
+batches instead omit all three ownership/revision fields and require no layout.
+
+The backend validates the complete document and expected window revision before
+child setup, then prepares every HOME/CWD before the first process executes.
+The owning workspace is reserved through startup and publication; competing
+layout/close mutations fail busy, while unrelated workspaces remain usable.
+Final CAS validation and one durable commit publish all new panes and their
+layout together. Ordinary TUI splits use this same operation, with one window
+revision increment and no subsequent placement request.
+
+If a process cannot start or the final commit fails, newly started children are
+terminated/reaped and no partial panes/layout are published. This is not atomic
+OS execution: directory preparation and already-executed external side effects
+cannot be undone. Filesystem races can still cause startup failure after
+preparation. A successfully executed short-lived command follows normal exit
+handling and can disappear from the layout before its reply is read.
+
+A persistence error returns an error, suspends further commits until restart and
+may leave the on-disk outcome uncertain after rename/fsync. Reconcile state
+after restart; never blindly replay a mutation whose reply was lost or whose
+outcome is unknown. Creation does not imply focus, native-agent readiness or
+permission approval.
+
 ### Requests and explicit shutdown
 
-Native client/server connections use binary Planus wire family 5. Registry
+Native client/server connections use binary Planus wire family 6. Registry
 operations target workspaces, their independent windows and owned panes;
 terminal/view operations are pane-scoped. Active-window selection belongs to
 each client. The `request` utility still accepts and prints JSON; that is its
 human-facing boundary, not the socket format.
 
-Use a matching launcher/server pair. Existing version-4 sessions stay running
-and remain usable with their matching old client; a version-5 client refuses
+Use a matching launcher/server pair. Existing family-4/5 sessions stay running
+and remain usable with their matching old client; a family-6 client refuses
 attachment or takeover rather than restarting or replacing them. Retain the
 old binaries for those sessions, or explicitly stop the intended session before
 starting a fresh one. Recovery records keep their existing private schema.
@@ -887,9 +965,9 @@ Source paths are ephemeral, redacted from request debug output and never session
 ```sh
 "$CARGO_TARGET_DIR/debug/bkpr" context --socket "$BKPR_RUN/control.sock"
 "$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
-  '{"version":5,"op":"inspect"}'
+  '{"version":6,"op":"inspect"}'
 "$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
-  '{"version":5,"op":"shutdown"}'
+  '{"version":6,"op":"shutdown"}'
 ```
 
 Check `ok` and `error` before treating an operation as successful. Shutdown closes
@@ -918,7 +996,7 @@ stopped. Older metadata upgrades without inventing active native bindings;
 ambiguous foreign-workspace ownership is rejected without replacing the record.
 
 Retired metadata can be explicitly forgotten with
-`{"version":5,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
+`{"version":6,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
 has stopped, every layout reference has been removed and all its views detached.
 This releases record capacity; it is not termination or automatic history pruning.
 

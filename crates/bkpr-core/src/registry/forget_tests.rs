@@ -137,7 +137,11 @@ fn explicit_forget_releases_record_capacity_without_automatic_pruning() {
                 workspace_id: None,
                 window_id: None,
                 expected_revision: None,
-                spec: spec(&home)
+                panes: vec![PaneSpawnEntry {
+                    reference: "pane".into(),
+                    spec: spec(&home)
+                }],
+                layout: None,
             }))
             .unwrap_err()
             .to_string()

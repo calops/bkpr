@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(target_os = "linux")]
-use bkpr_protocol::{PaneSpawnSpec, Size};
+use bkpr_protocol::{PaneSpawnEntry, PaneSpawnSpec, Size};
 use serde_json::Value;
 
 fn wire(socket: &Path, request: Request) -> Value {
@@ -35,19 +35,23 @@ fn explicit_shutdown_stops_poisoned_daemon_and_reaps_live_pane_even_when_respons
             workspace_id: None,
             window_id: None,
             expected_revision: None,
-            spec: PaneSpawnSpec {
-                argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
-                cwd: home.clone(),
-                home,
-                isolated_environment: true,
-                title: Some("owned".into()),
-                size: Size {
-                    cols: 80,
-                    rows: 24,
-                    cell_width: 8,
-                    cell_height: 16,
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec: PaneSpawnSpec {
+                    argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
+                    cwd: home.clone(),
+                    home,
+                    isolated_environment: true,
+                    title: Some("owned".into()),
+                    size: Size {
+                        cols: 80,
+                        rows: 24,
+                        cell_width: 8,
+                        cell_height: 16,
+                    },
                 },
-            },
+            }],
+            layout: None,
         }))
         .unwrap()
         .into_json()
@@ -423,7 +427,11 @@ fn in_flight_spawn_closing_is_unknown_but_an_actual_spawn_failure_stays_an_error
                     workspace_id: None,
                     window_id: None,
                     expected_revision: None,
-                    spec,
+                    panes: vec![PaneSpawnEntry {
+                        reference: "pane".into(),
+                        spec,
+                    }],
+                    layout: None,
                 }),
             )
         });

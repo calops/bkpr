@@ -151,7 +151,11 @@ fn resume_reservation_refuses_stale_alias_close_reopen_and_forget_without_blocki
             workspace_id: None,
             window_id: None,
             expected_revision: None,
-            spec: other_spec,
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec: other_spec,
+            }],
+            layout: None,
         },
     )["pane_id"]
         .as_str()

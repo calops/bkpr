@@ -7,6 +7,7 @@
 * Reap explicitly terminated pane processes before stopping their PTY writer. `portable-pty` emits newline/VEOF on writer drop; those bytes must not reach a still-live application or pending shell command.
 * Use the stable launch-local MCP name `bkpr` for Claude, Codex and Omp instead of a launch-ID suffix. Keep authentication launch-scoped and persistent configuration untouched.
 * Preserve the active keyboard layout when decoding Kitty control keys instead of substituting the alternate PC-101 key. Fix AZERTY Ctrl-W becoming Ctrl-Z while ordinary text remains correct.
+* Create one or many panes together with their final window layout through request-local references. Remove the TUI's spawn-then-layout workaround; validate the complete batch before execution, reserve capacity/ownership, publish once after durability, and reap unpublished children after startup or commit failure.
 
 ### Performance
 
@@ -20,8 +21,9 @@
 ### Breaking branch replacement
 
 * `feat/pane-first-mux` replaces the previous runtime with seven focused crates: `bkpr`, `bkpr-client`, `bkpr-tui-framework`, `bkpr-server` (the `bkprd` executable), `bkpr-core`, `bkpr-protocol` and `bkpr-terminal-engine`. There is no legacy launcher, plugin, binary alias or compatibility track on this branch.
+* Advance native wire family 5 → 6 for batch `pane_spawn` and explicit placement. Return `created_panes` reference-to-ID mappings; require a matching client/server pair and leave existing incompatible sessions running without automatic restart. Durable schema 4 is unchanged.
 * Remove the old host-runtime flake input, WASI build/export paths, sibling-runtime recipes and obsolete package/cache/publication automation. Nix now supplies only the default native development shell; Cargo plus the pinned engine preparation helper is the supported build path. Native Nix packaging requires a reproducible, offline engine dependency closure and runtime acceptance before package/app outputs return.
-* Expose the native daemon, TUI, typed version-5 control protocol and keyboard client. Backend-owned workspaces contain independent windows/layouts and owned panes; layout-only removal or client detach does not terminate a process. Metadata persists, but process and terminal-content recovery is not implemented. Forge/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
+* Expose the native daemon, TUI, typed version-6 control protocol and keyboard client. Backend-owned workspaces contain independent windows/layouts and owned panes; layout-only removal or client detach does not terminate a process. Metadata persists, but process and terminal-content recovery is not implemented. Forge/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
 * Native graphics initial-presentation gates remain unaccepted. This replacement is not production acceptance and does not modify installed applications or live sessions.
 
 ### Native named sessions

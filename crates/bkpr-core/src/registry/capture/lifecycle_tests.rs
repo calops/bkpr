@@ -23,27 +23,31 @@ fn seed_launch_command(
             workspace_id: None,
             window_id: None,
             expected_revision: None,
-            spec: PaneSpawnSpec {
-                argv: vec![
-                    if kind == HarnessKind::Claude {
-                        fixture.home.join("native/claude").to_str().unwrap().into()
-                    } else {
-                        "/bin/sh".into()
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec: PaneSpawnSpec {
+                    argv: vec![
+                        if kind == HarnessKind::Claude {
+                            fixture.home.join("native/claude").to_str().unwrap().into()
+                        } else {
+                            "/bin/sh".into()
+                        },
+                        "-c".into(),
+                        script.into(),
+                    ],
+                    cwd: fixture.home.clone(),
+                    home: fixture.home.clone(),
+                    title: None,
+                    isolated_environment: true,
+                    size: Size {
+                        cols: 80,
+                        rows: 24,
+                        cell_width: 8,
+                        cell_height: 16,
                     },
-                    "-c".into(),
-                    script.into(),
-                ],
-                cwd: fixture.home.clone(),
-                home: fixture.home.clone(),
-                title: None,
-                isolated_environment: true,
-                size: Size {
-                    cols: 80,
-                    rows: 24,
-                    cell_width: 8,
-                    cell_height: 16,
                 },
-            },
+            }],
+            layout: None,
         }))
         .unwrap()
         .into_json()
@@ -193,25 +197,29 @@ fn first_and_after_last_pane_observe_real_foreground_cwd_without_manual_refresh(
                 workspace_id: None,
                 window_id: None,
                 expected_revision: None,
-                spec: PaneSpawnSpec {
-                    argv: vec![
-                        "/bin/sh".into(),
-                        "-c".into(),
-                        "cd \"$1\"; exec sleep 60".into(),
-                        "cwd-fixture".into(),
-                        target.to_str().unwrap().into(),
-                    ],
-                    cwd: fixture.home.clone(),
-                    home: fixture.home.clone(),
-                    title: None,
-                    isolated_environment: true,
-                    size: Size {
-                        cols: 80,
-                        rows: 24,
-                        cell_width: 8,
-                        cell_height: 16,
+                panes: vec![PaneSpawnEntry {
+                    reference: "pane".into(),
+                    spec: PaneSpawnSpec {
+                        argv: vec![
+                            "/bin/sh".into(),
+                            "-c".into(),
+                            "cd \"$1\"; exec sleep 60".into(),
+                            "cwd-fixture".into(),
+                            target.to_str().unwrap().into(),
+                        ],
+                        cwd: fixture.home.clone(),
+                        home: fixture.home.clone(),
+                        title: None,
+                        isolated_environment: true,
+                        size: Size {
+                            cols: 80,
+                            rows: 24,
+                            cell_width: 8,
+                            cell_height: 16,
+                        },
                     },
-                },
+                }],
+                layout: None,
             }))
             .unwrap()
             .into_json()

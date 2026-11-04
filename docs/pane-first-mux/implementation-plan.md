@@ -217,15 +217,48 @@ is needed. Multi-client stop/last-shell/last-document proof is in
 
 ### Native binary transport
 
-Wire family 5 replaces native newline JSON with [Planus 1.3.0](https://docs.rs/planus/1.3.0/planus/) and checked-in schema bindings. The synchronous socket/lifetime ownership and authentication model stays unchanged; no second async runtime or transport service is introduced. CLI/MCP/provider interfaces and durable records keep their own JSON boundaries. Extensible metadata uses a recursive typed value union, not embedded JSON text; pane scenes have separate binary storage.
+Wire family 6 uses [Planus 1.3.0](https://docs.rs/planus/1.3.0/planus/) and checked-in schema bindings; the initial binary cutover was family 5. The synchronous socket/lifetime ownership and authentication model stays unchanged; no second async runtime or transport service is introduced. CLI/MCP/provider interfaces and durable records keep their own JSON boundaries. Extensible metadata uses a recursive typed value union, not embedded JSON text; pane scenes have separate binary storage.
 
 `bkpr-protocol::wire` owns the 24-byte little-endian admission header, typed codecs and bounded framing. Check magic, family, kind, reserved bits, required capabilities and declared size before allocating payload storage. Requests are bounded to 8 MiB and responses to 96 MiB. Bound traversal depth and aggregate owned expansion independently, including repeated offsets; reject unknown tags, inconsistent presence, duplicate metadata keys and invalid UTF-8 before dispatch.
 
 `bytes::Bytes` retains validated scene ranges in the received allocation without copying scene contents. Fully validate cell boundaries, row/layout counts, styles, links, geometry, revisions and image budgets before native frame expansion. Check baseline and image-generation prerequisites before consumer mutation; invalid updates cannot advance poll cursors or replace frame, resource or clipboard state. This is zero-copy scene reception, not an end-to-end zero-allocation claim: canonical mutable cells/resources still need owned storage, and Planus's finished encoder slice currently requires an owned-output copy.
 
-Preserve table ordinals, enum tags and the fixed scene structs. Add only optional fields with conservative semantics within a family; use required capability bits for new mandatory behavior, and bump the family for incompatible representation changes. Presence-bearing unions are required inside nullable wrapper tables. Do not revive a JSON fallback or infer compatibility from matching product version strings. Initial version-4 → family-5 attachment fails closed without restarting, displacing or terminating the old daemon; its matching old client remains usable. Durable schema 4 is unchanged.
+Preserve table ordinals, enum tags and the fixed scene structs within a family. Add only optional fields with conservative semantics; use required capability bits for new mandatory behavior, and bump the family for incompatible representation changes. Presence-bearing unions are required inside nullable wrapper tables, including optional spawn placement. Do not revive a JSON fallback or infer compatibility from matching product version strings. Family-6 attachment to a family-4/5 daemon fails closed without restarting, displacing or terminating it; its matching old client remains usable. Durable schema 4 is unchanged.
 
 The schema compiler is development-only: `planus-cli =1.3.0`. Regenerate `wire/generated.rs` from `wire/native.fbs`, and `scene_wire/scene_generated.rs` from `scene_wire/scene.fbs`, using `planus rust --format false -o OUTPUT SCHEMA`. Generated modules are excluded from hand formatting; normal builds need only the locked runtime dependency. Acceptance and matched whole-mux CPU evidence are recorded in the engine report.
+
+### Atomic process creation and placement
+
+`PaneSpawn` carries named `PaneSpawnEntry` values and a complete
+`SpawnLayoutNode`: explicit existing-pane IDs, request-local new references and
+ordinary ratio/axis splits. Bound creation requires the entire ownership/CAS
+triplet and layout; unowned administrative batches require neither. Resolve all
+new IDs and validate ownership, uniqueness, depth, ratios, specs, capacity and
+the bounded durable candidate before execution. Every new bound pane appears
+exactly once; existing owned panes may remain hidden without losing ownership.
+
+All workspace/window creation, reopening, restoration and batch placement share
+the reservation/start/commit engine. Reserve the whole batch, prepare every
+HOME/CWD outside global locks before the first exec, and start processes outside
+registry/writer locks. The workspace reservation rejects competing layout/close
+mutations; final CAS validation still protects publication. Rebuild against
+current metadata to retain unrelated workspace commits, then persist once and
+publish the full record plus all live handles under one state lock. Install
+completion/recovery callbacks before exposing handles and process early exits
+after releasing the writer lock. Keep the batch admission gate through callback
+wiring so managed capture/context cannot adopt unpublished panes.
+
+Return `created_panes` mappings and the resulting registry; ordinary TUI splits
+must not follow spawning with a second layout CAS. Failure cleans up every
+unpublished child without consuming older recovery intent. Directory setup and
+external command effects are not rollbackable; immediate successful process
+exit remains ordinary lifecycle. Failed durability publishes nothing, poisons
+further commits and reports error, including ambiguous rename/fsync outcomes.
+Never replay unknown creation. Existing `portable-pty`, `tempfile`, Planus and
+registry primitives cover this Bkpr transaction; no new dependency, agent-specific
+process system or transport is introduced. [Runtime evidence](engine-proof.md#atomic-pane-creation-and-placement)
+records subscriber, TUI and failure acceptance.
+
 
 
 
@@ -327,7 +360,7 @@ Define identity epochs, revision ordering, subscriptions/coalescing, resnapshot,
 
 ## Delivery sequence
 
-The local implementation now includes the seven-crate split, pinned safe SDK integration, typed Planus wire-family-5 control, independent PTYs, persisted workspace/layout metadata, bounded view authority, the retained-framework sidebar/forms/choosers, native harness capture/communication and explicit native conversation recovery. These are implemented portions of stages 2–5, not completion of every requirement below. Endpoint-qualified remote references, forge/CI services, a recovery picker, a second independent frontend and supported-product packaging remain future work. The [engine report](engine-proof.md) separates measured acceptance from unresolved gates.
+The local implementation now includes the seven-crate split, pinned safe SDK integration, typed Planus wire-family-6 control, independent PTYs, atomic multi-pane creation/placement, persisted workspace/layout metadata, bounded view authority, the retained-framework sidebar/forms/choosers, native harness capture/communication and explicit native conversation recovery. These are implemented portions of stages 2–5, not completion of every requirement below. Endpoint-qualified remote references, forge/CI services, a recovery picker, a second independent frontend and supported-product packaging remain future work. The [engine report](engine-proof.md) separates measured acceptance from unresolved gates.
 
 ### Current priority: restore Bkpr's main-branch frontend
 
