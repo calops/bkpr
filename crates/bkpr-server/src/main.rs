@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use bkpr_core::{registry::Registry, transport};
-use bkpr_protocol::{PaneSpawnSpec, Size};
+use bkpr_protocol::{PaneSpawnSpec, Size, SpawnDefaults};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -36,7 +36,7 @@ struct Cli {
     #[arg(long, default_value_t = 16)]
     cell_height: u32,
     /// Restore saved owned panes/layout using this current shell command.
-    /// Without argv, startup is read-only and never executes saved history.
+    /// Without argv, startup executes nothing; daemon SHELL only configures future panes.
     #[arg(last = true)]
     argv: Vec<String>,
 }
@@ -50,25 +50,38 @@ fn run(cli: Cli) -> Result<()> {
     ensure!(cli.socket.is_absolute(), "socket must be absolute");
     let registry = Registry::open_named(&cli.state_root, &cli.session)?;
     let result = (|| -> Result<()> {
-        let listener = transport::bind(&cli.socket)?;
-        let executable = match cli.bkpr {
-            Some(executable) => executable,
-            None => std::env::current_exe()?.with_file_name("bkpr"),
-        };
-        registry.configure_harnesses(&cli.socket, &executable)?;
-        registry.configure_agent_forwarding(&cli.socket)?;
-        let initial = if !cli.argv.is_empty() {
+        let initial_requested = !cli.argv.is_empty();
+        let startup = (|| -> Result<Option<PaneSpawnSpec>> {
             let isolated_environment = cli.home.is_some();
             let home = cli
                 .home
                 .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
                 .context("HOME is unavailable; supply --home")?;
-            let cwd = cli.cwd.unwrap_or(std::env::current_dir()?);
-            Some(PaneSpawnSpec {
-                argv: cli.argv,
+            let cwd = match cli.cwd {
+                Some(cwd) => cwd,
+                None => std::env::current_dir()?,
+            };
+            let argv = if initial_requested {
+                cli.argv
+            } else {
+                vec![
+                    std::env::var("SHELL")
+                        .ok()
+                        .filter(|shell| !shell.is_empty())
+                        .context("SHELL is unavailable for future panes")?,
+                ]
+            };
+            let defaults = SpawnDefaults {
+                argv,
                 cwd,
                 home,
                 isolated_environment,
+            };
+            let initial = initial_requested.then(|| PaneSpawnSpec {
+                argv: defaults.argv.clone(),
+                cwd: defaults.cwd.clone(),
+                home: defaults.home.clone(),
+                isolated_environment: defaults.isolated_environment,
                 title: None,
                 size: Size {
                     cols: cli.cols,
@@ -76,10 +89,24 @@ fn run(cli: Cli) -> Result<()> {
                     cell_width: cli.cell_width,
                     cell_height: cli.cell_height,
                 },
-            })
+            });
+            registry.configure_spawn_defaults(defaults)?;
+            Ok(initial)
+        })();
+        let initial = if initial_requested {
+            startup?
         } else {
-            None
+            // Headless startup stays usable without complete, valid daemon defaults.
+            // Never substitute programs/paths or infer them from saved panes.
+            startup.unwrap_or(None)
         };
+        let listener = transport::bind(&cli.socket)?;
+        let executable = match cli.bkpr {
+            Some(executable) => executable,
+            None => std::env::current_exe()?.with_file_name("bkpr"),
+        };
+        registry.configure_harnesses(&cli.socket, &executable)?;
+        registry.configure_agent_forwarding(&cli.socket)?;
         listener.serve_bootstrap(registry.clone(), initial)
     })();
     // Even startup/bind failures must tear down only the children this daemon owns.

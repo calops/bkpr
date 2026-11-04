@@ -192,6 +192,236 @@ fn spec() -> ViewSpec {
 }
 
 #[test]
+fn startup_defaults_are_authenticated_read_only_before_activation() {
+    use std::os::unix::ffi::OsStringExt;
+    let server = Server::new("startup-defaults");
+    assert!(wire(&server.socket, Operation::SessionInfo)["result"]["spawn_defaults"].is_null());
+    let defaults = SpawnDefaults {
+        argv: vec!["/daemon/shell".into(), "-l".into()],
+        cwd: std::ffi::OsString::from_vec(b"/absent/cwd-\xff".to_vec()).into(),
+        home: std::ffi::OsString::from_vec(b"/absent/home-\xfe".to_vec()).into(),
+        isolated_environment: true,
+    };
+    server
+        .registry
+        .configure_spawn_defaults(defaults.clone())
+        .unwrap();
+    assert!(
+        server
+            .registry
+            .configure_spawn_defaults(defaults.clone())
+            .is_err()
+    );
+    let client = server.register();
+    let before = server.registry.snapshot().unwrap();
+    let selected = server
+        .registry
+        .inner
+        .ssh_agent_selected
+        .lock()
+        .unwrap()
+        .clone();
+    let response = server.managed(&client, Operation::SessionInfo);
+    assert_eq!(response["ok"], true, "{response}");
+    let decoded: SpawnDefaults =
+        serde_json::from_value(response["result"]["spawn_defaults"].clone()).unwrap();
+    assert_eq!(decoded, defaults);
+    assert_eq!(
+        response["result"],
+        wire(&server.socket, Operation::SessionInfo)["result"]
+    );
+    for operation in [
+        Operation::Inspect,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: None,
+        },
+        Operation::Pane {
+            pane_id: "unadmitted".into(),
+            request: PaneRequest::Attach { spec: spec() },
+        },
+    ] {
+        let refused = server.managed(&client, operation);
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert!(
+            refused["error"].as_str().unwrap().contains("inactive"),
+            "{refused}"
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(server.registry.snapshot().unwrap()).unwrap(),
+        serde_json::to_value(before).unwrap(),
+    );
+    assert_eq!(
+        *server.registry.inner.ssh_agent_selected.lock().unwrap(),
+        selected
+    );
+    {
+        let clients = server.registry.inner.clients.lock().unwrap();
+        assert_eq!(clients.len(), 1);
+        let lease = &clients[&client.authority.client_id];
+        assert!(!lease.activated.load(Ordering::Acquire));
+        assert!(!lease.is_active());
+        assert!(lease.agent_socket.get().is_none());
+    }
+    let mut forged = client.authority.clone();
+    forged.token.push('x');
+    let refused = wire(
+        &server.socket,
+        Operation::Client {
+            authority: forged,
+            request: Box::new(Operation::SessionInfo),
+        },
+    );
+    assert_eq!(refused["ok"], false);
+    let created = wire(
+        &server.socket,
+        Operation::WorkspaceCreate {
+            name: Some("unrelated".into()),
+            initial: Some(PaneSpawnSpec {
+                argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
+                cwd: server._root.path().to_owned(),
+                home: server._root.path().to_owned(),
+                isolated_environment: false,
+                title: Some("layout fixture".into()),
+                size: spec().size,
+            }),
+        },
+    );
+    assert_eq!(created["ok"], true, "{created}");
+    let snapshot = server.registry.snapshot().unwrap();
+    let workspace = &snapshot.workspaces[0];
+    let updated = wire(
+        &server.socket,
+        Operation::LayoutUpdate {
+            workspace_id: workspace.id.clone(),
+            window_id: workspace.windows[0].id.clone(),
+            expected_revision: workspace.revision,
+            layout: None,
+        },
+    );
+    assert_eq!(updated["ok"], true, "{updated}");
+    assert_eq!(
+        server.managed(&client, Operation::SessionInfo)["result"],
+        response["result"]
+    );
+    assert_eq!(server.activate(&client, false)["ok"], true);
+    assert_eq!(
+        server.managed(&client, Operation::SessionInfo)["result"],
+        response["result"]
+    );
+    let authority = client.authority.clone();
+    drop(client);
+    eventually(|| {
+        !server
+            .registry
+            .inner
+            .clients
+            .lock()
+            .unwrap()
+            .contains_key(&authority.client_id)
+    });
+    let refused = wire(
+        &server.socket,
+        Operation::Client {
+            authority,
+            request: Box::new(Operation::SessionInfo),
+        },
+    );
+    assert_eq!(refused["ok"], false, "{refused}");
+}
+
+#[test]
+fn registered_defaults_query_survives_real_persistence_poison() {
+    let server = Server::new("defaults-poison");
+    server
+        .registry
+        .configure_spawn_defaults(SpawnDefaults {
+            argv: vec!["/daemon/shell".into()],
+            cwd: "/daemon/cwd".into(),
+            home: "/daemon/home".into(),
+            isolated_environment: false,
+        })
+        .unwrap();
+    let client = server.register();
+    let before = server.managed(&client, Operation::SessionInfo);
+    assert_eq!(before["ok"], true, "{before}");
+    let record = server.registry.inner.root.join("registry.json");
+    fs::remove_file(&record).unwrap();
+    fs::create_dir(&record).unwrap();
+    let poisoned = wire(
+        &server.socket,
+        Operation::WorkspaceCreate {
+            name: Some("force persistence failure".into()),
+            initial: None,
+        },
+    );
+    assert_eq!(poisoned["ok"], false, "{poisoned}");
+    assert!(server.registry.request_health().is_err());
+    let after = server.managed(&client, Operation::SessionInfo);
+    assert_eq!(after["ok"], true, "{after}");
+    assert_eq!(after["result"], before["result"]);
+    assert_eq!(server.managed(&client, Operation::Inspect)["ok"], false);
+    assert_eq!(server.activate(&client, false)["ok"], false);
+    let clients = server.registry.inner.clients.lock().unwrap();
+    assert!(
+        !clients[&client.authority.client_id]
+            .activated
+            .load(Ordering::Acquire)
+    );
+}
+
+#[test]
+fn invalid_startup_defaults_do_not_publish_or_consume_configuration() {
+    let server = Server::new("invalid-defaults");
+    let valid = SpawnDefaults {
+        argv: vec!["shell".into()],
+        cwd: "/nonexistent/cwd".into(),
+        home: "/nonexistent/home".into(),
+        isolated_environment: false,
+    };
+    let mut invalid = Vec::new();
+    for argv in [
+        vec![],
+        vec!["".into()],
+        vec!["x\0".into()],
+        vec!["x".into(); 257],
+        vec!["x".repeat(128 * 1024 + 1)],
+    ] {
+        invalid.push(SpawnDefaults {
+            argv,
+            ..valid.clone()
+        });
+    }
+    for path in ["", "relative", "/nul\0"] {
+        invalid.push(SpawnDefaults {
+            cwd: path.into(),
+            ..valid.clone()
+        });
+        invalid.push(SpawnDefaults {
+            home: path.into(),
+            ..valid.clone()
+        });
+    }
+    for defaults in invalid {
+        assert!(server.registry.configure_spawn_defaults(defaults).is_err());
+        assert!(wire(&server.socket, Operation::SessionInfo)["result"]["spawn_defaults"].is_null());
+    }
+    server
+        .registry
+        .configure_spawn_defaults(valid.clone())
+        .unwrap();
+    let response = wire(&server.socket, Operation::SessionInfo);
+    assert_eq!(
+        serde_json::from_value::<SpawnDefaults>(response["result"]["spawn_defaults"].clone())
+            .unwrap(),
+        valid
+    );
+    let stored = fs::read(server.registry.inner.root.join("registry.json")).unwrap();
+    assert!(!String::from_utf8_lossy(&stored).contains("nonexistent"));
+}
+
+#[test]
 fn managed_native_poll_delivers_binary_scene_through_dispatch_and_framing() {
     let server = Server::new("binary-scene");
     let client = server.register();

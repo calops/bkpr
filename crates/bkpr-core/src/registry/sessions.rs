@@ -268,7 +268,9 @@ impl Registry {
     ) -> Result<Payload> {
         let client = {
             let clients = self.inner.clients.lock().unwrap();
-            self.request_admission()?;
+            if !matches!(&operation, Operation::SessionInfo) {
+                self.request_admission()?;
+            }
             let client = clients
                 .get(&authority.client_id)
                 .context("unknown or detached client")?;
@@ -278,6 +280,12 @@ impl Registry {
                 "invalid client authority"
             );
             client.owner.validate(stream)?;
+            if matches!(&operation, Operation::SessionInfo) {
+                ensure!(
+                    crate::transport::lifetime_connected(&client.lifetime),
+                    "client lifetime stream disconnected"
+                );
+            }
             client.clone()
         };
         match operation {

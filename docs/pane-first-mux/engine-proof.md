@@ -1937,3 +1937,42 @@ claim. Genuine copied harness-token proof is explicitly unexercised here;
 existing authenticated capture/peer-binding regressions pass in the workspace
 suite. Those limits do not gate the scoped connection milestone.
 
+## Authoritative daemon spawn defaults
+
+The native `SessionInfo` control result now includes optional `SpawnDefaults`
+beside the unchanged logical session/daemon identity. A validated `OnceLock`
+holds startup command argv, raw-path cwd/home and isolation policy. This is not
+a full environment export, persisted launch recipe or inference from pane argv.
+No new operation, native family, remote-control schema or durable version is
+needed: the existing Planus control-value representation carries the DTO.
+
+The daemon captures its explicit current command, or its own `SHELL` for
+headless startup, together with selected HOME/cwd/isolation. Incomplete headless
+configuration stays unavailable without starting programs or guessing paths.
+Remote clients read this before activation. Native token/peer/birth and connected
+lifetime authentication still apply; only immutable `SessionInfo` bypasses the
+inactive-client and durability-health gates. Normal input/poll paths gain no new
+lifetime syscall.
+
+The shared protected build at
+`target/smoke/remote-tui/verification/compiled-1415410320870103/manifest.json`
+passes formatting, strict all-target Clippy, doctests and debug compilation.
+Host-UID1000 workspace execution passes 837 top-level tests, one additional
+isolated subprocess and fourteen explicitly ignored fixtures. Native regressions
+exercise preactivation reads, refused inactive mutations/views, forged authority,
+lifetime retirement, raw paths, immutable/nonpersisted policy and real persistence
+poisoning through framed native sockets.
+
+`target/smoke/remote-spawn-defaults/actual-native/acceptance.json` records actual
+CLI/daemon/process proof as host UID1000 with Internet socket creation denied.
+Both normal and isolated headless daemons publish exact configuration without
+executing the configured command. A process created from the returned defaults
+records the expected cwd/HOME and observable environment-preservation/scrubbing
+behavior, despite different caller HOME/SHELL. A different populated execution
+does not change policy; missing daemon `SHELL` returns null defaults while the
+headless daemon remains usable and empty. Cleanup has zero owned survivors.
+
+`source-capture.json` and `checked-backend-sources.zip` freeze the seven backend
+files; archived smoke sources and `verification-summary.json` retain reproduction
+and shared-check provenance. This is native backend acceptance, not a claim that
+remote TUI physical-surface verification has completed.

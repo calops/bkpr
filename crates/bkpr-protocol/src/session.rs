@@ -21,6 +21,17 @@ pub struct SessionInfo {
     pub daemon_id: String,
 }
 
+/// Immutable daemon startup policy for new panes; never client environment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnDefaults {
+    pub argv: Vec<String>,
+    #[serde(with = "crate::path_wire")]
+    pub cwd: std::path::PathBuf,
+    #[serde(with = "crate::path_wire")]
+    pub home: std::path::PathBuf,
+    pub isolated_environment: bool,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ClientAuthority {
     pub client_id: String,
