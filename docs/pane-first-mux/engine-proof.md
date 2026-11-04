@@ -1698,3 +1698,77 @@ zero-survivor cleanup remain retained.
 These are functional debug software-framebuffer observations, not a frame-rate,
 hardware-presentation latency or zero-upload claim. Popup sources still retire
 when absent; this fix does not silently retain unbounded hidden resources.
+
+## Scene encoder response-local scratch reuse
+
+The encoder previously collected a row's `Vec<Run>` before serialization.
+Each run allocated its own `String` and layout vector, including a layout
+allocation that the ASCII fast path immediately discarded. The measured
+control-worker allocator cost motivated removing those allocations rather than
+replacing them with a cheaper allocator.
+
+`Run::finish` now writes each completed run directly into the existing Planus
+builder. One text buffer, one layout buffer and one offset vector retain their
+capacity across runs and rows within that response. All capacity is released at
+the end of encoding, not retained in a global or cross-client pool. Layout
+entries, not text length, identify a pending run because empty-text cells still
+carry meaningful widths/counts. Style/link interning, full validation, resource
+receipts, delta baselines and the wire family remain unchanged.
+
+Standard `String`/`Vec` reuse and the maintained Planus builder provide the
+needed ownership guarantees. No pooling crate, new dependency, native patch,
+frame cap, delay or slower polling is needed.
+
+### Matched release CPU
+
+Both pairs use the signed `e13b4e3` backend baseline and the same frozen
+frontend/SDK. Only the encoder and its test source differ. This deliberately
+excludes the separately committed frontend graphics fixes from the comparison.
+Twelve actual Kitty captures alternate variant/workload order, three runs per
+variant/workload, with the same 240x79 pane, 280x81 outer TUI and exact finite
+source bytes/deadlines. CPU sums only client and daemon user/system counters;
+100% is one logical core.
+
+| Workload | Per-run buffers | Response-local buffers | Interpretation |
+| --- | ---: | ---: | --- |
+| Dense full-screen redraws | 21.80% | 21.63% | Essentially unchanged |
+| Recorded `cmatrix` replay | 76.30% | 67.42% | 11.6% less total CPU |
+
+The replay daemon accounts for nearly all the reduction; client CPU is
+unchanged within variation. Every candidate replay sample is below every
+control sample. All twelve cases pass exact-source, geometry, complete final
+Kitty content and zero-owned-survivor checks. These aren't physical FPS,
+presentation-latency or universal workload claims.
+
+### Allocation and semantic proof
+
+A throwaway System-backed allocator counts calls only during encoding of
+prebuilt 240x79 fixtures. This isn't CPU timing or peak-memory measurement.
+Both encoders produce the same encoded lengths in these fixtures.
+
+| Fixture | Old allocations | New allocations | Old reallocations | New reallocations |
+| --- | ---: | ---: | ---: | ---: |
+| Dense, single style | 420 | 107 | 400 | 10 |
+| Highly fragmented | 38,196 | 6,441 | 479 | 11 |
+
+An independent archived encoder/decoder oracle passes 484 cases, including
+1,936 complete-frame comparisons, 1,452 diagnostic comparisons and fourteen
+validation/error cases. Coverage includes independent style/link transitions,
+empty links, zero-byte/zero-width rows, row-edge identity changes, long Unicode,
+all style/source/cursor fields, deltas and image generation receipts. One
+permanent regression preserves the previously uncovered alternating-run and
+empty-row boundary behavior.
+
+Actual private old/new daemons produce identical complete native frames and
+scene diagnostics through three phases. Exact NUL/control/UTF-8/invalid-UTF-8
+PTY input, image replacement/deletion, final-session closure and cleanup pass.
+The integrated worktree passes 748 top-level tests plus one isolated subprocess
+success, with fourteen explicit ignored fixtures, strict all-target Clippy and
+workspace formatting. Builds use eight jobs/CPUs and the existing native prefix
+and Cargo cache; protected builds preserve public executables. No owned
+compilation or other owned GUI fixture runs during CPU captures.
+
+Evidence is in `target/smoke/run-buffer-reuse/`: `findings.json`,
+`matched/result.json`, `verification-summary.json`, complete compressed codec
+records, native phase receipts and archived reproduction sources. No live user
+session, provider or persistent setting participates.

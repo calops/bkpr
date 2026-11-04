@@ -26,11 +26,39 @@ const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_IMAGES: usize = 1024;
 
 type Layout = (u32, u8, u32);
+#[derive(Default)]
 struct Run {
     style: u32,
     link: Option<u32>,
     text: String,
     layout: Vec<g::Layout>,
+}
+
+impl Run {
+    fn finish(&mut self, builder: &mut Builder) -> planus::Offset<g::Run> {
+        let layout = if self.layout.len() == 1
+            && self.layout[0].length == 1
+            && self.layout[0].width == 1
+            && self.text.is_ascii()
+        {
+            &[][..]
+        } else {
+            self.layout.as_slice()
+        };
+        let text = builder.create_string(&self.text);
+        let layout = builder.create_vector(layout);
+        let offset = g::Run::create(
+            builder,
+            self.style,
+            self.link.is_some(),
+            self.link.unwrap_or(0),
+            text,
+            layout,
+        );
+        self.text.clear();
+        self.layout.clear();
+        offset
+    }
 }
 
 /// Encode directly from the canonical frame, borrowing image pixels and styles.
@@ -102,11 +130,12 @@ pub fn encode(
     let mut links = Vec::new();
     let mut link_ids = HashMap::new();
     let mut rows = Vec::new();
+    let mut run = Run::default();
+    let mut offsets = Vec::new();
     for (index, row) in frame.rows.iter().enumerate() {
         if !changed(index, row) {
             continue;
         }
-        let mut runs: Vec<Run> = Vec::new();
         for cell in &row.cells {
             let style = write_style(&cell.style);
             let style_id = *style_ids.entry(style).or_insert_with(|| {
@@ -121,18 +150,13 @@ pub fn encode(
                     id
                 })
             });
-            if !runs
-                .last()
-                .is_some_and(|run| run.style == style_id && run.link == link)
-            {
-                runs.push(Run {
-                    style: style_id,
-                    link,
-                    text: String::new(),
-                    layout: Vec::new(),
-                });
+            if run.style != style_id || run.link != link {
+                if !run.layout.is_empty() {
+                    offsets.push(run.finish(&mut builder));
+                }
+                run.style = style_id;
+                run.link = link;
             }
-            let run = runs.last_mut().unwrap();
             run.text.push_str(&cell.text);
             let length = cell.text.len() as u32;
             if let Some(part) = run
@@ -149,27 +173,9 @@ pub fn encode(
                 });
             }
         }
-        let mut offsets = Vec::with_capacity(runs.len());
-        for mut run in runs {
-            if run.layout.len() == 1
-                && run.layout[0].length == 1
-                && run.layout[0].width == 1
-                && run.text.is_ascii()
-            {
-                run.layout.clear();
-            }
-            let text = builder.create_string(&run.text);
-            let layout = builder.create_vector(run.layout.as_slice());
-            offsets.push(g::Run::create(
-                &mut builder,
-                run.style,
-                run.link.is_some(),
-                run.link.unwrap_or(0),
-                text,
-                layout,
-            ));
-        }
+        offsets.push(run.finish(&mut builder));
         let runs = builder.create_vector(offsets.as_slice());
+        offsets.clear();
         rows.push(g::Row::create(&mut builder, index as u64, runs));
     }
     let styles = builder.create_vector(styles.as_slice());
