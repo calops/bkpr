@@ -47,6 +47,21 @@ fn spec(home: &Path) -> PaneSpawnSpec {
         isolated_environment: true,
     }
 }
+// Test consumers choose their placement explicitly; the server has no append policy.
+fn split_new_pane(layout: Option<&LayoutNode>) -> SpawnLayoutNode {
+    let new = SpawnLayoutNode::New {
+        reference: "pane".into(),
+    };
+    match layout {
+        None => new,
+        Some(first) => SpawnLayoutNode::Split {
+            axis: Axis::Horizontal,
+            ratio: 500,
+            first: Box::new(existing_spawn_layout(first)),
+            second: Box::new(new),
+        },
+    }
+}
 fn spawn(
     registry: &Registry,
     home: &Path,
@@ -65,7 +80,11 @@ fn spawn(
                 workspace_id: Some(workspace_id),
                 window_id: Some(window.id.clone()),
                 expected_revision,
-                spec: spec(home),
+                panes: vec![PaneSpawnEntry {
+                    reference: "pane".into(),
+                    spec: spec(home),
+                }],
+                layout: Some(split_new_pane(window.layout.as_ref())),
             }
         } else {
             Operation::WindowCreate {
@@ -80,7 +99,11 @@ fn spawn(
             workspace_id: None,
             window_id: None,
             expected_revision,
-            spec: spec(home),
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec: spec(home),
+            }],
+            layout: None,
         }
     };
     send(registry, operation)["pane_id"]
@@ -482,7 +505,11 @@ fn normal_home_and_environment_are_preserved_and_initial_cwd_is_recorded() {
             workspace_id: None,
             window_id: None,
             expected_revision: None,
-            spec: launch,
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec: launch,
+            }],
+            layout: None,
         },
     )["pane_id"]
         .as_str()

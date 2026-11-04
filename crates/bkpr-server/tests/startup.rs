@@ -1,7 +1,7 @@
 use bkpr_protocol::{
     CaptureEvent, CaptureGrant, ConversationSource, HarnessKind, LayoutNode, Operation,
-    PaneRequest, PaneSpawnSpec, PaneStatus, RegistryResult, RegistrySnapshot, Request, Response,
-    Size,
+    PaneRequest, PaneSpawnEntry, PaneSpawnSpec, PaneStatus, RegistryResult, RegistrySnapshot,
+    Request, Response, Size, SpawnLayoutNode,
 };
 use std::{
     fs,
@@ -11,6 +11,39 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+fn append_spawn_layout(layout: Option<&LayoutNode>) -> SpawnLayoutNode {
+    fn existing(layout: &LayoutNode) -> SpawnLayoutNode {
+        match layout {
+            LayoutNode::Leaf { pane_id } => SpawnLayoutNode::Existing {
+                pane_id: pane_id.clone(),
+            },
+            LayoutNode::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => SpawnLayoutNode::Split {
+                axis: *axis,
+                ratio: *ratio,
+                first: Box::new(existing(first)),
+                second: Box::new(existing(second)),
+            },
+        }
+    }
+    let new = SpawnLayoutNode::New {
+        reference: "pane".into(),
+    };
+    match layout {
+        None => new,
+        Some(layout) => SpawnLayoutNode::Split {
+            axis: bkpr_protocol::Axis::Horizontal,
+            ratio: 500,
+            first: Box::new(existing(layout)),
+            second: Box::new(new),
+        },
+    }
+}
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -295,7 +328,11 @@ fn explicit_loaded_bootstrap_restores_owned_layout_with_current_shell_and_latest
             workspace_id: Some(workspace.clone()),
             window_id: Some(window.id.clone()),
             expected_revision: Some(window.revision),
-            spec,
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec,
+            }],
+            layout: Some(append_spawn_layout(window.layout.as_ref())),
         });
         panes.push(result["pane_id"].as_str().unwrap().to_owned());
     }
@@ -424,7 +461,11 @@ fn graceful_shutdown_preserves_exact_layout_intent_for_fresh_execution_reopen() 
         workspace_id: Some(workspace.clone()),
         window_id: Some(window.id.clone()),
         expected_revision: Some(window.revision),
-        spec: spec.clone(),
+        panes: vec![PaneSpawnEntry {
+            reference: "pane".into(),
+            spec: spec.clone(),
+        }],
+        layout: Some(append_spawn_layout(window.layout.as_ref())),
     })["pane_id"]
         .as_str()
         .unwrap()
@@ -701,7 +742,11 @@ fn last_explicit_workspace_close_notifies_lifetime_and_reaps_standalone_without_
         workspace_id: None,
         window_id: None,
         expected_revision: None,
-        spec: sleeping_spec(&fixture),
+        panes: vec![PaneSpawnEntry {
+            reference: "pane".into(),
+            spec: sleeping_spec(&fixture),
+        }],
+        layout: None,
     });
     let standalone_scene = daemon.send(Operation::Pane {
         pane_id: standalone["pane_id"].as_str().unwrap().into(),
@@ -830,7 +875,11 @@ fn missing_saved_directory_does_not_replace_layout_or_block_independent_shell() 
         workspace_id: Some(workspace.clone()),
         window_id: Some(window.id),
         expected_revision: Some(window.revision),
-        spec,
+        panes: vec![PaneSpawnEntry {
+            reference: "pane".into(),
+            spec,
+        }],
+        layout: Some(append_spawn_layout(window.layout.as_ref())),
     })["pane_id"]
         .as_str()
         .unwrap()
@@ -961,7 +1010,11 @@ fn native_fixed_resume_refusal_preserves_owned_intent_and_independent_restoratio
         workspace_id: Some(workspace.clone()),
         window_id: Some(window.id),
         expected_revision: Some(window.revision),
-        spec,
+        panes: vec![PaneSpawnEntry {
+            reference: "pane".into(),
+            spec,
+        }],
+        layout: Some(append_spawn_layout(window.layout.as_ref())),
     })["pane_id"]
         .as_str()
         .unwrap()
@@ -1081,7 +1134,11 @@ fn shutdown_during_cold_restore_never_leaves_an_owned_startup_process_or_lease()
             workspace_id: Some(workspace.clone()),
             window_id: Some(window.id),
             expected_revision: Some(window.revision),
-            spec: sleeping_spec(&fixture),
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec: sleeping_spec(&fixture),
+            }],
+            layout: Some(append_spawn_layout(window.layout.as_ref())),
         });
     }
     let before = first.snapshot();
@@ -1209,7 +1266,11 @@ fn closed_restore_stderr_cannot_strand_failed_saved_intent_or_session_ownership(
         workspace_id: Some(workspace.clone()),
         window_id: Some(window.id),
         expected_revision: Some(window.revision),
-        spec,
+        panes: vec![PaneSpawnEntry {
+            reference: "pane".into(),
+            spec,
+        }],
+        layout: Some(append_spawn_layout(window.layout.as_ref())),
     })["pane_id"]
         .as_str()
         .unwrap()

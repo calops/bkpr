@@ -347,7 +347,11 @@ fn window_revisions_are_independent_and_workspace_close_cas_covers_all_membershi
             workspace_id: Some(workspace_id.clone()),
             window_id: Some(two.id.clone()),
             expected_revision: Some(two.revision),
-            spec: spec(&fixture.home("second-split")),
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec: spec(&fixture.home("second-split")),
+            }],
+            layout: Some(split_new_pane(two.layout.as_ref())),
         },
     );
     let pane = split["pane_id"].as_str().unwrap();
@@ -381,7 +385,13 @@ fn window_revisions_are_independent_and_workspace_close_cas_covers_all_membershi
                     workspace_id,
                     window_id,
                     expected_revision: revision,
-                    spec: spec(&home)
+                    panes: vec![PaneSpawnEntry {
+                        reference: "pane".into(),
+                        spec: spec(&home)
+                    }],
+                    layout: Some(SpawnLayoutNode::New {
+                        reference: "pane".into()
+                    }),
                 }))
                 .is_err()
         );

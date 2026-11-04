@@ -19,19 +19,23 @@ impl Fixture {
                 workspace_id: None,
                 window_id: None,
                 expected_revision: None,
-                spec: PaneSpawnSpec {
-                    argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
-                    cwd: repo.path().to_owned(),
-                    home: home.path().to_owned(),
-                    size: Size {
-                        cols: 80,
-                        rows: 24,
-                        cell_width: 8,
-                        cell_height: 16,
+                panes: vec![PaneSpawnEntry {
+                    reference: "pane".into(),
+                    spec: PaneSpawnSpec {
+                        argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
+                        cwd: repo.path().to_owned(),
+                        home: home.path().to_owned(),
+                        size: Size {
+                            cols: 80,
+                            rows: 24,
+                            cell_width: 8,
+                            cell_height: 16,
+                        },
+                        title: Some("project fixture".into()),
+                        isolated_environment: true,
                     },
-                    title: Some("project fixture".into()),
-                    isolated_environment: true,
-                },
+                }],
+                layout: None,
             }))
             .unwrap()
             .into_json()

@@ -282,31 +282,9 @@ pub struct SpawnSpec {
     pub cwd: PathBuf,
     pub isolated_environment: bool,
 }
-struct SpawnContext {
-    session: (String, String),
-    workspace: Option<(String, String)>,
-}
-impl Pane {
-    pub fn spawn(spec: SpawnSpec) -> Result<Self> {
-        Self::spawn_with_id(
-            spec,
-            Uuid::new_v4().to_string(),
-            Arc::default(),
-            None,
-            None,
-            None,
-            None,
-        )
-    }
-    fn spawn_with_id(
-        spec: SpawnSpec,
-        pane_id: String,
-        view_budget: Arc<authority::ViewBudget>,
-        spawn_environment: Option<harness::SpawnEnvironment>,
-        status_wake: Option<crossbeam_channel::Sender<()>>,
-        context: Option<SpawnContext>,
-        ssh_agent_socket: Option<PathBuf>,
-    ) -> Result<Self> {
+struct PreparedSpawnSpec(SpawnSpec);
+impl PreparedSpawnSpec {
+    fn new(spec: SpawnSpec) -> Result<Self> {
         valid_size(spec.size)?;
         if spec.argv.is_empty() {
             bail!("empty shell argv");
@@ -319,6 +297,35 @@ impl Pane {
         if !spec.cwd.is_absolute() || !spec.cwd.is_dir() {
             bail!("cwd must be an existing absolute directory");
         }
+        Ok(Self(spec))
+    }
+}
+struct SpawnContext {
+    session: (String, String),
+    workspace: Option<(String, String)>,
+}
+impl Pane {
+    pub fn spawn(spec: SpawnSpec) -> Result<Self> {
+        Self::spawn_with_id(
+            PreparedSpawnSpec::new(spec)?,
+            Uuid::new_v4().to_string(),
+            Arc::default(),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+    fn spawn_with_id(
+        spec: PreparedSpawnSpec,
+        pane_id: String,
+        view_budget: Arc<authority::ViewBudget>,
+        spawn_environment: Option<harness::SpawnEnvironment>,
+        status_wake: Option<crossbeam_channel::Sender<()>>,
+        context: Option<SpawnContext>,
+        ssh_agent_socket: Option<PathBuf>,
+    ) -> Result<Self> {
+        let spec = spec.0;
         #[cfg(target_os = "linux")]
         if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 {
             return Err(std::io::Error::last_os_error().into());

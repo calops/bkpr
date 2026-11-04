@@ -124,14 +124,18 @@ impl Server {
                 workspace_id: None,
                 window_id: None,
                 expected_revision: None,
-                spec: PaneSpawnSpec {
-                    argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
-                    cwd: home.clone(),
-                    home,
-                    isolated_environment: true,
-                    title: Some("owned".into()),
-                    size: spec().size,
-                },
+                panes: vec![PaneSpawnEntry {
+                    reference: "pane".into(),
+                    spec: PaneSpawnSpec {
+                        argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
+                        cwd: home.clone(),
+                        home,
+                        isolated_environment: true,
+                        title: Some("owned".into()),
+                        size: spec().size,
+                    },
+                }],
+                layout: None,
             },
         );
         assert_eq!(response["ok"], true, "{response}");
@@ -494,12 +498,12 @@ fn queued_native_commands_lose_client_grant_but_accepted_releases_remain_cleanup
     let client = server.register();
     server.activate(&client, false);
     let home = server._root.path().join("clipboard-home");
-    let created = wire(&server.socket, Operation::PaneSpawn { workspace_id: None, window_id: None, expected_revision: None, spec: PaneSpawnSpec {
+    let created = wire(&server.socket, Operation::PaneSpawn { workspace_id: None, window_id: None, expected_revision: None, panes: vec![PaneSpawnEntry { reference: "pane".into(), spec: PaneSpawnSpec {
         argv: vec!["/bin/sh".into(), "-c".into(),
             r"while [ ! -f query ]; do sleep 0.01; done; printf '\033]52;c;?\007'; exec sleep 60".into()],
         cwd: home.clone(), home: home.clone(), isolated_environment: true,
         title: Some("queued".into()), size: spec().size,
-    } });
+    } }], layout: None });
     assert_eq!(created["ok"], true, "{created}");
     let pane_id = created["result"]["pane_id"].as_str().unwrap();
     let view_id = server.attach(&client, pane_id);
@@ -1160,20 +1164,24 @@ fn isolated_panes_do_not_gain_agent_credentials_after_client_activation() {
             workspace_id: None,
             window_id: None,
             expected_revision: None,
-            spec: PaneSpawnSpec {
-                argv: vec![
-                    "/bin/sh".into(),
-                    "-c".into(),
-                    "printf '%s' \"${SSH_AUTH_SOCK-unset}\" > \"$1\"; exec sleep 60".into(),
-                    "fixture".into(),
-                    output.to_str().unwrap().into(),
-                ],
-                cwd: home.clone(),
-                home,
-                isolated_environment: true,
-                title: None,
-                size: spec().size,
-            },
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec: PaneSpawnSpec {
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "printf '%s' \"${SSH_AUTH_SOCK-unset}\" > \"$1\"; exec sleep 60".into(),
+                        "fixture".into(),
+                        output.to_str().unwrap().into(),
+                    ],
+                    cwd: home.clone(),
+                    home,
+                    isolated_environment: true,
+                    title: None,
+                    size: spec().size,
+                },
+            }],
+            layout: None,
         },
     );
     assert_eq!(response["ok"], true, "{response}");

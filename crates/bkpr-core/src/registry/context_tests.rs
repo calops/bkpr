@@ -131,7 +131,11 @@ impl Fixture {
                 workspace_id: None,
                 window_id: None,
                 expected_revision: None,
-                spec: native_spec(&home),
+                panes: vec![PaneSpawnEntry {
+                    reference: "pane".into(),
+                    spec: native_spec(&home),
+                }],
+                layout: None,
             },
         );
         await_bytes(&home.join("ready"), b"ready");
@@ -535,7 +539,11 @@ fn peer_birth_and_controlling_pty_reject_stale_foreign_detached_and_nested_peers
             workspace_id: None,
             window_id: None,
             expected_revision: None,
-            spec,
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec,
+            }],
+            layout: None,
         },
     );
     let pane = value["pane_id"].as_str().unwrap();
@@ -728,7 +736,11 @@ fn immediate_root_context_waits_for_real_publication_without_retry_or_focus() {
             workspace_id: None,
             window_id: None,
             expected_revision: None,
-            spec,
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec,
+            }],
+            layout: None,
         }))
     });
     let publication_blocked = entered_rx.recv_timeout(Duration::from_secs(8));

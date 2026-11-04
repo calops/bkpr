@@ -166,8 +166,14 @@ table OperationPaneSpawn {
   workspace_id:string;
   window_id:string;
   expected_revision:OptionalU64;
+  panes:[PaneSpawnEntry] (required);
+  layout:OptionalSpawnLayout;
+}
+table PaneSpawnEntry {
+  reference:string (required);
   spec:PaneSpawnSpec (required);
 }
+table OptionalSpawnLayout { value:SpawnLayoutNode (required); }
 table OperationPaneReopen {
   workspace_id:string (required);
   window_id:string (required);
@@ -316,6 +322,19 @@ table LayoutNodeSplit {
   second:LayoutNode (required);
 }
 union LayoutNode { LayoutNodeLeaf, LayoutNodeSplit }
+table SpawnLayoutNodeExisting {
+  pane_id:string (required);
+}
+table SpawnLayoutNodeNew {
+  reference:string (required);
+}
+table SpawnLayoutNodeSplit {
+  axis:Axis;
+  ratio:ushort;
+  first:SpawnLayoutNode (required);
+  second:SpawnLayoutNode (required);
+}
+union SpawnLayoutNode { SpawnLayoutNodeExisting, SpawnLayoutNodeNew, SpawnLayoutNodeSplit }
 table CaptureEventBind {
   conversation_id:string (required);
   source:ConversationSource;

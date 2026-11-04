@@ -146,6 +146,8 @@ struct Inner {
     #[cfg(test)]
     spawn_barrier: Mutex<Option<Arc<SpawnBarrier>>>,
     #[cfg(test)]
+    spawn_started: Mutex<Option<SpawnStarted>>,
+    #[cfg(test)]
     persist_barrier: Mutex<Option<Arc<SpawnBarrier>>>,
     #[cfg(test)]
     capture_admission_wait: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
@@ -172,6 +174,8 @@ struct SpawnBarrier {
     entered: std::sync::mpsc::SyncSender<()>,
     resume: Mutex<std::sync::mpsc::Receiver<()>>,
 }
+#[cfg(test)]
+type SpawnStarted = Arc<dyn Fn(&Pane) + Send + Sync>;
 struct Lease(File);
 impl Drop for Lease {
     fn drop(&mut self) {
@@ -179,10 +183,11 @@ impl Drop for Lease {
     }
 }
 enum SpawnTarget {
-    Append {
+    Place {
         workspace_id: Option<String>,
         window_id: Option<String>,
         expected_revision: Option<u64>,
+        layout: Option<SpawnLayoutNode>,
     },
     Reopen {
         workspace_id: String,
@@ -211,7 +216,7 @@ enum SpawnTarget {
 impl SpawnTarget {
     fn workspace_id(&self) -> Option<&str> {
         match self {
-            Self::Append { workspace_id, .. } => workspace_id.as_deref(),
+            Self::Place { workspace_id, .. } => workspace_id.as_deref(),
             Self::Reopen { workspace_id, .. }
             | Self::Restore { workspace_id, .. }
             | Self::CreateWorkspace { workspace_id, .. }
@@ -220,7 +225,7 @@ impl SpawnTarget {
     }
     fn window_id(&self) -> Option<&str> {
         match self {
-            Self::Append { window_id, .. } => window_id.as_deref(),
+            Self::Place { window_id, .. } => window_id.as_deref(),
             Self::Reopen { window_id, .. }
             | Self::Restore { window_id, .. }
             | Self::CreateWorkspace { window_id, .. }
@@ -230,16 +235,24 @@ impl SpawnTarget {
     fn check(&self, state: &State) -> Result<()> {
         let r = &state.record.registry;
         match self {
-            Self::Append {
+            Self::Place {
                 workspace_id,
                 window_id,
                 expected_revision,
-            } => check_spawn_window(
-                r,
-                workspace_id.as_deref(),
-                window_id.as_deref(),
-                *expected_revision,
-            ),
+                layout,
+            } => {
+                check_spawn_window(
+                    r,
+                    workspace_id.as_deref(),
+                    window_id.as_deref(),
+                    *expected_revision,
+                )?;
+                ensure!(
+                    layout.is_some() == workspace_id.is_some(),
+                    "bound spawn requires a complete layout; unowned spawn requires no layout"
+                );
+                Ok(())
+            }
             Self::Reopen {
                 workspace_id,
                 window_id,
@@ -357,11 +370,12 @@ struct SpawnReservation {
     workspace_id: Option<String>,
     resume_pane: Option<String>,
     committed: bool,
+    count: usize,
 }
 impl Drop for SpawnReservation {
     fn drop(&mut self) {
         let mut state = self.inner.state.lock().unwrap();
-        state.spawning -= 1;
+        state.spawning -= self.count;
         if !self.committed
             && let Some(id) = &self.resume_pane
         {
@@ -379,6 +393,20 @@ impl Drop for SpawnReservation {
             lifecycle_owner: false,
         };
         let _ = registry.drain_completions();
+    }
+}
+// Unpublished children never carry registry recovery authority.
+struct SpawnChildren {
+    panes: Vec<Pane>,
+    committed: bool,
+}
+impl Drop for SpawnChildren {
+    fn drop(&mut self) {
+        if !self.committed {
+            for pane in &self.panes {
+                let _ = pane.request(PaneRequest::Shutdown);
+            }
+        }
     }
 }
 pub struct Registry {
@@ -525,6 +553,8 @@ impl Registry {
                 _lease: lease,
                 #[cfg(test)]
                 spawn_barrier: Mutex::new(None),
+                #[cfg(test)]
+                spawn_started: Mutex::new(None),
                 #[cfg(test)]
                 persist_barrier: Mutex::new(None),
                 #[cfg(test)]
@@ -845,14 +875,19 @@ impl Registry {
                 workspace_id,
                 window_id,
                 expected_revision,
-                spec,
-            } => self.spawn(
-                SpawnTarget::Append {
+                panes,
+                layout,
+            } => self.spawn_batch(
+                SpawnTarget::Place {
                     workspace_id,
                     window_id,
                     expected_revision,
+                    layout,
                 },
-                spec,
+                panes,
+                None,
+                None,
+                true,
             ),
             Operation::PaneReopen {
                 workspace_id,
@@ -972,50 +1007,86 @@ impl Registry {
     }
     fn spawn_inner(
         &self,
-        mut target: SpawnTarget,
+        target: SpawnTarget,
         spec: PaneSpawnSpec,
         resume: Option<recovery::ResumeAttempt>,
         origin: Option<(&crate::harness::Launch, &crate::harness::Peer)>,
     ) -> Result<Value> {
-        valid_size(spec.size)?;
+        self.spawn_batch(
+            target,
+            vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec,
+            }],
+            resume,
+            origin,
+            false,
+        )
+    }
+    fn spawn_batch(
+        &self,
+        mut target: SpawnTarget,
+        entries: Vec<PaneSpawnEntry>,
+        resume: Option<recovery::ResumeAttempt>,
+        origin: Option<(&crate::harness::Launch, &crate::harness::Peer)>,
+        report_created: bool,
+    ) -> Result<Value> {
         ensure!(
-            !spec.argv.is_empty()
-                && spec.argv.len() <= 256
-                && spec.argv.iter().map(String::len).sum::<usize>() <= 128 * 1024,
-            "invalid or excessive argv"
+            !entries.is_empty() && entries.len() <= MAX_LIVE_PANES,
+            "invalid pane batch size"
         );
-        let title = spec.title.clone().unwrap_or_else(|| {
-            Path::new(&spec.argv[0])
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned()
-        });
-        valid_name(&title)?;
+        ensure!(
+            matches!(target, SpawnTarget::Place { .. }) || entries.len() == 1,
+            "internal spawn requires one pane"
+        );
+        let count = entries.len();
         let workspace_id = target.workspace_id().map(str::to_owned);
-        let id = match &target {
-            SpawnTarget::Restore { pane_id, .. } => pane_id.clone(),
-            _ => Uuid::new_v4().to_string(),
-        };
-        let info = PaneInfo {
-            id: id.clone(),
-            workspace_id: workspace_id.clone(),
-            window_id: target.window_id().map(str::to_owned),
-            title,
-            status: PaneStatus::Running,
-            exit_code: None,
-            cwd: spec.cwd.clone(),
-            home: spec.home.clone(),
-            foreground_cwd: None,
-            harness: None,
-            harness_status: None,
-            project: Some(project::loading(&spec.cwd, None)),
-            isolated_environment: spec.isolated_environment,
+        let mut created_panes = BTreeMap::new();
+        let mut infos = Vec::with_capacity(count);
+        for entry in &entries {
+            ensure!(
+                !entry.reference.is_empty() && entry.reference.len() <= 256,
+                "invalid pane reference"
+            );
+            let title = validate_spawn_spec(&entry.spec)?;
+            let id = match &target {
+                SpawnTarget::Restore { pane_id, .. } => pane_id.clone(),
+                _ => Uuid::new_v4().to_string(),
+            };
+            ensure!(
+                created_panes
+                    .insert(entry.reference.clone(), id.clone())
+                    .is_none(),
+                "duplicate pane reference"
+            );
+            infos.push(PaneInfo {
+                id,
+                workspace_id: workspace_id.clone(),
+                window_id: target.window_id().map(str::to_owned),
+                title,
+                status: PaneStatus::Running,
+                exit_code: None,
+                cwd: entry.spec.cwd.clone(),
+                home: entry.spec.home.clone(),
+                foreground_cwd: None,
+                harness: None,
+                harness_status: None,
+                project: Some(project::loading(&entry.spec.cwd, None)),
+                isolated_environment: entry.spec.isolated_environment,
+            });
+        }
+        let id = infos[0].id.clone();
+        let layout = match &target {
+            SpawnTarget::Place {
+                layout: Some(layout),
+                ..
+            } => Some(resolve_spawn_layout(layout, &created_panes)?),
+            _ => None,
         };
         if let Some((launch, peer)) = origin {
             crate::harness::validate_callback(peer, launch)?;
         }
-        let workspace = {
+        let (workspace, candidate) = {
             let _transaction = self.inner.transaction.lock().unwrap();
             if let Some((launch, _)) = origin {
                 self.authorize_resume_origin(launch)?;
@@ -1053,11 +1124,19 @@ impl Registry {
                 .count();
             ensure!(
                 (matches!(target, SpawnTarget::Restore { .. })
-                    || state.record.registry.panes.len() + state.spawning < MAX_PANE_RECORDS)
-                    && running + state.spawning < MAX_LIVE_PANES,
+                    || state.record.registry.panes.len() + state.spawning + count
+                        <= MAX_PANE_RECORDS)
+                    && running + state.spawning + count <= MAX_LIVE_PANES,
                 "pane limit"
             );
             target.check(&state)?;
+            if let SpawnTarget::Place {
+                layout: Some(layout),
+                ..
+            } = &target
+            {
+                validate_spawn_existing(layout, &state.record.registry.panes)?;
+            }
             if let Some(resume) = &resume {
                 recovery::check_resume(&state, &self.inner.captures.lock().unwrap(), resume)?;
             }
@@ -1105,7 +1184,7 @@ impl Registry {
                 })
                 .transpose()?;
             // Validate the exact layout and revisions before argv can execute.
-            spawn_record(state.record.clone(), info.clone(), &target)?;
+            let candidate = spawn_record(state.record.clone(), &infos, &target, layout.as_ref())?;
             if let Some(workspace_id) = &workspace_id {
                 state.spawn_workspaces.insert(workspace_id.clone());
                 if let Some(name) = pending_name {
@@ -1117,15 +1196,19 @@ impl Registry {
             if let Some(resume) = &resume {
                 state.resuming.insert(id.clone(), resume.clone());
             }
-            state.spawning += 1;
-            workspace
+            state.spawning += count;
+            (workspace, candidate)
         };
         let mut reservation = SpawnReservation {
             inner: self.inner.clone(),
             workspace_id: workspace_id.clone(),
             resume_pane: resume.as_ref().map(|_| id.clone()),
             committed: false,
+            count,
         };
+        // Size validation uses a bounded sink, outside registry and writer locks.
+        serde_json::to_writer(RecordSize(0), &durable_record(&candidate))?;
+        drop(candidate);
         #[cfg(test)]
         {
             let barrier = self.inner.spawn_barrier.lock().unwrap().take();
@@ -1151,43 +1234,54 @@ impl Registry {
             .unwrap()
             .as_ref()
             .map(|relay| relay.socket().to_owned());
-        // PTY startup, child exec and initial snapshot never run under the registry lock.
-        let spawned = Pane::spawn_with_id(
-            SpawnSpec {
-                argv: spec.argv,
-                home: spec.home,
-                cwd: spec.cwd,
-                size: spec.size,
-                isolated_process: false,
-                isolated_environment: spec.isolated_environment,
-            },
-            id.clone(),
-            self.inner.view_budget.clone(),
-            environment,
-            Some(self.inner.status_wake.clone()),
-            Some(crate::SpawnContext {
-                session: (
-                    self.inner.session.session_id.clone(),
-                    self.inner.session.name.clone(),
-                ),
-                workspace,
-            }),
-            ssh_agent_socket,
-        );
-        let pane = spawned?;
-        let weak = Arc::downgrade(&self.inner);
-        let terminating_id = id.clone();
-        *pane.shared.before_terminate.lock().unwrap() = Some(Arc::new(move || {
-            let Some(inner) = weak.upgrade() else {
-                return Ok(());
-            };
-            Registry {
-                inner,
-                fresh: false,
-                lifecycle_owner: false,
+        // Rollback owns only unpublished handles: no recovery callbacks are installed
+        // until durable publication. Its shutdown/reaping runs outside registry locks.
+        let mut children = SpawnChildren {
+            panes: Vec::with_capacity(count),
+            committed: false,
+        };
+        // Prepare every HOME/CWD before the first exec. Isolated setup may create
+        // directories, but a later invalid filesystem prerequisite cannot run an
+        // earlier command. Filesystem races after this phase remain startup errors.
+        let prepared = entries
+            .into_iter()
+            .map(|entry| {
+                let spec = entry.spec;
+                crate::PreparedSpawnSpec::new(SpawnSpec {
+                    argv: spec.argv,
+                    home: spec.home,
+                    cwd: spec.cwd,
+                    size: spec.size,
+                    isolated_process: false,
+                    isolated_environment: spec.isolated_environment,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (spec, info) in prepared.into_iter().zip(&infos) {
+            let pane = Pane::spawn_with_id(
+                spec,
+                info.id.clone(),
+                self.inner.view_budget.clone(),
+                environment.clone(),
+                Some(self.inner.status_wake.clone()),
+                Some(crate::SpawnContext {
+                    session: (
+                        self.inner.session.session_id.clone(),
+                        self.inner.session.name.clone(),
+                    ),
+                    workspace: workspace.clone(),
+                }),
+                ssh_agent_socket.clone(),
+            )?;
+            children.panes.push(pane);
+            #[cfg(test)]
+            {
+                let hook = self.inner.spawn_started.lock().unwrap().clone();
+                if let Some(hook) = hook {
+                    hook(children.panes.last().unwrap());
+                }
             }
-            .revoke_recovery(&terminating_id)
-        }));
+        }
         let result = (|| -> Result<RegistrySnapshot> {
             let _transaction = self.inner.transaction.lock().unwrap();
             let current = {
@@ -1204,38 +1298,28 @@ impl Registry {
                 }
                 state.record.clone()
             };
-            let next = spawn_record(current, info, &target)?;
+            // Rebuild against current metadata, merging unrelated workspace commits.
+            let next = spawn_record(current, &infos, &target, layout.as_ref())?;
             commit(&self.inner, next, |state| {
-                state.live.insert(id.clone(), pane.clone());
+                for (info, pane) in infos.iter().zip(&children.panes) {
+                    self.install_spawn_callbacks(&info.id, pane);
+                    state.live.insert(info.id.clone(), pane.clone());
+                }
             })
         })();
-        if result.is_ok() {
-            reservation.committed = true;
-        }
-        if result.is_err() {
-            let _ = pane.request(PaneRequest::Shutdown);
-        }
         let registry = result?;
-        let weak = Arc::downgrade(&self.inner);
-        let notify_id = id.clone();
-        let callback: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            if let Some(inner) = weak.upgrade() {
-                let registry = Registry {
-                    inner,
-                    fresh: false,
-                    lifecycle_owner: false,
-                };
-                // A persistence failure poisons further operations; never report durable success.
-                let _ = registry.record_completion(&notify_id);
+        children.committed = true;
+        reservation.committed = true;
+        // A process can exit before callbacks are attached. Process every such
+        // completion while the batch reservation still protects final membership.
+        for (info, pane) in infos.iter().zip(&children.panes) {
+            if pane
+                .shared
+                .finished
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                self.record_completion(&info.id)?;
             }
-        });
-        *pane.shared.on_finish.lock().unwrap() = Some(callback.clone());
-        if pane
-            .shared
-            .finished
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            callback();
         }
         drop(reservation);
         let registry = {
@@ -1247,9 +1331,43 @@ impl Registry {
                 state.record.registry.clone()
             }
         };
-        Ok(
-            json!({"registry":registry,"pane_id":id,"workspace_id":workspace_id,"window_id":target.window_id()}),
-        )
+        let mut result = json!({
+            "registry": registry,
+            "pane_id": if count == 1 { Some(id) } else { None },
+            "workspace_id": workspace_id,
+            "window_id": target.window_id(),
+        });
+        if report_created {
+            result["created_panes"] = json!(created_panes);
+        }
+        Ok(result)
+    }
+    fn install_spawn_callbacks(&self, id: &str, pane: &Pane) {
+        let weak = Arc::downgrade(&self.inner);
+        let terminating_id = id.to_owned();
+        *pane.shared.before_terminate.lock().unwrap() = Some(Arc::new(move || {
+            let Some(inner) = weak.upgrade() else {
+                return Ok(());
+            };
+            Registry {
+                inner,
+                fresh: false,
+                lifecycle_owner: false,
+            }
+            .revoke_recovery(&terminating_id)
+        }));
+        let weak = Arc::downgrade(&self.inner);
+        let notify_id = id.to_owned();
+        *pane.shared.on_finish.lock().unwrap() = Some(Arc::new(move || {
+            if let Some(inner) = weak.upgrade() {
+                let _ = Registry {
+                    inner,
+                    fresh: false,
+                    lifecycle_owner: false,
+                }
+                .record_completion(&notify_id);
+            }
+        }));
     }
     fn drain_completions(&self) -> Result<bool> {
         let completed = {
@@ -1774,7 +1892,13 @@ fn remove_layout_pane(layout: LayoutNode, pane_id: &str) -> Option<LayoutNode> {
         },
     }
 }
-fn spawn_record(mut next: Record, info: PaneInfo, target: &SpawnTarget) -> Result<Record> {
+fn spawn_record(
+    mut next: Record,
+    infos: &[PaneInfo],
+    target: &SpawnTarget,
+    layout: Option<&LayoutNode>,
+) -> Result<Record> {
+    let info = &infos[0];
     if let SpawnTarget::Restore { pane_id, .. } = target {
         let old = next
             .registry
@@ -1785,7 +1909,7 @@ fn spawn_record(mut next: Record, info: PaneInfo, target: &SpawnTarget) -> Resul
         // Execution identity remains in its exact saved position. Initial CWD is
         // historical launch metadata; current directory intent has its own whitelist.
         let initial_cwd = old.cwd.clone();
-        *old = info;
+        *old = info.clone();
         old.cwd = initial_cwd;
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
@@ -1849,24 +1973,17 @@ fn spawn_record(mut next: Record, info: PaneInfo, target: &SpawnTarget) -> Resul
                 .context("unknown pane")?;
             old.workspace_id = None;
             old.window_id = None;
+        } else if matches!(target, SpawnTarget::Place { .. }) {
+            window.layout = Some(layout.context("bound spawn requires layout")?.clone());
         } else {
-            let leaf = LayoutNode::Leaf {
+            window.layout = Some(LayoutNode::Leaf {
                 pane_id: info.id.clone(),
-            };
-            window.layout = Some(match window.layout.take() {
-                None => leaf,
-                Some(first) => LayoutNode::Split {
-                    axis: Axis::Horizontal,
-                    ratio: 500,
-                    first: Box::new(first),
-                    second: Box::new(leaf),
-                },
             });
         }
         window.revision = next_revision(window.revision)?;
         workspace.revision = next_revision(workspace.revision)?;
     }
-    next.registry.panes.push(info);
+    next.registry.panes.extend_from_slice(infos);
     next.registry.revision = next_revision(next.registry.revision)?;
     validate_record(&next)?;
     Ok(next)
@@ -1975,6 +2092,118 @@ fn valid_name(name: &str) -> Result<()> {
         !name.trim().is_empty() && name.len() <= 256 && !name.chars().any(char::is_control),
         "invalid name"
     );
+    Ok(())
+}
+fn existing_spawn_layout(node: &LayoutNode) -> SpawnLayoutNode {
+    match node {
+        LayoutNode::Leaf { pane_id } => SpawnLayoutNode::Existing {
+            pane_id: pane_id.clone(),
+        },
+        LayoutNode::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => SpawnLayoutNode::Split {
+            axis: *axis,
+            ratio: *ratio,
+            first: Box::new(existing_spawn_layout(first)),
+            second: Box::new(existing_spawn_layout(second)),
+        },
+    }
+}
+fn validate_spawn_spec(spec: &PaneSpawnSpec) -> Result<String> {
+    use std::os::unix::ffi::OsStrExt;
+    valid_size(spec.size)?;
+    ensure!(
+        !spec.argv.is_empty()
+            && !spec.argv[0].is_empty()
+            && spec.argv.len() <= 256
+            && spec.argv.iter().map(String::len).sum::<usize>() <= 128 * 1024
+            && spec.argv.iter().all(|arg| !arg.contains('\0')),
+        "invalid or excessive argv"
+    );
+    ensure!(
+        spec.cwd.is_absolute()
+            && spec.home.is_absolute()
+            && !spec.cwd.as_os_str().as_bytes().contains(&0)
+            && !spec.home.as_os_str().as_bytes().contains(&0),
+        "invalid spawn paths"
+    );
+    let title = spec.title.clone().unwrap_or_else(|| {
+        Path::new(&spec.argv[0])
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    });
+    valid_name(&title)?;
+    Ok(title)
+}
+fn resolve_spawn_layout(
+    node: &SpawnLayoutNode,
+    refs: &BTreeMap<String, String>,
+) -> Result<LayoutNode> {
+    fn walk(
+        node: &SpawnLayoutNode,
+        refs: &BTreeMap<String, String>,
+        seen: &mut BTreeSet<String>,
+        depth: usize,
+    ) -> Result<LayoutNode> {
+        ensure!(depth <= MAX_LAYOUT_DEPTH, "layout depth limit");
+        Ok(match node {
+            SpawnLayoutNode::Existing { pane_id } => LayoutNode::Leaf {
+                pane_id: pane_id.clone(),
+            },
+            SpawnLayoutNode::New { reference } => {
+                let pane_id = refs.get(reference).context("unknown pane reference")?;
+                ensure!(
+                    seen.insert(reference.clone()),
+                    "duplicate pane reference in layout"
+                );
+                LayoutNode::Leaf {
+                    pane_id: pane_id.clone(),
+                }
+            }
+            SpawnLayoutNode::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => {
+                ensure!(
+                    (1..1000).contains(ratio),
+                    "split ratio must be 1..999 thousandths"
+                );
+                LayoutNode::Split {
+                    axis: *axis,
+                    ratio: *ratio,
+                    first: Box::new(walk(first, refs, seen, depth + 1)?),
+                    second: Box::new(walk(second, refs, seen, depth + 1)?),
+                }
+            }
+        })
+    }
+    let mut seen = BTreeSet::new();
+    let layout = walk(node, refs, &mut seen, 0)?;
+    ensure!(
+        seen.len() == refs.len(),
+        "layout must include every new pane exactly once"
+    );
+    Ok(layout)
+}
+fn validate_spawn_existing(node: &SpawnLayoutNode, panes: &[PaneInfo]) -> Result<()> {
+    match node {
+        SpawnLayoutNode::Existing { pane_id } => ensure!(
+            panes.iter().any(|pane| &pane.id == pane_id),
+            "layout refers to unknown existing pane"
+        ),
+        SpawnLayoutNode::New { .. } => {}
+        SpawnLayoutNode::Split { first, second, .. } => {
+            validate_spawn_existing(first, panes)?;
+            validate_spawn_existing(second, panes)?;
+        }
+    }
     Ok(())
 }
 fn validate_layout(node: &LayoutNode, panes: &[PaneInfo]) -> Result<()> {
@@ -2307,9 +2536,8 @@ fn read_record(root: &Path) -> Result<Option<Record>> {
     }
     Ok(Some(record))
 }
-fn persist(root: &Path, record: &Record) -> Result<()> {
-    let mut temporary = tempfile::NamedTempFile::new_in(root)?;
-    let durable = DurableRecord {
+fn durable_record(record: &Record) -> DurableRecord<'_> {
+    DurableRecord {
         version: record.version,
         recoveries: &record.recoveries,
         directories: &record.directories,
@@ -2319,8 +2547,25 @@ fn persist(root: &Path, record: &Record) -> Result<()> {
             workspaces: &record.registry.workspaces,
             panes: DurablePanes(&record.registry.panes),
         },
-    };
-    serde_json::to_writer(temporary.as_file_mut(), &durable)?;
+    }
+}
+struct RecordSize(u64);
+impl Write for RecordSize {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let remaining = MAX_RECORD.saturating_sub(self.0);
+        if bytes.len() as u64 > remaining {
+            return Err(std::io::Error::other("registry file limit"));
+        }
+        self.0 += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+fn persist(root: &Path, record: &Record) -> Result<()> {
+    let mut temporary = tempfile::NamedTempFile::new_in(root)?;
+    serde_json::to_writer(temporary.as_file_mut(), &durable_record(record))?;
     temporary.as_file_mut().flush()?;
     ensure!(
         temporary.as_file().metadata()?.len() <= MAX_RECORD,

@@ -270,10 +270,23 @@ impl Registry {
                             pane_id: source.to_owned(),
                         }
                     } else {
-                        SpawnTarget::Append {
+                        let new = SpawnLayoutNode::New {
+                            reference: "pane".into(),
+                        };
+                        let layout = match &window.layout {
+                            None => new,
+                            Some(first) => SpawnLayoutNode::Split {
+                                axis: Axis::Horizontal,
+                                ratio: 500,
+                                first: Box::new(existing_spawn_layout(first)),
+                                second: Box::new(new),
+                            },
+                        };
+                        SpawnTarget::Place {
                             workspace_id: Some(workspace_id.clone()),
                             window_id: Some(window_id.clone()),
                             expected_revision: Some(window.revision),
+                            layout: Some(layout),
                         }
                     }
                 }
@@ -463,8 +476,8 @@ impl Registry {
         let _transaction = self.inner.transaction.lock().unwrap();
         let mut next = {
             let mut state = self.inner.state.lock().unwrap();
-            // Failed unpublished spawns and daemon shutdown still need native
-            // cleanup, but must not consume recoverable intent.
+            // Daemon shutdown must clean up native processes without consuming
+            // recoverable intent. Unpublished spawns never install this callback.
             if state.closing || !state.live.contains_key(pane_id) {
                 return Ok(());
             }

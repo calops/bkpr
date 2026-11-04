@@ -158,10 +158,14 @@ fn canonical_context_reaches_bootstrap_workspace_window_and_append_execs() {
     let appended = send(
         registry,
         Operation::PaneSpawn {
+            layout: Some(split_new_pane(window.layout.as_ref())),
             workspace_id: Some(workspace.id),
             window_id: Some(window.id),
             expected_revision: Some(window.revision),
-            spec: context_spec(&home),
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec: context_spec(&home),
+            }],
         },
     );
     assert_canonical(registry, &pane_id(&appended), &home);
@@ -546,7 +550,11 @@ fn inherited_context_is_stripped_without_clobbering_user_settings_or_standalone_
                 workspace_id: None,
                 window_id: None,
                 expected_revision: None,
-                spec: launch,
+                panes: vec![PaneSpawnEntry {
+                    reference: "pane".into(),
+                    spec: launch,
+                }],
+                layout: None,
             },
         );
         let bytes = assert_canonical(registry, &pane_id(&created), &home);

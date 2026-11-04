@@ -319,11 +319,11 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
         entered,
         resume: Mutex::new(resume_rx),
     }));
-    let request = Request::new(Operation::PaneSpawn { workspace_id: None, window_id: None, expected_revision: None, spec: PaneSpawnSpec {
+    let request = Request::new(Operation::PaneSpawn { workspace_id: None, window_id: None, expected_revision: None, panes: vec![PaneSpawnEntry { reference: "pane".into(), spec: PaneSpawnSpec {
         argv: vec!["/bin/sh".into(), "-c".into(), "\"$1\" --ignored --exact registry::capture::tests::managed_peer_fixture --nocapture --test-threads=1; printf RETURNED; exec sleep 60".into(), "fixture".into(), wrapper.to_str().unwrap().into()],
         cwd: fixture.home.clone(), home: fixture.home.clone(), title: None, isolated_environment: true,
         size: Size { cols: 80, rows: 24, cell_width: 8, cell_height: 16 },
-    } });
+    } }], layout: None });
     let spawning_registry = registry.clone();
     let spawning = thread::spawn(move || spawning_registry.request(request));
     entered_rx.recv_timeout(Duration::from_secs(8)).unwrap();
@@ -474,19 +474,23 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
             workspace_id: None,
             window_id: None,
             expected_revision: None,
-            spec: PaneSpawnSpec {
-                argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
-                cwd: fixture.home.clone(),
-                home: fixture.home.clone(),
-                title: None,
-                isolated_environment: true,
-                size: Size {
-                    cols: 80,
-                    rows: 24,
-                    cell_width: 8,
-                    cell_height: 16,
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec: PaneSpawnSpec {
+                    argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
+                    cwd: fixture.home.clone(),
+                    home: fixture.home.clone(),
+                    title: None,
+                    isolated_environment: true,
+                    size: Size {
+                        cols: 80,
+                        rows: 24,
+                        cell_width: 8,
+                        cell_height: 16,
+                    },
                 },
-            },
+            }],
+            layout: None,
         }))
         .unwrap()
         .into_json()
@@ -707,23 +711,27 @@ fn non_utf8_foreground_cwd_round_trips_without_poisoning_or_persisting_live_fact
             workspace_id: None,
             window_id: None,
             expected_revision: None,
-            spec: PaneSpawnSpec {
-                argv: vec![
-                    "/bin/sh".into(),
-                    "-c".into(),
-                    "cd destination; exec sleep 60".into(),
-                ],
-                cwd: fixture.home.clone(),
-                home: fixture.home.clone(),
-                title: None,
-                isolated_environment: true,
-                size: Size {
-                    cols: 80,
-                    rows: 24,
-                    cell_width: 8,
-                    cell_height: 16,
+            panes: vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec: PaneSpawnSpec {
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "cd destination; exec sleep 60".into(),
+                    ],
+                    cwd: fixture.home.clone(),
+                    home: fixture.home.clone(),
+                    title: None,
+                    isolated_environment: true,
+                    size: Size {
+                        cols: 80,
+                        rows: 24,
+                        cell_width: 8,
+                        cell_height: 16,
+                    },
                 },
-            },
+            }],
+            layout: None,
         }))
         .unwrap()
         .into_json()
@@ -860,26 +868,30 @@ fn direct_root_capture_begin_waits_for_real_spawn_publication_without_launcher_r
         workspace_id: None,
         window_id: None,
         expected_revision: None,
-        spec: PaneSpawnSpec {
-            argv: vec![
-                wrapper.to_str().unwrap().into(),
-                "--ignored".into(),
-                "--exact".into(),
-                "registry::capture::tests::fast_root_capture_fixture".into(),
-                "--nocapture".into(),
-                "--test-threads=1".into(),
-            ],
-            cwd: fixture.home.clone(),
-            home: fixture.home.clone(),
-            title: None,
-            isolated_environment: true,
-            size: Size {
-                cols: 80,
-                rows: 24,
-                cell_width: 8,
-                cell_height: 16,
+        panes: vec![PaneSpawnEntry {
+            reference: "pane".into(),
+            spec: PaneSpawnSpec {
+                argv: vec![
+                    wrapper.to_str().unwrap().into(),
+                    "--ignored".into(),
+                    "--exact".into(),
+                    "registry::capture::tests::fast_root_capture_fixture".into(),
+                    "--nocapture".into(),
+                    "--test-threads=1".into(),
+                ],
+                cwd: fixture.home.clone(),
+                home: fixture.home.clone(),
+                title: None,
+                isolated_environment: true,
+                size: Size {
+                    cols: 80,
+                    rows: 24,
+                    cell_width: 8,
+                    cell_height: 16,
+                },
             },
-        },
+        }],
+        layout: None,
     });
     let spawning_registry = registry.clone();
     let spawning = thread::spawn(move || spawning_registry.request(request));
@@ -934,23 +946,18 @@ fn stale_observation_cannot_replace_newer_authenticated_native_binding() {
         .unwrap()
         .wrappers
         .join("claude");
-    let result = registry.request(Request::new(Operation::PaneSpawn {
-        workspace_id: None,
-        window_id: None,
-        expected_revision: None,
-        spec: PaneSpawnSpec {
-            argv: vec![
-                "/bin/sh".into(), "-c".into(),
-                "\"$1\" --ignored --exact registry::capture::tests::managed_peer_fixture --nocapture --test-threads=1; exec sleep 60".into(),
-                "fixture".into(), wrapper.to_str().unwrap().into(),
-            ],
-            cwd: fixture.home.clone(),
-            home: fixture.home.clone(),
-            title: None,
-            isolated_environment: true,
-            size: Size { cols: 80, rows: 24, cell_width: 8, cell_height: 16 },
-        },
-    })).unwrap().into_json().unwrap();
+    let result = registry.request(Request::new(Operation::PaneSpawn { workspace_id: None, window_id: None, expected_revision: None, panes: vec![PaneSpawnEntry { reference: "pane".into(), spec: PaneSpawnSpec {
+        argv: vec![
+            "/bin/sh".into(), "-c".into(),
+            "\"$1\" --ignored --exact registry::capture::tests::managed_peer_fixture --nocapture --test-threads=1; exec sleep 60".into(),
+            "fixture".into(), wrapper.to_str().unwrap().into(),
+        ],
+        cwd: fixture.home.clone(),
+        home: fixture.home.clone(),
+        title: None,
+        isolated_environment: true,
+        size: Size { cols: 80, rows: 24, cell_width: 8, cell_height: 16 },
+    } }], layout: None })).unwrap().into_json().unwrap();
     let pane_id = result["pane_id"].as_str().unwrap();
     await_file(&fixture.home.join("ready.json"));
     {

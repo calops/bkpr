@@ -47,8 +47,7 @@ pub(crate) struct Completion {
     pub selection: Option<Selection>,
 }
 
-// Synchronous by design: callers dispatch the entire sequence to one worker.
-// A later failure never replays or rolls back an earlier mutation.
+// Management I/O stays on a worker. Ambiguous mutations are never replayed.
 pub(crate) fn execute(socket: &Endpoint, command: Command) -> Result<Completion> {
     match command {
         Command::Single(operation) => single(socket, operation),
@@ -251,49 +250,97 @@ fn spawn(
     if window.layout.is_some() && !projected.iter().any(|pane| pane == target) {
         bail!("split target is not projected in the captured window");
     }
+    const REFERENCE: &str = "split";
     let created = request(
         socket,
         Operation::PaneSpawn {
             workspace_id: Some(workspace.id.clone()),
             window_id: Some(window.id.clone()),
             expected_revision: Some(window.revision),
-            spec,
+            panes: vec![PaneSpawnEntry {
+                reference: REFERENCE.into(),
+                spec,
+            }],
+            layout: Some(spawn_layout(
+                window.layout.as_ref(),
+                target,
+                axis,
+                REFERENCE,
+            )),
         },
         "pane creation",
     )?;
-    (|| -> Result<Completion> {
-        validate_result_target(&created, &workspace.id, &window.id)
-            .map_err(transport::mark_outcome_unknown)?;
-        let pane = created.pane_id.context("pane creation response omitted pane_id")
-            .map_err(transport::mark_outcome_unknown)?;
-        validate_selection(&created.registry, &workspace.id, &window.id, &pane)
-            .map_err(transport::mark_outcome_unknown)?;
-        let revision = owned_window(&created.registry, &workspace.id, &window.id)
-            .map_err(transport::mark_outcome_unknown)?.revision;
-        if window.revision.checked_add(1) != Some(revision) || projected.contains(&pane) {
-            bail_unknown("pane creation returned an inconsistent new identity or window revision")?;
+    (|| {
+        validate_result_target(&created, &workspace.id, &window.id)?;
+        let pane = created
+            .created_panes
+            .get(REFERENCE)
+            .context("pane creation response omitted its request-local reference")?
+            .clone();
+        if created.created_panes.len() != 1
+            || created.pane_id.as_ref().is_some_and(|id| id != &pane)
+            || projected.contains(&pane)
+        {
+            bail!("pane creation returned inconsistent new pane identities");
         }
-        // Preserve the user's captured layout and split direction. Bound spawn
-        // already owns/projects the pane; this second CAS only places that split.
-        let layout = split_leaf(window.layout, target, &pane, axis);
-        let placed = request(socket, Operation::LayoutUpdate {
-            workspace_id: workspace.id.clone(),
-            window_id: window.id.clone(),
-            expected_revision: revision,
-            layout: layout.clone(),
-        }, "layout update")?;
-        validate_selection(&placed.registry, &workspace.id, &window.id, &pane)
-            .map_err(transport::mark_outcome_unknown)?;
-        let document = owned_window(&placed.registry, &workspace.id, &window.id)
-            .map_err(transport::mark_outcome_unknown)?;
-        if document.layout != layout || revision.checked_add(1) != Some(document.revision) {
-            bail_unknown("layout update response did not confirm the exact layout and window revision")?;
+        validate_selection(&created.registry, &workspace.id, &window.id, &pane)?;
+        let document = owned_window(&created.registry, &workspace.id, &window.id)?;
+        let expected = split_leaf(window.layout, target, &pane, axis);
+        if document.layout != expected || window.revision.checked_add(1) != Some(document.revision)
+        {
+            bail!("pane creation did not confirm its exact final layout and window revision");
         }
         Ok(Completion {
-            registry: placed.registry,
-            selection: Some(Selection { workspace: workspace.id, window: window.id, pane }),
+            registry: created.registry,
+            selection: Some(Selection {
+                workspace: workspace.id,
+                window: window.id,
+                pane,
+            }),
         })
-    })().context("pane creation already succeeded; its process remains registry-owned even if layout placement was not confirmed")
+    })()
+    .map_err(transport::mark_outcome_unknown)
+    .context("pane creation succeeded but its final placement was not confirmed; do not replay")
+}
+
+fn spawn_layout(
+    layout: Option<&LayoutNode>,
+    target: &str,
+    axis: Axis,
+    reference: &str,
+) -> SpawnLayoutNode {
+    let new = || SpawnLayoutNode::New {
+        reference: reference.into(),
+    };
+    match layout {
+        None => new(),
+        Some(LayoutNode::Leaf { pane_id }) => {
+            let existing = SpawnLayoutNode::Existing {
+                pane_id: pane_id.clone(),
+            };
+            if pane_id == target {
+                SpawnLayoutNode::Split {
+                    axis,
+                    ratio: 500,
+                    first: Box::new(existing),
+                    second: Box::new(new()),
+                }
+            } else {
+                existing
+            }
+        }
+        Some(LayoutNode::Split {
+            axis: existing_axis,
+            ratio,
+            first,
+            second,
+        }) => SpawnLayoutNode::Split {
+            axis: *existing_axis,
+            ratio: *ratio,
+            first: Box::new(spawn_layout(Some(first), target, axis, reference)),
+            second: Box::new(spawn_layout(Some(second), target, axis, reference)),
+        },
+    }
 }
 
 fn single(socket: &Endpoint, operation: Operation) -> Result<Completion> {
@@ -529,6 +576,10 @@ mod tests {
                     pane_id: pane.map(str::to_owned),
                     workspace_id: workspace.map(str::to_owned),
                     window_id: pane.map(|_| "window".to_owned()),
+                    created_panes: pane
+                        .map(|id| ("split".to_owned(), id.to_owned()))
+                        .into_iter()
+                        .collect(),
                 })
                 .unwrap()
                 .into(),
@@ -684,60 +735,48 @@ mod tests {
             leaf("other"),
         );
         // Global/workspace revisions are independent from the captured window CAS.
-        let replies = vec![
-            success(
+        let (result, requests) = scripted(
+            vec![success(
                 registry(
                     900,
-                    workspace(
-                        8,
-                        Some(split(Axis::Horizontal, 500, leaf("old"), leaf("new"))),
-                    ),
+                    workspace(8, Some(expected_layout)),
                     &["old", "other", "new"],
                 ),
                 Some("new"),
                 None,
-            ),
-            success(
-                registry(
-                    901,
-                    workspace(9, Some(expected_layout.clone())),
-                    &["old", "other", "new"],
-                ),
-                None,
-                None,
-            ),
-        ];
-        let (result, requests) = scripted(replies, spawn_command(workspace(7, Some(old_layout))));
+            )],
+            spawn_command(workspace(7, Some(old_layout))),
+        );
         let completion = result.unwrap();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 1);
         match &requests[0].operation {
             Operation::PaneSpawn {
                 workspace_id,
                 window_id,
                 expected_revision,
-                ..
+                panes,
+                layout,
             } => {
                 assert_eq!(workspace_id.as_deref(), Some("workspace"));
                 assert_eq!(window_id.as_deref(), Some("window"));
                 assert_eq!(*expected_revision, Some(7));
+                assert_eq!(panes[0].reference, "split");
+                assert_eq!(
+                    serde_json::to_value(layout).unwrap(),
+                    serde_json::json!({
+                        "kind": "split", "axis": "horizontal", "ratio": 325,
+                        "first": {
+                            "kind": "split", "axis": "vertical", "ratio": 500,
+                            "first": {"kind": "existing", "pane_id": "old"},
+                            "second": {"kind": "new", "reference": "split"}
+                        },
+                        "second": {"kind": "existing", "pane_id": "other"}
+                    })
+                );
             }
             other => panic!("unexpected operation: {other:?}"),
         }
-        match &requests[1].operation {
-            Operation::LayoutUpdate {
-                workspace_id,
-                window_id,
-                expected_revision,
-                layout,
-            } => {
-                assert_eq!(workspace_id, "workspace");
-                assert_eq!(window_id, "window");
-                assert_eq!(*expected_revision, 8);
-                assert_eq!(layout.as_ref(), Some(&expected_layout));
-            }
-            other => panic!("unexpected operation: {other:?}"),
-        }
-        assert_eq!(completion.registry.revision, 901);
+        assert_eq!(completion.registry.revision, 900);
         let selected = completion.selection.unwrap();
         assert_eq!(selected.workspace, "workspace");
         assert_eq!(selected.window, "window");
@@ -745,43 +784,52 @@ mod tests {
     }
 
     #[test]
-    fn failed_or_lost_placement_keeps_created_pane_and_never_replays() {
+    fn rejected_or_lost_atomic_spawn_is_never_replayed_or_followed_by_placement() {
         for (reply, unknown) in [(rejection("revision conflict"), false), (None, true)] {
-            let (result, requests) = scripted(
-                vec![
-                    success(
-                        registry(
-                            20,
-                            workspace(
-                                8,
-                                Some(split(Axis::Horizontal, 500, leaf("old"), leaf("new"))),
-                            ),
-                            &["old", "new"],
-                        ),
-                        Some("new"),
-                        None,
+            let (result, requests) =
+                scripted(vec![reply], spawn_command(workspace(7, Some(leaf("old")))));
+            assert_eq!(transport::outcome_unknown(&result.unwrap_err()), unknown);
+            assert_eq!(requests.len(), 1);
+            assert!(matches!(requests[0].operation, Operation::PaneSpawn { .. }));
+        }
+    }
+
+    #[test]
+    fn successful_spawn_ack_must_confirm_mapping_and_final_layout_before_selecting() {
+        for fault in ["mapping", "layout", "revision"] {
+            let mut reply = success(
+                registry(
+                    900,
+                    workspace(
+                        8,
+                        Some(split(Axis::Vertical, 500, leaf("old"), leaf("new"))),
                     ),
-                    reply,
-                ],
+                    &["old", "new"],
+                ),
+                Some("new"),
+                None,
+            )
+            .unwrap();
+            let Some(Payload::Control(value)) = &mut reply.result else {
+                panic!("fixture response is not a control result");
+            };
+            match fault {
+                "mapping" => value["created_panes"] = serde_json::json!({"other": "new"}),
+                "layout" => {
+                    value["registry"]["workspaces"][0]["windows"][0]["layout"] =
+                        serde_json::to_value(leaf("old")).unwrap()
+                }
+                "revision" => {
+                    value["registry"]["workspaces"][0]["windows"][0]["revision"] = 9.into()
+                }
+                _ => unreachable!(),
+            }
+            let (result, requests) = scripted(
+                vec![Some(reply)],
                 spawn_command(workspace(7, Some(leaf("old")))),
             );
-            let error = result.unwrap_err();
-            let message = format!("{error:#}");
-            assert!(
-                message.contains("pane creation already succeeded"),
-                "{message}"
-            );
-            assert!(message.contains("remains registry-owned"), "{message}");
-            assert_eq!(transport::outcome_unknown(&error), unknown, "{message}");
-            assert_eq!(
-                requests.len(),
-                2,
-                "must not replay spawn/layout or terminate the new pane"
-            );
-            assert!(matches!(
-                &requests[1].operation,
-                Operation::LayoutUpdate { .. }
-            ));
+            assert!(transport::outcome_unknown(&result.unwrap_err()), "{fault}");
+            assert_eq!(requests.len(), 1, "{fault} must not replay the mutation");
         }
     }
 
@@ -850,6 +898,7 @@ mod tests {
                 pane_id: Some("new".into()),
                 workspace_id: Some("workspace".into()),
                 window_id: Some("window".into()),
+                created_panes: Default::default(),
             };
             match malformed {
                 0 => reply.workspace_id = None,
@@ -883,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn foreign_spawn_membership_or_absent_projection_never_attempts_placement() {
+    fn spawn_rejects_foreign_membership_or_absent_projection_before_selecting() {
         for malformed in 0..3 {
             let mut snapshot = registry(20, workspace(8, Some(leaf("new"))), &["new"]);
             match malformed {
@@ -897,94 +946,20 @@ mod tests {
             );
             let error = result.unwrap_err();
             assert!(transport::outcome_unknown(&error));
-            assert!(format!("{error:#}").contains("pane creation already succeeded"));
             assert_eq!(requests.len(), 1);
         }
     }
 
     #[test]
-    fn malformed_success_reports_completed_mutation_without_replay() {
-        for (command, phase) in [
-            (spawn_command(workspace(7, None)), "pane creation"),
-            (reopen_command(), "new shell replacement"),
-            (
-                Command::Create {
-                    name: Some("fresh".into()),
-                    spec: spec(),
-                },
-                "workspace creation",
-            ),
-            (
-                Command::CreateWindow {
-                    workspace_id: "workspace".into(),
-                    expected_revision: 100,
-                    name: None,
-                    spec: spec(),
-                },
-                "window creation",
-            ),
-            (
-                Command::Single(Operation::PaneTerminate {
-                    pane_id: "old".into(),
-                }),
-                "operation",
-            ),
-        ] {
-            let malformed = Some(Response {
-                version: PROTOCOL_VERSION,
-                ok: true,
-                result: Some(serde_json::json!({}).into()),
-                error: None,
-                failure: None,
-            });
-            let (result, requests) = scripted(vec![malformed], command);
-            let error = result.unwrap_err();
-            let message = format!("{error:#}");
-            assert!(
-                message.contains(&format!("{phase} already succeeded")),
-                "{message}"
-            );
-            assert!(
-                message.contains("omitted a valid registry result"),
-                "{message}"
-            );
-            assert!(transport::outcome_unknown(&error), "{message}");
-            assert_eq!(requests.len(), 1);
-        }
-    }
-
-    #[test]
-    fn layout_response_omissions_keep_partial_success_context() {
-        let mut incomplete = registry(30, workspace(9, Some(leaf("new"))), &["old", "new"]);
+    fn atomic_spawn_response_must_include_target_workspace_before_selecting() {
+        let mut incomplete = registry(30, workspace(8, Some(leaf("new"))), &["old", "new"]);
         incomplete.workspaces.clear();
-        let prior = success(
-            registry(
-                20,
-                workspace(
-                    8,
-                    Some(split(Axis::Horizontal, 500, leaf("old"), leaf("new"))),
-                ),
-                &["old", "new"],
-            ),
-            Some("new"),
-            None,
-        );
         let (result, requests) = scripted(
-            vec![prior, success(incomplete, None, None)],
+            vec![success(incomplete, Some("new"), None)],
             spawn_command(workspace(7, Some(leaf("old")))),
         );
-        let error = result.unwrap_err();
-        let message = format!("{error:#}");
-        assert!(
-            message.contains("pane creation already succeeded"),
-            "{message}"
-        );
-        assert!(
-            message.contains("response omitted target workspace"),
-            "{message}"
-        );
-        assert!(transport::outcome_unknown(&error), "{message}");
-        assert_eq!(requests.len(), 2);
+        assert!(transport::outcome_unknown(&result.unwrap_err()));
+        assert_eq!(requests.len(), 1);
     }
 
     #[test]
