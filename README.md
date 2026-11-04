@@ -461,6 +461,10 @@ Arrows or `j`/`k` move, Home/End and PageUp/PageDown reveal other rows, Left/Rig
 fold or unfold a workspace or window, and Enter activates the selected workspace,
 window or terminal. Esc returns to the original application. The mouse supports
 activation, wheel scrolling and double-click folding.
+The terminal cursor stays hidden but is positioned on the highlighted item,
+including after arrow navigation. Passive metadata cards do not move that
+logical focus position; native applications and focused forms regain their own
+cursor on return. This also keeps host cursor trails anchored to actual focus.
 
 In the sidebar, `n` creates a workspace and its first terminal, `N` creates a
 separate full terminal window, and `r` renames the selected item. `x`/Delete closes
@@ -513,9 +517,10 @@ that item and return when the popup closes. Limited-color clients retain native
 inverse keyboard selection.
 
 Contextual hints always use a passive popup populated from the same effective
-bindings as dispatch. It stays left-anchored inside the sidebar,
-overflowing only when the visible content needs more width. Sidebar mode uses
-a blue tint; prefix, resize and history/search modes use a yellow tint.
+bindings as dispatch. It stays left-anchored, overflowing only when the visible
+content needs more width. Every keybind popup adds one cell on the right through
+the same layout rule, without shifting its content or exceeding the viewport.
+Sidebar mode uses a blue tint; prefix, resize and history/search modes use a yellow tint.
 
 Complete key aliases share a content-sized gutter with word-wrapped descriptions.
 The whole visible table is centered when there is spare space; the gutter itself
@@ -558,11 +563,26 @@ Reusable text surfaces, editing, overlay lifecycle, clipping, capability probes
 and graphics preparation belong to `bkpr-tui-framework`. `bkpr-client` chooses
 colors/palette recipes, shadow depth, border widths, artwork and overlay content.
 The sidebar is unboxed, normally 38 cells wide, with compact connected rows.
+Drag its right edge to resize it independently in each client, including
+input-read-only clients. This changes the local viewport, not backend layout
+ratios or workspace membership; the preferred width survives terminal resizing.
+
+Hovering a pane frame highlights its affected movable edges using the terminal's
+cyan palette entry in both fancy and normal rendering. Left-drag selects nearby
+horizontal and vertical edges by pane quadrant and can move both in one
+revision-checked update. Grab offsets prevent a stationary press from jumping.
+Escape stops further drag input; already accepted layout updates may still finish.
+
 Confirmed Kitty graphics support and observed colors enable recessed pane
 contours, complete beveled popup/finder surfaces and bee/hive artwork through
 the existing scene renderer. Once a pane material is ready, its textual perimeter
 and title are omitted; application-owned status lines stay untouched. Other hosts
 retain rounded text borders, captions and `●`/`◌` markers.
+Unchanged artwork and border materials stay published while new color variants
+prepare. Image retirement and placement changes share the synchronized text
+frame rather than exposing an empty-image interval. Sidebar artwork sits above
+passive joined borders, including the hive's half-cell gutter extension, but
+below true modal content.
 
 Normal-sized panes share a one-cell separator in both orientations and presentation
 modes, rather than reserving two borders plus another divider. PTY size, pointer

@@ -55,6 +55,8 @@ pub struct Row {
 
 #[derive(Default)]
 pub struct Sidebar {
+    /// Client-local requested width, retained while the terminal is too narrow.
+    pub preferred_columns: Option<u16>,
     pub active: bool,
     pub cursor: Option<SidebarTarget>,
     pub scroll: usize,

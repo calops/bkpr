@@ -1280,6 +1280,105 @@ Provider-owned forge/PR/CI content is still unavailable, not fabricated.
 Animation, command palettes and the separately listed toast/theme/keybinding
 work remain outside this pass.
 
+## Sidebar popup anchor and shared material correction
+
+The user's side-by-side screenshots exposed three gaps in the preceding sidebar
+pass: a one-row content offset, mismatched item/card/border backgrounds, and tree
+guides left over the raised item. Main remains
+`9ad93bd809f8fb0dbd0c28bcbc267a682a21430b`; the current retained fork reference is
+`d7b40a37a63d4934054516f6f445488348075a62`.
+`zellij-server/src/output/recessed_frames/raised.rs` lifts the background when
+a surface has an attachment and clears covered guide cells; `joined.rs` gives
+item and card matching physical top padding.
+
+Client placement now accounts for the card's framing row so its first content
+row aligns with the item, retaining screen-fit clamping and tiny-screen source
+visibility. One client-owned raised palette supplies both cell backgrounds and
+the existing generic joined material. `ChromeContext::sidebar_popup` carries
+the visible target and color explicitly; unrelated/modal rows are not cleared.
+RGB popup plates do not also mark their cells as inverse selections: generic
+`BackgroundSpan` intentionally preserves selection backgrounds, and changing
+that framework contract would regress other widgets. Without confirmed RGB,
+native inverse selection remains intact.
+
+Actual immutable debug pair:
+`target/smoke/sidebar-alignment/bin-1359830084496647`.
+
+* `bkpr`: `dbf7e859610c1ea7b241dbf507ca0c629c5ea10d7467bdf2fcd9d7f895e0dbab`.
+* `bkprd`: `98339bed48ca5bec043e5e5f0857bc745e7524e107e84af0b243b50fef062f54`.
+
+`target/smoke/sidebar-alignment/acceptance.json` records five complete actual
+terminal contexts: Kitty dark/light, truecolor xterm dark/light and genuinely
+ANSI-only xterm. Every capture checks source/content row alignment and blank
+highlighted guide cells; RGB cases check one item/card color, plain cases check
+the border-cell backgrounds, and physical guide/rim samples check the displayed
+fill. Captures retain hover/keyboard handoff, scrolling, rendering toggles,
+three sizes, live palette changes, input ownership and detach restoration.
+All cleanups report no surviving owned births. Idle output and fully warmed
+popup-switch image payload deltas remain zero.
+
+The affected checks pass: 33 controller/sidebar tests, six popover tests and
+113 framework tests; strict all-target Clippy passes for the changed frontend
+packages with dependency linting excluded. The initial shared-background
+regression caught inverse selection overriding the plate before the RGB-only
+selection fix; a separate regression protects native inverse fallback.
+
+Workspace-wide checks encountered the concurrent backend codec migration:
+removed snapshot fields, changed typed payload/error APIs, legacy transport
+fixture versions and generated-wire lint failures. These are not represented as
+passing or relaxed. The immutable runtime pair includes protocol 5; the old
+JSON-line smoke adapter was replaced by the real native `bkpr request` utility
+using the daemon-advertised version, not by a second fixture codec. Concurrent
+backend/app edits mean smoke-start source hashes are not a claim of whole-tree
+compiled-source equivalence. All four pre-existing public executable hashes
+were preserved by the protected build.
+
+Exact seven-source controllers and fixtures are archived in
+`target/smoke/sidebar-alignment/controllers.zip`, CRC and member hashes verified,
+SHA-256 `a42b6bbecdb5c080c93a51e846869a1713957869805a162f77dcc1ba50fe1d0a`.
+Raw terminal output, actual screenshots, environment/pair receipts and cleanup
+records remain; loose owned scaffolds are removed after verification.
+
+### Complete opaque-cell coverage at the sidebar/card bridge
+
+The subsequent user screenshot exposed a narrow gap despite the matching palette
+and correct union geometry. The client intersected cached opaque spans with
+`window::content`, excluding the card's framing column. Sparse contour graphics
+intentionally leave fully opaque interiors to cell composition; rim checks alone
+therefore missed this unfilled column.
+
+The graphical popup now projects the cached opaque spans across its full logical
+envelope. Retained popup state blanks its framing glyphs in graphical mode and
+invalidates painting on readiness/preference changes, restoring complete rounded
+text borders without changing metadata, layout, geometry or cached raster work.
+The transition regression preserves exact interior content while checking both
+graphical padding and restored text corners.
+
+Actual debug pair:
+`target/smoke/sidebar-seam/bin-1362142258095532`.
+
+* `bkpr`: `fac98c0b4cf064c47c3c8968fc636c0e83a8e63db3ffb0b6ce2ba1bf582cef29`.
+* `bkprd`: `420b289c966c58d6f9ab9a86b82661da71f6f29f6d812a75937cb451ab55e1ad`.
+
+`target/smoke/sidebar-seam/acceptance.json` records dark/light Kitty and truecolor
+xterm fallback. The rich cases sample every pixel across the formerly unfilled
+column at 23 popup states each, including target switching and three sizes:
+2,070 physical pixels exactly match the shared material. Actual screenshots were
+inspected; rendering toggles restore rounded borders, input/lifecycle checks
+remain intact, warmed image-upload deltas stay zero and no owned births survive
+cleanup. These are framebuffer/payload observations, not latency or CPU claims.
+
+The coordinated workspace now passes 720 tests with 14 explicit ignored
+subprocess fixtures, strict all-target Clippy and rustfmt. Full output and
+protected-pair/source receipts are retained in `workspace-checks.log` and
+`build-snapshot.json`. Both affected source hashes remain unchanged after smoke;
+all four pre-existing public executable hashes were preserved.
+Exact seven-source controllers are archived with verified member hashes/CRC at
+`target/smoke/sidebar-seam/controllers.zip`, SHA-256
+`2a6aed1c9c1ef422b2b41ec9c663f79dd12b950021704fd0f6b082038784fbb9`.
+Loose owned controller scaffolds are removed; raw pixel samples, VT and
+screenshots remain.
+
 ## Native Planus transport and matched CPU comparison
 
 Native IPC now uses typed Planus wire family 5, including requests, responses,
@@ -1363,6 +1462,103 @@ The exact source/build/binary receipts are in
 `measurements.json` retain individual counters, byte hashes and limitations.
 Every case and the stage watchdog report zero surviving owned births.
 
+## Frame proximity, draggable sidebar and physical resize feedback
+
+The application guide gains one cell on its right after its content/gutter
+layout, so existing text does not shift. Other guide contexts keep their
+geometry. Sidebar width is an ephemeral per-client preference; dragging its
+right edge changes projected view sizes without changing canonical layout
+ratios, membership or process identities. Explicit widths clamp to preserve
+usable sidebar/native cells and survive terminal resize/hide/restoration.
+Input-read-only clients may resize this local viewport, not backend layouts.
+
+Pane frame presses select the nearest movable horizontal and vertical edges
+by pane quadrant, retaining split identities and initial grab offsets. Both
+axes materialize in one existing exact-revision layout update, with one
+in-flight commit and one latest pending coordinate pair. Hover and press use
+the same targets; feedback shows the divider spans actually affected by the
+authoritative binary layout. Modal/focus/geometry retirement consumes the
+remaining pointer gesture rather than leaking its tail to a native pane.
+
+Source ledger: main `9ad93bd809f8fb0dbd0c28bcbc267a682a21430b`
+and retained fork `d7b40a37a63d4934054516f6f445488348075a62`,
+especially `zellij-server/src/tab/mod.rs:625–648`,
+`tab/mouse_handler.rs:411–472`, `tab/resize_feedback.rs`,
+`panes/tiled_panes/resize_feedback_grid.rs`,
+`panes/tiled_panes/resize_feedback.rs` and
+`output/recessed_frames/hover.rs`. The adapted edge-glyph rules retain the
+fork's MIT notice.
+
+Dependency/ownership decision: extend the maintained Termwiz input parser and
+existing framework scene projection, not a second input parser, layout engine
+or renderer. `bkpr-client` owns sidebar preference, gesture policy and terminal
+ANSI-cyan/matte styling. `bkpr-tui-framework::window::paint_edge_feedback`
+paints connected glyphs into retained cells; `CellsWithUnderlay` clips those
+cells and demotes only intersecting earlier graphics beneath their text.
+Sampling, source identities, shadows and bounded renderer caches survive.
+The unchanged strip/style/size key skips repainting; no new raster worker,
+texture atlas, polling loop or per-hover image generation is introduced.
+
+Verification uses the immutable matching protocol-5 debug pair recorded in
+`target/smoke/resize-feedback/build-snapshot.json`. Full workspace tests passed
+(741 successful result rows including isolated subprocess tests, 14 ignored),
+as did strict all-target Clippy, formatting and the protected debug build.
+The build receipt preserves all four public debug/release executable hashes.
+
+Physical evidence under `target/smoke/resize-feedback/`:
+
+- `kitty-dark-default-1365853265807366/` and
+  `kitty-light-default-1365895404740844/`: actual rich and normal rendering,
+  two-axis near-corner drags, stationary no-jump presses, local sidebar sizing,
+  Escape cancellation, default-guide right expansion and modal no-click-through.
+- `xterm-dark-default-1365895396393122/`: the same input/geometry behavior
+  through the actual rounded-text fallback.
+- Full native grids and final rows establish content readiness before immutable
+  screenshots. ANSI-cyan text plus physical ink pixels prove feedback on both
+  affected axes and the sidebar edge. Each Kitty theme completes eight warm
+  hover cycles with zero additional image payload bytes.
+- Actual 120×36 → 180×48 → 120×36 resizing, exact native input preservation,
+  normal detach, original palette/termios restoration and zero owned-birth
+  survivors passed. Read-only behavior is covered by decoded client regressions,
+  not misrepresented as an exercised read-only physical fixture.
+
+A separate all-wire-splits regression reproduced a pending legacy Escape being
+overtaken by a structured key-release report. Resolving the maintained parser
+at complete framed-report boundaries fixes that ordering; it failed before and
+passed after. The first physical cancellation driver also had its own defect:
+`xdotool --clearmodifiers` synthesized mouse-up before Escape. Retained host
+input proves that ordering; the corrected driver preserves the held button.
+The diagnostic failure is not attributed to product cancellation.
+
+`acceptance.json`, `final-checks.log`, per-case PNG/text/device/input/cleanup
+records and the CRC-verified six-member `controllers.zip` retain reproduction
+and source evidence. This is debug software-framebuffer functional/cache proof,
+not a release CPU, hardware-presentation latency or FPS claim.
+
+## Shared right padding for every keybind popup
+
+The application-only exception above is superseded: every keybind context now
+uses the same final right-edge expansion in `keyguide::render_hints`. The extra
+cell remains outside wrapping, centering and key/description spans, and clamps
+to the available viewport. This is keybind-card layout policy, not extra padding
+for metadata cards or other overlays. Fancy and normal presentation consume the
+same resulting geometry.
+
+The context regression covers all fourteen guide contexts, including Ctrl-b,
+sidebar, forms, finder, history/search and resize. It checks the added right
+cell, screen-edge clamping and unchanged content/role coordinates. Obsolete
+default-width and symmetric-frame assertions were removed rather than repinned.
+Full workspace tests, strict all-target Clippy and formatting passed.
+
+Actual immutable debug-pair acceptance is under `target/smoke/keyguide-padding/`.
+`kitty-dark-default-1368510844961336/` records the default and Ctrl-b rounded
+cards, then the same Ctrl-b content coordinates in fancy rendering with physical
+right-padding/material samples. The outer sample is in the bevel, not the flat
+plate; native terminal text hidden beneath graphics is not mistaken for visible
+popup content. Input preservation, normal detach, palette/termios restoration
+and zero surviving owned processes passed. The protected build receipt is
+`target/smoke/ssh-forwarding/protected-1367244315972282/result.json`.
+
 ## Post-Planus scalar and UTF-8 cell extraction
 
 The fresh post-Planus replay profile uses a ten-second, 997 Hz user-space
@@ -1436,3 +1632,69 @@ controller/source captures. No owned compilation or other owned GUI fixture
 runs during CPU captures; live sessions, user settings and providers aren't used.
 The next measured candidates are control-worker scene/run scratch allocations,
 native dirty-row reuse and client composition/style comparison.
+
+## Sidebar focus graphics continuity, hidden cursor and artwork layering
+
+Three independent boundaries caused the reported focus behavior:
+
+- `SvgGraphics::configure` discarded all published icons/contours when a marker
+  color changed. It now retains entries matching exact RGB/dimensions and
+  contours matching exact style/cell geometry while preparing missing variants.
+  Matching undrained publications survive superseding requests. Genuine style,
+  geometry, capability and source-generation invalidation remains enforced.
+- Renderer image retirement, projection pruning and placement deletion preceded
+  synchronized-update begin. All presentation-affecting deletion now occurs
+  inside that atomic frame; unchanged native resources and bounded inactive
+  projections retain their existing residency rules.
+- Sidebar input focus did not own a cursor position, and rendering restored
+  cursor position only when visible. The client now anchors its hidden cursor
+  to the highlighted rendered icon row. The framework preserves valid logical
+  coordinates beneath passive plates while masking visibility, and emits final
+  CUP even for a valid hidden cursor. Later modal focus overrides it normally.
+
+The hive's unchanged main geometry starts half a cell into the framing column.
+Joined glyph exclusion begins one column farther right, so the later contour
+covered that ink. A separate resource-only artwork frame now follows passive
+materials and precedes modal contents/effects. It shares prepared images, does
+not clone the cell canvas, and changes neither SVG artwork nor margins, style,
+input ownership or normal fallback.
+
+No new graphics/parser/cache dependency or competing output loop was added.
+These are narrow extensions of the existing resvg preparer, retained scene and
+maintained terminal input/output infrastructure. Generic publication, atomicity
+and cursor mechanics remain in `bkpr-tui-framework`; sidebar focus and artwork
+layer selection remain in `bkpr-client`.
+
+Worktree-local evidence: `target/smoke/sidebar-focus/`. The frozen old debug pair
+is `keyguide-padding/bin`; the matching fixed pair is `sidebar-focus/bin-final`.
+The final protected receipt is
+`ssh-forwarding/protected-1393559136031107/result.json`. Workspace tests,
+strict all-target Clippy and formatting passed, including exact resource
+identity/style invalidation, undrained publication, emitted VT ordering, hidden
+cursor clipping/passive occlusion, modal/native restoration and idle silence.
+
+| Actual dark Kitty workload | Old pair | Fixed pair |
+| --- | ---: | ---: |
+| Image deletions outside synchronized frames, sixteen focus changes | 2,712 | 0 |
+| Selected workspace hive's opaque gutter pixels visible | 0 / 16 | 16 / 16 |
+
+`kitty-dark-default-1393999999387411/` records the old behavior;
+`kitty-dark-default-1394000013915551/` and
+`kitty-light-default-1394123325809422/` record the fixed behavior. Actual XCB
+framebuffer sampling covers hive/bee ink and six border regions through the
+focus burst. The old sample records thirty regional opaque-ink/border losses;
+the fixed dark/light samples record none. Full RGB differences are retained:
+popup backing, shadow and antialias pixels can change without losing opaque
+SVG ink, so those differences are not silently discarded or called disappearance.
+
+Kitty's actual `get-text --add-cursor` reports hidden positions on workspace,
+pane A and pane B at their expected rendered rows, native position on return,
+and a visible cursor only for the focused form. Light-mode acceptance also
+switches to normal rendering and repeats hidden workspace/pane/native checks.
+The complete expected native content establishes initial readiness before
+immutable references; screenshots, raw VT/device bytes, exact input logs and
+zero-survivor cleanup remain retained.
+
+These are functional debug software-framebuffer observations, not a frame-rate,
+hardware-presentation latency or zero-upload claim. Popup sources still retire
+when absent; this fix does not silently retain unbounded hidden resources.

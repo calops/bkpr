@@ -1236,6 +1236,8 @@ fn render_hints(
     for span in &mut expanded_roles {
         span.rect.x = span.rect.x.saturating_sub(left as u16) + offset as u16;
     }
+    // Keep the shared right margin outside content centering and wrapping.
+    let columns = columns.saturating_add(1).min(max_columns);
     Guide {
         columns,
         expanded,
@@ -1281,40 +1283,51 @@ mod tests {
     }
 
     #[test]
-    fn popup_prefers_sidebar_width_and_only_expands_for_content() {
-        let context = Context::CommandPrefix;
-        let compact = render_with(context, 38, 120, 10, |action| action == A::Cancel);
-        assert_eq!(compact.columns, 38);
-        let overflow = render_with(context, 38, 120, 10, |action| {
-            action == A::RemovePaneFromLayout
-        });
-        assert!(overflow.columns > 38 && overflow.columns <= 72);
-        let wide_sidebar = render_with(context, 100, 120, 10, |_| true);
-        assert_eq!(wide_sidebar.columns, 100);
-        let constrained = render_with(context, 38, 30, 10, |_| true);
-        assert_eq!(constrained.columns, 30);
-    }
-
-    fn assert_balanced_outline(guide: &Guide) {
-        let left = guide
-            .expanded
-            .iter()
-            .filter(|row| !row.trim().is_empty())
-            .map(|row| row.len() - row.trim_start_matches(' ').len())
-            .min()
-            .unwrap_or(0);
-        let end = guide
-            .expanded
-            .iter()
-            .map(|row| width(row.trim_end()))
-            .max()
-            .unwrap_or(0);
-        let right = usize::from(guide.columns.saturating_sub(2)).saturating_sub(end);
-        assert!(left.abs_diff(right) <= 1, "{left} left / {right} right");
+    fn every_keybind_popup_extends_right_without_moving_its_content() {
+        let hints = [
+            Hint {
+                keys: vec!["Ctrl-a", "a"],
+                action: A::ActivateSelected,
+                description: "select",
+                priority: 0,
+            },
+            Hint {
+                keys: vec!["b"],
+                action: A::EnterSidebar,
+                description: "open",
+                priority: 1,
+            },
+        ];
+        for context in [
+            Context::Application,
+            Context::CommandPrefix,
+            Context::Sidebar { selected: true },
+            Context::Sidebar { selected: false },
+            Context::Create,
+            Context::Edit,
+            Context::Confirmation,
+            Context::Finder,
+            Context::Chooser,
+            Context::Details,
+            Context::ClipboardConsent,
+            Context::History,
+            Context::Search,
+            Context::Resize,
+        ] {
+            for sidebar_columns in [38, 80] {
+                let constrained =
+                    render_hints(context, &hints, sidebar_columns, sidebar_columns, 8);
+                let padded = render_hints(context, &hints, sidebar_columns, sidebar_columns + 1, 8);
+                assert_eq!(constrained.columns, sidebar_columns);
+                assert_eq!(padded.columns, sidebar_columns + 1);
+                assert_eq!(padded.expanded, constrained.expanded);
+                assert_eq!(padded.expanded_roles, constrained.expanded_roles);
+            }
+        }
     }
 
     #[test]
-    fn popup_centers_the_visible_outline_not_the_gutter() {
+    fn asymmetric_descriptions_keep_a_content_sized_gutter() {
         let hint = Hint {
             keys: vec!["x"],
             action: A::RemovePaneFromLayout,
@@ -1332,11 +1345,10 @@ mod tests {
             guide.expanded[0].find("remove the layout entry"),
             Some(usize::from(key_end + 2))
         );
-        assert_balanced_outline(&guide);
     }
 
     #[test]
-    fn short_visible_table_keeps_a_shared_gutter_and_balanced_sidebar_space() {
+    fn short_table_aligns_aliases_and_description_columns() {
         let hints = [
             Hint {
                 keys: vec!["Ctrl-a", "a"],
@@ -1351,8 +1363,7 @@ mod tests {
                 priority: 1,
             },
         ];
-        let guide = render_hints(Context::Application, &hints, 38, 120, 8);
-        assert_eq!(guide.columns, 38);
+        let guide = render_hints(Context::CommandPrefix, &hints, 38, 120, 8);
         let endpoints: Vec<_> = (0..guide.expanded.len())
             .map(|row| {
                 guide
@@ -1371,7 +1382,6 @@ mod tests {
                 Some(usize::from(endpoints[row] + 2))
             );
         }
-        assert_balanced_outline(&guide);
     }
 
     #[test]
@@ -1391,26 +1401,9 @@ mod tests {
             },
         ];
         let guide = render_hints(Context::CommandPrefix, &hints, 24, 120, 2);
-        assert_eq!(guide.columns, 24);
         assert!(guide.expanded[0].contains("apply"));
         assert!(guide.expanded[1].contains("more"));
         assert_eq!(guide.expanded_roles.len(), 1);
-        assert_balanced_outline(&guide);
-    }
-
-    #[test]
-    fn overflowing_card_fits_its_outline_without_a_minimum_width_floor() {
-        let hint = Hint {
-            keys: vec!["x"],
-            action: A::RemovePaneFromLayout,
-            description: "keep this terminal process running",
-            priority: 0,
-        };
-        let needed = width(hint.description) + 1 + 2 + 4;
-        let guide = render_hints(Context::CommandPrefix, &[hint], 20, 120, 8);
-        assert_eq!(usize::from(guide.columns), needed);
-        assert!(guide.columns < 48);
-        assert_balanced_outline(&guide);
     }
 
     #[test]

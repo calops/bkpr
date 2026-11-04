@@ -184,6 +184,7 @@ struct PointerOrigin {
 enum PointerCapture {
     Ui,
     Resize,
+    SidebarResize { size: Size, offset: i32 },
     Pane(Arc<PointerOrigin>),
     Selection(Arc<PointerOrigin>),
 }
@@ -387,7 +388,7 @@ struct DeviceResponse {
 }
 #[derive(Default)]
 struct GuideCache {
-    key: Option<(crate::keyguide::Context, u16, u16, u16)>,
+    key: Option<(crate::keyguide::Context, u16, u16, u16, u16)>,
     content: crate::keyguide::Guide,
 }
 struct OverlayFocus {
@@ -426,6 +427,7 @@ struct App<'a> {
     color_query_pending: bool,
     last_button: MouseButton,
     pointer_capture: Option<PointerCapture>,
+    sidebar_resize_hover: bool,
     pressed_pointers: RefCell<Vec<PressedPointer>>,
     terminal_selection: selection::State,
     resizing: resizing::State,
@@ -441,6 +443,76 @@ struct App<'a> {
     host_focused: bool,
 }
 impl App<'_> {
+    fn screen_geometry(&self, size: Size) -> (Rect, Rect) {
+        screen_geometry(size, self.state.sidebar.preferred_columns)
+    }
+    fn sidebar_resize_blocked(&self) -> bool {
+        !self.host_focused
+            || self.state.form.is_some()
+            || self.finder.is_some()
+            || self
+                .consent
+                .as_ref()
+                .is_some_and(|consent| !consent.state.allowed && !consent.state.sent)
+    }
+    fn sidebar_resize_handle(&self, size: Size, x: u16, y: u16) -> bool {
+        let sidebar = self.screen_geometry(size).0;
+        sidebar.width > 0
+            && y < size.rows
+            && (x == sidebar.width || x.checked_add(1) == Some(sidebar.width))
+    }
+    fn validate_sidebar_resize(&mut self, size: Size) {
+        if matches!(
+            self.pointer_capture,
+            Some(PointerCapture::SidebarResize { size: original, .. })
+                if original != size || self.sidebar_resize_blocked()
+        ) {
+            self.pointer_capture = Some(PointerCapture::Ui);
+        }
+        if self.sidebar_resize_blocked() {
+            self.sidebar_resize_hover = false;
+        }
+    }
+    fn begin_sidebar_resize(&mut self, size: Size, x: u16, y: u16) -> bool {
+        if self.sidebar_resize_blocked() || !self.sidebar_resize_handle(size, x, y) {
+            return false;
+        }
+        self.retire_resize("sidebar resized");
+        self.state.sidebar.hover(None);
+        self.state.sidebar.pointer_row = None;
+        self.pointer_capture = Some(PointerCapture::SidebarResize {
+            size,
+            offset: i32::from(x) - i32::from(self.screen_geometry(size).0.width),
+        });
+        self.sidebar_resize_hover = true;
+        true
+    }
+    fn resize_overlay_blocked(&self, size: Size, x: u16, y: u16) -> bool {
+        let mut blocked = false;
+        for layer in self.overlays.layers() {
+            if layer.policy.modal {
+                return true;
+            }
+            if layer.policy.pointer && layer.placement.outer.contains(x, y) {
+                let rim = !layer.placement.content.contains(x, y)
+                    && ((layer.id == crate::popover::SURFACE_ID && x == layer.placement.outer.x)
+                        || (layer.id == "ui:guide" && self.sidebar_resize_handle(size, x, y)));
+                blocked = !rim;
+            }
+        }
+        blocked
+    }
+    fn sidebar_popup_target(&self) -> Option<&SidebarTarget> {
+        let consent = self
+            .consent
+            .as_ref()
+            .is_some_and(|consent| !consent.state.allowed && !consent.state.sent);
+        crate::controller::sidebar_popup_target(
+            &self.state,
+            consent || self.finder.is_some() || self.search_open(),
+        )
+    }
+
     fn begin_modal(&mut self) {
         if self.state.form.is_none() && self.finder.is_none() {
             self.overlays.remove("ui:modal");
@@ -619,8 +691,8 @@ impl App<'_> {
             | (u16::from(self.state.sidebar.active) << 6)
             | (u16::from(self.resize_dragging()) << 7)
             | (u16::from(!self.state.status.is_empty()) << 8);
-        let sidebar_columns = screen_geometry(size).0.width;
-        let key = (context, size.cols, size.rows, flags);
+        let sidebar_columns = self.screen_geometry(size).0.width;
+        let key = (context, size.cols, size.rows, sidebar_columns, flags);
         if self.guide.key != Some(key) {
             let content = crate::keyguide::render_with(
                 context,
@@ -663,7 +735,7 @@ impl App<'_> {
             return None;
         }
         let rect = Rect {
-            x: screen_geometry(size).0.x,
+            x: self.screen_geometry(size).0.x,
             y: size.rows - height,
             width,
             height,
@@ -1349,7 +1421,7 @@ impl App<'_> {
         }
     }
     fn rects(&self, size: Size) -> Vec<(String, Rect)> {
-        let (_, content) = screen_geometry(size);
+        let (_, content) = self.screen_geometry(size);
         let mut rects = Vec::new();
         if let Some(window) = self.state.current_window(&self.registry) {
             layout_rects(window.layout.as_ref(), content, &mut rects);
@@ -2695,8 +2767,8 @@ impl App<'_> {
         self.state.suppressed.insert(event.key.clone());
         self.state.status.clear();
         self.refresh_guide(size);
-        let page = (sidebar_content_rows(screen_geometry(size).0, self.guide_rows(size)) / 2).max(1)
-            as isize;
+        let page = (sidebar_content_rows(self.screen_geometry(size).0, self.guide_rows(size)) / 2)
+            .max(1) as isize;
         match action {
             Some(Action::LeaveSidebar) => self.state.sidebar.active = false,
             Some(Action::Navigate(direction)) => self.state.sidebar.navigate(match direction {
@@ -2895,6 +2967,19 @@ impl App<'_> {
             && event.action != KeyAction::Release
         {
             return Ok(true);
+        }
+        self.validate_sidebar_resize(size);
+        if matches!(
+            self.pointer_capture,
+            Some(PointerCapture::SidebarResize { .. })
+        ) {
+            if event.key == "Escape" {
+                self.pointer_capture = Some(PointerCapture::Ui);
+            }
+            if !self.held.contains_key(&event.key) {
+                self.state.suppressed.insert(event.key);
+            }
+            return Ok(false);
         }
         if self
             .consent
@@ -3237,6 +3322,7 @@ impl App<'_> {
         workspace_hits: &[(SidebarTarget, u16)],
         hits: &HitMap,
     ) -> Result<()> {
+        self.validate_sidebar_resize(size);
         self.validate_resize(size);
         let button = if mouse.mouse_buttons.contains(MouseButtons::VERT_WHEEL) {
             if mouse.mouse_buttons.contains(MouseButtons::WHEEL_POSITIVE) {
@@ -3281,6 +3367,21 @@ impl App<'_> {
             button
         };
         let captured = self.pointer_capture.clone();
+        let resize_point = !wheel
+            && button == MouseButton::None
+            && captured.is_none()
+            && !self.sidebar_resize_blocked()
+            && !self.state.prefix
+            && !self.resize_overlay_blocked(size, mouse.x, mouse.y)
+            && hits
+                .hit_test(mouse.x, mouse.y)
+                .is_some_and(|id| !matches!(id, "ui:modal" | "ui:search" | "ui:window"));
+        self.sidebar_resize_hover =
+            resize_point && self.sidebar_resize_handle(size, mouse.x, mouse.y);
+        self.update_resize_hover(
+            size,
+            (resize_point && !self.sidebar_resize_hover).then_some((mouse.x, mouse.y)),
+        );
         if !wheel {
             self.last_button = button;
             if action == MouseAction::Release {
@@ -3289,9 +3390,23 @@ impl App<'_> {
                 self.pointer_capture = Some(PointerCapture::Ui);
             }
         }
+        if let Some(PointerCapture::SidebarResize { offset, .. }) = captured {
+            if !wheel {
+                self.state.sidebar.preferred_columns = Some(
+                    (i32::from(mouse.x) - offset).clamp(3, i32::from(size.cols.saturating_sub(3)))
+                        as u16,
+                );
+                self.sidebar_resize_hover = action != MouseAction::Release
+                    || self.sidebar_resize_handle(size, mouse.x, mouse.y);
+            }
+            return Ok(());
+        }
         if matches!(&captured, Some(PointerCapture::Resize)) {
             if !wheel {
                 self.resize_pointer(mouse.x, mouse.y, action == MouseAction::Release)?;
+                if action == MouseAction::Release {
+                    self.update_resize_hover(size, Some((mouse.x, mouse.y)));
+                }
             }
             return Ok(());
         }
@@ -3315,6 +3430,20 @@ impl App<'_> {
                 _ => None,
             }
         };
+        if origin.is_none()
+            && !self.sidebar_resize_blocked()
+            && !self.resize_overlay_blocked(size, mouse.x, mouse.y)
+            && !matches!(&captured, Some(PointerCapture::Ui))
+            && button == MouseButton::Left
+            && action == MouseAction::Press
+            && hits
+                .hit_test(mouse.x, mouse.y)
+                .is_some_and(|id| !matches!(id, "ui:modal" | "ui:search" | "ui:window"))
+            && (self.begin_sidebar_resize(size, mouse.x, mouse.y)
+                || self.begin_divider_resize(size, mouse.x, mouse.y)?)
+        {
+            return Ok(());
+        }
         if origin.is_none() {
             let phase = if wheel {
                 PointerPhase::Wheel
@@ -3332,7 +3461,7 @@ impl App<'_> {
                     id: crate::popover::SURFACE_ID,
                     ..
                 }
-            ) && mouse.x >= screen_geometry(size).0.width
+            ) && mouse.x >= self.screen_geometry(size).0.width
             {
                 self.state.sidebar.pointer_row = None;
                 self.state.sidebar.hover(None);
@@ -3401,14 +3530,7 @@ impl App<'_> {
         {
             return Ok(());
         }
-        if origin.is_none()
-            && button == MouseButton::Left
-            && action == MouseAction::Press
-            && self.begin_divider_resize(size, mouse.x, mouse.y)?
-        {
-            return Ok(());
-        }
-        let (sidebar, _) = screen_geometry(size);
+        let (sidebar, _) = self.screen_geometry(size);
         if origin.is_none() && mouse.x < sidebar.width {
             self.state.sidebar.pointer_row = Some(mouse.y);
             self.state.sidebar.hover(
@@ -3672,6 +3794,14 @@ impl App<'_> {
             self.host_focused = response == b"focus;in";
             if !self.host_focused {
                 self.retire_resize("terminal focus lost");
+                self.clear_resize_hover();
+                self.sidebar_resize_hover = false;
+                if matches!(
+                    self.pointer_capture,
+                    Some(PointerCapture::SidebarResize { .. })
+                ) {
+                    self.pointer_capture = Some(PointerCapture::Ui);
+                }
                 self.selection_focus_lost();
                 self.close_search();
             }
@@ -3875,6 +4005,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         color_query_pending: false,
         last_button: MouseButton::None,
         pointer_capture: None,
+        sidebar_resize_hover: false,
         pressed_pointers: RefCell::new(Vec::new()),
         terminal_selection: selection::State::default(),
         resizing: resizing::State::default(),
@@ -3906,6 +4037,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         let mut chrome_projects = Vec::new();
         let mut chrome_foregrounds = Vec::new();
         let mut guide_theme = Theme::default();
+        let mut popover_theme = Theme::default();
         let mut guide_roles = Vec::new();
         let mut chrome_markers = Vec::new();
         let mut marker_sources = Vec::with_capacity(16);
@@ -3934,6 +4066,10 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         let mut window_effects = graphics_frame(initial_size);
         let mut popover_effects = graphics_frame(initial_size);
         let mut guide_effects = graphics_frame(initial_size);
+        let mut artwork_effects = graphics_frame(initial_size);
+        let mut resize_feedback_surface = UiSurface::new(initial_size);
+        let mut resize_feedback_regions = Vec::new();
+        let mut resize_feedback_style = None;
         let mut placeholders = HashMap::<String, UiSurface>::new();
         loop {
             if client.consume_lifecycle()? {
@@ -3962,6 +4098,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 &mut window_effects,
                 &mut popover_effects,
                 &mut guide_effects,
+                &mut artwork_effects,
             ] {
                 frame.size = size;
                 frame.images.clear();
@@ -3973,6 +4110,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 app.state.window.as_deref(),
                 app.state.focused.as_deref(),
             );
+            app.validate_sidebar_resize(size);
             app.validate_resize(size);
             let rects = app.rects(size);
             app.sync_views(size, &rects)?;
@@ -4057,12 +4195,17 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             app.resize_hint();
             app.refresh_guide(size);
             let guide_rows = app.guide_rows(size);
-            app.state
-                .sidebar
-                .viewport(sidebar_content_rows(screen_geometry(size).0, guide_rows));
+            app.state.sidebar.viewport(sidebar_content_rows(
+                app.screen_geometry(size).0,
+                guide_rows,
+            ));
+            crate::appearance::update_region_theme(&mut popover_theme, &app.colors, None);
             let workspace_hits = chrome(
                 &mut chrome_surface,
                 crate::controller::ChromeContext {
+                    sidebar_popup: app
+                        .sidebar_popup_target()
+                        .map(|target| (target, popover_theme.background(Role::Panel, false))),
                     size,
                     state: &app.state,
                     registry: &app.registry,
@@ -4099,6 +4242,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 &mut chrome_surface,
                 &theme,
                 crate::controller::ChromeContext {
+                    sidebar_popup: app
+                        .sidebar_popup_target()
+                        .map(|target| (target, popover_theme.background(Role::Panel, false))),
                     size,
                     state: &app.state,
                     registry: &app.registry,
@@ -4115,14 +4261,17 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             marker_sources.clear();
             chrome_surface.frame.images.clear();
             chrome_surface.frame.placements.clear();
-            let sidebar_width = screen_geometry(size).0.width;
+            let sidebar_width = app.screen_geometry(size).0.width;
             for (index, entry) in app
                 .state
                 .sidebar
                 .rows
                 .iter()
                 .skip(app.state.sidebar.scroll)
-                .take(sidebar_content_rows(screen_geometry(size).0, guide_rows))
+                .take(sidebar_content_rows(
+                    app.screen_geometry(size).0,
+                    guide_rows,
+                ))
                 .enumerate()
             {
                 let (artwork, col) = match entry.kind {
@@ -4184,6 +4333,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 chrome(
                     &mut chrome_surface,
                     crate::controller::ChromeContext {
+                        sidebar_popup: app
+                            .sidebar_popup_target()
+                            .map(|target| (target, popover_theme.background(Role::Panel, false))),
                         size,
                         state: &app.state,
                         registry: &app.registry,
@@ -4200,6 +4352,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     &mut chrome_surface,
                     &theme,
                     crate::controller::ChromeContext {
+                        sidebar_popup: app
+                            .sidebar_popup_target()
+                            .map(|target| (target, popover_theme.background(Role::Panel, false))),
                         size,
                         state: &app.state,
                         registry: &app.registry,
@@ -4216,9 +4371,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             for &(artwork, col, row, source) in &chrome_markers {
                 graphics.decorate(
                     &mut chrome_surface.frame,
+                    &mut artwork_effects,
                     artwork,
-                    col,
-                    row,
+                    [col, row],
                     source,
                     u32::from(row) + 1,
                 );
@@ -4453,17 +4608,8 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     );
                 }
             }
-            let tooltip_target = if popup || app.state.prefix || app.search_open() {
-                None
-            } else {
-                app.state.sidebar.hover.as_ref().or_else(|| {
-                    app.state
-                        .sidebar
-                        .active
-                        .then_some(app.state.sidebar.cursor.as_ref())
-                        .flatten()
-                })
-            };
+            let tooltip_target =
+                crate::controller::sidebar_popup_target(&app.state, popup || app.search_open());
             let anchor = tooltip_target.and_then(|target| {
                 workspace_hits
                     .iter()
@@ -4477,7 +4623,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     .map(|(_, row)| *row);
                 let first = rows.next()?;
                 let last = rows.next_back().unwrap_or(first);
-                let sidebar = screen_geometry(size).0;
+                let sidebar = app.screen_geometry(size).0;
                 Some(Rect {
                     x: sidebar.x,
                     y: first,
@@ -4489,14 +4635,18 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 &app.registry,
                 tooltip_target.filter(|_| anchor.is_some()),
                 anchor.unwrap_or(0),
-                screen_geometry(size).0.width,
+                app.screen_geometry(size).0.width,
                 size,
                 |pane| app.views.get(pane).map(|view| &view.metadata),
             );
-            graphics.prepare_joined(size, tooltip.zip(item_band));
+            graphics.prepare_joined(
+                size,
+                tooltip.zip(item_band),
+                popover_theme.style(Role::Panel).background,
+            );
             let mut popover_graphical = false;
             if let Some(rect) = tooltip {
-                app.popover.apply_theme(&theme, &project_palette);
+                app.popover.apply_theme(&popover_theme, &project_palette);
                 app.popover.surface.frame.images.clear();
                 app.popover.surface.frame.placements.clear();
                 if let Some((body, item)) = app.popover.body_rect().zip(item_band) {
@@ -4508,19 +4658,16 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     popover_graphical = graphics.joined_ready()
                         && graphics.decorate_joined(&mut popover_effects, 1, &[body, glyphs]);
                 }
-                if !popover_graphical {
-                    let local = app.popover.surface.frame.size;
-                    let bounds = Rect {
-                        x: 0,
-                        y: 0,
-                        width: local.cols,
-                        height: local.rows,
-                    };
-                    let captions = [
-                        material_caption(&app.popover.surface.frame, bounds, false),
-                        material_caption(&app.popover.surface.frame, bounds, true),
-                    ];
-                    material_border(&mut app.popover.surface.frame, bounds, true, &captions);
+                if app.popover.set_graphical(popover_graphical) {
+                    app.popover.paint(
+                        &app.registry,
+                        tooltip_target,
+                        anchor.unwrap_or(0),
+                        app.screen_geometry(size).0.width,
+                        size,
+                        |pane| app.views.get(pane).map(|view| &view.metadata),
+                    );
+                    app.popover.apply_theme(&popover_theme, &project_palette);
                 }
                 app.overlays.present(
                     crate::popover::SURFACE_ID,
@@ -4675,6 +4822,53 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 rect.height > 0 && app.search_overlay(&mut search_surface, rect.size(size))
             });
             app.theme_search(&mut search_surface, &theme);
+            let feedback_regions = if app.sidebar_resize_blocked() {
+                Vec::new()
+            } else if app.sidebar_resize_hover
+                || matches!(
+                    app.pointer_capture,
+                    Some(PointerCapture::SidebarResize { .. })
+                )
+            {
+                let sidebar = app.screen_geometry(size).0;
+                vec![Rect {
+                    x: sidebar.width,
+                    y: 0,
+                    width: u16::from(sidebar.width > 0),
+                    height: size.rows,
+                }]
+            } else {
+                app.resize_feedback(size)
+            };
+            let mut feedback_style = theme.style(Role::Base).clone();
+            feedback_style.foreground_source = ColorSource::Palette(6);
+            feedback_style.foreground = app
+                .colors
+                .palette
+                .get(&6)
+                .copied()
+                .unwrap_or(feedback_style.foreground);
+            let feedback_resized = resize_feedback_surface.frame.size != size;
+            if feedback_resized {
+                resize_feedback_surface = UiSurface::new(size);
+            }
+            if feedback_resized
+                || feedback_regions != resize_feedback_regions
+                || resize_feedback_style.as_ref() != Some(&feedback_style)
+            {
+                resize_feedback_surface.frame.foreground = chrome_surface.frame.foreground;
+                resize_feedback_surface.frame.background = chrome_surface.frame.background;
+                resize_feedback_surface.frame.palette.clear();
+                // Only current strips are projected; every cell in them is
+                // rewritten, so stale cells outside those clips stay invisible.
+                window::paint_edge_feedback(
+                    &mut resize_feedback_surface.frame,
+                    &feedback_regions,
+                    &feedback_style,
+                );
+                resize_feedback_regions = feedback_regions;
+                resize_feedback_style = Some(feedback_style);
+            }
             let faint_background = popup && crate::appearance::MODAL_BACKGROUND_FAINT;
             let mut surfaces = vec![Surface {
                 id: "ui:chrome",
@@ -4688,7 +4882,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 frame: &chrome_surface.frame,
                 selection: &[],
                 search: &[],
-                focused: false,
+                focused: app.host_focused && app.state.sidebar.active && !popup && !searching,
                 faint: faint_background,
             }];
             for (id, rect) in &rects {
@@ -4739,7 +4933,46 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 focused: false,
                 faint: faint_background,
             });
+            for segment in &resize_feedback_regions {
+                surfaces.push(Surface {
+                    id: "ui:resize:edges",
+                    content: SurfaceContent::CellsWithUnderlay(*segment),
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        width: size.cols,
+                        height: size.rows,
+                    },
+                    frame: &resize_feedback_surface.frame,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                });
+            }
+            // Artwork may extend into the joined item's framing column. Keep
+            // it above passive materials, but below modal contents and effects.
+            let mut artwork_surface = Some(Surface {
+                id: "ui:sidebar:artwork",
+                content: SurfaceContent::Graphics,
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: size.cols,
+                    height: size.rows,
+                },
+                frame: &artwork_effects,
+                selection: &[],
+                search: &[],
+                focused: false,
+                faint: faint_background,
+            });
             for layer in app.overlays.layers() {
+                if layer.policy.modal
+                    && let Some(artwork) = artwork_surface.take()
+                {
+                    surfaces.push(artwork);
+                }
                 if layer.id == "ui:modal"
                     && let Some(regions) = finder_cards
                 {
@@ -4757,15 +4990,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     }
                 } else if layer.id == crate::popover::SURFACE_ID && popover_graphical {
                     if let Some(rect) = tooltip {
-                        // Project opaque padding too; sparse material only fills
-                        // partial cells and expects the complete interior cleared.
-                        let local =
-                            bkpr_tui_framework::window::content(app.popover.surface.frame.size);
-                        let body = Rect {
-                            x: rect.x + local.x,
-                            y: rect.y + local.y,
-                            ..local
-                        };
+                        // Full cells in the joined contour include the card's
+                        // framing column at the bridge, not just its text body.
+                        let body = rect;
                         let first = surfaces.len();
                         for span in graphics.joined_opaque_spans() {
                             if span.row < body.y
@@ -4874,6 +5101,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     focused: false,
                     faint: faint_background && !layer.policy.modal,
                 });
+            }
+            if let Some(artwork) = artwork_surface {
+                surfaces.push(artwork);
             }
             if searching && !popup {
                 surfaces.push(Surface {
@@ -4985,6 +5215,9 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
             };
             if geometry_changed {
                 app.retire_resize("terminal geometry changed");
+                app.validate_sidebar_resize(input_size);
+                app.clear_resize_hover();
+                app.sidebar_resize_hover = false;
             }
             let resized_rects = (input_size != size).then(|| app.rects(input_size));
             let input_rects = resized_rects.as_deref().unwrap_or(&rects);
@@ -5346,6 +5579,7 @@ mod tests {
                 color_query_pending: false,
                 last_button: MouseButton::None,
                 pointer_capture: None,
+                sidebar_resize_hover: false,
                 pressed_pointers: RefCell::new(Vec::new()),
                 terminal_selection: selection::State::default(),
                 resizing: resizing::State::default(),
@@ -5375,10 +5609,9 @@ mod tests {
         };
         app.state.sidebar.active = false;
         app.refresh_guide(size);
-        let sidebar = screen_geometry(size).0;
+        let sidebar = app.screen_geometry(size).0;
         let normal = app.guide_geometry(size, false).unwrap();
         assert_eq!(normal.x, sidebar.x);
-        assert!(normal.width <= sidebar.width);
         assert_eq!(normal.y + normal.height, size.rows);
         assert_eq!(app.guide_accent(), None);
         app.options.read_only = true;
@@ -5401,8 +5634,8 @@ mod tests {
         };
         app.refresh_guide(narrow);
         let overflow = app.guide_geometry(narrow, false).unwrap();
-        assert_eq!(overflow.x, screen_geometry(narrow).0.x);
-        assert!(overflow.width > screen_geometry(narrow).0.width);
+        assert_eq!(overflow.x, app.screen_geometry(narrow).0.x);
+        assert!(overflow.width > app.screen_geometry(narrow).0.width);
         assert!(overflow.width <= narrow.cols);
         assert!(received.try_recv().is_err());
     }
@@ -6207,6 +6440,7 @@ mod tests {
         let workspace_hits = chrome(
             &mut surface,
             crate::controller::ChromeContext {
+                sidebar_popup: None,
                 size,
                 state: &app.state,
                 registry: &app.registry,
@@ -6287,7 +6521,7 @@ mod tests {
                 rows: 32,
                 ..size()
             };
-            let (_, body) = screen_geometry(size);
+            let (_, body) = app.screen_geometry(size);
             let first = Rect {
                 width: body.width / 2,
                 ..body
@@ -7890,7 +8124,7 @@ mod tests {
         let mut splits = Vec::new();
         crate::tiling::dividers(
             app.registry.workspaces[0].windows[0].layout.as_ref(),
-            screen_geometry(size).1,
+            app.screen_geometry(size).1,
             &mut splits,
         );
         splits[0].divider
@@ -7953,6 +8187,166 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn sidebar_drag_is_local_in_read_only_clients_and_consumes_the_entire_gesture() {
+        let (mut app, capture) = fixture();
+        let pointer = resize_fixture(&mut app);
+        app.options.read_only = true;
+        let before = serde_json::to_value(&app.registry).unwrap();
+        let width = app.screen_geometry(pointer.size).0.width;
+        pointer.send(&mut app, 35, width - 1, 3, false);
+        assert!(app.sidebar_resize_hover);
+        pointer.send(&mut app, 0, width - 1, 3, false);
+        pointer.send(&mut app, 32, width - 1, 3, false);
+        assert_eq!(app.screen_geometry(pointer.size).0.width, width);
+        pointer.send(&mut app, 32, width + 8, 3, false);
+        pointer.send(&mut app, 0, width + 8, 3, true);
+        assert_eq!(app.screen_geometry(pointer.size).0.width, width + 9);
+        assert!(app.pointer_capture.is_none());
+        assert_eq!(serde_json::to_value(&app.registry).unwrap(), before);
+        assert!(
+            capture.try_recv().is_err(),
+            "sidebar drag reached the backend"
+        );
+    }
+
+    #[test]
+    fn sidebar_drag_cancellation_tombstones_motion_and_release() {
+        for escape in [false, true] {
+            let (mut app, capture) = fixture();
+            let pointer = resize_fixture(&mut app);
+            let width = app.screen_geometry(pointer.size).0.width;
+            pointer.send(&mut app, 0, width, 3, false);
+            if escape {
+                app.key(key("Escape"), &mut Vec::new(), pointer.size, &pointer.rects)
+                    .unwrap();
+            } else {
+                app.host_focused = false;
+            }
+            pointer.send(&mut app, 32, width + 10, 3, false);
+            pointer.send(&mut app, 0, width + 10, 3, true);
+            assert_eq!(app.screen_geometry(pointer.size).0.width, width);
+            assert!(app.pointer_capture.is_none());
+            assert!(
+                capture.try_recv().is_err(),
+                "cancelled resize leaked native input"
+            );
+        }
+    }
+
+    #[test]
+    fn resize_hover_obeys_modal_and_read_only_ownership_and_geometry_retirement() {
+        let (mut app, capture) = fixture();
+        let pointer = resize_fixture(&mut app);
+        let divider = resize_divider(&app, pointer.size);
+        pointer.send(&mut app, 35, divider.x, 3, false);
+        assert_eq!(app.resize_feedback(pointer.size), vec![divider]);
+        app.overlays.present(
+            "ui:modal",
+            OverlayPlacement::centered(pointer.size, 30, 10),
+            OverlayPolicy::MODAL,
+            None,
+        );
+        pointer.send(&mut app, 35, divider.x, 3, false);
+        assert!(app.resize_feedback(pointer.size).is_empty());
+        app.overlays.remove("ui:modal");
+        app.options.read_only = true;
+        pointer.send(&mut app, 35, divider.x, 3, false);
+        assert!(app.resize_feedback(pointer.size).is_empty());
+        app.options.read_only = false;
+        pointer.send(&mut app, 0, divider.x, 3, false);
+        assert!(app.resize_capturing());
+        app.state.sidebar.preferred_columns = Some(app.screen_geometry(pointer.size).0.width + 4);
+        app.validate_resize(pointer.size);
+        assert!(!app.resize_capturing());
+        pointer.send(&mut app, 0, divider.x + 3, 5, true);
+        assert!(capture.try_recv().is_err());
+    }
+
+    #[test]
+    fn corner_pointer_drag_submits_both_axes_in_one_revision_guarded_layout() {
+        use std::{os::unix::net::UnixListener, thread};
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("corner.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let endpoint = Endpoint::unmanaged(&socket);
+        let (mut app, capture) = fixture();
+        app.socket = &endpoint;
+        let mut pointer = resize_fixture(&mut app);
+        let mut gamma = app.registry.panes[0].clone();
+        gamma.id = "gamma".into();
+        app.registry.panes.push(gamma);
+        if let Some(LayoutNode::Split { first, .. }) =
+            &mut app.registry.workspaces[0].windows[0].layout
+        {
+            **first = LayoutNode::Split {
+                axis: Axis::Vertical,
+                ratio: 500,
+                first: Box::new(LayoutNode::Leaf {
+                    pane_id: "focused-pane".into(),
+                }),
+                second: Box::new(LayoutNode::Leaf {
+                    pane_id: "gamma".into(),
+                }),
+            };
+        }
+        pointer.rects = app.rects(pointer.size);
+        let mut splits = Vec::new();
+        crate::tiling::dividers(
+            app.registry.workspaces[0].windows[0].layout.as_ref(),
+            app.screen_geometry(pointer.size).1,
+            &mut splits,
+        );
+        let (x, y) = (splits[0].divider.x, splits[1].divider.y - 2);
+        pointer.send(&mut app, 35, x, y, false);
+        assert_eq!(
+            app.resize_feedback(pointer.size),
+            vec![splits[0].divider, splits[1].divider]
+        );
+        pointer.send(&mut app, 0, x, y, false);
+        pointer.send(&mut app, 32, x, y, false);
+        assert!(
+            !app.jobs.contains("manage:window:resize-window"),
+            "near-edge press jumped"
+        );
+        let mut registry = app.registry.clone();
+        let (observed, requests) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let operation = read_resize_request(&mut stream);
+            accept_resize_request(&mut registry, &operation);
+            observed.send(operation).unwrap();
+            resize_reply(&mut stream, &registry);
+        });
+        pointer.send(&mut app, 32, x + 4, y + 3, false);
+        pointer.send(&mut app, 0, x + 4, y + 3, true);
+        let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(
+            request,
+            Operation::LayoutUpdate {
+                expected_revision: 7,
+                ..
+            }
+        ));
+        wait_background(&mut app, "manage:window:resize-window");
+        app.flush_resize().unwrap();
+        server.join().unwrap();
+        let mut resized = Vec::new();
+        crate::tiling::dividers(
+            app.registry.workspaces[0].windows[0].layout.as_ref(),
+            app.screen_geometry(pointer.size).1,
+            &mut resized,
+        );
+        assert_eq!(resized[0].divider.x, splits[0].divider.x + 4);
+        assert_eq!(resized[1].divider.y, splits[1].divider.y + 3);
+        assert_eq!(app.registry.workspaces[0].windows[0].revision, 8);
+        assert!(!app.resize_capturing());
+        assert!(
+            capture.try_recv().is_err(),
+            "corner drag leaked application mouse input"
+        );
     }
 
     #[test]
@@ -8061,7 +8455,7 @@ mod tests {
                 let mut final_rects = Vec::new();
                 layout_rects(
                     app.registry.workspaces[0].windows[0].layout.as_ref(),
-                    screen_geometry(pointer.size).1,
+                    app.screen_geometry(pointer.size).1,
                     &mut final_rects,
                 );
                 let pane = final_rects

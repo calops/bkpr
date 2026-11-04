@@ -86,6 +86,9 @@
 * Publish ephemeral canonical-repository color slots from the backend, sharing linked worktrees and retaining reservations through metadata uncertainty. Apply main's finite terminal-derived project accents to names and markers across sidebar, finder and popups; preserve neutral branches/tree guides and semantic status colors.
 * Replace the framework's background-only retained theme method with `apply_theme_with_colors` and generic foreground/background spans. Resolve visible ink correctly through inverse styling without flattening selected backgrounds or wide/combining glyphs.
 * Reuse warm joined materials immediately and retain source-valid inactive image projections in the existing renderer, with explicit byte/count bounds and prompt source retirement. Actual dark/light terminal checks reduce fully warmed popup-switch image payloads from 1,731,072 bytes to zero without reducing visible image support.
+* Preserve still-valid SVG icons and pane/popup contours while color-set changes prepare missing variants. Harvest matching undrained publications without retaining stale colors, dimensions or styles; keep all image retirement/placement changes inside the synchronized frame.
+* Track hidden cursor position independently of visibility. Anchor sidebar focus to its highlighted rendered item, preserve that logical position under passive plates, and restore native/modal cursors without showing hidden cursors or emitting idle output.
+* Project shared sidebar artwork above passive joined borders and below modal content, preserving the hive's half-cell gutter ink without cropping, wider margins or cloned cell canvases.
 * Add `Ctrl-b g` to reversibly switch fancy/text chrome, including inside focused finders/forms, without losing query/cursor/draft state, disabling native application images, resizing panes or discarding bounded prerender caches.
 * Keep provider-dependent forge/PR/CI overlay content unavailable until its backend contract exists. No provider calls, decorative animation or command palette are introduced.
 
@@ -119,9 +122,12 @@
 
 ### Native tiled-pane resizing
 
-* Add `Ctrl-b e` resize mode: arrows move a containing divider by one cell, Shift moves five, held arrows repeat, and Enter/Esc finishes without application input. Add left-drag resizing on real one-cell divider gutters outside pane content.
+* Add `Ctrl-b e` resize mode: arrows move a containing divider by one cell, Shift moves five, held arrows repeat, and Enter/Esc finishes without application input. Frame dragging uses main/fork quadrant proximity and frozen grab offsets to move both axes in one revision-guarded layout update.
 * Share partition arithmetic across pane projection, divider drawing and hit testing. Preserve unrelated ratios/topology, clamp useful subtree sizes and keep small-window projection separate from saved layout intent.
 * Reuse the existing revisioned backend layout API and bounded background pool. Retain only the latest pending pointer position behind one in-flight commit, preserve final release, block read-only mutation and retire foreign/focus/modal/geometry changes without replaying ambiguous updates.
+* Make the sidebar's right edge draggable with client-local width, terminal-resize clamping and whole-gesture cancellation. Keep read-only viewport sizing independent of backend layout mutation. Apply one extra right-edge cell to every keybind popup through shared guide layout, without moving its content or overflowing the screen.
+* Highlight affected resize edges in both rich and rounded text rendering. Keep cyan/background policy in the client; let framework clipped cell layers place cached chrome beneath edge glyphs without discarding source resources or shadows.
+* Resolve pending legacy keys before dispatching complete framed terminal reports, preventing structured key releases from overtaking an earlier Escape.
 
 ### Native pane rearrangement
 
