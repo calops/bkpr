@@ -1,7 +1,7 @@
 use bkpr_protocol::{
     CaptureEvent, CaptureGrant, ConversationSource, HarnessKind, LayoutNode, Operation,
     PaneRequest, PaneSpawnEntry, PaneSpawnSpec, PaneStatus, RegistryResult, RegistrySnapshot,
-    Request, Response, Size, SpawnLayoutNode,
+    Request, Response, Size, SpawnDefaults, SpawnLayoutNode,
 };
 use std::{
     fs,
@@ -72,7 +72,7 @@ impl Fixture {
             utility: std::env::current_exe().unwrap(),
         }
     }
-    fn command(&self, argv: &[&str]) -> Command {
+    fn daemon_command(&self) -> Command {
         let executable = std::env::var_os("BKPR_TEST_SERVER")
             .unwrap_or_else(|| env!("CARGO_BIN_EXE_bkprd").into());
         let mut command = Command::new(executable);
@@ -90,19 +90,27 @@ impl Fixture {
             .arg(&self.state)
             .arg("--bkpr")
             .arg(&self.utility)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        command
+    }
+    fn command(&self, argv: &[&str]) -> Command {
+        let mut command = self.daemon_command();
+        command
             .arg("--home")
             .arg(&self.home)
             .arg("--cwd")
-            .arg(&self.cwd)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
+            .arg(&self.cwd);
         if !argv.is_empty() {
             command.arg("--").args(argv);
         }
         command
     }
     fn start(&self, argv: &[&str]) -> Daemon {
-        let child = self.command(argv).spawn().unwrap();
+        self.start_command(self.command(argv))
+    }
+    fn start_command(&self, mut command: Command) -> Daemon {
+        let child = command.spawn().unwrap();
         let mut daemon = Daemon {
             child,
             socket: self.socket.clone(),
@@ -143,6 +151,9 @@ impl Daemon {
         let response: RegistryResult =
             serde_json::from_value(self.send(Operation::Inspect)).unwrap();
         response.registry
+    }
+    fn spawn_defaults(&self) -> Option<SpawnDefaults> {
+        serde_json::from_value(self.send(Operation::SessionInfo)["spawn_defaults"].clone()).unwrap()
     }
     fn stop(&mut self) {
         self.send(Operation::Shutdown);
@@ -248,6 +259,19 @@ fn explicit_fresh_bootstrap_creates_a_usable_pane_and_second_daemon_cannot_reset
     let fixture = Fixture::new();
     let mut daemon = fixture.start(&["/bin/sh", "-c", "printf fresh > fresh; exec sleep 60"]);
     wait_for(&fixture.cwd.join("fresh"), b"fresh");
+    assert_eq!(
+        daemon.spawn_defaults(),
+        Some(SpawnDefaults {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf fresh > fresh; exec sleep 60".into(),
+            ],
+            cwd: fixture.cwd.clone(),
+            home: fixture.home.clone(),
+            isolated_environment: true,
+        })
+    );
     let before = daemon.snapshot();
     assert_eq!(before.workspaces.len(), 1);
     assert_eq!(before.workspaces[0].name, "Main");
@@ -282,12 +306,14 @@ fn explicit_fresh_bootstrap_creates_a_usable_pane_and_second_daemon_cannot_reset
 fn headless_fresh_and_loaded_startup_never_spawns_or_replays_history() {
     let fixture = Fixture::new();
     let mut first = fixture.start(&[]);
+    assert_eq!(first.spawn_defaults(), None);
     assert!(first.snapshot().workspaces.is_empty());
     assert!(first.snapshot().panes.is_empty());
     let (_, pane) = historical(&fixture, &first);
     let before = first.snapshot();
     first.stop();
     let mut second = fixture.start(&[]);
+    assert_eq!(second.spawn_defaults(), None);
     let restored = second.snapshot();
     assert_eq!(workspaces(&restored), workspaces(&before));
     assert_eq!(restored.panes.len(), before.panes.len());
@@ -304,6 +330,118 @@ fn headless_fresh_and_loaded_startup_never_spawns_or_replays_history() {
         b"original"
     );
     second.stop();
+}
+
+#[test]
+fn headless_startup_captures_daemon_environment_without_running_its_shell() {
+    let fixture = Fixture::new();
+    let shell = fixture.home.join("owned-startup-shell");
+    let marker = fixture.cwd.join("unexpected-shell-execution");
+    fs::write(
+        &shell,
+        b"#!/bin/sh\nprintf executed > unexpected-shell-execution\n",
+    )
+    .unwrap();
+    fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut command = fixture.daemon_command();
+    command.current_dir(&fixture.cwd).env("SHELL", &shell);
+    let mut daemon = fixture.start_command(command);
+    assert_eq!(
+        daemon.spawn_defaults(),
+        Some(SpawnDefaults {
+            argv: vec![shell.into_os_string().into_string().unwrap()],
+            cwd: fixture.cwd.clone(),
+            home: fixture.home.clone(),
+            isolated_environment: false,
+        })
+    );
+    let snapshot = daemon.snapshot();
+    assert!(snapshot.panes.is_empty());
+    assert!(snapshot.workspaces.is_empty());
+    assert!(!marker.exists());
+    daemon.stop();
+    assert!(!marker.exists());
+}
+
+#[test]
+fn configured_headless_restart_uses_current_daemon_inputs_not_saved_panes() {
+    let fixture = Fixture::new();
+    let mut first = fixture.start(&[]);
+    historical(&fixture, &first);
+    first.stop();
+    let shell = fixture.home.join("current-shell-does-not-need-to-exist");
+    let mut command = fixture.command(&[]);
+    command
+        .current_dir(&fixture.home)
+        .env("SHELL", &shell)
+        .env("HOME", fixture.home.join("not-the-explicit-home"));
+    let mut daemon = fixture.start_command(command);
+    assert_eq!(
+        daemon.spawn_defaults(),
+        Some(SpawnDefaults {
+            argv: vec![shell.into_os_string().into_string().unwrap()],
+            cwd: fixture.cwd.clone(),
+            home: fixture.home.clone(),
+            isolated_environment: true,
+        })
+    );
+    let snapshot = daemon.snapshot();
+    assert_eq!(snapshot.panes.len(), 1);
+    assert_eq!(snapshot.panes[0].status, PaneStatus::Stopped);
+    assert_eq!(
+        fs::read(fixture.cwd.join("original-runs")).unwrap(),
+        b"original"
+    );
+    daemon.stop();
+}
+
+#[test]
+fn unavailable_headless_defaults_remain_unconfigured_without_creating_paths() {
+    for (variable, value) in [
+        ("SHELL", None),
+        ("SHELL", Some("")),
+        ("HOME", None),
+        ("HOME", Some("")),
+        ("HOME", Some("relative-home")),
+    ] {
+        let fixture = Fixture::new();
+        let mut command = fixture.daemon_command();
+        command.current_dir(&fixture.cwd).env("SHELL", "/bin/sh");
+        match value {
+            Some(value) => {
+                command.env(variable, value);
+            }
+            None => {
+                command.env_remove(variable);
+            }
+        }
+        let mut daemon = fixture.start_command(command);
+        assert_eq!(daemon.spawn_defaults(), None, "{variable}={value:?}");
+        assert!(daemon.snapshot().panes.is_empty());
+        assert!(!fixture.cwd.join("relative-home").exists());
+        daemon.stop();
+    }
+}
+
+#[test]
+fn explicit_startup_without_home_preserves_the_prerequisite_failure() {
+    let fixture = Fixture::new();
+    let output = fixture
+        .daemon_command()
+        .env_remove("HOME")
+        .current_dir(&fixture.cwd)
+        .args([
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf executed > unexpected-execution",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("HOME is unavailable; supply --home"));
+    assert!(!fixture.cwd.join("unexpected-execution").exists());
+    assert!(!fixture.socket.exists());
 }
 
 #[test]
@@ -386,6 +524,19 @@ fn explicit_loaded_bootstrap_restores_owned_layout_with_current_shell_and_latest
         "-c",
         "pwd -P > restored-cwd; printf current >> current-runs; exec sleep 60",
     ]);
+    assert_eq!(
+        restored.spawn_defaults(),
+        Some(SpawnDefaults {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "pwd -P > restored-cwd; printf current >> current-runs; exec sleep 60".into(),
+            ],
+            cwd: fixture.cwd.clone(),
+            home: fixture.home.clone(),
+            isolated_environment: true,
+        })
+    );
     wait_for(&fixture.cwd.join("current-runs"), b"current");
     wait_for(&later.join("current-runs"), b"currentcurrentcurrent");
     wait_for(&independent_cwd.join("current-runs"), b"current");

@@ -32,6 +32,12 @@
 * Multiplex opaque native binary streams through one no-PTY SSH connection and one remote helper. Reuse native process-bound client authority, pinned session/daemon identities, bounded observation/control/lifetime admission and an independently enforced remote lease.
 * Add nonactivating identity inspection, persistent headless JSON-line control and one-shot managed requests. Keep `-d` exclusive to persistent connection, forwarding explicit, launch credentials local and failed/unknown mutations nonreplayable. Native family 6 and durable schema 4 stay unchanged; remote TUI attachment remains deferred.
 
+### Daemon spawn defaults
+
+* Publish immutable command, cwd, home and isolation defaults beside `SessionInfo`, preserving native path bytes without exporting environment variables or launch credentials.
+* Capture current daemon startup configuration once, including headless daemon `SHELL`. Keep missing defaults explicitly unavailable; never infer them from saved or running pane commands, and never execute a program on a headless metadata query.
+* Permit authenticated identity/defaults reads before client activation, including after persistence failure. Preserve token, native peer and lifetime checks, mutable-operation gates and takeover ordering without new per-key checks, wire-family changes or durable records.
+
 ### Native named sessions
 
 * Restore `--session/-s` with default `bkpr`, exact UTF-8 names and separate daemon/state roots. Add read-only `bkpr list` and explicitly targeted `bkpr stop`; serialize concurrent bootstrap and validate stored/live identity without automatically restarting a live incompatible server.

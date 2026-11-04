@@ -256,6 +256,29 @@ There is no automatic reconnect or mutation replay. A mutation accepted before
 its reply was lost returns an **unknown outcome**, not a successful-looking
 acknowledgement. Reconnect explicitly and inspect state before deciding what to do.
 
+### Daemon spawn defaults
+
+`SessionInfo` includes immutable `spawn_defaults`: command argv, working
+directory, home and environment-isolation policy. These are daemon startup
+configuration, not an environment export or a saved pane recipe.
+
+The command supplied to `bkprd` after `--` is its current default command, as
+used for cold restoration. A headless daemon instead captures its own nonempty
+`SHELL`. Explicit daemon `--home` and `--cwd` override daemon HOME and invocation
+cwd; `--home` also selects isolated child environments. Missing or invalid
+headless configuration leaves defaults unavailable, without inventing a shell
+or path. Headless startup and metadata queries still execute nothing.
+
+Authenticated registered clients can read identity/defaults before activation,
+without takeover, agent-source selection or view admission. Other inactive
+operations remain rejected. Remote initialization must obtain valid daemon
+defaults rather than local or SSH-helper environment values; an older daemon
+without this metadata fails before takeover and is never automatically restarted.
+
+Defaults are not persisted or inferred from existing executions. A new daemon
+captures its current configuration; creating or replacing panes does not change
+it. Explicit callers retain arbitrary commands through the existing spawn API.
+
 ### Pane context
 
 Every native pane exec receives `BKPR_SESSION_ID`, `BKPR_SESSION_NAME` and

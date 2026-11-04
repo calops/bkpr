@@ -383,7 +383,10 @@ impl BoundSocket {
                         // Immutable daemon identity must remain readable when
                         // persistence is poisoned: normal stop validates its
                         // exact target through SessionInfo before cleanup.
-                        if !matches!(&request.operation, Operation::SessionInfo | Operation::Shutdown) {
+                        if !matches!(&request.operation, Operation::SessionInfo | Operation::Shutdown)
+                            && !matches!(&request.operation, Operation::Client { request, .. }
+                                if matches!(request.as_ref(), Operation::SessionInfo))
+                        {
                             registry.request_admission()?;
                         }
                         anyhow::ensure!(

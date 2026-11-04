@@ -121,6 +121,7 @@ struct State {
 struct Inner {
     root: PathBuf,
     session: SessionInfo,
+    spawn_defaults: std::sync::OnceLock<SpawnDefaults>,
     clients: Mutex<BTreeMap<String, Arc<sessions::ClientLease>>>,
     state: Mutex<State>,
     // Serialize durable writers, never pane I/O. Lock order: transaction, then state.
@@ -513,6 +514,7 @@ impl Registry {
             inner: Arc::new(Inner {
                 root: root.to_owned(),
                 session,
+                spawn_defaults: std::sync::OnceLock::new(),
                 clients: Mutex::new(BTreeMap::new()),
                 state: Mutex::new(State {
                     record,
@@ -684,6 +686,14 @@ impl Registry {
         validate_record(&next)?;
         commit(&self.inner, next, |_| {})
     }
+    /// Publish validated startup defaults once, without touching environment or disk.
+    pub fn configure_spawn_defaults(&self, defaults: SpawnDefaults) -> Result<()> {
+        validate_spawn_arguments(&defaults.argv, &defaults.cwd, &defaults.home)?;
+        self.inner
+            .spawn_defaults
+            .set(defaults)
+            .map_err(|_| anyhow::anyhow!("spawn defaults already configured"))
+    }
     pub fn request(&self, request: Request) -> Result<Payload> {
         self.request_for_client(request, None)
     }
@@ -696,11 +706,16 @@ impl Registry {
             request.version == PROTOCOL_VERSION,
             "unsupported protocol version"
         );
-        if let Some(client) = &client {
+        if let Some(client) = &client
+            && !matches!(&request.operation, Operation::SessionInfo)
+        {
             client.ensure_active()?;
         }
         match request.operation {
-            Operation::SessionInfo => Ok(json!({"session":self.inner.session})),
+            Operation::SessionInfo => Ok(json!({
+                "session": self.inner.session,
+                "spawn_defaults": self.inner.spawn_defaults.get(),
+            })),
             Operation::ClientRegister { .. }
             | Operation::Client { .. }
             | Operation::ClientActivate { .. }
@@ -2112,24 +2127,28 @@ fn existing_spawn_layout(node: &LayoutNode) -> SpawnLayoutNode {
         },
     }
 }
-fn validate_spawn_spec(spec: &PaneSpawnSpec) -> Result<String> {
+fn validate_spawn_arguments(argv: &[String], cwd: &Path, home: &Path) -> Result<()> {
     use std::os::unix::ffi::OsStrExt;
-    valid_size(spec.size)?;
     ensure!(
-        !spec.argv.is_empty()
-            && !spec.argv[0].is_empty()
-            && spec.argv.len() <= 256
-            && spec.argv.iter().map(String::len).sum::<usize>() <= 128 * 1024
-            && spec.argv.iter().all(|arg| !arg.contains('\0')),
+        !argv.is_empty()
+            && !argv[0].is_empty()
+            && argv.len() <= 256
+            && argv.iter().map(String::len).sum::<usize>() <= 128 * 1024
+            && argv.iter().all(|arg| !arg.contains('\0')),
         "invalid or excessive argv"
     );
     ensure!(
-        spec.cwd.is_absolute()
-            && spec.home.is_absolute()
-            && !spec.cwd.as_os_str().as_bytes().contains(&0)
-            && !spec.home.as_os_str().as_bytes().contains(&0),
+        cwd.is_absolute()
+            && home.is_absolute()
+            && !cwd.as_os_str().as_bytes().contains(&0)
+            && !home.as_os_str().as_bytes().contains(&0),
         "invalid spawn paths"
     );
+    Ok(())
+}
+fn validate_spawn_spec(spec: &PaneSpawnSpec) -> Result<String> {
+    valid_size(spec.size)?;
+    validate_spawn_arguments(&spec.argv, &spec.cwd, &spec.home)?;
     let title = spec.title.clone().unwrap_or_else(|| {
         Path::new(&spec.argv[0])
             .file_name()
