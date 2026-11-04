@@ -55,7 +55,8 @@ impl Resources {
         let cursor = snapshot.cursor()?;
         let mut row_iter = self.rows.update(&snapshot)?;
         let mut rows = Vec::with_capacity(size.rows as usize);
-        let mut graphemes = Vec::new();
+        let mut graphemes = String::new();
+        let mut scalar_utf8 = [0; 4];
         while let Some(row) = row_iter.next() {
             let placeholders = row.raw_row()?.has_kitty_virtual_placeholder()?;
             let mut cell_iter = self.cells.update(row)?;
@@ -67,24 +68,38 @@ impl Resources {
                     CellWide::SpacerHead | CellWide::SpacerTail => 0,
                     _ => 1,
                 };
-                let count = cell.graphemes_len()? as usize;
-                if count > 65536 {
-                    return Err(Error("grapheme exceeds bounded snapshot length".into()));
-                }
-                graphemes.resize(count, '\0');
-                if count > 0 {
-                    cell.graphemes_buf(&mut graphemes)?;
-                }
+                let content_tag = raw.content_tag()?;
+                let glyph: &str = match content_tag {
+                    CellContentTag::Codepoint if width != 0 => match raw.codepoint()? {
+                        0 => "",
+                        point => char::from_u32(point)
+                            .ok_or_else(|| Error("invalid native cell codepoint".into()))?
+                            .encode_utf8(&mut scalar_utf8),
+                    },
+                    CellContentTag::BgColorPalette | CellContentTag::BgColorRgb => "",
+                    _ => {
+                        let count = cell.graphemes_len()? as usize;
+                        if count > 65536 {
+                            return Err(Error("grapheme exceeds bounded snapshot length".into()));
+                        }
+                        if count == 0 {
+                            graphemes.clear();
+                        } else {
+                            cell.graphemes_utf8(&mut graphemes)?;
+                        }
+                        graphemes.as_str()
+                    }
+                };
                 // Native placements, not Unicode placeholders, are authoritative.
-                let text = if placeholders && graphemes.first() == Some(&'\u{10eeee}') {
+                let text = if placeholders && glyph.starts_with('\u{10eeee}') {
                     Default::default()
                 } else {
-                    graphemes.iter().copied().collect()
+                    glyph.into()
                 };
                 let style = cell.style()?;
                 let foreground = rgb(cell.fg_color()?.unwrap_or(colors.foreground));
                 let background = rgb(cell.bg_color()?.unwrap_or(colors.background));
-                let background_source = match raw.content_tag()? {
+                let background_source = match content_tag {
                     CellContentTag::BgColorPalette => {
                         ColorSource::Palette(raw.bg_color_palette()?.0)
                     }
