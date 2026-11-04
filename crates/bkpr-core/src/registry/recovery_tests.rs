@@ -78,6 +78,8 @@ fn restart_retains_only_native_descriptor_and_raw_cwd_without_live_authority_or_
     let before = fs::read(root.path().join("registry.json")).unwrap();
     let list = registry
         .request(Request::new(Operation::RecoveryList))
+        .unwrap()
+        .into_json()
         .unwrap();
     let candidates: Vec<RecoveryCandidate> =
         serde_json::from_value(list["recoveries"].clone()).unwrap();

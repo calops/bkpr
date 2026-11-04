@@ -43,9 +43,15 @@ impl Fixture {
         let fixture = Self { pane, _root: root };
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let snapshot: PaneSnapshot =
-                serde_json::from_value(fixture.pane.request(PaneRequest::Inspect).unwrap())
-                    .unwrap();
+            let snapshot: PaneSnapshot = serde_json::from_value(
+                fixture
+                    .pane
+                    .request(PaneRequest::Inspect)
+                    .unwrap()
+                    .into_json()
+                    .unwrap(),
+            )
+            .unwrap();
             if snapshot.frame.is_some_and(|f| {
                 f.rows[0]
                     .cells
@@ -64,6 +70,8 @@ impl Fixture {
     fn attach(&self) -> String {
         self.pane
             .request(PaneRequest::Attach { spec: spec() })
+            .unwrap()
+            .into_json()
             .unwrap()["view_id"]
             .as_str()
             .unwrap()
@@ -75,6 +83,8 @@ impl Fixture {
                 view_id: id.into(),
                 action,
             })
+            .unwrap()
+            .into_json()
             .unwrap()
     }
     fn poll(&self, id: &str, frame_after: u64) -> PaneSnapshot {
@@ -90,6 +100,8 @@ impl Fixture {
                     row_deltas: true,
                     scene_encoding: None,
                 })
+                .unwrap()
+                .into_json()
                 .unwrap(),
         )
         .unwrap()
@@ -166,7 +178,6 @@ fn read_only_search_publishes_annotations_without_scene_clones_or_input_grants()
     );
     let no_scene = f.poll(&reader, before.revision);
     assert!(no_scene.frame.is_none());
-    assert!(no_scene.row_delta.is_none());
     f.search(&reader, SearchAction::Clear);
     assert!(f.poll(&reader, before.revision).search.is_none());
 }
@@ -190,6 +201,8 @@ fn inspection_epochs_reject_queued_queries_and_hidden_completion_without_revival
             view_id: reader.clone(),
             spec: spec(),
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     f.pane
         .command(Mutation::Search {
@@ -206,6 +219,8 @@ fn inspection_epochs_reject_queued_queries_and_hidden_completion_without_revival
             view_id: reader.clone(),
             spec: hidden,
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     assert!(f.poll(&reader, 0).search.is_none());
     assert!(
@@ -221,6 +236,8 @@ fn inspection_epochs_reject_queued_queries_and_hidden_completion_without_revival
             view_id: reader.clone(),
             spec: spec(),
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     assert!(
         f.pane
@@ -248,6 +265,8 @@ fn inspection_epochs_reject_queued_queries_and_hidden_completion_without_revival
         .request(PaneRequest::Detach {
             view_id: reader.clone(),
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     assert!(
         f.pane
@@ -288,7 +307,11 @@ fn completion_retires_search_and_query_round_trips_disambiguate_repeated_text() 
         .unwrap();
     assert!(a < b && b < c);
     assert_eq!(f.complete(&reader).search.unwrap().generation, c);
-    f.pane.request(PaneRequest::Shutdown).unwrap();
+    f.pane
+        .request(PaneRequest::Shutdown)
+        .unwrap()
+        .into_json()
+        .unwrap();
     assert!(f.poll(&reader, 0).search.is_none());
     assert!(
         f.pane

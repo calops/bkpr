@@ -1,0 +1,112 @@
+// Generated Rust is checked in; regenerate with Planus CLI 1.3.0:
+// planus rust --format false -o scene_generated.rs scene.fbs
+// Tables evolve by appending optional fields; structs are layout-frozen.
+namespace scene;
+
+enum ColorKind : ubyte { Default, Palette, Rgb }
+enum CursorShape : ubyte { Bar, Block, Underline, Hollow }
+enum PixelFormat : ubyte { Rgb, Rgba, GrayAlpha, Gray }
+enum ImageLayer : ubyte { BelowBackground, BelowText, AboveText }
+
+struct Size {
+  cols:ushort;
+  rows:ushort;
+  cell_width:uint;
+  cell_height:uint;
+}
+
+// RGB is packed as 0x00RRGGBB; palette payloads contain the index.
+struct Style {
+  foreground:uint;
+  background:uint;
+  underline_color:uint;
+  foreground_kind:ColorKind;
+  foreground_value:uint;
+  background_kind:ColorKind;
+  background_value:uint;
+  underline_kind:ColorKind;
+  underline_value:uint;
+  flags:ushort;
+  underline:ubyte;
+}
+
+struct Layout {
+  length:uint;
+  width:ubyte;
+  count:uint;
+}
+
+struct Placement {
+  image_id:uint;
+  generation:ulong;
+  placement_id:uint;
+  col:int;
+  row:int;
+  offset_x:uint;
+  offset_y:uint;
+  width:uint;
+  height:uint;
+  source_x:uint;
+  source_y:uint;
+  source_width:uint;
+  source_height:uint;
+  layer:ImageLayer;
+  z:int;
+}
+
+table Cursor {
+  x:ushort;
+  y:ushort;
+  visible:bool;
+  blinking:bool;
+  shape:CursorShape;
+  has_color:bool;
+  color:uint;
+}
+
+table Image {
+  id:uint;
+  generation:ulong;
+  width:uint;
+  height:uint;
+  format:PixelFormat;
+  pixels:[ubyte] (required);
+}
+
+table Frame {
+  size:Size (required);
+  cursor:Cursor (required);
+  foreground:uint;
+  background:uint;
+  palette:[uint] (required);
+  images:[Image] (required);
+  placements:[Placement] (required);
+  alternate_screen:bool;
+  mouse_reporting:bool;
+  scrollback_total:ulong;
+  scrollback_offset:ulong;
+}
+
+table Run {
+  style:uint;
+  has_link:bool;
+  link:uint;
+  text:string (required);
+  layout:[Layout] (required);
+}
+
+table Row {
+  index:ulong;
+  runs:[Run] (required);
+}
+
+table Scene {
+  version:ubyte;
+  revision:ulong;
+  has_base_revision:bool;
+  base_revision:ulong;
+  frame:Frame (required);
+  styles:[Style] (required);
+  hyperlinks:[string] (required);
+  rows:[Row] (required);
+}

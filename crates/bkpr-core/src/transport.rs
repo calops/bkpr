@@ -3,15 +3,18 @@ mod clients;
 use anyhow::{Context, Result, bail};
 #[cfg(test)]
 use bkpr_protocol::MAX_CONTROL_CONNECTIONS;
+use bkpr_protocol::wire::{self, Codec, Kind};
 use bkpr_protocol::{
     AgentRequest, MAX_AGENT_SUBSCRIBERS, MAX_CONNECTIONS, MAX_REGISTRY_WATCHERS,
-    MAX_WAITING_PANE_POLLS, Operation, PROTOCOL_VERSION, PaneRequest, PaneSpawnSpec, Request,
-    RequestFailure, RequestOutcome, Response,
+    MAX_WAITING_PANE_POLLS, Operation, PROTOCOL_VERSION, PaneRequest, PaneSpawnSpec, Payload,
+    Request, RequestFailure, RequestOutcome, Response,
 };
 pub(crate) use clients::{ClientOwner, lifetime_connected, send_lifetime_event};
 use serde_json::json;
+#[cfg(test)]
+use std::io::Read;
 use std::{
-    io::{BufRead, BufReader, Read, Write},
+    io::Write,
     os::unix::{
         fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         io::AsRawFd,
@@ -25,8 +28,8 @@ use std::{
     thread,
     time::Duration,
 };
-const MAX_REQUEST: u64 = 8 * 1024 * 1024;
-const MAX_RESPONSE: u64 = 96 * 1024 * 1024;
+const MAX_REQUEST: usize = 8 * 1024 * 1024;
+const MAX_RESPONSE: usize = 96 * 1024 * 1024;
 struct ConnectionSlot(Arc<AtomicUsize>);
 impl ConnectionSlot {
     fn take(active: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
@@ -104,25 +107,6 @@ impl Drop for SignalRegistrations {
         for registration in self.0.drain(..) {
             signal_hook::low_level::unregister(registration);
         }
-    }
-}
-struct WireBuffer {
-    bytes: Vec<u8>,
-    limit: usize,
-}
-impl Write for WireBuffer {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if self.bytes.len().saturating_add(bytes.len()) > self.limit {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "aggregate scene wire limit exceeded",
-            ));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 struct SocketGuard(PathBuf);
@@ -372,13 +356,8 @@ impl BoundSocket {
                     let mut pending_response = None;
                     let mut dispatched = false;
                     let result = (|| -> Result<_> {
-                        let mut bytes = Vec::new();
-                        BufReader::new((&mut stream).take(MAX_REQUEST + 1))
-                            .read_until(b'\n', &mut bytes)?;
-                        if bytes.len() as u64 > MAX_REQUEST {
-                            bail!("request size limit");
-                        }
-                        let request: Request = serde_json::from_slice(&bytes)?;
+                        let bytes = wire::read_frame(&mut stream, Kind::Request, MAX_REQUEST)?;
+                        let request = wire::decode_request(&bytes)?;
                         pending_response = Some(PendingResponse::track(&responses));
                         let _waiting = waiting_slot(&request.operation, &waiting_panes, &waiting_registry, &waiting_agents)?;
                         let requested_subscription = match &request.operation {
@@ -419,7 +398,7 @@ impl BoundSocket {
                             Operation::ClientRegister { session_id, daemon_id } => {
                                 let (client, response) = registry.register_client(&stream, &session_id, &daemon_id)?;
                                 lifetime = Some(client);
-                                response
+                                Payload::Control(response)
                             }
                             Operation::Client { authority, request: operation } => {
                                 registry.client_request(authority, *operation, &stream)?
@@ -432,7 +411,8 @@ impl BoundSocket {
                             operation => registry.request(Request::new(operation))?,
                         };
                         subscription = requested_subscription.and_then(|(launch_id, receiver_id)| {
-                            let notification = result.get("notification")?;
+                            let Payload::Control(value) = &result else { return None; };
+                            let notification = value.get("notification")?;
                             Some((
                                 launch_id,
                                 receiver_id,
@@ -451,17 +431,21 @@ impl BoundSocket {
                         }
                         result => result,
                     };
-                    let response = response(result, dispatched);
-                    let mut encoded = WireBuffer {
-                        bytes: Vec::new(),
-                        limit: MAX_RESPONSE as usize,
+                    let reply = response(result, dispatched);
+                    let mut codec = Codec::new();
+                    let sent = match codec.encode_response(&reply) {
+                        Ok(bytes) if bytes.len() <= MAX_RESPONSE => {
+                            write_response(&mut stream, bytes, Duration::from_secs(3))
+                        }
+                        _ => {
+                            let fallback = response(
+                                Err(anyhow::anyhow!("aggregate scene wire limit exceeded after dispatch; outcome unknown, do not replay")),
+                                dispatched,
+                            );
+                            codec.encode_response(&fallback)
+                                .and_then(|bytes| write_response(&mut stream, bytes, Duration::from_secs(3)))
+                        }
                     };
-                    let bytes = if serde_json::to_writer(&mut encoded, &response).is_ok() {
-                        encoded.bytes
-                    } else {
-                        serde_json::to_vec(&json!({"version":PROTOCOL_VERSION,"ok":false,"error":"aggregate scene wire limit exceeded after dispatch; outcome unknown, do not replay"})).unwrap()
-                    };
-                    let sent = write_response(&mut stream, &bytes, Duration::from_secs(3));
                     if sent.is_err()
                         && let Some((launch_id, receiver_id, notification_id, generation)) = subscription
                     {
@@ -514,7 +498,7 @@ impl BoundSocket {
     }
 }
 
-fn response(result: Result<serde_json::Value>, dispatched: bool) -> Response {
+fn response(result: Result<Payload>, dispatched: bool) -> Response {
     match result {
         Ok(value) => Response {
             version: PROTOCOL_VERSION,
@@ -541,18 +525,35 @@ fn response(result: Result<serde_json::Value>, dispatched: bool) -> Response {
     }
 }
 
-fn write_response(stream: &mut UnixStream, bytes: &[u8], timeout: Duration) -> std::io::Result<()> {
-    let deadline = std::time::Instant::now() + timeout;
-    for mut remaining in [bytes, b"\n"] {
+fn write_response(stream: &mut UnixStream, bytes: &[u8], timeout: Duration) -> Result<()> {
+    wire::write_frame(
+        &mut ResponseWriter {
+            stream,
+            deadline: std::time::Instant::now() + timeout,
+        },
+        Kind::Response,
+        bytes,
+    )
+}
+
+struct ResponseWriter<'a> {
+    stream: &'a UnixStream,
+    deadline: std::time::Instant,
+}
+impl Write for ResponseWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let mut remaining = bytes;
         while !remaining.is_empty() {
-            let timeout = deadline.saturating_duration_since(std::time::Instant::now());
+            let timeout = self
+                .deadline
+                .saturating_duration_since(std::time::Instant::now());
             if timeout.is_zero() {
                 return Err(std::io::ErrorKind::TimedOut.into());
             }
             // Per-call nonblocking keeps lifetime sockets' shared file flags intact.
             let written = unsafe {
                 libc::send(
-                    stream.as_raw_fd(),
+                    self.stream.as_raw_fd(),
                     remaining.as_ptr().cast(),
                     remaining.len(),
                     libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
@@ -570,7 +571,7 @@ fn write_response(stream: &mut UnixStream, bytes: &[u8], timeout: Duration) -> s
                 std::io::ErrorKind::Interrupted => continue,
                 std::io::ErrorKind::WouldBlock => {
                     let mut descriptor = libc::pollfd {
-                        fd: stream.as_raw_fd(),
+                        fd: self.stream.as_raw_fd(),
                         events: libc::POLLOUT,
                         revents: 0,
                     };
@@ -589,8 +590,11 @@ fn write_response(stream: &mut UnixStream, bytes: &[u8], timeout: Duration) -> s
                 _ => return Err(error),
             }
         }
+        Ok(bytes.len())
     }
-    Ok(())
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn peer_connected(stream: &UnixStream) -> bool {
@@ -822,15 +826,67 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_wire_limit_rejects_before_transport_dispatch() {
-        let mut encoded = WireBuffer {
-            bytes: Vec::new(),
-            limit: 16,
-        };
-        assert!(
-            serde_json::to_writer(&mut encoded, &json!({"large":"012345678901234567890"})).is_err()
-        );
-        assert!(encoded.bytes.len() <= 16);
+    fn invalid_native_frames_never_dispatch_mutations() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let registry = Registry::open(root.path()).unwrap();
+        let socket = root.path().join("daemon.sock");
+        let bound = bind(&socket).unwrap();
+        let serving = registry.clone();
+        let worker = thread::spawn(move || bound.serve(serving));
+        let before = registry.snapshot().unwrap();
+        let mut codec = Codec::new();
+        let bytes = codec
+            .encode_request(&Request::new(Operation::WorkspaceCreate {
+                name: Some("must-not-commit".into()),
+                initial: None,
+            }))
+            .unwrap();
+        let valid = wire::encode_frame(Kind::Request, bytes).unwrap();
+        let mut invalid = Vec::new();
+        let mut frame = valid.clone();
+        frame[0] ^= 1;
+        invalid.push(frame);
+        let mut frame = valid.clone();
+        frame[4..8].copy_from_slice(&(PROTOCOL_VERSION - 1).to_le_bytes());
+        invalid.push(frame);
+        let mut frame = valid.clone();
+        frame[8] = Kind::Response as u8;
+        invalid.push(frame);
+        let mut frame = valid.clone();
+        frame[12..16].copy_from_slice(&((MAX_REQUEST + 1) as u32).to_le_bytes());
+        invalid.push(frame);
+        let mut frame = valid;
+        frame[16..24].copy_from_slice(&(1_u64 << 63).to_le_bytes());
+        invalid.push(frame);
+        invalid.push(wire::encode_frame(Kind::Request, &[0; 8]).unwrap());
+        for frame in invalid {
+            let mut stream = UnixStream::connect(&socket).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            stream.write_all(&frame).unwrap();
+            let bytes = wire::read_frame(&mut stream, Kind::Response, MAX_RESPONSE).unwrap();
+            let reply = wire::decode_response(&bytes).unwrap();
+            assert!(!reply.ok);
+            assert!(reply.result.is_none());
+            assert!(reply.failure.is_none());
+            let after = registry.snapshot().unwrap();
+            assert_eq!(after.revision, before.revision);
+            assert!(after.workspaces.is_empty());
+        }
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        wire::write_frame(
+            &mut stream,
+            Kind::Request,
+            codec
+                .encode_request(&Request::new(Operation::Shutdown))
+                .unwrap(),
+        )
+        .unwrap();
+        let bytes = wire::read_frame(&mut stream, Kind::Response, MAX_RESPONSE).unwrap();
+        assert!(wire::decode_response(&bytes).unwrap().ok);
+        worker.join().unwrap().unwrap();
     }
 
     #[test]

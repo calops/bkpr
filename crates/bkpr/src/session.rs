@@ -679,10 +679,7 @@ mod tests {
     }
 
     fn reply_once(socket: &Path, result: serde_json::Value) -> std::thread::JoinHandle<()> {
-        use std::{
-            io::{BufRead, BufReader, Write},
-            os::{fd::AsRawFd, unix::net::UnixListener},
-        };
+        use std::os::{fd::AsRawFd, unix::net::UnixListener};
         let listener = UnixListener::bind(socket).unwrap();
         std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)).unwrap();
         std::thread::spawn(move || {
@@ -703,18 +700,29 @@ mod tests {
             stream
                 .set_write_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
-            let mut request = String::new();
-            BufReader::new(&mut stream).read_line(&mut request).unwrap();
-            let request: bkpr_protocol::Request = serde_json::from_str(&request).unwrap();
-            assert!(matches!(request.operation, Operation::SessionInfo));
-            serde_json::to_writer(
+            let bytes = bkpr_protocol::wire::read_frame(
                 &mut stream,
-                &serde_json::json!({
-                    "version": bkpr_protocol::PROTOCOL_VERSION, "ok": true, "result": result
-                }),
+                bkpr_protocol::wire::Kind::Request,
+                8 * 1024 * 1024,
             )
             .unwrap();
-            stream.write_all(b"\n").unwrap();
+            let mut codec = bkpr_protocol::wire::Codec::new();
+            let request = bkpr_protocol::wire::decode_request(&bytes).unwrap();
+            assert!(matches!(request.operation, Operation::SessionInfo));
+            let response = bkpr_protocol::Response {
+                version: bkpr_protocol::PROTOCOL_VERSION,
+                ok: true,
+                result: Some(result.into()),
+                error: None,
+                failure: None,
+            };
+            let bytes = codec.encode_response(&response).unwrap();
+            bkpr_protocol::wire::write_frame(
+                &mut stream,
+                bkpr_protocol::wire::Kind::Response,
+                bytes,
+            )
+            .unwrap();
         })
     }
 

@@ -815,11 +815,7 @@ mod tests {
 
     #[test]
     fn rejected_capture_requests_redact_capabilities_and_end_is_not_replayed() {
-        use std::{
-            io::{BufRead, BufReader, Write},
-            os::unix::net::UnixListener,
-            thread,
-        };
+        use std::{os::unix::net::UnixListener, thread};
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("capture.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -830,9 +826,14 @@ mod tests {
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(2)))
                 .unwrap();
-            let mut line = String::new();
-            BufReader::new(&mut stream).read_line(&mut line).unwrap();
-            let request: bkpr_protocol::Request = serde_json::from_str(&line).unwrap();
+            let bytes = bkpr_protocol::wire::read_frame(
+                &mut stream,
+                bkpr_protocol::wire::Kind::Request,
+                8 * 1024 * 1024,
+            )
+            .unwrap();
+            let mut codec = bkpr_protocol::wire::Codec::new();
+            let request = bkpr_protocol::wire::decode_request(&bytes).unwrap();
             assert!(matches!(
                 request.operation,
                 Operation::HarnessEvent {
@@ -840,18 +841,20 @@ mod tests {
                     ..
                 }
             ));
-            serde_json::to_writer(
+            let response = bkpr_protocol::Response {
+                version: bkpr_protocol::PROTOCOL_VERSION,
+                ok: false,
+                result: None,
+                error: Some(format!("denied capability {token}")),
+                failure: None,
+            };
+            let bytes = codec.encode_response(&response).unwrap();
+            bkpr_protocol::wire::write_frame(
                 &mut stream,
-                &bkpr_protocol::Response {
-                    version: bkpr_protocol::PROTOCOL_VERSION,
-                    ok: false,
-                    result: None,
-                    error: Some(format!("denied capability {token}")),
-                    failure: None,
-                },
+                bkpr_protocol::wire::Kind::Response,
+                bytes,
             )
             .unwrap();
-            stream.write_all(b"\n").unwrap();
         });
         let error = capture.end().unwrap_err();
         assert!(!format!("{error:#}").contains(&capture.grant.token));

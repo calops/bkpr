@@ -19,7 +19,8 @@ use authority::Authority;
 use bkpr_protocol::ViewSpec;
 use bkpr_protocol::{
     ClipboardContent, ClipboardLocation, ClipboardPending, ClipboardResponse, Effect, Event, Frame,
-    ImageKey, KeyEvent, MouseEvent, ProgramStatus, SelectionEvent, SelectionSnapshot, Size,
+    KeyEvent, MouseEvent, PanePayload, Payload, ProgramStatus, SelectionEvent, SelectionSnapshot,
+    Size,
 };
 use bkpr_protocol::{MAX_INPUT_BYTES, PaneRequest as Request, valid_size};
 use bkpr_protocol::{MAX_SEARCH_BYTES, SearchAction, SearchSnapshot};
@@ -529,14 +530,14 @@ impl Pane {
         self.shared.changes.notify();
         let _ = self.shared.resize_wake.try_send(());
     }
-    pub fn request(&self, request: Request) -> Result<Value> {
+    pub fn request(&self, request: Request) -> Result<Payload> {
         self.request_for_client(request, None)
     }
     fn request_for_client(
         &self,
         request: Request,
         client: Option<Arc<registry::sessions::ClientLease>>,
-    ) -> Result<Value> {
+    ) -> Result<Payload> {
         self.check_request_client(&request, client.as_ref())?;
         let command = |mutation| self.command_for_client(mutation, client.clone());
         if self.shared.forgotten.load(Ordering::Acquire) {
@@ -568,7 +569,7 @@ impl Pane {
             } => {
                 if scene_encoding
                     .as_deref()
-                    .is_some_and(|encoding| encoding != "compact_v1")
+                    .is_some_and(|encoding| encoding != "planus_v1")
                 {
                     bail!("unsupported scene encoding");
                 }
@@ -632,7 +633,7 @@ impl Pane {
             drop(authority);
             self.shared.changes.notify();
             result?;
-            return Ok(json!({"accepted":true}));
+            return Ok(Payload::Control(json!({"accepted":true})));
         }
         let is_policy = matches!(
             &request,
@@ -882,21 +883,21 @@ impl Pane {
             }
             Request::Clipboard { .. } => unreachable!(),
         }
+        .map(Payload::Control)
     }
     fn snapshot(
         &self,
         request: &Request,
         client: Option<&Arc<registry::sessions::ClientLease>>,
-    ) -> Result<Value> {
-        let (view, after, frame_after, resources, row_deltas, compact_scene) = match request {
-            Request::Inspect => (None, 0, 0, &[][..], false, false),
+    ) -> Result<Payload> {
+        let (view, after, frame_after, resources, row_deltas) = match request {
+            Request::Inspect => (None, 0, 0, &[][..], false),
             Request::Poll {
                 view_id,
                 after,
                 frame_after,
                 resources,
                 row_deltas,
-                scene_encoding,
                 ..
             } => (
                 Some(view_id.as_str()),
@@ -904,7 +905,6 @@ impl Pane {
                 *frame_after,
                 resources.as_slice(),
                 *row_deltas,
-                scene_encoding.is_some(),
             ),
             _ => unreachable!("only inspection requests produce pane snapshots"),
         };
@@ -959,7 +959,7 @@ impl Pane {
                 .and_then(|id| published.scroll_frames.get(id))
                 .or(published.frame.as_ref())
                 .cloned();
-            let baseline = if (row_deltas || compact_scene)
+            let baseline = if row_deltas
                 && let Some(id) = view
                 && let Some(frame) = &frame
             {
@@ -1040,33 +1040,18 @@ impl Pane {
             .map(|frame| frame.image_keys())
             .unwrap_or_default();
         let changed_frame = frame.as_deref().filter(|_| frame_after != revision);
-        let (frame, row_delta, scene) = if compact_scene {
-            (
-                Value::Null,
-                None,
-                changed_frame
-                    .map(|frame| {
-                        scene_wire::encode(
-                            frame,
-                            revision,
-                            baseline.as_ref(),
-                            frame_after,
-                            resources,
-                        )
-                    })
-                    .transpose()?,
-            )
-        } else {
-            let (frame, delta) =
-                frame_payload(changed_frame, baseline.as_ref(), frame_after, resources);
-            (frame, delta, None)
-        };
-        let mut snapshot = json!({
+        let scene = changed_frame
+            .map(|frame| {
+                scene_wire::encode(frame, revision, baseline.as_ref(), frame_after, resources)
+            })
+            .transpose()?
+            .map(Into::into);
+        let metadata = json!({
             "pane_id": self.shared.pane_id,
             "pid": pid,
             "revision": revision,
             "snapshot_revision": snapshot_revision,
-            "frame": frame,
+            "frame": Value::Null,
             "image_refs": image_refs,
             "resource_protocol": 1,
             "writer": writer,
@@ -1092,70 +1077,11 @@ impl Pane {
                 "view_timeout_ms": 10000,
                 "poll_wait_max_ms": 1000,
                 "row_deltas": true,
-                "scene_encodings": ["compact_v1"],
+                "scene_encodings": ["planus_v1"],
             },
         });
-        if let Some(row_delta) = row_delta {
-            snapshot["row_delta"] = row_delta;
-        }
-        if let Some(scene) = scene {
-            snapshot["scene"] = scene;
-        }
-        Ok(snapshot)
+        Ok(Payload::Pane(PanePayload { metadata, scene }))
     }
-}
-fn frame_payload(
-    frame: Option<&Frame>,
-    baseline: Option<&(u64, Arc<Frame>)>,
-    frame_after: u64,
-    resources: &[ImageKey],
-) -> (Value, Option<Value>) {
-    let Some(frame) = frame else {
-        return (Value::Null, None);
-    };
-    let Some((base_revision, baseline)) = baseline.filter(|(revision, baseline)| {
-        *revision == frame_after
-            && baseline.size == frame.size
-            && baseline.rows.len() == frame.rows.len()
-    }) else {
-        return (json!(frame.wire(resources)), None);
-    };
-    let rows = frame
-        .rows
-        .iter()
-        .zip(&baseline.rows)
-        .enumerate()
-        .filter(|(_, (row, previous))| row != previous)
-        .map(|(index, (row, _))| (index, row))
-        .collect::<Vec<_>>();
-    let known = resources
-        .iter()
-        .copied()
-        .collect::<std::collections::HashSet<_>>();
-    let images = frame
-        .images
-        .iter()
-        .filter(|image| !known.contains(&image.key()))
-        .collect::<Vec<_>>();
-    // Keep metadata complete; only unchanged rows and receipted resources are
-    // omitted. Whole-row replacement preserves wide and combining cell groups.
-    (
-        json!({
-            "size": frame.size,
-            "rows": [],
-            "cursor": frame.cursor,
-            "foreground": frame.foreground,
-            "background": frame.background,
-            "palette": frame.palette,
-            "images": images,
-            "placements": frame.placements,
-            "alternate_screen": frame.alternate_screen,
-            "mouse_reporting": frame.mouse_reporting,
-            "scrollback_total": frame.scrollback_total,
-            "scrollback_offset": frame.scrollback_offset,
-        }),
-        Some(json!({"base_revision": base_revision, "rows": rows})),
-    )
 }
 fn revoke_paste(shared: &Shared, view: Option<&str>) {
     let mut grants = shared.paste.lock().unwrap();
@@ -2204,57 +2130,106 @@ mod snapshot_tests {
     fn request(pane: &Pane, request: Value) -> Value {
         pane.request(serde_json::from_value(request).unwrap())
             .unwrap()
+            .into_json()
+            .unwrap()
+    }
+
+    fn pane_reply(pane: &Pane, request: Value) -> PanePayload {
+        let Payload::Pane(reply) = pane
+            .request(serde_json::from_value(request).unwrap())
+            .unwrap()
+        else {
+            panic!("pane snapshot must keep its binary scene separate from control metadata");
+        };
+        assert!(reply.metadata.get("scene").is_none());
+        assert!(reply.metadata["frame"].is_null());
+        reply
     }
 
     #[test]
-    fn default_poll_is_one_shot_and_delta_baselines_follow_views() {
+    fn native_poll_applies_deltas_and_recovers_after_lost_baselines() {
         let pane = pane();
         let attached = request(
             &pane,
             json!({
-                "op": "attach", "size": frame().size,
-                "visible": false, "interactive": false, "input": false, "clipboard": false,
+                "op":"attach", "size":frame().size,
+                "visible":false, "interactive":false, "input":false, "clipboard":false,
             }),
         );
         let id = attached["view_id"].as_str().unwrap();
-        let first = request(&pane, json!({"op":"poll", "view_id":id, "row_deltas":true}));
-        assert_eq!(first["frame"]["rows"].as_array().unwrap().len(), 2);
-        assert!(first.get("row_delta").is_none());
-        let token = first["snapshot_revision"].as_u64().unwrap();
-        let unchanged = request(
+        let first = pane_reply(
             &pane,
             json!({
-                "op":"poll", "view_id":id, "snapshot_after":token, "frame_after":1,
+                "op":"poll", "view_id":id, "row_deltas":true, "scene_encoding":"planus_v1",
             }),
         );
-        assert_eq!(unchanged["snapshot_revision"], token);
-        assert!(unchanged["frame"].is_null());
-        assert!(unchanged.get("row_delta").is_none());
+        let mut actual = None;
+        let mut revision = 0;
+        scene_wire::decode(first.scene.as_deref().unwrap())
+            .unwrap()
+            .apply(&mut revision, &mut actual)
+            .unwrap();
+        assert_eq!(actual.as_ref(), Some(&frame()));
+        let token = first.metadata["snapshot_revision"].as_u64().unwrap();
+        let unchanged = pane_reply(
+            &pane,
+            json!({
+                "op":"poll", "view_id":id, "snapshot_after":token,
+                "frame_after":1, "row_deltas":true,
+            }),
+        );
+        assert_eq!(unchanged.metadata["snapshot_revision"], token);
+        assert!(unchanged.scene.is_none());
 
         let mut changed = frame();
         changed.rows[1].cells[0].text = "界".into();
         changed.rows[1].cells[0].width = 2;
         changed.rows[1].cells[1].text.clear();
         changed.rows[1].cells[1].width = 0;
+        changed.cursor.y = 1;
         {
             let mut published = pane.shared.published.lock().unwrap();
-            published.frame = Some(Arc::new(changed));
+            published.frame = Some(Arc::new(changed.clone()));
             published.revision = 2;
         }
         pane.shared.changes.notify();
-        let delta = request(
+        let delta = pane_reply(
             &pane,
             json!({
                 "op":"poll", "view_id":id, "frame_after":1, "row_deltas":true,
             }),
         );
-        assert_eq!(delta["frame"]["rows"], json!([]));
-        assert_eq!(delta["row_delta"]["base_revision"], 1);
-        assert_eq!(delta["row_delta"]["rows"][0][0], 1);
-        assert_eq!(delta["row_delta"]["rows"][0][1]["cells"][0]["text"], "界");
-        let full = request(&pane, json!({"op":"poll", "view_id":id, "frame_after":1}));
-        assert!(full.get("row_delta").is_none());
-        assert_eq!(full["frame"]["rows"].as_array().unwrap().len(), 2);
+        scene_wire::decode(delta.scene.as_deref().unwrap())
+            .unwrap()
+            .apply(&mut revision, &mut actual)
+            .unwrap();
+        assert_eq!(revision, 2);
+        assert_eq!(actual.as_ref(), Some(&changed));
+        // A missed response must produce a full scene once its baseline is lost.
+        let fallback = pane_reply(
+            &pane,
+            json!({
+                "op":"poll", "view_id":id, "frame_after":1, "row_deltas":true,
+            }),
+        );
+        let mut recovered = None;
+        scene_wire::decode(fallback.scene.as_deref().unwrap())
+            .unwrap()
+            .apply(&mut 0, &mut recovered)
+            .unwrap();
+        assert_eq!(recovered.as_ref(), Some(&changed));
+        let full = pane_reply(
+            &pane,
+            json!({
+                "op":"poll", "view_id":id, "frame_after":1, "row_deltas":false,
+            }),
+        );
+        recovered = None;
+        scene_wire::decode(full.scene.as_deref().unwrap())
+            .unwrap()
+            .apply(&mut 0, &mut recovered)
+            .unwrap();
+        assert_eq!(recovered.as_ref(), Some(&changed));
         request(&pane, json!({"op":"detach", "view_id":id}));
         assert!(pane.shared.delta_frames.lock().unwrap().is_empty());
         assert!(
@@ -2269,89 +2244,10 @@ mod snapshot_tests {
     }
 
     #[test]
-    fn deltas_reconstruct_exact_frames_and_fall_back_without_matching_baseline() {
-        let base = Arc::new(frame());
-        let mut current = (*base).clone();
-        current.rows[1].cells[0].text = "e\u{301}".into();
-        current.cursor.y = 1;
-        let baseline = (4, base.clone());
-        let (mut metadata, delta) = frame_payload(Some(&current), Some(&baseline), 4, &[]);
-        let delta = delta.unwrap();
-        metadata["rows"] = json!(base.rows);
-        for change in delta["rows"].as_array().unwrap() {
-            metadata["rows"][change[0].as_u64().unwrap() as usize] = change[1].clone();
-        }
-        assert_eq!(metadata, json!(current.wire(&[])));
-        let (_, cursor_only) = frame_payload(
-            Some(&current),
-            Some(&(5, Arc::new(current.clone()))),
-            5,
-            &[],
-        );
-        assert_eq!(cursor_only.unwrap()["rows"], json!([]));
-        assert!(
-            frame_payload(Some(&current), Some(&baseline), 3, &[])
-                .1
-                .is_none()
-        );
-        current.size.cols += 1;
-        assert!(
-            frame_payload(Some(&current), Some(&baseline), 4, &[])
-                .1
-                .is_none()
-        );
-        current.size = base.size;
-        current.rows.pop();
-        assert!(
-            frame_payload(Some(&current), Some(&baseline), 4, &[])
-                .1
-                .is_none()
-        );
-        assert_eq!(
-            frame_payload(None, Some(&baseline), 4, &[]),
-            (Value::Null, None)
-        );
-    }
-
-    #[test]
-    fn compact_scene_round_trips_exact_cells_styles_sources_and_resources() {
-        use bkpr_protocol::{Image, ImageLayer, PixelFormat, Placement};
+    fn native_inspect_keeps_full_frame_and_resources_while_poll_honors_receipts() {
+        use bkpr_protocol::{Image, PixelFormat};
+        let pane = pane();
         let mut expected = frame();
-        expected.size.cols = 6;
-        let mut cells = vec![expected.rows[0].cells[0].clone(); 6];
-        for (cell, (text, width)) in cells.iter_mut().zip([
-            ("e\u{301}", 1),
-            ("👩\u{200d}💻", 2),
-            ("", 0),
-            ("ab", 1),
-            ("", 1),
-            ("\u{301}", 0),
-        ]) {
-            cell.text = text.into();
-            cell.width = width;
-        }
-        cells[0].style.foreground_source = ColorSource::Palette(7);
-        cells[1].style.background_source = ColorSource::Rgb([9, 8, 7]);
-        cells[2].style.underline_source = ColorSource::Palette(255);
-        cells[3].style.bold = true;
-        cells[3].style.italic = true;
-        cells[3].style.faint = true;
-        cells[3].style.blink = true;
-        cells[3].style.inverse = true;
-        cells[3].style.invisible = true;
-        cells[3].style.strikethrough = true;
-        cells[3].style.overline = true;
-        cells[3].style.underline = 5;
-        cells[3].style.underline_color = [1, 2, 3];
-        cells[4].hyperlink = Some("https://example.invalid/界".into());
-        cells[5].hyperlink = cells[4].hyperlink.clone();
-        expected.rows = vec![
-            Row {
-                cells: cells.clone(),
-            },
-            Row { cells },
-        ];
-        expected.palette = vec![[1, 2, 3]; 256];
         expected.images = vec![Arc::new(Image {
             id: 9,
             generation: 42,
@@ -2360,187 +2256,47 @@ mod snapshot_tests {
             format: PixelFormat::Rgba,
             pixels: vec![1, 2, 3, 4],
         })];
-        expected.placements = vec![Placement {
-            image_id: 9,
-            generation: 42,
-            placement_id: 5,
-            col: -1,
-            row: 1,
-            offset_x: 2,
-            offset_y: 3,
-            width: 7,
-            height: 8,
-            source_x: 0,
-            source_y: 0,
-            source_width: 1,
-            source_height: 1,
-            layer: ImageLayer::BelowText,
-            z: -2,
-        }];
-        expected.alternate_screen = true;
-        expected.mouse_reporting = true;
-        expected.scrollback_total = 500;
-        expected.scrollback_offset = 42;
-        let wire = scene_wire::encode(&expected, 4, None, 0, &[]).unwrap();
-        assert_eq!(wire["hyperlinks"].as_array().unwrap().len(), 1);
-        assert_eq!(wire["styles"].as_array().unwrap().len(), 5);
-        let mut actual = None;
-        let mut revision = 0;
-        scene_wire::decode(wire)
-            .unwrap()
-            .apply(&mut revision, &mut actual)
-            .unwrap();
-        assert_eq!(revision, 4);
-        assert_eq!(actual.as_ref(), Some(&expected));
-
-        let mut changed = expected.clone();
-        changed.rows[1].cells[0].text = "changed".into();
-        changed.cursor.y = 1;
-        let baseline = (4, Arc::new(expected));
-        let wire =
-            scene_wire::encode(&changed, 5, Some(&baseline), 4, &changed.image_keys()).unwrap();
-        assert_eq!(wire["base_revision"], 4);
-        assert_eq!(wire["rows"].as_array().unwrap().len(), 1);
-        assert_eq!(wire["frame"]["images"], json!([]));
-        scene_wire::decode(wire)
-            .unwrap()
-            .apply(&mut revision, &mut actual)
-            .unwrap();
-        // Supplied image bytes intentionally exclude acknowledged resources.
-        changed.images.clear();
-        assert_eq!(actual.as_ref(), Some(&changed));
-        let wire = scene_wire::encode(&changed, 6, Some(&baseline), 3, &[]).unwrap();
-        assert!(wire["base_revision"].is_null());
-        assert_eq!(wire["rows"].as_array().unwrap().len(), 2);
-        changed.size.cell_width += 1;
-        assert!(
-            scene_wire::encode(&changed, 6, Some(&baseline), 4, &[]).unwrap()["base_revision"]
-                .is_null()
-        );
-    }
-
-    #[test]
-    fn compact_scene_rejects_corrupt_layouts_before_consumer_mutation() {
-        let original = frame();
-        let full = scene_wire::encode(&original, 4, None, 0, &[]).unwrap();
-        let mut corruptions = Vec::new();
-        let mut value = full.clone();
-        value["rows"][0][1][0][0] = json!(999);
-        corruptions.push(value);
-        let mut value = full.clone();
-        value["rows"][0][1][0][1] = json!(0);
-        corruptions.push(value);
-        let mut value = full.clone();
-        value["rows"][0][1][0][3] = json!([[0, 1, u32::MAX]]);
-        corruptions.push(value);
-        let mut value = full.clone();
-        value["rows"][0][1][0][2] = json!("界");
-        value["rows"][0][1][0][3] = json!([[1, 1, 2]]);
-        corruptions.push(value);
-        let mut value = full.clone();
-        value["rows"][1][0] = json!(0);
-        corruptions.push(value);
-        let mut value = full.clone();
-        value["rows"].as_array_mut().unwrap().pop();
-        corruptions.push(value);
-        let mut value = full.clone();
-        value["frame"]["rows"] = json!(original.rows);
-        corruptions.push(value);
-        let mut value = full.clone();
-        value["frame"]["size"]["cols"] = json!(u16::MAX);
-        corruptions.push(value);
-        let mut value = full.clone();
-        value["version"] = json!(99);
-        corruptions.push(value);
-        let mut value = full;
-        value["base_revision"] = json!(4);
-        corruptions.push(value);
-        for value in corruptions {
-            assert!(scene_wire::decode(value).is_err());
-        }
-        let baseline = (3, Arc::new(original.clone()));
-        let delta = scene_wire::encode(&original, 4, Some(&baseline), 3, &[]).unwrap();
-        let mut actual = Some(original.clone());
-        let mut revision = 2;
-        assert!(
-            scene_wire::decode(delta.clone())
-                .unwrap()
-                .apply(&mut revision, &mut actual)
-                .is_err()
-        );
-        assert_eq!(revision, 2);
-        assert_eq!(actual.as_ref(), Some(&original));
-        revision = 3;
-        actual.as_mut().unwrap().size.cols += 1;
-        let before = actual.clone();
-        assert!(
-            scene_wire::decode(delta)
-                .unwrap()
-                .apply(&mut revision, &mut actual)
-                .is_err()
-        );
-        assert_eq!(actual, before);
-    }
-
-    #[test]
-    fn compact_poll_negotiates_and_falls_back_to_full_after_lost_baseline() {
-        let pane = pane();
+        let keys = expected.image_keys();
+        pane.shared.published.lock().unwrap().frame = Some(Arc::new(expected.clone()));
         let attached = request(
             &pane,
             json!({
-                "op":"attach", "size":frame().size,
+                "op":"attach", "size":expected.size,
                 "visible":false, "interactive":false, "input":false, "clipboard":false,
             }),
         );
         let id = attached["view_id"].as_str().unwrap();
-        let first = request(
+        let poll = pane_reply(
             &pane,
-            json!({"op":"poll", "view_id":id, "scene_encoding":"compact_v1"}),
+            json!({
+                "op":"poll", "view_id":id, "resources":keys, "row_deltas":true,
+            }),
         );
-        assert!(first["frame"].is_null());
-        assert!(first.get("row_delta").is_none());
         let mut actual = None;
-        let mut revision = 0;
-        scene_wire::decode(first["scene"].clone())
+        scene_wire::decode(poll.scene.as_deref().unwrap())
             .unwrap()
-            .apply(&mut revision, &mut actual)
+            .apply(&mut 0, &mut actual)
             .unwrap();
-        assert_eq!(actual.as_ref(), Some(&frame()));
-        let unchanged = request(
-            &pane,
-            json!({
-                "op":"poll", "view_id":id, "frame_after":1, "scene_encoding":"compact_v1",
-            }),
-        );
-        assert!(unchanged.get("scene").is_none());
-        {
-            let mut published = pane.shared.published.lock().unwrap();
-            let mut changed = frame();
-            changed.cursor.x = 1;
-            published.frame = Some(Arc::new(changed));
-            published.revision = 2;
-        }
-        let cursor_only = request(
-            &pane,
-            json!({
-                "op":"poll", "view_id":id, "frame_after":1, "scene_encoding":"compact_v1",
-            }),
-        );
-        assert_eq!(cursor_only["scene"]["rows"], json!([]));
-        scene_wire::decode(cursor_only["scene"].clone())
+        assert!(actual.unwrap().images.is_empty());
+        assert_eq!(poll.metadata["image_refs"], json!(keys));
+        let inspect = pane_reply(&pane, json!({"op":"inspect"}));
+        let mut actual = None;
+        scene_wire::decode(inspect.scene.as_deref().unwrap())
             .unwrap()
-            .apply(&mut revision, &mut actual)
+            .apply(&mut 0, &mut actual)
             .unwrap();
-        assert_eq!(actual.unwrap().cursor.x, 1);
-        let fallback = request(
-            &pane,
-            json!({
-                "op":"poll", "view_id":id, "frame_after":1, "scene_encoding":"compact_v1",
-            }),
+        assert_eq!(actual.as_ref(), Some(&expected));
+        let cold = Payload::Pane(inspect).into_json().unwrap();
+        assert_eq!(cold["frame"], json!(expected));
+        assert!(
+            pane.request(
+                serde_json::from_value(json!({
+                    "op":"poll", "view_id":id, "resources":vec![keys[0];1025],
+                }))
+                .unwrap()
+            )
+            .is_err()
         );
-        assert!(fallback["scene"]["base_revision"].is_null());
-        assert_eq!(fallback["scene"]["rows"].as_array().unwrap().len(), 2);
-        assert!(request(&pane, json!({"op":"inspect"}))["frame"]["rows"].is_array());
         assert!(
             pane.request(
                 serde_json::from_value(json!({
@@ -2550,43 +2306,6 @@ mod snapshot_tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn compact_scene_represents_large_empty_and_ascii_grids_with_bounded_runs() {
-        let mut grid = frame();
-        grid.size.cols = 240;
-        grid.size.rows = 79;
-        let mut cell = grid.rows[0].cells[0].clone();
-        cell.text.clear();
-        grid.rows = vec![
-            Row {
-                cells: vec![cell; 240]
-            };
-            79
-        ];
-        let wire = scene_wire::encode(&grid, 1, None, 0, &[]).unwrap();
-        assert_eq!(wire["styles"].as_array().unwrap().len(), 1);
-        assert_eq!(wire["rows"][0][1][0][3], json!([[0, 1, 240]]));
-        assert!(serde_json::to_vec(&wire).unwrap().len() < 10_000);
-        let mut decoded = None;
-        scene_wire::decode(wire)
-            .unwrap()
-            .apply(&mut 0, &mut decoded)
-            .unwrap();
-        assert_eq!(decoded.as_ref(), Some(&grid));
-        for row in &mut grid.rows {
-            for cell in &mut row.cells {
-                cell.text = "x".into();
-            }
-        }
-        let wire = scene_wire::encode(&grid, 2, None, 0, &[]).unwrap();
-        assert_eq!(wire["rows"][0][1][0][3], json!([]));
-        scene_wire::decode(wire)
-            .unwrap()
-            .apply(&mut 0, &mut decoded)
-            .unwrap();
-        assert_eq!(decoded.as_ref(), Some(&grid));
     }
 
     #[test]

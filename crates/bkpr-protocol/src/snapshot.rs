@@ -28,11 +28,6 @@ pub struct PaneSnapshot {
     pub clipboard: Option<ClipboardPending>,
     pub clipboard_pending: bool,
     pub capabilities: PaneCapabilities,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub row_delta: Option<RowDelta>,
-    /// Versioned compact scene; decode using scene_wire::decode before applying it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scene: Option<serde_json::Value>,
     /// View-local metadata, independent of canonical scene revisions and resources.
     #[serde(default)]
     pub selection: Option<SelectionSnapshot>,
@@ -89,11 +84,6 @@ pub struct PaneCapabilities {
     pub poll_wait_max_ms: u64,
     pub row_deltas: bool,
     pub scene_encodings: Vec<String>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RowDelta {
-    pub base_revision: u64,
-    pub rows: Vec<(usize, Row)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

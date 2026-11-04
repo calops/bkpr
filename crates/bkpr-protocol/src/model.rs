@@ -34,17 +34,7 @@ pub struct ImageKey {
     pub id: u32,
     pub generation: u64,
 }
-pub struct FrameWire<'a> {
-    frame: &'a Frame,
-    known: std::collections::HashSet<ImageKey>,
-}
 impl Frame {
-    pub fn wire(&self, known: &[ImageKey]) -> FrameWire<'_> {
-        FrameWire {
-            frame: self,
-            known: known.iter().copied().collect(),
-        }
-    }
     pub fn image_keys(&self) -> Vec<ImageKey> {
         self.images.iter().map(|image| image.key()).collect()
     }
@@ -55,47 +45,6 @@ impl Image {
             id: self.id,
             generation: self.generation,
         }
-    }
-}
-impl Serialize for FrameWire<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::{SerializeSeq, SerializeStruct};
-        struct Images<'a> {
-            images: &'a [std::sync::Arc<Image>],
-            known: &'a std::collections::HashSet<ImageKey>,
-        }
-        impl Serialize for Images<'_> {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                let mut sequence = serializer.serialize_seq(None)?;
-                for image in self.images {
-                    if !self.known.contains(&image.key()) {
-                        sequence.serialize_element(image)?;
-                    }
-                }
-                sequence.end()
-            }
-        }
-        let frame = self.frame;
-        let mut output = serializer.serialize_struct("Frame", 12)?;
-        output.serialize_field("size", &frame.size)?;
-        output.serialize_field("rows", &frame.rows)?;
-        output.serialize_field("cursor", &frame.cursor)?;
-        output.serialize_field("foreground", &frame.foreground)?;
-        output.serialize_field("background", &frame.background)?;
-        output.serialize_field("palette", &frame.palette)?;
-        output.serialize_field(
-            "images",
-            &Images {
-                images: &frame.images,
-                known: &self.known,
-            },
-        )?;
-        output.serialize_field("placements", &frame.placements)?;
-        output.serialize_field("alternate_screen", &frame.alternate_screen)?;
-        output.serialize_field("mouse_reporting", &frame.mouse_reporting)?;
-        output.serialize_field("scrollback_total", &frame.scrollback_total)?;
-        output.serialize_field("scrollback_offset", &frame.scrollback_offset)?;
-        output.end()
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

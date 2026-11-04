@@ -262,7 +262,6 @@ fn signal(notify: &mut UnixStream) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::{
-        io::{BufRead, BufReader},
         os::unix::net::UnixListener,
         sync::atomic::{AtomicBool, Ordering},
         time::Duration,
@@ -389,10 +388,11 @@ mod tests {
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
-            let mut request = Vec::new();
-            BufReader::new(&mut stream)
-                .read_until(b'\n', &mut request)
-                .unwrap();
+            let request = crate::transport::test_wire::read_request(&mut stream).unwrap();
+            assert!(matches!(
+                request.operation,
+                bkpr_protocol::Operation::Shutdown
+            ));
             // Accept the request but lose its reply: replay is not safe.
         });
         jobs.submit("unknown".into(), move || {

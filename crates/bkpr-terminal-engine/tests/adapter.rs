@@ -633,7 +633,7 @@ fn history_read_during_hold_cannot_consume_canonical_render_updates() {
 }
 
 #[test]
-fn native_rgb_stays_rgb_and_pixels_use_base64_wire_encoding() {
+fn native_rgb_frame_preserves_pixels_through_human_json() {
     let mut term = terminal();
     term.feed(b"\x1b_Ga=T,f=24,i=9,s=1,v=1,q=2;/wD/\x1b\\")
         .unwrap();
@@ -641,27 +641,12 @@ fn native_rgb_stays_rgb_and_pixels_use_base64_wire_encoding() {
     assert_eq!(frame.images[0].format, PixelFormat::Rgb);
     assert_eq!(frame.images[0].pixels, [255, 0, 255]);
     let json = serde_json::to_value(&frame).unwrap();
-    assert_eq!(json["images"][0]["pixels"], "/wD/");
-    assert_eq!(serde_json::to_value(frame.wire(&[])).unwrap(), json);
-    let known = frame.image_keys();
-    let filtered = serde_json::to_value(frame.wire(&known)).unwrap();
-    let mut without_images = json.clone();
-    without_images["images"] = serde_json::json!([]);
-    assert_eq!(filtered, without_images);
-    let wrong_generation = [ImageKey {
-        id: known[0].id,
-        generation: known[0].generation + 1,
-    }];
-    assert_eq!(
-        serde_json::to_value(frame.wire(&wrong_generation)).unwrap(),
-        json
-    );
     let decoded: Frame = serde_json::from_value(json).unwrap();
     assert_eq!(decoded, frame);
 }
 
 #[test]
-fn large_native_rgba_and_rgb_roundtrip_below_frame_wire_quota() {
+fn large_native_rgba_and_rgb_survive_the_binary_scene_transport() {
     use base64::Engine;
     use std::fmt::Write as _;
     for (wire_format, format, width, height) in [
@@ -697,11 +682,16 @@ fn large_native_rgba_and_rgb_roundtrip_below_frame_wire_quota() {
             frame.images[0].pixels.len(),
             width * height * format.bytes_per_pixel()
         );
-        let mut encoded = Vec::with_capacity(frame.images[0].pixels.len().div_ceil(3) * 4 + 65536);
-        serde_json::to_writer(&mut encoded, &frame).unwrap();
-        assert!(encoded.len() < 96 * 1024 * 1024);
-        let decoded: Frame = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(decoded.images[0], frame.images[0]);
+        assert!(frame.images[0].pixels.iter().all(|byte| *byte == 0xab));
+        let encoded = bkpr_protocol::scene_wire::encode(&frame, 1, None, 0, &[]).unwrap();
+        assert!(encoded.len() < bkpr_protocol::wire::MAX_RESPONSE);
+        let mut decoded = None;
+        let mut revision = 0;
+        bkpr_protocol::scene_wire::decode(&encoded)
+            .unwrap()
+            .apply(&mut revision, &mut decoded)
+            .unwrap();
+        assert_eq!(decoded.unwrap().images[0], frame.images[0]);
     }
 }
 

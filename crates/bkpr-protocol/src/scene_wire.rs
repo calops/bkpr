@@ -1,176 +1,251 @@
-//! Compact JSON scenes. Tables are response-local; deltas replace complete rows.
-//! A run stores style/link table indices, concatenated text and RLE cell layout.
-//! Empty layout is the ASCII/width-one fast path; explicit byte lengths preserve
-//! engine cell boundaries without re-segmenting Unicode or inferring widths.
-use crate::{Cell, ColorSource, Frame, ImageKey, Row, Style};
-use anyhow::{Result, bail, ensure};
-use serde::{Deserialize, Serialize};
+//! Planus scenes with response-local style/link tables and complete row deltas.
+//! Explicit UTF-8 byte lengths preserve engine cell boundaries and widths; no
+//! Unicode re-segmentation is performed. JSON is only a cold diagnostic bridge.
+use crate::{Cell, Frame, Image, ImageKey, Row, Size};
+use anyhow::{Context, Result, ensure};
+use planus::{Builder, ReadAsRoot};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
 
+#[rustfmt::skip]
+#[allow(dead_code, unused_imports, clippy::all)]
+#[path = "scene_wire/scene_generated.rs"]
+mod generated;
+#[path = "scene_wire/scalars.rs"]
+mod scalars;
+use generated::scene as g;
+use scalars::*;
+
 const VERSION: u8 = 1;
 const MAX_CELLS: usize = 1_000_000;
-// Match the existing response budget; compression must not reduce supported text.
 const MAX_TEXT_BYTES: usize = 96 * 1024 * 1024;
-const MAX_EXPANDED_TEXT_BYTES: usize = MAX_TEXT_BYTES;
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_IMAGES: usize = 1024;
 
-// (UTF-8 bytes per cell, cell width, repeat count).
 type Layout = (u32, u8, u32);
-#[derive(Serialize, Deserialize)]
-struct Run(u32, Option<u32>, String, Vec<Layout>);
-#[derive(Serialize, Deserialize)]
-struct Scene {
-    version: u8,
-    revision: u64,
-    base_revision: Option<u64>,
-    frame: Frame,
-    styles: Vec<Style>,
-    hyperlinks: Vec<String>,
-    rows: Vec<(usize, Vec<Run>)>,
+struct Run {
+    style: u32,
+    link: Option<u32>,
+    text: String,
+    layout: Vec<g::Layout>,
 }
 
-#[derive(PartialEq, Eq, Hash)]
-struct StyleKey {
-    colors: [[u8; 3]; 3],
-    sources: [(u8, [u8; 3]); 3],
-    flags: u16,
-    underline: u8,
-}
-impl From<&Style> for StyleKey {
-    fn from(style: &Style) -> Self {
-        fn source(source: ColorSource) -> (u8, [u8; 3]) {
-            match source {
-                ColorSource::Default => (0, [0; 3]),
-                ColorSource::Palette(index) => (1, [index, 0, 0]),
-                ColorSource::Rgb(rgb) => (2, rgb),
-            }
-        }
-        let flags = [
-            style.bold,
-            style.italic,
-            style.faint,
-            style.blink,
-            style.inverse,
-            style.invisible,
-            style.strikethrough,
-            style.overline,
-        ]
-        .into_iter()
-        .enumerate()
-        .fold(0, |flags, (bit, set)| flags | ((set as u16) << bit));
-        Self {
-            colors: [style.foreground, style.background, style.underline_color],
-            sources: [
-                source(style.foreground_source),
-                source(style.background_source),
-                source(style.underline_source),
-            ],
-            flags,
-            underline: style.underline,
-        }
-    }
-}
-
+/// Encode directly from the canonical frame, borrowing image pixels and styles.
+/// Only changed rows are gathered; neither the frame nor its images are cloned.
 pub fn encode(
     frame: &Frame,
     revision: u64,
     baseline: Option<&(u64, Arc<Frame>)>,
     frame_after: u64,
     resources: &[ImageKey],
-) -> Result<Value> {
-    let baseline = baseline.filter(|(base_revision, previous)| {
-        *base_revision == frame_after
-            && previous.size == frame.size
-            && previous.rows.len() == frame.rows.len()
+) -> Result<Vec<u8>> {
+    crate::valid_size(frame.size)?;
+    let cols = usize::from(frame.size.cols);
+    let height = usize::from(frame.size.rows);
+    ensure!(cols * height <= MAX_CELLS, "scene cell limit");
+    ensure!(frame.rows.len() == height, "scene incomplete frame");
+    ensure!(
+        frame.palette.len() <= 256 && frame.placements.len() <= MAX_CELLS,
+        "scene resource count limit"
+    );
+    let baseline = baseline.filter(|(base, previous)| {
+        *base == frame_after && previous.size == frame.size && previous.rows.len() == height
     });
+    ensure!(
+        baseline.is_none_or(|(base, _)| *base < revision),
+        "scene non-advancing delta revision"
+    );
+    let changed =
+        |index: usize, row: &Row| baseline.is_none_or(|(_, previous)| row != &previous.rows[index]);
+    // Validate all input bounds before building. These limits also bound the
+    // worst-case FlatBuffer well below its signed 32-bit offset ceiling.
+    let mut expanded_text = 0usize;
+    for (index, row) in frame.rows.iter().enumerate() {
+        ensure!(row.cells.len() == cols, "scene incomplete row");
+        if !changed(index, row) {
+            continue;
+        }
+        for cell in &row.cells {
+            ensure!(
+                cell.width <= 2 && cell.text.len() <= 8192,
+                "scene invalid cell layout"
+            );
+            expanded_text = expanded_text
+                .saturating_add(cell.text.len())
+                .saturating_add(cell.hyperlink.as_ref().map_or(0, String::len));
+            ensure!(expanded_text <= MAX_TEXT_BYTES, "scene expanded text limit");
+        }
+    }
+    let known: HashSet<_> = resources.iter().copied().collect();
+    let mut image_count = 0usize;
+    let mut image_bytes = 0usize;
+    for image in frame
+        .images
+        .iter()
+        .filter(|image| !known.contains(&image.key()))
+    {
+        image_count += 1;
+        image_bytes = image_bytes.saturating_add(image.pixels.len());
+        ensure!(
+            image_count <= MAX_IMAGES && image_bytes <= MAX_IMAGE_BYTES,
+            "scene image resource limit"
+        );
+        check_image(image.width, image.height, image.format, image.pixels.len())?;
+    }
+
+    let mut builder = Builder::new();
     let mut styles = Vec::new();
     let mut style_ids = HashMap::new();
-    let mut hyperlinks = Vec::new();
+    let mut links = Vec::new();
     let mut link_ids = HashMap::new();
     let mut rows = Vec::new();
     for (index, row) in frame.rows.iter().enumerate() {
-        if baseline.is_some_and(|(_, previous)| row == &previous.rows[index]) {
+        if !changed(index, row) {
             continue;
         }
         let mut runs: Vec<Run> = Vec::new();
         for cell in &row.cells {
-            let style_id = *style_ids
-                .entry(StyleKey::from(&cell.style))
-                .or_insert_with(|| {
-                    let id = styles.len() as u32;
-                    styles.push(cell.style.clone());
-                    id
-                });
-            let link_id = cell.hyperlink.as_deref().map(|link| {
+            let style = write_style(&cell.style);
+            let style_id = *style_ids.entry(style).or_insert_with(|| {
+                let id = styles.len() as u32;
+                styles.push(style);
+                id
+            });
+            let link = cell.hyperlink.as_deref().map(|link| {
                 *link_ids.entry(link).or_insert_with(|| {
-                    let id = hyperlinks.len() as u32;
-                    hyperlinks.push(link.to_owned());
+                    let id = links.len() as u32;
+                    links.push(builder.create_string(link));
                     id
                 })
             });
             if !runs
                 .last()
-                .is_some_and(|run| run.0 == style_id && run.1 == link_id)
+                .is_some_and(|run| run.style == style_id && run.link == link)
             {
-                runs.push(Run(style_id, link_id, String::new(), Vec::new()));
+                runs.push(Run {
+                    style: style_id,
+                    link,
+                    text: String::new(),
+                    layout: Vec::new(),
+                });
             }
             let run = runs.last_mut().unwrap();
-            run.2.push_str(&cell.text);
-            let bytes = u32::try_from(cell.text.len())?;
-            if let Some(last) = run
-                .3
+            run.text.push_str(&cell.text);
+            let length = cell.text.len() as u32;
+            if let Some(part) = run
+                .layout
                 .last_mut()
-                .filter(|last| last.0 == bytes && last.1 == cell.width)
+                .filter(|part| part.length == length && part.width == cell.width)
             {
-                last.2 += 1;
+                part.count += 1;
             } else {
-                run.3.push((bytes, cell.width, 1));
+                run.layout.push(g::Layout {
+                    length,
+                    width: cell.width,
+                    count: 1,
+                });
             }
         }
-        for run in &mut runs {
-            if run.3.len() == 1 && run.3[0].0 == 1 && run.3[0].1 == 1 && run.2.is_ascii() {
-                run.3.clear();
+        let mut offsets = Vec::with_capacity(runs.len());
+        for mut run in runs {
+            if run.layout.len() == 1
+                && run.layout[0].length == 1
+                && run.layout[0].width == 1
+                && run.text.is_ascii()
+            {
+                run.layout.clear();
             }
+            let text = builder.create_string(&run.text);
+            let layout = builder.create_vector(run.layout.as_slice());
+            offsets.push(g::Run::create(
+                &mut builder,
+                run.style,
+                run.link.is_some(),
+                run.link.unwrap_or(0),
+                text,
+                layout,
+            ));
         }
-        rows.push((index, runs));
+        let runs = builder.create_vector(offsets.as_slice());
+        rows.push(g::Row::create(&mut builder, index as u64, runs));
     }
-    let known: HashSet<_> = resources.iter().copied().collect();
-    let metadata = Frame {
-        size: frame.size,
-        rows: Vec::new(),
-        cursor: frame.cursor.clone(),
-        foreground: frame.foreground,
-        background: frame.background,
-        palette: frame.palette.clone(),
-        images: frame
-            .images
-            .iter()
-            .filter(|image| !known.contains(&image.key()))
-            .cloned()
-            .collect(),
-        placements: frame.placements.clone(),
-        alternate_screen: frame.alternate_screen,
-        mouse_reporting: frame.mouse_reporting,
-        scrollback_total: frame.scrollback_total,
-        scrollback_offset: frame.scrollback_offset,
-    };
-    Ok(serde_json::to_value(Scene {
-        version: VERSION,
+    let styles = builder.create_vector(styles.as_slice());
+    let hyperlinks = builder.create_vector(links.as_slice());
+    let rows = builder.create_vector(rows.as_slice());
+    let palette: Vec<_> = frame.palette.iter().copied().map(pack).collect();
+    let palette = builder.create_vector(palette.as_slice());
+    let placements: Vec<_> = frame.placements.iter().map(write_placement).collect();
+    let placements = builder.create_vector(placements.as_slice());
+    let mut images = Vec::with_capacity(image_count);
+    for image in frame
+        .images
+        .iter()
+        .filter(|image| !known.contains(&image.key()))
+    {
+        let pixels = builder.create_vector(image.pixels.as_slice());
+        images.push(g::Image::create(
+            &mut builder,
+            image.id,
+            image.generation,
+            image.width,
+            image.height,
+            write_format(image.format),
+            pixels,
+        ));
+    }
+    let images = builder.create_vector(images.as_slice());
+    let cursor = &frame.cursor;
+    let cursor = g::Cursor::create(
+        &mut builder,
+        cursor.x,
+        cursor.y,
+        cursor.visible,
+        cursor.blinking,
+        write_shape(cursor.shape),
+        cursor.color.is_some(),
+        cursor.color.map_or(0, pack),
+    );
+    let size = frame.size;
+    let metadata = g::Frame::create(
+        &mut builder,
+        g::Size {
+            cols: size.cols,
+            rows: size.rows,
+            cell_width: size.cell_width,
+            cell_height: size.cell_height,
+        },
+        cursor,
+        pack(frame.foreground),
+        pack(frame.background),
+        palette,
+        images,
+        placements,
+        frame.alternate_screen,
+        frame.mouse_reporting,
+        frame.scrollback_total,
+        frame.scrollback_offset,
+    );
+    let root = g::Scene::create(
+        &mut builder,
+        VERSION,
         revision,
-        base_revision: baseline.map(|(revision, _)| *revision),
-        frame: metadata,
+        baseline.is_some(),
+        baseline.map_or(0, |(base, _)| *base),
+        metadata,
         styles,
         hyperlinks,
         rows,
-    })?)
+    );
+    // Planus 1.3 exposes only a borrowed finished slice, not owned extraction.
+    // The API's owned output requires this final copy; source image pixels were
+    // borrowed directly, without an intermediate cloned Frame or Image.
+    Ok(builder.finish(root, None).to_vec())
 }
 
-/// Validated, expanded row replacements. Metadata contains only newly supplied
-/// image resources; the client retains its generation-keyed image cache.
+/// Validated row replacements and newly supplied generation-keyed resources.
 pub struct DecodedScene {
     pub revision: u64,
     pub base_revision: Option<u64>,
@@ -178,23 +253,26 @@ pub struct DecodedScene {
     rows: Vec<(usize, Row)>,
 }
 impl DecodedScene {
-    /// Reject stale/missing baselines before touching the consumer's frame.
+    /// Resources supplied by this update, before any consumer state is changed.
+    pub fn image_keys(&self) -> impl Iterator<Item = ImageKey> + '_ {
+        self.frame.images.iter().map(|image| image.key())
+    }
+    /// Check every fallible prerequisite before moving the baseline's rows.
     pub fn apply(self, revision: &mut u64, frame: &mut Option<Frame>) -> Result<()> {
-        let mut metadata = self.frame;
         if let Some(base) = self.base_revision {
+            ensure!(*revision == base, "scene baseline revision mismatch");
+            let previous = frame.as_ref().context("scene missing baseline")?;
             ensure!(
-                *revision == base,
-                "compact scene baseline revision mismatch"
+                previous.size == self.frame.size
+                    && previous.rows.len() == usize::from(self.frame.size.rows),
+                "scene baseline geometry mismatch"
             );
-            let previous = frame
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("compact scene missing baseline"))?;
-            ensure!(
-                previous.size == metadata.size
-                    && previous.rows.len() == usize::from(metadata.size.rows),
-                "compact scene baseline geometry mismatch"
-            );
-            metadata.rows = std::mem::take(&mut previous.rows);
+        }
+        let mut metadata = self.frame;
+        if self.base_revision.is_some() {
+            // decode already validated sorted indices and complete row shapes;
+            // no Result-producing operation follows the first mutation.
+            metadata.rows = std::mem::take(&mut frame.as_mut().unwrap().rows);
             for (index, row) in self.rows {
                 metadata.rows[index] = row;
             }
@@ -207,195 +285,339 @@ impl DecodedScene {
     }
 }
 
-/// Bounds and all run shapes are checked before allocating expanded cells.
-pub fn decode(value: Value) -> Result<DecodedScene> {
-    let metadata_rows = value
-        .get("frame")
-        .and_then(|frame| frame.get("rows"))
-        .and_then(Value::as_array);
+fn check_image(width: u32, height: u32, format: crate::PixelFormat, length: usize) -> Result<()> {
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(format.bytes_per_pixel()));
+    ensure!(expected == Some(length), "scene image dimensions mismatch");
+    Ok(())
+}
+
+fn read_size(frame: g::FrameRef<'_>) -> Result<Size> {
+    let size = frame.size()?;
+    Ok(Size {
+        cols: size.cols(),
+        rows: size.rows(),
+        cell_width: size.cell_width(),
+        cell_height: size.cell_height(),
+    })
+}
+
+fn base_revision(scene: g::SceneRef<'_>) -> Result<Option<u64>> {
+    let present = scene.has_base_revision()?;
+    let base = scene.base_revision()?;
     ensure!(
-        metadata_rows.is_some_and(Vec::is_empty),
-        "compact scene metadata must not contain cells"
+        present || base == 0,
+        "scene absent base revision has a payload"
     );
-    let size = crate::Size::deserialize(&value["frame"]["size"])?;
+    Ok(present.then_some(base))
+}
+
+fn run_link(run: g::RunRef<'_>) -> Result<Option<u32>> {
+    let present = run.has_link()?;
+    let link = run.link()?;
+    ensure!(present || link == 0, "scene absent hyperlink has a payload");
+    Ok(present.then_some(link))
+}
+
+/// Planus reads lazily: visit every field and every vector before returning a
+/// root to the allocating decoder. This pass allocates no expanded cells,
+/// strings, image bytes, or owned schema tables, including on a late error.
+fn validate(bytes: &[u8]) -> Result<g::SceneRef<'_>> {
+    ensure!(
+        bytes.len() <= i32::MAX as usize,
+        "scene buffer exceeds format limit"
+    );
+    let scene = g::SceneRef::read_as_root(bytes)?;
+    ensure!(
+        scene.version()? == VERSION,
+        "unsupported Planus scene version"
+    );
+    let revision = scene.revision()?;
+    let base = base_revision(scene)?;
+    ensure!(
+        base.is_none_or(|base| base < revision),
+        "scene non-advancing delta revision"
+    );
+    let frame = scene.frame()?;
+    let size = read_size(frame)?;
     crate::valid_size(size)?;
-    let capacity = usize::from(size.cols) * usize::from(size.rows);
-    ensure!(capacity <= MAX_CELLS, "compact scene cell limit");
-    for (field, limit) in [
-        ("styles", capacity),
-        ("hyperlinks", capacity),
-        ("rows", usize::from(size.rows)),
-    ] {
-        ensure!(
-            value[field]
-                .as_array()
-                .is_some_and(|items| items.len() <= limit),
-            "compact scene table limit"
-        );
-    }
-    for (field, limit) in [
-        ("palette", 256),
-        ("images", 1024),
-        ("placements", MAX_CELLS),
-    ] {
-        ensure!(
-            value["frame"][field]
-                .as_array()
-                .is_some_and(|items| items.len() <= limit),
-            "compact scene resource count limit"
-        );
-    }
-    let mut encoded_images = 0usize;
-    for image in value["frame"]["images"].as_array().unwrap() {
-        let pixels = image["pixels"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("compact scene image encoding"))?;
-        encoded_images = encoded_images.saturating_add(pixels.len());
-        ensure!(
-            encoded_images <= MAX_IMAGE_BYTES.div_ceil(3) * 4 + 4 * 1024,
-            "compact scene encoded image byte limit"
-        );
-    }
-    let scene: Scene = serde_json::from_value(value)?;
+    let cols = usize::from(size.cols);
+    let height = usize::from(size.rows);
+    let capacity = cols * height;
+    ensure!(capacity <= MAX_CELLS, "scene cell limit");
+    read_cursor(frame.cursor()?)?;
+    unpack(frame.foreground()?)?;
+    unpack(frame.background()?)?;
+    frame.alternate_screen()?;
+    frame.mouse_reporting()?;
+    frame.scrollback_total()?;
+    frame.scrollback_offset()?;
+    let palette = frame.palette()?;
+    let images = frame.images()?;
+    let placements = frame.placements()?;
+    let styles = scene.styles()?;
+    let links = scene.hyperlinks()?;
+    let rows = scene.rows()?;
     ensure!(
-        scene.version == VERSION,
-        "unsupported compact scene version"
+        palette.len() <= 256 && images.len() <= MAX_IMAGES && placements.len() <= MAX_CELLS,
+        "scene resource count limit"
     );
-    let cols = usize::from(scene.frame.size.cols);
-    let height = usize::from(scene.frame.size.rows);
     ensure!(
-        scene.base_revision.is_none_or(|base| base < scene.revision),
-        "compact scene non-advancing delta revision"
+        styles.len() <= capacity && links.len() <= capacity && rows.len() <= height,
+        "scene table limit"
     );
+    for color in palette {
+        unpack(color)?;
+    }
+    for style in styles {
+        read_style(style)?;
+    }
+    let mut text_bytes = 0usize;
+    for link in links {
+        text_bytes = text_bytes.saturating_add(link?.len());
+        ensure!(text_bytes <= MAX_TEXT_BYTES, "scene hyperlink byte limit");
+    }
     let mut image_bytes = 0usize;
-    for image in &scene.frame.images {
-        let expected = (image.width as usize)
-            .checked_mul(image.height as usize)
-            .and_then(|pixels| pixels.checked_mul(image.format.bytes_per_pixel()));
-        ensure!(
-            expected == Some(image.pixels.len()),
-            "compact scene image dimensions mismatch"
-        );
-        image_bytes = image_bytes.saturating_add(image.pixels.len());
-        ensure!(
-            image_bytes <= MAX_IMAGE_BYTES,
-            "compact scene image byte limit"
-        );
+    for image in images {
+        let image = image?;
+        image.id()?;
+        image.generation()?;
+        let pixels = image.pixels()?;
+        check_image(
+            image.width()?,
+            image.height()?,
+            read_format(image.format()?),
+            pixels.len(),
+        )?;
+        image_bytes = image_bytes.saturating_add(pixels.len());
+        ensure!(image_bytes <= MAX_IMAGE_BYTES, "scene image byte limit");
     }
-    let mut bytes = scene
-        .hyperlinks
-        .iter()
-        .try_fold(0usize, |bytes, link| bytes.checked_add(link.len()))
-        .ok_or_else(|| anyhow::anyhow!("compact scene text overflow"))?;
+    for placement in placements {
+        read_placement(placement)?;
+    }
     let mut previous = None;
     let mut expanded_bytes = 0usize;
-    for (index, runs) in &scene.rows {
+    for row in rows {
+        let row = row?;
+        let index = usize::try_from(row.index()?).context("scene row index exceeds usize")?;
         ensure!(
-            *index < height && previous.is_none_or(|previous| previous < *index),
-            "compact scene row order/index"
+            index < height && previous.is_none_or(|previous| previous < index),
+            "scene row order/index"
         );
-        previous = Some(*index);
-        ensure!(runs.len() <= cols, "compact scene run limit");
+        previous = Some(index);
+        let runs = row.runs()?;
+        ensure!(runs.len() <= cols, "scene run limit");
         let mut cells = 0usize;
-        for Run(style, link, text, layout) in runs {
+        for run in runs {
+            let run = run?;
+            let style = run.style()? as usize;
+            let link = run_link(run)?;
             ensure!(
-                (*style as usize) < scene.styles.len()
-                    && link.is_none_or(|id| (id as usize) < scene.hyperlinks.len()),
-                "compact scene table index"
+                style < styles.len() && link.is_none_or(|id| (id as usize) < links.len()),
+                "scene table index"
             );
-            bytes = bytes.saturating_add(text.len());
+            let text = run.text()?;
+            let layout = run.layout()?;
+            text_bytes = text_bytes.saturating_add(text.len());
             ensure!(
-                bytes <= MAX_TEXT_BYTES && layout.len() <= cols,
-                "compact scene text/layout limit"
+                text_bytes <= MAX_TEXT_BYTES && layout.len() <= cols,
+                "scene text/layout limit"
             );
             let before = cells;
             if layout.is_empty() {
-                ensure!(
-                    text.is_ascii(),
-                    "compact scene implicit layout requires ASCII"
-                );
+                ensure!(text.is_ascii(), "scene implicit layout requires ASCII");
                 cells = cells.saturating_add(text.len());
             } else {
                 let mut offset = 0usize;
-                for &(length, width, count) in layout {
+                for part in layout {
+                    let length = part.length() as usize;
+                    let count = part.count() as usize;
                     ensure!(
-                        width <= 2 && count > 0 && length <= 8192,
-                        "compact scene invalid cell layout"
+                        part.width() <= 2 && count > 0 && length <= 8192,
+                        "scene invalid cell layout"
                     );
-                    cells = cells.saturating_add(count as usize);
-                    ensure!(cells <= cols, "compact scene row cell limit");
+                    cells = cells.saturating_add(count);
+                    ensure!(cells <= cols, "scene row cell limit");
                     for _ in 0..count {
                         offset = offset
-                            .checked_add(length as usize)
+                            .checked_add(length)
                             .filter(|end| *end <= text.len())
-                            .ok_or_else(|| anyhow::anyhow!("compact scene text layout overflow"))?;
-                        ensure!(
-                            text.is_char_boundary(offset),
-                            "compact scene split UTF-8 cell"
-                        );
+                            .context("scene text layout overflow")?;
+                        ensure!(text.is_char_boundary(offset), "scene split UTF-8 cell");
                     }
                 }
-                ensure!(offset == text.len(), "compact scene unused cell text");
+                ensure!(offset == text.len(), "scene unused cell text");
             }
-            ensure!(cells <= cols, "compact scene row cell limit");
-            expanded_bytes = expanded_bytes.saturating_add(text.len()).saturating_add(
-                link.map_or(0, |id| scene.hyperlinks[id as usize].len())
-                    .saturating_mul(cells - before),
-            );
+            ensure!(cells <= cols, "scene row cell limit");
+            let link_bytes = match link {
+                Some(id) => links
+                    .get(id as usize)
+                    .context("scene hyperlink index")??
+                    .len(),
+                None => 0,
+            };
+            expanded_bytes = expanded_bytes
+                .saturating_add(text.len())
+                .saturating_add(link_bytes.saturating_mul(cells - before));
             ensure!(
-                expanded_bytes <= MAX_EXPANDED_TEXT_BYTES,
-                "compact scene expanded text limit"
+                expanded_bytes <= MAX_TEXT_BYTES,
+                "scene expanded text limit"
             );
         }
-        ensure!(cells == cols, "compact scene incomplete row");
+        ensure!(cells == cols, "scene incomplete row");
     }
-    if scene.base_revision.is_none() {
-        ensure!(
-            scene.rows.len() == height,
-            "compact scene incomplete full frame"
-        );
-    }
-    if bytes > MAX_TEXT_BYTES {
-        bail!("compact scene hyperlink byte limit");
-    }
-    let rows = scene
-        .rows
-        .into_iter()
-        .map(|(index, runs)| {
-            let mut cells = Vec::with_capacity(cols);
-            for Run(style, link, text, layout) in runs {
-                let style = &scene.styles[style as usize];
-                let hyperlink = link.map(|id| &scene.hyperlinks[id as usize]);
-                let mut push = |text: &str, width| {
-                    cells.push(Cell {
-                        text: text.into(),
-                        width,
-                        style: style.clone(),
-                        hyperlink: hyperlink.cloned(),
-                    })
-                };
-                if layout.is_empty() {
-                    for offset in 0..text.len() {
-                        push(&text[offset..offset + 1], 1);
-                    }
-                } else {
-                    let mut offset = 0;
-                    for (length, width, count) in layout {
-                        for _ in 0..count {
-                            let end = offset + length as usize;
-                            push(&text[offset..end], width);
-                            offset = end;
-                        }
+    ensure!(
+        base.is_some() || rows.len() == height,
+        "scene incomplete full frame"
+    );
+    Ok(scene)
+}
+
+fn read_metadata(frame: g::FrameRef<'_>) -> Result<Frame> {
+    let palette = frame.palette()?.iter().map(unpack).collect::<Result<_>>()?;
+    let placements = frame
+        .placements()?
+        .iter()
+        .map(read_placement)
+        .collect::<Result<_>>()?;
+    let images = frame
+        .images()?
+        .iter()
+        .map(|image| {
+            let image = image?;
+            Ok(Arc::new(Image {
+                id: image.id()?,
+                generation: image.generation()?,
+                width: image.width()?,
+                height: image.height()?,
+                format: read_format(image.format()?),
+                pixels: image.pixels()?.to_vec(),
+            }))
+        })
+        .collect::<Result<_>>()?;
+    Ok(Frame {
+        size: read_size(frame)?,
+        rows: Vec::new(),
+        cursor: read_cursor(frame.cursor()?)?,
+        foreground: unpack(frame.foreground()?)?,
+        background: unpack(frame.background()?)?,
+        palette,
+        images,
+        placements,
+        alternate_screen: frame.alternate_screen()?,
+        mouse_reporting: frame.mouse_reporting()?,
+        scrollback_total: frame.scrollback_total()?,
+        scrollback_offset: frame.scrollback_offset()?,
+    })
+}
+
+/// Fully validate borrowed input before allocating expanded canonical cells or
+/// copying image pixels. No partially decoded scene can reach the consumer.
+pub fn decode(bytes: &[u8]) -> Result<DecodedScene> {
+    decode_validated(validate(bytes)?)
+}
+
+fn decode_validated(scene: g::SceneRef<'_>) -> Result<DecodedScene> {
+    let frame = read_metadata(scene.frame()?)?;
+    let cols = usize::from(frame.size.cols);
+    let styles = scene.styles()?;
+    let links = scene.hyperlinks()?;
+    let mut rows = Vec::with_capacity(scene.rows()?.len());
+    for row in scene.rows()? {
+        let row = row?;
+        let mut cells = Vec::with_capacity(cols);
+        for run in row.runs()? {
+            let run = run?;
+            let style = read_style(
+                styles
+                    .get(run.style()? as usize)
+                    .context("scene style index")?,
+            )?;
+            let hyperlink = match run_link(run)? {
+                Some(id) => Some(links.get(id as usize).context("scene hyperlink index")??),
+                None => None,
+            };
+            let mut push = |text: &str, width| {
+                cells.push(Cell {
+                    text: text.into(),
+                    width,
+                    style: style.clone(),
+                    hyperlink: hyperlink.map(str::to_owned),
+                })
+            };
+            let text = run.text()?;
+            let layout = run.layout()?;
+            if layout.is_empty() {
+                for offset in 0..text.len() {
+                    push(&text[offset..offset + 1], 1);
+                }
+            } else {
+                let mut offset = 0;
+                for part in layout {
+                    for _ in 0..part.count() {
+                        let end = offset + part.length() as usize;
+                        push(&text[offset..end], part.width());
+                        offset = end;
                     }
                 }
             }
-            (index, Row { cells })
-        })
-        .collect();
+        }
+        rows.push((row.index()? as usize, Row { cells }));
+    }
     Ok(DecodedScene {
-        revision: scene.revision,
-        base_revision: scene.base_revision,
-        frame: scene.frame,
+        revision: scene.revision()?,
+        base_revision: base_revision(scene)?,
+        frame,
         rows,
     })
 }
+
+/// Cold CLI/library diagnostic bridge. Full scenes become ordinary human Frame
+/// JSON; deltas retain structured compact replacements and their base revision.
+/// Neither representation is accepted as a native scene encoding.
+pub fn to_json(bytes: &[u8]) -> Result<Value> {
+    let scene = validate(bytes)?;
+    if base_revision(scene)?.is_none() {
+        let mut revision = 0;
+        let mut frame = None;
+        decode_validated(scene)?.apply(&mut revision, &mut frame)?;
+        return Ok(serde_json::to_value(
+            frame.context("scene missing full frame")?,
+        )?);
+    }
+    let frame = read_metadata(scene.frame()?)?;
+    let styles = scene
+        .styles()?
+        .iter()
+        .map(read_style)
+        .collect::<Result<Vec<_>>>()?;
+    let links = scene
+        .hyperlinks()?
+        .iter()
+        .collect::<planus::Result<Vec<_>>>()?;
+    let mut rows = Vec::with_capacity(scene.rows()?.len());
+    for row in scene.rows()? {
+        let row = row?;
+        let mut runs = Vec::with_capacity(row.runs()?.len());
+        for run in row.runs()? {
+            let run = run?;
+            let layout: Vec<Layout> = run
+                .layout()?
+                .iter()
+                .map(|part| (part.length(), part.width(), part.count()))
+                .collect();
+            runs.push((run.style()?, run_link(run)?, run.text()?, layout));
+        }
+        rows.push((row.index()?, runs));
+    }
+    Ok(serde_json::json!({
+        "version": scene.version()?, "revision": scene.revision()?,
+        "base_revision": base_revision(scene)?, "frame": frame,
+        "styles": styles, "hyperlinks": links, "rows": rows,
+    }))
+}
+
+#[cfg(test)]
+#[path = "scene_wire/tests.rs"]
+mod tests;

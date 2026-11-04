@@ -1,7 +1,6 @@
 //! Owned, local process/PTY fixtures; no provider or installed harness is invoked.
 use super::*;
 use std::{
-    io::{BufRead, BufReader, Write},
     os::unix::{net::UnixStream, process::CommandExt},
     process::{Child, Command},
     time::Instant,
@@ -17,13 +16,16 @@ fn wire(socket: &Path, operation: Operation) -> Value {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
-    serde_json::to_writer(&mut stream, &Request::new(operation)).unwrap();
-    stream.write_all(b"\n").unwrap();
-    let mut bytes = Vec::new();
-    BufReader::new(stream)
-        .read_until(b'\n', &mut bytes)
-        .unwrap();
-    serde_json::from_slice(&bytes).unwrap()
+    wire::write_frame(
+        &mut stream,
+        wire::Kind::Request,
+        wire::Codec::new()
+            .encode_request(&Request::new(operation))
+            .unwrap(),
+    )
+    .unwrap();
+    let bytes = wire::read_frame(&mut stream, wire::Kind::Response, wire::MAX_RESPONSE).unwrap();
+    serde_json::to_value(wire::decode_response(&bytes).unwrap()).unwrap()
 }
 fn await_file(path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -48,9 +50,11 @@ struct ServerGuard {
 impl Drop for ServerGuard {
     fn drop(&mut self) {
         if let Some(worker) = self.worker.take() {
-            if let Ok(mut stream) = UnixStream::connect(&self.socket) {
-                let _ = serde_json::to_writer(&mut stream, &Request::new(Operation::Shutdown));
-                let _ = stream.write_all(b"\n");
+            if let Ok(mut stream) = UnixStream::connect(&self.socket)
+                && let Ok(bytes) =
+                    wire::Codec::new().encode_request(&Request::new(Operation::Shutdown))
+            {
+                let _ = wire::write_frame(&mut stream, wire::Kind::Request, bytes);
             }
             let _ = worker.join();
         }
@@ -274,6 +278,8 @@ impl Fixture {
                     pane_id: pane_id.into(),
                     request: PaneRequest::Inspect,
                 }))
+                .unwrap()
+                .into_json()
                 .unwrap(),
         )
         .unwrap()
@@ -324,7 +330,7 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
     await_file(&fixture.home.join("capture-connected"));
     // The wrapper's connect succeeded while its pane was still uncommitted.
     resume.send(()).unwrap();
-    let result = spawning.join().unwrap().unwrap();
+    let result = spawning.join().unwrap().unwrap().into_json().unwrap();
     let pane_id = result["pane_id"].as_str().unwrap().to_owned();
     {
         let _transaction = registry.inner.transaction.lock().unwrap();
@@ -482,6 +488,8 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
                 },
             },
         }))
+        .unwrap()
+        .into_json()
         .unwrap();
     let other_id = other["pane_id"].as_str().unwrap();
     let other_pid = fixture.snapshot(other_id).pid.unwrap() as i32;
@@ -717,6 +725,8 @@ fn non_utf8_foreground_cwd_round_trips_without_poisoning_or_persisting_live_fact
                 },
             },
         }))
+        .unwrap()
+        .into_json()
         .unwrap();
     let id = result["pane_id"].as_str().unwrap();
     let durable = fs::read(fixture._root.path().join("registry.json")).unwrap();
@@ -745,7 +755,12 @@ fn non_utf8_foreground_cwd_round_trips_without_poisoning_or_persisting_live_fact
             wait_ms: 0,
         },
     ] {
-        let value = fixture.registry.request(Request::new(operation)).unwrap();
+        let value = fixture
+            .registry
+            .request(Request::new(operation))
+            .unwrap()
+            .into_json()
+            .unwrap();
         let snapshot: RegistryResult = serde_json::from_value(value).unwrap();
         assert_eq!(
             snapshot
@@ -765,6 +780,8 @@ fn non_utf8_foreground_cwd_round_trips_without_poisoning_or_persisting_live_fact
             name: Some("still healthy".into()),
             initial: None,
         }))
+        .unwrap()
+        .into_json()
         .unwrap();
     assert!(
         !fs::read_to_string(fixture._root.path().join("registry.json"))
@@ -870,7 +887,7 @@ fn direct_root_capture_begin_waits_for_real_spawn_publication_without_launcher_r
     let capture_waiting = admitted_rx.recv_timeout(Duration::from_secs(8));
     let premature_grant = fixture.home.join("fast-grant").exists();
     let _ = resume.send(());
-    let result = spawning.join().unwrap().unwrap();
+    let result = spawning.join().unwrap().unwrap().into_json().unwrap();
     publication_blocked.unwrap();
     capture_waiting.unwrap();
     assert!(!premature_grant);
@@ -933,7 +950,7 @@ fn stale_observation_cannot_replace_newer_authenticated_native_binding() {
             isolated_environment: true,
             size: Size { cols: 80, rows: 24, cell_width: 8, cell_height: 16 },
         },
-    })).unwrap();
+    })).unwrap().into_json().unwrap();
     let pane_id = result["pane_id"].as_str().unwrap();
     await_file(&fixture.home.join("ready.json"));
     {

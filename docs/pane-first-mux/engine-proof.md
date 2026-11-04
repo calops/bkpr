@@ -20,9 +20,9 @@ Linux [process cleanup](../../crates/bkpr-core/src/process_tree.rs) is scoped to
 
 ### IPC and resources
 
-The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses protocol-v4 typed workspace/window registry operations, one-shot client source publication and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. Request/response and admission limits are bounded, with control capacity reserved independently of long polls. These remain same-user local boundaries, not authenticated remote enrollment or production network framing.
+The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses Planus binary wire family 5 for typed workspace/window registry operations, one-shot client source publication and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. A fixed admission header checks family, message kind, required capabilities and the 8 MiB request / 96 MiB response bounds before allocating the payload. Control capacity remains reserved independently of long polls. These remain same-user local boundaries, not authenticated remote enrollment.
 
-Clients receive compact lossless scene runs and whole-row deltas on snapshot workers. Image receipts include ID and generation, avoiding stale pixels or needless retransmission. Workspace/window/pane metadata and revisioned layouts persist; terminal contents and processes do not. Restored records without runtimes are explicitly Stopped. A full scene-delta protocol and sustained-animation CPU reduction remain separate work.
+Clients receive compact lossless binary scene runs and whole-row deltas on snapshot workers. Image receipts include ID and generation, avoiding stale pixels or needless retransmission. The received allocation owns borrowed scene slices; complete validation precedes expanded native cells/resources and failure-atomic application. CLI/MCP/provider and persistence JSON are not the native wire format. Workspace/window/pane metadata and revisioned layouts persist; terminal contents and processes do not. Restored records without runtimes are explicitly Stopped. Sustained-animation CPU work remains measured separately below.
 
 ### Experiment limits
 
@@ -1279,3 +1279,86 @@ scaffolds are removed after verification; raw captures and receipts remain.
 Provider-owned forge/PR/CI content is still unavailable, not fabricated.
 Animation, command palettes and the separately listed toast/theme/keybinding
 work remain outside this pass.
+
+## Native Planus transport and matched CPU comparison
+
+Native IPC now uses typed Planus wire family 5, including requests, responses,
+binary pane scenes and client-lifetime events. `bytes::Bytes` retains the
+scene's range in the received allocation without a second scene-byte copy.
+Canonical mutable cells/resources still require owned storage; this isn't an
+end-to-end zero-allocation claim. External JSON boundaries and private durable
+schema 4 are unchanged.
+
+Independent review found that a malformed optional union could become an
+apparently absent layout. The failing regression decoded the damaged request
+as `layout:null`. Nullable wrapper tables with required union contents now
+reject that mutation, and equivalent result/failure corruption is covered.
+Complete scene validation, revision checks and resource preflight precede
+consumer changes or poll-cursor advancement.
+
+### Native acceptance
+
+`target/smoke/planus-migration/delivery-acceptance.json` records independent
+verification of the exact transport-only staged source: 716 tests passed,
+14 subprocess fixtures explicitly ignored. The integrated worktree, including
+the separately owned frontend changes, passes 720 tests. Both scopes pass
+strict all-target workspace Clippy, transport-owned rustfmt and workspace
+doctests. Permission-sensitive suites run as the real host user against exact
+protected debug artifacts, not inside the build namespace. Concurrent
+rendering changes aren't formatted, reverted or included in this commit.
+
+`delivery-tui/` launches that transport-only debug pair in actual Kitty and
+verifies the complete 79-row final pane grid, sidebar and exact finite source
+bytes. It is functional acceptance, not another performance measurement.
+
+`runtime-1363643375664373/acceptance.json` exercises both incompatible wire
+directions: attempted shutdown is rejected while the original session/daemon
+identity stays usable through its matching client. Unknown required
+capabilities fail before dispatch. The actual PTY fixture preserves NUL,
+control, non-UTF-8 and UTF-8 input bytes; emitted combining/wide/ZWJ text,
+truecolor, links and exact RGBA pixels survive native scene transport.
+Subsequent polls use a real row delta and generation-keyed image receipts;
+native resize converges, and final-pane termination reaps its workspace/session.
+Cleanup leaves zero owned survivors.
+
+### Matched release CPU
+
+Both release pairs use the same pinned native SDK, thin LTO and frozen client
+rendering/framework sources. The JSON control also has the same consumer
+resource preflight, with only a read-only image-key accessor added to its old
+scene adapter. No production rendering, frame cap, delay or fidelity change
+is credited to Planus. Builds use eight jobs and preserve all live public
+executable paths. No owned compilation or other owned GUI fixture runs during
+CPU capture.
+
+The actual native pane is 240×79 cells. Bkpr has its 280×81 sidebar window;
+Zellij uses 240×81. Twelve serial Kitty/Xvfb captures balance variant order
+across two repeats per workload/variant. Dense work emits 300 frames at the
+same offered 30 Hz, exactly 6,085,154 post-ready bytes. Recorded `cmatrix`
+replay uses the same forwarding deadlines and exactly 9,745,690 post-ready
+bytes in every run. All complete final terminal grids and byte streams match.
+
+CPU is client plus daemon, with 100% meaning one logical core. Producer,
+relay, observer and emulator CPU are excluded:
+
+| Workload | JSON control | Planus | Fresh Zellij control | Bkpr CPU reduction |
+| --- | ---: | ---: | ---: | ---: |
+| Dense full-screen redraws | 24.87% | 22.48% | 11.19% | 9.6% |
+| Recorded `cmatrix` replay | 142.70% | 78.74% | 12.93% | 44.8% |
+
+On replay, client CPU falls from 59.10% to 28.43% and daemon CPU from 83.60%
+to 50.31%. These are repeated workload observations, not universal budgets
+or physical-display FPS. Faster consumption can change observed intermediate
+states; final terminal content isn't a presentation-cadence measurement.
+
+Planus removes native JSON materialization/parsing, but not the remaining CPU
+gap: about 2.0× Zellij on dense work and 6.1× on replay. Frame extraction,
+comparison/expansion, rendering and per-request connections/workers still
+exist; this comparison doesn't attribute their shares. Profile those paths
+before selecting another optimization.
+
+The exact source/build/binary receipts are in
+`release-build-1362334787277319/result.json`; raw balanced captures are in
+`drivers/stages/paired-1362541717915134/`. `findings.json` and
+`measurements.json` retain individual counters, byte hashes and limitations.
+Every case and the stage watchdog report zero surviving owned births.

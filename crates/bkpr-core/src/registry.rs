@@ -654,14 +654,14 @@ impl Registry {
         validate_record(&next)?;
         commit(&self.inner, next, |_| {})
     }
-    pub fn request(&self, request: Request) -> Result<Value> {
+    pub fn request(&self, request: Request) -> Result<Payload> {
         self.request_for_client(request, None)
     }
     fn request_for_client(
         &self,
         request: Request,
         client: Option<Arc<sessions::ClientLease>>,
-    ) -> Result<Value> {
+    ) -> Result<Payload> {
         ensure!(
             request.version == PROTOCOL_VERSION,
             "unsupported protocol version"
@@ -724,7 +724,7 @@ impl Registry {
                             bootstrap: false,
                         },
                         spec,
-                    );
+                    ).map(Payload::Control);
                 }
                 let registry = self.mutate(|r| {
                     let state = self.inner.state.lock().unwrap();
@@ -959,13 +959,13 @@ impl Registry {
                 if terminating {
                     self.record_completion(&pane_id)?;
                 }
-                Ok(result)
+                return Ok(result);
             }
             Operation::Shutdown => {
                 self.shutdown()?;
                 Ok(json!({"shutdown":true}))
             }
-        }
+        }.map(Payload::Control)
     }
     fn spawn(&self, target: SpawnTarget, spec: PaneSpawnSpec) -> Result<Value> {
         self.spawn_inner(target, spec, None, None)

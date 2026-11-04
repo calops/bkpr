@@ -2480,10 +2480,8 @@ mod tests {
                 view_timeout_ms: 5000,
                 poll_wait_max_ms: 1000,
                 row_deltas: true,
-                scene_encodings: vec!["compact_v1".into()],
+                scene_encodings: vec!["planus_v1".into()],
             },
-            row_delta: None,
-            scene: None,
         };
         (pane, snapshot)
     }

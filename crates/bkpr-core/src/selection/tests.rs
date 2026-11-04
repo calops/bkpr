@@ -31,9 +31,15 @@ impl Fixture {
         let fixture = Self { pane, _root: root };
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let snapshot: PaneSnapshot =
-                serde_json::from_value(fixture.pane.request(PaneRequest::Inspect).unwrap())
-                    .unwrap();
+            let snapshot: PaneSnapshot = serde_json::from_value(
+                fixture
+                    .pane
+                    .request(PaneRequest::Inspect)
+                    .unwrap()
+                    .into_json()
+                    .unwrap(),
+            )
+            .unwrap();
             if snapshot.frame.as_ref().is_some_and(|frame| {
                 frame.rows[0]
                     .cells
@@ -52,6 +58,8 @@ impl Fixture {
     fn attach(&self) -> String {
         self.pane
             .request(PaneRequest::Attach { spec: spec() })
+            .unwrap()
+            .into_json()
             .unwrap()["view_id"]
             .as_str()
             .unwrap()
@@ -63,6 +71,8 @@ impl Fixture {
                 view_id: id.into(),
                 event: event(action, x),
             })
+            .unwrap()
+            .into_json()
             .unwrap();
     }
     fn poll(&self, id: &str, frame_after: u64) -> PaneSnapshot {
@@ -78,6 +88,8 @@ impl Fixture {
                     row_deltas: true,
                     scene_encoding: None,
                 })
+                .unwrap()
+                .into_json()
                 .unwrap(),
         )
         .unwrap()
@@ -126,6 +138,8 @@ fn read_only_selection_copies_exact_bytes_without_scene_or_authority_changes() {
             .request(PaneRequest::CopySelection {
                 view_id: reader.clone()
             })
+            .unwrap()
+            .into_json()
             .unwrap(),
         serde_json::json!({"copied":false,"contents":[]})
     );
@@ -146,7 +160,6 @@ fn read_only_selection_copies_exact_bytes_without_scene_or_authority_changes() {
     assert_eq!(after.revision, before.revision);
     assert!(after.snapshot_revision > before.snapshot_revision);
     assert!(after.frame.is_none());
-    assert!(after.row_delta.is_none());
     assert!(after.selection.as_ref().unwrap().active);
     assert!(!after.selection.as_ref().unwrap().dragging);
     assert!(fixture.poll(&other, before.revision).selection.is_none());
@@ -168,6 +181,8 @@ fn read_only_selection_copies_exact_bytes_without_scene_or_authority_changes() {
         .request(PaneRequest::CopySelection {
             view_id: reader.clone(),
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     assert_eq!(
         response,
@@ -188,6 +203,8 @@ fn read_only_selection_copies_exact_bytes_without_scene_or_authority_changes() {
         fixture
             .pane
             .request(PaneRequest::CopySelection { view_id: reader })
+            .unwrap()
+            .into_json()
             .unwrap()["copied"],
         false
     );
@@ -209,6 +226,8 @@ fn hidden_detached_and_retired_pane_copies_fail_without_reviving_old_selection()
             view_id: reader.clone(),
             spec: hidden,
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     assert!(
         fixture
@@ -233,6 +252,8 @@ fn hidden_detached_and_retired_pane_copies_fail_without_reviving_old_selection()
             view_id: reader.clone(),
             spec: spec(),
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     assert!(visible(&fixture.pane.shared, &reader, Some(old_activity)).is_err());
     assert_eq!(
@@ -241,6 +262,8 @@ fn hidden_detached_and_retired_pane_copies_fail_without_reviving_old_selection()
             .request(PaneRequest::CopySelection {
                 view_id: reader.clone()
             })
+            .unwrap()
+            .into_json()
             .unwrap()["copied"],
         false
     );
@@ -249,6 +272,8 @@ fn hidden_detached_and_retired_pane_copies_fail_without_reviving_old_selection()
         .request(PaneRequest::Detach {
             view_id: reader.clone(),
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     assert!(
         fixture
@@ -268,7 +293,12 @@ fn hidden_detached_and_retired_pane_copies_fail_without_reviving_old_selection()
             .is_err()
     );
     let live = fixture.attach();
-    fixture.pane.request(PaneRequest::Shutdown).unwrap();
+    fixture
+        .pane
+        .request(PaneRequest::Shutdown)
+        .unwrap()
+        .into_json()
+        .unwrap();
     assert!(
         fixture
             .pane
@@ -299,6 +329,8 @@ fn queued_copy_cannot_export_after_originating_view_policy_is_retired() {
             view_id: reader.clone(),
             spec: hidden,
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     fixture
         .pane
@@ -306,6 +338,8 @@ fn queued_copy_cannot_export_after_originating_view_policy_is_retired() {
             view_id: reader.clone(),
             spec: spec(),
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     assert!(
         fixture
@@ -340,6 +374,8 @@ fn queued_selection_and_copy_survive_same_visible_sizing_and_capability_updates(
             view_id: reader.clone(),
             spec: spec(),
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     fixture
         .pane
@@ -363,6 +399,8 @@ fn queued_selection_and_copy_survive_same_visible_sizing_and_capability_updates(
             view_id: reader.clone(),
             spec: changed,
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     for action in [SelectionAction::Drag, SelectionAction::Release] {
         fixture
@@ -396,6 +434,8 @@ fn queued_selection_and_copy_survive_same_visible_sizing_and_capability_updates(
             view_id: reader.clone(),
             spec: spec(),
         })
+        .unwrap()
+        .into_json()
         .unwrap();
     assert_eq!(
         fixture

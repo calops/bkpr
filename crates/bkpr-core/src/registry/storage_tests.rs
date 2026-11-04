@@ -78,15 +78,17 @@ fn blocked_metadata_write_does_not_block_pane_input_snapshots_or_committed_regis
                 pane_id,
                 request: PaneRequest::Inspect,
             }))?;
-            let _: PaneSnapshot = serde_json::from_value(snapshot)?;
-            controlling_registry.request(Request::new(Operation::Inspect))
+            let _: PaneSnapshot = serde_json::from_value(snapshot.into_json()?)?;
+            controlling_registry
+                .request(Request::new(Operation::Inspect))
+                .and_then(Payload::into_json)
         })();
         let _ = progress_tx.send(result);
     });
     // Release before assertions/join so a regression fails rather than hanging cleanup.
     let progress = progress_rx.recv_timeout(Duration::from_secs(3));
     drop(release);
-    let committed = writing.join().unwrap().unwrap();
+    let committed = writing.join().unwrap().unwrap().into_json().unwrap();
     controls.join().unwrap();
     let result = progress
         .expect("pane controls were blocked by registry durability work")

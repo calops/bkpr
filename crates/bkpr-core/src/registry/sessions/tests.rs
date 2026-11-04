@@ -13,13 +13,20 @@ fn wire_request(socket: &Path, request: Request) -> Value {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    serde_json::to_writer(&mut stream, &request).unwrap();
-    stream.write_all(b"\n").unwrap();
-    let mut bytes = Vec::new();
-    BufReader::new(stream)
-        .read_until(b'\n', &mut bytes)
-        .unwrap();
-    serde_json::from_slice(&bytes).unwrap()
+    let version = request.version;
+    let request = Request {
+        version: PROTOCOL_VERSION,
+        ..request
+    };
+    let mut frame = wire::encode_frame(
+        wire::Kind::Request,
+        wire::Codec::new().encode_request(&request).unwrap(),
+    )
+    .unwrap();
+    frame[4..8].copy_from_slice(&version.to_le_bytes());
+    stream.write_all(&frame).unwrap();
+    let bytes = wire::read_frame(&mut stream, wire::Kind::Response, wire::MAX_RESPONSE).unwrap();
+    serde_json::to_value(wire::decode_response(&bytes).unwrap()).unwrap()
 }
 fn eventually(mut predicate: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -65,19 +72,20 @@ impl Server {
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        serde_json::to_writer(
+        let request = Request::new(Operation::ClientRegister {
+            session_id: session.session_id,
+            daemon_id: session.daemon_id,
+        });
+        wire::write_frame(
             &mut stream,
-            &Request::new(Operation::ClientRegister {
-                session_id: session.session_id,
-                daemon_id: session.daemon_id,
-            }),
+            wire::Kind::Request,
+            wire::Codec::new().encode_request(&request).unwrap(),
         )
         .unwrap();
-        stream.write_all(b"\n").unwrap();
         let mut stream = BufReader::new(stream);
-        let mut bytes = Vec::new();
-        stream.read_until(b'\n', &mut bytes).unwrap();
-        let response: Value = serde_json::from_slice(&bytes).unwrap();
+        let bytes =
+            wire::read_frame(&mut stream, wire::Kind::Response, wire::MAX_RESPONSE).unwrap();
+        let response = serde_json::to_value(wire::decode_response(&bytes).unwrap()).unwrap();
         assert_eq!(response["ok"], true, "{response}");
         let authority = serde_json::from_value(response["result"]["client"].clone()).unwrap();
         Client { stream, authority }
@@ -155,9 +163,13 @@ struct Client {
 }
 impl Client {
     fn event(&mut self) -> ClientEvent {
-        let mut bytes = Vec::new();
-        self.stream.read_until(b'\n', &mut bytes).unwrap();
-        serde_json::from_slice(&bytes).unwrap()
+        let bytes = wire::read_frame(
+            &mut self.stream,
+            wire::Kind::ClientEvent,
+            wire::MAX_RESPONSE,
+        )
+        .unwrap();
+        wire::decode_client_event(&bytes).unwrap()
     }
 }
 fn spec() -> ViewSpec {
@@ -173,6 +185,58 @@ fn spec() -> ViewSpec {
         input: true,
         clipboard: true,
     }
+}
+
+#[test]
+fn managed_native_poll_delivers_binary_scene_through_dispatch_and_framing() {
+    let server = Server::new("binary-scene");
+    let client = server.register();
+    assert_eq!(server.activate(&client, false)["ok"], true);
+    let pane_id = server.spawn();
+    let view_id = server.attach(&client, &pane_id);
+    let request = Request::new(Operation::Client {
+        authority: client.authority.clone(),
+        request: Box::new(Operation::Pane {
+            pane_id: pane_id.clone(),
+            request: PaneRequest::Poll {
+                view_id,
+                after: 0,
+                frame_after: 0,
+                resources: Vec::new(),
+                snapshot_after: 0,
+                wait_ms: 0,
+                row_deltas: true,
+                scene_encoding: Some("planus_v1".into()),
+            },
+        }),
+    });
+    let mut stream = UnixStream::connect(&server.socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    wire::write_frame(
+        &mut stream,
+        wire::Kind::Request,
+        wire::Codec::new().encode_request(&request).unwrap(),
+    )
+    .unwrap();
+    let bytes = wire::read_frame(&mut stream, wire::Kind::Response, wire::MAX_RESPONSE).unwrap();
+    let response = wire::decode_response(&bytes).unwrap();
+    assert!(response.ok, "{response:?}");
+    let Payload::Pane(payload) = response.result.unwrap() else {
+        panic!("native polling must preserve the pane payload discriminator");
+    };
+    assert_eq!(payload.metadata["pane_id"], pane_id);
+    assert!(payload.metadata["frame"].is_null());
+    assert!(payload.metadata.get("scene").is_none());
+    let mut actual = None;
+    let mut revision = 0;
+    bkpr_protocol::scene_wire::decode(payload.scene.as_deref().unwrap())
+        .unwrap()
+        .apply(&mut revision, &mut actual)
+        .unwrap();
+    assert_eq!(revision, payload.metadata["revision"].as_u64().unwrap());
+    assert_eq!(actual.unwrap().size, spec().size);
 }
 
 fn acknowledge_native_turn(pane: &crate::Pane) {
@@ -543,19 +607,19 @@ fn inherited_lifetime_fixture() {
         serde_json::from_value(wire(&socket, Operation::SessionInfo)["result"]["session"].clone())
             .unwrap();
     let mut stream = UnixStream::connect(&socket).unwrap();
-    serde_json::to_writer(
+    let request = Request::new(Operation::ClientRegister {
+        session_id: session.session_id,
+        daemon_id: session.daemon_id,
+    });
+    wire::write_frame(
         &mut stream,
-        &Request::new(Operation::ClientRegister {
-            session_id: session.session_id,
-            daemon_id: session.daemon_id,
-        }),
+        wire::Kind::Request,
+        wire::Codec::new().encode_request(&request).unwrap(),
     )
     .unwrap();
-    stream.write_all(b"\n").unwrap();
     let mut reader = BufReader::new(stream);
-    let mut bytes = Vec::new();
-    reader.read_until(b'\n', &mut bytes).unwrap();
-    let response: Value = serde_json::from_slice(&bytes).unwrap();
+    let bytes = wire::read_frame(&mut reader, wire::Kind::Response, wire::MAX_RESPONSE).unwrap();
+    let response = serde_json::to_value(wire::decode_response(&bytes).unwrap()).unwrap();
     let authority: ClientAuthority =
         serde_json::from_value(response["result"]["client"].clone()).unwrap();
     assert_eq!(
@@ -798,7 +862,13 @@ fn expiry_driven_resize_cannot_outlive_its_managed_client_or_view() {
             )["ok"],
             true
         );
-        eventually(|| pane.request(PaneRequest::Inspect).unwrap()["frame"]["size"]["cols"] == 120);
+        eventually(|| {
+            pane.request(PaneRequest::Inspect)
+                .unwrap()
+                .into_json()
+                .unwrap()["frame"]["size"]["cols"]
+                == 120
+        });
         let anonymous = wire(
             &server.socket,
             Operation::Pane {
@@ -809,7 +879,13 @@ fn expiry_driven_resize_cannot_outlive_its_managed_client_or_view() {
             .as_str()
             .unwrap()
             .to_owned();
-        eventually(|| pane.request(PaneRequest::Inspect).unwrap()["frame"]["size"]["cols"] == 80);
+        eventually(|| {
+            pane.request(PaneRequest::Inspect)
+                .unwrap()
+                .into_json()
+                .unwrap()["frame"]["size"]["cols"]
+                == 80
+        });
         let (entered, entered_rx) = std::sync::mpsc::sync_channel(1);
         let (resume, resume_rx) = std::sync::mpsc::sync_channel(1);
         {
@@ -846,7 +922,10 @@ fn expiry_driven_resize_cannot_outlive_its_managed_client_or_view() {
         resume.send(()).unwrap();
         acknowledge_native_turn(&pane);
         assert_eq!(
-            pane.request(PaneRequest::Inspect).unwrap()["frame"]["size"]["cols"],
+            pane.request(PaneRequest::Inspect)
+                .unwrap()
+                .into_json()
+                .unwrap()["frame"]["size"]["cols"],
             80
         );
     }

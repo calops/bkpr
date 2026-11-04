@@ -112,7 +112,7 @@ fn spawn_reserves_workspace_revision_before_exec_without_blocking_other_workspac
     );
     wait_for_sentinel(&unrelated_home);
     drop(release);
-    let accepted = worker.join().unwrap().unwrap();
+    let accepted = worker.join().unwrap().unwrap().into_json().unwrap();
     assert!(accepted["pane_id"].as_str().is_some());
     wait_for_sentinel(&accepted_home);
     // A stale request is rejected before argv can run or even create its home.
@@ -417,7 +417,7 @@ fn last_execution_completion_during_admitted_spawn_converges_after_reservation_r
         assert!(!registry.session_end_requested());
         assert_eq!(registry.snapshot().unwrap().workspaces.len(), 1);
         drop(release);
-        let created = worker.join().unwrap().unwrap();
+        let created = worker.join().unwrap().unwrap().into_json().unwrap();
         let r = registry.snapshot().unwrap();
         assert_eq!(r.workspaces.len(), 1);
         assert!(!registry.session_end_requested());

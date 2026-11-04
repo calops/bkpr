@@ -439,7 +439,6 @@ fn request(socket: &Endpoint, operation: Operation, phase: &str) -> Result<Regis
 mod tests {
     use super::*;
     use std::{
-        io::{BufRead, BufReader, Write},
         os::unix::net::UnixListener,
         sync::mpsc,
         thread,
@@ -531,7 +530,8 @@ mod tests {
                     workspace_id: workspace.map(str::to_owned),
                     window_id: pane.map(|_| "window".to_owned()),
                 })
-                .unwrap(),
+                .unwrap()
+                .into(),
             ),
             error: None,
             failure: None,
@@ -569,19 +569,14 @@ mod tests {
                         stream
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
-                        let mut bytes = Vec::new();
-                        BufReader::new(&mut stream)
-                            .read_until(b'\n', &mut bytes)
-                            .unwrap();
-                        let request: Request = serde_json::from_slice(&bytes).unwrap();
+                        let request = transport::test_wire::read_request(&mut stream).unwrap();
                         assert_eq!(request.version, PROTOCOL_VERSION);
                         requests.push(request);
                         if let Some(reply) = replies
                             .next()
                             .unwrap_or_else(|| rejection("unexpected mutation replay"))
                         {
-                            serde_json::to_writer(&mut stream, &reply).unwrap();
-                            stream.write_all(b"\n").unwrap();
+                            transport::test_wire::write_response(&mut stream, &reply).unwrap();
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -870,7 +865,7 @@ mod tests {
                     version: PROTOCOL_VERSION,
                     failure: None,
                     ok: true,
-                    result: Some(serde_json::to_value(reply).unwrap()),
+                    result: Some(serde_json::to_value(reply).unwrap().into()),
                     error: None,
                 })],
                 Command::Create {
@@ -938,7 +933,7 @@ mod tests {
             let malformed = Some(Response {
                 version: PROTOCOL_VERSION,
                 ok: true,
-                result: Some(serde_json::json!({})),
+                result: Some(serde_json::json!({}).into()),
                 error: None,
                 failure: None,
             });

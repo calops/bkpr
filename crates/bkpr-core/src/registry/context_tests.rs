@@ -1,6 +1,5 @@
 use super::*;
 use std::{
-    io::{BufRead, BufReader, Write},
     os::{
         fd::{FromRawFd, OwnedFd},
         unix::{net::UnixStream, process::CommandExt},
@@ -56,7 +55,11 @@ fn publish_json(home: &Path, name: &str, value: &Value) {
 }
 
 fn call(registry: &Registry, operation: Operation) -> Value {
-    registry.request(Request::new(operation)).unwrap()
+    registry
+        .request(Request::new(operation))
+        .unwrap()
+        .into_json()
+        .unwrap()
 }
 
 fn peer(pid: i32) -> Peer {
@@ -69,12 +72,14 @@ fn peer(pid: i32) -> Peer {
 }
 
 fn selected(registry: &Registry, peer: &Peer, pane_id: Option<&str>) -> Result<PaneContext> {
-    let value = registry.request_authenticated(
-        Request::new(Operation::Context {
-            pane_id: pane_id.map(str::to_owned),
-        }),
-        peer,
-    )?;
+    let value = registry
+        .request_authenticated(
+            Request::new(Operation::Context {
+                pane_id: pane_id.map(str::to_owned),
+            }),
+            peer,
+        )?
+        .into_json()?;
     ensure!(
         value.as_object().is_some_and(|fields| fields.len() == 8),
         "unexpected context fields"
@@ -635,13 +640,16 @@ fn wire(socket: &Path, operation: Operation) -> Value {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
-    serde_json::to_writer(&mut stream, &Request::new(operation)).unwrap();
-    stream.write_all(b"\n").unwrap();
-    let mut bytes = Vec::new();
-    BufReader::new(stream)
-        .read_until(b'\n', &mut bytes)
-        .unwrap();
-    serde_json::from_slice(&bytes).unwrap()
+    wire::write_frame(
+        &mut stream,
+        wire::Kind::Request,
+        wire::Codec::new()
+            .encode_request(&Request::new(operation))
+            .unwrap(),
+    )
+    .unwrap();
+    let bytes = wire::read_frame(&mut stream, wire::Kind::Response, wire::MAX_RESPONSE).unwrap();
+    serde_json::to_value(wire::decode_response(&bytes).unwrap()).unwrap()
 }
 
 struct Server {
@@ -651,9 +659,11 @@ struct Server {
 impl Drop for Server {
     fn drop(&mut self) {
         if let Some(worker) = self.worker.take() {
-            if let Ok(mut stream) = UnixStream::connect(&self.socket) {
-                let _ = serde_json::to_writer(&mut stream, &Request::new(Operation::Shutdown));
-                let _ = stream.write_all(b"\n");
+            if let Ok(mut stream) = UnixStream::connect(&self.socket)
+                && let Ok(bytes) =
+                    wire::Codec::new().encode_request(&Request::new(Operation::Shutdown))
+            {
+                let _ = wire::write_frame(&mut stream, wire::Kind::Request, bytes);
             }
             let _ = worker.join();
         }
@@ -725,7 +735,7 @@ fn immediate_root_context_waits_for_real_publication_without_retry_or_focus() {
     let context_waiting = admitted_rx.recv_timeout(Duration::from_secs(8));
     let premature = home.join("context.json").exists();
     drop(release);
-    let spawned = spawning.join().unwrap().unwrap();
+    let spawned = spawning.join().unwrap().unwrap().into_json().unwrap();
     publication_blocked.unwrap();
     context_waiting.unwrap();
     assert!(

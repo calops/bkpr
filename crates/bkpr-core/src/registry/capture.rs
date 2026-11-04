@@ -31,7 +31,7 @@ impl Registry {
         Ok(())
     }
     #[cfg(test)]
-    pub(crate) fn request_authenticated(&self, request: Request, peer: &Peer) -> Result<Value> {
+    pub(crate) fn request_authenticated(&self, request: Request, peer: &Peer) -> Result<Payload> {
         self.request_authenticated_cancellable(request, peer, &|| true)
     }
     pub(crate) fn request_authenticated_cancellable(
@@ -39,7 +39,7 @@ impl Registry {
         request: Request,
         peer: &Peer,
         is_connected: &dyn Fn() -> bool,
-    ) -> Result<Value> {
+    ) -> Result<Payload> {
         ensure!(
             request.version == PROTOCOL_VERSION,
             "unsupported protocol version"
@@ -202,8 +202,8 @@ impl Registry {
                     json!({"launch_id":launch.grant.launch_id,"harness":launch.grant.kind.as_str(),"active":active,"session_id":native,"pane_id":pane.id,"workspace_id":pane.workspace_id,"window_id":pane.window_id,"workspace_name":workspace.map(|w| w.name.as_str()),"cwd":cwd.as_deref().map(bkpr_protocol::path_wire::WirePath)}),
                 )
             }
-            operation => self.request(Request::new(operation)),
-        }
+            operation => return self.request(Request::new(operation)),
+        }.map(Payload::Control)
     }
     pub(super) fn capture_pane(&self, pane_id: &str) -> Result<Pane> {
         let state = self.inner.state.lock().unwrap();

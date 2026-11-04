@@ -1,18 +1,20 @@
 use super::*;
 
 fn observer(registry: &Registry, pane_id: &str) -> Result<Value> {
-    registry.request(Request::new(Operation::Pane {
-        pane_id: pane_id.into(),
-        request: PaneRequest::Attach {
-            spec: ViewSpec {
-                size: size(80),
-                visible: true,
-                interactive: false,
-                input: false,
-                clipboard: false,
+    registry
+        .request(Request::new(Operation::Pane {
+            pane_id: pane_id.into(),
+            request: PaneRequest::Attach {
+                spec: ViewSpec {
+                    size: size(80),
+                    visible: true,
+                    interactive: false,
+                    input: false,
+                    clipboard: false,
+                },
             },
-        },
-    }))
+        }))
+        .and_then(Payload::into_json)
 }
 
 #[test]

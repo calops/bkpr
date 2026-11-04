@@ -128,7 +128,12 @@ fn quick_root_exit_reaps_stopped_other_pgrp_without_touching_parallel_pane() {
         root.path().join("parallel"),
         vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
     );
-    let parallel_pid = parallel.0.request(Request::Inspect).unwrap()["pid"]
+    let parallel_pid = parallel
+        .0
+        .request(Request::Inspect)
+        .unwrap()
+        .into_json()
+        .unwrap()["pid"]
         .as_i64()
         .unwrap() as i32;
     let parallel_birth = birth(parallel_pid).unwrap();
@@ -220,7 +225,12 @@ fn quick_root_exit_reaps_stopped_other_pgrp_without_touching_parallel_pane() {
         "cleanup touched another pane's execution"
     );
     assert_eq!(
-        parallel.0.request(Request::Inspect).unwrap()["lifecycle"],
+        parallel
+            .0
+            .request(Request::Inspect)
+            .unwrap()
+            .into_json()
+            .unwrap()["lifecycle"],
         "running"
     );
     for _ in 0..3 {
