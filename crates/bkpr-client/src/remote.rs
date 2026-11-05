@@ -1,9 +1,9 @@
 //! One owned OpenSSH transport to one existing native session. No reconnect or replay.
-use crate::transport::client_lifetime::{ConnectionPurpose, Connector};
+use crate::transport::client_lifetime::{ConnectionPurpose, Connector, Lifecycle};
 use crate::transport::{Endpoint, RegisteredClient};
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::{
-    PROTOCOL_VERSION, SessionInfo,
+    PROTOCOL_VERSION, SessionInfo, SpawnDefaults,
     remote_wire::{self, Control, Hello, Welcome},
     wire,
 };
@@ -31,7 +31,10 @@ use tokio::{
     task::JoinSet,
     time::timeout,
 };
-use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
+use tokio_util::{
+    compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt},
+    sync::CancellationToken,
+};
 
 const STREAMS: usize = 96;
 const RECEIVE_WINDOW: usize = 24 * 1024 * 1024;
@@ -113,19 +116,38 @@ impl Connector for RemoteConnector {
 struct Supervisor {
     stop: watch::Sender<bool>,
     thread: Option<thread::JoinHandle<()>>,
+    cancellation: CancellationToken,
     failure: Arc<Mutex<Option<String>>>,
 }
 impl Supervisor {
-    fn stop(&mut self) {
-        let _ = self.stop.send(true);
+    fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+    fn retire(&self) {
+        self.stop.send_replace(true);
+    }
+    fn cancel_and_join(&mut self) {
+        self.cancel();
+        self.join();
+    }
+    fn join(&mut self) {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
     }
+    fn stop(&mut self) {
+        self.retire();
+        self.join();
+    }
 }
 impl Drop for Supervisor {
     fn drop(&mut self) {
-        self.stop();
+        // Explicit native retirement drains accepted mutation receipts on the
+        // transport thread. Stale admission/force cancellation closes promptly.
+        // Neither path joins child/bridge teardown from the terminal thread.
+        if !*self.stop.borrow() {
+            self.cancel();
+        }
     }
 }
 
@@ -143,17 +165,72 @@ impl RemoteSession {
         Ok(session)
     }
 
-    /// Establish and register without takeover. The TUI activates only after
-    /// its local terminal and input/render resources are ready.
-    pub(crate) fn register(target: RemoteTarget) -> Result<Self> {
-        let (welcome, connector, supervisor) = Self::establish(target)?;
-        let client =
-            RegisteredClient::register_connector(connector, welcome.session, welcome.agent_socket)?;
-        Ok(Self { client, supervisor })
+    /// Headless admission. Interactive attachments use cancellable admission
+    /// and activate only after coordinator identity/alias approval.
+    fn register(target: RemoteTarget) -> Result<Self> {
+        let (welcome, connector, mut supervisor) =
+            Self::establish(target, CancellationToken::new())?;
+        match RegisteredClient::register_connector(connector, welcome.session, welcome.agent_socket)
+        {
+            Ok(client) => Ok(Self { client, supervisor }),
+            Err(error) => {
+                supervisor.cancel_and_join();
+                Err(error)
+            }
+        }
+    }
+
+    /// Establish and register on an admission worker. The token remains bound
+    /// to this owned SSH transport through activation and the attachment's life.
+    /// Cancellation closes all relays, including a blocked registration read.
+    pub(crate) fn register_cancellable(
+        target: RemoteTarget,
+        cancellation: CancellationToken,
+    ) -> Result<(Self, SpawnDefaults)> {
+        let (welcome, connector, mut supervisor) = Self::establish(target, cancellation.clone())?;
+        let admission: Result<_> = (|| {
+            ensure!(!cancellation.is_cancelled(), "remote admission cancelled");
+            let client = RegisteredClient::register_connector(
+                connector,
+                welcome.session,
+                welcome.agent_socket,
+            )?;
+            let defaults = spawn_defaults(client.endpoint(), client.session())?;
+            ensure!(!cancellation.is_cancelled(), "remote admission cancelled");
+            Ok((client, defaults))
+        })();
+        match admission {
+            Ok((client, defaults)) => Ok((Self { client, supervisor }, defaults)),
+            Err(error) => {
+                // This API runs only on a connection worker. Its completion
+                // must not outlive an owned SSH child on failed admission.
+                supervisor.cancel_and_join();
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn activate_once(&mut self, detach_others: bool) -> Result<()> {
-        self.client.activate_once(detach_others)
+        let result = self.client.activate_once(detach_others);
+        if result.is_err() {
+            self.client.cancel();
+            self.supervisor.cancel_and_join();
+        }
+        result
+    }
+    pub(crate) fn activate_cancellable(
+        &mut self,
+        detach_others: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        let result = self
+            .client
+            .activate_cancellable(detach_others, cancellation);
+        if result.is_err() {
+            self.client.cancel();
+            self.supervisor.cancel_and_join();
+        }
+        result
     }
 
     /// Discover one existing remote session without registering or activating a
@@ -167,17 +244,35 @@ impl RemoteSession {
             !target.forward_agent,
             "remote inspection cannot forward an SSH agent"
         );
-        let (welcome, _connector, mut supervisor) = Self::establish(target)?;
+        let (welcome, _connector, mut supervisor) =
+            Self::establish(target, CancellationToken::new())?;
         supervisor.stop();
         Ok(welcome.session)
     }
 
-    fn establish(target: RemoteTarget) -> Result<(Welcome, Arc<RemoteConnector>, Supervisor)> {
+    fn establish(
+        target: RemoteTarget,
+        cancellation: CancellationToken,
+    ) -> Result<(Welcome, Arc<RemoteConnector>, Supervisor)> {
+        ensure!(!cancellation.is_cancelled(), "remote admission cancelled");
         validate_target(&target)?;
+        let command = ssh_command(&target)?;
+        Self::establish_command(target, cancellation, command)
+    }
+
+    fn establish_command(
+        target: RemoteTarget,
+        cancellation: CancellationToken,
+        command: Command,
+    ) -> Result<(Welcome, Arc<RemoteConnector>, Supervisor)> {
+        // Parent cancellation retires this attempt, but transport cleanup must
+        // never cancel its caller's generation token. Otherwise a real error
+        // completion is mistaken for a stale attempt and silently discarded.
+        let cancellation = cancellation.child_token();
         let mut nonce = [0; 32];
         std::fs::File::open("/dev/urandom")?.read_exact(&mut nonce)?;
         let hello = Hello {
-            session_name: target.session_name.clone(),
+            session_name: target.session_name,
             native_family: PROTOCOL_VERSION,
             required_capabilities: wire::SUPPORTED_CAPABILITIES,
             connection_nonce: nonce,
@@ -194,6 +289,7 @@ impl RemoteSession {
         let (ready, ready_rx) = sync::sync_channel(1);
         let failure = Arc::new(Mutex::new(None));
         let failure_task = failure.clone();
+        let transport_cancellation = cancellation.clone();
         let thread = thread::Builder::new()
             .name("bkpr-remote-ssh".into())
             .spawn(move || {
@@ -202,7 +298,14 @@ impl RemoteSession {
                     .build()
                     .context("creating remote transport runtime")
                     .and_then(|runtime| {
-                        runtime.block_on(run_ssh(target, hello, receiver, stop_rx, ready))
+                        runtime.block_on(run_ssh(
+                            command,
+                            hello,
+                            receiver,
+                            stop_rx,
+                            ready,
+                            transport_cancellation,
+                        ))
                     });
                 if let Err(error) = result {
                     *failure_task.lock().unwrap() = Some(format!("{error:#}"));
@@ -211,6 +314,7 @@ impl RemoteSession {
         let mut supervisor = Supervisor {
             stop,
             thread: Some(thread),
+            cancellation,
             failure,
         };
         let handshake = ready_rx
@@ -220,7 +324,7 @@ impl RemoteSession {
         let welcome = match handshake {
             Ok(welcome) => welcome,
             Err(error) => {
-                supervisor.stop();
+                supervisor.cancel_and_join();
                 let failure = supervisor.failure.lock().unwrap();
                 if let Some(cause) = failure.as_ref() {
                     return Err(error.context(cause.clone()));
@@ -240,16 +344,35 @@ impl RemoteSession {
     pub fn endpoint(&self) -> Endpoint {
         self.client.endpoint().clone()
     }
-    /// True is authoritative detachment, including transport EOF without an event.
-    pub fn poll_lifecycle(&mut self) -> Result<bool> {
-        let result = self.client.consume_lifecycle();
-        if !matches!(result, Ok(false)) {
-            self.supervisor.stop();
-            if let Some(error) = self.supervisor.failure.lock().unwrap().as_ref() {
+    /// Lifecycle consumption never waits for SSH teardown. Explicit native
+    /// detach events take precedence over a coincident transport failure.
+    pub fn poll_lifecycle(&mut self) -> Result<Lifecycle> {
+        let result = self.client.poll_lifecycle();
+        if !matches!(result, Ok(Lifecycle::Active)) {
+            if matches!(result, Ok(Lifecycle::Detached { .. })) {
+                self.supervisor.retire();
+            } else {
+                self.supervisor.cancel();
+            }
+            if matches!(result, Ok(Lifecycle::TransportClosed))
+                && let Some(error) = self.supervisor.failure.lock().unwrap().as_ref()
+            {
                 bail!("remote transport disconnected: {error}");
             }
         }
         result
+    }
+    /// Close this attachment's authority/SSH without joining or detaching any
+    /// other native client. No daemon or application process is terminated.
+    pub fn cancel(&mut self) {
+        self.client.cancel();
+        self.supervisor.cancel();
+    }
+    /// Intentional nonblocking detach: stop new authority immediately, but keep
+    /// accepted mutation streams alive until their original receipts drain.
+    pub fn retire(&mut self) {
+        self.client.cancel();
+        self.supervisor.retire();
     }
     pub fn disconnect(&mut self) -> Result<()> {
         let result = self.client.detach();
@@ -262,8 +385,40 @@ impl RemoteSession {
 
     pub(crate) fn close_for_shutdown(&mut self) {
         self.client.close_for_shutdown();
-        self.supervisor.stop();
+        self.supervisor.retire();
     }
+}
+
+#[derive(serde::Deserialize)]
+struct DefaultsReply {
+    session: SessionInfo,
+    #[serde(default)]
+    spawn_defaults: Option<SpawnDefaults>,
+}
+
+pub(crate) fn spawn_defaults(endpoint: &Endpoint, expected: &SessionInfo) -> Result<SpawnDefaults> {
+    use std::os::unix::ffi::OsStrExt;
+    let reply: DefaultsReply =
+        serde_json::from_value(endpoint.checked(bkpr_protocol::Operation::SessionInfo)?)
+            .context("reading authoritative remote spawn defaults before activation")?;
+    ensure!(
+        reply.session == *expected,
+        "remote session or daemon changed while reading spawn defaults"
+    );
+    let defaults = reply.spawn_defaults.context(
+        "remote daemon does not provide authoritative spawn defaults; a compatible remote bkprd is required",
+    )?;
+    ensure!(
+        !defaults.argv.is_empty()
+            && !defaults.argv[0].is_empty()
+            && defaults.argv.iter().all(|arg| !arg.contains('\0'))
+            && defaults.cwd.is_absolute()
+            && defaults.home.is_absolute()
+            && !defaults.cwd.as_os_str().as_bytes().contains(&0)
+            && !defaults.home.as_os_str().as_bytes().contains(&0),
+        "remote daemon returned invalid spawn defaults"
+    );
+    Ok(defaults)
 }
 
 fn validate_target(target: &RemoteTarget) -> Result<()> {
@@ -448,21 +603,48 @@ async fn write_control(
     Ok(())
 }
 
+/// The unreaped group leader pins its numeric process-group identity. Descendant
+/// proxy/jump processes inherit that group; daemon/application processes run on
+/// the remote host and are never members of this local transport group.
+struct OwnedSsh {
+    child: tokio::process::Child,
+}
+impl OwnedSsh {
+    fn terminate(&mut self) {
+        if let Some(pid) = self.child.id() {
+            // Signal before wait: reaping first would permit PID/PGID reuse.
+            // process_group(0) made this child, not the client, the group leader.
+            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+            let _ = self.child.start_kill();
+        }
+    }
+}
+impl Drop for OwnedSsh {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
 async fn run_ssh(
-    target: RemoteTarget,
+    mut command: Command,
     hello: Hello,
     receiver: mpsc::Receiver<OpenPair>,
     stop: watch::Receiver<bool>,
     ready: sync::SyncSender<Result<Welcome>>,
+    cancellation: CancellationToken,
 ) -> Result<()> {
-    let mut child = ssh_command(&target)?
-        .spawn()
-        .context("launching system OpenSSH")?;
-    let io = Duplex {
-        read: child.stdout.take().unwrap(),
-        write: child.stdin.take().unwrap(),
+    ensure!(!cancellation.is_cancelled(), "remote admission cancelled");
+    let mut owned = OwnedSsh {
+        child: command
+            .process_group(0)
+            .spawn()
+            .context("launching system OpenSSH")?,
     };
-    let mut stderr = child.stderr.take().unwrap();
+    let io = Duplex {
+        read: owned.child.stdout.take().unwrap(),
+        write: owned.child.stdin.take().unwrap(),
+    };
+    let mut stderr = owned.child.stderr.take().unwrap();
     let diagnostics = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_LIMIT)));
     let diagnostics_task = diagnostics.clone();
     let mut stderr_task = tokio::spawn(async move {
@@ -481,11 +663,12 @@ async fn run_ssh(
         }
     });
     let result = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(anyhow::anyhow!("owned SSH transport cancelled")),
         result = client_transport(io, hello, receiver, stop, ready) => result,
-        status = child.wait() => Err(anyhow::anyhow!("OpenSSH exited: {:?}", status)),
     };
-    let _ = child.start_kill();
-    let _ = child.wait().await;
+    owned.terminate();
+    let _ = owned.child.wait().await;
     // Process exit doesn't establish that its stderr pipe has been drained.
     // An inherited writer must not keep attachment cleanup waiting forever.
     if timeout(Duration::from_millis(250), &mut stderr_task)

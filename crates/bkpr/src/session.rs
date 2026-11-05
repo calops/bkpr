@@ -1,21 +1,23 @@
 //! Local session addressing and daemon bootstrap belong to the launcher, not a frontend.
 use anyhow::{Context, Result, bail, ensure};
-use bkpr_client::{Options, transport};
+use bkpr_client::{SpawnDefaults, transport};
 use bkpr_protocol::{Operation, SessionInfo, Size};
 use fs2::FileExt;
+use notify::{RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
-    io::Read,
+    io::{Read, Write},
     os::unix::{
         fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         process::CommandExt,
     },
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
+use tokio_util::sync::CancellationToken;
 
 pub const DEFAULT_SESSION: &str = "bkpr";
 
@@ -288,6 +290,13 @@ fn named_directories(paths: &LocalPaths, create: bool) -> Result<bool> {
 }
 
 fn inspect(paths: &LocalPaths) -> Result<SessionInfo> {
+    inspect_cancellable(paths, None)
+}
+
+fn inspect_cancellable(
+    paths: &LocalPaths,
+    cancellation: Option<&CancellationToken>,
+) -> Result<SessionInfo> {
     let parent = paths.socket.parent().context("socket needs parent")?;
     if !named_directories(paths, false)? || !private_directory(parent, false)? {
         return Err(std::io::Error::new(
@@ -304,7 +313,12 @@ fn inspect(paths: &LocalPaths) -> Result<SessionInfo> {
         ),
         Err(error) => return Err(error.into()),
     }
-    let value = transport::checked(&paths.socket, Operation::SessionInfo)?;
+    let value = match cancellation {
+        Some(cancellation) => {
+            transport::checked_cancellable(&paths.socket, Operation::SessionInfo, cancellation)?
+        }
+        None => transport::checked(&paths.socket, Operation::SessionInfo)?,
+    };
     let info: SessionInfo = serde_json::from_value(
         value
             .get("session")
@@ -396,19 +410,56 @@ impl Drop for LaunchLock {
 /// Only known connection absence permits startup. Protocol/authentication errors
 /// on a live server are never hidden by restarting it. A launch lock makes
 /// concurrent launchers converge before either process can reset/bootstrap state.
+/// This one-shot hook runs in the attachment's bounded connection worker, never
+/// on reconnect. Cancellation abandons lock/readiness waits, not daemon ownership:
+/// a daemon (and its restored panes) already started here continues independently.
 pub fn ensure_server(
     paths: &LocalPaths,
     binary: Option<&Path>,
-    options: &Options,
+    defaults: &SpawnDefaults,
     size: Size,
+    cancellation: &CancellationToken,
 ) -> Result<()> {
+    let check_cancelled = || -> Result<()> {
+        ensure!(
+            !cancellation.is_cancelled(),
+            "local session preparation cancelled"
+        );
+        Ok(())
+    };
+    check_cancelled()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("creating local startup wait runtime")?;
     named_directories(paths, true)?;
     private_directory(paths.socket.parent().context("socket needs parent")?, true)?;
     private_directory(&paths.state_root, true)?;
     let lock = LaunchLock(private_file(&paths.state_root.join("launch.lock"), true)?);
-    lock.0
-        .lock_exclusive()
-        .context("locking session bootstrap")?;
+    runtime.block_on(async {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let mut retry = Duration::from_millis(25);
+        loop {
+            check_cancelled()?;
+            match lock.0.try_lock_exclusive() {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error).context("locking session bootstrap"),
+            }
+            // flock has no pollable unlock notification. Bound this kernel-lock
+            // retry fallback, back off while idle, and wake immediately on cancel.
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => bail!("local session preparation cancelled"),
+                _ = tokio::time::sleep_until(deadline) => {
+                    bail!("timed out waiting for the session bootstrap lock");
+                }
+                _ = tokio::time::sleep(retry) => {}
+            }
+            retry = (retry * 2).min(Duration::from_millis(500));
+        }
+    })?;
+    check_cancelled()?;
     if let Some(name) = &paths.name
         && let Some(stored) = read_manifest(&paths.state_root)?
     {
@@ -417,7 +468,7 @@ pub fn ensure_server(
             "stored session name does not match selected name"
         );
     }
-    match inspect(paths) {
+    match inspect_cancellable(paths, Some(cancellation)) {
         Ok(_) => return Ok(()),
         Err(error) if unavailable(&error) => {}
         Err(error) => return Err(error),
@@ -435,7 +486,31 @@ pub fn ensure_server(
         }
     };
     let log_path = paths.state_root.join("bkprd.log");
-    let log = private_file(&log_path, true)?;
+    let mut log = private_file(&log_path, true)?;
+    // A pipe would make cancellation close its reader; bkprd treats a failed
+    // ready write as bootstrap failure. A temporary regular stdout file keeps
+    // that one startup write safe even after this launcher stops waiting.
+    let stdout = tempfile::Builder::new()
+        .prefix(".startup-")
+        .tempfile_in(&paths.state_root)
+        .context("opening private daemon startup output")?;
+    let mut startup_output = private_file(stdout.path(), false)?;
+    let (events, mut changes) = tokio::sync::watch::channel(None::<String>);
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event
+            .as_ref()
+            .is_ok_and(|event| matches!(event.kind, notify::EventKind::Access(_)))
+        {
+            return;
+        }
+        events.send_modify(|failure| {
+            if let Err(error) = event {
+                *failure = Some(error.to_string());
+            }
+        });
+    })
+    .context("watching daemon startup output")?;
+    watcher.watch(stdout.path(), RecursiveMode::NonRecursive)?;
     let mut command = Command::new(server);
     command
         .arg("--socket")
@@ -449,7 +524,7 @@ pub fn ensure_server(
         .arg("--bkpr")
         .arg(&bkpr)
         .arg("--cwd")
-        .arg(&options.cwd)
+        .arg(&defaults.cwd)
         .arg("--cols")
         .arg(size.cols.to_string())
         .arg("--rows")
@@ -477,15 +552,15 @@ pub fn ensure_server(
             command.env_remove(key);
         }
     }
-    if options.isolated_environment {
-        command.arg("--home").arg(&options.home);
+    if defaults.isolated_environment {
+        command.arg("--home").arg(&defaults.home);
     }
     command
         .arg("--")
-        .args(&options.shell)
+        .args(&defaults.argv)
         .stdin(Stdio::null())
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
+        .stdout(Stdio::from(stdout.as_file().try_clone()?))
+        .stderr(Stdio::from(log.try_clone()?));
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() < 0 {
@@ -494,28 +569,74 @@ pub fn ensure_server(
             Ok(())
         });
     }
-    let mut child = command.spawn().context("starting bkprd")?;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match inspect(paths) {
-            Ok(_) => return Ok(()),
-            Err(error) if unavailable(&error) => {}
-            Err(error) => return Err(error),
-        }
-        if let Some(status) = child.try_wait()? {
-            // A daemon started by another owner may have won the backend lease.
-            if inspect(paths).is_ok() {
-                return Ok(());
-            }
-            bail!("bkprd exited ({status}); see {}", log_path.display());
-        }
-        if Instant::now() >= deadline {
-            bail!(
-                "bkprd did not publish its local socket; see {}",
-                log_path.display()
+    check_cancelled()?;
+    let mut child = {
+        let _entered = runtime.enter();
+        tokio::process::Command::from(command)
+            .kill_on_drop(false)
+            .spawn()
+            .context("starting bkprd")?
+    };
+    let mut record = Vec::with_capacity(512);
+    let exited = runtime.block_on(async {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            // No file polling: drain available bytes only on entry or a native
+            // filesystem event. Access events from our reads are ignored above.
+            Read::by_ref(&mut startup_output)
+                .take((8193 - record.len()) as u64)
+                .read_to_end(&mut record)?;
+            ensure!(
+                record.len() <= 8192,
+                "bkprd startup output exceeded its bound"
             );
+            if record.contains(&b'\n') {
+                #[derive(Deserialize)]
+                struct Ready {
+                    version: u32,
+                    ready: bool,
+                    #[serde(with = "bkpr_protocol::path_wire")]
+                    socket: PathBuf,
+                }
+                let ready: Ready =
+                    serde_json::from_slice(&record).context("decoding bkprd readiness record")?;
+                ensure!(
+                    ready.version == bkpr_protocol::PROTOCOL_VERSION
+                        && ready.ready
+                        && ready.socket == paths.socket,
+                    "bkprd readiness did not identify the selected socket and protocol"
+                );
+                return Ok(None);
+            }
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => bail!("local session preparation cancelled"),
+                _ = tokio::time::sleep_until(deadline) => {
+                    bail!("bkprd did not report readiness; see {}", log_path.display());
+                }
+                status = child.wait() => return Ok(Some(status?)),
+                event = changes.changed() => {
+                    event.context("daemon startup output watcher stopped")?;
+                    if let Some(error) = changes.borrow_and_update().as_ref() {
+                        bail!("watching daemon startup output: {error}");
+                    }
+                }
+            }
         }
-        std::thread::sleep(Duration::from_millis(20));
+    })?;
+    if !record.is_empty() {
+        log.write_all(&record)?;
+    }
+    // Exactly one authoritative owner validation follows readiness (or an exit
+    // where another launcher may have won the daemon lease). Never reconnect by
+    // replaying bootstrap and never kill a started daemon on wait cancellation.
+    match inspect_cancellable(paths, Some(cancellation)) {
+        Ok(_) => Ok(()),
+        Err(error) => match exited {
+            Some(status) => Err(error)
+                .with_context(|| format!("bkprd exited ({status}); see {}", log_path.display())),
+            None => Err(error),
+        },
     }
 }
 
@@ -551,6 +672,7 @@ mod tests {
             "..",
             "a/b",
             "a_b",
+            "foo:bar",
             "é",
             "e\u{301}",
         ] {
@@ -781,11 +903,8 @@ mod tests {
             &paths.socket,
             serde_json::json!({"not_session_identity":true}),
         );
-        let options = Options {
-            read_only: false,
-            detach_others: false,
-            clipboard_policy: "deny".into(),
-            shell: vec!["/bin/sh".into()],
+        let defaults = SpawnDefaults {
+            argv: vec!["/bin/sh".into()],
             cwd: directory.path().to_owned(),
             home: directory.path().to_owned(),
             isolated_environment: true,
@@ -800,8 +919,9 @@ mod tests {
             ensure_server(
                 &paths,
                 Some(Path::new("/nonexistent-bkprd")),
-                &options,
-                size
+                &defaults,
+                size,
+                &CancellationToken::new(),
             )
             .is_err()
         );

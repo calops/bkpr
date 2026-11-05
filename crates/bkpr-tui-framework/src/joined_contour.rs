@@ -367,16 +367,46 @@ impl Contour {
         }
         // Corners alone suffice for convex pieces. An inward arc can cut the
         // middle of an otherwise covered cell, so check its excluded disk too.
-        !features.iter().any(|feature| {
+        !Self::arc_cuts_rect(features, rect, false)
+    }
+
+    /// Certify uniform coverage; uncertain boundary pixels retain subpixel sampling.
+    pub fn pixel_coverage(features: &[Feature], rect: Rect) -> Option<bool> {
+        let mut inside = true;
+        let mut outside = true;
+        for x in [rect.x, rect.right] {
+            for y in [rect.y, rect.bottom] {
+                let d = distance(features, f64::from(x), f64::from(y)).0;
+                inside &= d >= 0.0;
+                outside &= d <= 0.0;
+                if !inside && !outside {
+                    return None;
+                }
+            }
+        }
+        if inside && !Self::arc_cuts_rect(features, rect, false) {
+            Some(true)
+        } else if outside && !Self::arc_cuts_rect(features, rect, true) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    fn arc_cuts_rect(features: &[Feature], rect: Rect, convex: bool) -> bool {
+        features.iter().any(|feature| {
             let Feature::Arc {
                 center,
                 radius,
-                convex: false,
+                convex: orientation,
                 ..
             } = *feature
             else {
                 return false;
             };
+            if orientation != convex {
+                return false;
+            }
             let bounds = feature.bounds();
             let left = rect.x.max(bounds.x);
             let right = rect.right.min(bounds.right);

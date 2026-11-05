@@ -2519,3 +2519,87 @@ remain unchanged by verification; the five paused latency exclusions remain inta
 These are debug/software-rendered functional checks, not latency guarantees or
 full-screen editor benchmarks. Controllers and effective source snapshots are
 retained in `target/smoke/scrollback-input/controllers.zip`.
+
+## Independent local and remote TUI sessions
+
+`target/smoke/multi-session/acceptance.json` records the complete working tree,
+including the user-accepted graphics latency work. There are no source overrides
+or latency exclusions. The 196 guarded workspace inputs include
+`chrome_graphics.rs`, framework `graphics.rs`, `joined.rs`, `joined_contour.rs`
+and the application's retained-decoration-source call.
+
+The immutable incremental-debug pair is
+`verification/compiled-30537826252942/manifest.json`:
+
+* `bkpr`: `1a004c205bc5f44af73de248ff9a3308c60642d0082db55603d371227b36b6c3`
+* `bkprd`: `fccea1abb681b3d11ec700c1694f8d6871f232429d76e4edebc0f17f72e67538`
+
+Native family 6, remote control 1, durable schema 4 and engine `93967b7` are
+unchanged. Actual terminals are Kitty 0.49.2 and XTerm 411 on private Xvfb;
+the SSH transport is OpenSSH 10.5p1. Primary workloads use 120×36 physical cells
+and complete 80×34 native bodies. Cargo work is bounded to eight jobs; native
+permission-sensitive test harnesses run as the actual host UID1000.
+
+| Case under `target/smoke/multi-session/` | Exercised result |
+| --- | --- |
+| `kitty-dark-default-31010262582328/` | 51 complete-native captures; mixed local/SSH owners, fancy/plain, three physical client windows, reconnect and full session-end cascade pass. |
+| `kitty-light-default-31010251902966/` | Same complete workload and 51 captures under the light host palette. |
+| `xterm-dark-default-30379966784756/` | 12 complete-native captures; legacy keyboard navigation, exact Unicode/newline bracketed paste, Ctrl-Space and rounded normal fallback pass. |
+| `kitty-dark-default-30379952395332/` | Headless control needs no TTY/display; EOF detaches only the client, takeover retains its reason, and unexpected transport loss exits unsuccessfully without terminating the remote program. |
+| `kitty-dark-default-31046267510467/`, `kitty-dark-default-31094402626854/` | Missing-helper errors remain visibly offline with no initial auto-retry; explicit R works in single/mixed mode and both local owners stay usable. |
+| `kitty-dark-default-31046257232703/` | Normal last-process exit and a process exiting during bootstrap both close the sole TUI with exact TTY restoration. |
+| `kitty-dark-default-31397849461987/` | Explicit fixture restart of the same logical owner reconnects to a fresh daemon; changed logical identity stays rejected/offline. Old input/images are not adopted and the instance palette survives. |
+
+The mixed cases browse and rename a foreign owner's workspace through the one
+tree without exposing hidden native views during passive navigation. Aliases
+deduplicate to one session parent. Actual takeover removes only the retired
+attachment; normal last-process exit removes its subtree while other local and
+remote sessions keep accepting exact input. Closing the final workspace through
+the real confirmation overlay exits after terminal restoration. Reconnect does
+not repeat bootstrap or one-shot takeover.
+
+Shared physical state is exercised through global theme/chrome changes and a
+toast that survives owner switching and can be dismissed. Three backends use the
+same native image ID777 with distinct actual pixels; resource namespaces remain
+independent. Held enhanced-key release stays with its original owner. Clipboard
+consent preserves exact bytes and never injects device replies into a PTY.
+Stopped pre-Welcome SSH/proxy groups are cancelled before fixture cleanup,
+local input continues during remote loss, and an accepted input with a hidden
+reply is never replayed after force reconnect.
+
+The spinner regression was reproduced with one already-ended SSH attempt and
+idle connection workers while the UI still said connecting. Failed transport
+cleanup had cancelled a clone of the coordinator's attempt token, causing its
+current failure completion to be discarded. The supervisor now owns a child token;
+initial errors remain inspectable and only previously active transport losses
+auto-reconnect. `baseline.json` retains the failing-before source/binary provenance.
+`retirement-before.txt` separately records the failing takeover-before-activation
+regression; typed native retirement now reaches removal instead of the retry path.
+
+Reference readiness includes the physical recessed aperture, not just complete
+native text. An early remote-only reference preceded cold graphics readiness;
+the uncensored later difference changed 30,453 pixels, with a maximum channel
+delta of 60. The final controller waits for visible physical corners and both
+aperture sides before recording immutable references, then compares whole native
+bodies without masks. A Mocha corner whose shadow rounds to the background is
+not treated as a readiness signal. XTerm's documented
+[mode 2006](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Readline-Modes)
+is explicitly enabled/reset in the private fixture so original pasted LF bytes
+remain literal. Production paste behavior and rendering were not changed to make
+these checks pass.
+
+Formatting, all-target strict Clippy, workspace test compilation, debug builds
+and doctests pass. Actual host execution in
+`verification/checks-31010239622406/result.json` passes 937 top-level tests plus
+one isolated child, with 14 ignored. All guarded inputs and entry public
+debug/release executable hashes are preserved. Every selected runtime/test
+cleanup reports zero owned survivors; private credentials and fixture roots
+are removed.
+
+`controllers.zip` retains all 196 source inputs, exact successful controller
+variants verified against recorded hashes, transitive fixture dependencies and
+verification metadata; CRC verification passes. `fixture-decisions.json` keeps
+the observed readiness, X11 stacking, revision-guard and fixture-binary corrections.
+These are functional debug/software-rendered checks, not WAN/second-host,
+hardware-GPU, full-screen editor or new comparative latency guarantees.
+

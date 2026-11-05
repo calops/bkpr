@@ -16,8 +16,8 @@ status are available in the TUI, together with launch-scoped context, discovery
 and durable peer communication. Local Git/project snapshots and explicit native
 harness recovery are available; forge/CI metadata is not implemented yet. Earlier
 release notes describe the former implementation, not this branch.
-SSH and normal TUI attachment to existing remote sessions are available.
-Cross-session workspace aggregation remains deferred.
+One TUI can attach to multiple local and existing SSH sessions. Its sidebar groups
+workspaces under their owning session; cross-session layouts remain deferred.
 
 Current `main` and the native-terminal fork are useful starting material when a
 domain comes into scope, not frozen specifications or compatibility obligations.
@@ -199,36 +199,49 @@ separate capacity, so admitted waiting views do not consume input/control slots.
 
 ### Remote sessions
 
-Open the normal TUI on one **already-running** remote session:
+Open the normal TUI on one or more local and **already-running** remote sessions:
 
 ```sh
 bkpr -r devbox
 bkpr --remote devbox --session work
-bkpr -r devbox -s 'remote / Δ' --remote-bkpr-bin /opt/bkpr/bin/bkpr
+bkpr -s bkpr -s devbox:work -s otherbox:review
+bkpr -r devbox -s work -s otherbox:review -s local:bkpr
+bkpr -s local:foo:bar
 
-# Take over only after the local terminal and remote defaults are ready.
-bkpr -r devbox -s work -d
+# Take over once, only after terminal setup and each owner's defaults are ready.
+bkpr -s bkpr -s devbox:work -d
 ```
 
-The session name defaults literally to `bkpr`. Host and session are separate
-arguments; there is no positional target or `host:session` grammar. The sidebar
-shows only the selected remote session, with its session name and SSH host.
-The same sidebar, forms, finder, splits, resize, input and rendering paths are
-used for local and remote attachments.
+Repeat `-s/--session` for multiple TUI targets. `host:name` selects an SSH host;
+`local:name` forces a local target and escapes literal colons in its name.
+`-r/--remote HOST` supplies the host for every unqualified target. Without `-s`,
+the name defaults to `bkpr`. Utilities accept one literal `-s` name, without
+host-prefix interpretation or broadcast; use `bkpr remote -r HOST` for remote
+utilities. Remote executable and SSH settings apply to remote targets only.
 
-The connection is direct: local TUI → one no-PTY OpenSSH/Yamux connection →
-remote `bkpr` helper → remote daemon. No local daemon, gateway or local session
-state is created. The remote daemon owns processes, layouts, workspaces, CWD,
-filesystem validation, Git metadata and native harness callbacks. Terminal
-capabilities, theme, graphics preference and clipboard presentation stay local.
-An empty existing session remains empty until an explicit creation action.
+With multiple sessions, the sidebar is one foldable tree: session, workspace,
+window, then pane. Session rows use the Nerd Font beekeeper icon; connecting rows
+animate with Unicode Braille. A single online session keeps the compact workspace
+tree. Hovering or browsing another owner's metadata does not activate its panes.
+Click or Enter activates the selected owner. `Ctrl-b S` jumps to the current
+session's tree context; `R` on a session row forces a fresh connection.
+
+Each remote attachment is direct: local TUI → one no-PTY OpenSSH/Yamux connection
+→ remote `bkpr` helper → remote daemon. Remote-only invocations need no local
+daemon, session state, HOME or working directory. Mixed invocations prepare local
+sessions independently, never as gateways for their remote siblings. Each daemon
+owns its processes, layouts, workspaces, CWD, filesystem validation, Git metadata
+and native harness callbacks. Theme, graphics preference, terminal capabilities
+and transient toasts belong to the physical client instance. An initially empty
+existing session stays empty until an explicit creation action.
 
 Both hosts need compatible native builds. Native wire family 6 is unchanged,
 but remote TUI attachment also requires authoritative daemon spawn defaults.
 Unavailable defaults or an incompatible/missing session fail before takeover,
 without local-path fallbacks, installation, bootstrap or automatic restart.
-Local launch overrides (`--cwd`, `--home`, `--bkprd`, shell arguments, socket
-and state-root paths) are rejected for remote TUI attachment.
+Local launch overrides (`--cwd`, `--home`, `--bkprd` and shell arguments) apply only
+to local targets and are rejected for remote-only invocation. Explicit socket and
+state-root paths cannot be combined with named `-s` targets.
 
 System OpenSSH supplies host aliases, identities and ProxyJump. Authentication
 is noninteractive: establish host-key trust and credentials beforehand.
@@ -262,18 +275,28 @@ the remote forwarded socket, never a local pathname. Grant it only to trusted
 hosts. Launch credentials and pane-context variables are removed from the SSH
 child's environment.
 
-`bkpr_client::run_remote` reuses `RemoteSession` and the authoritative native
-`Endpoint`. Registration is separate from activation; the existing eager
-`RemoteSession::connect` remains available for headless callers. Scene, image,
-input and clipboard frames stay binary through the bounded connection. There
-is no administrative fallback or second authority implementation.
+`bkpr_client::run_sessions` accepts independently owned local and remote
+`SessionTarget`s through the same application, framework and native `Endpoint`.
+Local preparation runs once after terminal initialization, off the UI thread.
+Registration and defaults discovery precede one-shot activation/takeover.
+The eager `RemoteSession::connect` remains available to headless callers.
+Scene, image, input and clipboard frames stay binary through bounded connections;
+there is no administrative fallback or merged authority.
 
-Normal detach leaves remote programs running. Unexpected helper/network failure
-revokes this client's authority and exits with an error after restoring the
-local terminal; it never fabricates an empty layout. There is no automatic
-reconnect or replay. A mutation whose accepted reply was lost remains an
-**unknown outcome**. Reconnect explicitly and inspect state before deciding
-what to do. Clipboard reads still require the host terminal's permission.
+Initial connection errors stay visibly offline with their cause and require an
+explicit `R` retry. A previously active attachment reconnects automatically after
+unintentional transport loss, with bounded backoff and fresh authority/snapshots.
+The logical session remains pinned; a replacement identity is rejected and aliases
+of the same live session are deduplicated. Reconnect never repeats local bootstrap,
+takeover, input or ambiguous mutations. A lost accepted reply remains an
+**unknown outcome**.
+
+Intentional detach/takeover and authoritative session closure remove that session
+and its subtree from this instance. Remaining sessions stay usable; ending the
+last session exits after terminal restoration. Bare transport loss is not session
+closure. Detaching the client leaves backend programs running. Headless `connect`
+reports explicit detachment reasons, treats unexpected loss as failure and does
+not automatically reconnect. Clipboard reads retain the host's permission policy.
 
 ### Daemon spawn defaults
 

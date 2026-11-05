@@ -30,7 +30,7 @@ pub(super) struct State {
     clears: VecDeque<(String, String)>,
 }
 
-impl App<'_> {
+impl App {
     pub(super) fn search_open(&self) -> bool {
         self.search.editor.is_some()
     }

@@ -9,19 +9,42 @@ fn shell() -> Arg {
         .value_parser(value_parser!(OsString))
 }
 
+fn session_argument() -> Arg {
+    Arg::new("session")
+        .long("session")
+        .short('s')
+        .action(ArgAction::Append)
+        .value_name("HOST:NAME|local:NAME|NAME")
+        .help("Attach a session; repeat for multiple TUI targets (local: escapes colons)")
+        .conflicts_with_all(["socket", "state-root"])
+}
+
+// Clap's global propagation replaces a parent's Append values with a child's.
+// Keep each group until we have counted utility targets or assembled the TUI list.
+fn scoped_session_arguments(command: Command, root: bool) -> Command {
+    let command = if root {
+        command.mut_arg("session", |argument| argument.global(false))
+    } else {
+        command.arg(session_argument())
+    };
+    command.mut_subcommands(|subcommand| scoped_session_arguments(subcommand, false))
+}
+
+fn session_count(matches: &ArgMatches) -> usize {
+    matches
+        .get_many::<String>("session")
+        .map_or(0, |names| names.len())
+        + matches
+            .subcommand()
+            .map_or(0, |(_, child)| session_count(child))
+}
+
 pub fn command() -> Command {
     let mut command = Command::new("bkpr")
         .version(env!("CARGO_PKG_VERSION"))
         .about("Persistent named pane workspaces")
         .after_help(crate::HELP)
-        .arg(
-            Arg::new("session")
-                .long("session")
-                .short('s')
-                .global(true)
-                .value_name("NAME")
-                .conflicts_with_all(["socket", "state-root"]),
-        )
+        .arg(session_argument().global(true))
         .arg(
             Arg::new("detach-others")
                 .long("detach-others")
@@ -35,7 +58,7 @@ pub fn command() -> Command {
                 .short('r')
                 .global(true)
                 .value_name("HOST")
-                .help("Connect directly to one existing remote session over SSH"),
+                .help("Default SSH host for every unqualified TUI target, or one remote utility"),
         )
         .arg(
             Arg::new("ssh-config")
@@ -184,19 +207,105 @@ pub fn command() -> Command {
         )
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TuiTarget {
+    Local(String),
+    Remote { host: String, name: String },
+}
+
+/// The CLI alone interprets host prefixes. Backend session names remain exact.
+pub fn tui_targets(matches: &ArgMatches) -> Result<Vec<TuiTarget>> {
+    let default_host = matches.get_one::<String>("remote");
+    let names = matches.get_many::<String>("session");
+    let child_names = matches
+        .subcommand_matches("tui")
+        .and_then(|child| child.get_many::<String>("session"));
+    let count = session_count(matches);
+    let default = (count == 0).then_some(crate::session::DEFAULT_SESSION);
+    let mut targets = Vec::with_capacity(count);
+    let mut seen = std::collections::HashSet::with_capacity(count);
+    for value in names
+        .into_iter()
+        .flatten()
+        .chain(child_names.into_iter().flatten())
+        .map(String::as_str)
+        .chain(default)
+    {
+        let target = if let Some(name) = value.strip_prefix("local:") {
+            TuiTarget::Local(name.to_owned())
+        } else if let Some((host, name)) = value.split_once(':') {
+            TuiTarget::Remote {
+                host: host.to_owned(),
+                name: name.to_owned(),
+            }
+        } else if let Some(host) = default_host {
+            TuiTarget::Remote {
+                host: host.clone(),
+                name: value.to_owned(),
+            }
+        } else {
+            TuiTarget::Local(value.to_owned())
+        };
+        let name = match &target {
+            TuiTarget::Local(name) => name,
+            TuiTarget::Remote { host, name } => {
+                if host.is_empty() || host.chars().any(char::is_control) {
+                    bail!("remote host must be nonempty and contain no control characters");
+                }
+                name
+            }
+        };
+        crate::session::validate_name(name)?;
+        if seen.insert(target.clone()) {
+            targets.push(target);
+        }
+    }
+    Ok(targets)
+}
+
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches> {
-    let matches = command().try_get_matches_from(args)?;
+    let args: Vec<_> = args.into_iter().collect();
+    let scoped = scoped_session_arguments(command(), true).try_get_matches_from(args.clone())?;
+    let name = scoped.subcommand_name().unwrap_or("tui");
+    if name != "tui" && session_count(&scoped) > 1 {
+        bail!("multiple --session targets are only valid for a TUI attachment");
+    }
+    let matches = if name == "tui" {
+        scoped
+    } else {
+        // Preserve existing utility callers' global single-target access.
+        command().try_get_matches_from(args)?
+    };
     let name = matches.subcommand_name().unwrap_or("tui");
     let remote_host = matches.get_one::<String>("remote").is_some();
+    if session_count(&matches) > 0
+        && ["socket", "state-root"]
+            .iter()
+            .any(|option| matches.contains_id(option))
+    {
+        bail!("--session cannot be combined with --socket or --state-root");
+    }
     if remote_host && !matches!(name, "tui" | "remote" | "api") {
         bail!("--remote is only valid for a TUI attachment, remote command or api call");
     }
-    if !remote_host
+    let tui_targets = if name == "tui" {
+        tui_targets(&matches)?
+    } else {
+        Vec::new()
+    };
+    let has_remote = remote_host
+        || tui_targets
+            .iter()
+            .any(|target| matches!(target, TuiTarget::Remote { .. }));
+    let has_local = tui_targets
+        .iter()
+        .any(|target| matches!(target, TuiTarget::Local(_)));
+    if !has_remote
         && (matches.contains_id("ssh-config")
             || matches.contains_id("remote-bkpr-bin")
             || matches.get_flag("forward-agent"))
     {
-        bail!("SSH options require --remote HOST");
+        bail!("SSH options require a remote target or --remote HOST");
     }
     if name != "tui" {
         if matches.get_flag("detach-others") && name != "remote" {
@@ -214,13 +323,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches> {
             bail!("frontend options are only valid for a TUI attachment");
         }
     }
-    if remote_host || matches!(name, "remote" | "__remote-helper") {
+    if has_remote || matches!(name, "remote" | "__remote-helper") {
         for option in [
             "socket",
             "state-root",
-            "cwd",
-            "home",
-            "bkprd",
             "pane",
             "view",
             "cols",
@@ -232,10 +338,17 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches> {
                 bail!("--{option} cannot target a remote connection");
             }
         }
-        if shell_arguments(&matches)?.is_some() {
+        if !has_local {
+            for option in ["cwd", "home", "bkprd"] {
+                if matches.contains_id(option) {
+                    bail!("--{option} cannot target a remote connection");
+                }
+            }
+        }
+        if !has_local && shell_arguments(&matches)?.is_some() {
             bail!("shell arguments cannot target a remote connection");
         }
-        if remote_host || name == "remote" {
+        if name != "tui" && (remote_host || name == "remote") {
             crate::session::validate_name(
                 matches
                     .get_one::<String>("session")
@@ -338,6 +451,178 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn repeated_targets_keep_order_hosts_and_literal_colon_names() {
+        let parsed = parse(args(&[
+            "bkpr",
+            "-s",
+            "foo",
+            "-s",
+            "bar",
+            "-s",
+            "devbox:baz",
+            "-s",
+            "local:foo:bar",
+            "-s",
+            "foo",
+            "-s",
+            "devbox:baz",
+        ]))
+        .unwrap();
+        assert_eq!(
+            tui_targets(&parsed).unwrap(),
+            [
+                TuiTarget::Local("foo".into()),
+                TuiTarget::Local("bar".into()),
+                TuiTarget::Remote {
+                    host: "devbox".into(),
+                    name: "baz".into()
+                },
+                TuiTarget::Local("foo:bar".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn default_host_is_invocation_wide_and_explicit_hosts_override_it() {
+        for values in [
+            vec![
+                "bkpr",
+                "-r",
+                "default",
+                "-s",
+                "foo",
+                "-s",
+                "elsewhere:a:b",
+                "-s",
+                "local:x:y",
+            ],
+            vec![
+                "bkpr",
+                "-s",
+                "foo",
+                "-s",
+                "elsewhere:a:b",
+                "-s",
+                "local:x:y",
+                "-r",
+                "default",
+            ],
+            vec![
+                "bkpr",
+                "tui",
+                "-s",
+                "foo",
+                "-r",
+                "default",
+                "-s",
+                "elsewhere:a:b",
+                "-s",
+                "local:x:y",
+            ],
+            vec![
+                "bkpr",
+                "-s",
+                "foo",
+                "tui",
+                "-r",
+                "default",
+                "-s",
+                "elsewhere:a:b",
+                "-s",
+                "local:x:y",
+            ],
+        ] {
+            let parsed = parse(args(&values)).unwrap();
+            assert_eq!(
+                tui_targets(&parsed).unwrap(),
+                [
+                    TuiTarget::Remote {
+                        host: "default".into(),
+                        name: "foo".into()
+                    },
+                    TuiTarget::Remote {
+                        host: "elsewhere".into(),
+                        name: "a:b".into()
+                    },
+                    TuiTarget::Local("x:y".into()),
+                ],
+                "{values:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn utilities_reject_multiple_targets_without_reinterpreting_exact_names() {
+        for command in ["stop", "context", "resume"] {
+            assert!(parse(args(&["bkpr", command, "-s", "one", "-s", "two"])).is_err());
+            let parsed = parse(args(&["bkpr", command, "-s", "local:a:b"])).unwrap();
+            assert_eq!(parsed.get_one::<String>("session").unwrap(), "local:a:b");
+        }
+        for values in [
+            vec!["bkpr", "request", "-s", "one", "-s", "two", "{}"],
+            vec!["bkpr", "-s", "one", "request", "-s", "two", "{}"],
+            vec![
+                "bkpr",
+                "api",
+                "call",
+                "session.inspect",
+                "-s",
+                "one",
+                "-s",
+                "two",
+            ],
+            vec![
+                "bkpr",
+                "-s",
+                "one",
+                "api",
+                "call",
+                "session.inspect",
+                "-s",
+                "two",
+            ],
+            vec![
+                "bkpr", "remote", "-r", "host", "connect", "-s", "one", "-s", "two",
+            ],
+            vec!["bkpr", "-s", ":name"],
+            vec!["bkpr", "-s", "host:"],
+            vec!["bkpr", "-s", "local:"],
+        ] {
+            assert!(parse(args(&values)).is_err(), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn local_bootstrap_overrides_do_not_become_remote_defaults() {
+        assert!(
+            parse(args(&[
+                "bkpr",
+                "-s",
+                "local:a:b",
+                "-s",
+                "host:remote",
+                "--cwd",
+                "/local/cwd",
+                "--home",
+                "/local/home",
+                "--bkprd",
+                "/local/bkprd",
+                "--ssh-config",
+                "ssh.conf",
+                "--",
+                "/bin/sh",
+                "-i",
+            ]))
+            .is_ok()
+        );
+        assert!(parse(args(&["bkpr", "-s", "host:remote", "--cwd", "/local/cwd",])).is_err());
+        let help = command().render_long_help().to_string();
+        assert!(help.contains("local:foo:bar"));
+        assert!(help.contains("ALL unqualified TUI targets"));
+        assert!(help.contains("Utilities accept at most one exact -s name"));
     }
 
     #[test]

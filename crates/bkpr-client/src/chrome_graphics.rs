@@ -181,6 +181,12 @@ impl ChromeGraphics {
         );
     }
 
+    pub(crate) fn retain_decoration_sources(&self, frame: &mut Frame) {
+        if let Some(styles) = &self.1 {
+            self.0.retain_decoration_sources(frame, &styles[2..5]);
+        }
+    }
+
     /// Cache complete native split geometry; unchanged renders allocate nothing.
     pub(crate) fn prepare_panes(&mut self, size: Size, rects: &[(String, Rect)]) {
         if self.0.is_enabled() {

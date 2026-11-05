@@ -29,6 +29,7 @@ const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DECORATIONS: usize = 11;
 const MAX_DECORATION_CACHE: usize = 16;
 const MAX_DECORATION_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RETAINED_DECORATION_BYTES: usize = 1024 * 1024;
 
 /// Trusted embedded path artwork. IDs must be unique within this preparer.
 pub struct SvgAsset {
@@ -377,6 +378,31 @@ impl SvgGraphics {
             self.joined_cache.remember(prepared);
         }
         self.joined = publication.joined;
+    }
+
+    /// Keep current material sources owned by a stable Scene graphics surface,
+    /// including inactive variants. Upload remains lazy on first placement.
+    pub fn retain_decoration_sources(&self, frame: &mut Frame, styles: &[DecorationStyle]) {
+        let Some(config) = &self.config else {
+            return;
+        };
+        if config.cell != [frame.size.cell_width, frame.size.cell_height] {
+            return;
+        }
+        let mut bytes: usize = frame.images.iter().map(|image| image.pixels.len()).sum();
+        for material in &self.decorations {
+            if styles.contains(&material.style)
+                && !frame
+                    .images
+                    .iter()
+                    .any(|image| image.key() == material.image.key())
+                && bytes.saturating_add(material.image.pixels.len())
+                    <= MAX_RETAINED_DECORATION_BYTES
+            {
+                bytes += material.image.pixels.len();
+                frame.images.push(Arc::clone(&material.image));
+            }
+        }
     }
 
     /// Place a prepared contour only in a reserved window perimeter.

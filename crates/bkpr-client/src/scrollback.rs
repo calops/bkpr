@@ -1,6 +1,6 @@
 use super::*;
 
-impl App<'_> {
+impl App {
     pub(super) fn history(&self, pane: &str) -> Option<(u64, u64)> {
         let attached = self.views.get(pane)?;
         let frame = attached.frame.as_ref()?;

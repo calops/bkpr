@@ -2,6 +2,7 @@
 //! implementation dependency is linked into a frontend.
 mod app;
 mod appearance;
+pub mod attachments;
 mod chrome_graphics;
 mod controller;
 mod finder;
@@ -15,28 +16,20 @@ pub mod remote;
 mod themes;
 mod tiling;
 pub mod transport;
+mod tree;
 mod updates;
 use anyhow::{Result, bail};
 pub use app::Options;
+pub use attachments::{PrepareLocal, SessionTarget};
+pub use bkpr_protocol::SpawnDefaults;
 use bkpr_protocol::*;
 use bkpr_tui_framework::{ClientEvent, ReplyDemux, decode_input, key_event, kitty_key};
 use std::path::Path;
 use termwiz::input::{InputEvent, InputParser};
 
-pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()> {
-    let mut options = Options::inherited()?;
-    options.read_only = read_only;
-    options.clipboard_policy = clipboard_policy.into();
-    app::run(socket, options)
-}
-pub fn run(socket: &Path, options: Options) -> Result<()> {
-    app::run(socket, options)
-}
-
-/// Attach the local terminal to one existing remote session, without local
-/// daemon/bootstrap state or automatic transport reconnection.
-pub fn run_remote(target: remote::RemoteTarget, options: Options) -> Result<()> {
-    app::run_remote(target, options)
+/// Run one physical terminal with independently owned local and remote sessions.
+pub fn run_sessions(targets: Vec<SessionTarget>, options: Options) -> Result<()> {
+    app::run_sessions(targets, options)
 }
 
 /// Physical decoder probe: ordered acceptance, never child processing or replay.

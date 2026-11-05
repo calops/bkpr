@@ -13,6 +13,7 @@ pub enum Context {
     Application,
     CommandPrefix,
     Sidebar { selected: bool },
+    Sessions,
     Create,
     Edit,
     Confirmation,
@@ -126,6 +127,8 @@ pub enum Action {
     ToggleSidebar,
     ToggleChrome,
     EnterSidebar,
+    EnterSessions,
+    ReconnectSession,
     LeaveSidebar,
     Navigate(Navigation),
     CycleView,
@@ -186,6 +189,8 @@ impl Action {
             Self::SendPrefix => "send Ctrl-b to app",
             Self::ToggleSidebar if matches!(context, Context::Sidebar { .. }) => "return to app",
             Self::ToggleSidebar | Self::EnterSidebar => "sidebar",
+            Self::EnterSessions => "sessions",
+            Self::ReconnectSession => "force reconnect session",
             Self::LeaveSidebar => "return to app",
             Self::Navigate(Navigation::Previous) => "select previous",
             Self::Navigate(Navigation::Next) => "select next",
@@ -300,7 +305,8 @@ const CHOOSER: u16 = 1 << 10;
 const DETAILS: u16 = 1 << 11;
 const CLIPBOARD_CONSENT: u16 = 1 << 12;
 const THEME: u16 = 1 << 13;
-const ALL: u16 = (1 << 14) - 1;
+const SESSIONS: u16 = 1 << 14;
+const ALL: u16 = (1 << 15) - 1;
 const SHIFT: u16 = 1;
 const CTRL: u16 = 2;
 const LOCKS: u16 = 16 | 32;
@@ -311,6 +317,7 @@ impl Context {
             Self::Application => APPLICATION,
             Self::CommandPrefix => PREFIX,
             Self::Sidebar { .. } => SIDEBAR,
+            Self::Sessions => SESSIONS,
             Self::Create => CREATE,
             Self::Edit => EDIT,
             Self::Confirmation => CONFIRM,
@@ -330,6 +337,7 @@ impl Context {
             Self::Application => "Application",
             Self::CommandPrefix => "Ctrl-b commands",
             Self::Sidebar { .. } => "Sidebar",
+            Self::Sessions => "Sessions",
             Self::Create => "Create",
             Self::Edit => "Edit",
             Self::Confirmation => "Confirm",
@@ -367,7 +375,11 @@ pub struct Binding {
 impl Binding {
     fn available(self, context: Context) -> bool {
         self.contexts & context.mask() != 0
-            && (!self.selected || matches!(context, Context::Sidebar { selected: true }))
+            && (!self.selected
+                || matches!(
+                    context,
+                    Context::Sidebar { selected: true } | Context::Sessions
+                ))
     }
 
     pub fn matches(self, event: &KeyEvent) -> bool {
@@ -433,10 +445,13 @@ use Navigation as N;
 // These definitions drive lookup and the contextual popup. Prefix commands are
 // deliberately single-press operations; repeated destructive/create commands
 // must never execute because the command key was held down.
+// Session roots and native rows share tree navigation; only session roots offer
+// reconnect, and native management remains tied to an owning native context.
 static BINDINGS: &[Binding] = &[
     physical(ALL, "BracketRight", CTRL, "Ctrl-]", A::Detach, 90, false),
+    text(SESSIONS, "R", A::ReconnectSession, 5),
     physical(
-        APPLICATION | SIDEBAR | HISTORY | SEARCH | RESIZE,
+        APPLICATION | SIDEBAR | SESSIONS | HISTORY | SEARCH | RESIZE,
         "KeyB",
         CTRL,
         "Ctrl-b",
@@ -445,7 +460,7 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
-        APPLICATION | SIDEBAR | HISTORY,
+        APPLICATION | SIDEBAR | SESSIONS | HISTORY,
         "Space",
         CTRL,
         "Ctrl-Space",
@@ -474,6 +489,7 @@ static BINDINGS: &[Binding] = &[
     physical(PREFIX, "KeyB", CTRL, "Ctrl-b", A::SendPrefix, 80, false),
     physical(PREFIX, "Escape", 0, "Esc", A::Cancel, 0, false),
     text(PREFIX, "b", A::EnterSidebar, 1),
+    text(PREFIX | SIDEBAR | SESSIONS, "S", A::EnterSessions, 2),
     text(PREFIX, "/", A::StartSearch, 10),
     text(PREFIX, "s", A::StartHistory, 11),
     text(PREFIX, "e", A::StartResize, 12),
@@ -547,10 +563,18 @@ static BINDINGS: &[Binding] = &[
         9,
         false,
     ),
-    physical(SIDEBAR, "Escape", 0, "Esc", A::LeaveSidebar, 0, false),
+    physical(
+        SIDEBAR | SESSIONS,
+        "Escape",
+        0,
+        "Esc",
+        A::LeaveSidebar,
+        0,
+        false,
+    ),
     text(SIDEBAR, "/", A::OpenFinder, 5),
     physical(
-        SIDEBAR | FINDER | CHOOSER | DETAILS | THEME,
+        SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME,
         "ArrowUp",
         0,
         "↑",
@@ -559,7 +583,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        SIDEBAR | FINDER | CHOOSER | DETAILS | THEME,
+        SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME,
         "ArrowDown",
         0,
         "↓",
@@ -567,10 +591,10 @@ static BINDINGS: &[Binding] = &[
         11,
         true,
     ),
-    repeating(text(SIDEBAR, "k", A::Navigate(N::Previous), 10)),
-    repeating(text(SIDEBAR, "j", A::Navigate(N::Next), 11)),
+    repeating(text(SIDEBAR | SESSIONS, "k", A::Navigate(N::Previous), 10)),
+    repeating(text(SIDEBAR | SESSIONS, "j", A::Navigate(N::Next), 11)),
     physical(
-        SIDEBAR | FINDER | DETAILS | THEME,
+        SIDEBAR | SESSIONS | FINDER | DETAILS | THEME,
         "PageUp",
         0,
         "PgUp",
@@ -579,7 +603,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        SIDEBAR | FINDER | DETAILS | THEME,
+        SIDEBAR | SESSIONS | FINDER | DETAILS | THEME,
         "PageDown",
         0,
         "PgDn",
@@ -588,7 +612,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        SIDEBAR | CHOOSER | DETAILS,
+        SIDEBAR | SESSIONS | CHOOSER | DETAILS,
         "Home",
         0,
         "Home",
@@ -597,7 +621,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        SIDEBAR | CHOOSER | DETAILS,
+        SIDEBAR | SESSIONS | CHOOSER | DETAILS,
         "End",
         0,
         "End",
@@ -605,10 +629,10 @@ static BINDINGS: &[Binding] = &[
         34,
         true,
     ),
-    repeating(text(SIDEBAR, "g", A::Navigate(N::First), 33)),
-    repeating(text(SIDEBAR, "G", A::Navigate(N::Last), 34)),
+    repeating(text(SIDEBAR | SESSIONS, "g", A::Navigate(N::First), 33)),
+    repeating(text(SIDEBAR | SESSIONS, "G", A::Navigate(N::Last), 34)),
     selected(physical(
-        SIDEBAR,
+        SIDEBAR | SESSIONS,
         "ArrowLeft",
         0,
         "←",
@@ -617,7 +641,7 @@ static BINDINGS: &[Binding] = &[
         false,
     )),
     selected(physical(
-        SIDEBAR,
+        SIDEBAR | SESSIONS,
         "ArrowRight",
         0,
         "→",
@@ -626,7 +650,7 @@ static BINDINGS: &[Binding] = &[
         false,
     )),
     selected(physical(
-        SIDEBAR,
+        SIDEBAR | SESSIONS,
         "Space",
         0,
         "Space",
@@ -635,7 +659,7 @@ static BINDINGS: &[Binding] = &[
         false,
     )),
     selected(physical(
-        SIDEBAR,
+        SIDEBAR | SESSIONS,
         "Enter",
         0,
         "Enter",
@@ -1312,6 +1336,7 @@ mod tests {
             Context::CommandPrefix,
             Context::Sidebar { selected: true },
             Context::Sidebar { selected: false },
+            Context::Sessions,
             Context::Create,
             Context::Edit,
             Context::Confirmation,
@@ -1533,6 +1558,46 @@ mod tests {
     }
 
     #[test]
+    fn session_roots_share_native_tree_navigation_without_header_cycling() {
+        for (key, text, expected) in [
+            ("ArrowUp", "", A::Navigate(N::Previous)),
+            ("ArrowDown", "", A::Navigate(N::Next)),
+            ("ArrowLeft", "", A::FoldSidebar),
+            ("ArrowRight", "", A::UnfoldSidebar),
+            ("Space", " ", A::ToggleFoldSidebar),
+            ("Home", "", A::Navigate(N::First)),
+            ("End", "", A::Navigate(N::Last)),
+            ("PageUp", "", A::Navigate(N::PagePrevious)),
+            ("PageDown", "", A::Navigate(N::PageNext)),
+            ("Enter", "", A::ActivateSelected),
+            ("KeyS", "S", A::EnterSessions),
+        ] {
+            let event = event(key, text, 0, KeyAction::Press);
+            assert_eq!(lookup(Context::Sessions, &event), Some(expected));
+            assert_eq!(
+                lookup(Context::Sidebar { selected: true }, &event),
+                Some(expected)
+            );
+        }
+        let reconnect = event("KeyR", "R", SHIFT, KeyAction::Press);
+        assert_eq!(
+            lookup(Context::Sessions, &reconnect),
+            Some(A::ReconnectSession)
+        );
+        assert_ne!(
+            lookup(Context::Sidebar { selected: true }, &reconnect),
+            Some(A::ReconnectSession)
+        );
+        assert_eq!(
+            lookup(
+                Context::CommandPrefix,
+                &event("KeyS", "s", 0, KeyAction::Press)
+            ),
+            Some(A::StartHistory)
+        );
+    }
+
+    #[test]
     fn form_editing_does_not_leak_into_confirmation_or_cycle_on_repeat() {
         for context in [Context::Create, Context::Edit] {
             assert_eq!(
@@ -1746,6 +1811,7 @@ mod tests {
             Context::CommandPrefix,
             Context::Sidebar { selected: true },
             Context::Sidebar { selected: false },
+            Context::Sessions,
             Context::Create,
             Context::Edit,
             Context::Confirmation,
