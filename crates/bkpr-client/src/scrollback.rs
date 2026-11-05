@@ -51,6 +51,9 @@ impl App<'_> {
             );
             return Ok(());
         }
+        let history = delta != i64::MIN
+            && enter
+            && (delta >= 0 || frame.scrollback_offset > delta.unsigned_abs());
         self.enqueue(
             pane,
             PaneRequest::Scroll {
@@ -58,9 +61,8 @@ impl App<'_> {
                 delta,
             },
         )?;
-        // Admission is ordered on the existing pane input lane, never retried.
-        // A historical frame keeps input blocked until the live frame arrives.
-        self.views.get_mut(pane).unwrap().history = delta != i64::MIN && enter;
+        // Pending entry is local; published live frames retire it.
+        self.views.get_mut(pane).unwrap().history = history;
         Ok(())
     }
 
@@ -69,23 +71,10 @@ impl App<'_> {
         event: &KeyEvent,
         rects: &[(String, Rect)],
     ) -> Result<bool> {
-        if event.action == KeyAction::Repeat
-            && self
-                .held
-                .get(&event.key)
-                .is_some_and(|(pane, _)| self.history(pane).is_some())
-        {
-            return Ok(true);
-        }
         let shifted_page =
             event.modifiers == 1 && matches!(event.key.as_str(), "PageUp" | "PageDown");
         if !shifted_page && !self.focused_history() {
             return Ok(false);
-        }
-        // A key pressed before entering history still owes its original pane a
-        // release. Only suppress lifecycles that were entirely client-local.
-        if !self.held.contains_key(&event.key) {
-            self.state.suppressed.insert(event.key.clone());
         }
         let Some(pane) = self.state.focused.clone() else {
             return Ok(true);
@@ -104,8 +93,12 @@ impl App<'_> {
             Some(Action::History(HistoryAction::LineDown)) => -1,
             Some(Action::History(HistoryAction::PageUp)) => page,
             Some(Action::History(HistoryAction::PageDown)) => -page,
-            _ => return Ok(true),
+            _ => return Ok(false),
         };
+        // Native keys keep their press/repeat/release lifecycle and origin.
+        if !self.held.contains_key(&event.key) {
+            self.state.suppressed.insert(event.key.clone());
+        }
         self.scroll_history(&pane, delta, delta != i64::MIN)?;
         Ok(true)
     }
@@ -127,6 +120,11 @@ impl App<'_> {
             return Ok(());
         }
         if self.state.prefix {
+            return Ok(());
+        }
+        if let Some(picker) = &mut self.theme_picker {
+            picker.list.paste(&text);
+            self.preview_theme();
             return Ok(());
         }
         if let Some(finder) = &mut self.finder {
@@ -153,7 +151,6 @@ impl App<'_> {
             return Ok(());
         }
         if !self.options.read_only
-            && !self.focused_history()
             && let Some((pane, view)) = self.active()
         {
             self.enqueue(

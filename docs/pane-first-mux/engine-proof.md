@@ -414,6 +414,10 @@ All final owned-runtime cleanup records report no survivors. Controller sources 
 
 This bounded step adds history navigation only, not selection, copying, search or persisted transcripts. Shift+PageUp and Ctrl-b s enter history; arrows move by row, PageUp/PageDown by page, Home reaches oldest retained history, and Esc/Enter/End return live. Explicit history mode blocks new application typing and paste while preserving already-accepted releases and transfer FIFO. Read-only views can inspect history.
 
+That initial blocking policy is superseded by
+[typing and manual-bottom history exit](#typing-and-manual-bottom-history-exit)
+below; the original smoke remains historical evidence, not the current input contract.
+
 Native tracked-grid references anchor each inspecting view across new output, pruning and resize/reflow without copying the terminal's retained buffer. Other views stay live and independent. The header/footer expose the authoritative offset and native retained-row total (including the visible grid); historical cursors are hidden. View retirement/detach/workspace switching ends that inspection, so a new attachment starts live. Native scrollback remains bounded by the configured 10,000-line/16 MiB page-granular retention, not an exact durable line-count guarantee.
 
 Ordinary vertical wheel events navigate primary-screen history only with confirmed native mouse-mode capability and reporting disabled. Mouse-aware applications retain native wheel input; Shift+wheel is the explicit history override. Unknown mode capability leaves ordinary application routing unchanged. Alternate-screen history is explicitly unavailable instead of exposing the primary buffer behind the application.
@@ -2288,3 +2292,230 @@ binary was restored over a changed output. Final guards preserve all four
 entry debug/release hashes. The concurrent frontend/theme work, paused latency
 changes and its Git hunks are excluded from this feature's source and commit.
 
+
+## Instance-local theme switcher
+
+This subsection records the initial UI-only pass. Its native-pixel-preservation
+assertion is historical, superseded by the
+[pane propagation correction](#theme-propagation-into-terminal-panes) below.
+
+`Ctrl-b t` opens one searchable theme card, without a preview pane. Keyboard
+selection and pointer motion preview the palette across Bkpr; Enter/left click
+commit, while Escape/outside press restore the prior choice. Query, selection
+and preview survive resize and fancy/normal toggles. An empty result cannot
+commit. A new client starts with inferred terminal colors, including when it
+reattaches to the same backend with the same HOME/XDG; selection creates no
+configuration file.
+
+Framework `SearchList` owns bounded grapheme-safe query editing, cached fuzzy
+ranking, navigation, scrolling, content headings and hit geometry, reusing
+`TextInput`, `UiSurface` and existing `nucleo-matcher` 0.3. Client `themes` owns
+the ten choices and UI-only palette projection; `appearance` still derives
+muted, blended and semantic colors. Source pins and applicable palette notices
+are recorded in the implementation plan and data module. Actual host evidence
+remains separate from overrides and still supplies native pane colors.
+
+Real Kitty mode-2031 notifications trigger fresh OSC queries without polling.
+An explicit preset survives host palette changes; inferred mode and a return to
+it use the latest observed colors. The picker reports unconfirmed RGB support
+instead of pretending to apply unsupported colors.
+
+Final evidence: `target/smoke/theme-switcher/acceptance.json`. The immutable debug
+pair combines backend revision `b41d1873921f1eb116df2eec2f5b0654c54b80cb` with
+the theme feature:
+
+* `bkpr`: `22e050878ff465951530d6f172e3dbe6fc9e3019e6fc0ce6aed3304326be2991`
+* `bkprd`: `337fbecab885f43f33a71776689d108bf1f87be6f61913f127ac9b8512bd12fa`
+
+Dark/light Kitty 0.49.2 rich and rounded-cell modes each pass 62 complete-frame
+palette/state checks; an actual xterm legacy-input run passes 28. Private Xvfb
+surfaces use 120×36 cells, default fonts, two visible native grids and four owned
+pane processes. All nine presets have physical foreground/background and
+derived matte checks. Representative 11×4-cell native-body crops remain
+byte-identical across palette changes; exact PTY input stays unchanged. This is
+not a whole-frame native pixel-identity claim. Both detach cycles restore owned
+host palette/TTY state, and every case reports zero surviving owned processes.
+
+The initial rich run caught a missing heading: graphical mode intentionally
+omits the text perimeter, so placing instructions in its caption hid them.
+The generic content heading fixes both modes; a geometry regression covers
+mouse selection and a one-row query viewport. A repeated-hover controller also
+needed real one-cell motion after reopening at the same pointer coordinate;
+the original failed evidence is retained.
+
+Protected formatting, all-target strict Clippy, workspace test compilation,
+debug build and doctests pass in 52.92 seconds:
+`verification/compiled-1454897806215614/manifest.json`. The actual UID1000 run
+in `verification/checks-1455177749151246/result.json` passes 874 top-level tests
+plus one isolated subprocess test, with 14 ignored and zero surviving processes.
+All 182 current host source guards and all four entry debug/release executable
+hashes are preserved. No old-backend mounts, cache clean or release build is used.
+Only the four paused latency files and one app call use their prior baseline;
+two byte-identical crate-root shadows force Cargo freshness without changing
+host mtimes. Paused latency work is neither reverted nor counted as verified.
+
+These are debug/software-rendering functional checks, not latency guarantees.
+Live color notifications are physically exercised on Kitty; RGB-unavailable
+palette projection has deterministic boundary tests, not an ANSI-only physical
+acceptance claim. Controllers and effective frontend source are retained in
+`target/smoke/theme-switcher/controllers.zip`.
+
+## Theme propagation into terminal panes
+
+This records the pane-propagation pass. Its modal-faint preview treatment is
+superseded by the [undimmed chooser correction](#papercolor-palettes-and-undimmed-previews)
+below; the palette precedence and canonical-state isolation contracts remain.
+
+The initial theme switcher excluded pane surfaces, so their native text colors
+could not follow a selected palette. The corrected client attaches one borrowed
+framework `PaletteOverride` to each visible pane/history surface. Default
+foreground/background and ANSI16 resolve through it before annotations, inverse,
+faint and damage comparison. Explicit RGB and indices beyond the borrowed slice
+retain canonical colors. No scene rows, terminal contents, images or backend
+palette state are cloned or mutated; clients can present one canonical frame
+with different palettes independently.
+
+UI roles already used the selected foreground and invalidated retained text
+styles on changed palette evidence; no separate UI foreground workaround was
+added. Overridden pane defaults use explicit RGB encoding even when host default
+colors are unknown. Unoverridden surfaces preserve existing native-default and
+observed-match ANSI encoding.
+
+`target/smoke/theme-panes/acceptance.json` records the corrected debug pair:
+
+* `bkpr`: `7e1c2f550632d57f52672ec61549303ecdd5b8e556a836eaca360064fd1ad9b7`
+* `bkprd`: `337fbecab885f43f33a71776689d108bf1f87be6f61913f127ac9b8512bd12fa`
+
+The private raw native program paints default colors, all 16 ANSI foregrounds
+and backgrounds, literal RGB and extended indexed references. Solid block text
+glyphs provide exact foreground pixels, while adjacent spaces provide background
+pixels. Expected complete Unicode grid content fences every capture. During
+modal preview the existing faint treatment remains active, so encoded foreground
+and physical background are checked; committed/no-modal captures additionally
+check physical foreground pixels rather than mistaking dimmed ink for palette
+failure.
+
+Dark and light Kitty rich/plain runs each pass 82 palette/state checks, including
+39 undimmed foreground-pixel observations. The xterm normal/legacy-input run
+passes 38 checks, including 18 undimmed foreground observations. Every named
+palette is committed and inspected; cancellation restores original pane colors.
+The existing resize, rendering-mode toggle, empty-result, hover/click,
+outside-dismissal, mode-2031 refresh, fresh-instance reset, exact native input,
+config-tree and detach-restoration checks remain exercised. All three cases
+report zero surviving owned processes.
+
+Protected formatting, strict all-target Clippy, workspace test compilation,
+debug build and doctests pass in 68.25 seconds:
+`target/smoke/theme-panes/verification/compiled-1396432300441/manifest.json`.
+The actual UID1000 run in `verification/checks-1702452364460/result.json` passes
+876 top-level tests plus one isolated subprocess test, with 14 ignored and zero
+survivors. Added scene regressions cover two differently themed and one canonical
+projection of the same frame, restoration, annotations, clipping, hidden focused
+cursor geometry and default/ANSI/RGB/indexed precedence.
+
+All 182 guarded host source inputs and the public entry debug/release binary
+hashes are preserved. The same five paused-latency exclusions remain intact.
+These are functional debug/software-rendering checks, not a latency guarantee.
+They verify per-client color presentation; application RGB, image contents and
+backend application color-query replies are not rewritten. Controllers,
+native C source and effective frontend sources are retained in
+`target/smoke/theme-panes/controllers.zip`.
+
+## PaperColor palettes and undimmed previews
+
+The catalog now includes PaperColor Light and PaperColor Dark from
+[the original upstream `0cfe64f`](https://github.com/NLKNguyen/papercolor-theme/blob/0cfe64ffb24c21a6101b5f994ca342a74c977aef/colors/PaperColor.vim),
+with the pinned MIT notice and source mapping in the catalog and implementation
+plan. They use the existing UI/pane preview, commit, rollback and instance-local
+lifetime; no dependency or runtime fetch is added.
+
+Theme chooser presentation no longer sets background faint. Forms/finder keep
+the existing policy, and clipboard consent retains precedence when it is the
+displayed modal. The private actual-terminal fixture opens an ordinary rename
+dialog and observes its foreground dimming and restoration without a background
+color change. Every chooser preview now checks undimmed foreground pixels as
+well as background pixels, including both fuzzy `paper light`/`paper dark`
+searches. All twelve choices fit the unfiltered card; both PaperColor variants'
+default foreground/background and complete ANSI16 palettes are inspected.
+
+Final evidence is `target/smoke/papercolor/acceptance.json`. Actual Kitty rich
+and normal rendering plus xterm normal/legacy input pass, preserving exact pane
+input, application RGB/extended-index references, commit/cancel semantics,
+mode-2031 refresh, fresh-instance reset, config-tree and detach restoration.
+All owned-process survivor lists are empty. Screenshots include
+`fancy-paper-light-fuzzy-undimmed.png` and
+`ordinary-rename-overlay-still-dims.png` under the recorded Kitty case.
+
+The protected debug build, formatting, strict all-target Clippy, workspace test
+compilation and doctests pass in 32.91 seconds:
+`verification/compiled-5688278584631/manifest.json`. Host UID1000 workspace
+execution passes 876 top-level tests plus one isolated subprocess test, with
+14 ignored, in `verification/checks-5792702273414/result.json`.
+
+Runtime pair SHA256:
+
+* `bkpr`: `d93aa472c64d4619bc9e0b672aa41e13a32c810cabcb0b597b7994c842049570`
+* `bkprd`: `337fbecab885f43f33a71776689d108bf1f87be6f61913f127ac9b8512bd12fa`
+
+All 182 source guards and public entry debug/release executable hashes are
+preserved; paused latency work remains untouched and excluded. These are
+private Xvfb/software-rendered functional checks, not latency guarantees.
+Controllers and effective frontend source are archived in
+`target/smoke/papercolor/controllers.zip`.
+
+## Typing and manual-bottom history exit
+
+Ordinary application keys, literal Ctrl-b forwarding and plain/enhanced paste
+now return only the target view to live output and deliver input once. History
+navigation and Esc/Enter/End remain local commands. Read-only grants, accepted
+release origins and clipboard consent/offer ordering remain unchanged.
+Published offset-zero scenes retire the local history flag; downward navigation
+at the visible bottom also retires pending entry, including coalesced up/down.
+
+Core retains view identity through its internal key/raw/paste mutations and
+resumes the target within the existing pane worker after native writer admission.
+Removing that view's historical scene override selects the existing immutable
+canonical live frame; target annotations and revision/wake update without a
+terminal recapture, another request or application output. Already-live input
+skips projection. Post-admission projection/effect errors cannot turn an accepted
+write ID into a false rejection. No protocol or engine dependency changes.
+
+`target/smoke/scrollback-input/acceptance.json` records the immutable debug pair:
+
+* `bkpr`: `ba1cb2bb5925579a588845ccd58cd9f1cd16ea08b6c37abf3aa95d29249e614f`
+* `bkprd`: `fccea1abb681b3d11ec700c1694f8d6871f232429d76e4edebc0f17f72e67538`
+
+Actual terminal cases:
+
+* `kitty-dark-default-8609972197018/` and
+  `kitty-light-default-8610993951963/`: rich and rounded normal rendering.
+* `xterm-dark-default-8755389583423/`: legacy input and normal rendering,
+  including a native foreground xclip owner on the private Xvfb PRIMARY selection.
+
+Across these cases, 98 restored native bodies match every expected cell and
+every pixel of their immutable live references, including the steady live cursor.
+Kitty cursor queries also confirm hidden history/restored live visibility.
+The raw applications log input but emit no output after typing: `x`, bracketed
+paste, literal control-prefix forwarding and typing bursts still restore live
+presentation and normal hints. Twelve immediate enter-history/type sequences
+per rendering mode preserve each `q` exactly once. Manual wheel-bottom return,
+oldest/page navigation, explicit live return, independent other-pane history and
+180×48 resize/typing pass. Core tests separately exercise two historical views
+of the same pane, exact raw/plain/enhanced paste and encoded release/denial edges.
+
+Reference readiness excludes transient presentation: an intermediate normal-mode
+reference accidentally contained the “Normal chrome” toast, producing a real
+top-row pixel mismatch after its expiry. The final controller waits for toast
+expiry and clears the host resize OSD before taking complete references; it does
+not mask those pixels or change production rendering.
+
+Final protected checks are
+`verification/compiled-8610305743201/manifest.json`: formatting, strict all-target
+Clippy, workspace test compilation, debug build and doctests pass. Actual UID1000
+execution in `verification/checks-8694673319213/result.json` passes 881 top-level
+tests plus one isolated child, with 14 ignored. All runtime/test survivor lists
+are empty. All 182 guarded source inputs and entry debug/release binary hashes
+remain unchanged by verification; the five paused latency exclusions remain intact.
+These are debug/software-rendered functional checks, not latency guarantees or
+full-screen editor benchmarks. Controllers and effective source snapshots are
+retained in `target/smoke/scrollback-input/controllers.zip`.

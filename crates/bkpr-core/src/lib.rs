@@ -100,10 +100,10 @@ enum Mutation {
         cursor: Option<[u8; 3]>,
         palette: Option<Box<[[u8; 3]; 256]>>,
     },
-    Raw(Vec<u8>),
-    Paste(Vec<u8>),
+    Raw(String, Vec<u8>),
+    Paste(String, Vec<u8>),
     PasteContents(String, Vec<ClipboardContent>, ClipboardLocation, bool),
-    Key(KeyEvent),
+    Key(String, KeyEvent),
     Mouse(MouseEvent),
     Focus(bool),
     Scroll {
@@ -129,10 +129,13 @@ enum Mutation {
 fn release_cleanup(mutation: &Mutation) -> bool {
     matches!(
         mutation,
-        Mutation::Key(KeyEvent {
-            action: bkpr_protocol::KeyAction::Release,
-            ..
-        }) | Mutation::Mouse(MouseEvent {
+        Mutation::Key(
+            _,
+            KeyEvent {
+                action: bkpr_protocol::KeyAction::Release,
+                ..
+            }
+        ) | Mutation::Mouse(MouseEvent {
             action: bkpr_protocol::MouseAction::Release,
             ..
         }) | Mutation::Focus(false)
@@ -182,7 +185,7 @@ fn completed_command(published: &Published, mutation: &Mutation) -> CommandResul
         if matches!(mutation, Mutation::Terminate | Mutation::Focus(_))
             || matches!(mutation, Mutation::Mouse(event)
                 if event.action == bkpr_protocol::MouseAction::Release)
-            || matches!(mutation, Mutation::Key(event)
+            || matches!(mutation, Mutation::Key(_, event)
                 if event.action == bkpr_protocol::KeyAction::Release)
         {
             return Ok(CommandOutcome::Completed);
@@ -794,14 +797,14 @@ impl Pane {
                 if data.len() > MAX_INPUT_BYTES {
                     bail!("input payload limit");
                 }
-                Ok(command(Mutation::Raw(data))?.response())
+                Ok(command(Mutation::Raw(view_id, data))?.response())
             }
             Request::Paste { view_id, data } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
                 if data.len() > MAX_INPUT_BYTES {
                     bail!("input payload limit");
                 }
-                Ok(command(Mutation::Paste(data))?.response())
+                Ok(command(Mutation::Paste(view_id, data))?.response())
             }
             Request::PasteContents {
                 view_id,
@@ -832,7 +835,7 @@ impl Pane {
             }
             Request::Key { view_id, event } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
-                Ok(command(Mutation::Key(event))?.response())
+                Ok(command(Mutation::Key(view_id, event))?.response())
             }
             Request::Mouse { view_id, event } => {
                 self.shared.authority.lock().unwrap().input(&view_id)?;
@@ -1217,6 +1220,48 @@ fn publish(terminal: &mut Terminal, shared: &Shared) -> Result<()> {
     if status_changed {
         shared.notify_status_changed();
     }
+    shared.changes.notify();
+    Ok(())
+}
+/// Reuse the immutable live scene for just the input target. No PTY output or
+/// whole-pane snapshot is needed to leave history; already-live input skips projection.
+fn publish_live_input(terminal: &mut Terminal, shared: &Shared, id: &str) -> Result<()> {
+    let mut authority = shared.authority.lock().unwrap();
+    let Some(view) = authority.views.get_mut(id) else {
+        return Ok(());
+    };
+    if view.scrollback_offset == 0 {
+        return Ok(());
+    }
+    terminal.scroll_view(id, i64::MIN)?;
+    view.scrollback_offset = 0;
+    let selection = terminal.view_selection(id)?;
+    let search = terminal.view_search(id)?;
+    let mut published = shared.published.lock().unwrap();
+    published.scroll_frames.remove(id);
+    if let Some(snapshot) = selection {
+        let value = (view.inspection_epoch, snapshot);
+        if let Some(previous) = published.selections.get_mut(id) {
+            *previous = value;
+        } else {
+            published.selections.insert(id.to_owned(), value);
+        }
+    } else {
+        published.selections.remove(id);
+    }
+    if let Some(snapshot) = search {
+        let value = (view.inspection_epoch, snapshot);
+        if let Some(previous) = published.searches.get_mut(id) {
+            *previous = value;
+        } else {
+            published.searches.insert(id.to_owned(), value);
+        }
+    } else {
+        published.searches.remove(id);
+    }
+    published.revision += 1;
+    drop(published);
+    drop(authority);
     shared.changes.notify();
     Ok(())
 }
@@ -1742,9 +1787,10 @@ fn run_pane(
                         &command.mutation,
                         Mutation::Colors { .. } | Mutation::Scroll { .. }
                     );
+                    let mut live_input_view = None;
                     let outcome = (|| -> Result<CommandOutcome> {
                         let cleanup = release_cleanup(&command.mutation);
-                        let enqueue = |bytes, barrier| {
+                        let enqueue = |bytes, barrier, view_id: Option<&str>| {
                             if let Some(control) = &command.control {
                                 control.ensure_active()?;
                             }
@@ -1755,6 +1801,12 @@ fn run_pane(
                                     .is_some_and(|client| !client.is_active())
                             {
                                 bail!("client attachment detached before input acceptance");
+                            }
+                            // Policy updates bypass request serialization. Recheck the
+                            // exact target at the native acceptance boundary as well.
+                            let authority = view_id.map(|_| shared.authority.lock().unwrap());
+                            if !cleanup && let Some(view_id) = view_id {
+                                authority.as_ref().unwrap().input(view_id)?;
                             }
                             writer.enqueue(bytes, barrier)
                         };
@@ -1771,14 +1823,26 @@ fn run_pane(
                                     terminal.set_palette(&palette)?;
                                 }
                             }
-                            Mutation::Raw(data) => write_id = Some(enqueue(data, false)?),
-                            Mutation::Paste(data) => {
+                            Mutation::Raw(view_id, data) => {
+                                let nonempty = !data.is_empty();
+                                write_id = Some(enqueue(data, false, Some(&view_id))?);
+                                if nonempty {
+                                    live_input_view = Some(view_id);
+                                }
+                            }
+                            Mutation::Paste(view_id, data) => {
+                                let nonempty = !data.is_empty();
                                 let bytes = terminal.encode_paste(&data)?;
                                 if !bytes.is_empty() {
-                                    write_id = Some(enqueue(bytes, false)?);
+                                    write_id = Some(enqueue(bytes, false, Some(&view_id))?);
+                                    if nonempty {
+                                        live_input_view = Some(view_id);
+                                    }
                                 }
                             }
                             Mutation::PasteContents(view_id, contents, location, allow_unsafe) => {
+                                let nonempty =
+                                    contents.iter().any(|content| !content.data.is_empty());
                                 let id = {
                                     let mut grants = shared.paste.lock().unwrap();
                                     if grants.origins.len()
@@ -1794,7 +1858,7 @@ fn run_pane(
                                     grants.origins.insert(
                                         id,
                                         PasteOrigin {
-                                            view_id,
+                                            view_id: view_id.clone(),
                                             expires: Instant::now()
                                                 + bkpr_terminal_engine::PASTE_OFFER_TIMEOUT,
                                         },
@@ -1814,7 +1878,7 @@ fn run_pane(
                                         if bytes.is_empty() {
                                             Ok(None)
                                         } else {
-                                            enqueue(bytes, false).map(Some)
+                                            enqueue(bytes, false, Some(&view_id)).map(Some)
                                         }
                                     });
                                 if accepted.is_err() || !terminal.has_paste_offer(id) {
@@ -1822,23 +1886,29 @@ fn run_pane(
                                     terminal.cancel_paste_offer(id);
                                 }
                                 write_id = accepted?;
+                                if nonempty && write_id.is_some() {
+                                    live_input_view = Some(view_id);
+                                }
                             }
-                            Mutation::Key(event) => {
+                            Mutation::Key(view_id, event) => {
                                 let bytes = terminal.encode_key(&event)?;
                                 if !bytes.is_empty() {
-                                    write_id = Some(enqueue(bytes, false)?);
+                                    write_id = Some(enqueue(bytes, false, Some(&view_id))?);
+                                    if event.action != bkpr_protocol::KeyAction::Release {
+                                        live_input_view = Some(view_id);
+                                    }
                                 }
                             }
                             Mutation::Mouse(event) => {
                                 let bytes = terminal.encode_mouse(&event)?;
                                 if !bytes.is_empty() {
-                                    write_id = Some(enqueue(bytes, false)?);
+                                    write_id = Some(enqueue(bytes, false, None)?);
                                 }
                             }
                             Mutation::Focus(focused) => {
                                 let bytes = terminal.encode_focus(focused)?;
                                 if !bytes.is_empty() {
-                                    write_id = Some(enqueue(bytes, false)?);
+                                    write_id = Some(enqueue(bytes, false, None)?);
                                 }
                             }
                             Mutation::Scroll { view_id, delta } => {
@@ -1906,15 +1976,31 @@ fn run_pane(
                             }
                             Mutation::Terminate => {}
                         }
-                        route_effects(terminal.drain_effects()?, &writer, &shared)?;
-                        if needs_publish {
-                            publish(&mut terminal, &shared)?;
+                        if write_id.is_none() {
+                            route_effects(terminal.drain_effects()?, &writer, &shared)?;
+                            if needs_publish {
+                                publish(&mut terminal, &shared)?;
+                            }
                         }
                         Ok(CommandOutcome::Applied(write_id))
                     })();
+                    // Once the writer accepts bytes, later projection/effect errors
+                    // fault the worker; they must never report a retryable rejection.
+                    let accepted = matches!(&outcome, Ok(CommandOutcome::Applied(Some(_))));
+                    let after_acceptance = if accepted {
+                        (|| -> Result<()> {
+                            if let Some(view_id) = live_input_view {
+                                publish_live_input(&mut terminal, &shared, &view_id)?;
+                            }
+                            route_effects(terminal.drain_effects()?, &writer, &shared)
+                        })()
+                    } else {
+                        Ok(())
+                    };
                     let _ = command
                         .result
                         .send(outcome.map_err(|error| format!("{error:#}")));
+                    after_acceptance?;
                 }
                 Some(Err(_)) => {
                     child.terminate()?;

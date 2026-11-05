@@ -7,7 +7,7 @@ use bkpr_tui_framework::{
 /// Native PTYs and pointer coordinates use the same gutter in rich and plain modes.
 pub(crate) const PANE_BORDER: u16 = 1;
 
-/// Focused local dialogs dim lower surfaces; passive hints never do.
+/// Ordinary local dialogs dim lower surfaces; palette previews and passive hints do not.
 pub(crate) const MODAL_BACKGROUND_FAINT: bool = true;
 
 /// Material policy from main 9ad93bd and retained fork 18890b23:
@@ -187,6 +187,8 @@ impl Recipe<'_> {
         ) {
             let surface = surface(fg, bg);
             for style in &mut self.styles {
+                // UI palettes may differ from (or outlive missing) host defaults.
+                style.foreground_source = ColorSource::Rgb(fg);
                 style.background = surface;
                 style.background_source = ColorSource::Rgb(surface);
             }

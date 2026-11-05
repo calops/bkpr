@@ -261,6 +261,7 @@ dependencies = [
  "hashlink",
  "image",
  "libc",
+ "nucleo-matcher",
  "png",
  "resvg",
  "termwiz",

@@ -137,6 +137,8 @@ mod scrollback;
 mod search;
 #[path = "selection.rs"]
 mod selection;
+#[path = "theme_switcher.rs"]
+mod theme_switcher;
 
 enum Background {
     Management(management::Completion),
@@ -380,7 +382,7 @@ impl Attached {
             .frame
             .as_mut()
             .expect("a decoded scene supplies a frame");
-        if frame.alternate_screen {
+        if frame.alternate_screen || frame.scrollback_offset == 0 {
             self.history = false;
         }
         for image in frame.images.drain(..) {
@@ -487,6 +489,8 @@ struct App<'a> {
     resizing: resizing::State,
     search: search::State,
     finder: Option<crate::finder::Finder>,
+    theme: crate::themes::ThemeId,
+    theme_picker: Option<theme_switcher::Picker>,
     popover: crate::popover::Popover,
     overlays: OverlayStack<OverlayFocus>,
     toasts: toast::ToastStack,
@@ -518,7 +522,7 @@ impl App<'_> {
     fn sidebar_resize_blocked(&self) -> bool {
         !self.host_focused
             || self.state.form.is_some()
-            || self.finder.is_some()
+            || self.picker_open()
             || self
                 .consent
                 .as_ref()
@@ -578,12 +582,13 @@ impl App<'_> {
             .is_some_and(|consent| !consent.state.allowed && !consent.state.sent);
         crate::controller::sidebar_popup_target(
             &self.state,
-            consent || self.finder.is_some() || self.search_open(),
+            consent || self.picker_open() || self.search_open(),
         )
     }
 
     fn begin_modal(&mut self) {
-        if self.state.form.is_none() && self.finder.is_none() {
+        self.restore_theme_preview();
+        if self.state.form.is_none() && !self.picker_open() {
             self.overlays.remove("ui:modal");
         }
         self.overlays.present(
@@ -616,6 +621,7 @@ impl App<'_> {
             return;
         }
         self.state.cancel();
+        self.restore_theme_preview();
         self.finder = None;
         if let Some(focus) = self.overlays.remove("ui:modal") {
             self.state.workspace = focus.workspace;
@@ -675,10 +681,7 @@ impl App<'_> {
             | Action::StartResize => !self.options.read_only,
             Action::CopySelection => self.options.clipboard_policy != "deny",
             Action::SendPrefix => {
-                !self.options.read_only
-                    && !self.state.sidebar.active
-                    && !self.focused_history()
-                    && !self.search_open()
+                !self.options.read_only && !self.state.sidebar.active && !self.search_open()
             }
             Action::Submit => self
                 .state
@@ -728,6 +731,8 @@ impl App<'_> {
             })
         } else if self.finder.is_some() {
             Some(ModalContext::Finder)
+        } else if self.theme_picker.is_some() {
+            Some(ModalContext::Theme)
         } else {
             None
         };
@@ -867,8 +872,10 @@ impl App<'_> {
             Some(
                 Action::Navigate(_) | Action::Edit(_) | Action::History(_) | Action::Resize { .. }
             )
-        ) || (matches!(context, Context::Create | Context::Edit | Context::Finder)
-            && event.modifiers & 14 == 0
+        ) || (matches!(
+            context,
+            Context::Create | Context::Edit | Context::Finder | Context::Theme
+        ) && event.modifiers & 14 == 0
             && event.text.chars().any(|ch| !ch.is_control()))
     }
     fn begin_finder(&mut self) {
@@ -909,6 +916,8 @@ impl App<'_> {
                 screen.cols.saturating_mul(4) / 5,
                 (screen.rows.saturating_mul(3) / 4).min(36),
             )
+        } else if self.theme_picker.is_some() {
+            (64, (crate::themes::THEMES.len() as u16).saturating_add(6))
         } else {
             match self.state.form.as_ref().map(|form| &form.kind) {
                 Some(FormKind::CreateWorkspace | FormKind::CreateWindow) => (76, 12),
@@ -1922,7 +1931,7 @@ impl App<'_> {
     fn notify_focus(&mut self) -> Result<()> {
         let focused = if self.host_focused
             && self.state.form.is_none()
-            && self.finder.is_none()
+            && !self.picker_open()
             && !self.state.sidebar.active
             && !self.search_open()
             && !self
@@ -2361,7 +2370,7 @@ impl App<'_> {
             if self.consent.is_some()
                 || self.paste_offer.is_some()
                 || self.state.form.is_some()
-                || self.finder.is_some()
+                || self.picker_open()
             {
                 let mut response = Some(Operation::Pane {
                     pane_id: pane.clone(),
@@ -2446,7 +2455,7 @@ impl App<'_> {
                 });
             }
             Ok(None) if !listing && self.paste_offer.is_some() => {
-                if self.focused_history() || self.state.sidebar.active || self.finder.is_some() {
+                if self.options.read_only || self.state.sidebar.active || self.picker_open() {
                     self.paste_offer = None;
                     return Ok(());
                 }
@@ -2981,7 +2990,7 @@ impl App<'_> {
     ) -> Result<bool> {
         let local = self.state.prefix
             || self.state.form.is_some()
-            || self.finder.is_some()
+            || self.picker_open()
             || self.state.sidebar.active
             || self.focused_history()
             || self.resize_capturing()
@@ -3121,7 +3130,7 @@ impl App<'_> {
             }
             return Ok(false);
         }
-        if self.state.form.is_some() || self.finder.is_some() {
+        if self.state.form.is_some() || self.picker_open() {
             if self.state.prefix {
                 self.state.prefix = false;
                 self.state.suppressed.insert(event.key.clone());
@@ -3210,6 +3219,18 @@ impl App<'_> {
             }
             return Ok(false);
         }
+        if self.theme_picker.is_some() {
+            let local = self.modal_geometry(size).1.size(size);
+            let intent = self
+                .theme_picker
+                .as_mut()
+                .unwrap()
+                .list
+                .handle_key(&event, local);
+            self.state.suppressed.insert(event.key.clone());
+            self.theme_picker_intent(intent);
+            return Ok(false);
+        }
         if self.finder.is_some() {
             let (_, content) = self.modal_geometry(size);
             let intent = self
@@ -3240,7 +3261,6 @@ impl App<'_> {
                 if !self.options.read_only
                     && !self.state.sidebar.active
                     && !self.search_open()
-                    && !self.focused_history()
                     && let Some((pane, view)) = self.active()
                 {
                     if self.selection_active(&pane) {
@@ -3285,6 +3305,7 @@ impl App<'_> {
             match action {
                 Some(Action::Detach) => return Ok(true),
                 Some(Action::ToggleChrome) => self.toggle_chrome(),
+                Some(Action::OpenThemes) => self.begin_theme_picker(),
                 Some(Action::StartSearch) => self.begin_search()?,
                 Some(Action::StartHistory) => self.enter_history(rects)?,
                 Some(Action::StartResize) => self.begin_keyboard_resize(size)?,
@@ -3627,6 +3648,32 @@ impl App<'_> {
                 PointerRoute::Target {
                     id: "ui:modal",
                     content: true,
+                } if self.theme_picker.is_some()
+                    && !self
+                        .consent
+                        .as_ref()
+                        .is_some_and(|consent| !consent.state.allowed && !consent.state.sent) =>
+                {
+                    let rect = self.overlays.layer("ui:modal").unwrap().placement.content;
+                    let event = MouseEvent {
+                        x: f32::from(mouse.x - rect.x),
+                        y: f32::from(mouse.y - rect.y),
+                        button: event_button,
+                        action,
+                        modifiers: u16::from(selection::mouse_modifiers(mouse.modifiers)),
+                    };
+                    let intent = self
+                        .theme_picker
+                        .as_mut()
+                        .unwrap()
+                        .list
+                        .handle_mouse(&event, rect.size(size));
+                    self.theme_picker_intent(intent);
+                    return Ok(());
+                }
+                PointerRoute::Target {
+                    id: "ui:modal",
+                    content: true,
                 } if self.finder.is_some()
                     && !self
                         .consent
@@ -3668,7 +3715,7 @@ impl App<'_> {
             return Ok(());
         }
         let modal = self.state.form.is_some()
-            || self.finder.is_some()
+            || self.picker_open()
             || self
                 .consent
                 .as_ref()
@@ -4265,6 +4312,8 @@ fn run_attached(
         resizing: resizing::State::default(),
         search: search::State::default(),
         finder: None,
+        theme: crate::themes::ThemeId::default(),
+        theme_picker: None,
         popover: crate::popover::Popover::new(initial_size),
         overlays: OverlayStack::default(),
         toasts: toast::ToastStack::default(),
@@ -4286,6 +4335,7 @@ fn run_attached(
         let mut demux = ReplyDemux::default();
         let mut last_input = Instant::now();
         let mut theme = Theme::default();
+        let mut ui_palette = crate::themes::Palette::default();
         let mut project_palette = crate::project_colors::ProjectPalette::default();
         let mut project_capacity = 0;
         let mut project_capacity_revision = None;
@@ -4456,7 +4506,10 @@ fn run_attached(
                 app.screen_geometry(size).0,
                 guide_rows,
             ));
-            crate::appearance::update_region_theme(&mut popover_theme, &app.colors, None);
+            ui_palette.update(&app.colors, app.theme);
+            let ui_colors = ui_palette.probe();
+            let pane_palette = app.theme.pane_palette(app.colors.truecolor);
+            crate::appearance::update_region_theme(&mut popover_theme, ui_colors, None);
             let workspace_hits = chrome(
                 &mut chrome_surface,
                 crate::controller::ChromeContext {
@@ -4483,7 +4536,7 @@ fn run_attached(
                         .map(|(target, _)| target),
                 );
             }
-            crate::appearance::update_theme(&mut theme, &app.colors);
+            crate::appearance::update_theme(&mut theme, ui_colors);
             if project_capacity_revision != Some(app.registry.revision) {
                 project_capacity = app
                     .registry
@@ -4494,7 +4547,7 @@ fn run_attached(
                     .map_or(0, |slot| slot.saturating_add(1));
                 project_capacity_revision = Some(app.registry.revision);
             }
-            project_palette.update(&app.colors, project_capacity);
+            project_palette.update(ui_colors, project_capacity);
             theme_chrome(
                 &mut chrome_surface,
                 &theme,
@@ -4567,7 +4620,7 @@ fn run_attached(
                 chrome_markers.push((artwork, col, row, source));
             }
             graphics.set_enabled(app.chrome_graphics_enabled);
-            graphics.prepare(&app.colors, size, &marker_sources);
+            graphics.prepare(ui_colors, size, &marker_sources);
             graphics.prepare_panes(size, &rects);
             next_pane_graphics.clear();
             for (index, (_, rect)) in rects.iter().enumerate() {
@@ -4677,7 +4730,7 @@ fn run_attached(
                     app.views.get(pane).map(|view| &view.metadata)
                 });
             }
-            let popup = consent_open || app.state.form.is_some() || app.finder.is_some();
+            let popup = consent_open || app.state.form.is_some() || app.picker_open();
             let mut placement = popup.then(|| {
                 if consent_open {
                     let placement = OverlayPlacement::centered(
@@ -4817,19 +4870,23 @@ fn run_attached(
                             role: Role::Warning,
                         }],
                     );
+                } else if let Some(picker) = &mut app.theme_picker {
+                    picker.list.set_title(if ui_palette.override_supported() {
+                        "Themes · Enter keep · Esc cancel"
+                    } else {
+                        "Themes · RGB unavailable; using terminal colors"
+                    });
+                    picker.list.paint(&mut popup_surface, local);
+                    picker.list.apply_theme(&mut popup_surface, &theme);
                 } else if let Some(finder) = &mut app.finder {
                     finder.paint(&mut popup_surface, local);
-                    finder.apply_theme(&mut popup_surface, &theme, &app.colors, &project_palette);
+                    finder.apply_theme(&mut popup_surface, &theme, ui_colors, &project_palette);
                 } else if let Some(form) = &app.state.form {
                     modal(&mut popup_surface, local, form, &app.registry, |pane| {
                         app.views.get(pane).map(|view| &view.metadata)
                     });
                     let form_palette = if let Some(accent) = form_region {
-                        crate::appearance::update_region_theme(
-                            &mut form_theme,
-                            &app.colors,
-                            accent,
-                        );
+                        crate::appearance::update_region_theme(&mut form_theme, ui_colors, accent);
                         &form_theme
                     } else {
                         &theme
@@ -5043,7 +5100,7 @@ fn run_attached(
                 }
                 crate::appearance::update_guide_theme(
                     &mut guide_theme,
-                    &app.colors,
+                    ui_colors,
                     app.guide_accent(),
                 );
                 guide_surface.apply_theme(&guide_theme, Role::Panel, &guide_roles);
@@ -5099,12 +5156,14 @@ fn run_attached(
             };
             let mut feedback_style = theme.style(Role::Base).clone();
             feedback_style.foreground_source = ColorSource::Palette(6);
-            feedback_style.foreground = app
-                .colors
+            feedback_style.foreground = ui_colors
                 .palette
                 .get(&6)
                 .copied()
                 .unwrap_or(feedback_style.foreground);
+            if ui_colors.truecolor {
+                feedback_style.foreground_source = ColorSource::Rgb(feedback_style.foreground);
+            }
             let feedback_resized = resize_feedback_surface.frame.size != size;
             if feedback_resized {
                 resize_feedback_surface = UiSurface::new(size);
@@ -5127,7 +5186,7 @@ fn run_attached(
                 resize_feedback_style = Some(feedback_style);
             }
             app.toasts.expire(Instant::now());
-            crate::appearance::update_theme(&mut toast_theme, &app.colors);
+            crate::appearance::update_theme(&mut toast_theme, ui_colors);
             app.toasts.paint(
                 size,
                 toast::ToastLayout {
@@ -5150,8 +5209,11 @@ fn run_attached(
                         )
                 },
             );
-            let faint_background = popup && crate::appearance::MODAL_BACKGROUND_FAINT;
+            let faint_background = popup
+                && (consent_open || app.theme_picker.is_none())
+                && crate::appearance::MODAL_BACKGROUND_FAINT;
             let mut surfaces = vec![Surface {
+                palette: None,
                 id: "ui:chrome",
                 content: SurfaceContent::Cells,
                 rect: Rect {
@@ -5178,6 +5240,7 @@ fn run_attached(
                     .or_else(|| placeholders.get(id).map(|surface| &surface.frame))
                 {
                     surfaces.push(Surface {
+                        palette: pane_palette,
                         id,
                         content: SurfaceContent::All,
                         rect,
@@ -5200,6 +5263,7 @@ fn run_attached(
                 }
             }
             surfaces.push(Surface {
+                palette: None,
                 id: "ui:chrome:graphics",
                 content: SurfaceContent::Graphics,
                 rect: Rect {
@@ -5216,6 +5280,7 @@ fn run_attached(
             });
             for segment in &resize_feedback_regions {
                 surfaces.push(Surface {
+                    palette: None,
                     id: "ui:resize:edges",
                     content: SurfaceContent::CellsWithUnderlay(*segment),
                     rect: Rect {
@@ -5234,6 +5299,7 @@ fn run_attached(
             // Artwork may extend into the joined item's framing column. Keep
             // it above passive materials, but below modal contents and effects.
             let mut artwork_surface = Some(Surface {
+                palette: None,
                 id: "ui:sidebar:artwork",
                 content: SurfaceContent::Graphics,
                 rect: Rect {
@@ -5259,6 +5325,7 @@ fn run_attached(
                 {
                     for (index, (_, body)) in regions.into_iter().enumerate() {
                         surfaces.push(Surface {
+                            palette: None,
                             id: ["ui:modal:input", "ui:modal:results", "ui:modal:preview"][index],
                             content: SurfaceContent::CellsClipped(body),
                             rect: layer.placement.outer,
@@ -5306,6 +5373,7 @@ fn run_attached(
                                 continue;
                             }
                             surfaces.push(Surface {
+                                palette: None,
                                 id: layer.id,
                                 content: SurfaceContent::CellsClipped(clip),
                                 rect: layer.placement.outer,
@@ -5332,6 +5400,7 @@ fn run_attached(
                         "ui:modal" => {
                             if !modal_graphical {
                                 surfaces.push(Surface {
+                                    palette: None,
                                     id: "ui:window",
                                     content: SurfaceContent::All,
                                     rect: layer.placement.outer,
@@ -5351,6 +5420,7 @@ fn run_attached(
                         _ => continue,
                     };
                     surfaces.push(Surface {
+                        palette: None,
                         id: layer.id,
                         content,
                         rect,
@@ -5368,6 +5438,7 @@ fn run_attached(
                     _ => continue,
                 };
                 surfaces.push(Surface {
+                    palette: None,
                     id: effects_id,
                     content: SurfaceContent::Graphics,
                     rect: Rect {
@@ -5388,6 +5459,7 @@ fn run_attached(
             }
             if searching && !popup {
                 surfaces.push(Surface {
+                    palette: None,
                     id: "ui:search",
                     content: SurfaceContent::All,
                     rect: search_rect.expect("search overlay has an owning pane footer"),
@@ -5400,6 +5472,7 @@ fn run_attached(
             }
             for card in app.toasts.cards() {
                 surfaces.push(Surface {
+                    palette: None,
                     id: "ui:toast",
                     content: if card.graphical {
                         SurfaceContent::CellsClipped(Rect {
@@ -5421,6 +5494,7 @@ fn run_attached(
             }
             if !toast_effects.placements.is_empty() {
                 surfaces.push(Surface {
+                    palette: None,
                     id: "ui:toast:graphics",
                     content: SurfaceContent::Graphics,
                     rect: Rect {
@@ -5918,6 +5992,8 @@ mod tests {
                 resizing: resizing::State::default(),
                 search: search::State::default(),
                 finder: None,
+                theme: crate::themes::ThemeId::default(),
+                theme_picker: None,
                 popover: crate::popover::Popover::new(size()),
                 overlays: OverlayStack::default(),
                 toasts: toast::ToastStack::default(),
@@ -5930,6 +6006,89 @@ mod tests {
             },
             received,
         )
+    }
+
+    fn theme_key(app: &mut App<'_>, key: &str, text: &str, modifiers: u16) {
+        for action in [KeyAction::Press, KeyAction::Release] {
+            app.key(
+                KeyEvent {
+                    key: key.into(),
+                    text: text.into(),
+                    modifiers,
+                    action,
+                    unshifted_codepoint: 0,
+                },
+                &mut Vec::new(),
+                size(),
+                &[],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn theme_preview_cancel_restores_the_last_commit_and_empty_results_cannot_commit() {
+        use crate::themes::ThemeId;
+        let (mut app, _) = fixture();
+        app.colors.truecolor = true;
+        app.colors.foreground = Some([220, 230, 240]);
+        app.colors.background = Some([20, 30, 40]);
+        theme_key(&mut app, "KeyB", "", 2);
+        theme_key(&mut app, "KeyT", "t", 0);
+        app.paste("Solarized Light".into()).unwrap();
+        assert_eq!(app.theme, ThemeId::SolarizedLight);
+        theme_key(&mut app, "Enter", "", 0);
+        assert!(app.theme_picker.is_none());
+        theme_key(&mut app, "KeyB", "", 2);
+        theme_key(&mut app, "KeyT", "t", 0);
+        assert_eq!(
+            app.theme_picker.as_ref().unwrap().list.selected(),
+            Some(&ThemeId::SolarizedLight)
+        );
+        app.paste("not-a-theme".into()).unwrap();
+        theme_key(&mut app, "Enter", "", 0);
+        assert!(app.theme_picker.is_some());
+        assert_eq!(app.theme, ThemeId::SolarizedLight);
+        theme_key(&mut app, "KeyU", "", 2);
+        app.paste("Tokyo Night Day".into()).unwrap();
+        assert_eq!(app.theme, ThemeId::TokyoNightDay);
+        theme_key(&mut app, "Escape", "", 0);
+        assert!(app.theme_picker.is_none());
+        assert_eq!(app.theme, ThemeId::SolarizedLight);
+        let (fresh, _) = fixture();
+        assert_eq!(fresh.theme, ThemeId::Terminal);
+    }
+
+    #[test]
+    fn terminal_notifications_refresh_behind_preview_and_cancel_uses_latest_colors() {
+        use crate::themes::{Palette, ThemeId};
+        let (mut app, _) = fixture();
+        app.colors.truecolor = true;
+        app.colors.foreground = Some([220, 230, 240]);
+        app.colors.background = Some([20, 30, 40]);
+        app.begin_theme_picker();
+        app.paste("Catppuccin Mocha".into()).unwrap();
+        assert_eq!(app.theme, ThemeId::CatppuccinMocha);
+        let mut parser = InputParser::new();
+        let mut demux = ReplyDemux::default();
+        for event in decode_input(&mut parser, demux.feed(b"\x1b[?997;2n"), false) {
+            let ClientEvent::Reply(reply) = event else {
+                panic!("theme report became input")
+            };
+            app.color_reply(&reply);
+        }
+        assert!(app.color_query_pending);
+        app.color_reply(b"10;rgb:1111/2222/3333");
+        app.color_reply(b"11;rgb:eeee/dddd/cccc");
+        let mut palette = Palette::default();
+        palette.update(&app.colors, app.theme);
+        assert_eq!(palette.probe().background, Some([0x1e, 0x1e, 0x2e]));
+        assert_eq!(app.theme, ThemeId::CatppuccinMocha);
+        app.cancel_modal();
+        palette.update(&app.colors, app.theme);
+        assert_eq!(app.theme, ThemeId::Terminal);
+        assert_eq!(palette.probe().foreground, Some([0x11, 0x22, 0x33]));
+        assert_eq!(palette.probe().background, Some([0xee, 0xdd, 0xcc]));
     }
 
     #[test]
@@ -6801,6 +6960,7 @@ mod tests {
         let scene = Scene {
             size,
             surfaces: vec![Surface {
+                palette: None,
                 id: "ui:chrome",
                 content: SurfaceContent::All,
                 rect: Rect {
@@ -6880,6 +7040,7 @@ mod tests {
                 vec![("focused-pane".into(), first), ("beta".into(), second)];
             let frame = blank(size);
             let mut surfaces = vec![Surface {
+                palette: None,
                 id: "ui:chrome",
                 content: SurfaceContent::All,
                 rect: Rect {
@@ -6896,6 +7057,7 @@ mod tests {
             }];
             for (pane, rect) in &rects {
                 surfaces.push(Surface {
+                    palette: None,
                     id: pane,
                     content: SurfaceContent::All,
                     rect: content(*rect),
@@ -7855,46 +8017,104 @@ mod tests {
     }
 
     #[test]
-    fn physical_history_keys_block_typing_and_paste_until_an_explicit_live_return() {
+    fn history_navigation_does_not_capture_application_key_lifecycles_or_paste() {
         let (mut app, capture) = fixture();
         attach_fixture(&mut app);
+        physical_keys(&mut app, b"\x1b[5;2~").unwrap();
+        assert!(scroll(&capture, "focused-pane", "focused-view") > 0);
         app.views
             .get_mut("focused-pane")
             .unwrap()
             .frame
             .as_mut()
             .unwrap()
-            .scrollback_total = 400;
-
-        physical_keys(&mut app, b"\x1b[5;2~").unwrap();
-        assert!(scroll(&capture, "focused-pane", "focused-view") > 0);
-        assert!(app.focused_history());
-        physical_keys(&mut app, b"x\x02\x02").unwrap();
-        app.paste("paste sentinel".into()).unwrap();
-        app.paste_reply(b"5522;type=read:status=OK:pw=cHc=;")
-            .unwrap();
-        app.paste_reply(b"5522;type=read:status=DATA:pw=cHc=:mime=Lg==;dGV4dC9wbGFpbg==")
-            .unwrap();
-        app.paste_reply(b"5522;type=read:status=DONE:pw=cHc=;")
-            .unwrap();
-        assert!(app.paste_offer.is_none() && app.paste_target.is_none());
-        assert!(app.consent.is_none());
-        assert!(
-            capture.try_recv().is_err(),
-            "history typing/paste leaked to the application"
-        );
-
+            .scrollback_offset = 12;
         for (name, expected) in [("ArrowUp", 1), ("ArrowDown", -1), ("Home", i64::MAX)] {
             app.key(key(name), &mut Vec::new(), size(), &[]).unwrap();
             assert_eq!(scroll(&capture, "focused-pane", "focused-view"), expected);
         }
-        app.key(key("End"), &mut Vec::new(), size(), &[]).unwrap();
-        assert_eq!(scroll(&capture, "focused-pane", "focused-view"), i64::MIN);
-        assert!(!app.focused_history());
-        physical_keys(&mut app, b"x").unwrap();
+        physical_keys(&mut app, b"\x1b[120;1:1u\x1b[120;1:2u\x1b[120;1:3u").unwrap();
+        for action in [KeyAction::Press, KeyAction::Repeat, KeyAction::Release] {
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                pane_id, request: PaneRequest::Key { view_id, event }
+            } if pane_id == "focused-pane" && view_id == "focused-view"
+                && event.key == "KeyX" && event.action == action));
+        }
+        physical_keys(&mut app, b"\x02\x02").unwrap();
+        for action in [KeyAction::Press, KeyAction::Release] {
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                pane_id, request: PaneRequest::Key { view_id, event }
+            } if pane_id == "focused-pane" && view_id == "focused-view"
+                && event.key == "KeyB" && event.modifiers == 2 && event.action == action));
+        }
+        app.paste("paste sentinel\nλ".into()).unwrap();
         assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
-        pane_id, request: PaneRequest::Key { event, .. }
-    } if pane_id == "focused-pane" && event.text == "x"));
+            pane_id, request: PaneRequest::Paste { view_id, data }
+        } if pane_id == "focused-pane" && view_id == "focused-view"
+            && data == "paste sentinel\nλ".as_bytes()));
+        assert!(capture.try_recv().is_err());
+    }
+
+    #[test]
+    fn historical_paste_offer_keeps_its_original_target_when_focus_changes() {
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        app.enter_history(&[]).unwrap();
+        scroll(&capture, "focused-pane", "focused-view");
+        app.paste_reply(b"5522;type=read:status=OK:pw=cHc=;")
+            .unwrap();
+        app.state.focused = Some("other-pane".into());
+        app.paste_reply(b"5522;type=read:status=DATA:pw=cHc=:mime=Lg==;dGV4dC9wbGFpbg==")
+            .unwrap();
+        app.paste_reply(b"5522;type=read:status=DONE:pw=cHc=;")
+            .unwrap();
+        let consent = app.consent.as_ref().unwrap();
+        assert_eq!(consent.pane, "focused-pane");
+        assert_eq!(consent.view, "focused-view");
+        assert!(!consent.state.allowed);
+        assert!(capture.try_recv().is_err());
+    }
+
+    #[test]
+    fn reaching_live_output_retires_history_context_and_hints() {
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        app.enter_history(&[]).unwrap();
+        scroll(&capture, "focused-pane", "focused-view");
+        for offset in [9, 0] {
+            let attached = app.views.get_mut("focused-pane").unwrap();
+            let mut next = attached.frame.clone().unwrap();
+            next.scrollback_total = 400;
+            next.scrollback_offset = offset;
+            let revision = attached.revision + 1;
+            let bytes = scene_wire::encode(&next, revision, None, 0, &[]).unwrap();
+            let mut metadata = attached.metadata.clone();
+            metadata.revision = revision;
+            metadata.snapshot_revision += 1;
+            attached
+                .apply(Snapshot {
+                    metadata,
+                    scene: Some(scene_wire::decode(&bytes).unwrap()),
+                })
+                .unwrap();
+            assert_eq!(app.focused_history(), offset != 0);
+            assert_eq!(
+                app.guide_context(),
+                if offset == 0 {
+                    crate::keyguide::Context::Application
+                } else {
+                    crate::keyguide::Context::History
+                }
+            );
+        }
+        app.enter_history(&[]).unwrap();
+        let page = scroll(&capture, "focused-pane", "focused-view");
+        app.scroll_history("focused-pane", -page, true).unwrap();
+        scroll(&capture, "focused-pane", "focused-view");
+        assert!(
+            !app.focused_history(),
+            "coalesced up/down retained scroll mode"
+        );
     }
 
     #[test]
@@ -7945,7 +8165,10 @@ mod tests {
             &[],
         )
         .unwrap();
-        assert!(capture.try_recv().is_err());
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { view_id, event }
+        } if pane_id == "focused-pane" && view_id == "focused-view"
+            && event.action == KeyAction::Repeat));
         app.state.focused = Some("beta".into());
         app.notified_focus = Some(("beta".into(), "beta-view".into()));
         app.key(
@@ -7958,10 +8181,10 @@ mod tests {
             &[],
         )
         .unwrap();
-        assert!(
-            capture.try_recv().is_err(),
-            "focus change leaked a held repeat into the historical view"
-        );
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { view_id, event }
+        } if pane_id == "focused-pane" && view_id == "focused-view"
+            && event.action == KeyAction::Repeat));
         app.key(
             KeyEvent {
                 action: KeyAction::Release,
@@ -7981,6 +8204,7 @@ mod tests {
         pane_id, request: PaneRequest::Key { .. }
     } if pane_id == "beta"));
         app.state.focused = Some("focused-pane".into());
+        app.notified_focus = Some(("focused-pane".into(), "focused-view".into()));
         assert!(app.focused_history());
         app.views
             .get_mut("focused-pane")
@@ -7992,10 +8216,10 @@ mod tests {
         app.key(key("End"), &mut Vec::new(), size(), &[]).unwrap();
         scroll(&capture, "focused-pane", "focused-view");
         app.key(key("KeyQ"), &mut Vec::new(), size(), &[]).unwrap();
-        assert!(
-            capture.try_recv().is_err(),
-            "stale historical frame accepted typing"
-        );
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { view_id, event }
+        } if pane_id == "focused-pane" && view_id == "focused-view"
+            && event.key == "KeyQ" && event.action == KeyAction::Press));
         app.views
             .get_mut("focused-pane")
             .unwrap()
@@ -8013,6 +8237,13 @@ mod tests {
         attach_fixture(&mut app);
         physical_keys(&mut app, b"\x02s").unwrap();
         assert!(scroll(&capture, "focused-pane", "focused-view") > 0);
+        app.views
+            .get_mut("focused-pane")
+            .unwrap()
+            .frame
+            .as_mut()
+            .unwrap()
+            .scrollback_offset = 50;
         physical_keys(&mut app, b"\x1b[6;2~").unwrap();
         assert!(scroll(&capture, "focused-pane", "focused-view") < 0);
         physical_keys(&mut app, b"typing\r").unwrap();
@@ -8169,7 +8400,7 @@ mod tests {
             .unwrap();
         app.enter_history(&[]).unwrap();
         pointer.send(&mut app, 0, alpha.x + 2, alpha.y + 2, true);
-        physical_keys(&mut app, b"blocked").unwrap();
+        physical_keys(&mut app, b"q").unwrap();
         assert!(capture.try_recv().is_err());
         app.paste_reply(b"5522;type=read:status=DONE:pw=cHc=;")
             .unwrap();
@@ -8177,6 +8408,10 @@ mod tests {
         assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
         request: PaneRequest::Mouse { event, .. }, ..
     } if event.action == MouseAction::Release));
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { view_id, event }
+        } if pane_id == "focused-pane" && view_id == "focused-view"
+            && event.text == "q" && event.action == KeyAction::Press));
         assert!(capture.try_recv().is_err());
         assert!(app.pointer_capture.is_none());
         assert!(app.pressed_pointers.borrow().is_empty());
@@ -8405,14 +8640,12 @@ mod tests {
     }
 
     #[test]
-    fn history_selection_clear_does_not_exit_history_or_release_suppressed_typing() {
+    fn history_selection_escape_clears_selection_before_leaving_history() {
         let (mut app, capture) = fixture();
         attach_fixture(&mut app);
         let view = app.views.get_mut("focused-pane").unwrap();
         view.history = true;
         view.metadata.selection = Some(selected_metadata());
-        app.key(key("KeyQ"), &mut Vec::new(), size(), &[]).unwrap();
-        assert!(capture.try_recv().is_err());
         app.key(key("Escape"), &mut Vec::new(), size(), &[])
             .unwrap();
         assert!(app.focused_history());

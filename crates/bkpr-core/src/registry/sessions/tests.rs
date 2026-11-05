@@ -757,7 +757,7 @@ fn queued_native_commands_lose_client_grant_but_accepted_releases_remain_cleanup
             .unwrap_or_else(|_| panic!("fixture queue full"));
         receive
     };
-    let input = queued(crate::Mutation::Raw(b"late".to_vec()));
+    let input = queued(crate::Mutation::Raw(view_id.clone(), b"late".to_vec()));
     let selection = queued(crate::Mutation::CopySelection {
         view_id: view_id.clone(),
         inspection_epoch: epoch,
@@ -790,7 +790,7 @@ fn queued_native_commands_lose_client_grant_but_accepted_releases_remain_cleanup
     assert!(pane.shared.paste.lock().unwrap().origins.is_empty());
     assert!(pane.shared.clipboard.lock().unwrap().is_none());
     assert!(
-        pane.command_for_client(crate::Mutation::Raw(b"late".to_vec()), Some(lease))
+        pane.command_for_client(crate::Mutation::Raw(view_id, b"late".to_vec()), Some(lease))
             .is_err()
     );
 }
