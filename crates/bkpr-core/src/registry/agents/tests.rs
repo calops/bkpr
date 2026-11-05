@@ -4,6 +4,7 @@ use messages::SendInput;
 fn launch(id: &str) -> Launch {
     let process = proc::process(std::process::id() as i32).unwrap().unwrap();
     Launch {
+        control: Default::default(),
         root: process.clone(),
         pane_root: process,
         grant: CaptureGrant {

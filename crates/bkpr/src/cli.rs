@@ -123,6 +123,36 @@ pub fn command() -> Command {
                 .arg(Arg::new("payload").required(true)),
         )
         .subcommand(
+            Command::new("api")
+                .about("Discover and call shared native control without starting a daemon or TUI")
+                .subcommand_required(true)
+                .disable_help_subcommand(true)
+                .subcommand(Command::new("help").about("Print the backend operation catalog as JSON"))
+                .subcommand(
+                    Command::new("schema")
+                        .about("Print JSON argument and result contracts for one operation or the catalog")
+                        .arg(Arg::new("operation")),
+                )
+                .subcommand(
+                    Command::new("call")
+                        .about("Dispatch one catalog operation once; never replay unknown mutations")
+                        .after_help("Managed launches use authenticated capture and default to their live workspace. Outside a managed launch, select --session NAME or --socket PATH; --remote HOST selects one existing remote session. Input must be explicit: text never adds Enter. Native acceptance is not application consumption. Inspect state before acting on an unknown outcome.")
+                        .arg(Arg::new("operation").required(true))
+                        .arg(
+                            Arg::new("arguments")
+                                .long("arguments")
+                                .value_name("JSON_OBJECT")
+                                .default_value("{}"),
+                        )
+                        .arg(
+                            Arg::new("scope")
+                                .long("scope")
+                                .value_parser(["workspace", "session", "all"])
+                                .help("Explicit daemon-local scope for authenticated managed calls"),
+                        ),
+                ),
+        )
+        .subcommand(
             Command::new("remote")
                 .about("Connect headlessly to one existing named session over SSH")
                 .subcommand_required(true)
@@ -158,8 +188,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches> {
     let matches = command().try_get_matches_from(args)?;
     let name = matches.subcommand_name().unwrap_or("tui");
     let remote_host = matches.get_one::<String>("remote").is_some();
-    if remote_host && !matches!(name, "tui" | "remote") {
-        bail!("--remote is only valid for a TUI attachment or a remote command");
+    if remote_host && !matches!(name, "tui" | "remote" | "api") {
+        bail!("--remote is only valid for a TUI attachment, remote command or api call");
     }
     if !remote_host
         && (matches.contains_id("ssh-config")
@@ -243,6 +273,25 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches> {
             .any(|key| matches.contains_id(key))
     {
         bail!("context does not accept view or terminal geometry options");
+    }
+    if name == "api" {
+        if ["pane", "view", "cols", "rows", "cell-width", "cell-height"]
+            .iter()
+            .any(|key| matches.contains_id(key))
+        {
+            bail!("api targets belong in the operation's --arguments JSON");
+        }
+        let api = matches
+            .subcommand_matches("api")
+            .context("missing api command")?;
+        if api.subcommand_name() != Some("call")
+            && (remote_host
+                || ["session", "socket", "state-root"]
+                    .iter()
+                    .any(|key| matches.contains_id(key)))
+        {
+            bail!("api help/schema are local catalog queries and do not accept a session target");
+        }
     }
     if name == "list"
         && ["session", "socket", "state-root"]

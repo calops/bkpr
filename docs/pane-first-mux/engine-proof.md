@@ -2206,3 +2206,85 @@ They are byte-identical to the pair already exercised by the isolated remote
 TUI matrix. Public debug/release binaries and foreign frontend/latency sources
 were preserved; the frontend-owned Git index was not touched.
 
+## Discoverable shared control
+
+The native CLI and launch-local MCP now share one typed operation catalog in
+`bkpr-protocol::control`. Schemars 1.2.3 generates argument/result schemas from
+the existing Rust contracts. Help/schema resolve locally; native calls use the
+existing binary transport and registry dispatcher. This adds no second spawn
+path, terminal parser or agent-specific management subsystem.
+
+`bkpr api help`, `bkpr api schema OP` and
+`bkpr -s work api call OP --arguments JSON` expose existing inspection,
+workspace/window/pane lifecycle, atomic pane batches with request-local layout
+references, layout CAS and native recovery. Unmanaged calls require an explicit
+endpoint. Managed calls retain their launch authentication and default to the
+live execution workspace; explicit session/all scope still stops at one daemon.
+Repository-scoped and cross-daemon control are not advertised.
+
+The MCP has nine shared tools: the existing seven communication/identity tools,
+`control` and separate explicit `terminal_input`. Control uses
+`{operation,arguments,scope?}` rather than the recovery-only request envelope.
+`pane.read` returns canonical visible-frame text and terminal state, not
+scrollback, image contents or output subscriptions. Text, bracketed paste, raw
+bytes and native key events never implicitly append Enter. Temporary private
+views do not borrow a human client's dimensions, focus or clipboard grants.
+PTY acceptance is not application consumption or harness readiness.
+
+Scope checks filter registry results and validate target identities before
+execution and publication. Process/foreground observation stays outside the
+registry writer lock, with each batch child revalidated before spawn. Retained
+launch lifetime descriptors and synchronous End revocation fence queued native
+input at writer admission without procfs scans on the input path. Client
+takeover also fences private views and queued input. Accepted input receipts
+survive view cleanup; typed failed/unknown outcomes survive credential
+redaction and relay transport without classifying arbitrary error text.
+
+Native wire family 6, remote control 1 and durable schema 4 are unchanged.
+Older running daemons may reject newly exposed operations; callers do not
+restart them or replay ambiguous mutations. The MCP envelope change is a clean
+cutover, not a compatibility alias.
+
+The isolated runtime proof is
+`target/smoke/control-api/actual-native-final/acceptance.json`. It uses the real
+launcher, daemon, launch authentication, CLI and newline-delimited MCP adapter.
+A private native executable supplies callbacks without invoking Claude or a
+provider. Seccomp denies Internet sockets; HOME/XDG, sockets and process
+identities are private. This proves the Bkpr transport/control path, not genuine
+harness consent or model execution.
+
+The smoke exercises local discovery without a daemon, truthful pre-dispatch
+errors, nine-tool MCP discovery, default-workspace refusal and explicit
+session-scope access, atomic two-pane final placement, stale layout revision,
+complete viewport reads and shared CLI/MCP dispatch. Text, bracketed Unicode
+paste, Enter and raw bytes including `0`/`255` reach the PTY byte-for-byte.
+Repeated reads/input leave no private views, dimension changes or human-view
+authority behind. Exact-birth cleanup reports zero surviving owned processes.
+
+The final protected debug build, formatting, all-target strict Clippy, workspace
+test compilation and doctests passed in
+`verification/compiled-1454534904742265/manifest.json`. The frozen host-UID1000
+run in `verification/checks-1454602212097961/result.json` passed 858 top-level
+tests plus one isolated subprocess test, with 14 ignored and no surviving owned
+process births. Runtime pair SHA256:
+
+* `bkpr`: `15fe5120ca4cf8cb2bbae8f9659faed02880e6b58394d7b5c42ba710bed6c283`
+* `bkprd`: `337fbecab885f43f33a71776689d108bf1f87be6f61913f127ac9b8512bd12fa`
+
+The first full run remains recorded as failed in
+`verification/checks-1454369035243334`: one new End-vs-resume test failed before
+its reservation barrier while using a fork-heavy fake-agent loop. Only that
+fixture changed to the existing blocking-shell pattern; production checks were
+not relaxed. Its rebuilt runtime pair is byte-identical to the smoke pair.
+
+Earlier compilation timeouts and an undefined-hidden-symbol linker failure
+remain in their original logs. Matching the failed code-generation unit against
+incremental work-product maps identified one `bkpr-core` library cache entry.
+It was reversibly quarantined, not deleted; rebuilding that library took
+11.2 seconds and the subsequent full compilation passed. No workspace cache
+clean, target-directory split, release build or resource-limit increase was
+used. The original public-output guard failure also remains recorded; no saved
+binary was restored over a changed output. Final guards preserve all four
+entry debug/release hashes. The concurrent frontend/theme work, paused latency
+changes and its Git hunks are excluded from this feature's source and commit.
+

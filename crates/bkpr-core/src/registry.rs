@@ -5,6 +5,7 @@ mod agents;
 mod automatic;
 mod capture;
 mod context;
+mod control;
 mod directories;
 mod project;
 mod recovery;
@@ -154,6 +155,10 @@ struct Inner {
     capture_admission_wait: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
     #[cfg(test)]
     control_resume_barrier: Mutex<Option<Arc<SpawnBarrier>>>,
+    #[cfg(test)]
+    control_observe_barrier: Mutex<Option<Arc<SpawnBarrier>>>,
+    #[cfg(test)]
+    control_cleanup_barrier: Mutex<Option<Arc<SpawnBarrier>>>,
     #[cfg(test)]
     request_wait_entered: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
 }
@@ -564,6 +569,10 @@ impl Registry {
                 #[cfg(test)]
                 control_resume_barrier: Mutex::new(None),
                 #[cfg(test)]
+                control_observe_barrier: Mutex::new(None),
+                #[cfg(test)]
+                control_cleanup_barrier: Mutex::new(None),
+                #[cfg(test)]
                 request_wait_entered: Mutex::new(None),
             }),
             fresh,
@@ -649,25 +658,22 @@ impl Registry {
         healthy(&state)?;
         Ok(state.record.registry.clone())
     }
+    #[cfg(test)]
     fn mutate(
         &self,
         edit: impl FnOnce(&mut RegistrySnapshot) -> Result<()>,
     ) -> Result<RegistrySnapshot> {
-        self.mutate_inner(None, edit)
-    }
-    fn mutate_workspace(
-        &self,
-        workspace_id: &str,
-        edit: impl FnOnce(&mut RegistrySnapshot) -> Result<()>,
-    ) -> Result<RegistrySnapshot> {
-        self.mutate_inner(Some(workspace_id), edit)
+        self.mutate_inner(None, None, edit)
     }
     fn mutate_inner(
         &self,
         workspace_id: Option<&str>,
+        control: Option<&control::ControlOrigin<'_>>,
         edit: impl FnOnce(&mut RegistrySnapshot) -> Result<()>,
     ) -> Result<RegistrySnapshot> {
+        self.observe_control(control)?;
         let _transaction = self.inner.transaction.lock().unwrap();
+        self.authorize_control(control)?;
         let mut next = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
@@ -701,6 +707,14 @@ impl Registry {
         &self,
         request: Request,
         client: Option<Arc<sessions::ClientLease>>,
+    ) -> Result<Payload> {
+        self.request_for_origin(request, client, None)
+    }
+    fn request_for_origin(
+        &self,
+        request: Request,
+        client: Option<Arc<sessions::ClientLease>>,
+        control: Option<&control::ControlOrigin<'_>>,
     ) -> Result<Payload> {
         ensure!(
             request.version == PROTOCOL_VERSION,
@@ -761,7 +775,7 @@ impl Registry {
             Operation::WorkspaceCreate { name, initial } => {
                 let id = Uuid::new_v4().to_string();
                 if let Some(spec) = initial {
-                    return self.spawn(
+                    return self.spawn_control(
                         SpawnTarget::CreateWorkspace {
                             workspace_id: id,
                             window_id: Uuid::new_v4().to_string(),
@@ -769,9 +783,10 @@ impl Registry {
                             bootstrap: false,
                         },
                         spec,
+                        control,
                     ).map(Payload::Control);
                 }
-                let registry = self.mutate(|r| {
+                let registry = self.mutate_inner(None, control, |r| {
                     let state = self.inner.state.lock().unwrap();
                     ensure!(
                         state.closing_workspaces.is_empty(),
@@ -811,7 +826,7 @@ impl Registry {
                 name,
             } => {
                 valid_name(&name)?;
-                let registry = self.mutate_workspace(&workspace_id, |r| {
+                let registry = self.mutate_inner(Some(&workspace_id), control, |r| {
                     let w = workspace(r, &workspace_id, expected_revision)?;
                     w.name = name;
                     w.revision = next_revision(w.revision)?;
@@ -822,13 +837,13 @@ impl Registry {
             Operation::WorkspaceClose {
                 workspace_id,
                 expected_revision,
-            } => self.close_documents(&workspace_id, None, expected_revision),
+            } => self.close_documents(&workspace_id, None, expected_revision, control),
             Operation::WindowCreate {
                 workspace_id,
                 expected_revision,
                 name,
                 spec,
-            } => self.spawn(
+            } => self.spawn_control(
                 SpawnTarget::CreateWindow {
                     workspace_id,
                     window_id: Uuid::new_v4().to_string(),
@@ -836,6 +851,7 @@ impl Registry {
                     name,
                 },
                 spec,
+                control,
             ),
             Operation::WindowRename {
                 workspace_id,
@@ -844,7 +860,7 @@ impl Registry {
                 name,
             } => {
                 valid_name(&name)?;
-                let registry = self.mutate_workspace(&workspace_id, |r| {
+                let registry = self.mutate_inner(Some(&workspace_id), control, |r| {
                     let w = r
                         .workspaces
                         .iter_mut()
@@ -862,14 +878,14 @@ impl Registry {
                 workspace_id,
                 window_id,
                 expected_revision,
-            } => self.close_documents(&workspace_id, Some(&window_id), expected_revision),
+            } => self.close_documents(&workspace_id, Some(&window_id), expected_revision, control),
             Operation::LayoutUpdate {
                 workspace_id,
                 window_id,
                 expected_revision,
                 layout,
             } => {
-                let registry = self.mutate_workspace(&workspace_id, |r| {
+                let registry = self.mutate_inner(Some(&workspace_id), control, |r| {
                     if let Some(node) = &layout {
                         validate_owned_layout(node, &r.panes, &workspace_id, &window_id)?;
                     }
@@ -903,6 +919,7 @@ impl Registry {
                 None,
                 None,
                 true,
+                control,
             ),
             Operation::PaneReopen {
                 workspace_id,
@@ -910,7 +927,7 @@ impl Registry {
                 expected_revision,
                 pane_id,
                 spec,
-            } => self.spawn(
+            } => self.spawn_control(
                 SpawnTarget::Reopen {
                     workspace_id,
                     window_id,
@@ -918,8 +935,9 @@ impl Registry {
                     pane_id,
                 },
                 spec,
+                control,
             ),
-            Operation::PaneForget { pane_id } => self.forget(&pane_id),
+            Operation::PaneForget { pane_id } => self.forget(&pane_id, control),
             Operation::PaneRename { pane_id, title } => {
                 valid_name(&title)?;
                 let workspace_id = self
@@ -935,7 +953,7 @@ impl Registry {
                     .context("unknown pane")?
                     .workspace_id
                     .clone();
-                let registry = self.mutate_inner(workspace_id.as_deref(), |r| {
+                let registry = self.mutate_inner(workspace_id.as_deref(), control, |r| {
                     let pane = r
                         .panes
                         .iter_mut()
@@ -963,6 +981,11 @@ impl Registry {
                 Ok(json!({"registry":registry}))
             }
             Operation::PaneTerminate { pane_id } => {
+                self.observe_control(control)?;
+                {
+                    let _transaction = self.inner.transaction.lock().unwrap();
+                    self.authorize_control(control)?;
+                }
                 let pane = {
                     let state = self.inner.state.lock().unwrap();
                     healthy(&state)?;
@@ -993,6 +1016,15 @@ impl Registry {
                         .cloned()
                         .context("pane is stopped; terminal contents were not recovered")?
                 };
+                let headless = match &request {
+                    PaneRequest::Poll { view_id, .. } | PaneRequest::Input { view_id, .. }
+                    | PaneRequest::Paste { view_id, .. } | PaneRequest::Key { view_id, .. } => view_id.is_empty(),
+                    PaneRequest::Inspect => control.is_some(),
+                    _ => false,
+                };
+                if headless {
+                    return self.control_pane_request(&pane, request, control, client);
+                }
                 let terminating = matches!(request, PaneRequest::Terminate { .. });
                 let inspection = matches!(
                     request,
@@ -1020,6 +1052,24 @@ impl Registry {
     fn spawn(&self, target: SpawnTarget, spec: PaneSpawnSpec) -> Result<Value> {
         self.spawn_inner(target, spec, None, None)
     }
+    fn spawn_control(
+        &self,
+        target: SpawnTarget,
+        spec: PaneSpawnSpec,
+        control: Option<&control::ControlOrigin<'_>>,
+    ) -> Result<Value> {
+        self.spawn_batch(
+            target,
+            vec![PaneSpawnEntry {
+                reference: "pane".into(),
+                spec,
+            }],
+            None,
+            None,
+            false,
+            control,
+        )
+    }
     fn spawn_inner(
         &self,
         target: SpawnTarget,
@@ -1036,6 +1086,7 @@ impl Registry {
             resume,
             origin,
             false,
+            None,
         )
     }
     fn spawn_batch(
@@ -1045,6 +1096,7 @@ impl Registry {
         resume: Option<recovery::ResumeAttempt>,
         origin: Option<(&crate::harness::Launch, &crate::harness::Peer)>,
         report_created: bool,
+        control: Option<&control::ControlOrigin<'_>>,
     ) -> Result<Value> {
         ensure!(
             !entries.is_empty() && entries.len() <= MAX_LIVE_PANES,
@@ -1101,8 +1153,10 @@ impl Registry {
         if let Some((launch, peer)) = origin {
             crate::harness::validate_callback(peer, launch)?;
         }
+        self.observe_control(control)?;
         let (workspace, candidate) = {
             let _transaction = self.inner.transaction.lock().unwrap();
+            self.authorize_control(control)?;
             if let Some((launch, _)) = origin {
                 self.authorize_resume_origin(launch)?;
             }
@@ -1273,6 +1327,11 @@ impl Registry {
             })
             .collect::<Result<Vec<_>>>()?;
         for (spec, info) in prepared.into_iter().zip(&infos) {
+            self.observe_control(control)?;
+            if control.is_some() {
+                let _transaction = self.inner.transaction.lock().unwrap();
+                self.authorize_control(control)?;
+            }
             let pane = Pane::spawn_with_id(
                 spec,
                 info.id.clone(),
@@ -1298,7 +1357,9 @@ impl Registry {
             }
         }
         let result = (|| -> Result<RegistrySnapshot> {
+            self.observe_control(control)?;
             let _transaction = self.inner.transaction.lock().unwrap();
+            self.authorize_control(control)?;
             let current = {
                 let state = self.inner.state.lock().unwrap();
                 healthy(&state)?;
@@ -1433,7 +1494,7 @@ impl Registry {
         }
         Ok(())
     }
-    fn forget(&self, id: &str) -> Result<Value> {
+    fn forget(&self, id: &str, control: Option<&control::ControlOrigin<'_>>) -> Result<Value> {
         let pane = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
@@ -1468,7 +1529,9 @@ impl Registry {
                 "pane still has active views; detach them before forgetting"
             );
         }
+        self.observe_control(control)?;
         let _transaction = self.inner.transaction.lock().unwrap();
+        self.authorize_control(control)?;
         let mut next = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
@@ -1644,9 +1707,12 @@ impl Registry {
         workspace_id: &str,
         window_id: Option<&str>,
         revision: u64,
+        control: Option<&control::ControlOrigin<'_>>,
     ) -> Result<Value> {
+        self.observe_control(control)?;
         let (panes, closing_documents) = {
             let _transaction = self.inner.transaction.lock().unwrap();
+            self.authorize_control(control)?;
             let mut state = self.inner.state.lock().unwrap();
             healthy(&state)?;
             ensure!(
@@ -1817,7 +1883,11 @@ impl Registry {
             let _transaction = self.inner.transaction.lock().unwrap();
             let mut state = self.inner.state.lock().unwrap();
             state.closing = true;
-            self.inner.captures.lock().unwrap().launches.clear();
+            let mut captures = self.inner.captures.lock().unwrap();
+            for launch in captures.launches.values() {
+                launch.control.revoke();
+            }
+            captures.launches.clear();
             self.inner.changed.notify_all();
             state.live.values().cloned().collect::<Vec<_>>()
         };

@@ -94,6 +94,28 @@ fn target(matches: &ArgMatches) -> Result<RemoteTarget> {
     })
 }
 
+/// Catalog calls reuse the single existing remote attachment and its no-replay transport.
+pub fn api_call(matches: &ArgMatches, operation: Operation) -> Result<Value> {
+    let mut session = RemoteSession::connect(target(matches)?)?;
+    let result = session.endpoint().checked(operation);
+    let disconnected = session.disconnect();
+    match result {
+        Ok(value) => {
+            if let Err(error) = disconnected {
+                eprintln!(
+                    "bkpr: native operation completed; remote attachment cleanup failed: {error:#}"
+                );
+            }
+            Ok(value)
+        }
+        Err(error) => {
+            // Dispatch outcome is authoritative even if attachment cleanup also fails.
+            let _ = disconnected;
+            Err(error)
+        }
+    }
+}
+
 pub fn execute(matches: &ArgMatches) -> Result<()> {
     let remote = matches
         .subcommand_matches("remote")

@@ -479,6 +479,7 @@ fn acknowledge_native_turn(pane: &crate::Pane) {
         .try_send(crate::Command {
             mutation: crate::Mutation::Focus(false),
             client: None,
+            control: None,
             result,
         })
         .unwrap_or_else(|_| panic!("fixture queue full"));
@@ -750,6 +751,7 @@ fn queued_native_commands_lose_client_grant_but_accepted_releases_remain_cleanup
             .try_send(crate::Command {
                 mutation,
                 client: Some(lease.clone()),
+                control: None,
                 result,
             })
             .unwrap_or_else(|_| panic!("fixture queue full"));

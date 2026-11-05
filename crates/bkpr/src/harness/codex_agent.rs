@@ -89,7 +89,10 @@ impl Authority {
         value: Value,
         selection: Option<(&Selection, u64)>,
     ) -> Result<Value> {
-        let request: AgentRequest = serde_json::from_value(value)?;
+        let request = match super::super::agent::resolve_request(value)? {
+            super::super::agent::RequestAction::Local(value) => return Ok(value),
+            super::super::agent::RequestAction::Native(request) => request,
+        };
         let subscription = matches!(request, AgentRequest::ReceiverSubscribe { .. });
         let mut stream = UnixStream::connect(&self.socket)?;
         stream.set_read_timeout(Some(Duration::from_secs(if subscription {
@@ -117,12 +120,7 @@ impl Authority {
                 request,
             },
         )
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "{}",
-                format!("{error:#}").replace(&self.token, "[REDACTED]")
-            )
-        })
+        .map_err(|error| super::super::sanitize_request_error(error, &self.token))
     }
     fn diagnostic(&self, message: &str) {
         let _ = (|| -> Result<()> {
@@ -268,7 +266,10 @@ fn serve(
     })();
     let value = match result {
         Ok(value) => json!({"result":value}),
-        Err(error) => json!({"error":format!("{error:#}").replace(secret, "[REDACTED]")}),
+        Err(error) => json!({
+            "error":format!("{error:#}").replace(secret, "[REDACTED]"),
+            "outcome_unknown":super::super::outcome_unknown(&error),
+        }),
     };
     let bytes = serde_json::to_vec(&value)?;
     ensure!(
@@ -555,23 +556,30 @@ mod tests {
         );
         assert!(
             validate_envelope(
-                &json!({"token":"secret","request":{"method":"control","request":{"op":"recovery_list"}}}),
+                &json!({"token":"secret","request":{"method":"control","operation":"recovery.list","arguments":{}}}),
                 "secret"
             )
             .is_ok()
         );
-        for operation in [
-            json!({"op":"shutdown"}),
-            json!({"op":"client","authority":{},"request":{"op":"recovery_list"}}),
-            json!({"op":"recovery_list","argv":["/bin/sh"]}),
-            json!({"op":"pane_resume","pane_id":"pane","expected":{},"argv":["/bin/sh"]}),
+        for request in [
+            json!({"method":"control","operation":"api.schema","arguments":{"operation":"pane.create"}}),
+            json!({"method":"control","operation":"pane.read","arguments":{"pane_id":"exact"}}),
+            json!({"method":"terminal_input","operation":"input.text","arguments":{"pane_id":"exact","text":"literal"}}),
         ] {
             assert!(
-                validate_envelope(
-                    &json!({"token":"secret","request":{"method":"control","request":operation}}),
-                    "secret"
-                )
-                .is_err()
+                validate_envelope(&json!({"token":"secret","request":request}), "secret").is_ok()
+            );
+        }
+        for request in [
+            json!({"method":"control","operation":"shutdown","arguments":{}}),
+            json!({"method":"control","operation":"client","arguments":{"authority":{}}}),
+            json!({"method":"control","request":{"op":"recovery_list"}}),
+            json!({"method":"control","operation":"recovery.list","arguments":{"argv":["/bin/sh"]}}),
+            json!({"method":"control","operation":"input.text","arguments":{"pane_id":"pane","text":"unexpected"}}),
+            json!({"method":"terminal_input","operation":"recovery.list","arguments":{}}),
+        ] {
+            assert!(
+                validate_envelope(&json!({"token":"secret","request":request}), "secret").is_err()
             );
         }
     }

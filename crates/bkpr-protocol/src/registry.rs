@@ -161,13 +161,14 @@ impl std::fmt::Debug for Operation {
         std::fmt::Debug::fmt(&value, f)
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PaneSpawnEntry {
     pub reference: String,
     pub spec: PaneSpawnSpec,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SpawnLayoutNode {
     Existing {
         pane_id: String,
@@ -177,17 +178,22 @@ pub enum SpawnLayoutNode {
     },
     Split {
         axis: Axis,
+        /// First child's share in thousandths; 500 is an equal split.
+        #[schemars(range(min = 1, max = 999))]
         ratio: u16,
         first: Box<SpawnLayoutNode>,
         second: Box<SpawnLayoutNode>,
     },
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PaneSpawnSpec {
     pub argv: Vec<String>,
     #[serde(with = "crate::path_wire")]
+    #[schemars(with = "crate::path_wire::PathSchema")]
     pub cwd: PathBuf,
     #[serde(with = "crate::path_wire")]
+    #[schemars(with = "crate::path_wire::PathSchema")]
     pub home: PathBuf,
     pub size: Size,
     #[serde(default)]
@@ -216,20 +222,22 @@ pub struct Window {
     pub revision: u64,
     pub layout: Option<LayoutNode>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LayoutNode {
     Leaf {
         pane_id: String,
     },
     Split {
         axis: Axis,
+        /// First child's share in thousandths; 500 is an equal split.
+        #[schemars(range(min = 1, max = 999))]
         ratio: u16,
         first: Box<LayoutNode>,
         second: Box<LayoutNode>,
     },
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Axis {
     Horizontal,

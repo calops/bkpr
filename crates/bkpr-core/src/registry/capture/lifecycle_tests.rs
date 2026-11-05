@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "control_tests.rs"]
+mod control_tests;
 fn seed_launch(fixture: &Fixture) -> (String, CaptureGrant, Peer) {
     seed_launch_command(
         fixture,
@@ -805,7 +807,8 @@ fn ended_agent_cannot_execute_recovery_after_scope_sampling_before_spawn_reserva
         .registry
         .configure_harnesses(&fixture.socket, &executable)
         .unwrap();
-    let (id, grant, peer) = seed_launch(&fixture);
+    let (id, grant, peer) =
+        seed_launch_command(&fixture, HarnessKind::Claude, "IFS= read -r _; exit 7");
     let launch = fixture.registry.inner.captures.lock().unwrap().launches[&grant.launch_id].clone();
     fixture
         .registry

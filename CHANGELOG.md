@@ -18,6 +18,13 @@
 * Reduce native snapshot extraction work through the existing SDK's raw-codepoint and reusable UTF-8 APIs instead of repeatedly querying and converting grapheme codepoints for every cell. Preserve Unicode clusters, native widths, image placeholders and snapshot cadence; matched client-plus-daemon release CPU results are recorded in the engine report.
 * Reuse response-local text, layout and row-offset buffers when encoding Planus scene runs instead of allocating and dropping buffers for every style/link span. Preserve empty-cell, Unicode, delta and resource semantics; matched replay CPU falls without adding a frame cap, delay or dependency.
 
+### Discoverable control
+
+* Share a typed operation catalog between `bkpr api help/schema/call` and the launch-local MCP. Generate argument and result schemas with maintained Schemars types; expose existing workspace/window/pane lifecycle, atomic batch placement, layouts, recovery and complete visible-frame text reads without a second dispatcher or spawn subsystem.
+* Expose text, bracketed paste, native key events and raw bytes through a separate `terminal_input` MCP tool. Preserve exact input, explicit submission, private temporary views, client takeover and launch End/process-exit revocation at native writer admission. Keep successful input receipts after cleanup and failed/unknown outcomes nonreplayable.
+* Keep process observation off registry writer locks, fence scoped targets before execution and publication, and validate each batch child before starting it. Do not export another workspace's registry metadata or borrow a human client's size, focus, view or clipboard authority.
+* **Breaking:** replace recovery-only MCP `control {request: ...}` with the discoverable `{operation, arguments, scope?}` envelope. Native wire family 6, remote control 1 and durable schema 4 remain unchanged; older live daemons may reject new operations and are never restarted automatically.
+
 ### Development checks
 
 * Keep the authenticated native-capture fixture stable with a private blocking pipe instead of repeatedly forking `sleep` during process inspection. Wait for the nested fixture to finish before binding, and assert recovery snapshots outside the registry mutex so a failure cannot poison cleanup. Production foreground validation and automatic-resume policy are unchanged.

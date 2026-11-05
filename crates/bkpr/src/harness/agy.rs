@@ -372,15 +372,6 @@ fn tools() -> Value {
     json!({"tools":tools})
 }
 
-fn tool_result(result: Result<Value>) -> Value {
-    match result {
-        Ok(value) => {
-            json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":value,"isError":false})
-        }
-        Err(error) => json!({"content":[{"type":"text","text":error.to_string()}],"isError":true}),
-    }
-}
-
 fn read_frame(input: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
     let mut frame = Vec::new();
     loop {
@@ -483,14 +474,27 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write, capture: &Capture) -
                     })
                     .unwrap_or("2025-11-25");
                 json!({"jsonrpc":"2.0","id":id,"result":{
-                    "protocolVersion":version,"capabilities":{"tools":{}},
+                    "protocolVersion":version,"capabilities":{"tools":{},"resources":{}},
                     "serverInfo":{"name":"bkpr","version":env!("CARGO_PKG_VERSION")},
-                    "instructions":bootstrap(capture)?
+                    "instructions":format!("{}\n{}", agent::INSTRUCTIONS, bootstrap(capture)?)
                 }})
             }
             "ping" if initialized => json!({"jsonrpc":"2.0","id":id,"result":{}}),
             "tools/list" if ready => json!({"jsonrpc":"2.0","id":id,"result":tools()}),
+            "resources/list" if ready => {
+                json!({"jsonrpc":"2.0","id":id,"result":agent::resources()})
+            }
+            "resources/templates/list" if ready => {
+                json!({"jsonrpc":"2.0","id":id,"result":{"resourceTemplates":[]}})
+            }
+            "resources/read" if ready => {
+                match agent::resource(message["params"]["uri"].as_str().unwrap_or("")) {
+                    Some(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
+                    None => rpc_error(id, -32002, "resource not found"),
+                }
+            }
             "tools/call" if ready => {
+                let mut receiver_instructions = None;
                 let result = (|| -> Result<Value> {
                     let root = root_metadata(&message)?;
                     capture.bind(ConversationSource::AgyMcp, root)?;
@@ -505,7 +509,7 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write, capture: &Capture) -
                     // never hide a durable send's successful result.
                     let identity = agent::call(capture, "whoami", json!({}))?;
                     let instructions = bootstrap(capture)?;
-                    let mut value = if name == "context" {
+                    let value = if name == "context" {
                         ensure!(
                             arguments.as_object().is_some_and(|value| value.is_empty()),
                             "context accepts no arguments"
@@ -521,16 +525,26 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write, capture: &Capture) -
                         agent::call(capture, name, arguments)?
                     };
                     if identity["readiness"]["can_notify"] != true {
-                        value["native_receiver_instructions"] = json!(instructions);
+                        receiver_instructions = Some(instructions);
                     }
                     Ok(value)
                 })();
-                json!({"jsonrpc":"2.0","id":id,"result":tool_result(result)})
+                let mut result = agent::tool_result(result);
+                if let Some(instructions) = receiver_instructions {
+                    result["content"]
+                        .as_array_mut()
+                        .expect("MCP tool results always contain a content array")
+                        .push(json!({"type":"text","text":instructions}));
+                }
+                json!({"jsonrpc":"2.0","id":id,"result":result})
             }
             "initialize" => rpc_error(id, -32600, "MCP connection is already initialized"),
-            "tools/list" | "tools/call" | "ping" => {
-                rpc_error(id, -32002, "MCP connection is not initialized")
-            }
+            "tools/list"
+            | "tools/call"
+            | "resources/list"
+            | "resources/read"
+            | "resources/templates/list"
+            | "ping" => rpc_error(id, -32002, "MCP connection is not initialized"),
             _ => rpc_error(id, -32601, "Method not found"),
         };
         write_frame(output, &response)?;
@@ -668,7 +682,8 @@ mod tests {
             })
             .collect();
         let inbox = json!({"messages":messages, "has_more":false});
-        let response = json!({"jsonrpc":"2.0","id":1,"result":tool_result(Ok(inbox.clone()))});
+        let response =
+            json!({"jsonrpc":"2.0","id":1,"result":agent::tool_result(Ok(inbox.clone()))});
         let mut wire = Vec::new();
         write_frame(&mut wire, &response)?;
         assert!(wire.len() > MAX_FRAME);

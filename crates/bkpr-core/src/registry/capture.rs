@@ -103,6 +103,7 @@ impl Registry {
                     .lookup(&launch_id, &token)?;
                 if matches!(event, CaptureEvent::End) {
                     // Retire volatile authority even if the agent writer is poisoned.
+                    launch.control.revoke();
                     let retired = self.agent_retire(std::slice::from_ref(&launch_id));
                     let ended_intent = self.automatic_end(&launch);
                     self.inner
@@ -745,7 +746,9 @@ impl Registry {
                 return;
             }
             for id in stale {
-                captures.launches.remove(&id);
+                if let Some(launch) = captures.launches.remove(&id) {
+                    launch.control.revoke();
+                }
             }
             captures.version = captures.version.wrapping_add(1);
             version = captures.version;

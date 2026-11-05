@@ -1,3 +1,4 @@
+mod api;
 mod cli;
 mod context;
 mod harness;
@@ -21,6 +22,9 @@ const HELP: &str = r#"Bkpr — persistent named pane workspaces
   bkpr stop [-s NAME | --socket PATH]
   bkpr resume [-s NAME | --socket PATH] [--pane PANE_ID]
   bkpr context [-s NAME | --socket PATH] [--pane PANE_ID] [--json]
+  bkpr api help
+  bkpr api schema [OPERATION]
+  bkpr api call OPERATION [--arguments JSON_OBJECT] [--scope workspace|session|all]
   bkpr request [-s NAME | --socket PATH] 'VERSIONED_TYPED_JSON_REQUEST'
   bkpr keyboard --socket PATH --pane PANE_ID --view VIEW_ID '[PHYSICAL_BYTES]'
   bkpr remote -r HOST [-s NAME] [--ssh-config PATH] [--remote-bkpr-bin REMOTE_EXECUTABLE]
@@ -105,6 +109,9 @@ fn main() -> Result<()> {
     }
     if command == "remote" {
         return remote::execute(&matches);
+    }
+    if command == "api" {
+        return api::run(&matches);
     }
     if let Some(target) = remote::tui_target(&matches)? {
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
