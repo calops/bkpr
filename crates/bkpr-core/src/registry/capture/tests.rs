@@ -2,7 +2,7 @@
 use super::*;
 use std::{
     os::unix::{net::UnixStream, process::CommandExt},
-    process::{Child, Command},
+    process::{Child, Command, Stdio},
     time::Instant,
 };
 
@@ -152,13 +152,17 @@ fn managed_peer_fixture() {
     );
     let native = home.join("native/claude");
     let nested = home.join("nested/claude");
+    // Keep the recognized native process stable while sampling its descendants.
+    // Repeatedly forking `sleep` makes procfs executable identity transient.
     let mut child = ChildGuard(Command::new(&native)
-        .args(["-c", r#"printf '\033]7501;state=working:app=claude\007'; "$1" -c '"$1" --ignored --exact registry::capture::tests::nested_peer_fixture --nocapture --test-threads=1; result=$?; exit "$result"' nested "$2"; while [ ! -f "$HOME/release-native" ]; do sleep 0.02; done"#, "native"])
+        .args(["-c", r#"printf '\033]7501;state=working:app=claude\007'; "$1" -c '"$1" --ignored --exact registry::capture::tests::nested_peer_fixture --nocapture --test-threads=1; result=$?; exit "$result"' nested "$2" || exit "$?"; printf ready > "$HOME/native-ready"; IFS= read -r hold"#, "native"])
         .arg(&nested).arg(std::env::current_exe().unwrap())
         .env("FIXTURE_CAPTURE_TOKEN", &grant.token).env("FIXTURE_CAPTURE_LAUNCH", &grant.launch_id)
         .current_dir(home.join("native-cwd"))
+        .stdin(Stdio::piped())
         .spawn().unwrap());
     await_file(&home.join("nested-result.json"));
+    await_file(&home.join("native-ready"));
     for id in ["native-one", "native-one", "native-two"] {
         assert_eq!(
             wire(
@@ -960,14 +964,20 @@ fn stale_observation_cannot_replace_newer_authenticated_native_binding() {
     } }], layout: None })).unwrap().into_json().unwrap();
     let pane_id = result["pane_id"].as_str().unwrap();
     await_file(&fixture.home.join("ready.json"));
-    {
+    let (automatic, has_directory) = {
         let state = registry.inner.state.lock().unwrap();
-        assert_eq!(
-            state.record.automatic[pane_id].conversation_id,
-            "native-two"
-        );
-        assert!(!state.record.directories.contains_key(pane_id));
-    }
+        (
+            state.record.automatic.get(pane_id).cloned(),
+            state.record.directories.contains_key(pane_id),
+        )
+    };
+    assert_eq!(
+        automatic
+            .as_ref()
+            .map(|saved| saved.conversation_id.as_str()),
+        Some("native-two")
+    );
+    assert!(!has_directory);
     // A is a real foreground observation of native-two, queued but not written.
     registry.observe_processes();
     assert!(
@@ -991,11 +1001,15 @@ fn stale_observation_cannot_replace_newer_authenticated_native_binding() {
         conversation_id: "native-three".into(),
         cwd: fixture.home.join("native-cwd"),
     };
-    {
+    let (recovery, automatic) = {
         let state = registry.inner.state.lock().unwrap();
-        assert_eq!(state.record.recoveries.get(pane_id), Some(&expected));
-        assert_eq!(state.record.automatic.get(pane_id), Some(&expected));
-    }
+        (
+            state.record.recoveries.get(pane_id).cloned(),
+            state.record.automatic.get(pane_id).cloned(),
+        )
+    };
+    assert_eq!(recovery.as_ref(), Some(&expected));
+    assert_eq!(automatic.as_ref(), Some(&expected));
     registry.flush_directories().unwrap();
     let durable = read_record(fixture._root.path()).unwrap().unwrap();
     assert_eq!(durable.recoveries.get(pane_id), Some(&expected));

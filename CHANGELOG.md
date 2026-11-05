@@ -18,6 +18,10 @@
 * Reduce native snapshot extraction work through the existing SDK's raw-codepoint and reusable UTF-8 APIs instead of repeatedly querying and converting grapheme codepoints for every cell. Preserve Unicode clusters, native widths, image placeholders and snapshot cadence; matched client-plus-daemon release CPU results are recorded in the engine report.
 * Reuse response-local text, layout and row-offset buffers when encoding Planus scene runs instead of allocating and dropping buffers for every style/link span. Preserve empty-cell, Unicode, delta and resource semantics; matched replay CPU falls without adding a frame cap, delay or dependency.
 
+### Development checks
+
+* Keep the authenticated native-capture fixture stable with a private blocking pipe instead of repeatedly forking `sleep` during process inspection. Wait for the nested fixture to finish before binding, and assert recovery snapshots outside the registry mutex so a failure cannot poison cleanup. Production foreground validation and automatic-resume policy are unchanged.
+
 ### Breaking branch replacement
 
 * `feat/pane-first-mux` replaces the previous runtime with seven focused crates: `bkpr`, `bkpr-client`, `bkpr-tui-framework`, `bkpr-server` (the `bkprd` executable), `bkpr-core`, `bkpr-protocol` and `bkpr-terminal-engine`. There is no legacy launcher, plugin, binary alias or compatibility track on this branch.
