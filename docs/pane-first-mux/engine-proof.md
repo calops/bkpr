@@ -1937,6 +1937,72 @@ claim. Genuine copied harness-token proof is explicitly unexercised here;
 existing authenticated capture/peer-binding regressions pass in the workspace
 suite. Those limits do not gate the scoped connection milestone.
 
+
+## Framework toasts and transient TUI notices
+
+`bkpr-tui-framework::toast::ToastStack` owns bounded notification lifetime,
+retained layout/text, rounded fallback cells, dismiss hitboxes and complete
+pointer gestures. Bkpr-client supplies the five-second lifetime, top-center
+placement, theme and existing raised-popup shadow/bevel material. Transient
+clipboard, input, operation, resize and rendering-mode notices no longer occupy
+the sidebar or pane title. Pending operations, live resize instructions,
+correlated editor errors and consent decisions remain contextual state.
+
+The stack retains at most three cards, evicting the oldest during bursts.
+Messages, wrapping and geometry are bounded; truncation is visibly marked.
+Insertion owns the deadline, not painting. The application expires cards and
+adds their next deadline to its existing poll timeout; there is no animation or
+periodic forced repaint. Cards never take keyboard focus. Dismissal consumes
+the complete pointer gesture, including expiry, eviction and chorded buttons.
+
+Reuse decision: retained `UiSurface`, `window` helpers and the existing scene
+and decoration path already supply composition, clipping, styling and output.
+Existing maintained Unicode segmentation/width libraries handle text boundaries.
+No dependency, renderer, backend service or separate output loop was added.
+The SGR framing boundary now preserves button/action identity alongside
+Termwiz's coordinate/modifier decoding. This fixes chorded release ambiguity
+without expanding the maintained decoder's supported mouse grammars.
+
+Actual isolated debug acceptance used the immutable client
+`540562566909b06a78d8b719184dfb0d80c3732c2f2d38f53c42b58036d1adce`
+and daemon
+`9ec81984c84e15815cfc0705e6a93265f99937f1f8a516838469f6e874df7d00`.
+The final test-only cleanup rebuilt to those identical executable hashes.
+
+* Kitty 0.49.2, private Xvfb/llvmpipe, dark and light palettes, 120×36,
+  9×18-pixel cells: complete fancy and normal toast surfaces, approximately
+  five-second expiry without input, body-click consumption, immediate `[x]`
+  dismissal, exact native keyboard delivery while visible, and held/chorded
+  releases after disappearance all passed.
+* Actual xterm, private Xvfb, 120×36, 9×19-pixel cells: the same interaction
+  checks passed with rounded text borders and no graphics requirement.
+* Detach restored the owned terminal; all fixture cleanup receipts have zero
+  surviving owned process births. No live sessions, model/provider services,
+  shell profiles, approvals or persistent settings were used.
+
+Receipts and inspected full-frame screenshots:
+`target/smoke/toasts/kitty-dark-default-1410887779021660/`,
+`target/smoke/toasts/kitty-light-default-1410924061676883/`, and
+`target/smoke/toasts/xterm-dark-default-1410969164632241/`.
+The frontend source scope, protected build manifests and reproduction controllers
+are retained under `target/smoke/toasts/`. Existing uncommitted latency work is
+included in the source capture and preserved, not presented as part of the toast
+design or as a resolved sidebar-focus regression.
+
+These are functional physical-surface checks, not a latency benchmark or desktop
+GPU acceptance. The previous sidebar-focus investigation remains separate.
+
+Final coordinated verification: workspace tests passed **823**, with **14
+ignored**; all-target strict Clippy, formatting and doctests passed. Host-UID
+runtime checks and cleanup are recorded in
+`target/smoke/toasts/verification/checks-1411196131407918/result.json`.
+The compiled test/runtime manifest is
+`target/smoke/toasts/verification/compiled-1411112587497522/manifest.json`.
+Protected builds preserved their entry debug/release executable hashes.
+`target/smoke/toasts/verification-summary.json` links exact source scope,
+terminal receipts and archived controllers. Loose toast controllers were removed
+after archival.
+
 ## Authoritative daemon spawn defaults
 
 The native `SessionInfo` control result now includes optional `SpawnDefaults`

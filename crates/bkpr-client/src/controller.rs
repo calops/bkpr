@@ -79,7 +79,6 @@ pub struct Controller {
     remembered_windows: HashMap<String, String>,
     pub prefix: bool,
     pub form: Option<Form>,
-    pub status: String,
     pub suppressed: std::collections::HashSet<String>,
     pub sidebar: Sidebar,
 }
@@ -93,7 +92,6 @@ impl Controller {
             remembered_windows: HashMap::new(),
             prefix: false,
             form: None,
-            status: String::new(),
             suppressed: Default::default(),
             sidebar: Sidebar::default(),
         };
@@ -826,7 +824,7 @@ pub(crate) fn sidebar_content_rows(sidebar: Rect, guide_rows: u16) -> usize {
     if sidebar.width == 0 {
         return 0;
     }
-    usize::from(sidebar.height.saturating_sub(guide_rows).saturating_sub(3))
+    usize::from(sidebar.height.saturating_sub(guide_rows).saturating_sub(2))
 }
 pub fn chrome<'a>(
     surface: &mut UiSurface,
@@ -1069,13 +1067,6 @@ pub fn chrome<'a>(
         } else {
             title
         };
-        let title =
-            if sidebar.width == 0 && state.focused.as_ref() == Some(id) && !state.status.is_empty()
-            {
-                format!("[{}] {title}", state.status)
-            } else {
-                title
-            };
         let title = format!(
             " {} {}",
             if state.focused.as_ref() == Some(id) {
@@ -1109,16 +1100,6 @@ pub fn chrome<'a>(
         } else if rect.height > 1 {
             lines.push(line(rect.x, rect.y, rect.width, title, false));
         }
-    }
-    let status_bottom = sidebar.height.saturating_sub(guide_rows);
-    if sidebar.width > 0 && status_bottom > 2 && !state.status.is_empty() {
-        lines.push(line(
-            1,
-            status_bottom - 1,
-            sidebar.width.saturating_sub(1),
-            &state.status,
-            false,
-        ));
     }
     surface.paint(size, lines, Some(cursor));
     hit
@@ -1405,18 +1386,6 @@ pub(crate) fn theme_chrome<'a>(
                 role: activity_role(status),
             });
         }
-    }
-    let status_bottom = sidebar.height.saturating_sub(guide_rows);
-    if status_bottom > 2 {
-        spans.push(RoleSpan {
-            rect: Rect {
-                x: 0,
-                y: status_bottom - 1,
-                width: sidebar.width,
-                height: 1,
-            },
-            role: Role::Muted,
-        });
     }
     for project in projects {
         let (role, foreground) = palette.ink(project.slot, muted);
@@ -1773,7 +1742,7 @@ pub(crate) fn theme_modal(surface: &mut UiSurface, theme: &Theme, form: &Form) {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn sidebar_hidden_cursor_tracks_navigation_icons_and_scrolled_item_not_details() {
+    fn sidebar_hidden_cursor_tracks_navigation_icons_and_item_not_details() {
         let (mut pane, snapshot) = capture_fixture();
         pane.project = Some(project_fixture());
         let mut registry = capture_registry(&pane);
@@ -1822,7 +1791,6 @@ mod tests {
                 icon
             );
             if column == 6 {
-                assert!(state.sidebar.scroll > 0);
                 // The same target's branch-detail row is painted immediately
                 // below the item, but must not become its physical anchor.
                 assert!(hits.iter().any(|(target, y)| target == &popup && *y > row));
@@ -2186,7 +2154,7 @@ mod tests {
     }
 
     #[test]
-    fn passive_guide_reservation_bounds_items_hits_and_status() {
+    fn passive_guide_reservation_bounds_items_and_hits() {
         let registry = RegistrySnapshot {
             revision: 1,
             workspaces: (0..20)
@@ -2199,8 +2167,7 @@ mod tests {
                 .collect(),
             panes: Vec::new(),
         };
-        let mut state = Controller::new(&registry);
-        state.status = "Status above guide".into();
+        let state = Controller::new(&registry);
         let size = Size {
             cols: 100,
             rows: 14,
@@ -2226,16 +2193,10 @@ mod tests {
             &mut Vec::new(),
         );
         let sidebar = screen_geometry(size, state.sidebar.preferred_columns).0;
-        let status_y = size.rows - guide_rows - 1;
+        let guide_y = size.rows - guide_rows;
         assert!(!hits.is_empty());
-        assert!(hits.iter().all(|(_, y)| *y < status_y));
-        let status: String = surface.frame.rows[usize::from(status_y)]
-            .cells
-            .iter()
-            .map(|cell| cell.text.as_str())
-            .collect();
-        assert!(status.contains(&state.status));
-        for row in &surface.frame.rows[usize::from(status_y + 1)..] {
+        assert!(hits.iter().all(|(_, y)| *y < guide_y));
+        for row in &surface.frame.rows[usize::from(guide_y)..] {
             assert!(
                 row.cells[..usize::from(sidebar.width)]
                     .iter()

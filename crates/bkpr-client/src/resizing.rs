@@ -1,9 +1,6 @@
 use super::*;
 use crate::tiling::{self, Direction};
 
-const KEY_HINT: &str = "RESIZE | arrows 1 cell  Shift+arrows 5 | Enter/Esc finish";
-const DRAG_HINT: &str = "RESIZE | drag divider; release to finish  Esc finish";
-
 enum Mode {
     Keyboard,
     Drag,
@@ -128,8 +125,9 @@ impl App<'_> {
     pub(super) fn retire_resize(&mut self, reason: &str) {
         self.resizing.hover = None;
         if self.resizing.gesture.take().is_some() {
-            self.state.status =
-                format!("Resize stopped: {reason}; accepted update may still finish; not replayed");
+            self.notify(format!(
+                "Resize stopped: {reason}; accepted update may still finish; not replayed"
+            ));
         }
         if matches!(self.pointer_capture, Some(PointerCapture::Resize)) {
             // Keep swallowing the physical gesture until its release, rather
@@ -238,24 +236,21 @@ impl App<'_> {
             drag_targets,
             pending_pointer: None,
         });
-        self.resize_hint();
         Ok(())
     }
 
-    pub(super) fn resize_hint(&mut self) {
-        if let Some(gesture) = &self.resizing.gesture {
-            let hint = match gesture.mode {
-                Mode::Keyboard if gesture.boundary => {
-                    "RESIZE | arrows 1 cell  Shift+arrows 5 | Enter/Esc finish | boundary/no matching divider"
-                }
-                Mode::Keyboard => KEY_HINT,
-                Mode::Drag => DRAG_HINT,
-                Mode::Finishing => "Resize finishing latest position; layout update pending",
-            };
-            if self.state.status != hint {
-                self.state.status.clear();
-                self.state.status.push_str(hint);
+    pub(super) fn resize_hint(&self) -> Option<&'static str> {
+        match self.resizing.gesture.as_ref() {
+            Some(gesture) => match gesture.mode {
+                Mode::Keyboard if gesture.boundary => Some("Boundary: no matching divider"),
+                Mode::Keyboard => None,
+                Mode::Drag => Some("Drag divider; release to finish"),
+                Mode::Finishing => Some("Resize pending; latest position not confirmed"),
+            },
+            None if self.resizing.flight.is_some() => {
+                Some("Resize update pending; outcome not confirmed")
             }
+            None => None,
         }
     }
 
@@ -267,9 +262,7 @@ impl App<'_> {
                 && gesture.pending_pointer.is_none()
             {
                 self.resizing.gesture = None;
-                self.state.status = "Resize finished".into();
-            } else {
-                self.resize_hint();
+                self.notify("Resize finished".into());
             }
         }
         if matches!(self.pointer_capture, Some(PointerCapture::Resize)) {
@@ -329,11 +322,9 @@ impl App<'_> {
             ) {
                 gesture.desired = layout;
                 gesture.boundary = false;
-                self.resize_hint();
                 self.flush_resize()?;
             } else {
                 gesture.boundary = true;
-                self.resize_hint();
             }
         }
         Ok(true)
@@ -489,7 +480,7 @@ impl App<'_> {
         if gesture.desired == gesture.acknowledged {
             if matches!(gesture.mode, Mode::Finishing) {
                 self.resizing.gesture = None;
-                self.state.status = "Resize finished".into();
+                self.notify("Resize finished".into());
             }
             return Ok(());
         }
@@ -557,31 +548,25 @@ impl App<'_> {
         match result {
             Ok(result) => {
                 self.accept_management(result, None);
-                if self.resizing.acknowledge() {
-                    if self.resizing.gesture.is_some() {
-                        self.resize_hint();
-                    } else {
-                        self.state.status = "Resize finished".into();
-                    }
+                if self.resizing.acknowledge() && self.resizing.gesture.is_none() {
+                    self.notify("Resize finished".into());
                 }
             }
             Err(error) => {
-                let live = self.resizing.gesture.take().is_some();
+                self.resizing.gesture = None;
                 let flight = self.resizing.flight.take().unwrap();
                 if matches!(self.pointer_capture, Some(PointerCapture::Resize)) {
                     self.pointer_capture = Some(PointerCapture::Ui);
                 }
-                if live || transport::outcome_unknown(&error) {
-                    let outcome = if transport::outcome_unknown(&error) {
-                        "outcome unknown"
-                    } else {
-                        "rejected"
-                    };
-                    self.state.status = format!(
-                        "Resize {outcome} in {}: {error:#}; not replayed; start a new gesture after inspecting layout",
-                        flight.window
-                    );
-                }
+                let outcome = if transport::outcome_unknown(&error) {
+                    "outcome unknown"
+                } else {
+                    "rejected"
+                };
+                self.notify(format!(
+                    "Resize {outcome} in {}: {error:#}; not replayed; start a new gesture after inspecting layout",
+                    flight.window
+                ));
             }
         }
     }

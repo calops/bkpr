@@ -12,7 +12,6 @@ struct Editor {
     dirty: bool,
     generation: Option<u64>,
     error: Option<String>,
-    notice: Option<String>,
     navigation: VecDeque<SearchAction>,
     repeating: HashSet<String>,
 }
@@ -61,11 +60,9 @@ impl App<'_> {
             dirty: true,
             generation: None,
             error: None,
-            notice: None,
             navigation: VecDeque::new(),
             repeating: HashSet::new(),
         });
-        self.state.status.clear();
         Ok(())
     }
 
@@ -166,7 +163,6 @@ impl App<'_> {
             Some(action @ (Action::NextMatch | Action::PreviousMatch)) => {
                 let editor = self.search.editor.as_mut().unwrap();
                 if editor.navigation.len() < MAX_NAVIGATION {
-                    editor.notice = None;
                     editor
                         .navigation
                         .push_back(if action == Action::PreviousMatch {
@@ -175,7 +171,7 @@ impl App<'_> {
                             SearchAction::Next
                         });
                 } else {
-                    editor.notice = Some("Navigation queue full; key not admitted".into());
+                    self.notify("Search navigation queue full; key not admitted".into());
                 }
             }
             Some(Action::Edit(EditAction::Backspace)) => {
@@ -185,7 +181,6 @@ impl App<'_> {
                     editor.revision = editor.revision.wrapping_add(1);
                     editor.generation = None;
                     editor.error = None;
-                    editor.notice = None;
                     editor.navigation.clear();
                 }
             }
@@ -196,7 +191,6 @@ impl App<'_> {
                 editor.revision = editor.revision.wrapping_add(1);
                 editor.generation = None;
                 editor.error = None;
-                editor.notice = None;
                 editor.navigation.clear();
             }
             None if event.modifiers & 14 == 0 => self.search_text(&event.text),
@@ -210,8 +204,8 @@ impl App<'_> {
             return;
         };
         if editor.query.len() + text.len() > MAX_SEARCH_BYTES {
-            editor.notice = Some(format!(
-                "Query full ({MAX_SEARCH_BYTES} UTF-8 bytes); text not admitted"
+            self.notify(format!(
+                "Search query full ({MAX_SEARCH_BYTES} UTF-8 bytes); text not admitted"
             ));
             return;
         }
@@ -224,7 +218,6 @@ impl App<'_> {
         editor.revision = editor.revision.wrapping_add(1);
         editor.generation = None;
         editor.error = None;
-        editor.notice = None;
         editor.navigation.clear();
     }
 
@@ -378,11 +371,7 @@ impl App<'_> {
             start = index;
             width += columns;
         }
-        let prefix = if let Some(notice) = &editor.notice {
-            format!("Search {notice} | {status} | /")
-        } else {
-            format!("Search {status} | /")
-        };
+        let prefix = format!("Search {status} | /");
         let value = format!(
             "{prefix}{} | Enter next  Shift-Enter previous  Esc clear",
             &editor.query[start..]

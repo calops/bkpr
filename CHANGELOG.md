@@ -87,6 +87,8 @@
 
 * Put placement, ordered passive/modal layers, opaque return-focus tokens and whole-gesture capture in the reusable framework. Restore main's outside-press cancellation without click-through; retain drafts through outside wheel/resize and keep pending or ambiguous operations noncancellable.
 * Project focused-overlay background faint per view, preserving canonical glyphs, colors, bold styles and images. Passive cards and the key guide retain application keyboard ownership.
+* Add reusable bounded, deadline-driven toast cards with retained Unicode-safe text, dismiss buttons and complete mouse-gesture ownership. Route transient TUI notices through top-center five-second cards, sharing popup shadows/bevels and rounded text fallbacks without taking keyboard focus. Keep pending operations and decision prompts in their contextual UI.
+* Preserve explicit SGR mouse press/release identity alongside maintained Termwiz coordinate/modifier decoding, preventing chorded toast clicks from leaking releases or leaving capture stuck.
 * Move Bkpr's palette recipe into client-owned appearance policy. Preserve main's subdued colors instead of inventing contrast-driven replacements; the framework caches supplied styles and accepts explicit graphic materials.
 * Restore main-aligned unboxed 38-cell sidebar geometry, compact connected project/pane rows and sole-window elision without changing backend identities.
 * Reuse the fork's rounded-mask convolution for compact recessed panes and complete raised surfaces with exterior shadows and directional bevels. Restore the light-theme upper/left facet and preserve rounded text fallbacks.

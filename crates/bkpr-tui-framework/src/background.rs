@@ -162,6 +162,7 @@ mod tests {
                         probe.feed(&reply);
                     }
                     InputPart::Keys(bytes) => assert!(bytes.is_empty()),
+                    InputPart::Mouse { .. } => panic!("background response became mouse input"),
                 }
             }
         }
