@@ -138,11 +138,22 @@ pub struct RemoteSession {
 impl RemoteSession {
     pub fn connect(target: RemoteTarget) -> Result<Self> {
         let detach_others = target.detach_others;
+        let mut session = Self::register(target)?;
+        session.activate_once(detach_others)?;
+        Ok(session)
+    }
+
+    /// Establish and register without takeover. The TUI activates only after
+    /// its local terminal and input/render resources are ready.
+    pub(crate) fn register(target: RemoteTarget) -> Result<Self> {
         let (welcome, connector, supervisor) = Self::establish(target)?;
-        let mut client =
+        let client =
             RegisteredClient::register_connector(connector, welcome.session, welcome.agent_socket)?;
-        client.activate_once(detach_others)?;
         Ok(Self { client, supervisor })
+    }
+
+    pub(crate) fn activate_once(&mut self, detach_others: bool) -> Result<()> {
+        self.client.activate_once(detach_others)
     }
 
     /// Discover one existing remote session without registering or activating a
@@ -231,14 +242,14 @@ impl RemoteSession {
     }
     /// True is authoritative detachment, including transport EOF without an event.
     pub fn poll_lifecycle(&mut self) -> Result<bool> {
-        let detached = self.client.consume_lifecycle()?;
-        if detached {
+        let result = self.client.consume_lifecycle();
+        if !matches!(result, Ok(false)) {
             self.supervisor.stop();
             if let Some(error) = self.supervisor.failure.lock().unwrap().as_ref() {
                 bail!("remote transport disconnected: {error}");
             }
         }
-        Ok(detached)
+        result
     }
     pub fn disconnect(&mut self) -> Result<()> {
         let result = self.client.detach();
@@ -247,6 +258,11 @@ impl RemoteSession {
     }
     pub fn lifetime_fd(&self) -> std::os::fd::RawFd {
         self.client.lifetime_fd()
+    }
+
+    pub(crate) fn close_for_shutdown(&mut self) {
+        self.client.close_for_shutdown();
+        self.supervisor.stop();
     }
 }
 

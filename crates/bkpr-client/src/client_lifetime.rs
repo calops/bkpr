@@ -159,6 +159,10 @@ impl Endpoint {
         self.lease.state.lock().unwrap().session_ended
     }
 
+    pub(crate) fn is_remote(&self) -> bool {
+        self.connector.remote()
+    }
+
     pub fn ensure_live(&self) -> Result<()> {
         if self.is_revoked() {
             return Err(DetachedBeforeDispatch.into());

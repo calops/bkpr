@@ -81,6 +81,8 @@ pub struct Controller {
     pub form: Option<Form>,
     pub suppressed: std::collections::HashSet<String>,
     pub sidebar: Sidebar,
+    /// Selected SSH host and literal session; never mixed with local sessions.
+    pub remote: Option<(String, String)>,
 }
 impl Controller {
     pub fn new(registry: &RegistrySnapshot) -> Self {
@@ -94,6 +96,7 @@ impl Controller {
             form: None,
             suppressed: Default::default(),
             sidebar: Sidebar::default(),
+            remote: None,
         };
         state.reconcile(registry);
         state
@@ -862,9 +865,23 @@ pub fn chrome<'a>(
             1,
             0,
             sidebar.width.saturating_sub(1),
-            "Workspaces",
+            state.remote.as_ref().map_or_else(
+                || "Workspaces".to_owned(),
+                |(_, session)| format!("Session {session}"),
+            ),
             false,
         ));
+        if let Some((host, _)) = &state.remote
+            && sidebar.height > 1
+        {
+            lines.push(line(
+                1,
+                1,
+                sidebar.width.saturating_sub(1),
+                format!("SSH {host}"),
+                false,
+            ));
+        }
     }
     let available = sidebar_content_rows(sidebar, guide_rows);
     for (index, entry) in state
@@ -1502,7 +1519,7 @@ pub fn modal<'a>(
             y.saturating_add(4),
             width,
             format!(
-                "{} Client current directory: {}",
+                "{} Default launch directory: {}",
                 if form.selection == 1 { "▸" } else { " " },
                 form.fields.primary.value
             ),

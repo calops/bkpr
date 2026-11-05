@@ -197,64 +197,83 @@ Client admission is bounded to 32 per daemon; views to 128 per daemon and 32 per
 pane. Lifetime connections, pane waits, registry watchers and controls have
 separate capacity, so admitted waiting views do not consume input/control slots.
 
-### Remote sessions: backend and headless API
+### Remote sessions
 
-Connect to one **already-running** named session on another host. The remote
-daemon owns its panes, processes, layouts, harnesses and metadata. This does not
-open a remote TUI, start or install a daemon, or add remote workspaces to the
-local sidebar.
+Open the normal TUI on one **already-running** remote session:
+
+```sh
+bkpr -r devbox
+bkpr --remote devbox --session work
+bkpr -r devbox -s 'remote / Δ' --remote-bkpr-bin /opt/bkpr/bin/bkpr
+
+# Take over only after the local terminal and remote defaults are ready.
+bkpr -r devbox -s work -d
+```
+
+The session name defaults literally to `bkpr`. Host and session are separate
+arguments; there is no positional target or `host:session` grammar. The sidebar
+shows only the selected remote session, with its session name and SSH host.
+The same sidebar, forms, finder, splits, resize, input and rendering paths are
+used for local and remote attachments.
+
+The connection is direct: local TUI → one no-PTY OpenSSH/Yamux connection →
+remote `bkpr` helper → remote daemon. No local daemon, gateway or local session
+state is created. The remote daemon owns processes, layouts, workspaces, CWD,
+filesystem validation, Git metadata and native harness callbacks. Terminal
+capabilities, theme, graphics preference and clipboard presentation stay local.
+An empty existing session remains empty until an explicit creation action.
+
+Both hosts need compatible native builds. Native wire family 6 is unchanged,
+but remote TUI attachment also requires authoritative daemon spawn defaults.
+Unavailable defaults or an incompatible/missing session fail before takeover,
+without local-path fallbacks, installation, bootstrap or automatic restart.
+Local launch overrides (`--cwd`, `--home`, `--bkprd`, shell arguments, socket
+and state-root paths) are rejected for remote TUI attachment.
+
+System OpenSSH supplies host aliases, identities and ProxyJump. Authentication
+is noninteractive: establish host-key trust and credentials beforehand.
+`--ssh-config PATH` selects a local per-invocation config;
+`--remote-bkpr-bin PATH` selects the remote executable (default: remote PATH
+`bkpr`). The remote login shell must accept POSIX-style executable quoting.
+Session names travel in the binary handshake, not in the shell command.
+The former `--ssh` and `--helper` flags are removed, without aliases.
+
+Headless workflows remain available:
 
 ```sh
 # Identity discovery without native client registration or activation.
-bkpr remote --ssh devbox --session work inspect
+bkpr remote -r devbox -s work inspect
 
 # One persistent attachment; Operation JSON objects in, JSON-line results out.
-bkpr remote --ssh devbox --session work connect
+printf '%s\n' '{"op":"inspect"}' | bkpr remote -r devbox -s work connect
 
-# Query the full registry, then disconnect at EOF without closing its panes.
-printf '%s\n' '{"op":"inspect"}' | \
-  bkpr remote --ssh devbox --session work connect
-
-# A single operation through a short-lived managed attachment.
-bkpr remote --ssh devbox --session work request '{"op":"inspect"}'
+# One operation through a short-lived managed attachment.
+bkpr remote -r devbox -s work request '{"op":"inspect"}'
 ```
 
-Both hosts need a compatible native Bkpr build; the remote `bkpr` must support
-the helper. Native wire family 6 is unchanged. Unavailable or incompatible
-sessions fail without bootstrap or restart.
-
-System OpenSSH supplies host aliases, identities and ProxyJump. Authentication
-is noninteractive: establish host-key trust and make credentials available
-beforehand. No PTY or shared ControlMaster is used. `--ssh-config PATH` selects
-a per-invocation config; `--helper /absolute/remote/path/to/bkpr` selects a helper
-outside the remote noninteractive PATH. The SSH login shell must accept
-POSIX-style executable quoting. Session names travel in the binary handshake,
-not in the shell command.
-
-Only persistent `connect` accepts `-d` / `--detach-others`. Takeover retires other
-remote attachments after the new one is ready, without closing their programs.
-Identity-only `inspect` does not select an agent source or disturb clients.
-Normal `connect` and `request` are managed attachments, including the existing
-latest-attachment SSH-agent selection rules.
+Remote TUI and persistent `connect` accept `-d` / `--detach-others`. Takeover
+retires other attachments only after successful initialization, without closing
+their programs. Identity-only `inspect` does not select an agent source or
+disturb clients.
 
 Agent forwarding is off even if SSH config enables it. Explicit
-`--forward-agent` on `connect` or `request` uses OpenSSH forwarding and the remote
-forwarded socket, never a local pathname. Grant it only to trusted hosts. Bkpr
-launch credentials and pane-context variables are removed from the SSH child's
-environment. Remote harness callbacks retain their own native pane authority.
+`--forward-agent` on the TUI, `connect` or `request` uses OpenSSH forwarding and
+the remote forwarded socket, never a local pathname. Grant it only to trusted
+hosts. Launch credentials and pane-context variables are removed from the SSH
+child's environment.
 
-The Rust `bkpr_client::remote::RemoteSession` API exposes pinned identity,
-a concurrent native `Endpoint`, lifecycle polling and disconnect.
-`RemoteSession::inspect` performs nonactivating discovery. Scene, image, input
-and clipboard frames remain binary through one bounded multiplexed SSH
-connection; JSON is only the CLI boundary. Harness/agent authority is rejected
-before transport, and managed operations never fall back to administrative
-shutdown or another privileged route.
+`bkpr_client::run_remote` reuses `RemoteSession` and the authoritative native
+`Endpoint`. Registration is separate from activation; the existing eager
+`RemoteSession::connect` remains available for headless callers. Scene, image,
+input and clipboard frames stay binary through the bounded connection. There
+is no administrative fallback or second authority implementation.
 
-Disconnecting or losing SSH retires this client's views, not the remote panes.
-There is no automatic reconnect or mutation replay. A mutation accepted before
-its reply was lost returns an **unknown outcome**, not a successful-looking
-acknowledgement. Reconnect explicitly and inspect state before deciding what to do.
+Normal detach leaves remote programs running. Unexpected helper/network failure
+revokes this client's authority and exits with an error after restoring the
+local terminal; it never fabricates an empty layout. There is no automatic
+reconnect or replay. A mutation whose accepted reply was lost remains an
+**unknown outcome**. Reconnect explicitly and inspect state before deciding
+what to do. Clipboard reads still require the host terminal's permission.
 
 ### Daemon spawn defaults
 

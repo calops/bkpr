@@ -34,7 +34,10 @@
 
 * Connect to one existing named session through system OpenSSH with `bkpr remote` and the reusable `RemoteSession` API. Keep remote processes, layouts, harnesses and metadata on their owning host; do not bootstrap, install, restart or aggregate sessions.
 * Multiplex opaque native binary streams through one no-PTY SSH connection and one remote helper. Reuse native process-bound client authority, pinned session/daemon identities, bounded observation/control/lifetime admission and an independently enforced remote lease.
-* Add nonactivating identity inspection, persistent headless JSON-line control and one-shot managed requests. Keep `-d` exclusive to persistent connection, forwarding explicit, launch credentials local and failed/unknown mutations nonreplayable. Native family 6 and durable schema 4 stay unchanged; remote TUI attachment remains deferred.
+* Add nonactivating identity inspection, persistent headless JSON-line control and one-shot managed requests. Keep forwarding explicit, launch credentials local and failed/unknown mutations nonreplayable. Native family 6 and durable schema 4 stay unchanged.
+* Attach the normal TUI with `-r/--remote HOST`, literal `-s/--session NAME` and `--remote-bkpr-bin PATH`. Reuse one authoritative remote endpoint and the existing UI; never start a local gateway, create a missing remote session or aggregate workspace ownership.
+* Defer activation/takeover until local terminal setup and authoritative remote spawn-default discovery succeed. Keep capabilities, theme and clipboard local while execution, paths and metadata remain remote; retire authority honestly on transport failure without reconnect or replay.
+* **Breaking:** replace `--ssh` with `-r/--remote` and `--helper` with `--remote-bkpr-bin` for headless remote commands too. No compatibility aliases or `host:session` target grammar are retained.
 
 ### Daemon spawn defaults
 
