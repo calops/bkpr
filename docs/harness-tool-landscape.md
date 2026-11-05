@@ -1,12 +1,12 @@
 # Harness tooling landscape and opportunities for Bkpr
 
-Research snapshot: **2026-11-05**. Bkpr baseline: native replacement branch `feat/pane-first-mux`, published revision `62be190e2467`, plus the roadmap and agreed multi-session design at the time of research. This is a product/architecture survey, **not an implementation plan or a change to the agreed roadmap**.
+Research snapshot: **2026-11-05**. Bkpr baseline: native replacement branch `feat/pane-first-mux`, published revision `62be190e2467`, plus the roadmap and agreed multi-session design at the time of research. This is a product/architecture survey, not an implementation plan. **Subsequent user decision:** add attention inbox, task-linked communication/handoffs, advisory resource reservations, reviewable result artifacts and coherent delivery diagnostics to the roadmap. **ACP hosting is rejected:** Bkpr remains terminal-first across TUI and future web/mobile clients, preserving each harness's native interface and bespoke features through rich per-harness integration.
 
 ## Conclusion
 
 The useful frontier is no longer just putting several agent terminals in a sidebar. It is making independent agents' work **actionable, reviewable and transferable**: who needs a decision, who owns the next step, what evidence supports a result, and how another agent can safely take over.
 
-Bkpr can supply the durable execution and control layer underneath those workflows without becoming another model harness, project-management system, provider router or account manager. The strongest new opportunities are an attention plane, task-correlated communication, explicit handoff/review artifacts, and narrowly scoped integrations with external task tools. Sandboxed execution and structured harness hosting are larger, optional product expansions, not inexpensive additions to terminal multiplexing.
+Bkpr can supply the durable execution and control layer underneath those workflows without becoming another model harness, project-management system, provider router or account manager. The strongest new opportunities are an attention plane, task-correlated communication, explicit handoff/review artifacts, and narrowly scoped integrations with external task tools. Sandboxed execution remains a larger optional product expansion. Structured harness hosting through ACP is an explicit non-goal, not a future interoperability recommendation.
 
 ## Reading guide and evidence limits
 
@@ -74,16 +74,16 @@ These are usually the software Bkpr should host or integrate with, not replace.
 
 | Project | Supported boundary found | Bkpr opportunity and limit |
 | --- | --- | --- |
-| [Pi](https://pi.dev/) | First-party [JSONL RPC](https://pi.dev/docs/latest/rpc), streaming events and [extension UI callbacks](https://pi.dev/docs/latest/rpc-extension-ui). **D.** | A deliberately launched structured adapter can render questions/tool results without screen parsing. The ACP wrapper located here is community code, not the first-party Pi contract. Extensions execute with user permissions. |
-| [OMP / oh-my-pi](https://github.com/can1357/oh-my-pi) | First-party [ACP](https://omp.sh/docs/acp), [RPC](https://omp.sh/docs/rpc), extensions and collaboration. **D/S.** | Strong candidate for an optional adapter alongside existing native integration. ACP exposes portable structure; RPC exposes richer but more version-coupled OMP features. Neither should displace the ordinary interactive TUI by default. |
-| [OpenCode](https://github.com/anomalyco/opencode) | [HTTP/OpenAPI server and events](https://opencode.ai/docs/server/), plugins and [ACP stdio mode](https://opencode.ai/v2/docs/cli/acp/). **D/S.** | Useful separation of execution server and clients. Its ACP process owns a private server rather than attaching to the shared service; model that lifetime explicitly. Native server API is a different, specialized integration. |
-| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | Plugin-oriented harness; [automation ACP profile](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/acp/acp/README.md) with persistent sessions, permissions, cancellation and settlement rules. **D/S.** | Good accepted-versus-settled lifecycle reference. Developer-preview contract deliberately omits several interactive presentation/session features; capability absence must remain visible. |
-| [ECA](https://eca.dev/) | Its own [LSP-inspired JSON-RPC protocol](https://eca.dev/protocol/), editor context, hooks, questions/approvals and remote clients. **D/S.** | Editor-context/review bridge, not ACP and not a plain Bkpr child CLI. Potentially complementary, but more specialized than a portable harness adapter. |
-| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Personal-assistant platform plus [ACP mode](https://hermes-agent.nousresearch.com/docs/developer-guide/acp-internals), messaging gateway, scheduling and persistence. **D/S.** | Coding-facing ACP is an integration target. Its multi-channel gateway, long-term learning, model loop and account setup should remain external. |
+| [Pi](https://pi.dev/) | First-party [JSONL RPC](https://pi.dev/docs/latest/rpc), streaming events and [extension UI callbacks](https://pi.dev/docs/latest/rpc-extension-ui). **D.** | Integrate the ordinary harness richly through its native extensions/hooks and suitable APIs while preserving its interface. RPC is an architectural reference, not a reason to replace the TUI. The ACP wrapper located here is community code; Bkpr ACP hosting is out of scope. Extensions execute with user permissions. |
+| [OMP / oh-my-pi](https://github.com/can1357/oh-my-pi) | First-party [ACP](https://omp.sh/docs/acp), [RPC](https://omp.sh/docs/rpc), extensions and collaboration. **D/S.** | Continue rich native plugin/extension/API integration that preserves OMP's bespoke features and interface. ACP availability is a fact about OMP, not a Bkpr integration recommendation. |
+| [OpenCode](https://github.com/anomalyco/opencode) | [HTTP/OpenAPI server and events](https://opencode.ai/docs/server/), plugins and [ACP stdio mode](https://opencode.ai/v2/docs/cli/acp/). **D/S.** | Investigate native plugins/server events only where they enrich the original harness experience. Its ACP process owns a private server rather than attaching to the shared service; that mode is not a Bkpr integration target. |
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | Plugin-oriented harness; [automation ACP profile](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/acp/acp/README.md) with persistent sessions, permissions, cancellation and settlement rules. **D/S.** | Good accepted-versus-settled lifecycle reference. Any Bkpr integration must preserve the harness's own interface through native capabilities; its developer-preview ACP profile is not our execution path. |
+| [ECA](https://eca.dev/) | Its own [LSP-inspired JSON-RPC protocol](https://eca.dev/protocol/), editor context, hooks, questions/approvals and remote clients. **D/S.** | Potentially complementary editor context or review integration, not a replacement harness interface or a normalized Bkpr chat frontend. |
+| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Personal-assistant platform plus [ACP mode](https://hermes-agent.nousresearch.com/docs/developer-guide/acp-internals), messaging gateway, scheduling and persistence. **D/S.** | Native harness integration may be considered if useful; ACP hosting is not a target. Its multi-channel gateway, long-term learning, model loop and account setup should remain external. |
 | [OpenClaw](https://github.com/openclaw/openclaw) | Existing multi-client [WebSocket gateway](https://docs.openclaw.ai/concepts/architecture), device pairing, tools and channel sessions. **D/S.** | A future external assistant can consume constrained Bkpr tools/events. It is not an ACP attach protocol or reason to give chat ingress unrestricted terminal input. |
 | [3code](https://github.com/capocasa/3code) | Terminal-native agent and embeddable Nim runtime with readable session artifacts. **D/S.** | Demonstrates a clean runtime/library seam. Owning its model/provider loop is outside Bkpr's purpose; preserve it as an external harness if demand warrants. |
 
-**Critical ACP/RPC caveat:** the inspected OMP, Pi, OpenCode, DSH and Hermes stdio modes launch separately controlled harness processes. They are **not drop-in observers of an already-running original TUI**. JSON-RPC stdout must use dedicated non-PTY pipes, not a terminal emulator's byte stream. A structured-harness host would therefore be an explicit product/architecture expansion: separate external conversation identity, process/session lifetime, permission callbacks and possibly non-terminal pane content. Keep existing native TUI/hook/extension paths intact. An ACP adapter must not promise that an arbitrary harness can be simultaneously driven by its native TUI and Bkpr.
+**ACP/RPC boundary:** the inspected OMP, Pi, OpenCode, DSH and Hermes stdio modes launch separately controlled harness processes. They are not drop-in observers of an already-running original TUI, and their dedicated protocol pipes are not terminal streams. The user has rejected adopting ACP hosting: preserve the ordinary native harness interface, including bespoke features, and enrich it one harness at a time through hooks, plugins, extensions and supported APIs. The protocol inventory above documents other projects, not a Bkpr adoption plan.
 
 ### Isolation, context, artifacts and collaborative surfaces
 
@@ -145,7 +145,7 @@ One narrow worktree lesson is worth retaining: Remuda locks linked worktrees to 
 
 ## Scope opportunities, ranked for Bkpr
 
-These are recommendations for discussion, not automatically accepted TODO items.
+The user accepted the attention inbox, task-linked communication/handoffs, resource reservations, reviewable artifacts and delivery diagnostics as separate TODO items. External task/orchestrator adapters and sandboxed execution remain proposals, not approved scope. ACP hosting is an explicit non-goal.
 
 | Priority | Opportunity | Status relative to current scope | Smallest coherent addition / important boundary |
 | --- | --- | --- | --- |
@@ -159,15 +159,15 @@ These are recommendations for discussion, not automatically accepted TODO items.
 
 A sensible initial discussion order after current multi-session work is: local cross-session communication already on the roadmap; coherent diagnostics and task/reply references; then attention/result workflows. This does not reinstate deferred CPU optimization or prioritize finishing-level forge enrichment over usable agent workflows.
 
-## Larger scope expansions worth considering separately
+## Scope boundaries and separate proposals
 
-### Structured harness host, optionally through ACP
+### Explicit non-goal: ACP hosting or a replacement harness interface
 
-ACP can reduce bespoke integration for transcript blocks, diffs, tool calls, questions and permissions when the harness deliberately runs in that mode. Pi's native RPC and some harness-specific app-server APIs can cover richer capabilities. This is promising interoperability, not a universal protocol switch.
+Bkpr remains terminal-first even when web and mobile clients are implemented. Harnesses own their interfaces; their bespoke tools, interactions and presentation are part of what Bkpr must preserve, not flatten into a common chat protocol.
 
-Before choosing it, decide whether Bkpr should render/control a structured conversation rather than only the original agent terminal. Required work includes non-PTY process I/O, external session association, truthful initialization/prompt/streaming/terminal/cancel states, callback timeouts and stale permission-response rejection. Current OSC 7501 status authority must not silently become generic transcript/title inference. Establish any new authoritative event source explicitly.
+Rich integration stays per harness: native hooks, plugins, extensions and supported APIs can supply attention, diagnostics, artifacts and control without replacing the original interface. Capability differences should remain explicit rather than constrain every harness to a lowest-common-denominator surface.
 
-MCP and ACP serve different directions: MCP exposes tools an agent may call; ACP lets a client host/control a supported agent. Neither protocol name alone supplies Bkpr's process authentication, permission policy or sandboxing. Supporting both is plausible without making Bkpr implement the model loop.
+ACP-based structured harness hosting and a Bkpr-owned replacement chat interface are therefore rejected directions, not deferred experiments. MCP remains the shared tool/control surface; this decision does not remove native hooks, plugins or harness-specific APIs.
 
 ### Mobile attention and authenticated observers
 
@@ -200,4 +200,4 @@ Artifact references can precede storage infrastructure: producer, owning endpoin
 5. **Isolation proof:** if sandbox work is approved, test host-file, network and credential boundaries independently. A successful Docker launch or a valid image name is not acceptance.
 6. **Failure economics:** compare human interruptions, review corrections, abandoned/stalled tasks, whole-system resource use and time-to-accepted-result, not agent count or tokens generated. No performance/quality ranking of these projects is established by this survey.
 
-No source changes to Bkpr's runtime or active remote feature were made for this report. No external application was executed, no installer/configuration change was performed, and no new feature was added to `TODO.md` without a separate decision.
+No source changes to Bkpr's runtime or active remote feature were made for this report. No external application was executed or installer/configuration change performed. A subsequent explicit user decision added the five accepted workflow items to `TODO.md` and recorded terminal-first, harness-native integration with ACP hosting as a non-goal.
