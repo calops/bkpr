@@ -1118,6 +1118,40 @@ pub struct PasteOffer {
     pub primary: bool,
     pub started: Instant,
 }
+
+/// Routing identity only; payload validation and transfer state remain in
+/// `clipboard_packet` / `paste_offer_packet`. Borrowing avoids copying MIME data.
+pub enum ClipboardReplyOrigin<'a> {
+    Request(&'a str),
+    Offer(&'a str),
+}
+
+pub fn clipboard_reply_origin(packet: &[u8]) -> Option<ClipboardReplyOrigin<'_>> {
+    let packet = packet.strip_prefix(b"5522;")?;
+    let metadata = std::str::from_utf8(packet.split(|byte| *byte == b';').next()?).ok()?;
+    let mut id = None;
+    let mut password = None;
+    let mut read = false;
+    for (key, value) in metadata
+        .split(':')
+        .filter_map(|field| field.split_once('='))
+    {
+        match key {
+            "id" if !value.is_empty() => id = Some(value),
+            "pw" => password = Some(value),
+            "type" => read = value == "read",
+            _ => {}
+        }
+    }
+    if let Some(id) = id {
+        Some(ClipboardReplyOrigin::Request(id))
+    } else if read {
+        password.map(ClipboardReplyOrigin::Offer)
+    } else {
+        None
+    }
+}
+
 pub fn paste_offer_packet(
     offer: &mut Option<PasteOffer>,
     packet: &[u8],

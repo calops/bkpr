@@ -192,9 +192,16 @@ pub fn build_content<'a>(
     Some(Content { rows })
 }
 
+struct Source<'a> {
+    owner: crate::tree::Owner,
+    registry: &'a RegistrySnapshot,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct ContentKey {
-    target: SidebarTarget,
+    owner: crate::tree::Owner,
+    target: Option<SidebarTarget>,
+    group: Option<crate::controller::SessionGroup>,
     registry_revision: u64,
     snapshots: Vec<(String, Option<SnapshotKey>)>,
 }
@@ -294,25 +301,98 @@ impl Popover {
                 .min(self.max_scroll)
         };
     }
-    /// Return screen placement; frame coordinates are local to that rect. Add
-    /// Surface { id: SURFACE_ID, content: SurfaceContent::All, rect,
-    /// frame: &self.surface.frame, focused: false, faint: false,
-    /// selection: &[], search: &[] } after pane/chrome, before modals.
-    pub fn paint<'a>(
+    /// Resolve passive metadata exclusively through the target's immutable owner.
+    pub(crate) fn paint_tree(
         &mut self,
-        registry: &RegistrySnapshot,
+        tree: &crate::tree::Tree,
+        target: Option<&crate::tree::Target>,
+        anchor_row: u16,
+        sidebar_width: u16,
+        screen: Size,
+    ) -> Option<Rect> {
+        let Some(target) = target else {
+            self.hide();
+            return None;
+        };
+        let Some(session) = tree.session(target.owner) else {
+            self.hide();
+            return None;
+        };
+        match &target.node {
+            crate::tree::Node::Native(native) => self.paint_owned(
+                Source {
+                    owner: target.owner,
+                    registry: &session.registry,
+                },
+                Some(native),
+                anchor_row,
+                sidebar_width,
+                screen,
+                |id| session.snapshots.get(id),
+            ),
+            crate::tree::Node::Session => {
+                let unchanged = self.content_key.as_ref().is_some_and(|key| {
+                    key.owner == target.owner
+                        && key.target.is_none()
+                        && key.group.as_ref() == Some(&session.group)
+                });
+                if !unchanged {
+                    if !self
+                        .content_key
+                        .as_ref()
+                        .is_some_and(|key| key.owner == target.owner && key.target.is_none())
+                    {
+                        self.scroll = 0;
+                    }
+                    self.content = Some(Content {
+                        rows: vec![
+                            Paragraph::new(&session.group.label, Role::Title),
+                            Paragraph::new(
+                                session.group.status.badge(),
+                                session.group.status.role(),
+                            ),
+                            Paragraph::new(
+                                if session.group.remote {
+                                    "Remote session"
+                                } else {
+                                    "Local session"
+                                },
+                                Role::Muted,
+                            ),
+                            Paragraph::new(&session.group.detail, Role::Base),
+                        ],
+                    });
+                    self.content_key = Some(ContentKey {
+                        owner: target.owner,
+                        target: None,
+                        group: Some(session.group.clone()),
+                        registry_revision: session.registry.revision,
+                        snapshots: Vec::new(),
+                    });
+                    self.paint_key = None;
+                }
+                self.layout(anchor_row, sidebar_width, screen)
+            }
+        }
+    }
+
+    fn paint_owned<'a>(
+        &mut self,
+        source: Source<'_>,
         target: Option<&SidebarTarget>,
         anchor_row: u16,
         sidebar_width: u16,
         screen: Size,
         snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
     ) -> Option<Rect> {
+        let Source { owner, registry } = source;
         let Some(target) = target.filter(|target| belongs(registry, target)) else {
             self.hide();
             return None;
         };
         let unchanged = self.content_key.as_ref().is_some_and(|key| {
-            key.target == *target
+            key.owner == owner
+                && key.target.as_ref() == Some(target)
                 && key.registry_revision == registry.revision
                 && key
                     .snapshots
@@ -324,7 +404,11 @@ impl Popover {
                     })
         });
         if !unchanged {
-            if self.content_key.as_ref().map(|key| &key.target) != Some(target) {
+            if !self
+                .content_key
+                .as_ref()
+                .is_some_and(|key| key.owner == owner && key.target.as_ref() == Some(target))
+            {
                 self.scroll = 0;
             }
             self.content = build_content(registry, target, &snapshot);
@@ -348,12 +432,18 @@ impl Popover {
                 .map(|pane| (pane.id.clone(), snapshot(&pane.id).map(SnapshotKey::new)))
                 .collect();
             self.content_key = Some(ContentKey {
-                target: target.clone(),
+                owner,
+                target: Some(target.clone()),
+                group: None,
                 registry_revision: registry.revision,
                 snapshots,
             });
             self.paint_key = None;
         }
+        self.layout(anchor_row, sidebar_width, screen)
+    }
+
+    fn layout(&mut self, anchor_row: u16, sidebar_width: u16, screen: Size) -> Option<Rect> {
         let key = PaintKey {
             screen,
             sidebar_width,
@@ -596,6 +686,94 @@ mod tests {
         }
     }
 
+    #[test]
+    fn unified_popup_uses_owner_generation_and_session_authority() {
+        use crate::controller::{Controller, SessionGroup, SessionStatus};
+        use crate::tree::{Node, Owner, Session, Target, Tree};
+        use std::sync::Arc;
+        let screen = Size {
+            cols: 120,
+            rows: 40,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let mut popup = Popover::new(screen);
+        let mut tree = Tree::new();
+        for generation in [1, 2] {
+            let owner = Owner {
+                slot: 0,
+                generation,
+            };
+            let title = format!("owner-{generation}-pane");
+            let mut registry = registry();
+            registry.panes[0].title = title.clone();
+            let state = Controller::new(&registry);
+            let group = SessionGroup {
+                label: format!("owner-{generation}-session"),
+                status: SessionStatus::Online,
+                detail: format!("owner-{generation}-detail"),
+                remote: generation == 2,
+            };
+            let session = Arc::new(Session {
+                owner,
+                group,
+                registry: Arc::new(registry),
+                rows: state.sidebar.rows.clone().into(),
+                workspace: state.workspace,
+                window: state.window,
+                focused: state.focused,
+                snapshots: Arc::new(std::collections::HashMap::from([(
+                    "terminal".into(),
+                    snapshot(),
+                )])),
+                statuses: Default::default(),
+                history: Default::default(),
+            });
+            tree.reconcile(vec![session], owner);
+            let target = Target {
+                owner,
+                node: Node::Native(SidebarTarget::Pane {
+                    workspace: "work".into(),
+                    pane: "terminal".into(),
+                }),
+            };
+            assert!(
+                popup
+                    .paint_tree(&tree, Some(&target), 3, 38, screen)
+                    .is_some()
+            );
+            let rows = &popup.content.as_ref().unwrap().rows;
+            assert!(rows.iter().any(|row| row.text.contains(&title)));
+        }
+        let session_target = Target {
+            owner: Owner {
+                slot: 0,
+                generation: 2,
+            },
+            node: Node::Session,
+        };
+        assert!(
+            popup
+                .paint_tree(&tree, Some(&session_target), 2, 38, screen)
+                .is_some()
+        );
+        let rows = &popup.content.as_ref().unwrap().rows;
+        assert!(rows.iter().any(|row| row.text == "owner-2-detail"));
+        assert!(!rows.iter().any(|row| row.text.contains("owner-2-pane")));
+        let stale = Target {
+            owner: Owner {
+                slot: 0,
+                generation: 1,
+            },
+            node: Node::Session,
+        };
+        assert!(
+            popup
+                .paint_tree(&tree, Some(&stale), 2, 38, screen)
+                .is_none()
+        );
+    }
+
     fn snapshot() -> PaneSnapshot {
         PaneSnapshot {
             pane_id: "terminal".into(),
@@ -790,11 +968,37 @@ mod tests {
         let mut snapshot = snapshot();
         let mut popup = Popover::new(screen);
         popup
-            .paint(&registry, Some(&target), 2, 24, screen, |_| Some(&snapshot))
+            .paint_owned(
+                Source {
+                    owner: crate::tree::Owner {
+                        slot: 0,
+                        generation: 1,
+                    },
+                    registry: &registry,
+                },
+                Some(&target),
+                2,
+                24,
+                screen,
+                |_| Some(&snapshot),
+            )
             .unwrap();
         snapshot.error = Some("Connection failed".into());
         popup
-            .paint(&registry, Some(&target), 2, 24, screen, |_| Some(&snapshot))
+            .paint_owned(
+                Source {
+                    owner: crate::tree::Owner {
+                        slot: 0,
+                        generation: 1,
+                    },
+                    registry: &registry,
+                },
+                Some(&target),
+                2,
+                24,
+                screen,
+                |_| Some(&snapshot),
+            )
             .unwrap();
         let text = popup
             .surface
@@ -817,9 +1021,20 @@ mod tests {
                 ..screen
             };
             let outer = popup
-                .paint(&registry, Some(&target), anchor, cols, screen, |_| {
-                    Some(&snapshot)
-                })
+                .paint_owned(
+                    Source {
+                        owner: crate::tree::Owner {
+                            slot: 0,
+                            generation: 1,
+                        },
+                        registry: &registry,
+                    },
+                    Some(&target),
+                    anchor,
+                    cols,
+                    screen,
+                    |_| Some(&snapshot),
+                )
                 .unwrap();
             let body = popup.body_rect().unwrap();
             assert_eq!(popup.surface.frame.size.cols, outer.width);
@@ -906,7 +1121,20 @@ mod tests {
         let mut popup = Popover::new(screen);
         for anchor in [2, 7, 12] {
             let outer = popup
-                .paint(&registry, Some(&target), anchor, 24, screen, |_| None)
+                .paint_owned(
+                    Source {
+                        owner: crate::tree::Owner {
+                            slot: 0,
+                            generation: 1,
+                        },
+                        registry: &registry,
+                    },
+                    Some(&target),
+                    anchor,
+                    24,
+                    screen,
+                    |_| None,
+                )
                 .unwrap();
             assert_eq!(popup.body_rect().unwrap().y, anchor);
             assert!(outer.y + outer.height <= screen.rows);
@@ -917,7 +1145,20 @@ mod tests {
             ..screen
         };
         let outer = popup
-            .paint(&registry, Some(&target), 3, 3, tiny, |_| None)
+            .paint_owned(
+                Source {
+                    owner: crate::tree::Owner {
+                        slot: 0,
+                        generation: 1,
+                    },
+                    registry: &registry,
+                },
+                Some(&target),
+                3,
+                3,
+                tiny,
+                |_| None,
+            )
             .unwrap();
         assert!(outer.y > 3 || outer.y + outer.height <= 3);
     }
@@ -939,7 +1180,20 @@ mod tests {
         for graphical in [false, true, false] {
             popup.set_graphical(graphical);
             popup
-                .paint(&registry, Some(&target), 4, 24, screen, |_| None)
+                .paint_owned(
+                    Source {
+                        owner: crate::tree::Owner {
+                            slot: 0,
+                            generation: 1,
+                        },
+                        registry: &registry,
+                    },
+                    Some(&target),
+                    4,
+                    24,
+                    screen,
+                    |_| None,
+                )
                 .unwrap();
             let frame = &popup.surface.frame;
             let top = &frame.rows[0].cells;

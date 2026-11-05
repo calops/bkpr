@@ -19,7 +19,7 @@ unicode-segmentation = "1"
 textwrap = { version = "0.16.4", default-features = false, features = ["unicode-width"] }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 tokio = { version = "1", features = ["rt", "net", "process", "sync", "time", "io-util", "macros"] }
-tokio-util = { version = "0.7", features = ["compat"] }
+tokio-util = { version = "0.7", features = ["compat", "rt"] }
 yamux = "=0.14.1"
 
 [dev-dependencies]

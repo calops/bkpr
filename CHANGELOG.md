@@ -39,12 +39,15 @@
 
 ### Remote sessions
 
-* Connect to one existing named session through system OpenSSH with `bkpr remote` and the reusable `RemoteSession` API. Keep remote processes, layouts, harnesses and metadata on their owning host; do not bootstrap, install, restart or aggregate sessions.
-* Multiplex opaque native binary streams through one no-PTY SSH connection and one remote helper. Reuse native process-bound client authority, pinned session/daemon identities, bounded observation/control/lifetime admission and an independently enforced remote lease.
-* Add nonactivating identity inspection, persistent headless JSON-line control and one-shot managed requests. Keep forwarding explicit, launch credentials local and failed/unknown mutations nonreplayable. Native family 6 and durable schema 4 stay unchanged.
-* Attach the normal TUI with `-r/--remote HOST`, literal `-s/--session NAME` and `--remote-bkpr-bin PATH`. Reuse one authoritative remote endpoint and the existing UI; never start a local gateway, create a missing remote session or aggregate workspace ownership.
-* Defer activation/takeover until local terminal setup and authoritative remote spawn-default discovery succeed. Keep capabilities, theme and clipboard local while execution, paths and metadata remain remote; retire authority honestly on transport failure without reconnect or replay.
-* **Breaking:** replace `--ssh` with `-r/--remote` and `--helper` with `--remote-bkpr-bin` for headless remote commands too. No compatibility aliases or `host:session` target grammar are retained.
+* Attach multiple local and existing remote sessions in one TUI with repeated `-s`. Use `host:name` for SSH, `local:name` to escape local colons, and `-r HOST` as the invocation-wide default host. Utilities remain single-target with literal names.
+* Keep one independent no-PTY OpenSSH/Yamux connection and remote helper per remote attachment. Preserve native process-bound authority, pinned identities, bounded admission, exact binary scenes/input/clipboard and unknown mutation outcomes without replay.
+* Present one owner-qualified session/workspace/window/pane tree. Keep passive navigation and popovers metadata-only; route explicit actions through their original owner and generation. Use the Nerd Font beekeeper icon and a framework Unicode connecting spinner.
+* Prepare local targets off the UI thread after terminal setup, once per invocation. Discover authoritative defaults before one-shot activation/takeover; remote-only startup needs no local HOME, CWD, daemon or session state.
+* Keep initial connection failures visibly offline for manual retry. Reconnect previously active attachments after transport loss without replaying input, bootstrap or takeover. Remove intentionally detached/ended sessions and exit when the last target ends; reject replacement logical identities instead of adopting them.
+* Share physical theme, rendering preference, sizing, device routing and transient toasts across attachments. Keep native resource IDs and held-button releases qualified by their originating attachment.
+* Preserve native retirement received before activation as a typed outcome, not a reconnect failure. Isolate transport cleanup under a child cancellation token so a failed SSH attempt cannot cancel its coordinator generation and hide its error.
+* Keep headless identity inspection, persistent JSON-line control and one-shot managed requests. EOF detaches only the client; explicit takeover reports its reason and unexpected loss remains a failure.
+* **Breaking:** replace the separate local/remote TUI entrypoints with `bkpr_client::run_sessions` and `SessionTarget`. Named TUI targets now interpret host prefixes; use `local:` for literal local colons. Native family 6, remote control 1 and durable schema 4 are unchanged.
 
 ### Daemon spawn defaults
 

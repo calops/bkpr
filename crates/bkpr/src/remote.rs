@@ -1,6 +1,9 @@
 //! Direct remote attachment boundary. Session discovery stays on the remote host.
 use anyhow::{Context, Result, ensure};
-use bkpr_client::remote::{RemoteSession, RemoteTarget, ResolvedSession};
+use bkpr_client::{
+    remote::{RemoteSession, RemoteTarget, ResolvedSession},
+    transport::Lifecycle,
+};
 use bkpr_protocol::{Operation, SessionInfo, remote_wire::Hello};
 use clap::ArgMatches;
 use serde_json::{Value, json};
@@ -67,31 +70,29 @@ fn validate_agent_socket(socket: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-pub fn tui_target(matches: &ArgMatches) -> Result<Option<RemoteTarget>> {
-    if matches.subcommand_name().unwrap_or("tui") != "tui"
-        || matches.get_one::<String>("remote").is_none()
-    {
-        return Ok(None);
-    }
-    target(matches).map(Some)
-}
-
-fn target(matches: &ArgMatches) -> Result<RemoteTarget> {
-    Ok(RemoteTarget {
-        destination: matches
-            .get_one::<String>("remote")
-            .context("remote requires --remote HOST")?
-            .clone(),
-        session_name: matches
-            .get_one::<String>("session")
-            .map(String::as_str)
-            .unwrap_or("bkpr")
-            .to_owned(),
+pub fn tui_target(matches: &ArgMatches, host: String, name: String) -> RemoteTarget {
+    RemoteTarget {
+        destination: host,
+        session_name: name,
         helper: matches.get_one::<PathBuf>("remote-bkpr-bin").cloned(),
         ssh_config: matches.get_one::<PathBuf>("ssh-config").cloned(),
         forward_agent: matches.get_flag("forward-agent"),
         detach_others: matches.get_flag("detach-others"),
-    })
+    }
+}
+
+fn target(matches: &ArgMatches) -> Result<RemoteTarget> {
+    Ok(tui_target(
+        matches,
+        matches
+            .get_one::<String>("remote")
+            .context("remote requires --remote HOST")?
+            .clone(),
+        matches
+            .get_one::<String>("session")
+            .cloned()
+            .unwrap_or_else(|| crate::session::DEFAULT_SESSION.to_owned()),
+    ))
 }
 
 /// Catalog calls reuse the single existing remote attachment and its no-replay transport.
@@ -239,15 +240,14 @@ fn run_console(
     output: &mut impl Write,
     info: &SessionInfo,
     lifetime_fd: RawFd,
-    mut detached: impl FnMut() -> Result<bool>,
+    mut lifecycle: impl FnMut() -> Result<Lifecycle>,
     mut dispatch: impl FnMut(Operation) -> Result<Value>,
 ) -> Result<()> {
     emit(output, &json!({"event":"connected", "session":info}))?;
     let mut line = Vec::new();
     let mut chunk = [0_u8; INPUT_CHUNK_BYTES];
     loop {
-        if detached()? {
-            emit(output, &json!({"event":"detached"}))?;
+        if report_retirement(output, lifecycle()?)? {
             return Ok(());
         }
         let mut descriptors = [
@@ -306,14 +306,24 @@ fn run_console(
             line.extend_from_slice(bytes);
             if terminated {
                 // A takeover between buffered lines must not deliver stale queued input.
-                if detached()? {
-                    emit(output, &json!({"event":"detached"}))?;
+                if report_retirement(output, lifecycle()?)? {
                     return Ok(());
                 }
                 dispatch_line(output, &line, &mut dispatch)?;
                 line.clear();
             }
         }
+    }
+}
+
+fn report_retirement(output: &mut impl Write, lifecycle: Lifecycle) -> Result<bool> {
+    match lifecycle {
+        Lifecycle::Active => Ok(false),
+        Lifecycle::Detached { reason } => {
+            emit(output, &json!({"event":"detached", "reason":reason}))?;
+            Ok(true)
+        }
+        Lifecycle::TransportClosed => anyhow::bail!("remote transport closed"),
     }
 }
 
@@ -364,7 +374,12 @@ mod tests {
             "-d".into(),
         ])
         .unwrap();
-        let selected = tui_target(&matches).unwrap().unwrap();
+        let crate::cli::TuiTarget::Remote { host, name } =
+            crate::cli::tui_targets(&matches).unwrap().remove(0)
+        else {
+            panic!("expected remote target")
+        };
+        let selected = tui_target(&matches, host, name);
         assert_eq!(selected.destination, "user@alias");
         assert_eq!(selected.session_name, "a / λ");
         assert_eq!(selected.helper, Some(helper));
@@ -375,34 +390,6 @@ mod tests {
         assert!(selected.forward_agent);
         assert!(selected.detach_others);
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn remote_session_defaults_do_not_inherit_local_target_selection() {
-        for values in [
-            vec!["bkpr", "-r", "alias"],
-            vec!["bkpr", "tui", "--remote", "alias"],
-            vec!["bkpr", "remote", "-r", "alias", "inspect"],
-        ] {
-            let matches =
-                crate::cli::parse(values.into_iter().map(std::ffi::OsString::from)).unwrap();
-            let selected = target(&matches).unwrap();
-            assert_eq!(selected.session_name, "bkpr");
-            assert!(selected.helper.is_none());
-            assert!(selected.ssh_config.is_none());
-            assert!(!selected.forward_agent);
-            assert!(!selected.detach_others);
-        }
-        for values in [
-            vec!["bkpr"],
-            vec!["bkpr", "-s", "local / λ"],
-            vec!["bkpr", "--socket", "/absent/socket"],
-            vec!["bkpr", "remote", "-r", "alias", "inspect"],
-        ] {
-            let matches =
-                crate::cli::parse(values.into_iter().map(std::ffi::OsString::from)).unwrap();
-            assert!(tui_target(&matches).unwrap().is_none());
-        }
     }
 
     #[test]
@@ -421,7 +408,7 @@ mod tests {
             &mut output,
             &info(),
             -1,
-            || Ok(false),
+            || Ok(Lifecycle::Active),
             |operation| {
                 calls += 1;
                 match operation {
@@ -472,7 +459,7 @@ mod tests {
             &mut output,
             &info(),
             -1,
-            || Ok(false),
+            || Ok(Lifecycle::Active),
             |_| panic!("authority operation reached native dispatch"),
         )
         .unwrap();
@@ -495,7 +482,15 @@ mod tests {
             &mut output,
             &info(),
             -1,
-            || Ok(calls.get() != 0),
+            || {
+                Ok(if calls.get() == 0 {
+                    Lifecycle::Active
+                } else {
+                    Lifecycle::Detached {
+                        reason: "takeover".into(),
+                    }
+                })
+            },
             |_| {
                 calls.set(calls.get() + 1);
                 Ok(json!({"observed":true}))
@@ -521,7 +516,13 @@ mod tests {
             || {
                 let previous = checks.get();
                 checks.set(previous + 1);
-                Ok(previous != 0)
+                Ok(if previous == 0 {
+                    Lifecycle::Active
+                } else {
+                    Lifecycle::Detached {
+                        reason: "takeover".into(),
+                    }
+                })
             },
             |_| panic!("lifecycle revocation must not dispatch an operation"),
         )
@@ -540,11 +541,27 @@ mod tests {
             &mut output,
             &info(),
             -1,
-            || Ok(false),
+            || Ok(Lifecycle::Active),
             |_| panic!("EOF must not become a native operation"),
         )
         .unwrap();
         assert_eq!(records(output).len(), 1);
+    }
+
+    #[test]
+    fn unexpected_transport_loss_is_not_reported_as_successful_detachment() {
+        let mut input = console_input(b"{\"op\":\"shutdown\"}\n");
+        let mut output = Vec::new();
+        let result = run_console(
+            &mut input,
+            &mut output,
+            &info(),
+            -1,
+            || Ok(Lifecycle::TransportClosed),
+            |_| panic!("transport loss must not dispatch queued operations"),
+        );
+        assert!(result.is_err());
+        assert!(records(output).iter().all(|row| row["event"] != "detached"));
     }
 
     #[test]

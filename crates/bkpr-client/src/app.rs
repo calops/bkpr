@@ -1,4 +1,5 @@
 use crate::transport::{Endpoint, RegisteredClient};
+use crate::tree::{Node as TreeNode, Owner as TreeOwner, Target as TreeTarget, Tree};
 use crate::{
     controller::*,
     transport,
@@ -16,8 +17,8 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::{Read, Write},
     os::fd::AsRawFd,
-    path::{Path, PathBuf},
-    sync::{Arc, mpsc},
+    path::PathBuf,
+    sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
 use termwiz::input::{InputEvent, InputParser, Modifiers, MouseButtons};
@@ -137,8 +138,11 @@ mod scrollback;
 mod search;
 #[path = "selection.rs"]
 mod selection;
+#[path = "sessions.rs"]
+mod sessions;
 #[path = "theme_switcher.rs"]
 mod theme_switcher;
+use sessions::{Coordinator, SessionAction};
 
 enum Background {
     Management(management::Completion),
@@ -210,78 +214,22 @@ impl PressedPointer {
     }
 }
 
+#[derive(Clone)]
 pub struct Options {
     pub read_only: bool,
     pub detach_others: bool,
     pub clipboard_policy: String,
-    pub shell: Vec<String>,
-    pub cwd: PathBuf,
-    pub home: PathBuf,
-    pub isolated_environment: bool,
 }
-impl Options {
-    /// Terminal-only options for a remote attachment. Remote launch authority
-    /// must never be synthesized from this process's directory or environment.
-    pub fn remote() -> Self {
+impl Default for Options {
+    fn default() -> Self {
         Self {
             read_only: false,
             detach_others: false,
             clipboard_policy: "ask".into(),
-            shell: Vec::new(),
-            cwd: PathBuf::new(),
-            home: PathBuf::new(),
-            isolated_environment: false,
         }
     }
-    pub fn inherited() -> Result<Self> {
-        Ok(Self {
-            read_only: false,
-            detach_others: false,
-            clipboard_policy: "ask".into(),
-            shell: vec![
-                std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()),
-                "-i".into(),
-            ],
-            cwd: std::env::current_dir()?,
-            home: std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .context("HOME is required")?,
-            isolated_environment: false,
-        })
-    }
 }
 
-#[derive(serde::Deserialize)]
-struct RemoteDefaultsReply {
-    session: SessionInfo,
-    #[serde(default)]
-    spawn_defaults: Option<SpawnDefaults>,
-}
-
-fn remote_spawn_defaults(endpoint: &Endpoint, expected: &SessionInfo) -> Result<SpawnDefaults> {
-    use std::os::unix::ffi::OsStrExt;
-    let reply: RemoteDefaultsReply =
-        serde_json::from_value(endpoint.checked(Operation::SessionInfo)?)
-            .context("reading authoritative remote spawn defaults before activation")?;
-    anyhow::ensure!(
-        reply.session == *expected,
-        "remote session or daemon changed while reading spawn defaults"
-    );
-    let defaults = reply.spawn_defaults.context(
-        "remote daemon does not provide authoritative spawn defaults; a compatible remote bkprd is required",
-    )?;
-    anyhow::ensure!(
-        !defaults.argv.is_empty()
-            && !defaults.argv[0].is_empty()
-            && defaults.argv.iter().all(|arg| !arg.contains('\0'))
-            && defaults.cwd.is_absolute()
-            && defaults.home.is_absolute()
-            && !defaults.cwd.as_os_str().as_bytes().contains(&0)
-            && !defaults.home.as_os_str().as_bytes().contains(&0),
-        "remote daemon returned invalid spawn defaults"
-    );
-    Ok(defaults)
-}
 struct Attached {
     view: String,
     spec: ViewSpec,
@@ -308,6 +256,7 @@ impl Attached {
         drain_ready: bool,
     ) -> Result<Option<updates::Receipt>> {
         self.retirement_requested = true;
+        self.pump.cancel();
         self.retirement_focus_out |= focus_out;
         if matches!(self.retirement_policy, RetirementPolicy::Visible) {
             let mut hidden = self.spec.clone();
@@ -452,17 +401,33 @@ struct OverlayFocus {
     window: Option<String>,
     pane: Option<String>,
     sidebar: bool,
-    cursor: Option<SidebarTarget>,
+    tree_target: Option<TreeTarget>,
 }
-struct App<'a> {
-    socket: &'a Endpoint,
+struct AppRuntime {
+    jobs: jobs::Scope<Background>,
+    input: Option<InputPump>,
+    tree: Arc<Mutex<Tree>>,
+    toasts: Arc<Mutex<toast::ToastStack>>,
+}
+struct App {
+    socket: Endpoint,
     options: Options,
+    spawn_defaults: Option<SpawnDefaults>,
+    session_action: Option<SessionAction>,
+    namespace: (u64, u64),
+    backgrounded: bool,
+    notification_source: Option<String>,
+    tree: Arc<Mutex<Tree>>,
+    tree_press: Option<TreeTarget>,
+    sidebar_target: Option<TreeTarget>,
+    sidebar_backend_available: bool,
+    sidebar_has_workspace: bool,
     registry: RegistrySnapshot,
     state: Controller,
     views: HashMap<String, Attached>,
     retiring: Vec<RetiringView>,
     retiring_candidates: Vec<RetiringCandidate>,
-    jobs: jobs::Jobs<Background>,
+    jobs: jobs::Scope<Background>,
     management: HashMap<String, ManagementIntent>,
     selection_epoch: u64,
     attach_slots: usize,
@@ -470,6 +435,7 @@ struct App<'a> {
     responses: Vec<DeviceResponse>,
     unconfirmed_views: usize,
     held: HashMap<String, (String, String)>,
+    key_events_report_releases: bool,
     input: InputPump,
     input_failures: HashMap<String, [Option<updates::InputFailure>; 3]>,
     view_failures: HashMap<String, String>,
@@ -493,7 +459,7 @@ struct App<'a> {
     theme_picker: Option<theme_switcher::Picker>,
     popover: crate::popover::Popover,
     overlays: OverlayStack<OverlayFocus>,
-    toasts: toast::ToastStack,
+    toasts: Arc<Mutex<toast::ToastStack>>,
     guide: GuideCache,
     chrome_graphics_enabled: bool,
     notified_focus: Option<(String, String)>,
@@ -501,14 +467,25 @@ struct App<'a> {
     lease_pending: HashSet<String>,
     host_focused: bool,
 }
-impl App<'_> {
+impl App {
     fn notify(&mut self, message: String) {
+        let message = match self
+            .notification_source
+            .as_deref()
+            .filter(|_| self.backgrounded)
+        {
+            Some(source) => format!("{source}: {message}"),
+            None => message,
+        };
         self.toasts
+            .lock()
+            .unwrap()
             .push(&message, Instant::now(), Duration::from_secs(5));
     }
 
     fn toast_timeout(&self, timeout: i32, now: Instant) -> i32 {
-        self.toasts.next_deadline().map_or(timeout, |deadline| {
+        let deadline = self.toasts.lock().unwrap().next_deadline();
+        deadline.map_or(timeout, |deadline| {
             let remaining = deadline.saturating_duration_since(now);
             let millis =
                 remaining.as_millis() + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
@@ -551,8 +528,7 @@ impl App<'_> {
             return false;
         }
         self.retire_resize("sidebar resized");
-        self.state.sidebar.hover(None);
-        self.state.sidebar.pointer_row = None;
+        self.clear_tree_pointer();
         self.pointer_capture = Some(PointerCapture::SidebarResize {
             size,
             offset: i32::from(x) - i32::from(self.screen_geometry(size).0.width),
@@ -575,16 +551,6 @@ impl App<'_> {
         }
         blocked
     }
-    fn sidebar_popup_target(&self) -> Option<&SidebarTarget> {
-        let consent = self
-            .consent
-            .as_ref()
-            .is_some_and(|consent| !consent.state.allowed && !consent.state.sent);
-        crate::controller::sidebar_popup_target(
-            &self.state,
-            consent || self.picker_open() || self.search_open(),
-        )
-    }
 
     fn begin_modal(&mut self) {
         self.restore_theme_preview();
@@ -603,7 +569,7 @@ impl App<'_> {
                 window: self.state.window.clone(),
                 pane: self.state.focused.clone(),
                 sidebar: self.state.sidebar.active,
-                cursor: self.state.sidebar.cursor.clone(),
+                tree_target: self.sidebar_target.clone(),
             }),
         );
         self.overlays.remove(crate::popover::SURFACE_ID);
@@ -627,10 +593,16 @@ impl App<'_> {
             self.state.workspace = focus.workspace;
             self.state.window = focus.window;
             self.state.focused = focus.pane;
-            self.state.sidebar.active = focus.sidebar;
-            self.state.sidebar.cursor = focus.cursor;
+            {
+                let mut tree = self.tree.lock().unwrap();
+                tree.active = focus.sidebar;
+                if let Some(target) = focus.tree_target {
+                    tree.restore_focus(target);
+                }
+            }
         }
         self.state.reconcile(&self.registry);
+        self.synchronize_tree_focus();
     }
     fn toggle_chrome(&mut self) {
         self.chrome_graphics_enabled = !self.chrome_graphics_enabled;
@@ -647,10 +619,140 @@ impl App<'_> {
         self.retire_resize("sidebar focused");
         self.selection_focus_lost();
         self.close_search();
-        self.state.sidebar.enter();
+        self.tree.lock().unwrap().enter();
+        self.synchronize_tree_focus();
     }
+    fn tree_owner(&self) -> TreeOwner {
+        TreeOwner {
+            slot: self.namespace.0.saturating_sub(1) as usize,
+            generation: self.namespace.1,
+        }
+    }
+    pub(super) fn synchronize_tree_focus(&mut self) {
+        let owner = self.tree_owner();
+        let tree = self.tree.lock().unwrap();
+        self.sidebar_target = tree.cursor.clone();
+        self.state.sidebar.preferred_columns = tree.preferred_columns;
+        self.state.sidebar.active = tree.active;
+        self.state.sidebar.cursor = tree.cursor.as_ref().and_then(|target| {
+            if target.owner != owner {
+                return None;
+            }
+            match &target.node {
+                TreeNode::Native(native) => Some(native.clone()),
+                TreeNode::Session => None,
+            }
+        });
+        self.state.sidebar.hover = tree.hover.as_ref().and_then(|target| {
+            if target.owner != owner {
+                return None;
+            }
+            match &target.node {
+                TreeNode::Native(native) => Some(native.clone()),
+                TreeNode::Session => None,
+            }
+        });
+        let selected = tree
+            .cursor
+            .as_ref()
+            .and_then(|target| tree.session(target.owner))
+            .or_else(|| tree.session(owner));
+        self.sidebar_backend_available =
+            selected.is_some_and(|session| session.group.status == SessionStatus::Online);
+        self.sidebar_has_workspace =
+            selected.is_some_and(
+                |session| match tree.cursor.as_ref().map(|target| &target.node) {
+                    Some(TreeNode::Native(target)) => session
+                        .registry
+                        .workspaces
+                        .iter()
+                        .any(|workspace| workspace.id == target.workspace()),
+                    _ => session.workspace.as_ref().is_some_and(|id| {
+                        session
+                            .registry
+                            .workspaces
+                            .iter()
+                            .any(|workspace| &workspace.id == id)
+                    }),
+                },
+            );
+    }
+    pub(super) fn leave_sidebar(&mut self) {
+        {
+            let mut tree = self.tree.lock().unwrap();
+            tree.active = false;
+            tree.hover(None);
+            tree.pointer_row = None;
+            tree.follow_active(self.tree_owner());
+        }
+        self.synchronize_tree_focus();
+    }
+    pub(super) fn enter_sessions(&mut self) {
+        self.enter_sidebar();
+        let owner = self.tree_owner();
+        self.tree.lock().unwrap().jump_session(owner);
+        self.synchronize_tree_focus();
+    }
+    fn emit_tree_action(&mut self, action: crate::keyguide::Action, size: Size) {
+        let target = self.sidebar_target.clone().or_else(|| {
+            self.sidebar_backend_available.then(|| TreeTarget {
+                owner: self.tree_owner(),
+                node: TreeNode::Session,
+            })
+        });
+        if let Some(target) = target {
+            self.session_action = Some(SessionAction::Tree {
+                target,
+                action,
+                size,
+            });
+        }
+    }
+    fn clear_tree_pointer(&mut self) {
+        {
+            let mut tree = self.tree.lock().unwrap();
+            tree.hover(None);
+            tree.pointer_row = None;
+        }
+        self.synchronize_tree_focus();
+    }
+    fn defaults(&self) -> Result<&SpawnDefaults> {
+        self.spawn_defaults
+            .as_ref()
+            .context("session has no validated launch defaults")
+    }
+
     fn supports_action(&self, action: crate::keyguide::Action) -> bool {
         use crate::keyguide::Action;
+        let backend_available = if self.state.sidebar.active {
+            self.sidebar_backend_available
+        } else {
+            self.spawn_defaults.is_some() && !self.socket.is_revoked()
+        };
+        if !backend_available {
+            return matches!(
+                action,
+                Action::CommandPrefix
+                    | Action::Detach
+                    | Action::EnterSessions
+                    | Action::ReconnectSession
+                    | Action::ToggleSidebar
+                    | Action::EnterSidebar
+                    | Action::LeaveSidebar
+                    | Action::Navigate(_)
+                    | Action::FoldSidebar
+                    | Action::UnfoldSidebar
+                    | Action::ToggleFoldSidebar
+                    | Action::ActivateSelected
+                    | Action::OpenThemes
+                    | Action::ToggleChrome
+                    | Action::Cancel
+                    | Action::Submit
+                    | Action::Edit(_)
+                    | Action::CycleView
+                    | Action::CycleField
+            );
+        }
         if self
             .state
             .form
@@ -664,9 +766,20 @@ impl App<'_> {
             Action::CommandPrefix => !self.resize_capturing() || self.resize_dragging(),
             Action::Resize { .. } => !self.options.read_only && !self.resize_dragging(),
             Action::CreateTerminal => {
-                !self.options.read_only && self.state.current(&self.registry).is_some()
+                !self.options.read_only
+                    && if self.state.sidebar.active {
+                        self.sidebar_has_workspace
+                    } else {
+                        self.state.current(&self.registry).is_some()
+                    }
             }
-            Action::CloseSelected => !self.options.read_only && self.state.sidebar.cursor.is_some(),
+            Action::CloseSelected => {
+                !self.options.read_only
+                    && self
+                        .sidebar_target
+                        .as_ref()
+                        .is_some_and(|target| matches!(target.node, TreeNode::Native(_)))
+            }
             Action::CreateWorkspace
             | Action::RenameSelected
             | Action::RenameWorkspace
@@ -736,6 +849,17 @@ impl App<'_> {
         } else {
             None
         };
+        if modal.is_none()
+            && !self.state.prefix
+            && !self.resize_capturing()
+            && self.state.sidebar.active
+            && self
+                .sidebar_target
+                .as_ref()
+                .is_some_and(|target| matches!(target.node, TreeNode::Session))
+        {
+            return Context::Sessions;
+        }
         ContextState {
             modal,
             resizing: self.resize_capturing() && !self.state.prefix,
@@ -745,7 +869,7 @@ impl App<'_> {
                 .state
                 .sidebar
                 .active
-                .then_some(self.state.sidebar.cursor.is_some()),
+                .then_some(self.sidebar_target.is_some()),
             history: self.focused_history(),
         }
         .context()
@@ -765,7 +889,10 @@ impl App<'_> {
             | (u16::from(self.search_open()) << 5)
             | (u16::from(self.state.sidebar.active) << 6)
             | (u16::from(self.resize_dragging()) << 7)
-            | (u16::from(!self.management.is_empty()) << 8);
+            | (u16::from(!self.management.is_empty()) << 8)
+            | (u16::from(self.sidebar_backend_available) << 9)
+            | (u16::from(self.sidebar_has_workspace) << 10)
+            | (u16::from(self.spawn_defaults.is_some() && !self.socket.is_revoked()) << 11);
         let sidebar_columns = self.screen_geometry(size).0.width;
         let key = GuideKey {
             context,
@@ -776,7 +903,7 @@ impl App<'_> {
             resize_hint: self.resize_hint(),
         };
         if self.guide.key != Some(key) {
-            let available = size.rows.saturating_sub(2);
+            let available = size.rows;
             let tree_rows = available.div_ceil(2).min(4);
             let max_rows = available.saturating_sub(tree_rows).saturating_sub(2) as usize;
             let mut content = crate::keyguide::render_with(
@@ -824,6 +951,7 @@ impl App<'_> {
                 crate::keyguide::Context::Application
                     | crate::keyguide::Context::CommandPrefix
                     | crate::keyguide::Context::Sidebar { .. }
+                    | crate::keyguide::Context::Sessions
                     | crate::keyguide::Context::History
                     | crate::keyguide::Context::Search
                     | crate::keyguide::Context::Resize
@@ -855,7 +983,9 @@ impl App<'_> {
 
     fn guide_accent(&self) -> Option<u8> {
         match self.guide_context() {
-            crate::keyguide::Context::Sidebar { .. } => Some(4),
+            crate::keyguide::Context::Sidebar { .. } | crate::keyguide::Context::Sessions => {
+                Some(4)
+            }
             crate::keyguide::Context::CommandPrefix
             | crate::keyguide::Context::Resize
             | crate::keyguide::Context::History
@@ -904,7 +1034,7 @@ impl App<'_> {
                     })?;
                 } else {
                     self.show_existing(target.pane_id)?;
-                    self.state.sidebar.active = false;
+                    self.leave_sidebar();
                 }
             }
         }
@@ -947,7 +1077,8 @@ impl App<'_> {
         };
         (placement.outer, content)
     }
-    fn open_form(&mut self, kind: FormKind, value: String) {
+    fn open_form(&mut self, kind: FormKind, value: String) -> Result<()> {
+        self.socket.ensure_live()?;
         self.begin_modal();
         self.finder = None;
         self.popover.hide();
@@ -991,20 +1122,22 @@ impl App<'_> {
                 }
                 _ => None,
             });
+        let defaults = self.defaults()?;
         let directory = if matches!(kind, FormKind::CreateWindow) {
             self.state
                 .focused
                 .as_ref()
                 .and_then(|id| self.registry.panes.iter().find(|pane| pane.id == *id))
                 .map(|pane| pane.foreground_cwd.as_ref().unwrap_or(&pane.cwd).clone())
-                .unwrap_or_else(|| self.options.cwd.clone())
+                .unwrap_or_else(|| defaults.cwd.clone())
         } else {
-            self.options.cwd.clone()
+            defaults.cwd.clone()
         };
         self.state.open(kind, value);
         let form = self.state.form.as_mut().unwrap();
         form.fields.inherit_directory(directory);
         form.target = target;
+        Ok(())
     }
     fn focus(&mut self, pane: String) {
         if self.state.focused.as_ref() != Some(&pane) {
@@ -1045,6 +1178,7 @@ impl App<'_> {
         command: management::Command,
         selection: Option<management::Selection>,
     ) -> Result<()> {
+        self.socket.ensure_live()?;
         let changes_selection = selection.is_some()
             || matches!(
                 &command,
@@ -1161,8 +1295,17 @@ impl App<'_> {
                 Ok(Background::Management(result)) => {
                     if form_pending {
                         self.state.form = None;
-                        if result.selection.is_some() {
-                            self.state.sidebar.active = false;
+                        if result.selection.is_some() && !self.backgrounded {
+                            let owner = self
+                                .tree
+                                .lock()
+                                .unwrap()
+                                .cursor
+                                .as_ref()
+                                .map(|target| target.owner);
+                            if owner.is_none_or(|owner| owner == self.tree_owner()) {
+                                self.leave_sidebar();
+                            }
                         }
                     }
                     self.accept_management(result, intent);
@@ -1202,7 +1345,7 @@ impl App<'_> {
                         }
                         self.view_failures.insert(pane.to_owned(), message.clone());
                     }
-                    if !form_pending {
+                    if !form_pending || self.backgrounded {
                         self.notify(message);
                     }
                 }
@@ -1650,8 +1793,14 @@ impl App<'_> {
             .iter()
             .any(|response| response.pane == pane && response.view == view)
             || self.consent.as_ref().is_some_and(|consent| {
-                consent.pane == pane && consent.view == view && consent.reply.is_some()
+                consent.pane == pane
+                    && consent.view == view
+                    && (consent.reply.is_some() || consent.state.sent)
             })
+            || self
+                .paste_target
+                .as_ref()
+                .is_some_and(|(origin, target)| origin == pane && target == view)
     }
     fn reap_responses(&mut self) {
         let mut index = 0;
@@ -1694,7 +1843,7 @@ impl App<'_> {
             && !self.options.read_only
             && (self.notified_focus.as_ref() == Some(&target)
                 || self.focus_out_pending.contains(&target));
-        if wait_policy && self.device_busy(pane, &target.1) {
+        if wait_policy && self.device_busy(pane, &target.1) && !self.backgrounded {
             let attached = self.views.get_mut(pane).unwrap();
             attached.retirement_requested = true;
             attached.retirement_focus_out |= focus_out;
@@ -1704,7 +1853,13 @@ impl App<'_> {
             .pressed_pointers
             .borrow()
             .iter()
-            .any(|pressed| pressed.origin.pane == pane && pressed.origin.view == target.1);
+            .any(|pressed| pressed.origin.pane == pane && pressed.origin.view == target.1)
+            && (!wait_policy
+                || (!self.device_busy(pane, &target.1)
+                    && !self
+                        .held
+                        .values()
+                        .any(|(origin, view)| origin == pane && view == &target.1)));
         let receipt = match self.views.get_mut(pane).unwrap().retire(
             &self.input,
             pane,
@@ -1795,15 +1950,16 @@ impl App<'_> {
         if self
             .consent
             .as_ref()
-            .is_some_and(|c| removed.contains(&c.pane))
+            .is_some_and(|c| removed.contains(&c.pane) && (!self.backgrounded || !c.state.sent))
         {
             let result = self.finish_consent(ClipboardResponse::denied());
             self.scope_input_result(result)?;
         }
-        if self
-            .paste_target
-            .as_ref()
-            .is_some_and(|(pane, _)| removed.contains(pane))
+        if !self.backgrounded
+            && self
+                .paste_target
+                .as_ref()
+                .is_some_and(|(pane, _)| removed.contains(pane))
         {
             let result = self.abort_listing("paste origin left the visible layout");
             self.scope_input_result(result)?;
@@ -2020,11 +2176,11 @@ impl App<'_> {
                 selection_epoch: self.selection_epoch,
                 cwd: pane.foreground_cwd.as_ref().unwrap_or(&pane.cwd).clone(),
             },
-            self.options.cwd.display().to_string(),
-        );
+            self.defaults()?.cwd.display().to_string(),
+        )?;
         Ok(())
     }
-    fn contextual_environment(&self) -> (PathBuf, bool) {
+    fn contextual_environment(&self) -> Result<(PathBuf, bool)> {
         if self.socket.is_remote()
             && let Some(pane) = self
                 .state
@@ -2032,9 +2188,10 @@ impl App<'_> {
                 .as_ref()
                 .and_then(|id| self.registry.panes.iter().find(|pane| pane.id == *id))
         {
-            (pane.home.clone(), pane.isolated_environment)
+            Ok((pane.home.clone(), pane.isolated_environment))
         } else {
-            (self.options.home.clone(), self.options.isolated_environment)
+            let defaults = self.defaults()?;
+            Ok((defaults.home.clone(), defaults.isolated_environment))
         }
     }
     fn spawn(&mut self, size: Size, axis: Axis) -> Result<()> {
@@ -2056,8 +2213,9 @@ impl App<'_> {
             .focused
             .as_ref()
             .and_then(|id| self.registry.panes.iter().find(|p| p.id == *id));
+        let defaults = self.defaults()?;
         let spec = PaneSpawnSpec {
-            argv: self.options.shell.clone(),
+            argv: defaults.argv.clone(),
             cwd: parent
                 .map(|p| {
                     if self.socket.is_remote() {
@@ -2066,15 +2224,15 @@ impl App<'_> {
                         p.cwd.clone()
                     }
                 })
-                .unwrap_or_else(|| self.options.cwd.clone()),
+                .unwrap_or_else(|| defaults.cwd.clone()),
             home: parent
                 .map(|p| p.home.clone())
-                .unwrap_or_else(|| self.options.home.clone()),
+                .unwrap_or_else(|| defaults.home.clone()),
             size,
             title: None,
             isolated_environment: parent
                 .map(|p| p.isolated_environment)
-                .unwrap_or(self.options.isolated_environment),
+                .unwrap_or(defaults.isolated_environment),
         };
         let target = self.state.focused.clone().unwrap_or_default();
         self.manage(
@@ -2280,7 +2438,11 @@ impl App<'_> {
                 }
             }
         }
-        let answer = begin_clipboard(out, &mut consent.state)?;
+        let native_id = std::mem::take(&mut consent.state.id);
+        consent.state.id = format!("a{}g{}_{}", self.namespace.0, self.namespace.1, native_id);
+        let answer = begin_clipboard(out, &mut consent.state);
+        consent.state.id = native_id;
+        let answer = answer?;
         if let Some(answer) = answer {
             self.finish_consent(answer)?;
         }
@@ -2533,7 +2695,7 @@ impl App<'_> {
                 {
                     bail!("focused execution is still live; it was not replaced");
                 }
-                let (home, isolated_environment) = self.contextual_environment();
+                let (home, isolated_environment) = self.contextual_environment()?;
                 self.manage(
                     management::Command::Reopen {
                         workspace_id,
@@ -2541,9 +2703,9 @@ impl App<'_> {
                         expected_revision,
                         pane_id,
                         spec: PaneSpawnSpec {
-                            argv: self.options.shell.clone(),
+                            argv: self.defaults()?.argv.clone(),
                             cwd: if form.selection == 1 {
-                                self.options.cwd.clone()
+                                self.defaults()?.cwd.clone()
                             } else {
                                 cwd
                             },
@@ -2603,12 +2765,12 @@ impl App<'_> {
                         name: (!form.fields.primary.value.trim().is_empty())
                             .then_some(form.fields.primary.value),
                         spec: PaneSpawnSpec {
-                            argv: self.options.shell.clone(),
+                            argv: self.defaults()?.argv.clone(),
                             cwd,
-                            home: self.options.home.clone(),
+                            home: self.defaults()?.home.clone(),
                             size,
                             title: None,
-                            isolated_environment: self.options.isolated_environment,
+                            isolated_environment: self.defaults()?.isolated_environment,
                         },
                     },
                     None,
@@ -2620,7 +2782,7 @@ impl App<'_> {
                 }
                 let workspace = self.form_workspace(form.target.as_ref())?;
                 let cwd = form.fields.directory();
-                let (home, isolated_environment) = self.contextual_environment();
+                let (home, isolated_environment) = self.contextual_environment()?;
                 self.manage(
                     management::Command::CreateWindow {
                         workspace_id: workspace.id,
@@ -2628,7 +2790,7 @@ impl App<'_> {
                         name: (!form.fields.primary.value.trim().is_empty())
                             .then_some(form.fields.primary.value),
                         spec: PaneSpawnSpec {
-                            argv: self.options.shell.clone(),
+                            argv: self.defaults()?.argv.clone(),
                             cwd,
                             home,
                             size,
@@ -2847,7 +3009,7 @@ impl App<'_> {
                 }
             }
         };
-        self.open_form(kind, value);
+        self.open_form(kind, value)?;
         self.state.form.as_mut().unwrap().target = Some((target, revision));
         Ok(())
     }
@@ -2867,7 +3029,183 @@ impl App<'_> {
             }
             SidebarTarget::Pane { pane, .. } => self.show_existing(pane)?,
         }
-        self.state.sidebar.active = false;
+        self.leave_sidebar();
+        Ok(())
+    }
+    fn tree_dispatch_action(action: crate::keyguide::Action) -> bool {
+        use crate::keyguide::Action;
+        matches!(
+            action,
+            Action::ActivateSelected
+                | Action::CreateWorkspace
+                | Action::CreateTerminal
+                | Action::RenameSelected
+                | Action::CloseSelected
+                | Action::RenameWorkspace
+                | Action::RenamePane
+                | Action::TerminatePane
+                | Action::CloseWorkspace
+                | Action::ChooseWorkspace
+                | Action::ChooseWindow
+                | Action::ChoosePane
+                | Action::ReopenPane
+                | Action::SplitHorizontal
+                | Action::SplitVertical
+                | Action::RemovePaneFromLayout
+                | Action::MovePane(_)
+                | Action::FocusPane(_)
+                | Action::PreviousWorkspace
+                | Action::NextWorkspace
+                | Action::NextPane
+                | Action::StartResize
+                | Action::OpenFinder
+                | Action::ProjectDetails
+                | Action::ReconnectSession
+        )
+    }
+    pub(super) fn dispatch_tree_action(
+        &mut self,
+        target: Option<&SidebarTarget>,
+        action: crate::keyguide::Action,
+        size: Size,
+    ) -> Result<()> {
+        use crate::keyguide::Action;
+        if let Some(target) = target {
+            if !self
+                .registry
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.id == target.workspace())
+            {
+                bail!("selected workspace no longer exists");
+            }
+            self.state.switch(target.workspace().into(), &self.registry);
+            match target {
+                SidebarTarget::Workspace(_) => {}
+                SidebarTarget::Window { window, .. } => {
+                    if !self.state.current(&self.registry).is_some_and(|workspace| {
+                        workspace.windows.iter().any(|entry| entry.id == *window)
+                    }) {
+                        bail!("selected window no longer exists");
+                    }
+                    self.state.switch_window(window.clone(), &self.registry);
+                }
+                SidebarTarget::Pane { workspace, pane } => {
+                    let pane = self
+                        .registry
+                        .panes
+                        .iter()
+                        .find(|entry| {
+                            entry.id == *pane && entry.workspace_id.as_ref() == Some(workspace)
+                        })
+                        .context("selected terminal no longer exists")?;
+                    let window = pane
+                        .window_id
+                        .clone()
+                        .context("selected terminal has no window")?;
+                    if !self.state.current(&self.registry).is_some_and(|workspace| {
+                        workspace.windows.iter().any(|entry| entry.id == window)
+                    }) {
+                        bail!("selected terminal's owning window no longer exists");
+                    }
+                    self.state.switch_window(window, &self.registry);
+                    self.state.focus(pane.id.clone());
+                }
+            }
+            self.state.sidebar.select(target.clone());
+            self.selection_epoch = self.selection_epoch.wrapping_add(1);
+        }
+        match action {
+            Action::ActivateSelected => {
+                let target = target.context("no selected native tree target")?;
+                self.activate_sidebar(target.clone())?;
+            }
+            Action::RenameSelected => self.edit_sidebar(false)?,
+            Action::CloseSelected => self.edit_sidebar(true)?,
+            Action::CreateWorkspace => self.open_form(FormKind::CreateWorkspace, String::new())?,
+            Action::CreateTerminal => self.open_form(FormKind::CreateWindow, String::new())?,
+            Action::RenameWorkspace => {
+                let name = self
+                    .state
+                    .current(&self.registry)
+                    .context("no workspace")?
+                    .name
+                    .clone();
+                self.open_form(FormKind::RenameWorkspace, name)?;
+            }
+            Action::RenamePane => {
+                let pane = self
+                    .state
+                    .focused
+                    .as_ref()
+                    .and_then(|id| self.registry.panes.iter().find(|pane| pane.id == *id))
+                    .context("no focused terminal")?;
+                self.open_form(FormKind::RenamePane, pane.title.clone())?;
+            }
+            Action::TerminatePane => self.open_form(FormKind::TerminatePane, String::new())?,
+            Action::CloseWorkspace => self.open_form(FormKind::CloseWorkspace, String::new())?,
+            Action::ChooseWorkspace => self.open_form(FormKind::ChooseWorkspace, String::new())?,
+            Action::ChooseWindow => self.open_form(FormKind::ChooseWindow, String::new())?,
+            Action::ChoosePane => self.open_form(FormKind::ChoosePane, String::new())?,
+            Action::ProjectDetails => self.open_form(FormKind::ProjectDetails, String::new())?,
+            Action::ReopenPane => self.confirm_reopen()?,
+            Action::SplitHorizontal => self.spawn(size, Axis::Horizontal)?,
+            Action::SplitVertical => self.spawn(size, Axis::Vertical)?,
+            Action::RemovePaneFromLayout => {
+                if self.options.read_only {
+                    bail!("read-only client cannot change layouts");
+                }
+                let workspace = self
+                    .state
+                    .current(&self.registry)
+                    .context("no workspace")?
+                    .id
+                    .clone();
+                let window = self
+                    .state
+                    .current_window(&self.registry)
+                    .cloned()
+                    .context("no window")?;
+                let pane = self
+                    .state
+                    .focused
+                    .as_deref()
+                    .context("no focused terminal")?;
+                self.operation(Operation::LayoutUpdate {
+                    workspace_id: workspace,
+                    window_id: window.id,
+                    expected_revision: window.revision,
+                    layout: remove_leaf(window.layout, pane),
+                })?;
+            }
+            Action::MovePane(direction) => self.move_directional(direction.key(), size)?,
+            Action::FocusPane(direction) => {
+                let rects = self.rects(size);
+                self.directional(direction.key(), &rects);
+            }
+            Action::PreviousWorkspace | Action::NextWorkspace => {
+                self.retire_resize("workspace focus changed");
+                self.selection_epoch = self.selection_epoch.wrapping_add(1);
+                self.state.cycle_workspace(
+                    &self.registry,
+                    if action == Action::PreviousWorkspace {
+                        -1
+                    } else {
+                        1
+                    },
+                );
+                self.select_current_lease();
+            }
+            Action::NextPane => {
+                self.retire_resize("pane focus changed");
+                self.selection_epoch = self.selection_epoch.wrapping_add(1);
+                self.state.cycle_pane(&self.registry);
+                self.select_current_lease();
+            }
+            Action::StartResize => self.begin_keyboard_resize(size)?,
+            Action::OpenFinder => self.begin_finder(),
+            _ => bail!("action is not available for a native tree target"),
+        }
         Ok(())
     }
     fn sidebar_key(&mut self, event: &KeyEvent, size: Size) -> Result<bool> {
@@ -2876,16 +3214,14 @@ impl App<'_> {
             return Ok(false);
         }
         let context = if self.state.sidebar.active {
-            Context::Sidebar {
-                selected: self.state.sidebar.cursor.is_some(),
-            }
+            self.guide_context()
         } else {
             Context::Application
         };
         let action = self.binding_action(context, event)?;
         if action == Some(Action::ToggleSidebar) {
             if self.state.sidebar.active {
-                self.state.sidebar.active = false;
+                self.leave_sidebar();
             } else {
                 self.enter_sidebar();
             }
@@ -2899,56 +3235,35 @@ impl App<'_> {
         }
         self.state.suppressed.insert(event.key.clone());
         self.refresh_guide(size);
-        let page = (sidebar_content_rows(self.screen_geometry(size).0, self.guide_rows(size)) / 2)
-            .max(1) as isize;
+        let page = (self.state.sidebar_rows(size, self.guide_rows(size)) / 2).max(1) as isize;
         match action {
-            Some(Action::LeaveSidebar) => self.state.sidebar.active = false,
-            Some(Action::Navigate(direction)) => self.state.sidebar.navigate(match direction {
-                Navigation::Previous => -1,
-                Navigation::Next => 1,
-                Navigation::First => isize::MIN,
-                Navigation::Last => isize::MAX,
-                Navigation::PagePrevious => -page,
-                Navigation::PageNext => page,
-            }),
-            Some(Action::FoldSidebar) => self.state.sidebar.fold(Some(true)),
-            Some(Action::UnfoldSidebar) => self.state.sidebar.fold(Some(false)),
-            Some(Action::ToggleFoldSidebar) => self.state.sidebar.fold(None),
-            Some(Action::ActivateSelected) => {
-                if let Some(target) = self.state.sidebar.cursor.clone() {
-                    self.activate_sidebar(target)?;
-                }
+            Some(Action::LeaveSidebar) => self.leave_sidebar(),
+            Some(Action::EnterSessions) => self.enter_sessions(),
+            Some(Action::Navigate(direction)) => {
+                self.tree.lock().unwrap().navigate(match direction {
+                    Navigation::Previous => -1,
+                    Navigation::Next => 1,
+                    Navigation::First => isize::MIN,
+                    Navigation::Last => isize::MAX,
+                    Navigation::PagePrevious => -page,
+                    Navigation::PageNext => page,
+                });
             }
-            Some(Action::CreateWorkspace) => {
-                self.open_form(FormKind::CreateWorkspace, String::new())
-            }
-            Some(Action::CreateTerminal) => {
-                if let Some(target) = self.state.sidebar.cursor.clone() {
-                    let workspace = self
-                        .registry
-                        .workspaces
-                        .iter()
-                        .find(|workspace| workspace.id == target.workspace())
-                        .context("selected workspace no longer exists")?;
-                    let target = (
-                        SidebarTarget::Workspace(workspace.id.clone()),
-                        workspace.revision,
-                    );
-                    self.open_form(FormKind::CreateWindow, String::new());
-                    self.state.form.as_mut().unwrap().target = Some(target);
-                }
-            }
-            Some(Action::RenameSelected) => self.edit_sidebar(false)?,
-            Some(Action::CloseSelected) => self.edit_sidebar(true)?,
-            Some(Action::OpenFinder) => self.begin_finder(),
+            Some(Action::FoldSidebar) => self.tree.lock().unwrap().fold(Some(true)),
+            Some(Action::UnfoldSidebar) => self.tree.lock().unwrap().fold(Some(false)),
+            Some(Action::ToggleFoldSidebar) => self.tree.lock().unwrap().fold(None),
+            Some(
+                action @ (Action::ActivateSelected
+                | Action::CreateWorkspace
+                | Action::CreateTerminal
+                | Action::RenameSelected
+                | Action::CloseSelected
+                | Action::OpenFinder
+                | Action::ReconnectSession),
+            ) => self.emit_tree_action(action, size),
             _ => {}
         }
-        self.state.sidebar.reconcile(
-            &self.registry,
-            self.state.workspace.as_deref(),
-            self.state.window.as_deref(),
-            self.state.focused.as_deref(),
-        );
+        self.synchronize_tree_focus();
         Ok(true)
     }
     fn move_directional(&mut self, key: &str, size: Size) -> Result<()> {
@@ -3302,31 +3617,35 @@ impl App<'_> {
             if !matches!(action, Some(Action::StartSearch | Action::CopySelection)) {
                 self.close_search();
             }
+            if self.state.sidebar.active
+                && let Some(action) = action
+                && Self::tree_dispatch_action(action)
+            {
+                self.emit_tree_action(action, size);
+                return Ok(false);
+            }
             match action {
                 Some(Action::Detach) => return Ok(true),
                 Some(Action::ToggleChrome) => self.toggle_chrome(),
+                Some(Action::EnterSessions) => self.enter_sessions(),
                 Some(Action::OpenThemes) => self.begin_theme_picker(),
                 Some(Action::StartSearch) => self.begin_search()?,
                 Some(Action::StartHistory) => self.enter_history(rects)?,
                 Some(Action::StartResize) => self.begin_keyboard_resize(size)?,
-                Some(Action::EnterSidebar) => {
-                    self.state.sidebar.enter();
-                    self.retire_resize("sidebar focused");
-                    self.selection_focus_lost();
-                }
+                Some(Action::EnterSidebar) => self.enter_sidebar(),
                 Some(Action::CopySelection) => self.copy_focused_selection()?,
                 Some(Action::ProjectDetails) => {
-                    self.open_form(FormKind::ProjectDetails, String::new())
+                    self.open_form(FormKind::ProjectDetails, String::new())?
                 }
                 Some(Action::CreateWorkspace) => {
-                    self.open_form(FormKind::CreateWorkspace, String::new())
+                    self.open_form(FormKind::CreateWorkspace, String::new())?
                 }
                 Some(Action::CreateTerminal) => {
-                    self.open_form(FormKind::CreateWindow, String::new())
+                    self.open_form(FormKind::CreateWindow, String::new())?
                 }
                 Some(Action::RenameWorkspace) => {
                     if let Some(workspace) = self.state.current(&self.registry) {
-                        self.open_form(FormKind::RenameWorkspace, workspace.name.clone());
+                        self.open_form(FormKind::RenameWorkspace, workspace.name.clone())?;
                     }
                 }
                 Some(Action::RenamePane) => {
@@ -3337,19 +3656,21 @@ impl App<'_> {
                         .and_then(|id| self.registry.panes.iter().find(|p| p.id == *id))
                         .map(|p| p.title.clone())
                         .unwrap_or_default();
-                    self.open_form(FormKind::RenamePane, title);
+                    self.open_form(FormKind::RenamePane, title)?;
                 }
                 Some(Action::TerminatePane) => {
-                    self.open_form(FormKind::TerminatePane, String::new())
+                    self.open_form(FormKind::TerminatePane, String::new())?
                 }
                 Some(Action::CloseWorkspace) => {
-                    self.open_form(FormKind::CloseWorkspace, String::new())
+                    self.open_form(FormKind::CloseWorkspace, String::new())?
                 }
                 Some(Action::ChooseWorkspace) => {
-                    self.open_form(FormKind::ChooseWorkspace, String::new())
+                    self.open_form(FormKind::ChooseWorkspace, String::new())?
                 }
-                Some(Action::ChooseWindow) => self.open_form(FormKind::ChooseWindow, String::new()),
-                Some(Action::ChoosePane) => self.open_form(FormKind::ChoosePane, String::new()),
+                Some(Action::ChooseWindow) => {
+                    self.open_form(FormKind::ChooseWindow, String::new())?
+                }
+                Some(Action::ChoosePane) => self.open_form(FormKind::ChoosePane, String::new())?,
                 Some(Action::ReopenPane) => self.confirm_reopen()?,
                 Some(Action::SplitHorizontal) => self.spawn(size, Axis::Horizontal)?,
                 Some(Action::SplitVertical) => self.spawn(size, Axis::Vertical)?,
@@ -3422,7 +3743,7 @@ impl App<'_> {
                 self.active()
             };
             if let Some((pane, view)) = target {
-                let held = (event.action == KeyAction::Press)
+                let held = (self.key_events_report_releases && event.action == KeyAction::Press)
                     .then(|| (event.key.clone(), (pane.clone(), view.clone())));
                 self.enqueue(
                     &pane,
@@ -3460,7 +3781,7 @@ impl App<'_> {
         physical: Option<(MouseButton, MouseAction)>,
         size: Size,
         rects: &[(String, Rect)],
-        workspace_hits: &[(SidebarTarget, u16)],
+        workspace_hits: &[(TreeTarget, u16)],
         hits: &HitMap,
     ) -> Result<()> {
         self.validate_sidebar_resize(size);
@@ -3513,33 +3834,32 @@ impl App<'_> {
         let captured = self.pointer_capture.clone();
         // Existing pane, selection, divider and UI gestures retain ownership
         // even when a new toast appears underneath their pointer.
-        if captured.is_none() || self.toasts.pointer_captured() {
-            let phase = if wheel {
-                PointerPhase::Wheel
-            } else {
-                match action {
-                    MouseAction::Press => PointerPhase::Press,
-                    MouseAction::Release => PointerPhase::Release,
-                    MouseAction::Motion => PointerPhase::Motion,
-                }
-            };
-            if !matches!(
-                self.toasts
-                    .route_pointer(mouse.x, mouse.y, phase, event_button),
-                toast::PointerRoute::Pass
-            ) {
-                if !wheel {
-                    self.last_button = button;
-                    match action {
-                        MouseAction::Press => self.pointer_capture = Some(PointerCapture::Ui),
-                        MouseAction::Release => self.pointer_capture = None,
-                        MouseAction::Motion => {}
-                    }
-                }
-                self.sidebar_resize_hover = false;
-                self.update_resize_hover(size, None);
-                return Ok(());
+        let phase = if wheel {
+            PointerPhase::Wheel
+        } else {
+            match action {
+                MouseAction::Press => PointerPhase::Press,
+                MouseAction::Release => PointerPhase::Release,
+                MouseAction::Motion => PointerPhase::Motion,
             }
+        };
+        let toast_route = {
+            let mut toasts = self.toasts.lock().unwrap();
+            if captured.is_none() || toasts.pointer_captured() {
+                toasts.route_pointer(mouse.x, mouse.y, phase, event_button)
+            } else {
+                toast::PointerRoute::Pass
+            }
+        };
+        if !matches!(toast_route, toast::PointerRoute::Pass) {
+            if !wheel {
+                self.last_button = button;
+            }
+            // ToastStack owns this physical gesture across session switches;
+            // do not leave a session-local UI capture behind on its old App.
+            self.sidebar_resize_hover = false;
+            self.update_resize_hover(size, None);
+            return Ok(());
         }
         let resize_point = !wheel
             && button == MouseButton::None
@@ -3561,15 +3881,17 @@ impl App<'_> {
             if action == MouseAction::Release {
                 self.pointer_capture = None;
             } else if action == MouseAction::Press {
+                self.tree_press = None;
                 self.pointer_capture = Some(PointerCapture::Ui);
             }
         }
         if let Some(PointerCapture::SidebarResize { offset, .. }) = captured {
             if !wheel {
-                self.state.sidebar.preferred_columns = Some(
+                self.tree.lock().unwrap().preferred_columns = Some(
                     (i32::from(mouse.x) - offset).clamp(3, i32::from(size.cols.saturating_sub(3)))
                         as u16,
                 );
+                self.synchronize_tree_focus();
                 self.sidebar_resize_hover = action != MouseAction::Release
                     || self.sidebar_resize_handle(size, mouse.x, mouse.y);
             }
@@ -3637,8 +3959,7 @@ impl App<'_> {
                 }
             ) && mouse.x >= self.screen_geometry(size).0.width
             {
-                self.state.sidebar.pointer_row = None;
-                self.state.sidebar.hover(None);
+                self.clear_tree_pointer();
             }
             match route {
                 PointerRoute::Dismiss("ui:modal") => {
@@ -3712,6 +4033,39 @@ impl App<'_> {
             }
         }
         if matches!(&captured, Some(PointerCapture::Ui)) && !wheel {
+            if action == MouseAction::Release
+                && let Some(target) = self.tree_press.take()
+                && mouse.x < self.screen_geometry(size).0.width
+                && workspace_hits
+                    .iter()
+                    .any(|(hit, row)| *row == mouse.y && hit == &target)
+            {
+                let accepted = {
+                    let mut tree = self.tree.lock().unwrap();
+                    if tree
+                        .rows
+                        .iter()
+                        .any(|row| row.target.as_ref() == Some(&target))
+                    {
+                        tree.enter();
+                        let double = tree.click(target.clone(), Instant::now());
+                        if double {
+                            tree.fold(None);
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                };
+                self.synchronize_tree_focus();
+                if accepted {
+                    self.session_action = Some(SessionAction::Tree {
+                        target,
+                        action: crate::keyguide::Action::ActivateSelected,
+                        size,
+                    });
+                }
+            }
             return Ok(());
         }
         let modal = self.state.form.is_some()
@@ -3732,39 +4086,33 @@ impl App<'_> {
         }
         let (sidebar, _) = self.screen_geometry(size);
         if origin.is_none() && mouse.x < sidebar.width {
-            self.state.sidebar.pointer_row = Some(mouse.y);
-            self.state.sidebar.hover(
-                workspace_hits
-                    .iter()
-                    .find(|(_, row)| *row == mouse.y)
-                    .map(|(target, _)| target),
-            );
-            if matches!(button, MouseButton::WheelUp | MouseButton::WheelDown) {
-                self.state
-                    .sidebar
-                    .scroll_by(if button == MouseButton::WheelUp {
+            let target = workspace_hits
+                .iter()
+                .find(|(_, row)| *row == mouse.y)
+                .map(|(target, _)| target);
+            {
+                let mut tree = self.tree.lock().unwrap();
+                tree.pointer_row = Some(mouse.y);
+                tree.hover(target);
+                if matches!(button, MouseButton::WheelUp | MouseButton::WheelDown) {
+                    tree.scroll_by(if button == MouseButton::WheelUp {
                         -3
                     } else {
                         3
                     });
-                return Ok(());
-            }
-            if button == MouseButton::Left
-                && action == MouseAction::Press
-                && let Some((target, _)) = workspace_hits.iter().find(|(_, row)| *row == mouse.y)
-            {
-                let double = self.state.sidebar.click(target.clone(), Instant::now());
-                self.activate_sidebar(target.clone())?;
-                if double {
-                    self.state.sidebar.select(target.clone());
-                    self.state.sidebar.fold(None);
                 }
             }
+            if event_button == MouseButton::Left
+                && action == MouseAction::Press
+                && captured.is_none()
+            {
+                self.tree_press = target.cloned();
+            }
+            self.synchronize_tree_focus();
             return Ok(());
         }
         if origin.is_none() {
-            self.state.sidebar.pointer_row = None;
-            self.state.sidebar.hover(None);
+            self.clear_tree_pointer();
         }
         let target = if let Some(origin) = origin {
             rects.iter().find(|(pane, _)| *pane == origin.pane)
@@ -3791,7 +4139,7 @@ impl App<'_> {
             return Ok(());
         }
         if origin.is_none() && button == MouseButton::Left && action == MouseAction::Press {
-            self.state.sidebar.active = false;
+            self.leave_sidebar();
             self.focus(pane.clone());
         }
         self.notify_focus()?;
@@ -4017,28 +4365,7 @@ impl App<'_> {
         let response = response.as_ref();
         terminal.theme_reply(response, out)?;
         self.color_reply(response);
-        if self.consent.is_none()
-            && self.state.form.is_none()
-            && (!self.search_open() || self.paste_offer.is_some())
-            && (!self.resize_capturing() || self.paste_offer.is_some())
-            && !self.options.read_only
-            && self.options.clipboard_policy != "deny"
-        {
-            self.paste_reply(response)?;
-        }
-        if let Some(consent) = self.consent.as_mut().filter(|c| c.state.sent) {
-            match clipboard_packet(&mut consent.state, response) {
-                Ok(Some(answer)) => self.finish_consent(answer)?,
-                Ok(None) => {}
-                Err(error) => {
-                    if consent.state.paste {
-                        let consent = self.consent.take().unwrap();
-                        return Err(self.fail_paste(&consent.pane, &consent.view, error, 0));
-                    }
-                    self.finish_consent(ClipboardResponse::denied())?;
-                }
-            }
-        }
+        self.device_reply(response)?;
         Ok(())
     }
 }
@@ -4146,199 +4473,135 @@ fn detach_failed_attach(
     }
 }
 
-pub fn run(socket: &Path, options: Options) -> Result<()> {
-    if !matches!(options.clipboard_policy.as_str(), "ask" | "allow" | "deny") {
-        bail!("clipboard must be ask, allow or deny");
+impl App {
+    fn new(
+        socket: Endpoint,
+        options: Options,
+        spawn_defaults: Option<SpawnDefaults>,
+        registry: RegistrySnapshot,
+        initial_size: Size,
+        runtime: AppRuntime,
+    ) -> Result<Self> {
+        let AppRuntime {
+            jobs,
+            input,
+            tree,
+            toasts,
+        } = runtime;
+        let state = Controller::new(&registry);
+        let input = match input {
+            Some(input) => input,
+            None => InputPump::new(&socket)?,
+        };
+        Ok(Self {
+            socket,
+            options,
+            spawn_defaults,
+            session_action: None,
+            namespace: (0, 0),
+            tree,
+            tree_press: None,
+            sidebar_target: None,
+            sidebar_backend_available: false,
+            sidebar_has_workspace: false,
+            backgrounded: false,
+            notification_source: None,
+            registry,
+            state,
+            views: HashMap::new(),
+            retiring: Vec::new(),
+            retiring_candidates: Vec::new(),
+            jobs,
+            management: HashMap::new(),
+            selection_epoch: 0,
+            attach_slots: 0,
+            retirement_budget: None,
+            responses: Vec::new(),
+            unconfirmed_views: 0,
+            held: HashMap::new(),
+            key_events_report_releases: false,
+            input,
+            input_failures: HashMap::new(),
+            view_failures: HashMap::new(),
+            consent: None,
+            answered: HashMap::new(),
+            deferred: RefCell::new(VecDeque::new()),
+            paste_offer: None,
+            paste_target: None,
+            enhanced_supported: None,
+            colors: ColorProbe::default(),
+            color_query_pending: false,
+            last_button: MouseButton::None,
+            pointer_capture: None,
+            sidebar_resize_hover: false,
+            pressed_pointers: RefCell::new(Vec::new()),
+            terminal_selection: selection::State::default(),
+            resizing: resizing::State::default(),
+            search: search::State::default(),
+            finder: None,
+            theme: crate::themes::ThemeId::default(),
+            theme_picker: None,
+            popover: crate::popover::Popover::new(initial_size),
+            overlays: OverlayStack::default(),
+            toasts,
+            guide: GuideCache::default(),
+            chrome_graphics_enabled: true,
+            notified_focus: None,
+            focus_out_pending: HashSet::new(),
+            lease_pending: HashSet::new(),
+            host_focused: true,
+        })
     }
-    run_attached(
-        Attachment::Local(RegisteredClient::register(socket)?),
-        options,
-        None,
-    )
 }
 
-pub fn run_remote(target: crate::remote::RemoteTarget, mut options: Options) -> Result<()> {
-    if !matches!(options.clipboard_policy.as_str(), "ask" | "allow" | "deny") {
-        bail!("clipboard must be ask, allow or deny");
-    }
-    options.detach_others |= target.detach_others;
-    let provenance = (target.destination.clone(), target.session_name.clone());
-    run_attached(
-        Attachment::Remote(crate::remote::RemoteSession::register(target)?),
-        options,
-        Some(provenance),
-    )
-}
-
-enum Attachment {
-    Local(RegisteredClient),
-    Remote(crate::remote::RemoteSession),
-}
-impl Attachment {
-    fn endpoint(&self) -> Endpoint {
-        match self {
-            Self::Local(client) => client.endpoint().clone(),
-            Self::Remote(session) => session.endpoint(),
+pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Result<()> {
+    anyhow::ensure!(
+        matches!(options.clipboard_policy.as_str(), "ask" | "allow" | "deny"),
+        "clipboard must be ask, allow or deny"
+    );
+    let terminal = TerminalGuard::enter()?;
+    let initial_size = dimensions()?;
+    let mut graphics = crate::chrome_graphics::ChromeGraphics::new()?;
+    let (mut resize_read, resize_write) = std::os::unix::net::UnixStream::pair()?;
+    resize_read.set_nonblocking(true)?;
+    resize_write.set_nonblocking(true)?;
+    struct ResizeSignal(signal_hook::SigId);
+    impl Drop for ResizeSignal {
+        fn drop(&mut self) {
+            signal_hook::low_level::unregister(self.0);
         }
     }
-    fn initialize<T>(
-        &mut self,
-        detach_others: bool,
-        setup: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
-        let ready = setup()?;
-        self.activate_once(detach_others)?;
-        Ok(ready)
+    let _resize = ResizeSignal(signal_hook::low_level::pipe::register(
+        signal_hook::consts::SIGWINCH,
+        resize_write,
+    )?);
+    let mut sessions = Coordinator::new(targets, options, initial_size)?;
+    let shared_tree = std::sync::Arc::clone(&sessions.tree);
+    let shared_toasts = std::sync::Arc::clone(&sessions.toasts);
+    struct ToastPresentation {
+        id: toast::ToastId,
+        style_revision: u64,
+        graphical: bool,
+        outer: Rect,
+        body: Rect,
+        frame: bkpr_protocol::Frame,
     }
-    fn activate_once(&mut self, detach_others: bool) -> Result<()> {
-        match self {
-            Self::Local(client) => client.activate_once(detach_others),
-            Self::Remote(session) => session.activate_once(detach_others),
-        }
-    }
-    fn consume_lifecycle(&mut self) -> Result<bool> {
-        match self {
-            Self::Local(client) => client.consume_lifecycle(),
-            Self::Remote(session) => session.poll_lifecycle(),
-        }
-    }
-    fn lifetime_fd(&self) -> std::os::fd::RawFd {
-        match self {
-            Self::Local(client) => client.lifetime_fd(),
-            Self::Remote(session) => session.lifetime_fd(),
-        }
-    }
-    fn close_for_shutdown(&mut self) {
-        match self {
-            Self::Local(client) => client.close_for_shutdown(),
-            Self::Remote(session) => session.close_for_shutdown(),
-        }
-    }
-    fn detach(&mut self) -> Result<()> {
-        match self {
-            Self::Local(client) => client.detach(),
-            Self::Remote(session) => session.disconnect(),
-        }
-    }
-}
-
-fn run_attached(
-    mut client: Attachment,
-    mut options: Options,
-    provenance: Option<(String, String)>,
-) -> Result<()> {
-    if !matches!(options.clipboard_policy.as_str(), "ask" | "allow" | "deny") {
-        bail!("clipboard must be ask, allow or deny");
-    }
-    let endpoint = client.endpoint();
-    let socket = &endpoint;
-    let remote_identity = match &client {
-        Attachment::Remote(session) => Some(session.info().clone()),
-        Attachment::Local(_) => None,
-    };
-    let (terminal, initial_size, jobs, input, mut graphics, mut resize_read, _resize) = client
-        .initialize(options.detach_others, || {
-            let terminal = TerminalGuard::enter()?;
-            let initial_size = dimensions()?;
-            let jobs = jobs::Jobs::new(8)?;
-            let input = InputPump::new(socket)?;
-            let graphics = crate::chrome_graphics::ChromeGraphics::new()?;
-            let (resize_read, resize_write) = std::os::unix::net::UnixStream::pair()?;
-            resize_read.set_nonblocking(true)?;
-            resize_write.set_nonblocking(true)?;
-            struct ResizeSignal(signal_hook::SigId);
-            impl Drop for ResizeSignal {
-                fn drop(&mut self) {
-                    signal_hook::low_level::unregister(self.0);
-                }
-            }
-            let resize = ResizeSignal(signal_hook::low_level::pipe::register(
-                signal_hook::consts::SIGWINCH,
-                resize_write,
-            )?);
-            if let Some(identity) = &remote_identity {
-                let defaults = remote_spawn_defaults(socket, identity)?;
-                options.shell = defaults.argv;
-                options.cwd = defaults.cwd;
-                options.home = defaults.home;
-                options.isolated_environment = defaults.isolated_environment;
-            }
-            Ok((
-                terminal,
-                initial_size,
-                jobs,
-                input,
-                graphics,
-                resize_read,
-                resize,
-            ))
-        })?;
-    let registry: RegistryResult = serde_json::from_value(socket.checked(Operation::Inspect)?)?;
-    let mut state = Controller::new(&registry.registry);
-    state.remote = provenance;
-    let mut registry_pump = updates::registry(socket, registry.registry.revision)?;
-    let mut app = App {
-        socket,
-        options,
-        registry: registry.registry,
-        state,
-        views: HashMap::new(),
-        retiring: Vec::new(),
-        retiring_candidates: Vec::new(),
-        jobs,
-        management: HashMap::new(),
-        selection_epoch: 0,
-        attach_slots: 0,
-        retirement_budget: None,
-        responses: Vec::new(),
-        unconfirmed_views: 0,
-        held: HashMap::new(),
-        input,
-        input_failures: HashMap::new(),
-        view_failures: HashMap::new(),
-        consent: None,
-        answered: HashMap::new(),
-        deferred: RefCell::new(VecDeque::new()),
-        paste_offer: None,
-        paste_target: None,
-        enhanced_supported: None,
-        colors: ColorProbe::default(),
-        color_query_pending: false,
-        last_button: MouseButton::None,
-        pointer_capture: None,
-        sidebar_resize_hover: false,
-        pressed_pointers: RefCell::new(Vec::new()),
-        terminal_selection: selection::State::default(),
-        resizing: resizing::State::default(),
-        search: search::State::default(),
-        finder: None,
-        theme: crate::themes::ThemeId::default(),
-        theme_picker: None,
-        popover: crate::popover::Popover::new(initial_size),
-        overlays: OverlayStack::default(),
-        toasts: toast::ToastStack::default(),
-        guide: GuideCache::default(),
-        chrome_graphics_enabled: true,
-        notified_focus: None,
-        focus_out_pending: HashSet::new(),
-        lease_pending: HashSet::new(),
-        host_focused: true,
-    };
     let result = (|| -> Result<()> {
         let mut terminal = terminal;
         let mut renderer = Renderer::default();
         let stdout = std::io::stdout();
         let mut out = std::io::BufWriter::with_capacity(256 * 1024, stdout.lock());
-        out.write_all(&app.colors.graphics.begin())?;
+        out.write_all(&sessions.app_mut().colors.graphics.begin())?;
         out.flush()?;
         let mut parser = InputParser::new();
         let mut demux = ReplyDemux::default();
+        let mut incoming = VecDeque::new();
+        let mut scoped_panes = Vec::<String>::new();
+        let mut resource_namespace = None;
         let mut last_input = Instant::now();
         let mut theme = Theme::default();
         let mut ui_palette = crate::themes::Palette::default();
         let mut project_palette = crate::project_colors::ProjectPalette::default();
-        let mut project_capacity = 0;
-        let mut project_capacity_revision = None;
         let mut chrome_projects = Vec::new();
         let mut chrome_foregrounds = Vec::new();
         let mut guide_theme = Theme::default();
@@ -4374,33 +4637,27 @@ fn run_attached(
         let mut guide_effects = graphics_frame(initial_size);
         let mut artwork_effects = graphics_frame(initial_size);
         let mut toast_effects = graphics_frame(initial_size);
+        let mut toast_frames: [Option<ToastPresentation>; 3] = std::array::from_fn(|_| None);
+        let mut toast_order = [0usize; 3];
         let mut resize_feedback_surface = UiSurface::new(initial_size);
         let mut resize_feedback_regions = Vec::new();
         let mut resize_feedback_style = None;
         let mut placeholders = HashMap::<String, UiSurface>::new();
+        let mut session_fds = Vec::new();
+        let mut fds = Vec::new();
         loop {
-            if client.consume_lifecycle()? {
+            let size = dimensions()?;
+            sessions.tick(size)?;
+            if sessions.should_exit() {
                 return Ok(());
             }
+            session_fds.clear();
+            sessions.append_poll_fds(&mut session_fds);
+            let session_timeout = sessions.timeout(1000);
+            let (attachment, generation) = sessions.namespace();
+            let active_owner = sessions.current_owner();
+            let app = sessions.app_mut();
             graphics.drain()?;
-            for failure in app.input.check()? {
-                app.record_input_failure(failure);
-            }
-            app.reap_retiring()?;
-            app.reap_responses();
-            let pointer_release = app.flush_pointer_releases();
-            app.scope_input_result(pointer_release)?;
-            let selection_release = app.flush_selection_release();
-            app.scope_input_result(selection_release)?;
-            app.complete_background()?;
-            if let Some(registry) = registry_pump.latest()?
-                && registry.revision >= app.registry.revision
-            {
-                app.observe_resize(&registry);
-                app.registry = registry;
-                app.state.reconcile(&app.registry);
-            }
-            let size = dimensions()?;
             for frame in [
                 &mut window_effects,
                 &mut popover_effects,
@@ -4412,15 +4669,26 @@ fn run_attached(
                 frame.images.clear();
                 frame.placements.clear();
             }
-            app.state.sidebar.reconcile(
-                &app.registry,
-                app.state.workspace.as_deref(),
-                app.state.window.as_deref(),
-                app.state.focused.as_deref(),
-            );
             app.validate_sidebar_resize(size);
             app.validate_resize(size);
             let rects = app.rects(size);
+            if resource_namespace != Some((attachment, generation))
+                || scoped_panes.len() != rects.len()
+                || scoped_panes
+                    .iter()
+                    .zip(&rects)
+                    .any(|(old, (id, _))| old != id)
+            {
+                renderer.set_resource_namespace(
+                    attachment,
+                    generation,
+                    rects.iter().map(|(id, _)| id.as_str()),
+                );
+                scoped_panes.clear();
+                scoped_panes.extend(rects.iter().map(|(id, _)| id.clone()));
+                resource_namespace = Some((attachment, generation));
+                placeholders.clear();
+            }
             app.sync_views(size, &rects)?;
             app.poll_views();
             let search = app.flush_search();
@@ -4484,83 +4752,77 @@ fn run_attached(
             )?;
             app.validate_resize(size);
             app.flush_resize()?;
-            if app
-                .paste_offer
-                .as_ref()
-                .is_some_and(|p| p.started.elapsed() > Duration::from_secs(4))
-            {
-                let result = app.abort_listing("enhanced paste listing timed out");
-                app.scope_input_result(result)?;
-            }
-            if app
-                .consent
-                .as_ref()
-                .is_some_and(|c| c.state.started.elapsed() > Duration::from_secs(4))
-            {
-                let result = app.finish_consent(ClipboardResponse::denied());
-                app.scope_input_result(result)?;
-            }
             app.refresh_guide(size);
             let guide_rows = app.guide_rows(size);
-            app.state.sidebar.viewport(sidebar_content_rows(
-                app.screen_geometry(size).0,
-                guide_rows,
-            ));
             ui_palette.update(&app.colors, app.theme);
             let ui_colors = ui_palette.probe();
             let pane_palette = app.theme.pane_palette(app.colors.truecolor);
             crate::appearance::update_region_theme(&mut popover_theme, ui_colors, None);
-            let workspace_hits = chrome(
+            // One presentation lock; input and Coordinator callbacks run only after release.
+            let mut tree = shared_tree.lock().unwrap();
+            let sidebar = screen_geometry(size, tree.preferred_columns).0;
+            let available = crate::controller::sidebar_content_rows(sidebar, guide_rows);
+            tree.viewport(available);
+            if let Some(row) = tree.pointer_row {
+                let target = row
+                    .checked_sub(2)
+                    .map(usize::from)
+                    .filter(|index| *index < available)
+                    .and_then(|index| tree.rows.get(tree.scroll + index))
+                    .and_then(|entry| entry.target.clone());
+                tree.hover(target.as_ref());
+            }
+            let consent_open = app
+                .consent
+                .as_ref()
+                .is_some_and(|consent| !consent.state.allowed && !consent.state.sent);
+            let tooltip_target = crate::controller::tree_popup_target(
+                &tree,
+                consent_open
+                    || app.state.form.is_some()
+                    || app.state.prefix
+                    || app.picker_open()
+                    || app.search_open(),
+            );
+            let workspace_hits = crate::controller::tree_chrome(
                 &mut chrome_surface,
-                crate::controller::ChromeContext {
-                    sidebar_popup: app
-                        .sidebar_popup_target()
+                crate::controller::TreeChromeContext {
+                    native: crate::controller::ChromeContext {
+                        size,
+                        state: &app.state,
+                        registry: &app.registry,
+                        rects: &rects,
+                        pane_graphics: &pane_graphics,
+                        guide_rows,
+                    },
+                    tree: &tree,
+                    active: active_owner,
+                    popup: tooltip_target
                         .map(|target| (target, popover_theme.background(Role::Panel, false))),
-                    size,
-                    state: &app.state,
-                    registry: &app.registry,
-                    rects: &rects,
-                    pane_graphics: &pane_graphics,
-                    guide_rows,
                 },
                 |pane| app.badge(pane),
                 |pane| app.views.get(pane).map(|view| &view.metadata),
                 |pane| app.history(pane),
                 &mut chrome_projects,
             );
-            if let Some(row) = app.state.sidebar.pointer_row {
-                app.state.sidebar.hover(
-                    workspace_hits
-                        .iter()
-                        .find(|(_, y)| *y == row)
-                        .map(|(target, _)| target),
-                );
-            }
             crate::appearance::update_theme(&mut theme, ui_colors);
-            if project_capacity_revision != Some(app.registry.revision) {
-                project_capacity = app
-                    .registry
-                    .panes
-                    .iter()
-                    .filter_map(|pane| pane.project.as_ref().and_then(|project| project.color_slot))
-                    .max()
-                    .map_or(0, |slot| slot.saturating_add(1));
-                project_capacity_revision = Some(app.registry.revision);
-            }
-            project_palette.update(ui_colors, project_capacity);
-            theme_chrome(
+            project_palette.update(ui_colors, tree.project_capacity());
+            crate::controller::theme_tree_chrome(
                 &mut chrome_surface,
                 &theme,
-                crate::controller::ChromeContext {
-                    sidebar_popup: app
-                        .sidebar_popup_target()
+                crate::controller::TreeChromeContext {
+                    native: crate::controller::ChromeContext {
+                        size,
+                        state: &app.state,
+                        registry: &app.registry,
+                        rects: &rects,
+                        pane_graphics: &pane_graphics,
+                        guide_rows,
+                    },
+                    tree: &tree,
+                    active: active_owner,
+                    popup: tooltip_target
                         .map(|target| (target, popover_theme.background(Role::Panel, false))),
-                    size,
-                    state: &app.state,
-                    registry: &app.registry,
-                    rects: &rects,
-                    pane_graphics: &pane_graphics,
-                    guide_rows,
                 },
                 |pane| app.views.get(pane).map(|view| &view.metadata),
                 &project_palette,
@@ -4571,44 +4833,9 @@ fn run_attached(
             marker_sources.clear();
             chrome_surface.frame.images.clear();
             chrome_surface.frame.placements.clear();
-            let sidebar_width = app.screen_geometry(size).0.width;
-            for (index, entry) in app
-                .state
-                .sidebar
-                .rows
-                .iter()
-                .skip(app.state.sidebar.scroll)
-                .take(sidebar_content_rows(
-                    app.screen_geometry(size).0,
-                    guide_rows,
-                ))
-                .enumerate()
+            for (_, artwork, col, row) in
+                crate::controller::tree_artwork_rows(&tree, size, guide_rows)
             {
-                let (artwork, col) = match entry.kind {
-                    SidebarRowKind::Workspace { .. } => (crate::chrome_graphics::Artwork::Hive, 1),
-                    SidebarRowKind::Pane { index, projected } => {
-                        let grouped = app.registry.workspaces.iter().any(|workspace| {
-                            app.registry.panes[index].workspace_id.as_ref() == Some(&workspace.id)
-                                && workspace.windows.len() > 1
-                        });
-                        (
-                            if projected {
-                                crate::chrome_graphics::Artwork::Bee
-                            } else {
-                                crate::chrome_graphics::Artwork::BeeHidden
-                            },
-                            if grouped { 6 } else { 4 },
-                        )
-                    }
-                    SidebarRowKind::Projects { .. }
-                    | SidebarRowKind::Window { .. }
-                    | SidebarRowKind::Detail { .. }
-                    | SidebarRowKind::Spacer => continue,
-                };
-                if col + 2 > sidebar_width.saturating_sub(1) {
-                    continue;
-                }
-                let row = index as u16 + 2;
                 let style =
                     &chrome_surface.frame.rows[usize::from(row)].cells[usize::from(col)].style;
                 let source = theme.effective_ink(style);
@@ -4640,37 +4867,43 @@ fn run_attached(
                 std::mem::swap(&mut pane_graphics, &mut next_pane_graphics);
                 // Readiness is display-list data, not destructive glyph edits.
                 // Repaint once on transition before the single physical write.
-                chrome(
+                crate::controller::tree_chrome(
                     &mut chrome_surface,
-                    crate::controller::ChromeContext {
-                        sidebar_popup: app
-                            .sidebar_popup_target()
+                    crate::controller::TreeChromeContext {
+                        native: crate::controller::ChromeContext {
+                            size,
+                            state: &app.state,
+                            registry: &app.registry,
+                            rects: &rects,
+                            pane_graphics: &pane_graphics,
+                            guide_rows,
+                        },
+                        tree: &tree,
+                        active: active_owner,
+                        popup: tooltip_target
                             .map(|target| (target, popover_theme.background(Role::Panel, false))),
-                        size,
-                        state: &app.state,
-                        registry: &app.registry,
-                        rects: &rects,
-                        pane_graphics: &pane_graphics,
-                        guide_rows,
                     },
                     |pane| app.badge(pane),
                     |pane| app.views.get(pane).map(|view| &view.metadata),
                     |pane| app.history(pane),
                     &mut chrome_projects,
                 );
-                theme_chrome(
+                crate::controller::theme_tree_chrome(
                     &mut chrome_surface,
                     &theme,
-                    crate::controller::ChromeContext {
-                        sidebar_popup: app
-                            .sidebar_popup_target()
+                    crate::controller::TreeChromeContext {
+                        native: crate::controller::ChromeContext {
+                            size,
+                            state: &app.state,
+                            registry: &app.registry,
+                            rects: &rects,
+                            pane_graphics: &pane_graphics,
+                            guide_rows,
+                        },
+                        tree: &tree,
+                        active: active_owner,
+                        popup: tooltip_target
                             .map(|target| (target, popover_theme.background(Role::Panel, false))),
-                        size,
-                        state: &app.state,
-                        registry: &app.registry,
-                        rects: &rects,
-                        pane_graphics: &pane_graphics,
-                        guide_rows,
                     },
                     |pane| app.views.get(pane).map(|view| &view.metadata),
                     &project_palette,
@@ -4721,10 +4954,6 @@ fn run_attached(
                 );
                 surface.apply_theme(&theme, Role::Muted, &[]);
             }
-            let consent_open = app
-                .consent
-                .as_ref()
-                .is_some_and(|consent| !consent.state.allowed && !consent.state.sent);
             if let Some(finder) = &mut app.finder {
                 finder.update_registry(&app.registry, |pane| {
                     app.views.get(pane).map(|view| &view.metadata)
@@ -4811,8 +5040,8 @@ fn run_attached(
                         workspace: app.state.workspace.clone(),
                         window: app.state.window.clone(),
                         pane: app.state.focused.clone(),
-                        sidebar: app.state.sidebar.active,
-                        cursor: app.state.sidebar.cursor.clone(),
+                        sidebar: tree.active,
+                        tree_target: tree.cursor.clone(),
                     });
                 app.overlays.present(
                     "ui:modal",
@@ -4922,8 +5151,6 @@ fn run_attached(
                     );
                 }
             }
-            let tooltip_target =
-                crate::controller::sidebar_popup_target(&app.state, popup || app.search_open());
             let anchor = tooltip_target.and_then(|target| {
                 workspace_hits
                     .iter()
@@ -4945,13 +5172,12 @@ fn run_attached(
                     height: last.saturating_sub(first).saturating_add(1),
                 })
             });
-            let tooltip = app.popover.paint(
-                &app.registry,
+            let tooltip = app.popover.paint_tree(
+                &tree,
                 tooltip_target.filter(|_| anchor.is_some()),
                 anchor.unwrap_or(0),
-                app.screen_geometry(size).0.width,
+                sidebar.width,
                 size,
-                |pane| app.views.get(pane).map(|view| &view.metadata),
             );
             graphics.prepare_joined(
                 size,
@@ -4973,13 +5199,12 @@ fn run_attached(
                         && graphics.decorate_joined(&mut popover_effects, 1, &[body, glyphs]);
                 }
                 if app.popover.set_graphical(popover_graphical) {
-                    app.popover.paint(
-                        &app.registry,
+                    app.popover.paint_tree(
+                        &tree,
                         tooltip_target,
                         anchor.unwrap_or(0),
-                        app.screen_geometry(size).0.width,
+                        sidebar.width,
                         size,
-                        |pane| app.views.get(pane).map(|view| &view.metadata),
                     );
                     app.popover.apply_theme(&popover_theme, &project_palette);
                 }
@@ -4995,6 +5220,7 @@ fn run_attached(
             let guide_rect = app.guide_geometry(size, popup);
             let mut guide_draw_rect = None;
             if let Some(rect) = guide_rect {
+                graphics.retain_decoration_sources(&mut guide_effects);
                 let body = Rect {
                     x: rect.x + 2,
                     y: rect.y + 1,
@@ -5185,9 +5411,12 @@ fn run_attached(
                 resize_feedback_regions = feedback_regions;
                 resize_feedback_style = Some(feedback_style);
             }
-            app.toasts.expire(Instant::now());
+            let sidebar_active = tree.active;
+            drop(tree);
+            let mut toasts = shared_toasts.lock().unwrap();
+            toasts.expire(Instant::now());
             crate::appearance::update_theme(&mut toast_theme, ui_colors);
-            app.toasts.paint(
+            toasts.paint(
                 size,
                 toast::ToastLayout {
                     max_width: 72,
@@ -5209,6 +5438,42 @@ fn run_attached(
                         )
                 },
             );
+            let mut toast_count = 0;
+            let mut visible_toasts = [false; 3];
+            for card in toasts.cards() {
+                let retained = &mut toast_frames[card.slot];
+                // Toast text is immutable per ID. UiSurface has no frame
+                // revision; size, material mode and Theme revision cover all
+                // subsequent text/style changes without warm frame copying.
+                let unchanged = retained.as_ref().is_some_and(|cached| {
+                    cached.id == card.id
+                        && cached.frame.size == card.surface.frame.size
+                        && cached.graphical == card.graphical
+                        && cached.style_revision == toast_theme.revision()
+                });
+                if !unchanged {
+                    *retained = Some(ToastPresentation {
+                        id: card.id,
+                        style_revision: toast_theme.revision(),
+                        graphical: card.graphical,
+                        outer: card.outer,
+                        body: card.body,
+                        frame: card.surface.frame.clone(),
+                    });
+                }
+                let cached = retained.as_mut().expect("visible toast presentation");
+                cached.outer = card.outer;
+                cached.body = card.body;
+                visible_toasts[card.slot] = true;
+                toast_order[toast_count] = card.slot;
+                toast_count += 1;
+            }
+            for (cached, visible) in toast_frames.iter_mut().zip(visible_toasts) {
+                if !visible {
+                    *cached = None;
+                }
+            }
+            drop(toasts);
             let faint_background = popup
                 && (consent_open || app.theme_picker.is_none())
                 && crate::appearance::MODAL_BACKGROUND_FAINT;
@@ -5225,7 +5490,7 @@ fn run_attached(
                 frame: &chrome_surface.frame,
                 selection: &[],
                 search: &[],
-                focused: app.host_focused && app.state.sidebar.active && !popup && !searching,
+                focused: app.host_focused && sidebar_active && !popup && !searching,
                 faint: faint_background,
             }];
             for (id, rect) in &rects {
@@ -5250,7 +5515,7 @@ fn run_attached(
                         faint: faint_background,
                         focused: !popup
                             && !searching
-                            && !app.state.sidebar.active
+                            && !sidebar_active
                             && app.state.focused.as_ref() == Some(id)
                             && app.input_enabled(id)
                             && app.history(id).is_none()
@@ -5470,7 +5735,10 @@ fn run_attached(
                     faint: false,
                 });
             }
-            for card in app.toasts.cards() {
+            for slot in &toast_order[..toast_count] {
+                let card = toast_frames[*slot]
+                    .as_ref()
+                    .expect("visible toast presentation");
                 surfaces.push(Surface {
                     palette: None,
                     id: "ui:toast",
@@ -5485,7 +5753,7 @@ fn run_attached(
                         SurfaceContent::All
                     },
                     rect: card.outer,
-                    frame: &card.surface.frame,
+                    frame: &card.frame,
                     selection: &[],
                     search: &[],
                     focused: false,
@@ -5512,9 +5780,6 @@ fn run_attached(
             }
             let scene = Scene { size, surfaces };
             let hits = scene.hit_map();
-            if client.consume_lifecycle()? {
-                return Ok(());
-            }
             // The application chooses the matte; the framework owns its physical
             // lifetime. Prepared requests alone are not visible pane materials.
             let background = if app.chrome_graphics_enabled
@@ -5533,14 +5798,10 @@ fn run_attached(
             };
             terminal.set_background(&mut out, background)?;
             renderer.render(&mut out, &scene, &app.colors, &mut terminal)?;
-            let mut fds = vec![
+            fds.clear();
+            fds.extend([
                 libc::pollfd {
                     fd: libc::STDIN_FILENO,
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-                libc::pollfd {
-                    fd: registry_pump.wake.as_raw_fd(),
                     events: libc::POLLIN,
                     revents: 0,
                 },
@@ -5560,16 +5821,12 @@ fn run_attached(
                     revents: 0,
                 },
                 libc::pollfd {
-                    fd: client.lifetime_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-                libc::pollfd {
                     fd: graphics.wake_fd(),
                     events: libc::POLLIN,
                     revents: 0,
                 },
-            ];
+            ]);
+            fds.extend_from_slice(&session_fds);
             for (pane, view) in &app.views {
                 if view.retirement_requested || app.view_failures.contains_key(pane) {
                     continue;
@@ -5587,15 +5844,16 @@ fn run_attached(
                 escape.as_millis().max(1) as i32
             };
             let timeout = app.selection_timeout(timeout);
-            let timeout = app.toast_timeout(timeout, Instant::now());
+            let timeout = if incoming.is_empty() {
+                app.toast_timeout(timeout.min(session_timeout), Instant::now())
+            } else {
+                0
+            };
             let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
             if ready < 0
                 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
             {
                 return Err(std::io::Error::last_os_error().into());
-            }
-            if client.consume_lifecycle()? {
-                return Ok(());
             }
             let mut resized = [0u8; 64];
             let mut geometry_changed = false;
@@ -5629,14 +5887,21 @@ fn run_attached(
             } else {
                 Vec::new()
             };
-            let mut incoming = VecDeque::from(decode_input(&mut parser, parts, available));
+            incoming.extend(decode_input(&mut parser, parts, available));
             while let Some(event) = incoming.pop_front() {
-                if client.consume_lifecycle()? {
-                    return Ok(());
+                if sessions.route_release(&event)? {
+                    continue;
                 }
+                if let ClientEvent::Reply(response) = &event
+                    && sessions.route_device_reply(response)?
+                {
+                    continue;
+                }
+                let app = sessions.app_mut();
                 match event {
                     ClientEvent::Reply(response) => {
                         if let Some(key) = response.strip_prefix(b"key;") {
+                            app.key_events_report_releases = true;
                             if app.dispatch_key(
                                 kitty_key(key)?,
                                 &mut out,
@@ -5651,6 +5916,7 @@ fn run_attached(
                         }
                     }
                     ClientEvent::Legacy(InputEvent::Key(key)) => {
+                        app.key_events_report_releases = false;
                         if app.dispatch_key(key_event(key), &mut out, input_size, input_rects)? {
                             return Ok(());
                         }
@@ -5687,7 +5953,11 @@ fn run_attached(
                     }
                     _ => {}
                 }
+                if app.session_action.is_some() {
+                    break;
+                }
             }
+            let app = sessions.app_mut();
             if app.color_query_pending {
                 terminal.prepare_background_query();
             }
@@ -5695,15 +5965,15 @@ fn run_attached(
         }
         Ok(())
     })();
-    let lifecycle = client.consume_lifecycle();
-    if result.as_ref().err().is_some_and(transport::server_closing) {
-        client.close_for_shutdown();
-    }
+    result.and(sessions.finish())
+}
+
+fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
+    let endpoint = app.socket.clone();
+    let socket = &endpoint;
+    let result = Ok(());
     if socket.is_revoked() {
-        // Backend revocation already retired this client's views and grants.
-        // Do not manufacture failed cleanup mutations with expired authority.
-        let mut finished =
-            shutdown_result(result, socket.session_ended()).and(lifecycle.map(|_| ()));
+        let mut finished = Ok(());
         match app.jobs.finish() {
             Ok(completions) => {
                 for completion in completions {
@@ -5716,9 +5986,12 @@ fn run_attached(
             Err(error) => accumulate_cleanup(&mut finished, Err(error)),
         }
         accumulate_cleanup(&mut finished, app.input.finish());
+        accumulate_cleanup(
+            &mut finished,
+            shutdown_result(client.detach(), socket.session_ended()),
+        );
         return finished;
     }
-    lifecycle?;
     app.retire_resize("client detached");
     let mut cleanup = Ok(());
     while app.consent.is_some() {
@@ -5831,7 +6104,7 @@ fn run_attached(
         drop(retired.attached);
         accumulate_cleanup(&mut released, result);
     }
-    let lifecycle = client.consume_lifecycle().map(|_| ());
+    let lifecycle = client.lifecycle().map(|_| ());
     let detached = shutdown_result(client.detach(), socket.session_ended());
     shutdown_result(result, socket.session_ended())
         .and(cleanup)
@@ -5900,6 +6173,8 @@ fn detach_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree;
+    use std::path::Path;
     #[test]
     fn rich_material_clears_frame_labels_without_touching_application_cells() {
         let size = Size {
@@ -5934,7 +6209,7 @@ mod tests {
         );
     }
 
-    fn fixture<'a>() -> (App<'a>, updates::Capture) {
+    fn fixture() -> (App, updates::Capture) {
         let registry = RegistrySnapshot {
             revision: 0,
             workspaces: Vec::new(),
@@ -5949,23 +6224,34 @@ mod tests {
                         std::sync::LazyLock::new(|| {
                             Endpoint::unmanaged(Path::new("/unused-ui-test-endpoint"))
                         });
-                    &ENDPOINT
+                    ENDPOINT.clone()
                 },
                 options: Options {
                     read_only: false,
                     detach_others: false,
                     clipboard_policy: "ask".into(),
-                    shell: vec!["/bin/sh".into(), "-i".into()],
+                },
+                session_action: None,
+                namespace: (1, 1),
+                tree: Arc::new(Mutex::new(Tree::default())),
+                tree_press: None,
+                sidebar_target: None,
+                sidebar_backend_available: false,
+                sidebar_has_workspace: false,
+                backgrounded: false,
+                notification_source: Some("session 0".into()),
+                spawn_defaults: Some(SpawnDefaults {
+                    argv: vec!["/bin/sh".into(), "-i".into()],
                     cwd: PathBuf::from("/fixture"),
                     home: PathBuf::from("/fixture/home"),
                     isolated_environment: true,
-                },
+                }),
                 registry,
                 state,
                 views: HashMap::new(),
                 retiring: Vec::new(),
                 retiring_candidates: Vec::new(),
-                jobs: jobs::Jobs::new(8).unwrap(),
+                jobs: jobs::Scope::new(8).unwrap(),
                 management: HashMap::new(),
                 selection_epoch: 0,
                 attach_slots: 0,
@@ -5973,6 +6259,7 @@ mod tests {
                 responses: Vec::new(),
                 unconfirmed_views: 0,
                 held: HashMap::new(),
+                key_events_report_releases: true,
                 input,
                 input_failures: HashMap::new(),
                 view_failures: HashMap::new(),
@@ -5996,7 +6283,7 @@ mod tests {
                 theme_picker: None,
                 popover: crate::popover::Popover::new(size()),
                 overlays: OverlayStack::default(),
-                toasts: toast::ToastStack::default(),
+                toasts: Arc::new(Mutex::new(toast::ToastStack::default())),
                 guide: GuideCache::default(),
                 chrome_graphics_enabled: true,
                 notified_focus: None,
@@ -6008,7 +6295,330 @@ mod tests {
         )
     }
 
-    fn theme_key(app: &mut App<'_>, key: &str, text: &str, modifiers: u16) {
+    fn metadata_session(app: &App, owner: TreeOwner, status: SessionStatus) -> Arc<tree::Session> {
+        let mut sidebar = Sidebar::default();
+        sidebar.reconcile(
+            &app.registry,
+            app.state.workspace.as_deref(),
+            app.state.window.as_deref(),
+            app.state.focused.as_deref(),
+        );
+        Arc::new(tree::Session {
+            owner,
+            group: SessionGroup {
+                label: format!("session {}", owner.slot),
+                status,
+                detail: String::new(),
+                remote: false,
+            },
+            registry: Arc::new(app.registry.clone()),
+            rows: sidebar.rows.clone().into(),
+            workspace: app.state.workspace.clone(),
+            window: app.state.window.clone(),
+            focused: app.state.focused.clone(),
+            snapshots: Arc::new(HashMap::new()),
+            statuses: Arc::new(HashMap::new()),
+            history: Arc::new(HashMap::new()),
+        })
+    }
+    fn publish_test_tree(app: &mut App) {
+        let owner = app.tree_owner();
+        let metadata = metadata_session(app, owner, SessionStatus::Online);
+        app.tree.lock().unwrap().reconcile(vec![metadata], owner);
+        app.synchronize_tree_focus();
+    }
+
+    #[test]
+    fn unavailable_session_has_no_native_launch_authority_or_native_hints() {
+        use crate::keyguide::Action;
+        let (mut app, _) = fixture();
+        app.socket = Endpoint::unavailable();
+        app.spawn_defaults = None;
+        for action in [
+            Action::CreateWorkspace,
+            Action::CreateTerminal,
+            Action::OpenFinder,
+            Action::StartSearch,
+            Action::StartResize,
+            Action::SplitHorizontal,
+            Action::SendPrefix,
+        ] {
+            assert!(!app.supports_action(action));
+        }
+        for action in [
+            Action::EnterSessions,
+            Action::ReconnectSession,
+            Action::OpenThemes,
+            Action::Detach,
+        ] {
+            assert!(app.supports_action(action));
+        }
+        let error = app
+            .open_form(FormKind::CreateWorkspace, "new".into())
+            .unwrap_err();
+        assert!(transport::detached_before_dispatch(&error));
+        assert!(app.state.form.is_none());
+        assert!(app.spawn_defaults.is_none());
+    }
+
+    #[test]
+    fn clipboard_callbacks_accept_only_the_original_attachment_generation() {
+        let (mut app, _) = fixture();
+        app.namespace = (1, 2);
+        app.consent = Some(consent(false));
+        for id in ["a2g2_request", "a1g1_request"] {
+            app.device_reply(
+                format!("5522;type=read:id={id}:status=DATA:mime=dGV4dC9wbGFpbg==;b2xk").as_bytes(),
+            )
+            .unwrap();
+            assert!(app.consent.as_ref().unwrap().state.contents.is_empty());
+        }
+        app.device_reply(
+            b"5522;type=read:id=a1g2_request:status=DATA:mime=dGV4dC9wbGFpbg==;bmF0aXZl",
+        )
+        .unwrap();
+        let consent = app.consent.as_ref().unwrap();
+        assert_eq!(
+            consent.state.id, "request",
+            "native callback identity must not be rewritten"
+        );
+        assert_eq!(consent.state.contents[0].data, b"native");
+        assert!(
+            app.session_navigation_allowed(),
+            "an already-dispatched device callback cannot stall another session"
+        );
+        app.consent.as_mut().unwrap().state.sent = false;
+        assert!(
+            !app.session_navigation_allowed(),
+            "user-decision modal retains capture"
+        );
+    }
+
+    #[test]
+    fn legacy_keys_do_not_wait_for_releases_the_host_cannot_report() {
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        physical_keys(&mut app, b"a").unwrap();
+        assert!(matches!(
+            capture.try_recv().unwrap(),
+            Operation::Pane {
+                request: PaneRequest::Key { .. },
+                ..
+            }
+        ));
+        assert!(app.held.is_empty());
+        app.backgrounded = true;
+        app.retire_view("focused-pane", true).unwrap();
+        assert!(matches!(
+            capture.try_recv().unwrap(),
+            Operation::Pane {
+                request: PaneRequest::Update { .. },
+                ..
+            }
+        ));
+        app.retire_view("focused-pane", true).unwrap();
+        assert!(!app.views.contains_key("focused-pane"));
+    }
+
+    #[test]
+    fn hidden_view_retirement_keeps_owed_key_release_on_its_original_view() {
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        app.backgrounded = true;
+        app.held.insert(
+            "KeyA".into(),
+            ("focused-pane".into(), "focused-view".into()),
+        );
+        app.retire_view("focused-pane", true).unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Update { spec, .. },
+        } if pane_id == "focused-pane" && !spec.visible && !spec.interactive && !spec.clipboard));
+        app.retire_view("focused-pane", true).unwrap();
+        assert!(app.views.contains_key("focused-pane"));
+        assert!(
+            app.views
+                .get_mut("focused-pane")
+                .unwrap()
+                .pump
+                .latest()
+                .unwrap()
+                .is_none()
+        );
+        let mut release = key("KeyA");
+        release.action = KeyAction::Release;
+        app.key(release, &mut Vec::new(), size(), &[]).unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { view_id, event },
+        } if pane_id == "focused-pane" && view_id == "focused-view" && event.action == KeyAction::Release));
+        assert!(app.held.is_empty());
+        app.retire_view("focused-pane", true).unwrap();
+        assert!(!app.views.contains_key("focused-pane"));
+    }
+
+    #[test]
+    fn tree_click_selects_on_release_and_consumes_the_whole_gesture() {
+        let (mut app, capture) = fixture();
+        let own = app.tree_owner();
+        let foreign = TreeOwner {
+            slot: 1,
+            generation: 7,
+        };
+        app.tree.lock().unwrap().reconcile(
+            vec![
+                metadata_session(&app, own, SessionStatus::Online),
+                metadata_session(&app, foreign, SessionStatus::Online),
+            ],
+            own,
+        );
+        let target = TreeTarget {
+            owner: foreign,
+            node: TreeNode::Session,
+        };
+        let tree_hits = vec![(target.clone(), 3)];
+        let size = size();
+        let frame = blank(size);
+        let hits = Scene {
+            size,
+            surfaces: vec![Surface {
+                id: "ui:chrome",
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: size.cols,
+                    height: size.rows,
+                },
+                frame: &frame,
+                palette: None,
+                content: SurfaceContent::Cells,
+                selection: &[],
+                search: &[],
+                focused: false,
+                faint: false,
+            }],
+        }
+        .hit_map();
+        let mut parser = InputParser::new();
+        let mut demux = ReplyDemux::default();
+        for (packet, pressed) in [
+            (b"\x1b[<0;3;4M".as_slice(), true),
+            (b"\x1b[<0;3;4m".as_slice(), false),
+        ] {
+            for event in decode_input(&mut parser, demux.feed(packet), false) {
+                let ClientEvent::Mouse {
+                    event,
+                    button,
+                    action,
+                } = event
+                else {
+                    panic!("expected mouse event");
+                };
+                app.mouse(event, Some((button, action)), size, &[], &tree_hits, &hits)
+                    .unwrap();
+            }
+            if pressed {
+                assert!(app.session_action.is_none());
+                assert!(matches!(app.pointer_capture, Some(PointerCapture::Ui)));
+            }
+        }
+        assert!(matches!(app.session_action, Some(SessionAction::Tree {
+            target: ref selected, action: crate::keyguide::Action::ActivateSelected, ..
+        }) if selected == &target));
+        assert_eq!(app.tree.lock().unwrap().cursor.as_ref(), Some(&target));
+        assert!(
+            app.state.sidebar.cursor.is_none(),
+            "foreign IDs must not enter local context"
+        );
+        assert!(app.pointer_capture.is_none());
+        assert!(capture.try_recv().is_err());
+    }
+
+    #[test]
+    fn foreign_tree_navigation_uses_source_capabilities_without_local_native_ids() {
+        use crate::keyguide::Action;
+        let (mut app, capture) = fixture();
+        unavailable_fixture(&mut app);
+        let own = app.tree_owner();
+        let foreign = TreeOwner {
+            slot: 9,
+            generation: 3,
+        };
+        let native = SidebarTarget::Pane {
+            workspace: "history".into(),
+            pane: "focused-pane".into(),
+        };
+        let selected = TreeTarget {
+            owner: foreign,
+            node: TreeNode::Native(native.clone()),
+        };
+        let source = metadata_session(&app, own, SessionStatus::Online);
+        let foreign_source = metadata_session(&app, foreign, SessionStatus::Online);
+        {
+            let mut tree = app.tree.lock().unwrap();
+            tree.reconcile(vec![source.clone(), foreign_source], own);
+            tree.enter();
+            tree.select(selected.clone());
+            tree.hover(Some(&selected));
+        }
+        app.synchronize_tree_focus();
+        assert!(app.state.sidebar.active);
+        assert_eq!(app.state.sidebar.cursor, None);
+        assert_eq!(app.state.sidebar.hover, None);
+        assert!(app.supports_action(Action::CreateTerminal));
+        let current_workspace = app.state.workspace.clone();
+        app.key(key("ArrowUp"), &mut Vec::new(), size(), &[])
+            .unwrap();
+        assert_eq!(app.state.workspace, current_workspace);
+        assert_eq!(
+            app.tree.lock().unwrap().cursor.as_ref().unwrap().owner,
+            foreign
+        );
+        assert!(app.session_action.is_none());
+        app.tree.lock().unwrap().reconcile(
+            vec![
+                source,
+                metadata_session(&app, foreign, SessionStatus::Offline),
+            ],
+            own,
+        );
+        app.synchronize_tree_focus();
+        assert_eq!(app.guide_context(), crate::keyguide::Context::Sessions);
+        assert!(!app.supports_action(Action::CreateWorkspace));
+        assert!(!app.supports_action(Action::CreateTerminal));
+        let mut reconnect = key("KeyR");
+        reconnect.text = "R".into();
+        reconnect.modifiers = 1;
+        app.key(reconnect, &mut Vec::new(), size(), &[]).unwrap();
+        assert!(matches!(app.session_action, Some(SessionAction::Tree {
+            target: TreeTarget { owner, node: TreeNode::Session },
+            action: Action::ReconnectSession, ..
+        }) if owner == foreign));
+        assert!(capture.try_recv().is_err());
+    }
+
+    #[test]
+    fn headless_online_tree_keeps_prefix_creation_on_its_exact_owner() {
+        let (mut app, capture) = fixture();
+        publish_test_tree(&mut app);
+        app.enter_sessions();
+        assert!(app.tree.lock().unwrap().rows.is_empty());
+        assert!(app.state.sidebar.active);
+        assert!(app.sidebar_target.is_none());
+        app.state.prefix = true;
+        let mut create = key("KeyC");
+        create.text = "c".into();
+        app.key(create, &mut Vec::new(), size(), &[]).unwrap();
+        assert!(matches!(app.session_action, Some(SessionAction::Tree {
+            target: TreeTarget { owner, node: TreeNode::Session },
+            action: crate::keyguide::Action::CreateWorkspace, ..
+        }) if owner == app.tree_owner()));
+        assert!(
+            app.state.form.is_none(),
+            "coordinator must dispatch the owning context"
+        );
+        assert!(capture.try_recv().is_err());
+    }
+
+    fn theme_key(app: &mut App, key: &str, text: &str, modifiers: u16) {
         for action in [KeyAction::Press, KeyAction::Release] {
             app.key(
                 KeyEvent {
@@ -6334,7 +6944,7 @@ mod tests {
         assert!(received.try_recv().is_err());
         assert!(!app.state.suppressed.contains("KeyY"));
     }
-    fn unavailable_fixture(app: &mut App<'_>) {
+    fn unavailable_fixture(app: &mut App) {
         attach_fixture(app);
         app.views.clear();
         app.notified_focus = None;
@@ -6359,9 +6969,10 @@ mod tests {
             }],
         });
         app.state = Controller::new(&app.registry);
+        publish_test_tree(app);
     }
 
-    fn reopen_key(app: &mut App<'_>) -> Result<bool> {
+    fn reopen_key(app: &mut App) -> Result<bool> {
         app.state.prefix = true;
         let mut event = key("KeyR");
         event.text = "R".into();
@@ -6409,12 +7020,16 @@ mod tests {
     fn modal_cancel_restores_sidebar_context_and_pending_submit_keeps_ownership() {
         let (mut app, captured) = fixture();
         unavailable_fixture(&mut app);
-        app.state.sidebar.active = true;
-        app.state.sidebar.cursor = Some(SidebarTarget::Workspace("history".into()));
+        app.enter_sidebar();
+        app.tree.lock().unwrap().select(TreeTarget {
+            owner: app.tree_owner(),
+            node: TreeNode::Native(SidebarTarget::Workspace("history".into())),
+        });
+        app.synchronize_tree_focus();
         let focus = app.state.focused.clone();
-        app.open_form(FormKind::RenameWorkspace, "name".into());
-        app.state.sidebar.active = false;
-        app.state.sidebar.cursor = None;
+        app.open_form(FormKind::RenameWorkspace, "name".into())
+            .unwrap();
+        app.leave_sidebar();
         app.state.form.as_mut().unwrap().pending = Some("accepted-request".into());
         app.key(key("Escape"), &mut Vec::new(), size(), &[])
             .unwrap();
@@ -6446,12 +7061,13 @@ mod tests {
             let listener = UnixListener::bind(&socket).unwrap();
             let (mut app, received) = fixture();
             let endpoint = Endpoint::unmanaged(&socket);
-            app.socket = &endpoint;
+            app.socket = endpoint.clone();
             unavailable_fixture(&mut app);
             if !has_foreground_cwd {
                 app.registry.panes[0].foreground_cwd = None;
             }
-            app.options.shell = vec!["/client/configured-shell".into(), "--interactive".into()];
+            app.spawn_defaults.as_mut().unwrap().argv =
+                vec!["/client/configured-shell".into(), "--interactive".into()];
             let server = thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
@@ -6495,7 +7111,7 @@ mod tests {
                 })
             );
             let request = server.join().unwrap();
-            let jobs = std::mem::replace(&mut app.jobs, jobs::Jobs::new(1).unwrap());
+            let jobs = std::mem::replace(&mut app.jobs, jobs::Scope::new(1).unwrap());
             let completions = jobs.finish().unwrap();
             assert_eq!(completions.len(), 1);
             assert!(completions[0].result.is_err());
@@ -6511,13 +7127,16 @@ mod tests {
                     assert_eq!(window_id, "history-window");
                     assert_eq!(expected_revision, 7);
                     assert_eq!(pane_id, "focused-pane");
-                    assert_eq!(spec.argv, app.options.shell);
-                    assert_eq!(spec.home, app.options.home);
-                    assert_eq!(spec.isolated_environment, app.options.isolated_environment);
+                    assert_eq!(spec.argv, app.defaults().unwrap().argv);
+                    assert_eq!(spec.home, app.defaults().unwrap().home);
+                    assert_eq!(
+                        spec.isolated_environment,
+                        app.defaults().unwrap().isolated_environment
+                    );
                     assert_eq!(
                         spec.cwd,
                         if use_client_cwd {
-                            app.options.cwd.clone()
+                            app.defaults().unwrap().cwd.clone()
                         } else if has_foreground_cwd {
                             PathBuf::from("/observed/cwd")
                         } else {
@@ -6638,10 +7257,10 @@ mod tests {
         assert!(spec.visible && spec.interactive);
         assert!(!spec.input && !spec.clipboard);
     }
-    fn attach_fixture(app: &mut App<'_>) {
+    fn attach_fixture(app: &mut App) {
         attach_named_fixture(app, "focused-pane", "focused-view");
     }
-    fn attach_named_fixture(app: &mut App<'_>, pane: &str, view: &str) {
+    fn attach_named_fixture(app: &mut App, pane: &str, view: &str) {
         app.registry.panes.push(PaneInfo {
             id: pane.into(),
             workspace_id: None,
@@ -6649,12 +7268,12 @@ mod tests {
             title: "test shell".into(),
             status: PaneStatus::Running,
             exit_code: None,
-            cwd: app.options.cwd.clone(),
+            cwd: app.defaults().unwrap().cwd.clone(),
             foreground_cwd: None,
             harness: None,
             harness_status: None,
             project: None,
-            home: app.options.home.clone(),
+            home: app.defaults().unwrap().home.clone(),
             isolated_environment: true,
         });
         let metadata = PaneSnapshot {
@@ -6797,15 +7416,19 @@ mod tests {
         assert_eq!(frame.rows[0].cells[0].text.as_str(), "N");
         assert_eq!(frame.images, vec![new]);
     }
-    fn physical_keys(app: &mut App<'_>, bytes: &[u8]) -> Result<()> {
+    fn physical_keys(app: &mut App, bytes: &[u8]) -> Result<()> {
         let mut parser = InputParser::new();
         let mut demux = ReplyDemux::default();
         for event in decode_input(&mut parser, demux.feed(bytes), false) {
             let key = match event {
                 ClientEvent::Reply(packet) if packet.starts_with(b"key;") => {
+                    app.key_events_report_releases = true;
                     kitty_key(&packet[4..])?
                 }
-                ClientEvent::Legacy(InputEvent::Key(key)) => key_event(key),
+                ClientEvent::Legacy(InputEvent::Key(key)) => {
+                    app.key_events_report_releases = false;
+                    key_event(key)
+                }
                 _ => panic!("expected physical keyboard event"),
             };
             assert!(!app.key(key, &mut Vec::new(), size(), &[])?);
@@ -6911,16 +7534,17 @@ mod tests {
                 title: id.into(),
                 status: PaneStatus::Running,
                 exit_code: None,
-                cwd: app.options.cwd.clone(),
+                cwd: app.defaults().unwrap().cwd.clone(),
                 foreground_cwd: None,
                 harness: None,
                 harness_status: None,
                 project: None,
-                home: app.options.home.clone(),
+                home: app.defaults().unwrap().home.clone(),
                 isolated_environment: true,
             })
             .collect();
         app.state = Controller::new(&app.registry);
+        publish_test_tree(&mut app);
         let size = Size {
             cols: 100,
             rows: 36,
@@ -6929,16 +7553,20 @@ mod tests {
         };
         let rects = app.rects(size);
         let mut surface = UiSurface::new(size);
-        let workspace_hits = chrome(
+        let workspace_hits = crate::controller::tree_chrome(
             &mut surface,
-            crate::controller::ChromeContext {
-                sidebar_popup: None,
-                size,
-                state: &app.state,
-                registry: &app.registry,
-                rects: &rects,
-                pane_graphics: &[],
-                guide_rows: 0,
+            crate::controller::TreeChromeContext {
+                native: crate::controller::ChromeContext {
+                    size,
+                    state: &app.state,
+                    registry: &app.registry,
+                    rects: &rects,
+                    pane_graphics: &[],
+                    guide_rows: 0,
+                },
+                tree: &app.tree.lock().unwrap(),
+                active: app.tree_owner(),
+                popup: None,
             },
             |_| None,
             |_| None,
@@ -6999,6 +7627,17 @@ mod tests {
             )
             .unwrap();
         }
+        let SessionAction::Tree {
+            target,
+            action,
+            size,
+        } = app.session_action.take().unwrap();
+        let TreeNode::Native(native) = target.node else {
+            panic!("expected native target");
+        };
+        assert_eq!(target.owner, app.tree_owner());
+        app.dispatch_tree_action(Some(&native), action, size)
+            .unwrap();
         assert_eq!(app.state.workspace.as_deref(), Some("remote"));
         assert!(
             received.try_recv().is_err(),
@@ -7011,7 +7650,7 @@ mod tests {
         hits: HitMap,
     }
     impl PointerFixture {
-        fn new(app: &mut App<'_>) -> Self {
+        fn new(app: &mut App) -> Self {
             attach_fixture(app);
             attach_named_fixture(app, "beta", "beta-view");
             // This fixture exercises application-owned pointer lifecycles;
@@ -7071,17 +7710,10 @@ mod tests {
             let hits = Scene { size, surfaces }.hit_map();
             Self { size, rects, hits }
         }
-        fn send(&self, app: &mut App<'_>, button: u8, x: u16, y: u16, release: bool) {
+        fn send(&self, app: &mut App, button: u8, x: u16, y: u16, release: bool) {
             self.try_send(app, button, x, y, release).unwrap();
         }
-        fn try_send(
-            &self,
-            app: &mut App<'_>,
-            button: u8,
-            x: u16,
-            y: u16,
-            release: bool,
-        ) -> Result<()> {
+        fn try_send(&self, app: &mut App, button: u8, x: u16, y: u16, release: bool) -> Result<()> {
             let packet = format!(
                 "\x1b[<{button};{};{}{}",
                 x + 1,
@@ -7111,8 +7743,8 @@ mod tests {
             Ok(())
         }
     }
-    fn paint_test_toasts(app: &mut App<'_>, size: Size) {
-        app.toasts.paint(
+    fn paint_test_toasts(app: &mut App, size: Size) {
+        app.toasts.lock().unwrap().paint(
             size,
             toast::ToastLayout {
                 max_width: 72,
@@ -7133,22 +7765,28 @@ mod tests {
             let pointer = PointerFixture::new(&mut app);
             app.notify("Chorded notice".into());
             paint_test_toasts(&mut app, pointer.size);
-            let dismiss = app.toasts.cards().next().unwrap().dismiss;
+            let dismiss = {
+                let toasts = app.toasts.lock().unwrap();
+                let card = toasts.cards().next().unwrap();
+                card.dismiss
+            };
             pointer.send(&mut app, 0, dismiss.x, dismiss.y, false);
             pointer.send(&mut app, 2, dismiss.x, dismiss.y, false);
-            assert!(app.toasts.pointer_captured());
+            assert!(app.toasts.lock().unwrap().pointer_captured());
             if expire {
-                app.toasts.expire(app.toasts.next_deadline().unwrap());
+                let mut toasts = app.toasts.lock().unwrap();
+                let deadline = toasts.next_deadline().unwrap();
+                toasts.expire(deadline);
             }
             pointer.send(&mut app, 0, dismiss.x, dismiss.y, true);
-            assert!(app.toasts.is_empty());
+            assert!(app.toasts.lock().unwrap().is_empty());
             assert!(
-                app.toasts.pointer_captured(),
+                app.toasts.lock().unwrap().pointer_captured(),
                 "secondary button remains held"
             );
             let native = content(pointer.rects[0].1);
             pointer.send(&mut app, 2, native.x + 2, native.y + 8, true);
-            assert!(!app.toasts.pointer_captured());
+            assert!(!app.toasts.lock().unwrap().pointer_captured());
             assert!(app.pointer_capture.is_none());
             assert!(capture.try_recv().is_err(), "consumed chord release leaked");
             pointer.send(&mut app, 0, native.x + 2, native.y + 8, false);
@@ -7165,19 +7803,136 @@ mod tests {
         let (mut app, _) = fixture();
         assert_eq!(app.toast_timeout(1000, Instant::now()), 1000);
         app.toggle_chrome();
-        let deadline = app.toasts.next_deadline().unwrap();
+        let deadline = app.toasts.lock().unwrap().next_deadline().unwrap();
         for _ in 0..3 {
             paint_test_toasts(&mut app, size());
         }
-        assert_eq!(app.toasts.next_deadline(), Some(deadline));
+        assert_eq!(app.toasts.lock().unwrap().next_deadline(), Some(deadline));
         assert_eq!(
             app.toast_timeout(1000, deadline - Duration::from_nanos(1)),
             1
         );
         assert_eq!(app.toast_timeout(1000, deadline), 0);
-        assert!(app.toasts.expire(deadline));
-        assert!(app.toasts.is_empty());
+        {
+            let mut toasts = app.toasts.lock().unwrap();
+            assert!(toasts.expire(deadline));
+            assert!(toasts.is_empty());
+        }
         assert_eq!(app.toast_timeout(1000, deadline), 1000);
+    }
+
+    #[test]
+    fn shared_toast_gesture_and_expiry_survive_session_switches_without_local_capture() {
+        let (mut first, first_input) = fixture();
+        let first_pointer = PointerFixture::new(&mut first);
+        let (mut second, second_input) = fixture();
+        let second_pointer = PointerFixture::new(&mut second);
+        second.toasts = Arc::clone(&first.toasts);
+        first.notify("Physical global notice".into());
+        paint_test_toasts(&mut first, first_pointer.size);
+        let (id, dismiss, deadline) = {
+            let toasts = first.toasts.lock().unwrap();
+            let card = toasts.cards().next().unwrap();
+            (card.id, card.dismiss, toasts.next_deadline().unwrap())
+        };
+        first_pointer.send(&mut first, 0, dismiss.x, dismiss.y, false);
+        first_pointer.send(&mut first, 2, dismiss.x, dismiss.y, false);
+        assert!(first.pointer_capture.is_none());
+        paint_test_toasts(&mut second, second_pointer.size);
+        {
+            let mut toasts = second.toasts.lock().unwrap();
+            assert_eq!(toasts.cards().next().unwrap().id, id);
+            assert_eq!(toasts.next_deadline(), Some(deadline));
+            assert!(toasts.pointer_captured());
+            toasts.expire(deadline);
+            assert!(toasts.is_empty());
+            assert!(toasts.pointer_captured());
+        }
+        let native = content(second_pointer.rects[0].1);
+        second_pointer.send(&mut second, 0, native.x + 2, native.y + 8, true);
+        assert!(second.toasts.lock().unwrap().pointer_captured());
+        second_pointer.send(&mut second, 2, native.x + 2, native.y + 8, true);
+        assert!(!second.toasts.lock().unwrap().pointer_captured());
+        assert!(first.pointer_capture.is_none());
+        assert!(second.pointer_capture.is_none());
+        assert!(first_input.try_recv().is_err());
+        assert!(second_input.try_recv().is_err());
+        paint_test_toasts(&mut first, first_pointer.size);
+        assert!(
+            first.toasts.lock().unwrap().is_empty(),
+            "expired notices must not revive"
+        );
+        let native = content(first_pointer.rects[0].1);
+        first_pointer.send(&mut first, 0, native.x + 2, native.y + 8, false);
+        first_pointer.send(&mut first, 0, native.x + 2, native.y + 8, true);
+        assert_eq!(
+            captured_mouse(&first_input).len(),
+            2,
+            "old App retained a stale UI capture"
+        );
+    }
+
+    #[test]
+    fn hidden_backend_completion_notifies_shared_queue_once_with_its_origin() {
+        let (mut visible, _) = fixture();
+        let (mut hidden, _) = fixture();
+        hidden.namespace = (2, 7);
+        hidden.backgrounded = true;
+        hidden.notification_source = Some("session 1".into());
+        hidden.tree = Arc::clone(&visible.tree);
+        hidden.toasts = Arc::clone(&visible.toasts);
+        let visible_owner = visible.tree_owner();
+        hidden.tree.lock().unwrap().reconcile(
+            vec![
+                metadata_session(&visible, visible_owner, SessionStatus::Online),
+                metadata_session(&hidden, hidden.tree_owner(), SessionStatus::Online),
+            ],
+            visible_owner,
+        );
+        hidden.tree.lock().unwrap().reconcile(
+            vec![metadata_session(
+                &visible,
+                visible_owner,
+                SessionStatus::Online,
+            )],
+            visible_owner,
+        );
+        hidden
+            .jobs
+            .submit("hidden-job".into(), || bail!("background failure"))
+            .unwrap();
+        wait_background(&mut hidden, "hidden-job");
+        paint_test_toasts(&mut visible, size());
+        let deadline = {
+            let toasts = visible.toasts.lock().unwrap();
+            assert_eq!(toasts.cards().count(), 1);
+            let text = toasts
+                .cards()
+                .next()
+                .unwrap()
+                .surface
+                .frame
+                .rows
+                .iter()
+                .flat_map(|row| &row.cells)
+                .map(|cell| cell.text.as_str())
+                .collect::<String>();
+            assert!(text.contains("session 1"));
+            assert!(text.contains("hidden-job"));
+            toasts.next_deadline().unwrap()
+        };
+        hidden.complete_background().unwrap();
+        paint_test_toasts(&mut hidden, size());
+        {
+            let mut toasts = hidden.toasts.lock().unwrap();
+            assert_eq!(toasts.cards().count(), 1);
+            assert_eq!(toasts.next_deadline(), Some(deadline));
+            toasts.expire(deadline);
+        }
+        paint_test_toasts(&mut visible, size());
+        paint_test_toasts(&mut hidden, size());
+        assert!(visible.toasts.lock().unwrap().is_empty());
+        assert!(hidden.toasts.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -7189,40 +7944,49 @@ mod tests {
         let mut clipboard = Vec::new();
         app.selection_clipboard(&mut clipboard).unwrap();
         assert!(clipboard.is_empty());
-        assert!(!app.toasts.is_empty());
+        assert!(!app.toasts.lock().unwrap().is_empty());
         paint_test_toasts(&mut app, pointer.size);
         let (body, dismiss) = {
-            let card = app.toasts.cards().next().unwrap();
+            let toasts = app.toasts.lock().unwrap();
+            let card = toasts.cards().next().unwrap();
             (card.body, card.dismiss)
         };
         pointer.send(&mut app, 35, body.x, body.y, false);
         assert!(app.pointer_capture.is_none(), "hover must not capture");
         pointer.send(&mut app, 0, body.x, body.y, false);
         pointer.send(&mut app, 0, 0, pointer.size.rows - 1, true);
-        assert!(!app.toasts.is_empty());
+        assert!(!app.toasts.lock().unwrap().is_empty());
         assert!(capture.try_recv().is_err());
         app.key(key("KeyX"), &mut Vec::new(), pointer.size, &pointer.rects)
             .unwrap();
         assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
             pane_id, request: PaneRequest::Key { event, .. },
         } if pane_id == "focused-pane" && event.key == "KeyX"));
-        app.open_form(FormKind::ChoosePane, String::new());
+        app.open_form(FormKind::ChoosePane, String::new()).unwrap();
         pointer.send(&mut app, 0, dismiss.x, dismiss.y, false);
         pointer.send(&mut app, 0, dismiss.x, dismiss.y, true);
-        assert!(app.toasts.is_empty());
+        assert!(app.toasts.lock().unwrap().is_empty());
         assert!(app.state.form.is_some());
         assert_eq!(app.overlays.keyboard_owner(), Some("ui:modal"));
         assert!(capture.try_recv().is_err());
 
         app.notify("Another notice".into());
         paint_test_toasts(&mut app, pointer.size);
-        let dismiss = app.toasts.cards().next().unwrap().dismiss;
+        let dismiss = {
+            let toasts = app.toasts.lock().unwrap();
+            let card = toasts.cards().next().unwrap();
+            card.dismiss
+        };
         pointer.send(&mut app, 0, dismiss.x, dismiss.y, false);
-        assert!(app.toasts.pointer_captured());
-        app.toasts.expire(app.toasts.next_deadline().unwrap());
-        assert!(app.toasts.is_empty());
+        {
+            let mut toasts = app.toasts.lock().unwrap();
+            assert!(toasts.pointer_captured());
+            let deadline = toasts.next_deadline().unwrap();
+            toasts.expire(deadline);
+            assert!(toasts.is_empty());
+        }
         pointer.send(&mut app, 0, 0, pointer.size.rows - 1, true);
-        assert!(!app.toasts.pointer_captured());
+        assert!(!app.toasts.lock().unwrap().pointer_captured());
         assert!(app.pointer_capture.is_none());
         assert!(app.state.form.is_some());
         assert!(capture.try_recv().is_err(), "expired toast release leaked");
@@ -7236,11 +8000,18 @@ mod tests {
         pointer.send(&mut app, 0, native.x + 2, native.y + 8, false);
         app.notify("Appeared during native drag".into());
         paint_test_toasts(&mut app, pointer.size);
-        let dismiss = app.toasts.cards().next().unwrap().dismiss;
+        let dismiss = {
+            let toasts = app.toasts.lock().unwrap();
+            let card = toasts.cards().next().unwrap();
+            card.dismiss
+        };
         pointer.send(&mut app, 32, dismiss.x, dismiss.y, false);
         pointer.send(&mut app, 0, dismiss.x, dismiss.y, true);
-        assert!(!app.toasts.is_empty());
-        assert!(!app.toasts.pointer_captured());
+        {
+            let toasts = app.toasts.lock().unwrap();
+            assert!(!toasts.is_empty());
+            assert!(!toasts.pointer_captured());
+        }
         let events = captured_mouse(&capture);
         assert_eq!(events.len(), 3);
         assert!(events.iter().all(|(pane, _, _)| pane == "focused-pane"));
@@ -7254,8 +8025,11 @@ mod tests {
         app.notify("Appeared during divider drag".into());
         paint_test_toasts(&mut app, pointer.size);
         pointer.send(&mut app, 0, divider.x, 3, true);
-        assert!(!app.toasts.is_empty());
-        assert!(!app.toasts.pointer_captured());
+        {
+            let toasts = app.toasts.lock().unwrap();
+            assert!(!toasts.is_empty());
+            assert!(!toasts.pointer_captured());
+        }
         assert!(!app.resize_capturing());
         assert!(!app.jobs.contains("manage:window:resize-window"));
         assert!(capture.try_recv().is_err());
@@ -7265,7 +8039,7 @@ mod tests {
     fn outside_modal_click_cancels_without_starting_a_native_gesture() {
         let (mut app, capture) = fixture();
         let pointer = PointerFixture::new(&mut app);
-        app.open_form(FormKind::ChoosePane, String::new());
+        app.open_form(FormKind::ChoosePane, String::new()).unwrap();
         let placement = OverlayPlacement::centered(pointer.size, 30, 10);
         app.overlays
             .present("ui:modal", placement, OverlayPolicy::MODAL, None);
@@ -7783,7 +8557,7 @@ mod tests {
         app.reap_retiring().unwrap();
         assert!(app.retiring.is_empty());
     }
-    fn wait_background(app: &mut App<'_>, key: &str) {
+    fn wait_background(app: &mut App, key: &str) {
         while app.jobs.contains(key) {
             let mut fd = libc::pollfd {
                 fd: app.jobs.wake.as_raw_fd(),
@@ -7917,8 +8691,8 @@ mod tests {
                 name: Some("new".into()),
                 spec: PaneSpawnSpec {
                     argv: vec!["/bin/sh".into()],
-                    cwd: app.options.cwd.clone(),
-                    home: app.options.home.clone(),
+                    cwd: app.defaults().unwrap().cwd.clone(),
+                    home: app.defaults().unwrap().home.clone(),
                     size: size(),
                     title: None,
                     isolated_environment: true,
@@ -8814,7 +9588,7 @@ mod tests {
         assert!(capture.try_recv().is_err());
     }
 
-    fn resize_fixture(app: &mut App<'_>) -> PointerFixture {
+    fn resize_fixture(app: &mut App) -> PointerFixture {
         let mut pointer = PointerFixture::new(app);
         app.registry.workspaces = vec![
             Workspace {
@@ -8853,7 +9627,7 @@ mod tests {
         pointer
     }
 
-    fn resize_divider(app: &App<'_>, size: Size) -> Rect {
+    fn resize_divider(app: &App, size: Size) -> Rect {
         let mut splits = Vec::new();
         crate::tiling::dividers(
             app.registry.workspaces[0].windows[0].layout.as_ref(),
@@ -9007,7 +9781,7 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         let endpoint = Endpoint::unmanaged(&socket);
         let (mut app, capture) = fixture();
-        app.socket = &endpoint;
+        app.socket = endpoint.clone();
         let mut pointer = resize_fixture(&mut app);
         let mut gamma = app.registry.panes[0].clone();
         gamma.id = "gamma".into();
@@ -9092,7 +9866,7 @@ mod tests {
             let listener = UnixListener::bind(&socket).unwrap();
             let (mut app, capture) = fixture();
             let endpoint = Endpoint::unmanaged(&socket);
-            app.socket = &endpoint;
+            app.socket = endpoint.clone();
             let pointer = resize_fixture(&mut app);
             let initial = resize_divider(&app, pointer.size);
             let mut registry = app.registry.clone();
@@ -9224,7 +9998,7 @@ mod tests {
             let listener = UnixListener::bind(&socket).unwrap();
             let (mut app, capture) = fixture();
             let endpoint = Endpoint::unmanaged(&socket);
-            app.socket = &endpoint;
+            app.socket = endpoint.clone();
             let pointer = resize_fixture(&mut app);
             let before = app.registry.workspaces[0].windows[0].layout.clone();
             let mut registry = app.registry.clone();
@@ -9443,7 +10217,8 @@ mod tests {
         let (mut app, _) = fixture();
         unavailable_fixture(&mut app);
         let original = app.state.focused.clone().unwrap();
-        app.open_form(FormKind::RenamePane, "renamed".into());
+        app.open_form(FormKind::RenamePane, "renamed".into())
+            .unwrap();
         let mut replacement = app
             .registry
             .panes
@@ -9470,7 +10245,8 @@ mod tests {
 
         let (mut app, _) = fixture();
         unavailable_fixture(&mut app);
-        app.open_form(FormKind::RenameWorkspace, "renamed".into());
+        app.open_form(FormKind::RenameWorkspace, "renamed".into())
+            .unwrap();
         app.registry.workspaces[0].id = "replacement-workspace".into();
         app.state.reconcile(&app.registry);
         assert_eq!(
@@ -9551,7 +10327,7 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         let endpoint = Endpoint::unmanaged(&socket);
         let (mut app, _) = fixture();
-        app.socket = &endpoint;
+        app.socket = endpoint.clone();
         unavailable_fixture(&mut app);
         let mut removed = app.registry.panes[0].clone();
         removed.id = "removed-pane".into();
@@ -9629,16 +10405,16 @@ mod tests {
         assert!(capture.try_recv().is_err());
     }
 
-    fn submitted_form_operation(kind: FormKind, prepare: impl FnOnce(&mut App<'_>)) -> Operation {
+    fn submitted_form_operation(kind: FormKind, prepare: impl FnOnce(&mut App)) -> Operation {
         use std::{os::unix::net::UnixListener, thread};
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("form.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let endpoint = Endpoint::unmanaged(&socket);
         let (mut app, _) = fixture();
-        app.socket = &endpoint;
+        app.socket = endpoint.clone();
         unavailable_fixture(&mut app);
-        app.open_form(kind, "renamed".into());
+        app.open_form(kind, "renamed".into()).unwrap();
         prepare(&mut app);
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -9657,7 +10433,7 @@ mod tests {
             request
         });
         app.apply_form(size()).unwrap();
-        let jobs = std::mem::replace(&mut app.jobs, jobs::Jobs::new(1).unwrap());
+        let jobs = std::mem::replace(&mut app.jobs, jobs::Scope::new(1).unwrap());
         assert!(
             jobs.finish()
                 .unwrap()

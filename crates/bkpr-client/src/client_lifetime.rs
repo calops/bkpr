@@ -41,6 +41,17 @@ pub fn detached_before_dispatch(error: &anyhow::Error) -> bool {
     error.is::<DetachedBeforeDispatch>() && !super::outcome_unknown(error)
 }
 
+#[derive(Debug)]
+pub(crate) struct NativeRetirement {
+    reason: String,
+}
+impl std::fmt::Display for NativeRetirement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "client attachment retired: {}", self.reason)
+    }
+}
+impl std::error::Error for NativeRetirement {}
+
 struct LeaseState {
     revoked: bool,
     session_ended: bool,
@@ -98,8 +109,24 @@ pub(crate) enum ConnectionPurpose {
 
 pub(crate) trait Connector: Send + Sync {
     fn connect(&self, purpose: ConnectionPurpose) -> Result<UnixStream>;
+    fn connect_cancellable(
+        &self,
+        purpose: ConnectionPurpose,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<UnixStream> {
+        ensure!(!cancellation.is_cancelled(), "native connection cancelled");
+        self.connect(purpose)
+    }
     fn remote(&self) -> bool {
         false
+    }
+}
+
+/// Offline UI state has neither an address nor an administrative backend.
+struct UnavailableConnector;
+impl Connector for UnavailableConnector {
+    fn connect(&self, _purpose: ConnectionPurpose) -> Result<UnixStream> {
+        Err(DetachedBeforeDispatch.into())
     }
 }
 
@@ -107,6 +134,26 @@ struct LocalConnector(PathBuf);
 impl Connector for LocalConnector {
     fn connect(&self, _purpose: ConnectionPurpose) -> Result<UnixStream> {
         UnixStream::connect(&self.0).with_context(|| format!("connecting to {}", self.0.display()))
+    }
+    fn connect_cancellable(
+        &self,
+        _purpose: ConnectionPurpose,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<UnixStream> {
+        let stream = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => bail!("local connection cancelled"),
+                    stream = tokio::net::UnixStream::connect(&self.0) => {
+                        Ok(stream?.into_std()?)
+                    }
+                }
+            })?;
+        stream.set_nonblocking(false)?;
+        Ok(stream)
     }
 }
 
@@ -136,6 +183,14 @@ impl Endpoint {
                 }),
             }),
         }
+    }
+
+    /// Explicit no-backend state for an unattached UI. Every clone is revoked
+    /// before publication and can never dispatch a native request.
+    pub fn unavailable() -> Self {
+        let endpoint = Self::from_connector(Arc::new(UnavailableConnector), None);
+        endpoint.lease.revoke();
+        endpoint
     }
 
     /// Explicitly unbound headless/admin access, never inferred client access.
@@ -175,6 +230,75 @@ impl Endpoint {
         self.checked_payload(operation)?.into_json()
     }
 
+    /// Worker-only admission observations. Cancellation closes this request,
+    /// while the attachment's lease remains the authority for every clone.
+    pub fn checked_cancellable(
+        &self,
+        operation: Operation,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<Value> {
+        ensure!(
+            observational(&operation),
+            "cancellable endpoint request must be observational"
+        );
+        let result = (|| {
+            self.ensure_live()?;
+            let stream = self
+                .connector
+                .connect_cancellable(ConnectionPurpose::Observation, cancellation)?;
+            let _inflight = self.track_request(&stream, true)?;
+            stream.set_nonblocking(true)?;
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(async {
+                    let mut stream = tokio::net::UnixStream::from_std(stream)?;
+                    let dispatched = std::cell::Cell::new(false);
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => {
+                            let error = anyhow::anyhow!("client observation cancelled");
+                            Err(if dispatched.get() { super::mark_outcome_unknown(error) } else { error })
+                        },
+                        response = async {
+                            self.ensure_live()?;
+                            dispatched.set(true);
+                            match &self.lease.authority {
+                                Some(authority) => super::request_client_async(
+                                    &mut stream, authority, &operation,
+                                ).await,
+                                None => super::request_async(
+                                    &mut stream, &Request::new(operation), wire::MAX_RESPONSE,
+                                ).await,
+                            }
+                        } => checked_response(response?),
+                    }
+                })
+        })();
+        result.map_err(super::observation_error)
+    }
+
+    fn track_request(&self, stream: &UnixStream, observational: bool) -> Result<Inflight<'_>> {
+        let cancellation = stream.try_clone()?;
+        let mut state = self.lease.state.lock().unwrap();
+        if state.revoked {
+            return Err(DetachedBeforeDispatch.into());
+        }
+        let id = state.next_request;
+        state.next_request = state.next_request.wrapping_add(1);
+        state.requests.insert(
+            id,
+            ActiveRequest {
+                stream: cancellation,
+                observational,
+            },
+        );
+        Ok(Inflight {
+            lease: &self.lease,
+            id,
+        })
+    }
+
     /// Dispatch without converting binary pane scenes into diagnostic JSON.
     pub fn checked_payload(&self, operation: Operation) -> Result<Payload> {
         let is_observation = observational(&operation);
@@ -206,27 +330,7 @@ impl Endpoint {
             let mut stream = self.connector.connect(purpose)?;
             stream.set_read_timeout(Some(Duration::from_secs(15)))?;
             stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-            let cancellation = stream.try_clone()?;
-            let id = {
-                let mut state = self.lease.state.lock().unwrap();
-                if state.revoked {
-                    return Err(DetachedBeforeDispatch.into());
-                }
-                let id = state.next_request;
-                state.next_request = state.next_request.wrapping_add(1);
-                state.requests.insert(
-                    id,
-                    ActiveRequest {
-                        stream: cancellation,
-                        observational: is_observation,
-                    },
-                );
-                id
-            };
-            let _inflight = Inflight {
-                lease: &self.lease,
-                id,
-            };
+            let _inflight = self.track_request(&stream, is_observation)?;
             let response = match &self.lease.authority {
                 Some(authority) => request_client_stream(&mut stream, authority, &operation)?,
                 None => request_stream(&mut stream, &Request::new(operation))?,
@@ -304,12 +408,26 @@ fn capture_agent_socket(value: Option<OsString>) -> Result<Option<PathBuf>> {
     }))
 }
 
+/// Native detach reasons distinguish explicit user/session retirement from
+/// lifetime transport cleanup. Only the coordinator owns reconnect policy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Lifecycle {
+    Active,
+    /// Explicit retirement, including unrecognized reasons. Preserve the fact
+    /// without inferring user intent; policy must not automatically retry it.
+    Detached {
+        reason: String,
+    },
+    TransportClosed,
+}
+
 /// Owns the sole lifetime stream. Dropping this object revokes every endpoint
 /// clone and closes the stream, even when workers still retain endpoints.
 pub struct RegisteredClient {
     endpoint: Endpoint,
     session: SessionInfo,
     lifetime: Option<UnixStream>,
+    lifecycle: Lifecycle,
     pending: Vec<u8>,
     activation_attempted: bool,
     agent_socket: Option<PathBuf>,
@@ -319,6 +437,48 @@ impl RegisteredClient {
     pub fn register(socket: &Path) -> Result<Self> {
         let agent_socket = capture_agent_socket(std::env::var_os("SSH_AUTH_SOCK"))?;
         Self::register_with_agent_socket(socket, agent_socket)
+    }
+
+    /// Cancellation covers local UDS connection, identity discovery and native
+    /// registration. No activation or mutation is retried.
+    pub fn register_cancellable(
+        socket: &Path,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<Self> {
+        let agent_socket = capture_agent_socket(std::env::var_os("SSH_AUTH_SOCK"))?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("creating cancellable local registration runtime")?
+            .block_on(async {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => bail!("local attachment registration cancelled"),
+                    registered = async {
+                        let mut probe = tokio::net::UnixStream::connect(socket).await
+                            .with_context(|| format!("connecting to {}", socket.display()))?;
+                        let response = super::request_async(
+                            &mut probe, &Request::new(Operation::SessionInfo), wire::MAX_RESPONSE,
+                        ).await?;
+                        let expected: SessionReply = serde_json::from_value(checked_response(response)?)
+                            .context("decoding server session identity")?;
+                        Self::validate_identity(&expected.session)?;
+                        let mut lifetime = tokio::net::UnixStream::connect(socket).await?;
+                        let response = super::request_async(
+                            &mut lifetime,
+                            &Request::new(Operation::ClientRegister {
+                                session_id: expected.session.session_id.clone(),
+                                daemon_id: expected.session.daemon_id.clone(),
+                            }),
+                            MAX_LIFETIME_PAYLOAD,
+                        ).await?;
+                        Self::from_registration(
+                            Arc::new(LocalConnector(socket.to_owned())),
+                            expected.session, agent_socket, lifetime.into_std()?, response,
+                        )
+                    } => registered,
+                }
+            })
     }
 
     fn register_with_agent_socket(socket: &Path, agent_socket: Option<PathBuf>) -> Result<Self> {
@@ -339,18 +499,13 @@ impl RegisteredClient {
         expected: SessionInfo,
         agent_socket: Option<PathBuf>,
     ) -> Result<Self> {
-        let session = SessionReply { session: expected };
-        bkpr_protocol::valid_session_name(&session.session.name)?;
-        ensure!(
-            !session.session.session_id.is_empty() && !session.session.daemon_id.is_empty(),
-            "server omitted session or daemon identity"
-        );
+        Self::validate_identity(&expected)?;
         let mut lifetime = connector.connect(ConnectionPurpose::Lifetime)?;
         lifetime.set_read_timeout(Some(Duration::from_secs(15)))?;
         lifetime.set_write_timeout(Some(Duration::from_secs(5)))?;
         let request = Request::new(Operation::ClientRegister {
-            session_id: session.session.session_id.clone(),
-            daemon_id: session.session.daemon_id.clone(),
+            session_id: expected.session_id.clone(),
+            daemon_id: expected.daemon_id.clone(),
         });
         let mut codec = Codec::new();
         wire::write_frame(
@@ -363,11 +518,30 @@ impl RegisteredClient {
         let bytes = wire::read_frame(&mut lifetime, Kind::Response, MAX_LIFETIME_PAYLOAD)?;
         let response =
             wire::decode_response_owned(bytes).context("decoding client registration response")?;
+        Self::from_registration(connector, expected, agent_socket, lifetime, response)
+    }
+
+    fn validate_identity(session: &SessionInfo) -> Result<()> {
+        bkpr_protocol::valid_session_name(&session.name)?;
+        ensure!(
+            !session.session_id.is_empty() && !session.daemon_id.is_empty(),
+            "server omitted session or daemon identity"
+        );
+        Ok(())
+    }
+
+    fn from_registration(
+        connector: Arc<dyn Connector>,
+        expected: SessionInfo,
+        agent_socket: Option<PathBuf>,
+        lifetime: UnixStream,
+        response: bkpr_protocol::Response,
+    ) -> Result<Self> {
         let registered: RegistrationReply =
             serde_json::from_value(checked_response(validate_response(response)?)?)
                 .context("decoding registered client identity")?;
         ensure!(
-            registered.session == session.session,
+            registered.session == expected,
             "server session or daemon changed during registration"
         );
         ensure!(
@@ -381,6 +555,7 @@ impl RegisteredClient {
             endpoint: Endpoint::from_connector(connector, Some(registered.client)),
             session: registered.session,
             lifetime: Some(lifetime),
+            lifecycle: Lifecycle::Active,
             pending: Vec::new(),
             activation_attempted: false,
             agent_socket,
@@ -391,6 +566,9 @@ impl RegisteredClient {
         &self.endpoint
     }
     pub fn session(&self) -> &SessionInfo {
+        &self.session
+    }
+    pub fn info(&self) -> &SessionInfo {
         &self.session
     }
     pub(crate) fn client_id(&self) -> &str {
@@ -406,6 +584,14 @@ impl RegisteredClient {
         self.lifetime.as_ref().map_or(-1, AsRawFd::as_raw_fd)
     }
 
+    fn ensure_activation_live(&mut self) -> Result<()> {
+        match self.poll_lifecycle()? {
+            Lifecycle::Active => Ok(()),
+            Lifecycle::Detached { reason } => Err(NativeRetirement { reason }.into()),
+            Lifecycle::TransportClosed => bail!("client transport closed before activation"),
+        }
+    }
+
     /// Must be called only after frontend initialization, before attaching views.
     /// Even an ambiguous failure consumes the attempt: takeover is never replayed.
     pub fn activate_once(&mut self, detach_others: bool) -> Result<()> {
@@ -414,14 +600,65 @@ impl RegisteredClient {
             "client activation already attempted; do not replay"
         );
         self.activation_attempted = true;
-        ensure!(
-            !self.consume_lifecycle()?,
-            "client detached before activation"
-        );
+        self.ensure_activation_live()?;
         let value = self.endpoint.checked(Operation::ClientActivate {
             detach_others,
             agent_socket: self.agent_socket.take(),
         })?;
+        Self::validate_activation(value)
+    }
+
+    /// Worker-only activation with cancellation across the native reply wait.
+    /// Cancellation after dispatch is an unknown outcome, never replayable.
+    pub fn activate_cancellable(
+        &mut self,
+        detach_others: bool,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<()> {
+        ensure!(
+            !self.activation_attempted,
+            "client activation already attempted; do not replay"
+        );
+        self.activation_attempted = true;
+        self.ensure_activation_live()?;
+        self.endpoint.ensure_live()?;
+        let stream = self
+            .endpoint
+            .connector
+            .connect_cancellable(ConnectionPurpose::Control, cancellation)?;
+        stream.set_nonblocking(true)?;
+        let authority = self
+            .endpoint
+            .lease
+            .authority
+            .as_ref()
+            .expect("registered client retains its native authority");
+        let operation = Operation::ClientActivate {
+            detach_others,
+            agent_socket: self.agent_socket.take(),
+        };
+        let value = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                let mut stream = tokio::net::UnixStream::from_std(stream)?;
+                let dispatched = std::cell::Cell::new(false);
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => {
+                        let error = anyhow::anyhow!("client activation cancelled");
+                        Err(if dispatched.get() { super::mark_outcome_unknown(error) } else { error })
+                    },
+                    response = async {
+                        dispatched.set(true);
+                        super::request_client_async(&mut stream, authority, &operation).await
+                    } => checked_response(response?),
+                }
+            })?;
+        Self::validate_activation(value)
+    }
+
+    fn validate_activation(value: Value) -> Result<()> {
         ensure!(
             value.get("activated").and_then(Value::as_bool) == Some(true)
                 && value
@@ -435,30 +672,39 @@ impl RegisteredClient {
 
     pub(crate) fn close_for_shutdown(&mut self) {
         self.endpoint.lease.state.lock().unwrap().session_ended = true;
+        self.lifecycle = Lifecycle::Detached {
+            reason: "shutdown".into(),
+        };
         self.close();
     }
 
-    /// Bounded, nonblocking lifecycle consumption. EOF is authoritative detach,
-    /// including EOF without an event. Malformed events fail closed as well.
-    pub fn consume_lifecycle(&mut self) -> Result<bool> {
-        if self.lifetime.is_none() {
-            return Ok(true);
+    /// Revoke authority and release the lifetime without a blocking detach RPC.
+    /// Accepted mutations retain their original outcome; callers never replay.
+    pub fn cancel(&mut self) {
+        if self.lifetime.is_some() {
+            self.lifecycle = Lifecycle::Detached {
+                reason: "cancelled".into(),
+            };
         }
-        let result = self.read_lifecycle();
-        match result {
-            Ok(false) => Ok(false),
-            Ok(true) => {
-                self.close();
-                Ok(true)
-            }
-            Err(error) => {
-                self.close();
-                Err(error)
-            }
-        }
+        self.close();
     }
 
-    fn read_lifecycle(&mut self) -> Result<bool> {
+    pub fn poll_lifecycle(&mut self) -> Result<Lifecycle> {
+        if self.lifetime.is_none() {
+            return Ok(self.lifecycle.clone());
+        }
+        let result = self.read_lifecycle();
+        if !matches!(result, Ok(Lifecycle::Active)) {
+            self.lifecycle = result
+                .as_ref()
+                .cloned()
+                .unwrap_or(Lifecycle::TransportClosed);
+            self.close();
+        }
+        result
+    }
+
+    fn read_lifecycle(&mut self) -> Result<Lifecycle> {
         let stream = self.lifetime.as_mut().unwrap();
         let mut bytes = [0; 1024];
         let mut budget = LIFECYCLE_READ_BUDGET;
@@ -481,23 +727,33 @@ impl RegisteredClient {
                     event.event == "client_detached",
                     "unsupported client lifecycle event"
                 );
-                if event.reason == "shutdown" {
-                    self.endpoint.lease.state.lock().unwrap().session_ended = true;
-                }
-                return Ok(true);
+                return match event.reason.as_str() {
+                    "shutdown" => {
+                        self.endpoint.lease.state.lock().unwrap().session_ended = true;
+                        Ok(Lifecycle::Detached {
+                            reason: event.reason,
+                        })
+                    }
+                    "disconnected" | "owner_exited" => Ok(Lifecycle::TransportClosed),
+                    _ => Ok(Lifecycle::Detached {
+                        reason: event.reason,
+                    }),
+                };
             }
             if budget == 0 || reads == 0 {
-                return Ok(false);
+                return Ok(Lifecycle::Active);
             }
             let length = (target - self.pending.len()).min(bytes.len()).min(budget);
             reads -= 1;
             match stream.read(&mut bytes[..length]) {
-                Ok(0) => return Ok(true),
+                Ok(0) => return Ok(Lifecycle::TransportClosed),
                 Ok(count) => {
                     self.pending.extend_from_slice(&bytes[..count]);
                     budget -= count;
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Ok(Lifecycle::Active);
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error).context("reading client lifetime"),
             }
@@ -509,6 +765,9 @@ impl RegisteredClient {
             return Ok(());
         }
         let result = self.endpoint.checked(Operation::ClientDetach).map(|_| ());
+        self.lifecycle = Lifecycle::Detached {
+            reason: "detach".into(),
+        };
         self.close();
         result
     }
@@ -596,6 +855,7 @@ mod tests {
                 endpoint: Endpoint::unmanaged(Path::new("unused.sock")),
                 session: session(),
                 lifetime: Some(lifetime),
+                lifecycle: Lifecycle::Active,
                 pending: Vec::new(),
                 activation_attempted: false,
                 agent_socket: None,
@@ -605,16 +865,48 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_retirement_before_activation_is_not_a_reconnect_failure() {
+        for (reason, retired) in [
+            ("takeover", true),
+            ("shutdown", true),
+            ("owner_exited", false),
+            ("disconnected", false),
+        ] {
+            for cancellable in [false, true] {
+                let (mut client, mut server) = lifecycle_pair();
+                server.write_all(&detached(reason)).unwrap();
+                let error = if cancellable {
+                    client.activate_cancellable(false, &tokio_util::sync::CancellationToken::new())
+                } else {
+                    client.activate_once(false)
+                }
+                .unwrap_err();
+                assert_eq!(
+                    error.is::<NativeRetirement>(),
+                    retired,
+                    "{reason}; cancellable={cancellable}"
+                );
+                assert!(client.endpoint().is_revoked());
+            }
+        }
+    }
+
+    #[test]
     fn fragmented_lifecycle_header_and_payload_preserve_authoritative_shutdown() {
         let (mut client, mut server) = lifecycle_pair();
         let bytes = detached("shutdown");
         for fragment in bytes[..bytes.len() - 1].chunks(3) {
             server.write_all(fragment).unwrap();
-            assert!(!client.consume_lifecycle().unwrap());
+            assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::Active);
             assert!(!client.endpoint().is_revoked());
         }
         server.write_all(&bytes[bytes.len() - 1..]).unwrap();
-        assert!(client.consume_lifecycle().unwrap());
+        assert_eq!(
+            client.poll_lifecycle().unwrap(),
+            Lifecycle::Detached {
+                reason: "shutdown".into()
+            }
+        );
         assert!(client.endpoint().is_revoked());
         assert!(client.endpoint().session_ended());
     }
@@ -639,10 +931,10 @@ mod tests {
         for bytes in cases {
             let (mut client, mut server) = lifecycle_pair();
             server.write_all(&bytes).unwrap();
-            assert!(client.consume_lifecycle().is_err());
+            assert!(client.poll_lifecycle().is_err());
             assert!(client.endpoint().is_revoked());
             assert!(!client.endpoint().session_ended());
-            assert!(client.consume_lifecycle().unwrap());
+            assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::TransportClosed);
         }
     }
 
@@ -707,7 +999,12 @@ mod tests {
         let mut client = RegisteredClient::register_with_agent_socket(&socket, None).unwrap();
         let endpoint = client.endpoint().clone();
         assert_eq!(client.session(), &session());
-        assert!(client.consume_lifecycle().unwrap());
+        assert_eq!(
+            client.poll_lifecycle().unwrap(),
+            Lifecycle::Detached {
+                reason: "takeover".into()
+            }
+        );
         assert!(endpoint.checked(Operation::Inspect).is_err());
         assert!(client.activate_once(true).is_err());
         finish.send(()).unwrap();
@@ -837,7 +1134,7 @@ mod tests {
                 );
             });
             let mut client = RegisteredClient::register_with_agent_socket(&socket, source).unwrap();
-            assert!(!client.consume_lifecycle().unwrap());
+            assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::Active);
             client.activate_once(true).unwrap();
             assert!(client.activate_once(true).is_err());
             finish.send(()).unwrap();
@@ -902,7 +1199,7 @@ mod tests {
         let worker_endpoint = endpoint.clone();
         let worker = thread::spawn(move || worker_endpoint.checked(Operation::Inspect));
         observed.recv_timeout(Duration::from_secs(3)).unwrap();
-        assert!(client.consume_lifecycle().unwrap());
+        assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::TransportClosed);
         let error = worker.join().unwrap().unwrap_err();
         assert!(super::super::outcome_unknown(&error));
         assert!(!detached_before_dispatch(&error));
@@ -961,7 +1258,12 @@ mod tests {
         let worker_endpoint = endpoint.clone();
         let worker = thread::spawn(move || worker_endpoint.checked(Operation::Inspect));
         observed.recv_timeout(Duration::from_secs(3)).unwrap();
-        assert!(client.consume_lifecycle().unwrap());
+        assert_eq!(
+            client.poll_lifecycle().unwrap(),
+            Lifecycle::Detached {
+                reason: "shutdown".into()
+            }
+        );
         let error = worker.join().unwrap().unwrap_err();
         assert!(super::super::outcome_unknown(&error));
         assert!(!super::super::shutdown_not_dispatched(&error));
@@ -1020,7 +1322,12 @@ mod tests {
                 })
             });
             observed.recv_timeout(Duration::from_secs(3)).unwrap();
-            assert!(client.consume_lifecycle().unwrap());
+            assert_eq!(
+                client.poll_lifecycle().unwrap(),
+                Lifecycle::Detached {
+                    reason: "shutdown".into()
+                }
+            );
             release.send(()).unwrap();
             match worker.join().unwrap() {
                 Ok(value) => {
@@ -1038,5 +1345,294 @@ mod tests {
             }
             server.join().unwrap();
         }
+    }
+    #[test]
+    fn lifecycle_events_preserve_intentional_reason_while_eof_is_transport_loss() {
+        for reason in ["takeover", "shutdown", "detached"] {
+            let (mut client, mut server) = lifecycle_pair();
+            server.write_all(&detached(reason)).unwrap();
+            drop(server);
+            let expected = Lifecycle::Detached {
+                reason: reason.into(),
+            };
+            assert_eq!(client.poll_lifecycle().unwrap(), expected);
+            assert_eq!(client.poll_lifecycle().unwrap(), expected);
+            assert!(client.endpoint().is_revoked());
+        }
+        let (mut client, server) = lifecycle_pair();
+        drop(server);
+        assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::TransportClosed);
+        assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::TransportClosed);
+        assert!(!client.endpoint().session_ended());
+    }
+
+    #[test]
+    fn buffered_native_transport_cleanup_events_are_recoverable_not_user_detach() {
+        for reason in ["disconnected", "owner_exited"] {
+            let (mut client, mut server) = lifecycle_pair();
+            server.write_all(&detached(reason)).unwrap();
+            // The event is already buffered while this endpoint is still open:
+            // classification cannot depend on local timeout/EOF winning a race.
+            assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::TransportClosed);
+            assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::TransportClosed);
+            assert!(client.endpoint().is_revoked());
+            assert!(!client.endpoint().session_ended());
+        }
+    }
+
+    #[test]
+    fn unknown_native_detach_reason_preserves_explicit_retirement_without_inventing_intent() {
+        let (mut client, mut server) = lifecycle_pair();
+        server
+            .write_all(&detached("unknown-future-reason"))
+            .unwrap();
+        assert_eq!(
+            client.poll_lifecycle().unwrap(),
+            Lifecycle::Detached {
+                reason: "unknown-future-reason".into(),
+            }
+        );
+        assert_eq!(
+            client.poll_lifecycle().unwrap(),
+            Lifecycle::Detached {
+                reason: "unknown-future-reason".into(),
+            }
+        );
+        assert!(client.endpoint().is_revoked());
+        assert!(!client.endpoint().session_ended());
+    }
+
+    #[test]
+    fn cancellation_interrupts_registration_read_without_waiting_for_native_timeout() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("native.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (accepted, accepted_rx) = mpsc::sync_channel(1);
+        let server = thread::spawn(move || {
+            let (mut probe, _) = listener.accept().unwrap();
+            assert!(matches!(
+                read_request(&mut probe).operation,
+                Operation::SessionInfo
+            ));
+            probe
+                .write_all(&response(serde_json::json!({"session": session()})))
+                .unwrap();
+            let (mut lifetime, _) = listener.accept().unwrap();
+            assert!(matches!(
+                read_request(&mut lifetime).operation,
+                Operation::ClientRegister { .. }
+            ));
+            accepted.send(()).unwrap();
+            let mut byte = [0];
+            assert_eq!(lifetime.read(&mut byte).unwrap(), 0);
+        });
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let (completed, completed_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let result = RegisteredClient::register_cancellable(&socket, &worker_cancellation);
+            completed.send(result.map(|_| ())).unwrap();
+        });
+        accepted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        cancellation.cancel();
+        let error = completed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("registration cancelled"));
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn cancellable_registration_rejects_replacement_daemon_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("native.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let (mut probe, _) = listener.accept().unwrap();
+            assert!(matches!(
+                read_request(&mut probe).operation,
+                Operation::SessionInfo
+            ));
+            probe
+                .write_all(&response(serde_json::json!({"session": session()})))
+                .unwrap();
+            let (mut lifetime, _) = listener.accept().unwrap();
+            let request = read_request(&mut lifetime);
+            assert!(
+                matches!(request.operation, Operation::ClientRegister { daemon_id, .. }
+                if daemon_id == session().daemon_id)
+            );
+            let mut replacement = session();
+            replacement.daemon_id = "replacement-daemon".into();
+            lifetime
+                .write_all(&response(registration(replacement)))
+                .unwrap();
+            let mut byte = [0];
+            assert_eq!(lifetime.read(&mut byte).unwrap(), 0);
+        });
+        let error = RegisteredClient::register_cancellable(
+            &socket,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .err()
+        .expect("replacement identity must fail admission");
+        assert!(format!("{error:#}").contains("session or daemon changed"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn cancelled_activation_keeps_unknown_outcome_and_cannot_be_replayed() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("native.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (accepted, accepted_rx) = mpsc::sync_channel(1);
+        let server = thread::spawn(move || {
+            let (mut probe, _) = listener.accept().unwrap();
+            read_request(&mut probe);
+            probe
+                .write_all(&response(serde_json::json!({"session": session()})))
+                .unwrap();
+            let (mut lifetime, _) = listener.accept().unwrap();
+            read_request(&mut lifetime);
+            lifetime
+                .write_all(&response(registration(session())))
+                .unwrap();
+            let (mut activation, _) = listener.accept().unwrap();
+            let request = read_request(&mut activation);
+            assert!(
+                matches!(request.operation, Operation::Client { request, .. }
+                if matches!(*request, Operation::ClientActivate { detach_others: true, .. }))
+            );
+            accepted.send(()).unwrap();
+            let mut byte = [0];
+            assert_eq!(activation.read(&mut byte).unwrap(), 0);
+        });
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let (completed, completed_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let mut client =
+                RegisteredClient::register_cancellable(&socket, &worker_cancellation).unwrap();
+            let error = client
+                .activate_cancellable(true, &worker_cancellation)
+                .unwrap_err();
+            assert!(super::super::outcome_unknown(&error));
+            assert!(client.activate_once(true).is_err());
+            completed.send(()).unwrap();
+        });
+        accepted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        cancellation.cancel();
+        completed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+    #[test]
+    fn abandoned_late_registration_completion_releases_lifetime_without_activation() {
+        let (_directory, socket, server) = fixture(move |mut lifetime, listener| {
+            lifetime
+                .write_all(&response(registration(session())))
+                .unwrap();
+            let mut byte = [0];
+            assert_eq!(lifetime.read(&mut byte).unwrap(), 0);
+            listener.set_nonblocking(true).unwrap();
+            assert!(matches!(listener.accept(), Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock));
+        });
+        let (completed, abandoned) = mpsc::sync_channel(1);
+        drop(abandoned);
+        let worker = thread::spawn(move || {
+            let client = RegisteredClient::register_cancellable(
+                &socket,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap();
+            // A completion for a retired attempt no longer has a receiver.
+            // Dropping its sole owner must revoke registration, not activate.
+            assert!(completed.send(client).is_err());
+        });
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+    #[test]
+    fn admission_observation_cancellation_closes_only_its_request_without_replay() {
+        let (accepted, accepted_rx) = mpsc::sync_channel(1);
+        let (finish, finish_rx) = mpsc::sync_channel(1);
+        let (_directory, socket, server) = fixture(move |mut lifetime, listener| {
+            lifetime
+                .write_all(&response(registration(session())))
+                .unwrap();
+            let (mut observation, _) = listener.accept().unwrap();
+            let request = read_request(&mut observation);
+            assert!(
+                matches!(request.operation, Operation::Client { request, .. }
+                if matches!(*request, Operation::Inspect))
+            );
+            accepted.send(()).unwrap();
+            let mut byte = [0];
+            assert_eq!(observation.read(&mut byte).unwrap(), 0);
+            finish_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            assert!(matches!(listener.accept(), Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock));
+        });
+        let mut client = RegisteredClient::register_cancellable(
+            &socket,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap();
+        let endpoint = client.endpoint().clone();
+        let worker_endpoint = endpoint.clone();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let (completed, completed_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            completed
+                .send(worker_endpoint.checked_cancellable(Operation::Inspect, &worker_cancellation))
+                .unwrap();
+        });
+        accepted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        cancellation.cancel();
+        let error = completed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap_err();
+        assert!(super::super::outcome_unknown(&error));
+        assert!(
+            !endpoint.is_revoked(),
+            "request cancellation revoked the entire attachment"
+        );
+        assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::Active);
+        client.cancel();
+        finish.send(()).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+    #[test]
+    fn unavailable_endpoint_is_revoked_without_address_or_dispatch_authority() {
+        let endpoint = Endpoint::unavailable();
+        assert!(endpoint.is_revoked());
+        for operation in [
+            Operation::Inspect,
+            Operation::SessionInfo,
+            Operation::WorkspaceRename {
+                workspace_id: "must-not-dispatch".into(),
+                expected_revision: 1,
+                name: "unavailable".into(),
+            },
+        ] {
+            let error = endpoint.clone().checked(operation).unwrap_err();
+            assert!(detached_before_dispatch(&error));
+            assert!(!super::super::outcome_unknown(&error));
+        }
+        let error = endpoint
+            .checked_cancellable(
+                Operation::Inspect,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert!(detached_before_dispatch(&error));
+        assert!(!super::super::outcome_unknown(&error));
     }
 }

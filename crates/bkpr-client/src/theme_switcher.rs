@@ -8,7 +8,7 @@ pub(super) struct Picker {
     original: ThemeId,
 }
 
-impl App<'_> {
+impl App {
     pub(super) fn picker_open(&self) -> bool {
         self.finder.is_some() || self.theme_picker.is_some()
     }

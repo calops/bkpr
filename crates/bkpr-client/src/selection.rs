@@ -50,7 +50,7 @@ impl State {
     }
 }
 
-impl App<'_> {
+impl App {
     pub(super) fn selection_spans(&self, pane: &str) -> &[SelectionSpan] {
         self.views
             .get(pane)

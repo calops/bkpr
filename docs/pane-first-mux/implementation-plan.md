@@ -405,7 +405,7 @@ Launch context, scoped discovery and durable peer communication are implemented 
 
 Local repository/worktree identity, branch/HEAD, working-tree summaries, committed merge-base totals, focused TUI details and shared MCP context are now implemented. Foreground CWD and event invalidation drive off-path collection; coverage failures and executable-filter preflight rejection remain explicit, never fabricated zero totals.
 
-The native backend now implements one session per owned workspace, multiple independent window/layout documents per workspace and paired terminal workspace/window membership. Authoritative layouts reject foreign-window and foreign-workspace panes. Window revisions remain independent while workspace-close CAS covers child edits; optional-name workspace creation atomically commits its first window and terminal. Protocol 3 replaces the old single-layout API; durable schema 2 performs a deterministic, one-shot schema-1 upgrade without replaying argv and refuses ambiguous foreign layouts. Main's sidebar “Create terminal” uses a separate window, not a split. Full normal use of workspace references through their owner remains the cross-session/remote contract: input, creation, layout mutation and closure are not read-only. Assume the same user without introducing a permissions framework or weakening process-bound authentication. Cross-daemon/SSH routing, forge/PR/CI enrichment and harness recovery remain separate work; preserve performance and the deferred sustained-output CPU investigation.
+The native backend now implements one session per owned workspace, multiple independent window/layout documents per workspace and paired terminal workspace/window membership. Authoritative layouts reject foreign-window and foreign-workspace panes. Window revisions remain independent while workspace-close CAS covers child edits; optional-name workspace creation atomically commits its first window and terminal. Protocol 3 replaces the old single-layout API; durable schema 2 performs a deterministic, one-shot schema-1 upgrade without replaying argv and refuses ambiguous foreign layouts. Main's sidebar “Create terminal” uses a separate window, not a split. Full normal use of workspace references through their owner remains the cross-session/remote contract: input, creation, layout mutation and closure are not read-only. Assume the same user without introducing a permissions framework or weakening process-bound authentication. Cross-owner workspace-reference routing and forge/PR/CI enrichment remain separate work; preserve performance and the deferred sustained-output CPU investigation.
 
 The user-approved lifecycle cascade is backend-owned: closing the last terminal, including normal shell exit, closes its workspace; closing the last workspace closes the session and exits attached clients after terminal restoration. Client detach and layout-only projection removal remain nonterminating. Apply the session rule to a last-workspace-close transition, not an intentionally empty headless daemon at startup. The count must not depend on which window a particular client currently displays.
 
@@ -448,10 +448,11 @@ Restore remaining project/forge/CI enrichment after core TUI workflows, preservi
 The backend milestone is implemented through `RemoteSession` and `bkpr remote`;
 its [actual SSH proof](engine-proof.md#remote-session-backend-and-headless-connection)
 records exact binaries, bounds, native authority, failure behavior and limits.
-The normal client now also [attaches directly to one remote session](engine-proof.md#direct-remote-tui-attachment)
-using that same endpoint, not a local gateway or a second transport.
-Native family 6 and durable schema 4 remain unchanged. Cross-session workspace
-aggregation remains deferred.
+The normal client [attaches directly over that endpoint](engine-proof.md#direct-remote-tui-attachment),
+without a local gateway or second transport. It now supports multiple independent
+local and remote attachments in one physical TUI. Native family 6, remote control 1
+and durable schema 4 remain unchanged. Mixed-owner layouts and cross-session
+workspace references remain deferred.
 
 A compatible launcher/helper must already be installed on the remote host and
 the selected session must already be running. Connecting does not install
@@ -493,8 +494,10 @@ activation. A reserved control stream provides correlated heartbeat/lease
 handling independently of scene backpressure. Expired leases, malformed control,
 EOF and helper/SSH death retire the attachment and its views, not the session or
 programs. Accepted mutations may complete; a lost result remains unknown and is
-never replayed. Reconnection is an explicit fresh attachment/resnapshot, not
-transparent continuation with old input queues, tokens or grants.
+never replayed. TUI reconnect creates a fresh attachment/resnapshot only after a
+previously active connection is lost; initial failures remain offline for explicit
+retry. Logical identity stays pinned, and intentional retirement removes the target.
+Old input queues, tokens, grants, bootstrap and takeover are never replayed.
 
 OpenSSH owns encryption, authentication, host verification, aliases and
 ProxyJump. Require known host keys and noninteractive authentication; do not
@@ -506,6 +509,46 @@ explicit opt-in uses OpenSSH's existing forwarding and the helper's remote
 Remote native harness callbacks continue directly to the remote Unix socket
 with their real OS/process/PTY authority; viewing a remote session grants no
 local harness impersonation or merged agent discovery.
+
+#### Multiple independent attachments and one sidebar tree
+
+`bkpr` resolves repeated TUI targets and supplies one-shot local preparation to
+`bkpr-client::run_sessions`. Remote-only startup does not resolve local HOME/CWD
+or roots. Local preparation, SSH admission, activation and retirement run in
+bounded workers; the physical input/render loop never joins them. Initial failure
+and previously active transport loss have different retry policies. Force reconnect
+invalidates the owner generation before worker admission. Transport cleanup owns a
+child cancellation token, not its caller's attempt token.
+
+`bkpr-client` owns session hierarchy, source-qualified cursor/actions,
+fold policy, labels and metadata formatting. Each attachment keeps its authoritative
+native registry and endpoint. The global tree consumes cached immutable metadata;
+hover, keyboard browsing and popovers do not attach hidden native views. Session
+removal hides the subtree immediately while stable tombstones finish origin-bound
+receipts and cleanup. Explicit native retirement and nonempty-to-empty membership
+transitions remove targets; bare EOF, initially empty headless state and retained
+history do not establish semantic closure. The last remaining target's end exits
+the client after TTY restoration.
+
+The framework owns reusable retained `Navigation` selection/viewport/click mechanics
+and the deadline-driven Unicode `Spinner`. Bkpr supplies the Nerd Font beekeeper
+glyph, hierarchy and styling. Generic graphics, damage and native scene composition
+stay in the existing framework; theme, chrome preference and toast queue belong to
+one physical client, while native resource/device/release origins stay owner-qualified.
+
+Dependency decision: evaluated maintained MIT-licensed
+[`tui-tree-widget` 0.24.1](https://crates.io/crates/tui-tree-widget/0.24.1),
+including its [dependencies](https://crates.io/api/v1/crates/tui-tree-widget/0.24.1/dependencies)
+and [render/state implementation](https://github.com/EdJoPaTo/tui-rs-tree-widget/tree/v0.24.1).
+It uses Ratatui's cell buffer; visible hit/navigation identities are populated by
+its render pass and flattening allocates identifier paths per draw. The current
+framework does not use Ratatui. Adapting that widget solely for this extra hierarchy
+would introduce a second cell-buffer/render bridge and duplicate retained row state.
+Extracted the existing row navigation instead, keeping one cached tree/render path
+for single and multiple attachments. No upstream widget code was copied. The
+[primary Nerd Font glyph map](https://github.com/ryanoasis/nerd-fonts/blob/master/glyphnames.json)
+identifies `md-beekeeper` as U+F14E2.
+
 
 Identity-only inspection performs the remote handshake without native client
 registration or activation, so it does not consume a native slot, select an

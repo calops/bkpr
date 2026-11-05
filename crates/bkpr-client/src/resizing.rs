@@ -117,7 +117,7 @@ impl State {
     }
 }
 
-impl App<'_> {
+impl App {
     pub(super) fn resize_capturing(&self) -> bool {
         self.resizing.capturing()
     }

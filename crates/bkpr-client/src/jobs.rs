@@ -32,9 +32,17 @@ pub(crate) struct Jobs<T: Send + 'static> {
 
 impl<T: Send + 'static> Jobs<T> {
     pub fn new(limit: usize) -> Result<Self> {
+        Self::with_workers(limit, limit)
+    }
+
+    pub fn with_workers(limit: usize, workers: usize) -> Result<Self> {
         if limit == 0 {
             bail!("background job limit must be positive");
         }
+        anyhow::ensure!(
+            workers > 0 && workers <= limit,
+            "invalid background worker count"
+        );
         let (wake, notify) = UnixStream::pair().context("creating background job wake channel")?;
         wake.set_nonblocking(true)?;
         notify.set_nonblocking(true)?;
@@ -49,7 +57,7 @@ impl<T: Send + 'static> Jobs<T> {
             workers: Vec::new(),
             wake,
         };
-        for _ in 0..limit {
+        for _ in 0..workers {
             let jobs = Arc::clone(&jobs);
             let completed = completed.clone();
             let mut notify = notify
@@ -234,6 +242,163 @@ impl<T: Send + 'static> Drop for Jobs<T> {
     }
 }
 
+struct ScopedDispatcher<T: Send + 'static> {
+    jobs: Jobs<T>,
+    live: HashSet<u64>,
+    ready: std::collections::HashMap<u64, Vec<Completion<T>>>,
+    remote_pending: HashSet<String>,
+    next: u64,
+}
+
+/// Generation-local handles share the terminal's eight management workers.
+/// Keys and completions never escape their scope, even when native IDs repeat.
+pub(crate) struct Scope<T: Send + 'static> {
+    shared: Arc<Mutex<ScopedDispatcher<T>>>,
+    id: u64,
+    remote: bool,
+    pub wake: UnixStream,
+}
+
+impl<T: Send + 'static> Scope<T> {
+    pub fn new(limit: usize) -> Result<Self> {
+        let jobs = Jobs::new(limit)?;
+        let wake = jobs.wake.try_clone()?;
+        Ok(Self {
+            shared: Arc::new(Mutex::new(ScopedDispatcher {
+                jobs,
+                live: HashSet::from([0]),
+                ready: std::collections::HashMap::new(),
+                remote_pending: HashSet::new(),
+                next: 0,
+            })),
+            id: 0,
+            remote: false,
+            wake,
+        })
+    }
+
+    pub fn scope(&self) -> Result<Self> {
+        self.scope_for(false)
+    }
+
+    pub fn scope_for(&self, remote: bool) -> Result<Self> {
+        let mut shared = self.shared.lock().unwrap();
+        let wake = shared.jobs.wake.try_clone()?;
+        shared.next = shared.next.checked_add(1).context("job scope exhausted")?;
+        let id = shared.next;
+        shared.live.insert(id);
+        Ok(Self {
+            shared: Arc::clone(&self.shared),
+            id,
+            remote,
+            wake,
+        })
+    }
+
+    fn key(&self, key: &str) -> String {
+        format!("{}:{key}", self.id)
+    }
+
+    pub fn contains(&self, key: &str) -> bool {
+        let shared = self.shared.lock().unwrap();
+        shared.jobs.contains(&self.key(key))
+            || shared
+                .ready
+                .get(&self.id)
+                .is_some_and(|ready| ready.iter().any(|item| item.key == key))
+    }
+
+    pub fn is_full(&self) -> bool {
+        let shared = self.shared.lock().unwrap();
+        shared.jobs.pending.len() + shared.ready.values().map(Vec::len).sum::<usize>()
+            >= shared.jobs.limit
+            || (self.remote
+                && shared.remote_pending.len() >= shared.jobs.limit.saturating_sub(2).max(1))
+    }
+
+    pub fn submit(
+        &mut self,
+        key: String,
+        job: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> Result<()> {
+        let mut shared = self.shared.lock().unwrap();
+        anyhow::ensure!(
+            shared.jobs.pending.len() + shared.ready.values().map(Vec::len).sum::<usize>()
+                < shared.jobs.limit,
+            "background job limit reached"
+        );
+        anyhow::ensure!(
+            !self.remote
+                || shared.remote_pending.len() < shared.jobs.limit.saturating_sub(2).max(1),
+            "remote management capacity reached; local workers remain reserved"
+        );
+        anyhow::ensure!(
+            !shared
+                .ready
+                .get(&self.id)
+                .is_some_and(|ready| ready.iter().any(|item| item.key == key)),
+            "background job already pending: {key}"
+        );
+        let key = self.key(&key);
+        if self.remote {
+            shared.jobs.submit(key.clone(), job)?;
+            shared.remote_pending.insert(key);
+            Ok(())
+        } else {
+            shared.jobs.submit(key, job)
+        }
+    }
+
+    pub fn latest(&mut self) -> Result<Vec<Completion<T>>> {
+        let mut shared = self.shared.lock().unwrap();
+        for completion in shared.jobs.latest()? {
+            shared.remote_pending.remove(&completion.key);
+            let (scope, key) = completion
+                .key
+                .split_once(':')
+                .context("invalid scoped job key")?;
+            let scope = scope.parse::<u64>()?;
+            if shared.live.contains(&scope) {
+                shared.ready.entry(scope).or_default().push(Completion {
+                    key: key.to_owned(),
+                    result: completion.result,
+                });
+            }
+        }
+        Ok(shared.ready.remove(&self.id).unwrap_or_default())
+    }
+
+    /// Called only after the physical UI stops. Never waits holding the shared
+    /// dispatcher lock, so retired generations cannot stall current admissions.
+    pub fn finish(mut self) -> Result<Vec<Completion<T>>> {
+        let prefix = format!("{}:", self.id);
+        let mut completed = Vec::new();
+        loop {
+            completed.extend(self.latest()?);
+            if !self
+                .shared
+                .lock()
+                .unwrap()
+                .jobs
+                .pending
+                .iter()
+                .any(|key| key.starts_with(&prefix))
+            {
+                return Ok(completed);
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+impl<T: Send + 'static> Drop for Scope<T> {
+    fn drop(&mut self) {
+        let mut shared = self.shared.lock().unwrap();
+        shared.live.remove(&self.id);
+        shared.ready.remove(&self.id);
+    }
+}
+
 fn panic_error(panic: Box<dyn Any + Send>) -> anyhow::Error {
     if let Some(message) = panic.downcast_ref::<String>() {
         anyhow!("background job panicked: {message}")
@@ -266,6 +431,59 @@ mod tests {
         sync::atomic::{AtomicBool, Ordering},
         time::Duration,
     };
+
+    #[test]
+    fn generation_scopes_keep_identical_native_job_keys_and_results_separate() {
+        let shared = Scope::new(2).unwrap();
+        let mut first = shared.scope().unwrap();
+        let mut second = shared.scope().unwrap();
+        first
+            .submit("manage:window:same-id".into(), || Ok(11))
+            .unwrap();
+        second
+            .submit("manage:window:same-id".into(), || Ok(22))
+            .unwrap();
+        let mut first = first.finish().unwrap();
+        let mut second = second.finish().unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first.pop().unwrap().result.unwrap(), 11);
+        assert_eq!(second.pop().unwrap().result.unwrap(), 22);
+    }
+
+    #[test]
+    fn stalled_remote_management_cannot_occupy_the_local_worker_reserve() {
+        let shared = Scope::new(8).unwrap();
+        let mut remote = shared.scope_for(true).unwrap();
+        let mut local = shared.scope().unwrap();
+        let mut release = Vec::new();
+        for index in 0..6 {
+            let (sender, receiver) = mpsc::channel();
+            release.push(sender);
+            remote
+                .submit(format!("remote:{index}"), move || {
+                    receiver.recv()?;
+                    Ok(index)
+                })
+                .unwrap();
+        }
+        assert!(remote.is_full());
+        assert!(!local.is_full());
+        assert!(remote.submit("overflow".into(), || Ok(99)).is_err());
+        let (progress, observed) = mpsc::channel();
+        local
+            .submit("local".into(), move || {
+                progress.send(())?;
+                Ok(42)
+            })
+            .unwrap();
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(local.finish().unwrap().pop().unwrap().result.unwrap(), 42);
+        for sender in release {
+            sender.send(()).unwrap();
+        }
+        assert_eq!(remote.finish().unwrap().len(), 6);
+    }
 
     fn wait_for_wake<T: Send + 'static>(jobs: &mut Jobs<T>) {
         jobs.wake.set_nonblocking(false).unwrap();

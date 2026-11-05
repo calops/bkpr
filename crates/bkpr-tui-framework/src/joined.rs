@@ -54,6 +54,8 @@ struct Patch {
     key: PatchKey,
     body: Arc<Image>,
     shadow: Arc<Image>,
+    body_visible: bool,
+    shadow_visible: bool,
 }
 impl Patch {
     fn bytes(&self) -> usize {
@@ -148,8 +150,11 @@ impl PreparedJoined {
         let mut id = base;
         for part in &self.parts {
             let patch = &self.patches[part.patch];
-            for image in [&patch.body, &patch.shadow] {
-                if !frame.images.iter().any(|old| old.key() == image.key()) {
+            for (image, visible) in [
+                (&patch.body, patch.body_visible),
+                (&patch.shadow, patch.shadow_visible),
+            ] {
+                if visible && !frame.images.iter().any(|old| old.key() == image.key()) {
                     frame.images.push(Arc::clone(image));
                 }
             }
@@ -157,11 +162,29 @@ impl PreparedJoined {
             // above glyphs only outside explicitly supplied glyph rectangles.
             let entire = [[part.x, part.y, part.width, part.height]];
             let (clipped, length) = fragments(part).unwrap();
-            for (image, layer, pieces) in [
-                (&patch.body, ImageLayer::BelowText, entire.as_slice()),
-                (&patch.shadow, ImageLayer::AboveText, entire.as_slice()),
-                (&patch.body, ImageLayer::AboveText, &clipped[..length]),
+            for (image, layer, pieces, visible) in [
+                (
+                    &patch.body,
+                    ImageLayer::BelowText,
+                    entire.as_slice(),
+                    patch.body_visible,
+                ),
+                (
+                    &patch.shadow,
+                    ImageLayer::AboveText,
+                    entire.as_slice(),
+                    patch.shadow_visible,
+                ),
+                (
+                    &patch.body,
+                    ImageLayer::AboveText,
+                    &clipped[..length],
+                    patch.body_visible,
+                ),
             ] {
+                if !visible {
+                    continue;
+                }
                 for &[x, y, w, h] in pieces {
                     let right = (x + w).min(u32::from(frame.size.cols) * self.cell[0]);
                     let bottom = (y + h).min(u32::from(frame.size.rows) * self.cell[1]);
@@ -638,68 +661,6 @@ fn rasterize(key: PatchKey, generation: u64, next_id: &mut u32) -> Option<Patch>
     if pw.checked_mul(ph)? > 1_048_576 {
         return None;
     }
-    let mut mask = vec![0.0; pw * ph];
-    for y in 0..ph {
-        for x in 0..pw {
-            let mut inside = 0.0;
-            for sy in 0..4 {
-                for sx in 0..4 {
-                    if distance(
-                        &features,
-                        x as f64 - pad as f64 + (sx as f64 + 0.5) / 4.0,
-                        y as f64 - pad as f64 + (sy as f64 + 0.5) / 4.0,
-                    )
-                    .0 >= 0.0
-                    {
-                        inside += 1.0;
-                    }
-                }
-            }
-            mask[y * pw + x] = inside / 16.0;
-        }
-    }
-    let sigma = f64::from(key.style.sigma_milli) / 1000.0;
-    let support = (sigma * 5.0).ceil() as isize;
-    let mut kernel: Vec<_> = (-support..=support)
-        .map(|i| (-0.5 * (i as f64 / sigma).powi(2)).exp())
-        .collect();
-    let total: f64 = kernel.iter().sum();
-    for weight in &mut kernel {
-        *weight /= total;
-    }
-    let mut horizontal = vec![0.0; mask.len()];
-    let mut blurred = vec![0.0; mask.len()];
-    for y in 0..ph {
-        for x in 0..pw {
-            for (i, weight) in kernel.iter().enumerate() {
-                let px = (x as isize + i as isize - support).clamp(0, pw as isize - 1) as usize;
-                horizontal[y * pw + x] += mask[y * pw + px] * weight;
-            }
-        }
-    }
-    for y in 0..ph {
-        for x in 0..pw {
-            for (i, weight) in kernel.iter().enumerate() {
-                let py = (y as isize + i as isize - support).clamp(0, ph as isize - 1) as usize;
-                blurred[y * pw + x] += horizontal[py * pw + x] * weight;
-            }
-        }
-    }
-    // A terminal may linearly filter beyond a one-texel texture edge. Crop
-    // the middle of three identical texels instead of fading into that border.
-    // Rasterize the constant axis once; only duplicate its final RGBA bytes.
-    let (repeat_x, repeat_y) = match key.geometry {
-        Geometry::Line {
-            horizontal: true, ..
-        } => (3, 1),
-        Geometry::Line {
-            horizontal: false, ..
-        } => (1, 3),
-        Geometry::Tile(_) => (1, 1),
-    };
-    let bytes = width * height * 4;
-    let mut body = Vec::with_capacity(bytes * repeat_x * repeat_y);
-    let mut shadow = Vec::with_capacity(bytes * repeat_x * repeat_y);
     let columns = width.div_ceil(cw);
     let rows = height.div_ceil(ch);
     let mut partial_cells = Vec::with_capacity(columns * rows);
@@ -716,6 +677,117 @@ fn rasterize(key: PatchKey, generation: u64, next_id: &mut u32) -> Option<Patch>
             ));
         }
     }
+    // The exterior shadow is zero where complete cells have coverage one.
+    let shadow_samples = if key.style.shadow_opacity_milli != 0
+        && partial_cells.iter().any(|partial| *partial)
+    {
+        let (scan_width, scan_height) = match key.geometry {
+            Geometry::Line {
+                horizontal: true, ..
+            } => (1, ph),
+            Geometry::Line {
+                horizontal: false, ..
+            } => (pw, 1),
+            Geometry::Tile(_) => (pw, ph),
+        };
+        // Straight features are exactly invariant along their tangent. Repeat the
+        // result, preserving the existing kernel and floating-point summation order.
+        let repeat_axis = |values: &mut [f64]| {
+            if scan_width == 1 {
+                for row in values.chunks_exact_mut(pw) {
+                    row.fill(row[0]);
+                }
+            } else if scan_height == 1 {
+                for y in 1..ph {
+                    values.copy_within(..pw, y * pw);
+                }
+            }
+        };
+        let mut mask = vec![0.0; pw * ph];
+        for y in 0..scan_height {
+            for x in 0..scan_width {
+                let pixel = PixelRect {
+                    x: x as i32 - pad as i32,
+                    y: y as i32 - pad as i32,
+                    right: x as i32 - pad as i32 + 1,
+                    bottom: y as i32 - pad as i32 + 1,
+                };
+                if let Some(inside) = Contour::pixel_coverage(&features, pixel) {
+                    mask[y * pw + x] = f64::from(u8::from(inside));
+                    continue;
+                }
+                let mut inside = 0.0;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        if distance(
+                            &features,
+                            x as f64 - pad as f64 + (sx as f64 + 0.5) / 4.0,
+                            y as f64 - pad as f64 + (sy as f64 + 0.5) / 4.0,
+                        )
+                        .0 >= 0.0
+                        {
+                            inside += 1.0;
+                        }
+                    }
+                }
+                mask[y * pw + x] = inside / 16.0;
+            }
+        }
+        repeat_axis(&mut mask);
+        let sigma = f64::from(key.style.sigma_milli) / 1000.0;
+        let support = (sigma * 5.0).ceil() as isize;
+        let mut kernel: Vec<_> = (-support..=support)
+            .map(|i| (-0.5 * (i as f64 / sigma).powi(2)).exp())
+            .collect();
+        let total: f64 = kernel.iter().sum();
+        for weight in &mut kernel {
+            *weight /= total;
+        }
+        let mut horizontal = vec![0.0; mask.len()];
+        let mut blurred = vec![0.0; mask.len()];
+        for y in 0..scan_height {
+            for x in 0..scan_width {
+                let mut sum = 0.0;
+                for (i, weight) in kernel.iter().enumerate() {
+                    let px = (x as isize + i as isize - support).clamp(0, pw as isize - 1) as usize;
+                    sum += mask[y * pw + px] * weight;
+                }
+                horizontal[y * pw + x] = sum;
+            }
+        }
+        repeat_axis(&mut horizontal);
+        for y in 0..scan_height {
+            for x in 0..scan_width {
+                let mut sum = 0.0;
+                for (i, weight) in kernel.iter().enumerate() {
+                    let py = (y as isize + i as isize - support).clamp(0, ph as isize - 1) as usize;
+                    sum += horizontal[py * pw + x] * weight;
+                }
+                blurred[y * pw + x] = sum;
+            }
+        }
+        repeat_axis(&mut blurred);
+        Some((mask, blurred))
+    } else {
+        None
+    };
+    // A terminal may linearly filter beyond a one-texel texture edge. Crop
+    // the middle of three identical texels instead of fading into that border.
+    // Rasterize the constant axis once; only duplicate its final RGBA bytes.
+    let (repeat_x, repeat_y) = match key.geometry {
+        Geometry::Line {
+            horizontal: true, ..
+        } => (3, 1),
+        Geometry::Line {
+            horizontal: false, ..
+        } => (1, 3),
+        Geometry::Tile(_) => (1, 1),
+    };
+    let bytes = width * height * 4;
+    let mut body = Vec::with_capacity(bytes * repeat_x * repeat_y);
+    let mut shadow = Vec::with_capacity(bytes * repeat_x * repeat_y);
+    let mut body_visible = false;
+    let mut shadow_visible = false;
     for y in 0..height {
         for x in 0..width {
             let partial = partial_cells[(y / ch) * columns + x / cw];
@@ -746,26 +818,33 @@ fn rasterize(key: PatchKey, generation: u64, next_id: &mut u32) -> Option<Patch>
             } else {
                 [0; 4]
             };
+            body_visible |= pixel[3] != 0;
             for _ in 0..repeat_x {
                 body.extend_from_slice(&pixel);
             }
-            let fx = (x as f64 + pad as f64 - f64::from(key.style.offset_milli[0]) / 1000.0)
-                .clamp(0.0, (pw - 2) as f64);
-            let fy = (y as f64 + pad as f64 - f64::from(key.style.offset_milli[1]) / 1000.0)
-                .clamp(0.0, (ph - 2) as f64);
-            let ix = fx.floor() as usize;
-            let iy = fy.floor() as usize;
-            let dx = fx - ix as f64;
-            let dy = fy - iy as f64;
-            let a = blurred[iy * pw + ix] * (1.0 - dx) + blurred[iy * pw + ix + 1] * dx;
-            let b = blurred[(iy + 1) * pw + ix] * (1.0 - dx) + blurred[(iy + 1) * pw + ix + 1] * dx;
-            let alpha = ((a * (1.0 - dy) + b * dy)
-                * (1.0 - mask[(y + pad) * pw + x + pad])
-                * f64::from(key.style.shadow_opacity_milli)
-                / 1000.0
-                * 255.0)
-                .round()
-                .clamp(0.0, 255.0) as u8;
+            let alpha = if let Some((mask, blurred)) = &shadow_samples {
+                let fx = (x as f64 + pad as f64 - f64::from(key.style.offset_milli[0]) / 1000.0)
+                    .clamp(0.0, (pw - 2) as f64);
+                let fy = (y as f64 + pad as f64 - f64::from(key.style.offset_milli[1]) / 1000.0)
+                    .clamp(0.0, (ph - 2) as f64);
+                let ix = fx.floor() as usize;
+                let iy = fy.floor() as usize;
+                let dx = fx - ix as f64;
+                let dy = fy - iy as f64;
+                let a = blurred[iy * pw + ix] * (1.0 - dx) + blurred[iy * pw + ix + 1] * dx;
+                let b =
+                    blurred[(iy + 1) * pw + ix] * (1.0 - dx) + blurred[(iy + 1) * pw + ix + 1] * dx;
+                ((a * (1.0 - dy) + b * dy)
+                    * (1.0 - mask[(y + pad) * pw + x + pad])
+                    * f64::from(key.style.shadow_opacity_milli)
+                    / 1000.0
+                    * 255.0)
+                    .round()
+                    .clamp(0.0, 255.0) as u8
+            } else {
+                0
+            };
+            shadow_visible |= alpha != 0;
             for _ in 0..repeat_x {
                 shadow.extend_from_slice(&[0, 0, 0, alpha]);
             }
@@ -791,6 +870,8 @@ fn rasterize(key: PatchKey, generation: u64, next_id: &mut u32) -> Option<Patch>
         key,
         body: image(id, body),
         shadow: image(id + 1, shadow),
+        body_visible,
+        shadow_visible,
     })
 }
 
@@ -817,6 +898,132 @@ mod tests {
                 lip_highlight_milli: 240,
                 lip_shade_milli: 240,
             },
+        }
+    }
+
+    #[test]
+    fn certified_pixels_preserve_subpixel_coverage_at_convex_and_concave_corners() {
+        let request = request();
+        let pad = reach(request.style).unwrap();
+        let mut cache = JoinedCache::default();
+        let mut next_id = 1;
+        for cell in [[8, 16], [9, 18]] {
+            let prepared = cache.prepare(request, cell, 1, &mut next_id).unwrap();
+            for patch in &prepared.patches {
+                let Geometry::Tile(features) = &patch.key.geometry else {
+                    continue;
+                };
+                for y in -pad..cell[1] as i32 + pad {
+                    for x in -pad..cell[0] as i32 + pad {
+                        let rect = PixelRect {
+                            x,
+                            y,
+                            right: x + 1,
+                            bottom: y + 1,
+                        };
+                        let Some(covered) = Contour::pixel_coverage(features, rect) else {
+                            continue;
+                        };
+                        for dy in [0.125, 0.375, 0.625, 0.875] {
+                            for dx in [0.125, 0.375, 0.625, 0.875] {
+                                assert_eq!(
+                                    distance(features, f64::from(x) + dx, f64::from(y) + dy).0
+                                        >= 0.0,
+                                    covered,
+                                    "cell={cell:?}, pixel={x},{y}, sample={dx},{dy}, features={features:?}",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn straight_material_matches_a_two_dimensional_cell_on_both_axes() {
+        let style = request().style;
+        let pad = reach(style).unwrap() as u32;
+        for cell in [[8, 16], [9, 18]] {
+            for horizontal in [false, true] {
+                let unit = if horizontal { cell[1] } else { cell[0] };
+                let start = ((pad + 1).div_ceil(unit) + 1) * unit;
+                for inward in [-1, 1] {
+                    for phase in [0, unit as i32 / 2] {
+                        let mut next_id = 1;
+                        let line = rasterize(
+                            PatchKey {
+                                style,
+                                cell,
+                                geometry: Geometry::Line {
+                                    horizontal,
+                                    inward,
+                                    phase,
+                                },
+                            },
+                            1,
+                            &mut next_id,
+                        )
+                        .unwrap();
+                        let feature = if horizontal {
+                            Feature::Edge {
+                                from: Point {
+                                    x: -1_000_000,
+                                    y: phase,
+                                },
+                                to: Point {
+                                    x: 1_000_000,
+                                    y: phase,
+                                },
+                                nx: 0,
+                                ny: inward,
+                            }
+                        } else {
+                            Feature::Edge {
+                                from: Point {
+                                    x: phase,
+                                    y: -1_000_000,
+                                },
+                                to: Point {
+                                    x: phase,
+                                    y: 1_000_000,
+                                },
+                                nx: inward,
+                                ny: 0,
+                            }
+                        };
+                        let tile = rasterize(
+                            PatchKey {
+                                style,
+                                cell,
+                                geometry: Geometry::Tile(vec![feature]),
+                            },
+                            1,
+                            &mut next_id,
+                        )
+                        .unwrap();
+                        for (line, tile) in [(&line.body, &tile.body), (&line.shadow, &tile.shadow)]
+                        {
+                            for y in 0..cell[1] {
+                                for x in 0..cell[0] {
+                                    let (sx, sy) = if horizontal {
+                                        (1, start + y)
+                                    } else {
+                                        (start + x, 1)
+                                    };
+                                    let a = ((sy * line.width + sx) * 4) as usize;
+                                    let b = ((y * tile.width + x) * 4) as usize;
+                                    assert_eq!(
+                                        line.pixels[a..a + 4],
+                                        tile.pixels[b..b + 4],
+                                        "{cell:?}, horizontal={horizontal}, inward={inward}, phase={phase}, pixel={x},{y}",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -7,17 +7,16 @@ mod remote;
 mod session;
 
 use anyhow::{Context, Result, bail};
-use bkpr_client::Options;
-use bkpr_protocol::{Operation, Request, Size};
+use bkpr_client::{Options, SessionTarget, SpawnDefaults};
+use bkpr_protocol::{Operation, Request};
 use std::{io::IsTerminal, path::PathBuf};
 
 const HELP: &str = r#"Bkpr — persistent named pane workspaces
 
-  bkpr [tui] [-s NAME | --socket PATH --state-root PATH] [-d]
-       [--cwd PATH] [--read-only] [--clipboard ask|allow|deny] [--bkprd PATH]
-       [--home ISOLATED_FIXTURE_HOME] [-- SHELL ARGS...]
-  bkpr [tui] -r HOST [-s NAME] [--remote-bkpr-bin REMOTE_EXECUTABLE]
-       [--ssh-config PATH] [--forward-agent] [-d] [--read-only] [--clipboard ask|allow|deny]
+  bkpr [tui] [-s [HOST:]NAME ... | --socket PATH --state-root PATH] [-d]
+       [-r DEFAULT_HOST] [--cwd PATH] [--read-only] [--clipboard ask|allow|deny]
+       [--bkprd PATH] [--home ISOLATED_FIXTURE_HOME] [-- SHELL ARGS...]
+       [--remote-bkpr-bin REMOTE_EXECUTABLE] [--ssh-config PATH] [--forward-agent]
   bkpr list
   bkpr stop [-s NAME | --socket PATH]
   bkpr resume [-s NAME | --socket PATH] [--pane PANE_ID]
@@ -33,7 +32,9 @@ const HELP: &str = r#"Bkpr — persistent named pane workspaces
   bkpr install agy
 
 Bare bkpr connects or starts the named local session `bkpr`, then opens its TUI.
--s / --session selects an exact name (Unicode, spaces and slashes are supported).
+-s / --session repeats to attach independent local and remote sessions in one TUI.
+Use -s foo -s bar -s devbox:baz; local:foo:bar selects the literal local name foo:bar.
+Names remain exact (Unicode, spaces, slashes and colons are supported).
 -d / --detach-others revokes other clients once this attachment is ready; it does
 not terminate their panes. Client exit/detach preserves daemon and pane processes.
 `list` discovers stored sessions without starting them; `stop` stops only the
@@ -45,9 +46,10 @@ intent without a fallback; direct bkprd startup without argv stays headless.
 Explicit --session overrides inherited BKPR_SOCKET. Headless context/request/
 keyboard/resume otherwise inherit pane routing; normal TUI/stop default to `bkpr`.
 Utilities do not initialize the TUI or automatically start a daemon.
--r / --remote selects a single existing remote session; its exact name defaults to
-`bkpr`, independently of local pane routing. The local TUI connects directly over
-SSH without starting a local daemon or creating, installing or restarting remotely.
+-r / --remote supplies the default host for ALL unqualified TUI targets, regardless
+of argument position. Explicit HOST:NAME and local:NAME override it. Remote names
+default to `bkpr`, independently of local pane routing. The TUI connects directly
+over SSH without creating, installing or restarting remotely.
 --remote-bkpr-bin selects the remote helper executable (default: remote PATH `bkpr`).
 `remote inspect` validates session identity read-only, without attaching or forwarding
 agents. `remote connect` keeps one attachment for bounded Operation JSON lines.
@@ -55,6 +57,12 @@ Only the TUI and remote connect accept -d takeover. SSH host keys must already b
 trusted; agent forwarding is disabled unless explicitly requested by a remote TUI,
 request or connect invocation. Remote paths and process operations stay remote;
 terminal theme, capabilities and clipboard policy stay local.
+Local startup options apply only to local targets; remote pane defaults stay remote.
+Utilities accept at most one exact -s name (no host-prefix interpretation).
+Initial failures remain offline for explicit retry. Previously active attachments
+reconnect after transport loss, never restarting programs or replaying operations.
+Ctrl-b S selects the session tree context; R on a session row forces reconnect.
+An ended/detached session leaves the tree; ending the last exits after TTY restoration.
 `resume` lists saved native conversations read-only; --pane selects one exact ID.
 Resume uses current native configuration, not saved argv/settings; process start
 is pending authenticated conversation binding, not proof the conversation loaded.
@@ -75,8 +83,9 @@ Keyboard (Ctrl-b prefix, then one command):
   e resize: arrows 1 cell, Shift+arrows 5; Enter/Esc finish; drag dividers directly
   / search: type query, Enter next / Shift+Enter previous, Esc close
   s scrollback/history     y copy selection         i project details
+  S jump to session tree   R on session row: force reconnect
   x remove layout leaf only (process survives)      ! close / terminate (yes)
-  X remove workspace layout (confirm yes; processes survive)
+  X close workspace and all its owned terminals (confirm yes)
   o show existing pane (including hidden/unassigned executions)
   d detach                 Ctrl-b Ctrl-b send Ctrl-b to focused pane
 Ctrl-] detaches directly. Click workspace or pane to focus; application mouse
@@ -113,17 +122,8 @@ fn main() -> Result<()> {
     if command == "api" {
         return api::run(&matches);
     }
-    if let Some(target) = remote::tui_target(&matches)? {
-        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-            bail!("TUI needs a terminal; use remote inspect or request for headless access");
-        }
-        let mut options = Options::remote();
-        options.read_only = matches.get_flag("read-only");
-        options.detach_others = matches.get_flag("detach-others");
-        if let Some(policy) = matches.get_one::<String>("clipboard") {
-            options.clipboard_policy.clone_from(policy);
-        }
-        return bkpr_client::run_remote(target, options);
+    if command == "tui" {
+        return run_tui(&matches);
     }
     let roots = session::Roots::inherited()?;
     if command == "list" {
@@ -137,7 +137,7 @@ fn main() -> Result<()> {
         matches.get_one::<PathBuf>("state-root").cloned(),
         std::env::var_os("BKPR_SOCKET").map(PathBuf::from),
         matches!(command, "context" | "request" | "keyboard" | "resume"),
-        command == "tui",
+        false,
     )?;
     let payload = || {
         matches
@@ -197,42 +197,99 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        "tui" => {
-            if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-                bail!("TUI needs a terminal; use context or request for headless access");
-            }
-            let mut options = Options::inherited()?;
-            options.read_only = matches.get_flag("read-only");
-            options.detach_others = matches.get_flag("detach-others");
-            if let Some(policy) = matches.get_one::<String>("clipboard") {
-                options.clipboard_policy.clone_from(policy);
-            }
-            if let Some(path) = matches.get_one::<PathBuf>("cwd") {
-                options.cwd = cli::absolute(path.clone())?;
-            }
-            if let Some(path) = matches.get_one::<PathBuf>("home") {
-                options.home = cli::absolute(path.clone())?;
-                options.isolated_environment = true;
-            }
-            if let Some(shell) = cli::shell_arguments(&matches)? {
-                options.shell = shell;
-            }
-            let physical = bkpr_tui_framework::dimensions()?;
-            let size = Size {
-                cols: physical.cols,
-                rows: physical.rows,
-                cell_width: physical.cell_width,
-                cell_height: physical.cell_height,
-            };
-            bkpr_protocol::valid_size(size)?;
-            let binary = matches
-                .get_one::<PathBuf>("bkprd")
-                .cloned()
-                .map(cli::absolute)
-                .transpose()?;
-            session::ensure_server(&paths, binary.as_deref(), &options, size)?;
-            bkpr_client::run(&paths.socket, options)
-        }
         _ => unreachable!(),
     }
+}
+
+fn run_tui(matches: &clap::ArgMatches) -> Result<()> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        bail!("TUI needs a terminal; use context, request or remote inspect for headless access");
+    }
+    let mut options = Options {
+        read_only: matches.get_flag("read-only"),
+        detach_others: matches.get_flag("detach-others"),
+        ..Options::default()
+    };
+    if let Some(policy) = matches.get_one::<String>("clipboard") {
+        options.clipboard_policy.clone_from(policy);
+    }
+    let specifications = cli::tui_targets(matches)?;
+    let has_local = specifications
+        .iter()
+        .any(|target| matches!(target, cli::TuiTarget::Local(_)));
+    // A remote-only launch does not require or inspect local HOME, CWD or roots.
+    let local = if has_local {
+        Some((session::Roots::inherited()?, local_defaults(matches)?))
+    } else {
+        None
+    };
+    let binary = matches
+        .get_one::<PathBuf>("bkprd")
+        .cloned()
+        .map(cli::absolute)
+        .transpose()?;
+    let mut targets = Vec::with_capacity(specifications.len());
+    for specification in specifications {
+        match specification {
+            cli::TuiTarget::Remote { host, name } => {
+                targets.push(SessionTarget::Remote(remote::tui_target(
+                    matches, host, name,
+                )));
+            }
+            cli::TuiTarget::Local(name) => {
+                let (roots, defaults) = local.as_ref().expect("local defaults resolved");
+                let paths = session::LocalPaths::resolve(
+                    roots,
+                    (!matches.contains_id("socket")).then_some(name.as_str()),
+                    matches.get_one::<PathBuf>("socket").cloned(),
+                    matches.get_one::<PathBuf>("state-root").cloned(),
+                    None,
+                    false,
+                    true,
+                )?;
+                let spawn_defaults = defaults.clone();
+                let bootstrap_defaults = defaults.clone();
+                let binary = binary.clone();
+                targets.push(SessionTarget::Local {
+                    name: paths.name.clone(),
+                    socket: paths.socket.clone(),
+                    spawn_defaults,
+                    prepare: Some(Box::new(move |size, cancellation| {
+                        session::ensure_server(
+                            &paths,
+                            binary.as_deref(),
+                            &bootstrap_defaults,
+                            size,
+                            &cancellation,
+                        )
+                    })),
+                });
+            }
+        }
+    }
+    bkpr_client::run_sessions(targets, options)
+}
+
+fn local_defaults(matches: &clap::ArgMatches) -> Result<SpawnDefaults> {
+    Ok(SpawnDefaults {
+        argv: cli::shell_arguments(matches)?.unwrap_or_else(|| {
+            vec![
+                std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()),
+                "-i".into(),
+            ]
+        }),
+        cwd: matches
+            .get_one::<PathBuf>("cwd")
+            .cloned()
+            .map(cli::absolute)
+            .transpose()?
+            .unwrap_or(std::env::current_dir()?),
+        home: match matches.get_one::<PathBuf>("home") {
+            Some(home) => cli::absolute(home.clone())?,
+            None => std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .context("HOME is required")?,
+        },
+        isolated_environment: matches.contains_id("home"),
+    })
 }

@@ -1,0 +1,108 @@
+//! A one-cell progress indicator driven by the caller's existing event loop.
+use std::time::{Duration, Instant};
+
+const PERIOD: Duration = Duration::from_millis(120);
+const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+pub struct Spinner {
+    epoch: Instant,
+    next: Option<Instant>,
+    frame: usize,
+    active: bool,
+}
+
+impl Spinner {
+    pub fn new(now: Instant) -> Self {
+        Self {
+            epoch: now,
+            next: None,
+            frame: 0,
+            active: false,
+        }
+    }
+
+    pub fn set_active(&mut self, active: bool, now: Instant) -> bool {
+        if self.active == active {
+            return false;
+        }
+        self.active = active;
+        self.epoch = now;
+        self.frame = 0;
+        self.next = active.then(|| now.checked_add(PERIOD)).flatten();
+        true
+    }
+
+    /// Coalesce missed ticks without replaying frames or drifting the phase.
+    pub fn advance(&mut self, now: Instant) -> bool {
+        if self.next.is_none_or(|next| now < next) {
+            return false;
+        }
+        let elapsed = now.duration_since(self.epoch).as_nanos();
+        let period = PERIOD.as_nanos();
+        let frame = (elapsed / period % FRAMES.len() as u128) as usize;
+        let changed = self.frame != frame;
+        self.frame = frame;
+        self.next = now.checked_add(PERIOD - Duration::from_nanos((elapsed % period) as u64));
+        changed
+    }
+
+    pub fn glyph(&self) -> char {
+        if self.active { FRAMES[self.frame] } else { ' ' }
+    }
+
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.next
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inactive_indicators_never_schedule_repaints() {
+        let now = Instant::now();
+        let mut spinner = Spinner::new(now);
+        assert_eq!(spinner.next_deadline(), None);
+        assert_eq!(spinner.glyph(), ' ');
+        assert!(!spinner.advance(now + Duration::from_secs(30)));
+        spinner.set_active(true, now);
+        spinner.advance(now + PERIOD);
+        assert!(spinner.set_active(false, now + PERIOD));
+        assert_eq!(spinner.next_deadline(), None);
+        assert_eq!(spinner.glyph(), ' ');
+        assert!(!spinner.advance(now + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn late_ticks_coalesce_and_keep_the_original_phase() {
+        let now = Instant::now();
+        let mut spinner = Spinner::new(now);
+        spinner.set_active(true, now);
+        assert!(!spinner.advance(now + PERIOD - Duration::from_nanos(1)));
+        assert!(spinner.advance(now + PERIOD));
+        let glyph = spinner.glyph();
+        let cycles = FRAMES.len() as u32 * 3 + 1;
+        assert!(!spinner.advance(now + PERIOD * cycles + Duration::from_millis(30)));
+        assert_eq!(spinner.glyph(), glyph);
+        assert_eq!(spinner.next_deadline(), Some(now + PERIOD * (cycles + 1)));
+        assert!(spinner.advance(now + PERIOD * (cycles + 1)));
+        assert_ne!(spinner.glyph(), glyph);
+    }
+
+    #[test]
+    fn reactivation_restarts_without_old_deadlines() {
+        let now = Instant::now();
+        let mut spinner = Spinner::new(now);
+        spinner.set_active(true, now);
+        let first = spinner.glyph();
+        spinner.advance(now + PERIOD * 2);
+        spinner.set_active(false, now + PERIOD * 2);
+        let resumed = now + Duration::from_secs(5);
+        spinner.set_active(true, resumed);
+        assert_eq!(spinner.glyph(), first);
+        assert_eq!(spinner.next_deadline(), Some(resumed + PERIOD));
+        assert!(!spinner.set_active(true, resumed + Duration::from_millis(10)));
+        assert_eq!(spinner.next_deadline(), Some(resumed + PERIOD));
+    }
+}

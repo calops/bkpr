@@ -9,8 +9,84 @@ use std::{io::Write, os::unix::net::UnixStream, path::Path, time::Duration};
 
 #[path = "client_lifetime.rs"]
 pub(crate) mod client_lifetime;
-pub use client_lifetime::{Endpoint, RegisteredClient, detached_before_dispatch};
+pub use client_lifetime::{Endpoint, Lifecycle, RegisteredClient, detached_before_dispatch};
 
+/// Run on an admission worker, never the terminal thread. Cancellation drops
+/// only this request's socket and cannot replay a dispatched operation.
+pub fn checked_cancellable(
+    socket: &Path,
+    operation: Operation,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<Value> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("creating cancellable native request runtime")?
+        .block_on(async {
+            let dispatched = std::cell::Cell::new(false);
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {
+                    let error = anyhow::anyhow!("native request cancelled");
+                    Err(if dispatched.get() { error.context(OutcomeUnknown) } else { error })
+                },
+                response = async {
+                    let mut stream = tokio::net::UnixStream::connect(socket)
+                        .await
+                        .with_context(|| format!("connecting to {}", socket.display()))?;
+                    dispatched.set(true);
+                    request_async(&mut stream, &Request::new(operation), wire::MAX_RESPONSE).await
+                } => checked_response(response?),
+            }
+        })
+}
+
+/// Reads exactly one frame, leaving a coalesced lifetime event on the socket.
+pub(crate) async fn request_async(
+    stream: &mut tokio::net::UnixStream,
+    request: &Request,
+    response_limit: usize,
+) -> Result<Response> {
+    let mut codec = Codec::new();
+    let frame = wire::encode_frame(Kind::Request, codec.encode_request(request)?)
+        .context(OutcomeUnknown)?;
+    request_frame_async(stream, frame, response_limit).await
+}
+
+pub(crate) async fn request_client_async(
+    stream: &mut tokio::net::UnixStream,
+    authority: &ClientAuthority,
+    operation: &Operation,
+) -> Result<Response> {
+    let mut codec = Codec::new();
+    let frame = wire::encode_frame(
+        Kind::Request,
+        codec.encode_client_request(authority, operation)?,
+    )
+    .context(OutcomeUnknown)?;
+    request_frame_async(stream, frame, wire::MAX_RESPONSE).await
+}
+
+async fn request_frame_async(
+    stream: &mut tokio::net::UnixStream,
+    frame: Vec<u8>,
+    response_limit: usize,
+) -> Result<Response> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::time::timeout(Duration::from_secs(15), async {
+        stream.write_all(&frame).await?;
+        let mut header = [0; wire::HEADER_LEN];
+        stream.read_exact(&mut header).await?;
+        let length = wire::frame_payload_len(&header, Kind::Response, response_limit)?;
+        let mut payload = vec![0; length];
+        stream.read_exact(&mut payload).await?;
+        validate_response(wire::decode_response_owned(payload)?)
+    })
+    .await
+    .context("native response deadline")
+    .and_then(|response| response)
+    .context(OutcomeUnknown)
+}
 #[derive(Debug)]
 struct OutcomeUnknown;
 impl std::fmt::Display for OutcomeUnknown {
