@@ -675,6 +675,14 @@ impl Registry {
             if state.closing {
                 return;
             }
+            if !state
+                .live
+                .get(&id)
+                .is_some_and(|current| Arc::ptr_eq(&current.shared, &pane.shared))
+            {
+                continue;
+            }
+            let automatic_title = state.record.automatic_titles.contains(&id);
             let registry = &mut state.record.registry;
             let Some(info) = registry
                 .panes
@@ -683,9 +691,10 @@ impl Registry {
             else {
                 continue;
             };
-            let published = pane.shared.published.lock().unwrap();
+            let mut published = pane.shared.published.lock().unwrap();
+            let title_changed = std::mem::take(&mut published.title_changed);
             let summary = harness_summary(info.harness.as_ref(), &published);
-            if info.harness_status.as_ref() != summary {
+            if info.harness_status.as_ref() != summary || (automatic_title && title_changed) {
                 let Some(revision) = registry.revision.checked_add(1) else {
                     continue;
                 };

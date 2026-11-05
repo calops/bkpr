@@ -426,7 +426,8 @@ fn agent_recovery_control_defaults_to_live_workspace_and_cannot_resume_foreign_o
         .registry
         .configure_harnesses(&fixture.socket, &std::env::current_exe().unwrap())
         .unwrap();
-    let (pane_id, grant, peer) = seed_launch(&fixture);
+    let (pane_id, grant, peer) =
+        seed_launch_command(&fixture, HarnessKind::Claude, "IFS= read -r hold");
     let launch = fixture.registry.inner.captures.lock().unwrap().launches[&grant.launch_id].clone();
     fixture
         .registry

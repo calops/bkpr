@@ -68,6 +68,8 @@ struct Published {
     selections: BTreeMap<String, (u64, SelectionSnapshot)>,
     searches: BTreeMap<String, (u64, SearchSnapshot)>,
     status: Vec<ProgramStatus>,
+    title: Option<String>,
+    title_changed: bool,
     program_identity: Option<bkpr_protocol::ProcessIdentity>,
     lifecycle: String,
     exit_code: Option<u32>,
@@ -82,6 +84,8 @@ impl Default for Published {
             selections: BTreeMap::new(),
             searches: BTreeMap::new(),
             status: Vec::new(),
+            title: None,
+            title_changed: false,
             program_identity: None,
             revision: 0,
             events: VecDeque::new(),
@@ -1277,6 +1281,18 @@ fn route_effects(effects: Vec<Effect>, writer: &writer::Queue, shared: &Shared) 
             }
             effect => {
                 let mut p = shared.published.lock().unwrap();
+                let title_changed = if let Effect::Title(title) = &effect {
+                    let title = (!title.is_empty()).then_some(title.as_str());
+                    if p.title.as_deref() != title {
+                        p.title = title.map(str::to_owned);
+                        p.title_changed = true;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
                 p.event_sequence += 1;
                 let sequence = p.event_sequence;
                 p.events.push_back(Event { sequence, effect });
@@ -1284,6 +1300,9 @@ fn route_effects(effects: Vec<Effect>, writer: &writer::Queue, shared: &Shared) 
                     p.events.pop_front();
                 }
                 drop(p);
+                if title_changed {
+                    shared.notify_status_changed();
+                }
                 shared.changes.notify();
             }
         }
