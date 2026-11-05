@@ -127,10 +127,12 @@ impl Registry {
                     .context("pane execution window is unavailable")
             })
             .transpose()?;
+        let mut pane_title = info.title.clone();
+        super::project_title(&state, id, &mut pane_title);
         let context = PaneContext {
             session: self.inner.session.clone(),
             pane_id: info.id.clone(),
-            pane_title: info.title.clone(),
+            pane_title,
             workspace_id: workspace.map(|workspace| workspace.id.clone()),
             workspace_name: workspace.map(|workspace| workspace.name.clone()),
             window_id: window.map(|window| window.id.clone()),

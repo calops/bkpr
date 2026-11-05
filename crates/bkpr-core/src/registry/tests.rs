@@ -572,5 +572,7 @@ mod resize_tests;
 mod spawn_tests;
 #[path = "storage_tests.rs"]
 mod storage_tests;
+#[path = "title_tests.rs"]
+mod title_tests;
 #[path = "view_budget_tests.rs"]
 mod view_budget_tests;

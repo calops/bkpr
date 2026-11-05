@@ -44,6 +44,10 @@ struct Record {
     recoveries: BTreeMap<String, HarnessRecovery>,
     directories: BTreeMap<String, directories::Directory>,
     automatic: BTreeMap<String, HarnessRecovery>,
+    // LEGACY_COMPAT(next-major): old records lack label origin; absence keeps
+    // their saved labels fixed rather than guessing which names were explicit.
+    #[serde(default)]
+    automatic_titles: BTreeSet<String>,
 }
 // Persistence is an explicit intent whitelist, not serialization of live facts.
 // Borrow the record: a metadata write need not copy every foreground observation.
@@ -54,6 +58,7 @@ struct DurableRecord<'a> {
     recoveries: &'a BTreeMap<String, HarnessRecovery>,
     directories: &'a BTreeMap<String, directories::Directory>,
     automatic: &'a BTreeMap<String, HarnessRecovery>,
+    automatic_titles: &'a BTreeSet<String>,
 }
 #[derive(Serialize)]
 struct DurableRegistry<'a> {
@@ -479,6 +484,7 @@ impl Registry {
             recoveries: BTreeMap::new(),
             directories: BTreeMap::new(),
             automatic: BTreeMap::new(),
+            automatic_titles: BTreeSet::new(),
             registry: RegistrySnapshot {
                 revision: 0,
                 workspaces: Vec::new(),
@@ -656,7 +662,7 @@ impl Registry {
     pub fn snapshot(&self) -> Result<RegistrySnapshot> {
         let state = self.inner.state.lock().unwrap();
         healthy(&state)?;
-        Ok(state.record.registry.clone())
+        Ok(registry_snapshot(&state))
     }
     #[cfg(test)]
     fn mutate(
@@ -670,6 +676,14 @@ impl Registry {
         workspace_id: Option<&str>,
         control: Option<&control::ControlOrigin<'_>>,
         edit: impl FnOnce(&mut RegistrySnapshot) -> Result<()>,
+    ) -> Result<RegistrySnapshot> {
+        self.mutate_record_inner(workspace_id, control, |record| edit(&mut record.registry))
+    }
+    fn mutate_record_inner(
+        &self,
+        workspace_id: Option<&str>,
+        control: Option<&control::ControlOrigin<'_>>,
+        edit: impl FnOnce(&mut Record) -> Result<()>,
     ) -> Result<RegistrySnapshot> {
         self.observe_control(control)?;
         let _transaction = self.inner.transaction.lock().unwrap();
@@ -687,7 +701,7 @@ impl Registry {
             }
             state.record.clone()
         };
-        edit(&mut next.registry)?;
+        edit(&mut next)?;
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
         commit(&self.inner, next, |_| {})
@@ -770,7 +784,7 @@ impl Registry {
                     })
                     .unwrap();
                 healthy(&state)?;
-                Ok(json!({"registry":state.record.registry}))
+                Ok(json!({"registry":registry_snapshot(&state)}))
             }
             Operation::WorkspaceCreate { name, initial } => {
                 let id = Uuid::new_v4().to_string();
@@ -953,7 +967,9 @@ impl Registry {
                     .context("unknown pane")?
                     .workspace_id
                     .clone();
-                let registry = self.mutate_inner(workspace_id.as_deref(), control, |r| {
+                let registry = self.mutate_record_inner(workspace_id.as_deref(), control, |record| {
+                    record.automatic_titles.remove(&pane_id);
+                    let r = &mut record.registry;
                     let pane = r
                         .panes
                         .iter_mut()
@@ -1107,6 +1123,10 @@ impl Registry {
             "internal spawn requires one pane"
         );
         let count = entries.len();
+        let automatic_titles: Vec<bool> = entries
+            .iter()
+            .map(|entry| entry.spec.title.is_none())
+            .collect();
         let workspace_id = target.workspace_id().map(str::to_owned);
         let mut created_panes = BTreeMap::new();
         let mut infos = Vec::with_capacity(count);
@@ -1182,7 +1202,7 @@ impl Registry {
                             .load(std::sync::atomic::Ordering::Acquire)
                     })
             }) {
-                return Ok(json!({"registry":state.record.registry}));
+                return Ok(json!({"registry":registry_snapshot(&state)}));
             }
             let running = state
                 .record
@@ -1253,7 +1273,13 @@ impl Registry {
                 })
                 .transpose()?;
             // Validate the exact layout and revisions before argv can execute.
-            let candidate = spawn_record(state.record.clone(), &infos, &target, layout.as_ref())?;
+            let candidate = spawn_record(
+                state.record.clone(),
+                &infos,
+                &automatic_titles,
+                &target,
+                layout.as_ref(),
+            )?;
             if let Some(workspace_id) = &workspace_id {
                 state.spawn_workspaces.insert(workspace_id.clone());
                 if let Some(name) = pending_name {
@@ -1375,7 +1401,7 @@ impl Registry {
                 state.record.clone()
             };
             // Rebuild against current metadata, merging unrelated workspace commits.
-            let next = spawn_record(current, &infos, &target, layout.as_ref())?;
+            let next = spawn_record(current, &infos, &automatic_titles, &target, layout.as_ref())?;
             commit(&self.inner, next, |state| {
                 for (info, pane) in infos.iter().zip(&children.panes) {
                     self.install_spawn_callbacks(&info.id, pane);
@@ -1404,7 +1430,7 @@ impl Registry {
             if state.record.registry.revision == registry.revision {
                 registry
             } else {
-                state.record.registry.clone()
+                registry_snapshot(&state)
             }
         };
         let mut result = json!({
@@ -1593,6 +1619,7 @@ impl Registry {
         next.recoveries.remove(id);
         next.directories.remove(id);
         next.automatic.remove(id);
+        next.automatic_titles.remove(id);
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
         let registry = commit(&self.inner, next, |state| {
@@ -1980,6 +2007,7 @@ fn remove_layout_pane(layout: LayoutNode, pane_id: &str) -> Option<LayoutNode> {
 fn spawn_record(
     mut next: Record,
     infos: &[PaneInfo],
+    automatic_titles: &[bool],
     target: &SpawnTarget,
     layout: Option<&LayoutNode>,
 ) -> Result<Record> {
@@ -2069,6 +2097,26 @@ fn spawn_record(
         workspace.revision = next_revision(workspace.revision)?;
     }
     next.registry.panes.extend_from_slice(infos);
+    let first_new = next.registry.panes.len() - infos.len();
+    for (index, (info, automatic)) in infos.iter().zip(automatic_titles).enumerate() {
+        if *automatic {
+            let inherited = match target {
+                SpawnTarget::Reopen { pane_id, .. } if !next.automatic_titles.contains(pane_id) => {
+                    next.registry
+                        .panes
+                        .iter()
+                        .find(|pane| &pane.id == pane_id)
+                        .map(|pane| pane.title.clone())
+                }
+                _ => None,
+            };
+            if let Some(title) = inherited {
+                next.registry.panes[first_new + index].title = title;
+            } else {
+                next.automatic_titles.insert(info.id.clone());
+            }
+        }
+    }
     next.registry.revision = next_revision(next.registry.revision)?;
     validate_record(&next)?;
     Ok(next)
@@ -2429,6 +2477,10 @@ fn validate_record(record: &Record) -> Result<()> {
         );
     }
     ensure!(
+        record.automatic_titles.iter().all(|id| ids.contains(&id)),
+        "automatic title refers to unknown pane"
+    );
+    ensure!(
         record.recoveries.len() <= r.panes.len(),
         "recovery descriptor limit"
     );
@@ -2631,6 +2683,7 @@ fn durable_record(record: &Record) -> DurableRecord<'_> {
         recoveries: &record.recoveries,
         directories: &record.directories,
         automatic: &record.automatic,
+        automatic_titles: &record.automatic_titles,
         registry: DurableRegistry {
             revision: record.registry.revision,
             workspaces: &record.registry.workspaces,
@@ -2664,6 +2717,21 @@ fn persist(root: &Path, record: &Record) -> Result<()> {
     temporary.persist(root.join("registry.json"))?;
     File::open(root)?.sync_all()?;
     Ok(())
+}
+fn project_title(state: &State, id: &str, title: &mut String) {
+    if state.record.automatic_titles.contains(id)
+        && let Some(pane) = state.live.get(id)
+        && let Some(native) = &pane.shared.published.lock().unwrap().title
+    {
+        title.clone_from(native);
+    }
+}
+fn registry_snapshot(state: &State) -> RegistrySnapshot {
+    let mut registry = state.record.registry.clone();
+    for pane in &mut registry.panes {
+        project_title(state, &pane.id, &mut pane.title);
+    }
+    registry
 }
 // Caller owns transaction; no state guard may cross this durability boundary.
 fn commit(
@@ -2706,7 +2774,7 @@ fn commit(
     publish(&mut state);
     inner.changed.notify_all();
     let _ = inner.project_wake.try_send(());
-    Ok(state.record.registry.clone())
+    Ok(registry_snapshot(&state))
 }
 
 #[cfg(test)]

@@ -30,7 +30,7 @@ impl Registry {
                         .load(std::sync::atomic::Ordering::Acquire)
                 })
             {
-                return Ok(json!({"registry":state.record.registry}));
+                return Ok(json!({"registry":registry_snapshot(&state)}));
             }
             ensure!(
                 !spec.argv.is_empty(),
