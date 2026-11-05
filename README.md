@@ -637,6 +637,16 @@ Ready graphical frame cells also use that normal pane background beneath the
 atlas. Its opaque outer mask supplies the sidebar matte, while the opened parts
 of horizontal border cells retain the pane color instead of exposing a dark strip.
 
+Transient TUI notices appear as top-center toast cards rather than sidebar status
+text. Clipboard notices, operation results, input errors, resize results and
+rendering-mode changes share the framework's bounded stack of three cards.
+Each expires after five seconds; click its `[x]` button to dismiss it sooner.
+Toasts do not take keyboard focus, and clicking a card never clicks the pane
+behind it, including when a held gesture outlasts the card.
+Fancy cards reuse popup shadows and bevels; normal/unsupported rendering uses
+rounded text borders. Pending operations, live resize instructions, form errors,
+search progress and clipboard-consent decisions remain in their contextual UI.
+
 Supporting hosts notify live theme changes through mode 2031; Bkpr re-queries
 colors without polling and restores the original confirmed notification setting
 on detach. Missing replies or unconfirmed truecolor retain native default colors,
@@ -885,7 +895,7 @@ Releasing a nonempty selection sends its plain text to the standard host
 clipboard. `Ctrl-b y` copies it again. Explicit user selection authorizes this
 export without an application clipboard-consent prompt; `--clipboard deny`
 prevents it. The existing terminal clipboard transport also works over a terminal
-connection such as SSH, subject to the host's permissions. A **sent** status is
+connection such as SSH, subject to the host's permissions. A **sent** toast is
 not proof the host accepted or stored the text.
 
 Esc clears the selection without sending that Escape to the application. In

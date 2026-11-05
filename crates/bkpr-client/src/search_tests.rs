@@ -190,10 +190,6 @@ fn search_query_limits_and_backspace_preserve_complete_unicode_without_native_in
     app.flush_search().unwrap();
     assert_search_query(capture.respond(serde_json::json!({"generation": 1})), "a");
     app.flush_search().unwrap();
-    let mut overlay = UiSurface::new(size());
-    app.search_overlay(&mut overlay, size());
-    let rendered = overlay.frame.rows[0].cells.iter().map(|cell| cell.text.as_str()).collect::<String>();
-    assert!(rendered.contains("not admitted"), "{rendered}");
     assert!(capture.try_recv().is_err());
 }
 
@@ -246,7 +242,7 @@ fn search_editor_repeats_text_backspace_and_navigation_but_never_replays_closed_
 }
 
 #[test]
-fn search_local_rejections_are_visible_preserve_results_and_clear_after_valid_edit() {
+fn search_local_rejections_preserve_results_and_accept_a_later_valid_edit() {
     let (mut app, capture) = fixture();
     attach_fixture(&mut app);
     app.begin_search().unwrap();
@@ -257,22 +253,11 @@ fn search_local_rejections_are_visible_preserve_results_and_clear_after_valid_ed
     app.views.get_mut("focused-pane").unwrap().metadata.search = Some(search_result("needle", 1, false, 3));
     app.search_text(&"x".repeat(MAX_SEARCH_BYTES));
     assert_eq!(app.search_spans("focused-pane").len(), 1, "local rejection is not a fatal search error");
-    let screen = Size { cols: 100, ..size() };
-    let mut overlay = UiSurface::new(screen);
-    app.search_overlay(&mut overlay, screen);
-    let label = overlay.frame.rows[0].cells.iter().map(|cell| cell.text.as_str()).collect::<String>();
-    assert!(label.contains("not admitted") && label.contains("1/3"), "{label}");
     for _ in 0..65 {
         app.key(key("Enter"), &mut Vec::new(), size(), &[]).unwrap();
     }
-    app.search_overlay(&mut overlay, screen);
-    let label = overlay.frame.rows[0].cells.iter().map(|cell| cell.text.as_str()).collect::<String>();
-    assert!(label.contains("queue full") && label.contains("not admitted") && label.contains("1/3"), "{label}");
     assert_eq!(app.search_spans("focused-pane").len(), 1);
     app.search_text("x");
-    app.search_overlay(&mut overlay, screen);
-    let label = overlay.frame.rows[0].cells.iter().map(|cell| cell.text.as_str()).collect::<String>();
-    assert!(!label.contains("not admitted") && !label.contains("queue full"), "{label}");
     app.flush_search().unwrap();
     assert_search_query(capture.respond(serde_json::json!({"generation": 2})), "needlex");
 }

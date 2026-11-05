@@ -54,7 +54,7 @@ The current CPU-efficiency level is accepted for now; further optimization is de
 
 - [x] Finish static graphics-backed pane/sidebar/popup decorations through the existing framework composition/output path. Keep palette recipes, colors, shadow depth and border widths in client appearance policy; retain framework capability detection, generic rasterization/style caching and sparse bounded atlases. Actual rich/plain modes share reserved native geometry; resize/live-theme/input/idle checks pass. No decorative animation is added.
 
-- [ ] Present clipboard notifications as transient toast popups rather than sidebar status text. Consider top-center placement; reuse popup shadows, bevels and proper rounded normal-rendering fallbacks.
+- [x] Route transient TUI notices through reusable framework toasts, not sidebar status text. Show a bounded top-center stack with five-second expiry and clickable dismissal; reuse popup shadows/bevels and rounded normal-rendering fallbacks. Preserve keyboard focus and complete mouse gestures, including expiry and chorded releases. Pending operations and decision prompts remain contextual state.
 
 - [ ] Run a comprehensive keybinding cleanup phase for consistency and ergonomics across application, sidebar, prefix, history/search/selection, resize and popup/form contexts. Audit naming, aliases, modifier patterns, collisions, keyboard-layout behavior and terminal compatibility; keep dispatch, contextual hints and documentation synchronized.
 

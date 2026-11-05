@@ -305,14 +305,16 @@ impl App<'_> {
             match receipt.try_recv() {
                 Err(mpsc::TryRecvError::Empty) => return Ok(()),
                 Ok(Err(error)) => {
-                    self.state.status =
-                        format!("Selection autoscroll failed: {error}; not replayed");
+                    self.notify(format!(
+                        "Selection autoscroll failed: {error}; not replayed"
+                    ));
                     self.terminal_selection.drag = None;
                     self.pointer_capture = Some(PointerCapture::Ui);
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.state.status =
-                        "Selection autoscroll completion disconnected; not replayed".into();
+                    self.notify(
+                        "Selection autoscroll completion disconnected; not replayed".into(),
+                    );
                     self.terminal_selection.drag = None;
                     self.pointer_capture = Some(PointerCapture::Ui);
                 }
@@ -395,15 +397,14 @@ impl App<'_> {
         }) {
             self.copy_selection(&pane, &view, false)?;
         } else {
-            self.state.status = "No attached selection to copy".into();
+            self.notify("No attached selection to copy".into());
         }
         Ok(())
     }
 
     fn copy_selection(&mut self, pane: &str, view: &str, automatic: bool) -> Result<()> {
         if self.options.clipboard_policy == "deny" {
-            self.state.status =
-                "Selection retained; host clipboard export denied by client policy".into();
+            self.notify("Selection retained; host clipboard export denied by client policy".into());
             return Ok(());
         }
         if !self.selection_view(pane, view) {
@@ -411,7 +412,7 @@ impl App<'_> {
         }
         if self.terminal_selection.hidden.contains(view) {
             if !automatic {
-                self.state.status = "No selection to copy".into();
+                self.notify("No selection to copy".into());
             }
             return Ok(());
         }
@@ -421,7 +422,7 @@ impl App<'_> {
             .copies
             .retain(|copy| copy.generation == generation && copy.focus_epoch == focus_epoch);
         if self.terminal_selection.copies.len() >= MAX_PENDING_COPIES {
-            self.state.status = "Selection copy queue full; request was not admitted".into();
+            self.notify("Selection copy queue full; request was not admitted".into());
             return Ok(());
         }
         let receipt = self.input.response(Operation::Pane {
@@ -489,7 +490,7 @@ impl App<'_> {
                         bail!("invalid empty selection response");
                     }
                     if !copy.automatic {
-                        self.state.status = "No selection to copy".into();
+                        self.notify("No selection to copy".into());
                     }
                     return Ok(());
                 }
@@ -527,9 +528,10 @@ impl App<'_> {
                 if !answer.is_some_and(|answer| answer.result == ClipboardResult::Success) {
                     bail!("selection clipboard export was not sent");
                 }
-                self.state.status =
+                self.notify(
                     "Selection sent to host clipboard; host permissions remain authoritative"
-                        .into();
+                        .into(),
+                );
                 Ok(())
             });
             if let Err(error) = result {
@@ -538,7 +540,7 @@ impl App<'_> {
                         "selection clipboard host transport failed; outcome unknown; not replayed",
                     ));
                 }
-                self.state.status = format!("Selection copy failed: {error:#}; not replayed");
+                self.notify(format!("Selection copy failed: {error:#}; not replayed"));
             }
         }
     }

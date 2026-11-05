@@ -8,6 +8,7 @@ pub mod joined;
 mod joined_contour;
 pub mod overlay;
 mod surface;
+pub mod toast;
 pub mod window;
 pub use surface::{BackgroundSpan, ForegroundSpan, RoleSpan, UiSurface};
 mod theme;

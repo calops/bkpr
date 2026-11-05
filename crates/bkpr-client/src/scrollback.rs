@@ -33,21 +33,22 @@ impl App<'_> {
 
     pub(super) fn scroll_history(&mut self, pane: &str, delta: i64, enter: bool) -> Result<()> {
         if !self.input_enabled(pane) {
-            self.state.status = self.placeholder(pane);
+            self.notify(self.placeholder(pane));
             return Ok(());
         }
         let Some(attached) = self.views.get(pane) else {
-            self.state.status = self.placeholder(pane);
+            self.notify(self.placeholder(pane));
             return Ok(());
         };
         let Some(frame) = attached.frame.as_ref() else {
-            self.state.status = self.placeholder(pane);
+            self.notify(self.placeholder(pane));
             return Ok(());
         };
         if frame.alternate_screen && delta != i64::MIN {
-            self.state.status =
+            self.notify(
                 "History unavailable on the alternate screen; return to the primary screen first."
-                    .into();
+                    .into(),
+            );
             return Ok(());
         }
         self.enqueue(
@@ -60,7 +61,6 @@ impl App<'_> {
         // Admission is ordered on the existing pane input lane, never retried.
         // A historical frame keeps input blocked until the live frame arrives.
         self.views.get_mut(pane).unwrap().history = delta != i64::MIN && enter;
-        self.state.status.clear();
         Ok(())
     }
 

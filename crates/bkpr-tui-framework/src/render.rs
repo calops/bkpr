@@ -730,10 +730,22 @@ fn draw_prepared(
 pub enum InputPart {
     Keys(Vec<u8>),
     Reply(Vec<u8>),
+    /// Complete SGR packet with only its otherwise-lossy button identity saved.
+    Mouse {
+        bytes: Vec<u8>,
+        button: MouseButton,
+        action: MouseAction,
+    },
 }
 pub enum ClientEvent {
     Legacy(InputEvent),
     Reply(Vec<u8>),
+    /// Maintained-parser coordinates/modifiers plus physical SGR identity.
+    Mouse {
+        event: termwiz::input::MouseEvent,
+        button: MouseButton,
+        action: MouseAction,
+    },
 }
 fn emit_reply(parts: &mut Vec<InputPart>, keys: &mut Vec<u8>, reply: Vec<u8>) {
     if !keys.is_empty() {
@@ -775,6 +787,36 @@ pub fn decode_input(
                     .into_iter()
                     .filter_map(client_input),
             ),
+            InputPart::Mouse {
+                bytes,
+                button,
+                action,
+            } => {
+                // A framed packet cannot continue a preceding legacy Escape.
+                events.extend(
+                    parser
+                        .parse_as_vec(&[], false)
+                        .into_iter()
+                        .filter_map(client_input),
+                );
+                events.extend(
+                    parser
+                        .parse_as_vec(&bytes, false)
+                        .into_iter()
+                        .filter_map(|event| {
+                            Some(match client_input(event)? {
+                                ClientEvent::Legacy(InputEvent::Mouse(event)) => {
+                                    ClientEvent::Mouse {
+                                        event,
+                                        button,
+                                        action,
+                                    }
+                                }
+                                event => event,
+                            })
+                        }),
+                );
+            }
             InputPart::Reply(reply) => {
                 // A complete framed report cannot continue the preceding key.
                 // Resolve a pending legacy Escape before its structured release
@@ -798,6 +840,41 @@ pub fn decode_input(
         );
     }
     events
+}
+
+// Termwiz remains the mouse decoder. SGR's final byte and first parameter carry
+// physical identity it discards (all releases become an empty button set, and
+// repeated same-button presses/motion cannot be distinguished afterward).
+// The maintained input parser supports SGR mouse, not historical X10 packets;
+// this framing metadata must not expand its supported protocol grammars.
+fn sgr_mouse_identity(final_byte: u8, params: &[u8]) -> Option<(MouseButton, MouseAction)> {
+    if !matches!(final_byte, b'M' | b'm') {
+        return None;
+    }
+    let params = params.strip_prefix(b"<")?;
+    let end = params.iter().position(|byte| *byte == b';')?;
+    let code: u8 = std::str::from_utf8(&params[..end]).ok()?.parse().ok()?;
+    let button = match code & 0xc3 {
+        0 => MouseButton::Left,
+        1 => MouseButton::Middle,
+        2 => MouseButton::Right,
+        3 => MouseButton::None,
+        64 => MouseButton::WheelUp,
+        65 => MouseButton::WheelDown,
+        66 => MouseButton::WheelLeft,
+        67 => MouseButton::WheelRight,
+        128 => MouseButton::Back,
+        129 => MouseButton::Forward,
+        _ => return None,
+    };
+    let action = if final_byte == b'm' {
+        MouseAction::Release
+    } else if code & 32 != 0 {
+        MouseAction::Motion
+    } else {
+        MouseAction::Press
+    };
+    Some((button, action))
 }
 #[derive(Default)]
 pub struct ReplyDemux {
@@ -865,6 +942,19 @@ impl ReplyDemux {
                             keys.extend_from_slice(b"\x1b[200~");
                             self.in_paste = true;
                             self.paste_bytes = 0;
+                            cursor += end + 3;
+                            continue;
+                        }
+                        if let Some((button, action)) = sgr_mouse_identity(tail[end], &tail[..end])
+                        {
+                            if !keys.is_empty() {
+                                parts.push(InputPart::Keys(std::mem::take(&mut keys)));
+                            }
+                            parts.push(InputPart::Mouse {
+                                bytes: self.buffer[cursor..cursor + end + 3].to_vec(),
+                                button,
+                                action,
+                            });
                             cursor += end + 3;
                             continue;
                         }
@@ -1763,6 +1853,7 @@ mod tests {
             match part {
                 InputPart::Keys(bytes) => keys.extend(bytes),
                 InputPart::Reply(reply) => replies.push(reply),
+                InputPart::Mouse { bytes, .. } => keys.extend(bytes),
             }
         }
         (keys, replies)
@@ -1974,25 +2065,104 @@ mod tests {
         let mice = events
             .into_iter()
             .map(|event| match event {
-                ClientEvent::Legacy(InputEvent::Mouse(mouse)) => mouse,
+                ClientEvent::Mouse {
+                    event,
+                    button,
+                    action,
+                } => (event, button, action),
                 _ => panic!("expected decoded SGR mouse event"),
             })
             .collect::<Vec<_>>();
         assert_eq!(mice.len(), 2);
-        assert_eq!((mice[0].x, mice[0].y), (5, 5));
+        assert_eq!((mice[0].0.x, mice[0].0.y), (5, 5));
+        assert_eq!(mice[0].1, MouseButton::Left);
+        assert_eq!(mice[0].2, MouseAction::Press);
         assert!(
             mice[0]
+                .0
                 .mouse_buttons
                 .contains(termwiz::input::MouseButtons::LEFT)
         );
-        assert_eq!((mice[1].x, mice[1].y), (5, 5));
-        assert!(mice[1].mouse_buttons.is_empty());
+        assert_eq!((mice[1].0.x, mice[1].0.y), (5, 5));
+        assert_eq!(mice[1].1, MouseButton::Left);
+        assert_eq!(mice[1].2, MouseAction::Release);
+        assert!(mice[1].0.mouse_buttons.is_empty());
         let events = decode_input(&mut parser, demux.feed(b"\x1b[<0;1;1M"), false);
         assert!(
-            matches!(events.as_slice(), [ClientEvent::Legacy(InputEvent::Mouse(mouse))]
-            if mouse.x == 0 && mouse.y == 0)
+            matches!(events.as_slice(), [ClientEvent::Mouse { event, button: MouseButton::Left, action: MouseAction::Press }]
+            if event.x == 0 && event.y == 0)
         );
     }
+    #[test]
+    fn chorded_sgr_buttons_retain_each_press_and_release_identity_at_every_split() {
+        let wire = b"\x1b[<0;6;6M\x1b[<2;6;6M\x1b[<0;6;6m\x1b[<2;6;6m";
+        for split in 0..=wire.len() {
+            let mut parser = InputParser::new();
+            let mut demux = ReplyDemux::default();
+            let mut events = decode_input(&mut parser, demux.feed(&wire[..split]), true);
+            events.extend(decode_input(&mut parser, demux.feed(&wire[split..]), false));
+            let identities = events
+                .into_iter()
+                .map(|event| match event {
+                    ClientEvent::Mouse {
+                        event,
+                        button,
+                        action,
+                    } => {
+                        assert_eq!((event.x, event.y), (5, 5));
+                        (button, action)
+                    }
+                    _ => panic!("SGR mouse packet lost its physical identity at split {split}"),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                identities,
+                [
+                    (MouseButton::Left, MouseAction::Press),
+                    (MouseButton::Right, MouseAction::Press),
+                    (MouseButton::Left, MouseAction::Release),
+                    (MouseButton::Right, MouseAction::Release),
+                ],
+                "SGR chord changed at split {split}"
+            );
+        }
+    }
+
+    #[test]
+    fn sgr_repeated_presses_and_motion_remain_distinct_with_maintained_modifiers() {
+        let mut parser = InputParser::new();
+        let mut demux = ReplyDemux::default();
+        let events = decode_input(
+            &mut parser,
+            demux.feed(b"\x1b[<4;2;3M\x1b[<4;2;3M\x1b[<36;3;3M\x1b[<36;3;3M\x1b[<39;4;3M"),
+            false,
+        );
+        let identities = events
+            .into_iter()
+            .map(|event| match event {
+                ClientEvent::Mouse {
+                    event,
+                    button,
+                    action,
+                } => {
+                    assert!(event.modifiers.contains(Modifiers::SHIFT));
+                    (event.x, event.y, button, action)
+                }
+                _ => panic!("expected maintained-parser mouse event with physical metadata"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            identities,
+            [
+                (1, 2, MouseButton::Left, MouseAction::Press),
+                (1, 2, MouseButton::Left, MouseAction::Press),
+                (2, 2, MouseButton::Left, MouseAction::Motion),
+                (2, 2, MouseButton::Left, MouseAction::Motion),
+                (3, 2, MouseButton::None, MouseAction::Motion),
+            ]
+        );
+    }
+
     #[test]
     fn pending_escape_precedes_structured_key_release_and_mouse_release() {
         let wire = b"\x1b\x1b[27;1:3u\x1b[<0;4;4m";
@@ -2006,7 +2176,7 @@ mod tests {
                 matches!(events.as_slice(), [
                     ClientEvent::Legacy(InputEvent::Key(press)),
                     ClientEvent::Reply(release),
-                    ClientEvent::Legacy(InputEvent::Mouse(mouse)),
+                    ClientEvent::Mouse { event: mouse, button: MouseButton::Left, action: MouseAction::Release },
                 ] if press.key == KeyCode::Escape
                     && release.strip_prefix(b"key;").is_some_and(|payload| {
                         kitty_key(payload).is_ok_and(|key| key.key == "Escape"
@@ -2095,6 +2265,7 @@ mod graphics_probe_tests {
                     match part {
                         InputPart::Keys(keys) => assert!(keys.is_empty()),
                         InputPart::Reply(reply) => probe.feed(&reply),
+                        InputPart::Mouse { .. } => panic!("graphics response became mouse input"),
                     }
                 }
             }

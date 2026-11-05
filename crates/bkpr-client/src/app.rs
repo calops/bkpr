@@ -386,9 +386,18 @@ struct DeviceResponse {
     view: String,
     receipt: updates::Receipt,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GuideKey {
+    context: crate::keyguide::Context,
+    cols: u16,
+    rows: u16,
+    sidebar_columns: u16,
+    flags: u16,
+    resize_hint: Option<&'static str>,
+}
 #[derive(Default)]
 struct GuideCache {
-    key: Option<(crate::keyguide::Context, u16, u16, u16, u16)>,
+    key: Option<GuideKey>,
     content: crate::keyguide::Guide,
 }
 struct OverlayFocus {
@@ -435,6 +444,7 @@ struct App<'a> {
     finder: Option<crate::finder::Finder>,
     popover: crate::popover::Popover,
     overlays: OverlayStack<OverlayFocus>,
+    toasts: toast::ToastStack,
     guide: GuideCache,
     chrome_graphics_enabled: bool,
     notified_focus: Option<(String, String)>,
@@ -443,6 +453,20 @@ struct App<'a> {
     host_focused: bool,
 }
 impl App<'_> {
+    fn notify(&mut self, message: String) {
+        self.toasts
+            .push(&message, Instant::now(), Duration::from_secs(5));
+    }
+
+    fn toast_timeout(&self, timeout: i32, now: Instant) -> i32 {
+        self.toasts.next_deadline().map_or(timeout, |deadline| {
+            let remaining = deadline.saturating_duration_since(now);
+            let millis =
+                remaining.as_millis() + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
+            timeout.min(millis.min(i32::MAX as u128) as i32)
+        })
+    }
+
     fn screen_geometry(&self, size: Size) -> (Rect, Rect) {
         screen_geometry(size, self.state.sidebar.preferred_columns)
     }
@@ -559,18 +583,19 @@ impl App<'_> {
     }
     fn toggle_chrome(&mut self) {
         self.chrome_graphics_enabled = !self.chrome_graphics_enabled;
-        self.state.status = if self.chrome_graphics_enabled {
-            "Fancy chrome requested"
-        } else {
-            "Normal chrome"
-        }
-        .into();
+        self.notify(
+            if self.chrome_graphics_enabled {
+                "Fancy chrome requested"
+            } else {
+                "Normal chrome"
+            }
+            .into(),
+        );
     }
     fn enter_sidebar(&mut self) {
         self.retire_resize("sidebar focused");
         self.selection_focus_lost();
         self.close_search();
-        self.state.status.clear();
         self.state.sidebar.enter();
     }
     fn supports_action(&self, action: crate::keyguide::Action) -> bool {
@@ -690,21 +715,52 @@ impl App<'_> {
             | (u16::from(self.search_open()) << 5)
             | (u16::from(self.state.sidebar.active) << 6)
             | (u16::from(self.resize_dragging()) << 7)
-            | (u16::from(!self.state.status.is_empty()) << 8);
+            | (u16::from(!self.management.is_empty()) << 8);
         let sidebar_columns = self.screen_geometry(size).0.width;
-        let key = (context, size.cols, size.rows, sidebar_columns, flags);
+        let key = GuideKey {
+            context,
+            cols: size.cols,
+            rows: size.rows,
+            sidebar_columns,
+            flags,
+            resize_hint: self.resize_hint(),
+        };
         if self.guide.key != Some(key) {
-            let content = crate::keyguide::render_with(
+            let available = size.rows.saturating_sub(2);
+            let tree_rows = available.div_ceil(2).min(4);
+            let max_rows = available.saturating_sub(tree_rows).saturating_sub(2) as usize;
+            let mut content = crate::keyguide::render_with(
                 context,
                 sidebar_columns,
                 size.cols,
-                {
-                    let available = size.rows.saturating_sub(2);
-                    let tree_rows = available.div_ceil(2).min(4);
-                    available.saturating_sub(tree_rows).saturating_sub(2) as usize
-                },
+                max_rows,
                 |action| self.supports_action(action),
             );
+            let hint = self.resize_hint().or_else(|| {
+                (!self.management.is_empty())
+                    .then_some("Operation pending; other panes remain interactive")
+            });
+            if let Some(hint) = hint
+                && content.columns >= 8
+                && max_rows > 0
+            {
+                let hints = textwrap::wrap(hint, usize::from(content.columns - 4));
+                let count = hints.len().min(max_rows);
+                content.expanded.truncate(max_rows - count);
+                content
+                    .expanded_roles
+                    .retain(|span| usize::from(span.rect.y) < content.expanded.len());
+                for span in &mut content.expanded_roles {
+                    span.rect.y += count as u16;
+                }
+                content.expanded.splice(
+                    0..0,
+                    hints
+                        .into_iter()
+                        .take(count)
+                        .map(|line| format!(" {line} ")),
+                );
+            }
             self.guide = GuideCache {
                 key: Some(key),
                 content,
@@ -983,7 +1039,6 @@ impl App<'_> {
             form.pending = Some(key.clone());
             form.error = None;
         }
-        self.state.status = format!("{key} pending; other panes remain interactive");
         Ok(())
     }
     fn operation(&mut self, operation: Operation) -> Result<()> {
@@ -1057,7 +1112,7 @@ impl App<'_> {
                         }
                     }
                     self.accept_management(result, intent);
-                    self.state.status = format!("{} completed", completion.key);
+                    self.notify(format!("{} completed", completion.key));
                 }
                 Ok(Background::Resize(_)) => bail!("resize completion lost its captured intent"),
                 Ok(Background::Attached { pane, attached }) => {
@@ -1093,14 +1148,16 @@ impl App<'_> {
                         }
                         self.view_failures.insert(pane.to_owned(), message.clone());
                     }
-                    self.state.status = message;
+                    if !form_pending {
+                        self.notify(message);
+                    }
                 }
             }
         }
         Ok(())
     }
     fn record_input_failure(&mut self, failure: updates::InputFailure) {
-        self.state.status = failure.to_string();
+        self.notify(failure.to_string());
         let slot = &mut self
             .input_failures
             .entry(failure.pane_id.clone())
@@ -1169,7 +1226,7 @@ impl App<'_> {
             }
         }
         for (pane, view, error) in failed {
-            self.state.status = format!("pane {pane} view {view} poll failed: {error}");
+            self.notify(format!("pane {pane} view {view} poll failed: {error}"));
             self.view_failures.insert(pane, error);
         }
     }
@@ -1549,19 +1606,19 @@ impl App<'_> {
                 Ok(result) => {
                     let response = self.responses.swap_remove(index);
                     if let Err(error) = result {
-                        self.state.status = format!(
+                        self.notify(format!(
                             "pane {} view {} clipboard response failed: {error}",
                             response.pane, response.view
-                        );
+                        ));
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => index += 1,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     let response = self.responses.swap_remove(index);
-                    self.state.status = format!(
+                    self.notify(format!(
                         "pane {} view {} clipboard completion disconnected; outcome unknown; not replayed",
                         response.pane, response.view
-                    );
+                    ));
                 }
             }
         }
@@ -1571,6 +1628,7 @@ impl App<'_> {
             return Ok(());
         };
         let target = (pane.to_owned(), attached.view.clone());
+        let had_retirement_error = attached.retirement_error.is_some();
         self.cancel_pointer(pane, &target.1);
         let cancellation = self.flush_pointer_releases();
         let completed = self.execution_completed(pane);
@@ -1607,8 +1665,8 @@ impl App<'_> {
                 return result;
             }
         };
-        if let Some(error) = &self.views[pane].retirement_error {
-            self.state.status = format!("{error:#}");
+        if !had_retirement_error && let Some(error) = &self.views[pane].retirement_error {
+            self.notify(format!("{error:#}"));
         }
         let Some(receipt) = receipt else {
             return cancellation;
@@ -1631,10 +1689,10 @@ impl App<'_> {
                     let retired = self.retiring.swap_remove(index);
                     if let Err(error) = result {
                         self.unconfirmed_views += 1;
-                        self.state.status = format!(
+                        self.notify(format!(
                             "pane {} view {} detach failed: {error}; retirement not confirmed",
                             retired.attached.metadata.pane_id, retired.attached.view
-                        );
+                        ));
                     }
                     drop(retired);
                 }
@@ -1644,10 +1702,10 @@ impl App<'_> {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     let retired = self.retiring.swap_remove(index);
                     self.unconfirmed_views += 1;
-                    self.state.status = format!(
+                    self.notify(format!(
                         "pane {} view {} retirement completion unknown",
                         retired.attached.metadata.pane_id, retired.attached.view
-                    );
+                    ));
                     drop(retired);
                 }
             }
@@ -1807,7 +1865,7 @@ impl App<'_> {
                     }) {
                         let message = format!("pane {id} attach not admitted: {error:#}");
                         self.view_failures.insert(id.clone(), message.clone());
-                        self.state.status = message;
+                        self.notify(message);
                     } else {
                         self.attach_slots += 1;
                     }
@@ -2183,10 +2241,10 @@ impl App<'_> {
                 })
         }) {
             let consent = self.consent.take().unwrap();
-            self.state.status = format!(
+            self.notify(format!(
                 "pane {} view {} clipboard grant expired or was revoked",
                 consent.pane, consent.view
-            );
+            ));
             if let Some(reply) = consent.reply {
                 return Err(updates::InputFailure::admission(
                     &reply,
@@ -2222,7 +2280,7 @@ impl App<'_> {
                 let error =
                     format!("pane {pane} clipboard grant does not belong to attached view {view}");
                 self.view_failures.insert(pane, error.clone());
-                self.state.status = error;
+                self.notify(error);
                 continue;
             }
             let id = &pending.request_id;
@@ -2331,8 +2389,9 @@ impl App<'_> {
                 self.paste_target = self.active();
                 if self.paste_target.is_none() {
                     self.paste_offer = None;
-                    self.state.status =
-                        "Enhanced paste has no focused pane; no input was dispatched".into();
+                    self.notify(
+                        "Enhanced paste has no focused pane; no input was dispatched".into(),
+                    );
                 }
             }
             Ok(None) if listing && self.paste_offer.is_none() => {
@@ -2351,8 +2410,7 @@ impl App<'_> {
                         return Err(self.fail_paste(&pane, &view, error, 1));
                     }
                 }
-                self.state.status =
-                    "Clipboard has no paste content; following input released".into();
+                self.notify("Clipboard has no paste content; following input released".into());
             }
             Ok(None) => {}
             Err(error) => {
@@ -2360,7 +2418,7 @@ impl App<'_> {
                 if let Some((pane, view)) = self.paste_target.take().or_else(|| self.active()) {
                     return Err(self.fail_paste(&pane, &view, error, 0));
                 }
-                self.state.status = format!("Enhanced paste offer rejected: {error:#}");
+                self.notify(format!("Enhanced paste offer rejected: {error:#}"));
             }
         }
         Ok(())
@@ -2765,7 +2823,6 @@ impl App<'_> {
             return Ok(false);
         }
         self.state.suppressed.insert(event.key.clone());
-        self.state.status.clear();
         self.refresh_guide(size);
         let page = (sidebar_content_rows(self.screen_geometry(size).0, self.guide_rows(size)) / 2)
             .max(1) as isize;
@@ -2825,7 +2882,7 @@ impl App<'_> {
         }
         let rects = self.rects(size);
         let Some(target) = self.directional_target(key, &rects) else {
-            self.state.status = "No pane in that direction; layout unchanged".into();
+            self.notify("No pane in that direction; layout unchanged".into());
             return Ok(());
         };
         let workspace = self.state.current(&self.registry).context("no workspace")?;
@@ -2869,7 +2926,7 @@ impl App<'_> {
                 Ok(false)
             }
             Err(error) if local => {
-                self.state.status = format!("{error:#}");
+                self.notify(format!("{error:#}"));
                 Ok(false)
             }
             result => result,
@@ -3043,7 +3100,6 @@ impl App<'_> {
                 }
                 if let Err(error) = self.apply_form(size) {
                     let message = format!("{error:#}");
-                    self.state.status = message.clone();
                     if let Some(form) = &mut self.state.form {
                         form.error = Some(message);
                     }
@@ -3155,7 +3211,6 @@ impl App<'_> {
             }
             self.state.prefix = false;
             self.state.suppressed.insert(event.key.clone());
-            self.state.status.clear();
             use crate::keyguide::{Action, Context};
             let action = self.binding_action(Context::CommandPrefix, &event)?;
             if !matches!(action, Some(Action::StartSearch | Action::CopySelection)) {
@@ -3233,9 +3288,6 @@ impl App<'_> {
                         expected_revision: window.revision,
                         layout,
                     })?;
-                    self.state.status =
-                        "Layout removal pending; process survives. Ctrl-b o or click ◌ to show it."
-                            .into();
                 }
                 Some(Action::PreviousWorkspace) => {
                     self.retire_resize("workspace focus changed");
@@ -3260,7 +3312,7 @@ impl App<'_> {
                 }
                 Some(Action::FocusPane(direction)) => self.directional(direction.key(), rects),
                 Some(Action::Cancel) => {}
-                _ => self.state.status = "Unknown Ctrl-b command; press Ctrl-b for bindings".into(),
+                _ => self.notify("Unknown Ctrl-b command; press Ctrl-b for bindings".into()),
             };
             if self.state.form.is_some() {
                 self.retire_resize("modal opened");
@@ -3296,20 +3348,21 @@ impl App<'_> {
                     self.held.insert(key, target);
                 }
             } else if let Some(pane) = &self.state.focused {
-                self.state.status = self
-                    .view_failures
-                    .get(pane)
-                    .cloned()
-                    .or_else(|| {
-                        self.input_failures.get(pane).and_then(|failures| {
-                            failures
-                                .iter()
-                                .flatten()
-                                .find(|failure| failure.stopped)
-                                .map(ToString::to_string)
+                self.notify(
+                    self.view_failures
+                        .get(pane)
+                        .cloned()
+                        .or_else(|| {
+                            self.input_failures.get(pane).and_then(|failures| {
+                                failures
+                                    .iter()
+                                    .flatten()
+                                    .find(|failure| failure.stopped)
+                                    .map(ToString::to_string)
+                            })
                         })
-                    })
-                    .unwrap_or_else(|| self.placeholder(pane));
+                        .unwrap_or_else(|| self.placeholder(pane)),
+                );
             }
         }
         Ok(false)
@@ -3317,6 +3370,7 @@ impl App<'_> {
     fn mouse(
         &mut self,
         mouse: termwiz::input::MouseEvent,
+        physical: Option<(MouseButton, MouseAction)>,
         size: Size,
         rects: &[(String, Rect)],
         workspace_hits: &[(SidebarTarget, u16)],
@@ -3352,21 +3406,54 @@ impl App<'_> {
                 | MouseButton::WheelLeft
                 | MouseButton::WheelRight
         );
-        let action = if wheel {
-            MouseAction::Press
-        } else if button == MouseButton::None && self.last_button != MouseButton::None {
-            MouseAction::Release
-        } else if button == self.last_button {
-            MouseAction::Motion
-        } else {
-            MouseAction::Press
-        };
-        let event_button = if action == MouseAction::Release {
-            self.last_button
-        } else {
-            button
-        };
+        let (event_button, action) = physical.unwrap_or_else(|| {
+            let action = if wheel {
+                MouseAction::Press
+            } else if button == MouseButton::None && self.last_button != MouseButton::None {
+                MouseAction::Release
+            } else if button == self.last_button {
+                MouseAction::Motion
+            } else {
+                MouseAction::Press
+            };
+            let event_button = if action == MouseAction::Release {
+                self.last_button
+            } else {
+                button
+            };
+            (event_button, action)
+        });
         let captured = self.pointer_capture.clone();
+        // Existing pane, selection, divider and UI gestures retain ownership
+        // even when a new toast appears underneath their pointer.
+        if captured.is_none() || self.toasts.pointer_captured() {
+            let phase = if wheel {
+                PointerPhase::Wheel
+            } else {
+                match action {
+                    MouseAction::Press => PointerPhase::Press,
+                    MouseAction::Release => PointerPhase::Release,
+                    MouseAction::Motion => PointerPhase::Motion,
+                }
+            };
+            if !matches!(
+                self.toasts
+                    .route_pointer(mouse.x, mouse.y, phase, event_button),
+                toast::PointerRoute::Pass
+            ) {
+                if !wheel {
+                    self.last_button = button;
+                    match action {
+                        MouseAction::Press => self.pointer_capture = Some(PointerCapture::Ui),
+                        MouseAction::Release => self.pointer_capture = None,
+                        MouseAction::Motion => {}
+                    }
+                }
+                self.sidebar_resize_hover = false;
+                self.update_resize_hover(size, None);
+                return Ok(());
+            }
+        }
         let resize_point = !wheel
             && button == MouseButton::None
             && captured.is_none()
@@ -3596,7 +3683,7 @@ impl App<'_> {
         }
         self.notify_focus()?;
         if !(self.input_enabled(pane) || origin.is_some() && action == MouseAction::Release) {
-            self.state.status = self.placeholder(pane);
+            self.notify(self.placeholder(pane));
             return Ok(());
         }
         let rect = content(*rect);
@@ -4013,6 +4100,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         finder: None,
         popover: crate::popover::Popover::new(initial_size),
         overlays: OverlayStack::default(),
+        toasts: toast::ToastStack::default(),
         guide: GuideCache::default(),
         chrome_graphics_enabled: true,
         notified_focus: None,
@@ -4037,6 +4125,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         let mut chrome_projects = Vec::new();
         let mut chrome_foregrounds = Vec::new();
         let mut guide_theme = Theme::default();
+        let mut toast_theme = Theme::default();
         let mut popover_theme = Theme::default();
         let mut guide_roles = Vec::new();
         let mut chrome_markers = Vec::new();
@@ -4067,6 +4156,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
         let mut popover_effects = graphics_frame(initial_size);
         let mut guide_effects = graphics_frame(initial_size);
         let mut artwork_effects = graphics_frame(initial_size);
+        let mut toast_effects = graphics_frame(initial_size);
         let mut resize_feedback_surface = UiSurface::new(initial_size);
         let mut resize_feedback_regions = Vec::new();
         let mut resize_feedback_style = None;
@@ -4099,6 +4189,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 &mut popover_effects,
                 &mut guide_effects,
                 &mut artwork_effects,
+                &mut toast_effects,
             ] {
                 frame.size = size;
                 frame.images.clear();
@@ -4192,7 +4283,6 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 let result = app.finish_consent(ClipboardResponse::denied());
                 app.scope_input_result(result)?;
             }
-            app.resize_hint();
             app.refresh_guide(size);
             let guide_rows = app.guide_rows(size);
             app.state.sidebar.viewport(sidebar_content_rows(
@@ -4869,6 +4959,30 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 resize_feedback_regions = feedback_regions;
                 resize_feedback_style = Some(feedback_style);
             }
+            app.toasts.expire(Instant::now());
+            crate::appearance::update_theme(&mut toast_theme, &app.colors);
+            app.toasts.paint(
+                size,
+                toast::ToastLayout {
+                    max_width: 72,
+                    top_margin: 1,
+                    side_margin: 2,
+                    gap: 1,
+                    max_lines: 5,
+                },
+                &toast_theme,
+                |slot, outer, body| {
+                    outer.width >= 3
+                        && outer.height >= 3
+                        && graphics.decorate_window_in_clipped(
+                            &mut toast_effects,
+                            outer,
+                            true,
+                            1 + slot as u32 * 64,
+                            &[body],
+                        )
+                },
+            );
             let faint_background = popup && crate::appearance::MODAL_BACKGROUND_FAINT;
             let mut surfaces = vec![Surface {
                 id: "ui:chrome",
@@ -5117,6 +5231,44 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                     faint: false,
                 });
             }
+            for card in app.toasts.cards() {
+                surfaces.push(Surface {
+                    id: "ui:toast",
+                    content: if card.graphical {
+                        SurfaceContent::CellsClipped(Rect {
+                            x: card.body.x - card.outer.x,
+                            y: card.body.y - card.outer.y,
+                            width: card.body.width,
+                            height: card.body.height,
+                        })
+                    } else {
+                        SurfaceContent::All
+                    },
+                    rect: card.outer,
+                    frame: &card.surface.frame,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                });
+            }
+            if !toast_effects.placements.is_empty() {
+                surfaces.push(Surface {
+                    id: "ui:toast:graphics",
+                    content: SurfaceContent::Graphics,
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        width: size.cols,
+                        height: size.rows,
+                    },
+                    frame: &toast_effects,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                });
+            }
             let scene = Scene { size, surfaces };
             let hits = scene.hit_map();
             if client.consume_lifecycle()? {
@@ -5194,6 +5346,7 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                 escape.as_millis().max(1) as i32
             };
             let timeout = app.selection_timeout(timeout);
+            let timeout = app.toast_timeout(timeout, Instant::now());
             let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
             if ready < 0
                 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
@@ -5261,20 +5414,33 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
                             return Ok(());
                         }
                     }
-                    ClientEvent::Legacy(InputEvent::Paste(text)) => {
-                        if !app.resize_capturing() {
-                            let result = app.paste(text);
-                            app.scope_input_result(result)?;
-                        }
+                    ClientEvent::Legacy(InputEvent::Paste(text)) if !app.resize_capturing() => {
+                        let result = app.paste(text);
+                        app.scope_input_result(result)?;
                     }
-                    ClientEvent::Legacy(InputEvent::Mouse(mouse)) => {
-                        if let Err(error) =
-                            app.mouse(mouse, input_size, input_rects, &workspace_hits, &hits)
-                        {
+                    event @ (ClientEvent::Legacy(InputEvent::Mouse(_))
+                    | ClientEvent::Mouse { .. }) => {
+                        let (mouse, physical) = match event {
+                            ClientEvent::Legacy(InputEvent::Mouse(mouse)) => (mouse, None),
+                            ClientEvent::Mouse {
+                                event,
+                                button,
+                                action,
+                            } => (event, Some((button, action))),
+                            _ => unreachable!("matched mouse event"),
+                        };
+                        if let Err(error) = app.mouse(
+                            mouse,
+                            physical,
+                            input_size,
+                            input_rects,
+                            &workspace_hits,
+                            &hits,
+                        ) {
                             if error.downcast_ref::<updates::InputRejected>().is_some() {
                                 app.scope_input_result(Err(error))?;
                             } else {
-                                app.state.status = format!("{error:#}");
+                                app.notify(format!("{error:#}"));
                             }
                         }
                     }
@@ -5587,6 +5753,7 @@ mod tests {
                 finder: None,
                 popover: crate::popover::Popover::new(size()),
                 overlays: OverlayStack::default(),
+                toasts: toast::ToastStack::default(),
                 guide: GuideCache::default(),
                 chrome_graphics_enabled: true,
                 notified_focus: None,
@@ -6334,7 +6501,6 @@ mod tests {
         )
         .unwrap();
         assert!(app.state.prefix);
-        assert!(app.state.status.is_empty());
         physical_keys(&mut app, b"\x1b[53:37;2:1;37u").unwrap_err();
         assert!(!app.state.prefix);
         assert!(app.state.suppressed.contains("Digit5"));
@@ -6488,11 +6654,23 @@ mod tests {
         let mut demux = ReplyDemux::default();
         let bytes = format!("\x1b[<0;6;{}M\x1b[<0;6;{}m", row + 1, row + 1);
         for event in decode_input(&mut parser, demux.feed(bytes.as_bytes()), false) {
-            let ClientEvent::Legacy(InputEvent::Mouse(mouse)) = event else {
+            let ClientEvent::Mouse {
+                event,
+                button,
+                action,
+            } = event
+            else {
                 panic!("expected physical SGR mouse event");
             };
-            app.mouse(mouse, size, &rects, &workspace_hits, &hits)
-                .unwrap();
+            app.mouse(
+                event,
+                Some((button, action)),
+                size,
+                &rects,
+                &workspace_hits,
+                &hits,
+            )
+            .unwrap();
         }
         assert_eq!(app.state.workspace.as_deref(), Some("remote"));
         assert!(
@@ -6584,14 +6762,176 @@ mod tests {
             let mut parser = InputParser::new();
             let mut demux = ReplyDemux::default();
             for event in decode_input(&mut parser, demux.feed(packet.as_bytes()), false) {
-                let ClientEvent::Legacy(InputEvent::Mouse(mouse)) = event else {
+                let ClientEvent::Mouse {
+                    event,
+                    button,
+                    action,
+                } = event
+                else {
                     panic!("expected decoded SGR mouse event");
                 };
-                app.mouse(mouse, self.size, &self.rects, &[], &self.hits)?;
+                app.mouse(
+                    event,
+                    Some((button, action)),
+                    self.size,
+                    &self.rects,
+                    &[],
+                    &self.hits,
+                )?;
             }
             Ok(())
         }
     }
+    fn paint_test_toasts(app: &mut App<'_>, size: Size) {
+        app.toasts.paint(
+            size,
+            toast::ToastLayout {
+                max_width: 72,
+                top_margin: 1,
+                side_margin: 2,
+                gap: 1,
+                max_lines: 5,
+            },
+            &Theme::default(),
+            |_, _, _| false,
+        );
+    }
+
+    #[test]
+    fn physical_sgr_chord_releases_stay_with_toast_after_dismissal_or_expiry() {
+        for expire in [false, true] {
+            let (mut app, capture) = fixture();
+            let pointer = PointerFixture::new(&mut app);
+            app.notify("Chorded notice".into());
+            paint_test_toasts(&mut app, pointer.size);
+            let dismiss = app.toasts.cards().next().unwrap().dismiss;
+            pointer.send(&mut app, 0, dismiss.x, dismiss.y, false);
+            pointer.send(&mut app, 2, dismiss.x, dismiss.y, false);
+            assert!(app.toasts.pointer_captured());
+            if expire {
+                app.toasts.expire(app.toasts.next_deadline().unwrap());
+            }
+            pointer.send(&mut app, 0, dismiss.x, dismiss.y, true);
+            assert!(app.toasts.is_empty());
+            assert!(
+                app.toasts.pointer_captured(),
+                "secondary button remains held"
+            );
+            let native = content(pointer.rects[0].1);
+            pointer.send(&mut app, 2, native.x + 2, native.y + 8, true);
+            assert!(!app.toasts.pointer_captured());
+            assert!(app.pointer_capture.is_none());
+            assert!(capture.try_recv().is_err(), "consumed chord release leaked");
+            pointer.send(&mut app, 0, native.x + 2, native.y + 8, false);
+            pointer.send(&mut app, 0, native.x + 2, native.y + 8, true);
+            let events = captured_mouse(&capture);
+            assert_eq!(events.len(), 2, "subsequent native click was swallowed");
+            assert_eq!(events[0].2.action, MouseAction::Press);
+            assert_eq!(events[1].2.action, MouseAction::Release);
+        }
+    }
+
+    #[test]
+    fn toast_deadline_is_event_owned_and_poll_timeout_rounds_up() {
+        let (mut app, _) = fixture();
+        assert_eq!(app.toast_timeout(1000, Instant::now()), 1000);
+        app.toggle_chrome();
+        let deadline = app.toasts.next_deadline().unwrap();
+        for _ in 0..3 {
+            paint_test_toasts(&mut app, size());
+        }
+        assert_eq!(app.toasts.next_deadline(), Some(deadline));
+        assert_eq!(
+            app.toast_timeout(1000, deadline - Duration::from_nanos(1)),
+            1
+        );
+        assert_eq!(app.toast_timeout(1000, deadline), 0);
+        assert!(app.toasts.expire(deadline));
+        assert!(app.toasts.is_empty());
+        assert_eq!(app.toast_timeout(1000, deadline), 1000);
+    }
+
+    #[test]
+    fn toast_pointer_capture_does_not_steal_keyboard_or_dismiss_underlying_modal() {
+        let (mut app, capture) = fixture();
+        let pointer = PointerFixture::new(&mut app);
+        app.copy_focused_selection().unwrap();
+        capture.respond(serde_json::json!({"copied":false, "contents":[]}));
+        let mut clipboard = Vec::new();
+        app.selection_clipboard(&mut clipboard).unwrap();
+        assert!(clipboard.is_empty());
+        assert!(!app.toasts.is_empty());
+        paint_test_toasts(&mut app, pointer.size);
+        let (body, dismiss) = {
+            let card = app.toasts.cards().next().unwrap();
+            (card.body, card.dismiss)
+        };
+        pointer.send(&mut app, 35, body.x, body.y, false);
+        assert!(app.pointer_capture.is_none(), "hover must not capture");
+        pointer.send(&mut app, 0, body.x, body.y, false);
+        pointer.send(&mut app, 0, 0, pointer.size.rows - 1, true);
+        assert!(!app.toasts.is_empty());
+        assert!(capture.try_recv().is_err());
+        app.key(key("KeyX"), &mut Vec::new(), pointer.size, &pointer.rects)
+            .unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { event, .. },
+        } if pane_id == "focused-pane" && event.key == "KeyX"));
+        app.open_form(FormKind::ChoosePane, String::new());
+        pointer.send(&mut app, 0, dismiss.x, dismiss.y, false);
+        pointer.send(&mut app, 0, dismiss.x, dismiss.y, true);
+        assert!(app.toasts.is_empty());
+        assert!(app.state.form.is_some());
+        assert_eq!(app.overlays.keyboard_owner(), Some("ui:modal"));
+        assert!(capture.try_recv().is_err());
+
+        app.notify("Another notice".into());
+        paint_test_toasts(&mut app, pointer.size);
+        let dismiss = app.toasts.cards().next().unwrap().dismiss;
+        pointer.send(&mut app, 0, dismiss.x, dismiss.y, false);
+        assert!(app.toasts.pointer_captured());
+        app.toasts.expire(app.toasts.next_deadline().unwrap());
+        assert!(app.toasts.is_empty());
+        pointer.send(&mut app, 0, 0, pointer.size.rows - 1, true);
+        assert!(!app.toasts.pointer_captured());
+        assert!(app.pointer_capture.is_none());
+        assert!(app.state.form.is_some());
+        assert!(capture.try_recv().is_err(), "expired toast release leaked");
+    }
+
+    #[test]
+    fn toast_appearing_mid_native_or_divider_gesture_preserves_existing_owner() {
+        let (mut app, capture) = fixture();
+        let pointer = PointerFixture::new(&mut app);
+        let native = content(pointer.rects[0].1);
+        pointer.send(&mut app, 0, native.x + 2, native.y + 8, false);
+        app.notify("Appeared during native drag".into());
+        paint_test_toasts(&mut app, pointer.size);
+        let dismiss = app.toasts.cards().next().unwrap().dismiss;
+        pointer.send(&mut app, 32, dismiss.x, dismiss.y, false);
+        pointer.send(&mut app, 0, dismiss.x, dismiss.y, true);
+        assert!(!app.toasts.is_empty());
+        assert!(!app.toasts.pointer_captured());
+        let events = captured_mouse(&capture);
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|(pane, _, _)| pane == "focused-pane"));
+        assert_eq!(events.last().unwrap().2.action, MouseAction::Release);
+
+        let (mut app, capture) = fixture();
+        let pointer = resize_fixture(&mut app);
+        let divider = resize_divider(&app, pointer.size);
+        pointer.send(&mut app, 0, divider.x, 3, false);
+        assert!(matches!(app.pointer_capture, Some(PointerCapture::Resize)));
+        app.notify("Appeared during divider drag".into());
+        paint_test_toasts(&mut app, pointer.size);
+        pointer.send(&mut app, 0, divider.x, 3, true);
+        assert!(!app.toasts.is_empty());
+        assert!(!app.toasts.pointer_captured());
+        assert!(!app.resize_capturing());
+        assert!(!app.jobs.contains("manage:window:resize-window"));
+        assert!(capture.try_recv().is_err());
+    }
+
     #[test]
     fn outside_modal_click_cancels_without_starting_a_native_gesture() {
         let (mut app, capture) = fixture();
@@ -6828,7 +7168,6 @@ mod tests {
             app.key(exit, &mut Vec::new(), size(), &[]).unwrap();
             assert!(capture.try_recv().is_err());
             assert!(!app.held.contains_key("KeyD"));
-            assert!(app.state.status.is_empty());
             assert!(app.input_failures.is_empty());
             app.key(key("KeyA"), &mut Vec::new(), size(), &[]).unwrap();
             assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
@@ -6870,7 +7209,6 @@ mod tests {
             app.reap_retiring().unwrap();
             assert!(app.retiring.is_empty());
             assert_eq!(app.unconfirmed_views, 0);
-            assert!(app.state.status.is_empty());
             assert!(app.input_failures.is_empty());
             assert!(app.view_failures.is_empty());
             app.state.focused = Some("beta".into());
@@ -7597,7 +7935,6 @@ mod tests {
         pointer.send(&mut app, 68, alpha.x + 2, alpha.y + 2, false);
         physical_keys(&mut app, b"\x1b[5;2~").unwrap();
         assert!(!app.focused_history());
-        assert!(!app.state.status.is_empty());
         assert!(
             capture.try_recv().is_err(),
             "alternate screen exposed primary history"
@@ -7773,7 +8110,6 @@ mod tests {
         let mut out = Vec::new();
         app.selection_clipboard(&mut out).unwrap();
         assert_eq!(out, b"\x1b]52;c;w6kK\x1b\\");
-        assert!(app.state.status.contains("sent to host"));
         assert!(!app.views["focused-pane"].spec.input);
         assert!(!app.views["focused-pane"].spec.clipboard);
         assert_eq!(app.state.focused.as_deref(), Some("focused-pane"));
@@ -7837,7 +8173,6 @@ mod tests {
         app.options.clipboard_policy = "deny".into();
         app.copy_focused_selection().unwrap();
         assert!(capture.try_recv().is_err());
-        assert!(app.state.status.contains("denied"));
         app.options.clipboard_policy = "ask".into();
         for value in [
             serde_json::json!({"copied":false, "contents":[]}),
@@ -7849,7 +8184,6 @@ mod tests {
             app.selection_clipboard(&mut out).unwrap();
             assert!(out.is_empty());
         }
-        assert!(app.state.status.contains("payload limit"));
         assert!(app.input_failures.is_empty());
     }
 
@@ -8009,7 +8343,6 @@ mod tests {
         capture.respond(copy_contents(b"exact bytes".to_vec()));
         let error = app.selection_clipboard(&mut BrokenHost).unwrap_err();
         assert!(error.to_string().contains("outcome unknown"));
-        assert!(!app.state.status.contains("sent to host"));
         let mut next = Vec::new();
         app.selection_clipboard(&mut next).unwrap();
         assert!(next.is_empty());
@@ -8550,11 +8883,6 @@ mod tests {
             assert!(!app.jobs.contains("manage:window:resize-window"));
             assert!(!app.resize_capturing());
             assert_eq!(app.registry.workspaces[0].windows[0].layout, before);
-            assert!(app.state.status.contains("not replayed"));
-            assert_eq!(
-                app.state.status.contains("outcome unknown"),
-                outcome != "conflict"
-            );
             assert!(capture.try_recv().is_err());
         }
     }
@@ -8629,7 +8957,7 @@ mod tests {
         enter.text = "e".into();
         app.dispatch_key(enter, &mut Vec::new(), pointer.size, &pointer.rects)
             .unwrap();
-        assert!(app.state.status.contains("read-only"));
+        assert!(!app.resize_capturing());
         assert!(pointer.try_send(&mut app, 0, divider.x, 3, false).is_err());
         pointer.send(&mut app, 0, divider.x, 3, true);
         app.options.read_only = false;
@@ -8650,11 +8978,9 @@ mod tests {
             &pointer.rects,
         )
         .unwrap();
-        app.resize_hint();
-        assert!(app.state.status.contains("no matching divider"));
         app.key(key("Escape"), &mut Vec::new(), pointer.size, &pointer.rects)
             .unwrap();
-        assert_eq!(app.state.status, "Resize finished");
+        assert!(!app.resize_capturing());
         assert!(!app.jobs.contains("manage:window:resize-window"));
         assert!(capture.try_recv().is_err());
     }
@@ -8683,7 +9009,6 @@ mod tests {
         app.registry = foreign;
         app.validate_resize(pointer.size);
         assert!(!app.resize_capturing());
-        assert!(app.state.status.contains("window changed elsewhere"));
         assert!(!app.jobs.contains("manage:window:resize-window"));
         assert!(capture.try_recv().is_err());
     }
