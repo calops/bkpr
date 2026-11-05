@@ -87,6 +87,15 @@ Repository `calops/bkpr-zellij`, inspected main `d7b40a37a63d4934054516f6f445488
 
 Rendering, image clipping/damage, cursor/focus, client surfaces, terminal capability/palette handling, input demultiplexing and clipboard transport are explicit reuse candidates. Do not import the fork's `Screen`, tab/plugin ownership or second terminal grid as a shortcut. Capture exact paths, symbols and dependencies when selecting a port; the fork is not a maintained SDK boundary or a specification the new client must reproduce.
 
+History exit revisits Bkpr main `9ad93bd`'s `crates/bkpr-zellij/src/keyguide.rs`
+and fork `d7b40a37`'s `zellij-server/src/screen.rs` mode synchronization and
+`zellij-client/src/input_handler.rs` paste routing. Keep automatic return to
+normal mode at live bottom, not the legacy blocking of typing/paste in Scroll.
+The client owns navigation bindings and hints; core uses the existing native
+per-view tracked viewport and pane input worker to resume exactly the input
+target without another transport round trip. No terminal parser or dependency
+is added, and no fork implementation is copied.
+
 | Candidate | Starting source | Fit for the new client |
 | --- | --- | --- |
 | Host capability/palette model | `zellij-server/src/terminal_colors.rs`, `TerminalColors::update` | Small fixed-size observed-client state. Replace Zellij IPC/event adapters and its `xparse_color`/`AnsiCode` dependency with the new client boundary. RGB color replies don't establish truecolor capability; palette reset shouldn't erase independent capabilities. Current native `ColorProbe` already covers overlapping behavior, so avoid a duplicate module. |
@@ -178,11 +187,21 @@ Actual debug rich/plain, live-theme, draft/gesture, local Git and framed two-cli
 
 ### Terminal-native theme
 
-`bkpr-tui-framework::Theme`, `Role` and `RoleSpan` own reusable color resolution and retained `UiSurface::apply_theme` styling. `bkpr-client` assigns roles to Bkpr components and guarded activity; neither framework theme nor palette probing knows workspaces or harness identities. Native application frames bypass theme application. Palette equivalence is prepared once per surface, retaining compact native ANSI output for observed matches and resolved RGB for differing virtual pane palettes.
+`bkpr-tui-framework::Theme`, `Role` and `RoleSpan` own reusable color resolution and retained `UiSurface::apply_theme` styling. `bkpr-client` assigns roles to Bkpr components and guarded activity; neither framework theme nor palette probing knows workspaces or harness identities. Native frames retain their application styles; optional borrowed `Surface::palette` overrides project their default and indexed colors without applying UI roles or mutating canonical state. Palette equivalence is prepared once per surface, retaining compact native ANSI output for observed matches and resolved RGB for differing virtual pane palettes.
 
 Main `9ad93bd809f8fb0dbd0c28bcbc267a682a21430b`, `crates/bkpr-zellij/src/palette.rs` and `ui.rs`, supplies the signed luminance surface shift, subdued foreground/selection/accent blends and semantic color assignments. Preserve that recipe without invented contrast-based recoloring. RGB surfaces require independent positive `Tc`/`RGB` evidence and both observed foreground/background. Otherwise native defaults, ANSI indices and selection/hover attributes remain meaningful. The legacy project-slot allocator and plugin transport are not copied.
 
 The inherited palette recipe lives in `bkpr-client::appearance`, which supplies `ThemeStyles`. Framework `Theme` only caches caller-resolved styles against relevant terminal evidence and retains generic style application. Palette recipes, fallback semantic choices and decoration materials are client policy; no Bkpr-specific recipe remains in the graphics engine.
+
+The theme picker uses the framework's generic `SearchList` inside the existing modal owner, with a content heading shared by graphical and rounded-cell rendering. Query editing reuses `TextInput`; fuzzy matching reuses maintained `nucleo-matcher` 0.3, already used by the finder. Ranking runs only on query changes, not hover or repaint. Client appearance policy leaves the chooser's background undimmed so preview colors remain accurate; ordinary modal overlays still use the same generic faint mechanism. No second editor, search engine, overlay loop or theme SDK is introduced.
+
+`bkpr-client::themes` owns named palette data, the cached UI projection and borrowed pane overrides. `Ctrl-b t` previews highlighted choices across chrome and terminal panes, commits with Enter/left click, and restores the prior choice on Escape/outside dismissal. With positive RGB evidence, pane overrides replace default foreground/background and ANSI16 before inverse, selection/search annotations, faint and damage comparison. Explicit application RGB, higher palette indices and image resources remain unchanged. Native seeding still uses actual host observations; selected palettes never become backend facts or recolor another client's view. A client-instance choice has no configuration or backend persistence, and inferred mode returns to current canonical pane colors and the latest host-derived UI colors.
+
+Palette data sources: [Catppuccin/kitty `4309831`](https://github.com/catppuccin/kitty/tree/43098316202b84d6a71f71aaf8360f102f4d3f1a/themes), four `.conf` variants (MIT); [altercation/solarized `62f656a`](https://github.com/altercation/solarized/blob/62f656a02f93c5190a8753159e34b385588d5ff3/xresources/solarized), with the documented light base substitutions (MIT); and [folke/tokyonight.nvim `cdc07ac`](https://github.com/folke/tokyonight.nvim/tree/cdc07ac78467a233fd62c493de29a17e0cf2b2b6/extras/kitty), night/storm/day generated files explicitly marked MIT (the repository's code license is Apache-2.0). Applicable MIT notices are retained in the data module. Small compile-time constants avoid a palette parser/dependency; Bkpr's existing client appearance policy still derives muted, blended and semantic colors.
+
+PaperColor Light/Dark use the original [NLKNguyen/papercolor-theme `0cfe64f`](https://github.com/NLKNguyen/papercolor-theme/blob/0cfe64ffb24c21a6101b5f994ca342a74c977aef/colors/PaperColor.vim): the default light/dark `color00`–`color15` tables, with `Normal` foreground from `color07` and background from `color00`. Preserve the published slot order rather than remapping it to conventional color names. MIT, Copyright (c) 2015–2020 Nikyle Nguyen; the notice is retained with the catalog's existing MIT permission text. Optional Vim syntax/UI colors are not copied.
+
+
 
 
 Fork `d7b40a37a63d4934054516f6f445488348075a62`, `zellij-server/src/terminal_colors.rs` and `zellij-client/src/{lib,stdin_ansi_parser,stdin_handler}.rs`, informs capability independence, duplicate suppression and event-triggered palette refresh. The existing bounded demultiplexer consumes private `CSI ?997;1n`/`?997;2n` reports; one input batch requests one refresh through the existing output owner. Mode 2031 changes require confirmed mutable support and retain the original setting for detach. No polling, second parser, global backend palette or decoration timer is introduced.

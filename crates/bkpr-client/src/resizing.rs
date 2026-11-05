@@ -160,7 +160,7 @@ impl App<'_> {
         {
             Some("pane, window, or workspace focus changed")
         } else if self.state.form.is_some()
-            || self.finder.is_some()
+            || self.picker_open()
             || self
                 .consent
                 .as_ref()
@@ -188,7 +188,7 @@ impl App<'_> {
         }
         if !self.host_focused
             || self.state.form.is_some()
-            || self.finder.is_some()
+            || self.picker_open()
             || self
                 .consent
                 .as_ref()
@@ -343,7 +343,7 @@ impl App<'_> {
             !self.options.read_only
                 && self.host_focused
                 && self.state.form.is_none()
-                && self.finder.is_none()
+                && !self.picker_open()
                 && !self
                     .consent
                     .as_ref()

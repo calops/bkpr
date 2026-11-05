@@ -706,11 +706,28 @@ Fancy cards reuse popup shadows and bevels; normal/unsupported rendering uses
 rounded text borders. Pending operations, live resize instructions, form errors,
 search progress and clipboard-consent decisions remain in their contextual UI.
 
-Supporting hosts notify live theme changes through mode 2031; Bkpr re-queries
-colors without polling and restores the original confirmed notification setting
-on detach. Missing replies or unconfirmed truecolor retain native default colors,
-ANSI accents, inverse selection and underlined hover instead of a guessed dark
-theme. Terminal names and RGB color replies alone do not establish truecolor.
+`Ctrl-b t` opens the theme picker: type to fuzzy-filter, then use Up/Down or hover
+to preview a palette across Bkpr and its terminal panes immediately. Enter or a
+left click keeps the choice; Escape or an outside press restores it everywhere.
+The chooser leaves the background undimmed for accurate previews; ordinary
+dialogs keep their existing dimming.
+The list includes inferred terminal colors, four Catppuccin variants, Solarized
+Dark/Light, Tokyo Night/Storm/Day and PaperColor Light/Dark. Muted, blended and semantic styles continue
+to use Bkpr's appearance recipe. Pane default foreground/background and the 16
+ANSI colors follow the theme; application-specified RGB colors, higher indexed
+colors and images remain application-owned. This is a per-client presentation
+override, not a mutation of shared terminal state. A new client starts with
+inferred terminal colors; there is no config persistence yet.
+
+Supporting hosts notify live terminal color changes through mode 2031; Bkpr
+re-queries without polling and restores the original confirmed notification
+setting on detach. Inferred mode follows the new colors. A selected preset stays
+selected, while returning to inferred mode uses the latest observation.
+When inferred mode lacks color replies, or any choice lacks confirmed truecolor,
+Bkpr retains native default colors, ANSI accents, inverse selection and
+underlined hover instead of a guessed dark theme.
+The picker reports when RGB overrides are unavailable. Terminal names and RGB
+color replies alone do not establish truecolor.
 
 Reusable text surfaces, editing, overlay lifecycle, clipping, capability probes
 and graphics preparation belong to `bkpr-tui-framework`. `bkpr-client` chooses
@@ -892,7 +909,8 @@ changes, and an already accepted update may still finish.
 ### Scrollback navigation
 
 Press `Shift+PageUp` or `Ctrl-b s` to enter history and page upward.
-`Shift+PageDown` enters history and pages toward live output. In history:
+`Shift+PageDown` pages toward live output and leaves history at the bottom.
+In history:
 
 | Key | Action |
 | --- | --- |
@@ -903,10 +921,11 @@ Press `Shift+PageUp` or `Ctrl-b s` to enter history and page upward.
 
 The pane header and focused status line show `HISTORY` and the authoritative
 row offset from live output, followed by native retained rows (including the
-visible grid). The
-application cursor is hidden while inspecting history, including explicit mode
-at offset zero. Ordinary typing, literal Ctrl-b forwarding and paste do not
-reach the application in this mode; return live explicitly before typing.
+visible grid). The application cursor is hidden while inspecting history.
+Ordinary application keys, literal Ctrl-b forwarding and paste return that view
+to live output and reach the application once, without waiting for a live frame.
+Manually scrolling to the bottom also closes history mode and its key hints.
+Explicit history-navigation shortcuts above remain client-local.
 Existing `Ctrl-b [` / `Ctrl-b ]` workspace navigation and pane-focus commands
 remain unchanged. Already accepted key/pointer releases and clipboard transfers
 still complete for their original view in input order.
@@ -982,7 +1001,8 @@ Counts belong to the active primary or alternate screen; native primary-screen
 results resume when the application returns to it.
 
 Esc clears search and closes its field without sending Escape to the application.
-If the view is still in history, End returns live before ordinary typing resumes.
+If the view is still in history, ordinary typing or paste returns it live;
+End returns live without application input.
 Read-only clients can search. Pane/workspace focus changes, another form or view
 retirement close the editor and discard stale query results; another client's
 search and viewport remain independent.

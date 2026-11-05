@@ -37,10 +37,20 @@ pub enum SurfaceContent {
     CellsWithUnderlay(Rect),
     Graphics,
 }
+/// Borrowed, view-local terminal colors; canonical frames remain unchanged.
+/// Entries outside this palette retain their canonical frame colors.
+#[derive(Clone, Copy, Debug)]
+pub struct PaletteOverride<'a> {
+    pub foreground: [u8; 3],
+    pub background: [u8; 3],
+    pub palette: &'a [[u8; 3]],
+}
 pub struct Surface<'a> {
     pub id: &'a str,
     pub rect: Rect,
     pub frame: &'a Frame,
+    /// Presentation colors for defaults and indexed colors, never explicit RGB.
+    pub palette: Option<PaletteOverride<'a>>,
     pub content: SurfaceContent,
     /// Sorted, one-span-per-row view-local highlighting, outside the canonical delta baseline.
     pub selection: &'a [SelectionSpan],
@@ -437,19 +447,28 @@ pub fn clear(frame: &mut Frame, rect: Rect) {
         }
     }
 }
-fn effective_style(style: &Style, frame: &Frame, native_palette: &[bool; 16]) -> Style {
+fn effective_style(
+    style: &Style,
+    frame: &Frame,
+    palette: PaletteOverride<'_>,
+    native_palette: &[bool; 16],
+    override_defaults: bool,
+) -> Style {
+    let entry = |index| {
+        palette
+            .palette
+            .get(index)
+            .or_else(|| frame.palette.get(index))
+            .copied()
+    };
     let resolve = |source: ColorSource, default: [u8; 3], fallback: [u8; 3]| match source {
         ColorSource::Default => default,
-        ColorSource::Palette(index) => frame
-            .palette
-            .get(index as usize)
-            .copied()
-            .unwrap_or(fallback),
+        ColorSource::Palette(index) => entry(usize::from(index)).unwrap_or(fallback),
         ColorSource::Rgb(rgb) => rgb,
     };
     let mut result = style.clone();
-    result.foreground = resolve(style.foreground_source, frame.foreground, style.foreground);
-    result.background = resolve(style.background_source, frame.background, style.background);
+    result.foreground = resolve(style.foreground_source, palette.foreground, style.foreground);
+    result.background = resolve(style.background_source, palette.background, style.background);
     result.underline_color = resolve(
         style.underline_source,
         result.foreground,
@@ -459,21 +478,31 @@ fn effective_style(style: &Style, frame: &Frame, native_palette: &[bool; 16]) ->
     // ANSI encoding when the host entry matches; only virtual mismatches need
     // explicit RGB. Unresolved UI sources remain honest native ANSI indices.
     let projected_source = |source| match source {
-        ColorSource::Palette(index) => match frame.palette.get(usize::from(index)) {
+        ColorSource::Palette(index) => match entry(usize::from(index)) {
             Some(rgb)
                 if !native_palette
                     .get(usize::from(index))
                     .copied()
                     .unwrap_or(false) =>
             {
-                ColorSource::Rgb(*rgb)
+                ColorSource::Rgb(rgb)
             }
             _ => source,
         },
         _ => source,
     };
-    result.foreground_source = projected_source(style.foreground_source);
-    result.background_source = projected_source(style.background_source);
+    // Unknown host defaults intentionally remain native for canonical frames.
+    // An explicit view override must instead take effect even without a probe.
+    result.foreground_source = if override_defaults && style.foreground_source == ColorSource::Default {
+        ColorSource::Rgb(result.foreground)
+    } else {
+        projected_source(style.foreground_source)
+    };
+    result.background_source = if override_defaults && style.background_source == ColorSource::Default {
+        ColorSource::Rgb(result.background)
+    } else {
+        projected_source(style.background_source)
+    };
     result.underline_source = projected_source(style.underline_source);
     result
 }
@@ -490,16 +519,27 @@ fn copy_cell(destination: &mut Cell, source: &Cell, style: &Style) {
     }
 }
 fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect], host: &ColorProbe) {
+    let palette = surface.palette.unwrap_or(PaletteOverride {
+        foreground: surface.frame.foreground,
+        background: surface.frame.background,
+        palette: &surface.frame.palette,
+    });
     // Prepare host/virtual palette equality once per surface, not per cell.
     let native_palette = std::array::from_fn(|index| {
-        surface
-            .frame
+        palette
             .palette
             .get(index)
+            .or_else(|| surface.frame.palette.get(index))
             .is_some_and(|rgb| host.palette.get(&index) == Some(rgb))
     });
     let blank = blank_cell();
-    let mut blank_style = effective_style(&blank.style, surface.frame, &native_palette);
+    let mut blank_style = effective_style(
+        &blank.style,
+        surface.frame,
+        palette,
+        &native_palette,
+        surface.palette.is_some(),
+    );
     blank_style.faint |= surface.faint;
     let r = surface.rect;
     for clip in visible {
@@ -534,8 +574,13 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect], ho
                 }
                 if end > left && x < right {
                     if x >= left && end <= right {
-                        let mut style =
-                            effective_style(&cell.style, surface.frame, &native_palette);
+                        let mut style = effective_style(
+                            &cell.style,
+                            surface.frame,
+                            palette,
+                            &native_palette,
+                            surface.palette.is_some(),
+                        );
                         style.faint |= surface.faint;
                         while search_index < search.len() && search[search_index].end <= x {
                             search_index += 1;
@@ -835,6 +880,212 @@ impl Renderer {
 #[cfg(test)]
 mod scene_tests {
     use super::*;
+    fn canonical_style(style: &Style, frame: &Frame) -> Style {
+        effective_style(
+            style,
+            frame,
+            PaletteOverride {
+                foreground: frame.foreground,
+                background: frame.background,
+                palette: &frame.palette,
+            },
+            &[false; 16],
+            false,
+        )
+    }
+
+    #[test]
+    fn borrowed_palettes_recolor_independent_views_and_removal_restores_canonical_colors() {
+        let size = Size { cols: 15, rows: 2, cell_width: 8, cell_height: 16 };
+        let mut source = blank(Size { cols: 5, rows: 1, ..size });
+        source.foreground = [201, 202, 203];
+        source.background = [21, 22, 23];
+        source.palette = vec![[60, 70, 80]; 17];
+        source.palette[1] = [101, 102, 103];
+        source.palette[2] = [111, 112, 113];
+        source.palette[3] = [121, 122, 123];
+        source.palette[16] = [131, 132, 133];
+        text(&mut source, 0, 0, "DAREF", false);
+        for cell in &mut source.rows[0].cells {
+            cell.style.foreground_source = ColorSource::Default;
+            cell.style.background_source = ColorSource::Default;
+            cell.style.underline_source = ColorSource::Default;
+            cell.style.underline = 1;
+        }
+        let ansi = &mut source.rows[0].cells[1].style;
+        ansi.foreground_source = ColorSource::Palette(1);
+        ansi.background_source = ColorSource::Palette(2);
+        ansi.underline_source = ColorSource::Palette(3);
+        let literal = &mut source.rows[0].cells[2].style;
+        literal.foreground_source = ColorSource::Rgb([141, 142, 143]);
+        literal.background_source = ColorSource::Rgb([151, 152, 153]);
+        literal.underline_source = ColorSource::Rgb([161, 162, 163]);
+        let extended = &mut source.rows[0].cells[3].style;
+        extended.foreground_source = ColorSource::Palette(16);
+        extended.background_source = ColorSource::Palette(16);
+        extended.underline_source = ColorSource::Palette(16);
+        source.rows[0].cells[4].style.foreground_source = ColorSource::Palette(1);
+        let rows = source.rows.clone();
+        let cells = source.rows[0].cells.as_ptr();
+        let canonical_palette = source.palette.clone();
+        let mut first = [[10, 20, 30]; 16];
+        first[1] = [31, 32, 33];
+        first[2] = [41, 42, 43];
+        first[3] = [51, 52, 53];
+        let mut second = [[90, 100, 110]; 16];
+        second[1] = [61, 62, 63];
+        second[2] = [71, 72, 73];
+        second[3] = [81, 82, 83];
+        let palettes = [
+            Some(PaletteOverride {
+                foreground: [11, 12, 13],
+                background: [14, 15, 16],
+                palette: &first,
+            }),
+            Some(PaletteOverride {
+                foreground: [17, 18, 19],
+                background: [24, 25, 26],
+                palette: &second,
+            }),
+            None,
+        ];
+        let mut scene = Scene {
+            size,
+            surfaces: palettes.into_iter().enumerate().map(|(index, palette)| Surface {
+                id: ["first", "second", "canonical"][index],
+                rect: Rect { x: index as u16 * 5, y: 0, width: 5, height: 1 },
+                frame: &source,
+                palette,
+                content: SurfaceContent::Cells,
+                selection: &[],
+                search: &[],
+                focused: false,
+                faint: false,
+            }).collect(),
+        };
+        let mut host = ColorProbe {
+            truecolor: true,
+            foreground: None,
+            background: None,
+            ..ColorProbe::default()
+        };
+        for (index, rgb) in source.palette.iter().take(16).enumerate() {
+            host.palette.insert(index, *rgb);
+        }
+        let mut physical_palette = [[60, 70, 80]; 256];
+        physical_palette[..source.palette.len()].copy_from_slice(&source.palette);
+        let mut physical = bkpr_terminal_engine::Terminal::new(size).unwrap();
+        physical.set_default_colors(source.foreground, source.background, None).unwrap();
+        physical.set_palette(&physical_palette).unwrap();
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        let mut bytes = Vec::new();
+        renderer.render(&mut bytes, &scene, &host, &mut terminal).unwrap();
+        physical.feed(&bytes).unwrap();
+        let observed = physical.snapshot().unwrap();
+        for (index, (foreground, background, palette)) in [
+            ([11, 12, 13], [14, 15, 16], first.as_slice()),
+            ([17, 18, 19], [24, 25, 26], second.as_slice()),
+            (source.foreground, source.background, source.palette.as_slice()),
+        ].into_iter().enumerate() {
+            let view = &observed.rows[0].cells[index * 5..index * 5 + 5];
+            let expected = [
+                (foreground, background, foreground),
+                (palette[1], palette[2], palette[3]),
+                ([141, 142, 143], [151, 152, 153], [161, 162, 163]),
+                ([131, 132, 133], [131, 132, 133], [131, 132, 133]),
+                (palette[1], background, palette[1]),
+            ];
+            for (cell, (fg, bg, underline)) in view.iter().zip(expected) {
+                assert_eq!(cell.style.foreground, fg, "view {index}: {}", cell.text);
+                assert_eq!(cell.style.background, bg, "view {index}: {}", cell.text);
+                assert_eq!(cell.style.underline_color, underline, "view {index}: {}", cell.text);
+                assert_eq!(cell.style.underline, 1);
+            }
+        }
+        for surface in &mut scene.surfaces {
+            surface.palette = None;
+        }
+        bytes.clear();
+        renderer.render(&mut bytes, &scene, &host, &mut terminal).unwrap();
+        physical.feed(&bytes).unwrap();
+        let restored = physical.snapshot().unwrap();
+        for index in 0..3 {
+            assert_eq!(
+                &restored.rows[0].cells[index * 5..index * 5 + 5],
+                &observed.rows[0].cells[10..15],
+            );
+        }
+        assert_eq!(source.rows, rows);
+        assert_eq!(source.rows[0].cells.as_ptr(), cells);
+        assert_eq!(source.palette, canonical_palette);
+        assert_eq!(source.foreground, [201, 202, 203]);
+        assert_eq!(source.background, [21, 22, 23]);
+    }
+
+    #[test]
+    fn borrowed_palette_preserves_annotations_clipping_and_focused_cursor() {
+        let size = Size { cols: 6, rows: 3, cell_width: 8, cell_height: 16 };
+        let mut source = blank(Size { cols: 4, rows: 1, ..size });
+        text(&mut source, 0, 0, "ABCD", false);
+        source.cursor.x = 2;
+        source.cursor.y = 0;
+        source.cursor.visible = false;
+        for cell in &mut source.rows[0].cells {
+            cell.style.foreground_source = ColorSource::Palette(1);
+            cell.style.background_source = ColorSource::Default;
+            cell.style.underline_source = ColorSource::Default;
+            cell.style.bold = true;
+        }
+        source.rows[0].cells[1].style.inverse = true;
+        let palette = [[31, 32, 33]; 16];
+        let selection = [SelectionSpan { row: 0, start: 1, end: 2 }];
+        let search = [SearchSpan { row: 0, start: 2, end: 3, selected: true }];
+        let scene = Scene {
+            size,
+            surfaces: vec![Surface {
+                id: "clipped",
+                rect: Rect { x: 1, y: 1, width: 4, height: 1 },
+                frame: &source,
+                palette: Some(PaletteOverride {
+                    foreground: [11, 12, 13],
+                    background: [21, 22, 23],
+                    palette: &palette,
+                }),
+                content: SurfaceContent::CellsClipped(Rect { x: 1, y: 0, width: 2, height: 1 }),
+                selection: &selection,
+                search: &search,
+                focused: true,
+                faint: true,
+            }],
+        };
+        let host = ColorProbe { truecolor: true, ..ColorProbe::default() };
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        let mut bytes = Vec::new();
+        renderer.render(&mut bytes, &scene, &host, &mut terminal).unwrap();
+        let mut physical = bkpr_terminal_engine::Terminal::new(size).unwrap();
+        physical.feed(&bytes).unwrap();
+        let observed = physical.snapshot().unwrap();
+        assert_eq!(observed.rows[1].cells[1].text.trim(), "");
+        assert_eq!(observed.rows[1].cells[2].text, "B");
+        assert_eq!(observed.rows[1].cells[3].text, "C");
+        assert_eq!(observed.rows[1].cells[4].text.trim(), "");
+        let selected = &observed.rows[1].cells[2].style;
+        assert!(!selected.inverse, "selection toggles the original inverse intent");
+        assert!(selected.bold && selected.faint);
+        assert_eq!(selected.foreground, [31, 32, 33]);
+        assert_eq!(selected.background, [21, 22, 23]);
+        let searched = &observed.rows[1].cells[3].style;
+        assert!(searched.inverse && searched.bold && searched.faint);
+        assert_eq!(searched.underline, 1);
+        let cursor = &renderer.canvas.as_ref().unwrap().cursor;
+        assert_eq!((cursor.x, cursor.y, cursor.visible), (3, 1, false));
+        assert!(source.rows[0].cells[1].style.inverse);
+        assert!(!source.rows[0].cells[2].style.inverse);
+        assert!(!source.rows[0].cells[2].style.faint);
+        assert_eq!(source.rows[0].cells[2].style.underline, 0);
+    }
     #[test]
     fn hit_testing_uses_topmost_geometry() {
         let size = Size {
@@ -856,6 +1107,7 @@ mod scene_tests {
                         height: 10,
                     },
                     frame: &frame,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: true,
@@ -871,6 +1123,7 @@ mod scene_tests {
                         height: 4,
                     },
                     frame: &frame,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: false,
@@ -963,6 +1216,7 @@ mod scene_tests {
                         height: 3,
                     },
                     frame: &left,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: false,
@@ -978,6 +1232,7 @@ mod scene_tests {
                         height: 3,
                     },
                     frame: &right,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: true,
@@ -1021,6 +1276,7 @@ mod scene_tests {
                     height: 3,
                 },
                 frame: &frame,
+                palette: None,
                 selection: &[],
                 search: &[],
                 focused: true,
@@ -1096,6 +1352,7 @@ mod scene_tests {
                         id: "native",
                         rect: Rect { x: 4, y: 0, width: 12, height: 6 },
                         frame: &native,
+                        palette: None,
                         selection: &[],
                         search: &[],
                         focused: focus == "native",
@@ -1106,6 +1363,7 @@ mod scene_tests {
                         id: "sidebar",
                         rect: Rect { x: 0, y: 0, width: 4, height: 6 },
                         frame: sidebar,
+                        palette: None,
                         selection: &[],
                         search: &[],
                         focused: focus == "sidebar",
@@ -1116,6 +1374,7 @@ mod scene_tests {
                         id: "popup",
                         rect: Rect { x: 7, y: 2, width: 7, height: 3 },
                         frame: popup,
+                        palette: None,
                         selection: &[],
                         search: &[],
                         focused: focus == "modal",
@@ -1177,6 +1436,7 @@ mod scene_tests {
                     id: "clipped",
                     rect: Rect { x: 2, y: 1, width: 6, height: 2 },
                     frame: &source,
+                    palette: None,
                     content: SurfaceContent::CellsClipped(Rect {
                         x: 2, y: 0, width: 3, height: 1,
                     }),
@@ -1230,6 +1490,7 @@ mod scene_tests {
                         id: "sidebar",
                         rect: Rect { x: 0, y: 0, width: 10, height: 6 },
                         frame: &sidebar,
+                        palette: None,
                         content: SurfaceContent::Cells,
                         selection: &[],
                         search: &[],
@@ -1240,6 +1501,7 @@ mod scene_tests {
                         id: "passive-joined-anchor",
                         rect: Rect { x: 0, y: 0, width: 10, height: 6 },
                         frame: &plate,
+                        palette: None,
                         content: SurfaceContent::CellsClipped(Rect {
                             x: 1, y: 2, width: 8, height: 1,
                         }),
@@ -1327,6 +1589,7 @@ mod scene_tests {
                     id: "native",
                     rect: Rect { x: 0, y: 0, width: 12, height: 4 },
                     frame: &native,
+                    palette: None,
                     content: SurfaceContent::All,
                     selection: &[],
                     search: &[],
@@ -1337,6 +1600,7 @@ mod scene_tests {
                     id: "clipped",
                     rect: Rect { x: 2, y: 1, width: 6, height: 2 },
                     frame: &source,
+                    palette: None,
                     content: content(Rect {
                         x: 2, y: 0, width: 3, height: 1,
                     }),
@@ -1391,6 +1655,7 @@ mod scene_tests {
             id: "clipped",
             rect: Rect { x: 2, y: 1, width: 6, height: 3 },
             frame: &source,
+            palette: None,
             content: content(Rect {
                 x: 1, y: 1, width: u16::MAX, height: u16::MAX,
             }),
@@ -1439,6 +1704,7 @@ mod scene_tests {
                     id: "native",
                     rect,
                     frame: &native,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: true,
@@ -1449,6 +1715,7 @@ mod scene_tests {
                     id: "effects",
                     rect,
                     frame: &effects,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: true,
@@ -1534,6 +1801,7 @@ mod scene_tests {
                     id: "native",
                     rect,
                     frame: &native,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: true,
@@ -1544,6 +1812,7 @@ mod scene_tests {
                     id: "effects",
                     rect,
                     frame: &effects,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: false,
@@ -1720,10 +1989,12 @@ mod scene_tests {
                 surfaces: vec![
                     Surface {
                         id: "native", rect, frame: &native, content: SurfaceContent::All,
+                        palette: None,
                         selection: &[], search: &[], focused: true, faint: false,
                     },
                     Surface {
                         id: "material", rect, frame: &material, content: SurfaceContent::Graphics,
+                        palette: None,
                         selection: &[], search: &[], focused: false, faint: false,
                     },
                 ],
@@ -1739,6 +2010,7 @@ mod scene_tests {
             for (id, segment) in [("vertical", vertical), ("horizontal", horizontal)] {
                 scene.surfaces.push(Surface {
                     id, rect, frame: &feedback, content: SurfaceContent::CellsWithUnderlay(segment),
+                    palette: None,
                     selection: &[], search: &[], focused: false, faint: false,
                 });
             }
@@ -1768,6 +2040,7 @@ mod scene_tests {
             assert!(output.is_empty(), "retained feedback should be idle");
             scene.surfaces.push(Surface {
                 id: "popup", rect: popup_rect, frame: &popup, content: SurfaceContent::Cells,
+                palette: None,
                 selection: &[], search: &[], focused: false, faint: false,
             });
             renderer.render(&mut output, &scene, &ColorProbe::default(), &mut terminal).unwrap();
@@ -1815,6 +2088,7 @@ mod scene_tests {
         let feedback = blank(size);
         let image_surface = |id, frame| Surface {
             id, rect, frame, content: SurfaceContent::Graphics,
+            palette: None,
             selection: &[], search: &[], focused: false, faint: false,
         };
         let scene = Scene {
@@ -1826,6 +2100,7 @@ mod scene_tests {
                 image_surface("third", &third),
                 Surface {
                     id: "feedback", rect, frame: &feedback,
+                    palette: None,
                     content: SurfaceContent::CellsWithUnderlay(rect),
                     selection: &[], search: &[], focused: false, faint: false,
                 },
@@ -1960,6 +2235,7 @@ mod scene_tests {
                     id: "native",
                     rect: screen,
                     frame: &native,
+                    palette: None,
                     content: SurfaceContent::All,
                     selection: &[],
                     search: &[],
@@ -1970,6 +2246,7 @@ mod scene_tests {
                     id: "upper",
                     rect: screen,
                     frame: &upper,
+                    palette: None,
                     content: SurfaceContent::Graphics,
                     selection: &[],
                     search: &[],
@@ -1980,6 +2257,7 @@ mod scene_tests {
                     id: "lower",
                     rect: screen,
                     frame: &lower,
+                    palette: None,
                     content: SurfaceContent::Graphics,
                     selection: &[],
                     search: &[],
@@ -2030,6 +2308,7 @@ mod scene_tests {
                 height: 1,
             },
             frame: &popup,
+            palette: None,
             content: SurfaceContent::Cells,
             selection: &[],
             search: &[],
@@ -2089,6 +2368,7 @@ mod scene_tests {
                     id: "native",
                     rect,
                     frame: &native,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: true,
@@ -2099,6 +2379,7 @@ mod scene_tests {
                     id: "effects",
                     rect,
                     frame: &effects,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: false,
@@ -2113,6 +2394,7 @@ mod scene_tests {
                         ..rect
                     },
                     frame: &popup,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: false,
@@ -2275,6 +2557,7 @@ mod scene_tests {
                 id: ["default", "local", "explicit"][index],
                 rect: Rect { x: index as u16 * 2, y: 0, width: 2, height: 1 },
                 frame,
+                palette: None,
                 content: SurfaceContent::All,
                 selection: &[],
                 search: &[],
@@ -2363,6 +2646,7 @@ mod scene_tests {
                         height: 1,
                     },
                     frame: &a,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: false,
@@ -2378,6 +2662,7 @@ mod scene_tests {
                         height: 1,
                     },
                     frame: &b,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: false,
@@ -2465,6 +2750,7 @@ mod scene_tests {
                     height: 1,
                 },
                 frame: &ui.frame,
+                palette: None,
                 selection: &[],
                 search: &[],
                 focused: false,
@@ -2496,6 +2782,7 @@ mod scene_tests {
                     height: 1,
                 },
                 frame: &pane,
+                palette: None,
                 selection: &[],
                 search: &[],
                 focused: false,
@@ -2587,6 +2874,7 @@ mod scene_tests {
                         height: 2,
                     },
                     frame: &source,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: false,
@@ -2602,6 +2890,7 @@ mod scene_tests {
                         height: 2,
                     },
                     frame: &source,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: false,
@@ -2640,12 +2929,12 @@ mod scene_tests {
         assert_eq!(canvas.rows[0].cells[2].text, "e\u{301}");
         for column in [0, 2] {
             let mut expected =
-                effective_style(&source.rows[0].cells[column].style, &source, &[false; 16]);
+                canonical_style(&source.rows[0].cells[column].style, &source);
             expected.inverse = !expected.inverse;
             assert_eq!(canvas.rows[0].cells[column].style, expected);
             assert_eq!(
                 canvas.rows[0].cells[column + 6].style,
-                effective_style(&source.rows[0].cells[column].style, &source, &[false; 16])
+                canonical_style(&source.rows[0].cells[column].style, &source)
             );
         }
         assert_eq!(canvas.rows[0].cells[0].style, canvas.rows[0].cells[1].style);
@@ -2679,7 +2968,7 @@ mod scene_tests {
             .unwrap();
         assert_eq!(
             renderer.canvas.as_ref().unwrap().rows[0].cells[0].style,
-            effective_style(&source.rows[0].cells[0].style, &source, &[false; 16])
+            canonical_style(&source.rows[0].cells[0].style, &source)
         );
         let matches = [
             SearchSpan {
@@ -2711,7 +3000,7 @@ mod scene_tests {
             )
             .unwrap();
         let canvas = renderer.canvas.as_ref().unwrap();
-        let mut selected = effective_style(&source.rows[0].cells[0].style, &source, &[false; 16]);
+        let mut selected = canonical_style(&source.rows[0].cells[0].style, &source);
         selected.inverse = !selected.inverse;
         assert_eq!(
             canvas.rows[0].cells[0].style, selected,
@@ -2721,18 +3010,18 @@ mod scene_tests {
             canvas.rows[0].cells[1].style, selected,
             "wide glyph is annotated atomically"
         );
-        let mut chosen = effective_style(&source.rows[0].cells[2].style, &source, &[false; 16]);
+        let mut chosen = canonical_style(&source.rows[0].cells[2].style, &source);
         chosen.inverse = !chosen.inverse;
         chosen.bold = true;
         chosen.underline = chosen.underline.max(1);
         assert_eq!(canvas.rows[0].cells[2].style, chosen);
-        let mut ordinary = effective_style(&source.rows[0].cells[3].style, &source, &[false; 16]);
+        let mut ordinary = canonical_style(&source.rows[0].cells[3].style, &source);
         ordinary.underline = ordinary.underline.max(1);
         assert_eq!(canvas.rows[0].cells[3].style, ordinary);
         assert_eq!(canvas.rows[0].cells[2].text, "e\u{301}");
         assert_eq!(
             canvas.rows[0].cells[2 + 6].style,
-            effective_style(&source.rows[0].cells[2].style, &source, &[false; 16])
+            canonical_style(&source.rows[0].cells[2].style, &source)
         );
         assert_eq!(source.rows, canonical_rows);
         assert_eq!(source.rows[0].cells.as_ptr(), canonical_cells);
@@ -2774,6 +3063,7 @@ mod scene_tests {
                         height: 1,
                     },
                     frame: &source,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: false,
@@ -2789,6 +3079,7 @@ mod scene_tests {
                         height: 1,
                     },
                     frame: &source,
+                    palette: None,
                     selection: &[],
                     search: &[],
                     focused: false,

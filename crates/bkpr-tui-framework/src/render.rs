@@ -1659,7 +1659,7 @@ pub struct ColorProbe {
 }
 
 /// Explicit Kitty query evidence, independent of TERM and color capabilities.
-#[derive(Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct GraphicsProbe {
     pending: Option<(u32, Instant)>,
     issued_id: Option<u32>,
@@ -2400,6 +2400,7 @@ mod material_cache_tests {
                     height: frame.size.rows,
                 },
                 frame,
+                palette: None,
                 selection: &[],
                 search: &[],
                 focused: false,
@@ -2412,6 +2413,7 @@ mod material_cache_tests {
                 id: "cover",
                 rect,
                 frame: &popup,
+                palette: None,
                 selection: &[],
                 search: &[],
                 focused: false,

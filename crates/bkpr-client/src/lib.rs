@@ -12,6 +12,7 @@ mod popover;
 mod project_colors;
 const TEXT_INPUT_LIMIT: usize = 4096;
 pub mod remote;
+mod themes;
 mod tiling;
 pub mod transport;
 mod updates;

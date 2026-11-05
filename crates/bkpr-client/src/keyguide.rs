@@ -17,6 +17,7 @@ pub enum Context {
     Edit,
     Confirmation,
     Finder,
+    Theme,
     Chooser,
     Details,
     ClipboardConsent,
@@ -31,6 +32,7 @@ pub enum ModalContext {
     Edit,
     Confirmation,
     Finder,
+    Theme,
     Chooser,
     Details,
     ClipboardConsent,
@@ -57,6 +59,7 @@ impl ContextState {
                 ModalContext::Edit => Context::Edit,
                 ModalContext::Confirmation => Context::Confirmation,
                 ModalContext::Finder => Context::Finder,
+                ModalContext::Theme => Context::Theme,
                 ModalContext::Chooser => Context::Chooser,
                 ModalContext::Details => Context::Details,
                 ModalContext::ClipboardConsent => Context::ClipboardConsent,
@@ -138,6 +141,7 @@ pub enum Action {
     /// Close the selected product entity, not merely remove it from a layout.
     CloseSelected,
     OpenFinder,
+    OpenThemes,
     Submit,
     Cancel,
     AllowClipboard,
@@ -206,6 +210,7 @@ impl Action {
             Self::RenameSelected => "rename",
             Self::CloseSelected => "close",
             Self::OpenFinder => "find panes",
+            Self::OpenThemes => "themes",
             Self::Submit => match context {
                 Context::Create => "create",
                 Context::Edit => "save",
@@ -294,7 +299,8 @@ const RESIZE: u16 = 1 << 9;
 const CHOOSER: u16 = 1 << 10;
 const DETAILS: u16 = 1 << 11;
 const CLIPBOARD_CONSENT: u16 = 1 << 12;
-const ALL: u16 = (1 << 13) - 1;
+const THEME: u16 = 1 << 13;
+const ALL: u16 = (1 << 14) - 1;
 const SHIFT: u16 = 1;
 const CTRL: u16 = 2;
 const LOCKS: u16 = 16 | 32;
@@ -309,6 +315,7 @@ impl Context {
             Self::Edit => EDIT,
             Self::Confirmation => CONFIRM,
             Self::Finder => FINDER,
+            Self::Theme => THEME,
             Self::History => HISTORY,
             Self::Search => SEARCH,
             Self::Resize => RESIZE,
@@ -327,6 +334,7 @@ impl Context {
             Self::Edit => "Edit",
             Self::Confirmation => "Confirm",
             Self::Finder => "Find panes",
+            Self::Theme => "Choose theme",
             Self::History => "History",
             Self::Search => "Search",
             Self::Resize => "Resize",
@@ -472,6 +480,7 @@ static BINDINGS: &[Binding] = &[
     text(PREFIX, "y", A::CopySelection, 13),
     text(PREFIX, "i", A::ProjectDetails, 30),
     text(PREFIX, "g", A::ToggleChrome, 31),
+    text(PREFIX, "t", A::OpenThemes, 32),
     text(PREFIX, "c", A::CreateWorkspace, 20),
     text(PREFIX, "N", A::CreateTerminal, 19),
     text(PREFIX, "r", A::RenameWorkspace, 23),
@@ -541,7 +550,7 @@ static BINDINGS: &[Binding] = &[
     physical(SIDEBAR, "Escape", 0, "Esc", A::LeaveSidebar, 0, false),
     text(SIDEBAR, "/", A::OpenFinder, 5),
     physical(
-        SIDEBAR | FINDER | CHOOSER | DETAILS,
+        SIDEBAR | FINDER | CHOOSER | DETAILS | THEME,
         "ArrowUp",
         0,
         "↑",
@@ -550,7 +559,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        SIDEBAR | FINDER | CHOOSER | DETAILS,
+        SIDEBAR | FINDER | CHOOSER | DETAILS | THEME,
         "ArrowDown",
         0,
         "↓",
@@ -561,7 +570,7 @@ static BINDINGS: &[Binding] = &[
     repeating(text(SIDEBAR, "k", A::Navigate(N::Previous), 10)),
     repeating(text(SIDEBAR, "j", A::Navigate(N::Next), 11)),
     physical(
-        SIDEBAR | FINDER | DETAILS,
+        SIDEBAR | FINDER | DETAILS | THEME,
         "PageUp",
         0,
         "PgUp",
@@ -570,7 +579,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        SIDEBAR | FINDER | DETAILS,
+        SIDEBAR | FINDER | DETAILS | THEME,
         "PageDown",
         0,
         "PgDn",
@@ -648,7 +657,7 @@ static BINDINGS: &[Binding] = &[
         false,
     )),
     physical(
-        CREATE | EDIT | CONFIRM | FINDER | SEARCH | CHOOSER | DETAILS,
+        CREATE | EDIT | CONFIRM | FINDER | SEARCH | CHOOSER | DETAILS | THEME,
         "Escape",
         0,
         "Esc",
@@ -661,7 +670,7 @@ static BINDINGS: &[Binding] = &[
     text(CONFIRM, "n", A::Cancel, 0),
     text(CONFIRM, "N", A::Cancel, 0),
     physical(
-        CREATE | EDIT | CONFIRM | FINDER | CHOOSER,
+        CREATE | EDIT | CONFIRM | FINDER | CHOOSER | THEME,
         "Enter",
         0,
         "Enter",
@@ -675,7 +684,7 @@ static BINDINGS: &[Binding] = &[
     text(CLIPBOARD_CONSENT, "y", A::AllowClipboard, 1),
     text(CLIPBOARD_CONSENT, "Y", A::AllowClipboard, 1),
     physical(
-        CREATE | EDIT | FINDER | SEARCH,
+        CREATE | EDIT | FINDER | SEARCH | THEME,
         "Backspace",
         0,
         "Backspace",
@@ -684,7 +693,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CREATE | EDIT | FINDER | SEARCH,
+        CREATE | EDIT | FINDER | SEARCH | THEME,
         "KeyU",
         CTRL,
         "Ctrl-u",
@@ -696,7 +705,7 @@ static BINDINGS: &[Binding] = &[
     physical(CREATE, "Tab", SHIFT, "Shift-Tab", A::CycleField, 10, false),
     physical(FINDER, "Tab", 0, "Tab", A::CycleView, 12, false),
     physical(
-        FINDER,
+        FINDER | THEME,
         "KeyP",
         CTRL,
         "Ctrl-p",
@@ -705,7 +714,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        FINDER,
+        FINDER | THEME,
         "KeyN",
         CTRL,
         "Ctrl-n",
@@ -714,7 +723,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CREATE | EDIT | FINDER,
+        CREATE | EDIT | FINDER | THEME,
         "ArrowLeft",
         0,
         "←",
@@ -723,7 +732,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CREATE | EDIT | FINDER,
+        CREATE | EDIT | FINDER | THEME,
         "ArrowRight",
         0,
         "→",
@@ -732,7 +741,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CREATE | EDIT | FINDER,
+        CREATE | EDIT | FINDER | THEME,
         "Home",
         0,
         "Home",
@@ -741,7 +750,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CREATE | EDIT | FINDER,
+        CREATE | EDIT | FINDER | THEME,
         "End",
         0,
         "End",
@@ -750,7 +759,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CREATE | EDIT | FINDER,
+        CREATE | EDIT | FINDER | THEME,
         "Delete",
         0,
         "Del",
