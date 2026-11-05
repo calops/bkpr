@@ -1976,3 +1976,61 @@ headless daemon remains usable and empty. Cleanup has zero owned survivors.
 files; archived smoke sources and `verification-summary.json` retain reproduction
 and shared-check provenance. This is native backend acceptance, not a claim that
 remote TUI physical-surface verification has completed.
+
+## Stable authenticated-capture fixture
+
+The remote TUI workspace run in
+`target/smoke/remote-tui/verification/checks-1418016847865801` remains a recorded
+failure, not a successful run obtained by retry. Its first missing automatic
+recovery entry was followed by an assertion while holding the registry mutex;
+that poisoned subsequent shutdown and destructor cleanup.
+
+Instrumented native RPC/process fixtures subsequently captured a concrete
+eligibility failure in `target/smoke/capture-recovery/`:
+
+* `stress-1420069003088815/core-04.log` records an accepted duplicate binding
+  whose foreground predicate returned `ENOENT`, followed by automatic-intent
+  removal at `registry/recovery.rs`. Later bindings restored the intent.
+* `stress-1420348927882942/core-07.log` identifies the foreground-classification
+  failure on a descendant whose PID, birth, parent, controlling PTY and process
+  group were still present. `core-44.log` records the corresponding binding
+  classifier failure and missing readiness marker.
+
+The fixture's copied native shell repeatedly forked `sleep` every 20 ms while
+the backend inspected its descendants. Replace that churn with the shell's
+blocking `read` builtin and a retained private `ChildStdin` pipe. A separate
+marker follows completion of the nested rejection fixture before any native
+binding. Keep the real callback authentication, process inspection,
+background/restore transitions and durable automatic-binding assertions.
+Snapshot the asserted state under its mutex, then release it before asserting.
+
+The original run did not record its foreground predicate, so the exact original
+event cannot be proven retroactively. The observed classifier failures justify
+stabilizing the fixture, not relaxing production authority checks or retrying
+bindings until accepted. Production process classification, foreground
+validation, automatic-resume policy, wire formats and daemon binaries are
+unchanged. Temporary diagnostics are archived and removed from source.
+
+With identical diagnostics, the stable fixture passed all 512 isolated cases
+in `stress-1420505590085300`: 2,560 authenticated native bindings, zero rejected
+foreground predicates or classifier errors, and zero surviving owned process
+births. The run used the actual host UID1000, four concurrent fixtures on
+CPUs0–7, private HOME/XDG and sockets, incremental debug artifacts and no
+provider calls.
+
+After removing all temporary production-source diagnostics, the scoped
+latency-excluded feature source passed formatting, all-target strict Clippy,
+workspace test compilation, debug builds and doctests:
+`target/smoke/capture-recovery/verification/compiled-1420716408307149/manifest.json`.
+The frozen host-user workspace run in `verification/checks-1420780905092158`
+passed 835 top-level tests plus one isolated subprocess test, with 14 ignored
+and zero surviving owned process births. This is a new run after a fixture
+change; it does not overwrite the original failure.
+
+The rebuilt client SHA256 remains
+`e965e60325d38eaaf77756d4a5131797ed8e43e34bf20648fb026cdf46947141`,
+and the daemon remains
+`619a6071ff6e0906f21dfea9873ff688f700b1c9e86e76468d821fdd493c3423`.
+They are byte-identical to the pair already exercised by the isolated remote
+TUI matrix. Public debug/release binaries and foreign frontend/latency sources
+were preserved; the frontend-owned Git index was not touched.
