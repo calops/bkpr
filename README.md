@@ -16,8 +16,8 @@ status are available in the TUI, together with launch-scoped context, discovery
 and durable peer communication. Local Git/project snapshots and explicit native
 harness recovery are available; forge/CI metadata is not implemented yet. Earlier
 release notes describe the former implementation, not this branch.
-Headless SSH connections to existing remote sessions are available. Remote TUI
-attachment and cross-session workspace aggregation are not implemented.
+SSH and normal TUI attachment to existing remote sessions are available.
+Cross-session workspace aggregation remains deferred.
 
 Current `main` and the native-terminal fork are useful starting material when a
 domain comes into scope, not frozen specifications or compatibility obligations.
@@ -465,13 +465,53 @@ descriptors, but unknown historical activity is not guessed: their cold restart
 uses shells. Native recovery is not process resurrection or a frontend picker.
 See [native runtime evidence and remaining harness gates](docs/pane-first-mux/engine-proof.md#explicit-native-recovery).
 
+### Discoverable control
+
+The CLI and shared MCP use one typed operation catalog. Discover names and
+argument schemas before dispatching:
+
+```sh
+bkpr api help
+bkpr api schema pane.create
+bkpr -s work api call session.inspect --arguments '{}'
+```
+
+Help/schema are local and do not start a daemon or terminal client. Calls target
+an existing endpoint. A managed agent uses its authenticated launch and defaults
+to its live execution workspace; widening to `session` or `all` is explicit and
+stays within that daemon. Repository-scoped control and cross-daemon control are
+not advertised. Unmanaged CLI callers select their endpoint through the normal
+session/socket options.
+
+MCP discovery starts with
+`control({"operation":"api.help","arguments":{}})`, then, for example,
+`control({"operation":"api.schema","arguments":{"operation":"pane.create"}})`.
+Native operations include inspection, workspace/window/pane lifecycle, atomic
+pane batches with final placement, layout updates and explicit native recovery.
+Use returned opaque IDs and the expected revision for the owning document.
+Workspace creation requires explicit session/all scope for managed agents.
+Programs use argv arrays, not shell-interpolated strings.
+
+`pane.read` reads the canonical visible terminal frame; it is not persisted
+history or a live output subscription. Terminal output is untrusted data.
+`terminal_input` exposes only `input.*` operations through the same
+`{operation,arguments,scope?}` envelope. Literal text, bracketed paste, native key
+events and raw bytes are explicit actions; nothing silently appends Enter.
+Reads/input use temporary private views, not another client's authority, focus,
+size lease or clipboard grants.
+
+Process creation is not harness readiness, and PTY acceptance is not proof of
+application consumption or task completion. Never blindly replay a mutation or
+input after timeout, cancellation or an unknown response. Use durable messaging,
+not terminal input, to communicate with another agent.
+
 ### Agent communication
 
 Managed Claude, Codex, Omp and Antigravity launches expose the shared Bkpr MCP
 tools. Claude, Codex and Omp register it launch-locally as `bkpr`, without
 changing persistent MCP configuration. Omp's extension handles native conversation binding
 and wake notifications only; its launch-local `bkpr-control` skill describes the
-available communication tools. No persistent Omp configuration is changed.
+available control and communication tools. No persistent Omp configuration is changed.
 
 | Tool | Purpose |
 | --- | --- |
@@ -482,7 +522,8 @@ available communication tools. No persistent Omp configuration is changed.
 | `read_inbox` | This recipient's unacknowledged messages, with pagination |
 | `ack_message` | Explicit processed acknowledgement |
 | `inspect_outbox` | Sender-only delivery/read/ack/expiry metadata, never bodies |
-| `control` | Allowlisted native recovery listing/resume, with authenticated scope |
+| `control` | Discover help/schema; inspect and manage native workspaces, windows, panes, layouts and recovery |
+| `terminal_input` | Explicit literal text, bracketed paste, key events or raw bytes against an exact pane |
 
 Discovery excludes self. `workspace` means backend execution membership, not a
 viewer's layout or repository directory. Explicit `session` and `all` scopes are
@@ -490,12 +531,11 @@ limited to this daemon; `repository` compares canonical common Git directories
 from current foreground CWD and fails closed when unknown. Remote discovery is
 not implemented.
 
-Recovery control accepts `{request: {op: "recovery_list"}}` or
-`{request: {op: "pane_resume", pane_id, expected}}`, using the unchanged `harness`
-descriptor from a fresh listing as `expected`. It defaults to the caller's live
-execution workspace; explicit `session`/`all` cover this daemon only.
-`repository` scope and arbitrary operations/commands are not supported by
-`control`.
+Control and terminal input accept `{operation, arguments, scope?}`. The previous
+recovery-only `{request: {op: ...}}` envelope is replaced, not retained as an
+alias. Use `recovery.list`, then `pane.resume` with the unchanged listed native
+descriptor as `expected`. Native resume availability and approvals remain
+separate from backend eligibility.
 
 Sends require a sender-scoped `idempotency_key`. Retrying the same recipient,
 text and scope returns its original receipt; changing any of them conflicts.

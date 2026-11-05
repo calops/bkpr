@@ -1,11 +1,15 @@
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Size {
+    #[schemars(range(min = 1, max = 500))]
     pub cols: u16,
+    #[schemars(range(min = 1, max = 300))]
     pub rows: u16,
+    #[schemars(range(min = 1, max = 256))]
     pub cell_width: u32,
+    #[schemars(range(min = 1, max = 256))]
     pub cell_height: u32,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -232,7 +236,7 @@ impl ClipboardResponse {
 }
 /// Physical key uses W3C code spelling: KeyA, Digit0, Enter, ArrowUp, F1, etc.
 /// Modifiers: shift=1, control=2, alt=4, super=8, caps-lock=16, num-lock=32.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct KeyEvent {
     pub key: String,
     pub modifiers: u16,
@@ -240,7 +244,7 @@ pub struct KeyEvent {
     pub action: KeyAction,
     pub unshifted_codepoint: u32,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum KeyAction {
     Press,
     Release,

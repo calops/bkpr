@@ -27,6 +27,49 @@ use std::{
 };
 
 const HARNESS_HELP: &str = "Usage: bkpr run HARNESS [--] ARGS...\nHarnesses: claude, codex, omp, agy, opencode, cursor, copilot, aider, cline, goose";
+
+/// Shared CLI entrypoint retains launch-local authentication and Codex relay isolation.
+pub(crate) fn control_request(request: serde_json::Value) -> Result<serde_json::Value> {
+    agent::request(request)
+}
+
+/// Only typed transport facts determine ambiguity; error text can contain user input.
+pub(crate) fn outcome_unknown(error: &anyhow::Error) -> bool {
+    bkpr_client::transport::outcome_unknown(error)
+        || error
+            .downcast_ref::<SafeRequestError>()
+            .is_some_and(|error| error.outcome_unknown)
+}
+
+#[derive(Debug)]
+struct SafeRequestError {
+    message: String,
+    outcome_unknown: bool,
+}
+
+impl std::fmt::Display for SafeRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+// Deliberately no source: retaining the original chain could expose credentials.
+impl std::error::Error for SafeRequestError {}
+
+pub(super) fn request_error(message: impl Into<String>, outcome_unknown: bool) -> anyhow::Error {
+    anyhow::Error::new(SafeRequestError {
+        message: message.into(),
+        outcome_unknown,
+    })
+}
+
+pub(super) fn sanitize_request_error(error: anyhow::Error, credential: &str) -> anyhow::Error {
+    let unknown = outcome_unknown(&error);
+    request_error(
+        format!("{error:#}").replace(credential, "[REDACTED]"),
+        unknown,
+    )
+}
 const MANAGED_NAMES: &[&str] = &[
     "claude",
     "claude-code",
@@ -406,12 +449,8 @@ impl Capture {
     }
 
     pub(super) fn request(&self, operation: Operation) -> Result<serde_json::Value> {
-        bkpr_client::transport::checked(&self.socket, operation).map_err(|error| {
-            anyhow::anyhow!(
-                "{}",
-                format!("{error:#}").replace(&self.grant.token, "[REDACTED]")
-            )
-        })
+        bkpr_client::transport::checked(&self.socket, operation)
+            .map_err(|error| sanitize_request_error(error, &self.grant.token))
     }
 
     pub(super) fn bind(&self, source: ConversationSource, id: &str) -> Result<()> {

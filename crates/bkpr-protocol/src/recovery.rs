@@ -3,12 +3,13 @@ use crate::HarnessKind;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HarnessRecovery {
     pub kind: HarnessKind,
     pub conversation_id: String,
     #[serde(with = "crate::path_wire")]
+    #[schemars(with = "crate::path_wire::PathSchema")]
     pub cwd: PathBuf,
 }
 

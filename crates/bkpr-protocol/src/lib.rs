@@ -2,6 +2,7 @@
 mod agent;
 pub use agent::*;
 mod context;
+pub mod control;
 pub use context::*;
 mod harness;
 pub use harness::*;

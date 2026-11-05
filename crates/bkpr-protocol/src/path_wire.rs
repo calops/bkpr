@@ -2,6 +2,14 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeStruct};
 use std::path::{Path, PathBuf};
 
+/// JSON shape shared by native path decoding and generated control schemas.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub(crate) enum PathSchema {
+    Text(String),
+    Unix { unix_bytes: Vec<u8> },
+}
+
 pub struct WirePath<'a>(pub &'a Path);
 impl Serialize for WirePath<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -27,12 +35,7 @@ pub fn serialize<S: Serializer>(path: &Path, serializer: S) -> Result<S::Ok, S::
     WirePath(path).serialize(serializer)
 }
 pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<PathBuf, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Encoded {
-        Text(String),
-        Unix { unix_bytes: Vec<u8> },
-    }
+    use PathSchema as Encoded;
     match Encoded::deserialize(deserializer)? {
         Encoded::Text(text) => Ok(PathBuf::from(text)),
         Encoded::Unix { unix_bytes } => {

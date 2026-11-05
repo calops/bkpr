@@ -21,6 +21,13 @@ pub(crate) struct Launch {
     pub pane_root: Process,
     pub grant: CaptureGrant,
     pub managed: ManagedHarness,
+    pub(crate) control: crate::ControlLease,
+}
+impl Launch {
+    pub(crate) fn control_lease(&self) -> Result<crate::ControlLease> {
+        self.control.bind(&self.root, &self.pane_root)?;
+        Ok(self.control.clone())
+    }
 }
 #[derive(Default)]
 pub(crate) struct Captures {
@@ -107,6 +114,7 @@ impl Captures {
                     error: None,
                 },
                 grant: grant.clone(),
+                control: crate::ControlLease::default(),
             },
         );
         self.version = self.version.wrapping_add(1);
@@ -197,6 +205,7 @@ impl Captures {
                 self.launches.get_mut(launch_id).unwrap().managed.error = Some(message);
             }
             CaptureEvent::End => {
+                launch.control.revoke();
                 self.launches.remove(launch_id);
             }
         }
@@ -204,7 +213,14 @@ impl Captures {
         Ok(())
     }
     pub fn retire_pane(&mut self, pane_id: &str) {
-        self.launches.retain(|_, l| l.grant.pane_id != pane_id);
+        self.launches.retain(|_, launch| {
+            if launch.grant.pane_id == pane_id {
+                launch.control.revoke();
+                false
+            } else {
+                true
+            }
+        });
         self.version = self.version.wrapping_add(1);
     }
 }

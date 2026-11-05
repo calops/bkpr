@@ -1,11 +1,19 @@
 ---
 name: bkpr-control
-description: Use Bkpr tools for agent identity, workspace-scoped discovery and durable peer communication in this managed launch.
+description: Discover Bkpr control operations, manage native workspaces and panes, and communicate with authenticated agents in this managed launch.
 ---
 
-# Bkpr communication
+# Bkpr control and communication
 
-Use the launch-local `bkpr_<launch>` MCP server. Its tools are `whoami`, `set_title`, `discover_agents`, `send_message`, `read_inbox`, `ack_message` and `inspect_outbox`. Match the loaded tool schemas; do not invent workspace/pane control operations that this server doesn't expose.
+Use the launch-local `bkpr` MCP server. Call `control` with `{"operation":"api.help","arguments":{}}` for its current inventory, then `api.schema` with `{"operation":"pane.create"}` for an exact operation's arguments. Do not guess contracts or assume that an older daemon supports a new capability.
+
+`control` exposes supported inspection, workspace/window/pane lifecycle, atomic creation/layout placement, recovery and terminal reads. `terminal_input` separately exposes `input.*` operations through the same `{operation,arguments}` envelope. Use only advertised operations. The CLI exposes the same inventory through `bkpr api help` and `bkpr api schema`.
+
+Target returned opaque workspace, window and pane IDs, not titles or the human's current focus. Keep expected revisions for mutations. New processes take argv arrays; shell syntax has no special meaning unless a shell is explicitly selected. Creation, process start, authenticated harness binding and communication readiness are separate outcomes.
+
+Terminal input is explicit user-authorized interaction, never a peer-message fallback. Text, bracketed paste, keys and bytes have different semantics; do not silently submit Enter. PTY acceptance is not proof of application consumption or task completion. Never blindly replay a failed, timed-out or cancelled mutation or input; it may already have taken effect.
+
+The messaging tools are `whoami`, `set_title`, `discover_agents`, `send_message`, `read_inbox`, `ack_message` and `inspect_outbox`.
 
 Call `whoami` for authoritative live identity and context. Discovery excludes self and defaults to the current execution workspace. Repository, session and all scopes require explicit selection; session/all currently cover this daemon, not remote endpoints. Target returned opaque agent IDs, not names.
 

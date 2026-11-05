@@ -3,6 +3,8 @@ pub mod authority;
 #[cfg(target_os = "linux")]
 mod process_tree;
 use bkpr_protocol::scene_wire;
+mod control_lease;
+pub(crate) use control_lease::ControlLease;
 mod environment;
 mod harness;
 mod harness_process;
@@ -163,6 +165,7 @@ type CommandResult = std::result::Result<CommandOutcome, String>;
 struct Command {
     mutation: Mutation,
     client: Option<Arc<registry::sessions::ClientLease>>,
+    control: Option<ControlLease>,
     result: mpsc::SyncSender<CommandResult>,
 }
 fn completed_command(published: &Published, mutation: &Mutation) -> CommandResult {
@@ -260,6 +263,8 @@ struct Shared {
     resize_barrier: Mutex<Option<Arc<ResizeBarrier>>>,
     #[cfg(all(test, target_os = "linux"))]
     snapshot_barrier: Mutex<Option<SnapshotBarrier>>,
+    #[cfg(all(test, target_os = "linux"))]
+    control_request_wait: Mutex<Option<mpsc::SyncSender<()>>>,
 }
 impl Shared {
     fn notify_status_changed(&self) {
@@ -365,6 +370,8 @@ impl Pane {
             resize_barrier: Mutex::new(None),
             #[cfg(all(test, target_os = "linux"))]
             snapshot_barrier: Mutex::new(None),
+            #[cfg(all(test, target_os = "linux"))]
+            control_request_wait: Mutex::new(None),
         });
         let (commands, rx) = crossbeam_channel::bounded(64);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -422,11 +429,23 @@ impl Pane {
     fn command(&self, mutation: Mutation) -> Result<CommandOutcome> {
         self.command_for_client(mutation, None)
     }
+    #[cfg(test)]
     fn command_for_client(
         &self,
         mutation: Mutation,
         client: Option<Arc<registry::sessions::ClientLease>>,
     ) -> Result<CommandOutcome> {
+        self.command_authorized(mutation, client, None)
+    }
+    fn command_authorized(
+        &self,
+        mutation: Mutation,
+        client: Option<Arc<registry::sessions::ClientLease>>,
+        control: Option<ControlLease>,
+    ) -> Result<CommandOutcome> {
+        if let Some(control) = &control {
+            control.ensure_active()?;
+        }
         if let Some(client) = &client {
             client.ensure_active()?;
         }
@@ -444,6 +463,7 @@ impl Pane {
                 .try_send(Command {
                     mutation,
                     client,
+                    control,
                     result: tx,
                 })
                 .map_err(|_| anyhow::anyhow!("pane command queue full or closed"))?;
@@ -545,8 +565,26 @@ impl Pane {
         request: Request,
         client: Option<Arc<registry::sessions::ClientLease>>,
     ) -> Result<Payload> {
+        self.request_authorized(request, client, None)
+    }
+    pub(crate) fn request_control(
+        &self,
+        request: Request,
+        control: &ControlLease,
+    ) -> Result<Payload> {
+        self.request_authorized(request, None, Some(control.clone()))
+    }
+    fn request_authorized(
+        &self,
+        request: Request,
+        client: Option<Arc<registry::sessions::ClientLease>>,
+        control: Option<ControlLease>,
+    ) -> Result<Payload> {
+        if let Some(control) = &control {
+            control.ensure_active()?;
+        }
         self.check_request_client(&request, client.as_ref())?;
-        let command = |mutation| self.command_for_client(mutation, client.clone());
+        let command = |mutation| self.command_authorized(mutation, client.clone(), control.clone());
         if self.shared.forgotten.load(Ordering::Acquire) {
             bail!("pane was forgotten");
         }
@@ -654,6 +692,13 @@ impl Pane {
         } else {
             None
         };
+        #[cfg(all(test, target_os = "linux"))]
+        if !is_policy
+            && control.is_some()
+            && let Some(entered) = self.shared.control_request_wait.lock().unwrap().take()
+        {
+            let _ = entered.send(());
+        }
         let _serial = if is_policy {
             None
         } else {
@@ -664,6 +709,9 @@ impl Pane {
             bail!("pane was forgotten");
         }
         self.check_request_client(&request, client.as_ref())?;
+        if let Some(control) = &control {
+            control.ensure_active()?;
+        }
         match request {
             Request::Inspect | Request::Poll { .. } => unreachable!(),
             Request::Attach { spec } => {
@@ -1607,6 +1655,12 @@ fn run_pane(
             };
             match command {
                 Some(Ok(command)) => {
+                    if let Some(control) = &command.control
+                        && let Err(error) = control.ensure_active()
+                    {
+                        let _ = command.result.send(Err(format!("{error:#}")));
+                        continue;
+                    }
                     // Already accepted releases keep their cleanup/origin semantics;
                     // new input and queued callbacks cannot outlive an attachment.
                     if command
@@ -1691,6 +1745,9 @@ fn run_pane(
                     let outcome = (|| -> Result<CommandOutcome> {
                         let cleanup = release_cleanup(&command.mutation);
                         let enqueue = |bytes, barrier| {
+                            if let Some(control) = &command.control {
+                                control.ensure_active()?;
+                            }
                             if !cleanup
                                 && command
                                     .client
@@ -1748,6 +1805,9 @@ fn run_pane(
                                     terminal.paste_contents(id, contents, location, allow_unsafe);
                                 let accepted =
                                     encoded.map_err(anyhow::Error::from).and_then(|bytes| {
+                                        if let Some(control) = &command.control {
+                                            control.ensure_active()?;
+                                        }
                                         if let Some(client) = &command.client {
                                             client.ensure_active()?;
                                         }
@@ -2024,6 +2084,8 @@ impl Drop for OwnedChild {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod control_lease_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(all(test, target_os = "linux"))]
@@ -2128,6 +2190,8 @@ mod snapshot_tests {
                 resize_barrier: Mutex::new(None),
                 #[cfg(target_os = "linux")]
                 snapshot_barrier: Mutex::new(None),
+                #[cfg(target_os = "linux")]
+                control_request_wait: Mutex::new(None),
                 before_terminate: Default::default(),
             }),
             commands,

@@ -815,16 +815,10 @@ impl Registry {
         }
         match request {
             AgentRequest::Control { request, scope } => {
-                ensure!(
-                    matches!(
-                        &*request,
-                        Operation::RecoveryList | Operation::PaneResume { .. }
-                    ),
-                    "agent control operation is not supported"
-                );
+                bkpr_protocol::control::validate_native(&request)?;
                 ensure!(
                     scope != AgentScope::Repository,
-                    "repository-scoped recovery control is not supported; explicitly select workspace or session scope"
+                    "repository-scoped control is not supported; explicitly select workspace or session scope"
                 );
                 let contexts = self.agent_contexts(false, id, None, false)?;
                 let own = contexts.get(id).context("live agent context unavailable")?;
@@ -877,9 +871,21 @@ impl Registry {
                                 .context("control test barrier was not released")?;
                         }
                         ensure!(is_connected(), "agent control caller disconnected");
-                        self.resume_scoped(&pane_id, expected, workspace, Some((&launch, peer)))
+                        let result = self.resume_scoped(
+                            &pane_id,
+                            expected,
+                            workspace.clone(),
+                            Some((&launch, peer)),
+                        )?;
+                        Ok(super::control::scope_control_result(
+                            result,
+                            workspace.as_deref(),
+                        ))
                     }
-                    _ => unreachable!("allowlisted agent control operation"),
+                    operation => {
+                        ensure!(is_connected(), "agent control caller disconnected");
+                        self.request_for_control(operation, &launch, peer, workspace)
+                    }
                 }
             }
             AgentRequest::ReceiverRegister {
