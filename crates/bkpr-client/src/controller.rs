@@ -3,6 +3,7 @@ use crate::{metadata::ProjectSpan, project_colors::ProjectPalette};
 use bkpr_protocol::*;
 use bkpr_tui_framework::{BackgroundSpan, ForegroundSpan, Rect, Role, RoleSpan, Theme, UiSurface};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 #[path = "sidebar.rs"]
 mod sidebar;
 pub use sidebar::{Row as SidebarRow, RowKind as SidebarRowKind, Sidebar, SidebarTarget};
@@ -90,13 +91,11 @@ impl SessionStatus {
     }
     pub(crate) fn badge(self) -> &'static str {
         match self {
-            Self::Queued => "[wait]",
-            Self::Connecting => "[conn]",
-            Self::Reconnecting => "[retry]",
-            Self::Activating => "[auth]",
-            Self::Online => "[up]",
-            Self::Offline => "[off]",
-            Self::Rejected => "[deny]",
+            Self::Queued => "\u{f0150}",
+            Self::Connecting | Self::Reconnecting | Self::Activating => "\u{f0a9e}",
+            Self::Online => "",
+            Self::Offline => "\u{f0c5f}",
+            Self::Rejected => "\u{f05d6}",
         }
     }
     pub(crate) fn role(self) -> Role {
@@ -110,32 +109,141 @@ impl SessionStatus {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SessionGroup {
-    pub label: String,
+    pub name: String,
+    pub host: Option<String>,
     pub status: SessionStatus,
     pub detail: String,
-    pub remote: bool,
 }
 
-fn session_caption(label: &str, status: SessionStatus, marker: char, width: u16) -> String {
-    let badge = status.badge();
-    if usize::from(width) <= badge.len() + 2 {
-        return bkpr_tui_framework::window::fit(badge, width);
+impl SessionGroup {
+    pub(crate) fn tail_role(&self) -> Role {
+        match self.status {
+            SessionStatus::Online | SessionStatus::Queued => Role::Muted,
+            status => status.role(),
+        }
     }
-    let columns = usize::from(width) - badge.len() - 3;
-    let identity = if unicode_width::UnicodeWidthStr::width(label) > columns && columns > 0 {
-        let mut clipped = bkpr_tui_framework::window::fit(label, columns.saturating_sub(1) as u16);
-        clipped.push('…');
-        clipped
-    } else {
-        bkpr_tui_framework::window::fit(label, columns as u16)
+
+    fn tail_icon(&self, spinner: char) -> Option<char> {
+        if self.status.busy()
+            && spinner != ' '
+            && unicode_width::UnicodeWidthChar::width(spinner) == Some(1)
+        {
+            return Some(spinner);
+        }
+        match (self.host.is_some(), self.status) {
+            (true, SessionStatus::Online) => Some('\u{f048d}'),
+            (true, SessionStatus::Offline | SessionStatus::Rejected) => Some('\u{f048e}'),
+            _ => self.status.badge().chars().next(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct SessionCaptionPart<'a> {
+    text: &'a str,
+    width: u16,
+    ellipsis: bool,
+}
+impl<'a> SessionCaptionPart<'a> {
+    fn fit(text: &'a str, width: u16) -> Self {
+        use unicode_segmentation::UnicodeSegmentation as _;
+        use unicode_width::UnicodeWidthStr as _;
+        if width == 0 {
+            return Self::default();
+        }
+        let mut columns = 0;
+        let mut ellipsis_end = 0;
+        let mut ellipsis_columns = 0;
+        for (offset, glyph) in text.grapheme_indices(true) {
+            let advance = glyph.width();
+            if columns + advance > usize::from(width) {
+                return Self {
+                    text: &text[..ellipsis_end],
+                    width: ellipsis_columns + 1,
+                    ellipsis: true,
+                };
+            }
+            columns += advance;
+            if columns < usize::from(width) {
+                ellipsis_end = offset + glyph.len();
+                ellipsis_columns = columns as u16;
+            }
+        }
+        Self {
+            text,
+            width: columns as u16,
+            ellipsis: false,
+        }
+    }
+
+    fn push_to(&self, caption: &mut String) {
+        caption.push_str(self.text);
+        if self.ellipsis {
+            caption.push('…');
+        }
+    }
+}
+
+struct SessionCaptionLayout<'a> {
+    name: SessionCaptionPart<'a>,
+    host: SessionCaptionPart<'a>,
+    tail_width: u16,
+}
+fn session_caption_layout(group: &SessionGroup, width: u16) -> SessionCaptionLayout<'_> {
+    let body = width.saturating_sub(2);
+    let mut layout = SessionCaptionLayout {
+        name: SessionCaptionPart::default(),
+        host: SessionCaptionPart::default(),
+        tail_width: 0,
     };
-    let padding = usize::from(width)
-        - 2
-        - unicode_width::UnicodeWidthStr::width(identity.as_str())
-        - badge.len();
-    let mut caption = format!("{marker} {identity}");
-    caption.extend(std::iter::repeat_n(' ', padding));
-    caption.push_str(badge);
+    if body >= 3 && group.tail_icon(' ').is_some() {
+        layout.tail_width = 1;
+        if let Some(host) = group.host.as_deref().filter(|host| !host.is_empty())
+            && body >= 5
+        {
+            // Keep at least half the usable text space for the name, but let a
+            // short name release its unused share to the right-aligned host.
+            let name_share = SessionCaptionPart::fit(&group.name, (body - 3).div_ceil(2));
+            layout.host = SessionCaptionPart::fit(host, body - 3 - name_share.width);
+            layout.tail_width += 1 + layout.host.width;
+        }
+    }
+    let name_width = body.saturating_sub(layout.tail_width + u16::from(layout.tail_width > 0));
+    layout.name = SessionCaptionPart::fit(&group.name, name_width);
+    layout
+}
+
+/// Width of the right-aligned host/status slot, excluding the preceding gap.
+/// This shares caption layout without formatting or allocating a second string.
+fn session_tail_width(group: &SessionGroup, width: u16) -> u16 {
+    session_caption_layout(group, width).tail_width
+}
+
+/// The beekeeper and its spacer stay fixed. The name gets a fair share before
+/// the optional host, whose status icon is replaced rather than supplemented.
+fn session_caption(group: &SessionGroup, spinner: char, width: u16) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let layout = session_caption_layout(group, width);
+    let mut caption = String::with_capacity(usize::from(width) * 4);
+    caption.push('\u{f14e2}');
+    if width == 1 {
+        return caption;
+    }
+    caption.push(' ');
+    layout.name.push_to(&mut caption);
+    caption.extend(std::iter::repeat_n(
+        ' ',
+        usize::from(width - 2 - layout.name.width - layout.tail_width),
+    ));
+    if layout.tail_width > 0 {
+        caption.push(group.tail_icon(spinner).expect("layout reserves an icon"));
+        if layout.tail_width > 1 {
+            caption.push(' ');
+            layout.host.push_to(&mut caption);
+        }
+    }
     caption
 }
 
@@ -638,20 +746,6 @@ fn sidebar_pane_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>, width: u
     format!("{prefix}{name}{}{status}", " ".repeat(padding))
 }
 
-fn pane_tree(rows: &[SidebarRow], registry: &RegistrySnapshot, index: usize) -> (bool, bool) {
-    let pane = &registry.panes[index];
-    let grouped = registry.workspaces.iter().any(|workspace| {
-        Some(&workspace.id) == pane.workspace_id.as_ref() && workspace.windows.len() > 1
-    });
-    let last = rows.iter().rev().find_map(|row| match row.kind {
-        SidebarRowKind::Pane { index, .. } if registry.panes[index].window_id == pane.window_id => {
-            Some(index)
-        }
-        _ => None,
-    }) == Some(index);
-    (grouped, last)
-}
-
 fn sidebar_branch(pane: &PaneInfo, width: u16) -> String {
     let Some(project) = &pane.project else {
         return String::new();
@@ -893,13 +987,29 @@ pub(crate) struct TreeChromeContext<'a> {
     pub active: crate::tree::Owner,
     pub popup: Option<(&'a crate::tree::Target, ColorSource)>,
 }
+fn focused_tree_pane(
+    entry: &crate::tree::TreeRow,
+    session: &crate::tree::Session,
+    active: crate::tree::Owner,
+) -> bool {
+    let index = match entry.kind {
+        crate::tree::Kind::Native(
+            SidebarRowKind::Pane { index, .. } | SidebarRowKind::Detail { index },
+        ) => index,
+        _ => return false,
+    };
+    let pane = &session.registry.panes[index];
+    entry.owner == active
+        && session.focused.as_ref() == Some(&pane.id)
+        && session.workspace.as_ref() == pane.workspace_id.as_ref()
+        && session.window.as_ref() == pane.window_id.as_ref()
+}
+
 struct NativeRowContext<'a> {
     registry: &'a RegistrySnapshot,
-    rows: &'a [SidebarRow],
-    active_window: Option<&'a String>,
+    entry: &'a crate::tree::TreeRow,
     known: Option<&'a PaneSnapshot>,
     width: u16,
-    offset: u16,
     row: u16,
     highlighted: bool,
 }
@@ -920,23 +1030,25 @@ fn native_row_label(
 ) -> (String, u16) {
     let NativeRowContext {
         registry,
-        rows,
-        active_window,
+        entry,
         known,
         width,
-        offset,
         row,
         highlighted,
     } = context;
-    let mut marker_x = 1 + offset;
-    let mut label = match kind {
+    let marker_x = entry.icon_column();
+    let mut label = String::with_capacity(usize::from(width) * 2);
+    entry.write_prefix(&mut label, highlighted);
+    match kind {
         SidebarRowKind::Workspace { index, collapsed } => {
             let workspace = &registry.workspaces[index];
-            format!(
+            write!(
+                label,
                 "● {}{}",
                 workspace.name,
                 if collapsed { " ···" } else { "" }
             )
+            .unwrap();
         }
         SidebarRowKind::Projects { index } => {
             let workspace = &registry.workspaces[index];
@@ -958,8 +1070,7 @@ fn native_row_label(
                     ));
                 }
             }
-            let mut label = String::from(if highlighted { "  " } else { "│ " });
-            let mut column = usize::from(offset) + 3;
+            let mut column = usize::from(entry.content_column());
             for (position, (_, name, slot)) in repositories.into_iter().enumerate() {
                 if position > 0 {
                     label.push_str(" · ");
@@ -980,38 +1091,25 @@ fn native_row_label(
                 label.push_str(name);
                 column += columns;
             }
-            label
         }
         SidebarRowKind::Window {
             workspace,
             index,
             collapsed,
         } => {
-            marker_x = 3 + offset;
             let window = &registry.workspaces[workspace].windows[index];
-            format!(
-                "  {} {} {}",
-                if collapsed { "▸" } else { "▾" },
-                if active_window == Some(&window.id) {
-                    "▪"
-                } else {
-                    "▫"
-                },
-                window.name
-            )
+            if width.saturating_sub(marker_x) >= 2 {
+                write!(
+                    label,
+                    "\u{e0cc} {}{}",
+                    window.name,
+                    if collapsed { " ···" } else { "" }
+                )
+                .unwrap();
+            }
         }
         SidebarRowKind::Pane { index, projected } => {
             let pane = &registry.panes[index];
-            let (grouped, last) = pane_tree(rows, registry, index);
-            let lead = if highlighted {
-                "   "
-            } else if last {
-                "╰─╴"
-            } else {
-                "├─╴"
-            };
-            let indent = if grouped { "  " } else { "" };
-            marker_x = offset + if grouped { 6 } else { 4 };
             project_spans.push(ProjectSpan {
                 rect: Rect {
                     x: marker_x,
@@ -1021,39 +1119,26 @@ fn native_row_label(
                 },
                 slot: pane.project.as_ref().and_then(|project| project.color_slot),
             });
-            format!(
-                "{indent}{lead}{} {}",
+            write!(
+                label,
+                "{} {}",
                 if projected { "●" } else { "◌" },
                 sidebar_pane_label(
                     pane,
                     known,
-                    width
-                        .saturating_sub(offset)
-                        .saturating_sub(if grouped { 8 } else { 6 }) as usize
+                    usize::from(width.saturating_sub(entry.content_column()))
                 )
             )
+            .unwrap();
         }
         SidebarRowKind::Detail { index } => {
-            let (grouped, last) = pane_tree(rows, registry, index);
-            let lead = if highlighted || last {
-                "     "
-            } else {
-                "│    "
-            };
-            let indent = if grouped { "  " } else { "" };
             let pane = &registry.panes[index];
-            let branch = sidebar_branch(
+            label.push_str(&sidebar_branch(
                 pane,
-                width
-                    .saturating_sub(offset)
-                    .saturating_sub(if grouped { 8 } else { 6 }),
-            );
-            format!("{indent}{lead}{branch}")
+                width.saturating_sub(entry.content_column()),
+            ));
         }
-        SidebarRowKind::Spacer => String::new(),
-    };
-    if offset > 0 {
-        label.insert_str(0, "  ");
+        SidebarRowKind::Spacer => {}
     }
     (label, marker_x)
 }
@@ -1093,33 +1178,26 @@ pub(crate) fn tree_artwork_rows(
     ),
 > + '_ {
     let sidebar = screen_geometry(size, tree.preferred_columns).0;
-    let offset = if tree.sessions_len() > 1 { 2 } else { 0 };
     tree.rows
         .iter()
         .skip(tree.scroll)
         .take(sidebar_content_rows(sidebar, guide_rows))
         .enumerate()
         .filter_map(move |(index, row)| {
-            let session = tree.session(row.owner)?;
-            let (artwork, column) = match row.kind {
+            let artwork = match row.kind {
                 crate::tree::Kind::Native(SidebarRowKind::Workspace { .. }) => {
-                    (crate::chrome_graphics::Artwork::Hive, 1 + offset)
+                    crate::chrome_graphics::Artwork::Hive
                 }
-                crate::tree::Kind::Native(SidebarRowKind::Pane { index, projected }) => (
+                crate::tree::Kind::Native(SidebarRowKind::Pane { projected, .. }) => {
                     if projected {
                         crate::chrome_graphics::Artwork::Bee
                     } else {
                         crate::chrome_graphics::Artwork::BeeHidden
-                    },
-                    offset
-                        + if pane_tree(&session.rows, &session.registry, index).0 {
-                            6
-                        } else {
-                            4
-                        },
-                ),
+                    }
+                }
                 _ => return None,
             };
+            let column = row.icon_column();
             (column + 2 <= sidebar.width.saturating_sub(1)).then_some((
                 row.owner,
                 artwork,
@@ -1180,16 +1258,18 @@ fn render_chrome<'a>(
             },
             false,
         ));
-        if let Some((host, _)) = &state.remote
-            && tree.sessions_len() == 1
+        if tree.sessions_len() == 1
+            && let Some(session) = tree.session(active)
+            && session.group.status == SessionStatus::Online
+            && let Some(host) = session.group.host.as_deref()
+            && sidebar.width >= 3
         {
-            lines.push(line(
-                1,
-                1,
-                sidebar.width.saturating_sub(1),
-                format!("SSH {host}"),
-                false,
-            ));
+            let host = SessionCaptionPart::fit(host, sidebar.width - 3);
+            let width = host.width + 2;
+            let mut label = String::with_capacity(usize::from(width) * 4);
+            label.push_str("\u{f048d} ");
+            host.push_to(&mut label);
+            lines.push(line(sidebar.width - width, 1, width, label, false));
         }
     }
     for (index, entry) in tree
@@ -1208,23 +1288,15 @@ fn render_chrome<'a>(
         let plate = highlighted
             && tree_popup.is_some_and(|(_, background)| matches!(background, ColorSource::Rgb(_)));
         let selected = tree.active && entry.target.is_some() && entry.target == tree.cursor;
-        let (label, marker_x) = match entry.kind {
-            crate::tree::Kind::Session => {
-                let marker = if session.group.status.busy() {
-                    state.session_spinner
-                } else {
-                    '\u{f14e2}'
-                };
-                (
-                    session_caption(
-                        &session.group.label,
-                        session.group.status,
-                        marker,
-                        sidebar.width.saturating_sub(1),
-                    ),
-                    1,
-                )
-            }
+        let (mut label, marker_x) = match entry.kind {
+            crate::tree::Kind::Session => (
+                session_caption(
+                    &session.group,
+                    state.session_spinner,
+                    sidebar.width.saturating_sub(1),
+                ),
+                1,
+            ),
             crate::tree::Kind::Native(kind) => {
                 let known = match kind {
                     SidebarRowKind::Pane { index, .. } => {
@@ -1236,11 +1308,9 @@ fn render_chrome<'a>(
                     kind,
                     NativeRowContext {
                         registry: &session.registry,
-                        rows: &session.rows,
-                        active_window: session.window.as_ref(),
+                        entry,
                         known,
                         width: sidebar.width,
-                        offset: if tree.sessions_len() > 1 { 2 } else { 0 },
                         row,
                         highlighted,
                     },
@@ -1263,12 +1333,20 @@ fn render_chrome<'a>(
             cursor.x = marker_x;
             cursor.y = row;
         }
+        let row_selected = (selected || focused_tree_pane(entry, session, active)) && !plate;
+        if row_selected {
+            let columns = unicode_width::UnicodeWidthStr::width(label.as_str());
+            label.extend(std::iter::repeat_n(
+                ' ',
+                usize::from(sidebar.width.saturating_sub(1)).saturating_sub(columns),
+            ));
+        }
         lines.push(line(
             1,
             row,
             sidebar.width.saturating_sub(1),
             label,
-            selected && !plate,
+            row_selected,
         ));
         if let Some(target) = &entry.target {
             hit(target.node.clone(), target.owner, row);
@@ -1280,7 +1358,7 @@ fn render_chrome<'a>(
     {
         let width = area.width.saturating_sub(4);
         if width > 0 {
-            let title = format!("{} {}", group.label, group.status.badge());
+            let title = format!("{} {}", group.name, group.status.badge());
             let rows = wrapped(&title, usize::from(width)).into_iter()
                 .chain(std::iter::once(String::new()))
                 .chain(wrapped(&group.detail, usize::from(width)))
@@ -1407,7 +1485,7 @@ fn render_theme_chrome<'a>(
         native: context,
         tree,
         popup: tree_popup,
-        ..
+        active,
     } = context;
     let ChromeContext {
         state,
@@ -1439,97 +1517,83 @@ fn render_theme_chrome<'a>(
         },
         role: Role::Title,
     });
+    if tree.sessions_len() == 1
+        && tree.session(active).is_some_and(|session| {
+            session.group.host.is_some() && session.group.status == SessionStatus::Online
+        })
+    {
+        spans.push(RoleSpan {
+            rect: Rect {
+                x: 1,
+                y: 1,
+                width: sidebar.width.saturating_sub(1),
+                height: 1,
+            },
+            role: Role::Muted,
+        });
+    }
     let available = sidebar_content_rows(sidebar, guide_rows);
+    let focus_edges = tree.focus_edges();
+    let inactive_guide_ink = crate::appearance::inactive_tree_guide_ink(theme);
     for index in 0..available {
         let row = index as u16 + 2;
-        let (
-            kind,
-            registry,
-            rows,
-            window,
-            focused,
-            workspace,
-            target,
-            offset,
-            selected,
-            inherited,
-            background,
-            known,
-        ) = {
-            let Some(entry) = tree.rows.get(tree.scroll + index) else {
-                break;
-            };
-            let Some(session) = tree.session(entry.owner) else {
-                continue;
-            };
-            let selected = tree.active && entry.target.is_some() && entry.target == tree.cursor;
-            let background = tree_popup
-                .filter(|(target, _)| entry.target.as_ref() == Some(*target))
-                .map(|(_, background)| background)
-                .or_else(|| {
-                    (entry.target.is_some() && entry.target == tree.hover)
-                        .then(|| theme.background(Role::Hover, false))
-                });
-            if matches!(entry.kind, crate::tree::Kind::Session) {
-                let rect = Rect {
-                    x: 1,
-                    y: row,
-                    width: sidebar.width.saturating_sub(1),
-                    height: 1,
-                };
-                spans.push(RoleSpan {
-                    rect,
-                    role: session.group.status.role(),
-                });
-                if let Some(background) = background {
-                    backgrounds.push(BackgroundSpan { rect, background });
-                }
-                continue;
-            }
-            let crate::tree::Kind::Native(kind) = entry.kind else {
-                unreachable!()
-            };
-            let target = entry.target.as_ref().and_then(|target| match &target.node {
-                crate::tree::Node::Native(target) => Some(target),
-                _ => None,
+        let Some(entry) = tree.rows.get(tree.scroll + index) else {
+            break;
+        };
+        let Some(session) = tree.session(entry.owner) else {
+            continue;
+        };
+        let background = tree_popup
+            .filter(|(target, _)| entry.target.as_ref() == Some(*target))
+            .map(|(_, background)| background)
+            .or_else(|| {
+                (entry.target.is_some() && entry.target == tree.hover)
+                    .then(|| theme.background(Role::Hover, false))
             });
-            let inherited = tree.cursor.as_ref().is_some_and(|cursor| cursor.owner == entry.owner && matches!((&cursor.node, target), (crate::tree::Node::Native(SidebarTarget::Pane { workspace, .. }), Some(target)) if workspace == target.workspace()));
-            let known = match kind {
-                SidebarRowKind::Pane { index, .. } => {
-                    session.snapshots.get(&session.registry.panes[index].id)
-                }
-                _ => None,
+        if matches!(entry.kind, crate::tree::Kind::Session) {
+            let rect = Rect {
+                x: 1,
+                y: row,
+                width: sidebar.width.saturating_sub(1),
+                height: 1,
             };
-            (
-                kind,
-                session.registry.as_ref(),
-                session.rows.as_ref(),
-                session.window.as_ref(),
-                session.focused.as_ref(),
-                session.workspace.as_deref(),
-                target,
-                if tree.sessions_len() > 1 { 2 } else { 0 },
-                selected,
-                inherited,
-                background,
-                known,
-            )
+            spans.push(RoleSpan {
+                rect,
+                role: if entry.owner == active {
+                    Role::Title
+                } else {
+                    Role::Base
+                },
+            });
+            let tail_width = session_tail_width(&session.group, rect.width);
+            if tail_width > 0 {
+                spans.push(RoleSpan {
+                    rect: Rect {
+                        x: rect.x + rect.width - tail_width,
+                        width: tail_width,
+                        ..rect
+                    },
+                    role: session.group.tail_role(),
+                });
+            }
+            if let Some(background) = background {
+                backgrounds.push(BackgroundSpan { rect, background });
+            }
+            continue;
+        }
+        let crate::tree::Kind::Native(kind) = entry.kind else {
+            unreachable!()
+        };
+        let registry = session.registry.as_ref();
+        let known = match kind {
+            SidebarRowKind::Pane { index, .. } => session.snapshots.get(&registry.panes[index].id),
+            _ => None,
         };
         let role = match kind {
             SidebarRowKind::Workspace { .. } => Role::Title,
-            SidebarRowKind::Window {
-                workspace, index, ..
-            } => {
-                if window == Some(&registry.workspaces[workspace].windows[index].id) {
-                    Role::Accent
-                } else {
-                    Role::Base
-                }
-            }
-            SidebarRowKind::Pane { index, .. } => {
-                if focused == Some(&registry.panes[index].id)
-                    && target.is_some_and(|target| Some(target.workspace()) == workspace)
-                {
+            SidebarRowKind::Window { .. } => Role::Base,
+            SidebarRowKind::Pane { .. } => {
+                if focused_tree_pane(entry, session, active) {
                     Role::Title
                 } else {
                     Role::Base
@@ -1560,31 +1624,38 @@ fn render_theme_chrome<'a>(
                 background,
             });
         }
-        let (guide_x, guide_width) = match kind {
-            SidebarRowKind::Projects { .. } => (1, 2),
-            SidebarRowKind::Pane { index, .. } | SidebarRowKind::Detail { index } => (
-                if pane_tree(rows, registry, index).0 {
-                    3
-                } else {
-                    1
-                },
-                3,
-            ),
-            _ => (1, 0),
+        let prefix_width = if matches!(kind, SidebarRowKind::Spacer) {
+            entry.depth * 3
+        } else if matches!(
+            kind,
+            SidebarRowKind::Projects { .. } | SidebarRowKind::Detail { .. }
+        ) {
+            entry.content_column().saturating_sub(1)
+        } else {
+            entry.icon_column().saturating_sub(1)
         };
-        if guide_width > 0 {
-            spans.push(RoleSpan {
-                rect: Rect {
-                    x: offset + guide_x,
-                    width: guide_width.min(sidebar.width.saturating_sub(offset + guide_x)),
-                    ..row_rect
-                },
-                role: if selected || inherited {
-                    Role::Base
-                } else {
-                    Role::Muted
-                },
+        for level in 1..=prefix_width.div_ceil(3) {
+            let x = 1 + (level - 1) * 3;
+            let rect = Rect {
+                x,
+                width: 3
+                    .min(prefix_width - (x - 1))
+                    .min(sidebar.width.saturating_sub(x)),
+                ..row_rect
+            };
+            let bright = focus_edges.iter().flatten().any(|edge| {
+                edge.depth == level && (edge.start..=edge.end).contains(&(tree.scroll + index))
             });
+            spans.push(RoleSpan {
+                rect,
+                role: if bright { Role::Base } else { Role::Muted },
+            });
+            if !bright {
+                foregrounds.push(ForegroundSpan {
+                    rect,
+                    foreground: inactive_guide_ink,
+                });
+            }
         }
         if let SidebarRowKind::Detail { index: pane_index } = kind
             && let Some(project) = &registry.panes[pane_index].project
@@ -1596,13 +1667,7 @@ fn render_theme_chrome<'a>(
         {
             let added = changes.insertions.checked_ilog10().unwrap_or(0) as usize + 1;
             let removed = changes.deletions.checked_ilog10().unwrap_or(0) as usize + 1;
-            let available = sidebar.width.saturating_sub(offset).saturating_sub(
-                if pane_tree(rows, registry, pane_index).0 {
-                    8
-                } else {
-                    6
-                },
-            ) as usize;
+            let available = usize::from(sidebar.width.saturating_sub(entry.content_column()));
             if added + removed + 9 <= available {
                 let y = row;
                 let cells = &surface.frame.rows[usize::from(y)].cells[..usize::from(sidebar.width)];
@@ -1641,12 +1706,7 @@ fn render_theme_chrome<'a>(
             if let Some(harness) = recognized_harness(pane, known) {
                 spans.push(RoleSpan {
                     rect: Rect {
-                        x: offset
-                            + if pane_tree(rows, registry, pane_index).0 {
-                                8
-                            } else {
-                                6
-                            },
+                        x: entry.content_column(),
                         y: row,
                         width: 2,
                         height: 1,
@@ -2117,10 +2177,10 @@ mod tests {
             vec![Arc::new(crate::tree::Session {
                 owner: FIXTURE_OWNER,
                 group: SessionGroup {
-                    label: "fixture".into(),
+                    name: "fixture".into(),
+                    host: None,
                     status: SessionStatus::Online,
                     detail: String::new(),
-                    remote: false,
                 },
                 registry: Arc::new(context.registry.clone()),
                 rows: state.sidebar.rows.clone().into(),
@@ -2263,10 +2323,10 @@ mod tests {
         std::sync::Arc::new(crate::tree::Session {
             owner,
             group: super::SessionGroup {
-                label: label.into(),
+                name: label.into(),
+                host: None,
                 status: super::SessionStatus::Online,
                 detail: format!("{label} session details"),
-                remote: false,
             },
             registry: std::sync::Arc::new(registry),
             rows: state.sidebar.rows.clone().into(),
@@ -2447,27 +2507,124 @@ mod tests {
             ColorSource::Rgb([40, 50, 60])
         );
     }
+    fn caption_group(name: &str, host: Option<&str>, status: SessionStatus) -> SessionGroup {
+        SessionGroup {
+            name: name.into(),
+            host: host.map(str::to_owned),
+            status,
+            detail: String::new(),
+        }
+    }
+
     #[test]
-    fn connection_badges_survive_long_target_names_and_narrow_sidebars() {
-        use super::{SessionStatus, session_caption};
-        let label = "remote ssh-with-a-very-long-hostname:literal/session/with/long/name";
-        for status in [
-            SessionStatus::Queued,
-            SessionStatus::Connecting,
-            SessionStatus::Reconnecting,
-            SessionStatus::Activating,
-            SessionStatus::Online,
-            SessionStatus::Offline,
-            SessionStatus::Rejected,
+    fn remote_host_is_a_separate_muted_tail_and_status_replaces_its_icon() {
+        use bkpr_tui_framework::Role;
+        use unicode_width::UnicodeWidthStr as _;
+        for (status, icon, role) in [
+            (SessionStatus::Online, '\u{f048d}', Role::Muted),
+            (SessionStatus::Queued, '\u{f0150}', Role::Muted),
+            (SessionStatus::Connecting, '\u{f0aa1}', Role::Warning),
+            (SessionStatus::Reconnecting, '\u{f0aa1}', Role::Warning),
+            (SessionStatus::Activating, '\u{f0aa1}', Role::Warning),
+            (SessionStatus::Offline, '\u{f048e}', Role::Error),
+            (SessionStatus::Rejected, '\u{f048e}', Role::Error),
         ] {
-            for width in [12, 24, 38] {
-                let caption = session_caption(label, status, '>', width);
-                assert!(caption.ends_with(status.badge()));
-                assert!(caption.contains('…'));
-                assert_eq!(
-                    unicode_width::UnicodeWidthStr::width(caption.as_str()),
-                    usize::from(width)
-                );
+            let group = caption_group("literal/session:name", Some("user@host"), status);
+            let caption = super::session_caption(&group, '\u{f0aa1}', 40);
+            assert!(caption.starts_with("\u{f14e2} literal/session:name "));
+            assert!(caption.ends_with(&format!("{icon} user@host")));
+            assert_eq!(caption.matches(icon).count(), 1);
+            assert_eq!(caption.width(), 40);
+            let tail = super::session_tail_width(&group, 40);
+            assert_eq!(
+                caption[..caption.find(icon).unwrap()].width(),
+                usize::from(40 - tail)
+            );
+            assert_eq!(group.tail_role(), role);
+            if status != SessionStatus::Online {
+                assert!(!caption.contains('\u{f048d}'));
+            }
+        }
+    }
+
+    #[test]
+    fn local_sessions_have_no_host_tail_and_pending_status_stays_icon_only() {
+        let mut group = caption_group("local", None, SessionStatus::Online);
+        assert_eq!(
+            super::session_caption(&group, '\u{f0aa1}', 7),
+            "\u{f14e2} local"
+        );
+        assert_eq!(super::session_tail_width(&group, 7), 0);
+        for (status, icon) in [
+            (SessionStatus::Queued, '\u{f0150}'),
+            (SessionStatus::Connecting, '\u{f0aa1}'),
+            (SessionStatus::Offline, '\u{f0c5f}'),
+        ] {
+            group.status = status;
+            let caption = super::session_caption(&group, '\u{f0aa1}', 12);
+            assert!(caption.starts_with("\u{f14e2} local "));
+            assert!(caption.ends_with(icon));
+            assert_eq!(super::session_tail_width(&group, 12), 1);
+        }
+    }
+
+    #[test]
+    fn long_hosts_cannot_crowd_out_session_names_and_short_names_release_space() {
+        use unicode_width::UnicodeWidthStr as _;
+        let group = caption_group(
+            "session-with-a-long-name",
+            Some("host-with-a-long-name"),
+            SessionStatus::Online,
+        );
+        let caption = super::session_caption(&group, ' ', 18);
+        let (name, host) = caption["\u{f14e2} ".len()..]
+            .split_once('\u{f048d}')
+            .unwrap();
+        assert!(name.trim_end().width() >= 7);
+        assert!(name.trim_end().ends_with('…'));
+        assert!(host.ends_with('…'));
+        assert!(name.ends_with(' '));
+        let short = caption_group("x", group.host.as_deref(), SessionStatus::Online);
+        assert!(super::session_tail_width(&short, 18) > super::session_tail_width(&group, 18));
+    }
+
+    #[test]
+    fn narrow_and_cjk_captions_keep_whole_glyphs_root_and_exact_tail_geometry() {
+        use unicode_width::UnicodeWidthStr as _;
+        for host in [None, Some("遠隔e\u{301}計算機")] {
+            for status in [
+                SessionStatus::Queued,
+                SessionStatus::Connecting,
+                SessionStatus::Online,
+                SessionStatus::Offline,
+                SessionStatus::Rejected,
+            ] {
+                let group = caption_group("開発e\u{301}作業", host, status);
+                for width in 0..40 {
+                    let caption = super::session_caption(&group, '\u{f0aa1}', width);
+                    assert_eq!(caption.width(), usize::from(width), "{caption:?}");
+                    if width > 0 {
+                        assert!(caption.starts_with('\u{f14e2}'));
+                    }
+                    if width >= 2 {
+                        assert!(caption.starts_with("\u{f14e2} "));
+                    }
+                    let tail = super::session_tail_width(&group, width);
+                    if width < 5 {
+                        assert_eq!(tail, 0);
+                    }
+                    if tail > 0 {
+                        let icon = group.tail_icon('\u{f0aa1}').unwrap();
+                        let start = caption.find(icon).unwrap();
+                        assert_eq!(caption[..start].width(), usize::from(width - tail));
+                        assert!(caption[..start].ends_with(' '));
+                    }
+                    for (index, ch) in caption.char_indices() {
+                        if ch == '\u{301}' {
+                            assert!(caption[..index].ends_with('e'));
+                        }
+                    }
+                }
             }
         }
     }
@@ -2495,7 +2652,7 @@ mod tests {
         state
             .sidebar
             .viewport(sidebar_content_rows(sidebar, guide_rows));
-        for (column, icon) in [(1, "●"), (3, "▾"), (6, "●")] {
+        for (index, icon) in ["●", "\u{e0cc}", "●"].into_iter().enumerate() {
             let popup = state.sidebar.cursor.clone().unwrap();
             let hits = paint_fixture(
                 &mut surface,
@@ -2514,14 +2671,15 @@ mod tests {
                 &mut Vec::new(),
             );
             let row = hits.iter().find(|(target, _)| target == &popup).unwrap().1;
+            let column = surface.frame.rows[usize::from(row)]
+                .cells
+                .iter()
+                .position(|cell| cell.text == icon)
+                .unwrap() as u16;
             let cursor = &surface.frame.cursor;
             assert_eq!((cursor.x, cursor.y), (column, row));
             assert!(!cursor.visible);
-            assert_eq!(
-                surface.frame.rows[row as usize].cells[column as usize].text,
-                icon
-            );
-            if column == 6 {
+            if index == 2 {
                 // The same target's branch-detail row is painted immediately
                 // below the item, but must not become its physical anchor.
                 assert!(hits.iter().any(|(target, y)| target == &popup && *y > row));
@@ -2626,10 +2784,14 @@ mod tests {
             .find(|cell| matches!(cell.text.as_str(), "●" | "◌"))
             .unwrap();
         assert_eq!(
-            marker.style.foreground_source,
+            if marker.style.inverse {
+                marker.style.background_source
+            } else {
+                marker.style.foreground_source
+            },
             bkpr_protocol::ColorSource::Palette(5)
         );
-        assert!(!marker.style.faint && !marker.style.bold);
+        assert!(!marker.style.faint);
         let detail_y = state
             .sidebar
             .rows
@@ -2638,11 +2800,166 @@ mod tests {
             .unwrap()
             + 2;
         let branch = &surface.frame.rows[detail_y].cells[6];
-        assert_eq!(
-            branch.style.foreground_source,
-            theme.ink(Role::Muted, false)
+        let ink = if branch.style.inverse {
+            branch.style.background_source
+        } else {
+            branch.style.foreground_source
+        };
+        assert_eq!(ink, theme.ink(Role::Muted, true));
+    }
+
+    #[test]
+    fn focused_native_pane_keeps_inverse_highlight_when_hover_background_is_unknown() {
+        let (mut pane, snapshot) = capture_fixture();
+        pane.project = Some(project_fixture());
+        let registry = capture_registry(&pane);
+        let mut state = Controller::new(&registry);
+        let target = SidebarTarget::Pane {
+            workspace: "work".into(),
+            pane: pane.id.clone(),
+        };
+        state.sidebar.hover = Some(target.clone());
+        let mut surface = capture_surface();
+        let context = FixtureChrome {
+            size: surface.frame.size,
+            state: &state,
+            registry: &registry,
+            rects: &[],
+            pane_graphics: &[],
+            guide_rows: 0,
+            sidebar_popup: Some((&target, ColorSource::Default)),
+        };
+        let mut projects = Vec::new();
+        let hits = paint_fixture(
+            &mut surface,
+            context,
+            |_| None,
+            |_| Some(&snapshot),
+            |_| None,
+            &mut projects,
         );
-        assert!(branch.style.faint);
+        let mut theme = Theme::default();
+        crate::appearance::update_theme(&mut theme, &bkpr_tui_framework::ColorProbe::default());
+        style_fixture(
+            &mut surface,
+            &theme,
+            context,
+            |_| Some(&snapshot),
+            &ProjectPalette::default(),
+            &projects,
+            &mut Vec::new(),
+        );
+        let row = hits.iter().find(|(hit, _)| hit == &target).unwrap().1;
+        let sidebar = screen_geometry(surface.frame.size, state.sidebar.preferred_columns).0;
+        assert!(
+            [row, row + 1].into_iter().all(|row| {
+                surface.frame.rows[usize::from(row)].cells[1..usize::from(sidebar.width)]
+                    .iter()
+                    .all(|cell| cell.style.inverse)
+            }),
+            "a default-color hover card must preserve both rows of the native inverse highlight"
+        );
+    }
+
+    #[test]
+    fn focused_guides_end_at_each_ancestor_and_leave_window_labels_neutral() {
+        let (mut pane, snapshot) = capture_fixture();
+        pane.project = Some(project_fixture());
+        let mut registry = capture_registry(&pane);
+        let mut other = pane.clone();
+        other.id = "other-pane".into();
+        other.window_id = Some("other-window".into());
+        registry.workspaces[0]
+            .windows
+            .push(window("other-window", Some(leaf(&other.id))));
+        registry.panes.push(other);
+        let mut state = Controller::new(&registry);
+        state.sidebar.cursor = Some(SidebarTarget::Pane {
+            workspace: "work".into(),
+            pane: pane.id.clone(),
+        });
+        let mut surface = capture_surface();
+        let host = bkpr_tui_framework::ColorProbe {
+            truecolor: true,
+            foreground: Some([220; 3]),
+            background: Some([20; 3]),
+            ..Default::default()
+        };
+        let mut theme = Theme::default();
+        crate::appearance::update_theme(&mut theme, &host);
+        let context = FixtureChrome {
+            sidebar_popup: None,
+            size: surface.frame.size,
+            state: &state,
+            registry: &registry,
+            rects: &[],
+            pane_graphics: &[],
+            guide_rows: 0,
+        };
+        let mut projects = Vec::new();
+        paint_fixture(
+            &mut surface,
+            context,
+            |_| None,
+            |_| Some(&snapshot),
+            |_| None,
+            &mut projects,
+        );
+        style_fixture(
+            &mut surface,
+            &theme,
+            context,
+            |_| Some(&snapshot),
+            &ProjectPalette::default(),
+            &projects,
+            &mut Vec::new(),
+        );
+        let row = |kind| {
+            state
+                .sidebar
+                .rows
+                .iter()
+                .position(|row| row.kind == kind)
+                .unwrap()
+                + 2
+        };
+        let window_y = row(SidebarRowKind::Window {
+            workspace: 0,
+            index: 0,
+            collapsed: false,
+        });
+        let other_y = row(SidebarRowKind::Window {
+            workspace: 0,
+            index: 1,
+            collapsed: false,
+        });
+        let pane_y = row(SidebarRowKind::Pane {
+            index: 0,
+            projected: true,
+        });
+        let detail_y = row(SidebarRowKind::Detail { index: 0 });
+        let icon_x = surface.frame.rows[window_y]
+            .cells
+            .iter()
+            .position(|cell| cell.text == "\u{e0cc}")
+            .unwrap();
+        let ink = |y: usize, x: usize| surface.frame.rows[y].cells[x].style.foreground_source;
+        let bright = theme.ink(Role::Base, false);
+        let muted = crate::appearance::inactive_tree_guide_ink(&theme);
+        for y in [pane_y, detail_y] {
+            assert_eq!(
+                surface.frame.rows[y].cells[2].style.background_source,
+                theme.background(Role::Base, true)
+            );
+        }
+        assert_ne!(bright, muted);
+        assert_eq!(ink(window_y, icon_x - 3), bright);
+        assert_eq!(ink(pane_y, icon_x - 3), muted);
+        assert_eq!(ink(detail_y, icon_x - 3), muted);
+        assert_eq!(ink(pane_y, icon_x), bright);
+        assert_eq!(ink(other_y, icon_x - 3), muted);
+        assert_eq!(ink(window_y, icon_x), bright);
+        assert_eq!(ink(other_y, icon_x), bright);
     }
 
     #[test]
@@ -2662,8 +2979,21 @@ mod tests {
             deletions: 4,
             ..ChangeSummary::default()
         });
-        let registry = capture_registry(&pane);
+        let mut registry = capture_registry(&pane);
+        let mut native = pane.clone();
+        native.id = "native-active".into();
+        native.harness = None;
+        native.harness_status = None;
+        registry.workspaces[0].windows[0].layout = Some(LayoutNode::Split {
+            axis: Axis::Horizontal,
+            ratio: 500,
+            first: Box::new(leaf(&pane.id)),
+            second: Box::new(leaf(&native.id)),
+        });
+        let native_id = native.id.clone();
+        registry.panes.push(native);
         let mut state = Controller::new(&registry);
+        state.focused = Some(native_id);
         let target = SidebarTarget::Pane {
             workspace: "work".into(),
             pane: pane.id.clone(),
@@ -2734,10 +3064,6 @@ mod tests {
                 theme.background(Role::Base, false)
             };
             assert_eq!(logo.style.background_source, background);
-            assert_eq!(
-                cells[1].style.foreground_source,
-                theme.ink(Role::Base, active)
-            );
             let detail = &surface.frame.rows[pane_y + 1].cells;
             let added = detail.iter().find(|cell| cell.text == "+").unwrap();
             let removed = detail.iter().find(|cell| cell.text == "-").unwrap();
@@ -2751,38 +3077,6 @@ mod tests {
             );
             assert_eq!(added.style.background_source, background);
         }
-        state.sidebar.active = false;
-        state.sidebar.cursor = Some(SidebarTarget::Workspace("work".into()));
-        let context = FixtureChrome {
-            sidebar_popup: None,
-            size,
-            state: &state,
-            registry: &registry,
-            rects: &[],
-            pane_graphics: &[],
-            guide_rows: 0,
-        };
-        // A retained frame must lose the inherited bright guides without repaint.
-        style_fixture(
-            &mut surface,
-            &theme,
-            context,
-            |_| Some(&snapshot),
-            &Default::default(),
-            &[],
-            &mut Vec::new(),
-        );
-        let pane_y = state
-            .sidebar
-            .rows
-            .iter()
-            .position(|row| matches!(row.kind, SidebarRowKind::Pane { .. }))
-            .unwrap()
-            + 2;
-        assert_eq!(
-            surface.frame.rows[pane_y].cells[1].style.foreground_source,
-            theme.ink(Role::Muted, false)
-        );
     }
     #[test]
     fn sidebar_geometry_clamps_width_without_leaving_gaps_or_starving_native_cells() {
@@ -4076,7 +4370,7 @@ mod tests {
                 let expected = if visible {
                     raised_bg
                 } else {
-                    theme.background(Role::Base, false)
+                    theme.background(Role::Base, true)
                 };
                 assert!(
                     cells[1..usize::from(sidebar.width)]

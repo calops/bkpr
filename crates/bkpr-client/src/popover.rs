@@ -346,17 +346,13 @@ impl Popover {
                     }
                     self.content = Some(Content {
                         rows: vec![
-                            Paragraph::new(&session.group.label, Role::Title),
+                            Paragraph::new(&session.group.name, Role::Title),
                             Paragraph::new(
                                 session.group.status.badge(),
                                 session.group.status.role(),
                             ),
                             Paragraph::new(
-                                if session.group.remote {
-                                    "Remote session"
-                                } else {
-                                    "Local session"
-                                },
+                                session.group.host.as_deref().unwrap_or("Local session"),
                                 Role::Muted,
                             ),
                             Paragraph::new(&session.group.detail, Role::Base),
@@ -709,10 +705,10 @@ mod tests {
             registry.panes[0].title = title.clone();
             let state = Controller::new(&registry);
             let group = SessionGroup {
-                label: format!("owner-{generation}-session"),
+                name: format!("owner-{generation}-session"),
+                host: (generation == 2).then(|| "remote.example".into()),
                 status: SessionStatus::Online,
                 detail: format!("owner-{generation}-detail"),
-                remote: generation == 2,
             };
             let session = Arc::new(Session {
                 owner,

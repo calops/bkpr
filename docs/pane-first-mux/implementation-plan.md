@@ -530,9 +530,32 @@ transitions remove targets; bare EOF, initially empty headless state and retaine
 history do not establish semantic closure. The last remaining target's end exits
 the client after TTY restoration.
 
+Session separators are cached nonselectable rows, not decoration added during
+rendering. Rebuild caches sibling continuations and parent row indices once;
+composition walks at most three selected-to-parent edges to style only the
+actual ancestor path. Inactive guides use a client-chosen 35% foreground blend
+against the sidebar. Window labels remain neutral. The active native pane
+supplies selection intent and trailing cells on both title and metadata rows;
+only its title owns the hidden cursor anchor. Confirmed RGB cards share their
+plate color, while unknown-background hover retains native inverse selection.
+Session name and remote host are separate presentation fields, never routing
+identities or parsed display strings. Shared grapheme-aware width budgeting
+right-aligns the host and clips long names without splitting a grapheme.
+
+`bkpr-core`, not the frontend, owns effective pane names. New unnamed executions
+follow the retained latest OSC 0/2 title independently of the bounded effect ring;
+empty native titles fall back to their base label. Explicit create/rename pins
+the label. Private schema 4 records automatic naming intent, not transient OSC
+contents; old records default to fixed labels because origin cannot be inferred.
+Inspect, context, commit replies, automatic bootstrap and registry `Wait` share
+the same effective projection. Metadata wakes include hidden-pane title changes
+without opening a view, scanning processes or writing each title to disk.
+Harness semantic status remains OSC 7501 and authenticated native facts.
+
 The framework owns reusable retained `Navigation` selection/viewport/click mechanics
-and the deadline-driven Unicode `Spinner`. Bkpr supplies the Nerd Font beekeeper
-glyph, hierarchy and styling. Generic graphics, damage and native scene composition
+and the deadline-driven `Spinner`, parameterized by a static frame slice. Bkpr
+supplies Nerd Font circle-slice frames, beekeeper glyph, hierarchy and styling.
+Generic graphics, damage and native scene composition
 stay in the existing framework; theme, chrome preference and toast queue belong to
 one physical client, while native resource/device/release origins stay owner-qualified.
 
@@ -547,7 +570,12 @@ would introduce a second cell-buffer/render bridge and duplicate retained row st
 Extracted the existing row navigation instead, keeping one cached tree/render path
 for single and multiple attachments. No upstream widget code was copied. The
 [primary Nerd Font glyph map](https://github.com/ryanoasis/nerd-fonts/blob/master/glyphnames.json)
-identifies `md-beekeeper` as U+F14E2.
+identifies `md-beekeeper` as U+F14E2, the requested `ple-honeycomb` as U+E0CC,
+and server-network/server-network-off as U+F048D/U+F048E. The honeycomb uses
+a PUA glyph followed by an ASCII space to reserve two cells, matching
+[Kitty's documented private-use icon convention](https://sw.kovidgoyal.net/kitty/faq/#some-special-symbols-are-rendered-small-truncated-in-kitty).
+No font-coverage guess, OSC 66 dependency or second glyph renderer is introduced;
+the host still determines available font coverage and visual expansion.
 
 
 Identity-only inspection performs the remote handshake without native client

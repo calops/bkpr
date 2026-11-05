@@ -63,7 +63,7 @@ impl SessionTarget {
                     .into_owned()
             }),
             Self::Remote(target) => {
-                format!("remote {}:{}", target.destination, target.session_name)
+                format!("\u{f048d} {}:{}", target.destination, target.session_name)
             }
         }
     }
@@ -73,5 +73,26 @@ impl SessionTarget {
             Self::Local { .. } => None,
             Self::Remote(target) => Some((target.destination.clone(), target.session_name.clone())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SessionTarget;
+
+    #[test]
+    fn remote_label_preserves_literal_target_without_a_textual_prefix() {
+        let target = SessionTarget::Remote(crate::remote::RemoteTarget {
+            destination: "user@literal-host".into(),
+            session_name: "literal/session:name".into(),
+            helper: None,
+            ssh_config: None,
+            forward_agent: false,
+            detach_others: false,
+        });
+        assert_eq!(
+            target.label(),
+            "\u{f048d} user@literal-host:literal/session:name"
+        );
     }
 }

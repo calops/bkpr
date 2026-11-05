@@ -220,11 +220,17 @@ host-prefix interpretation or broadcast; use `bkpr remote -r HOST` for remote
 utilities. Remote executable and SSH settings apply to remote targets only.
 
 With multiple sessions, the sidebar is one foldable tree: session, workspace,
-window, then pane. Session rows use the Nerd Font beekeeper icon; connecting rows
-animate with Unicode Braille. A single online session keeps the compact workspace
-tree. Hovering or browsing another owner's metadata does not activate its panes.
-Click or Enter activates the selected owner. `Ctrl-b S` jumps to the current
-session's tree context; `R` on a session row forces a fresh connection.
+window, then pane, with a blank line between sessions. Session rows use the Nerd
+Font beekeeper icon. Remote hosts sit right-aligned and muted; connecting hosts
+use a colored Nerd Font spinner, and failures use a colored network-off icon.
+Healthy sessions have no status badge. Windows use the two-cell `` honeycomb
+slot and neutral labels; project colors belong to pane bees. Bright tree guides
+trace only the selected item's path to its ancestors. The active pane's title
+and metadata share one full-width highlight.
+A single online session keeps the compact workspace tree. Hovering or browsing
+another owner's metadata does not activate its panes. Click or Enter activates
+the selected owner. `Ctrl-b S` jumps to the current session's tree context;
+`R` on a session row forces a fresh connection.
 
 Each remote attachment is direct: local TUI → one no-PTY OpenSSH/Yamux connection
 → remote `bkpr` helper → remote daemon. Remote-only invocations need no local
@@ -636,6 +642,12 @@ In the sidebar, `n` creates a workspace and its first terminal, `N` creates a
 separate full terminal window, and `r` renames the selected item. `x`/Delete closes
 the selected workspace, window or terminal after confirmation, terminating all
 its owned processes, including hidden terminals. A separate window is not a split.
+
+New unnamed panes follow their application's OSC 0/2 title, including while
+hidden; an empty title restores the command-derived label. Explicit creation
+names and sidebar renames stay fixed. Restart preserves that naming choice,
+not transient application titles; older saved labels remain fixed because
+their original naming intent is unknown. Titles never establish harness status.
 
 `/` opens the metadata finder, distinct from `Ctrl-b /` terminal-content search.
 It supports fuzzy terms and `workspace:`, `window:`, `harness:`, `status:`, `cwd:`,

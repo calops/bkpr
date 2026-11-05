@@ -33,7 +33,67 @@ pub(crate) struct TreeRow {
     pub parent: Option<Target>,
     pub kind: Kind,
     pub depth: u16,
+    pub last_sibling: bool,
+    pub continuations: u8,
+    parent_row: Option<usize>,
 }
+
+#[derive(Clone, Copy)]
+pub(crate) struct FocusEdge {
+    pub depth: u16,
+    pub start: usize,
+    pub end: usize,
+}
+impl TreeRow {
+    fn branch(&self) -> bool {
+        matches!(
+            self.kind,
+            Kind::Native(
+                SidebarRowKind::Workspace { .. }
+                    | SidebarRowKind::Window { .. }
+                    | SidebarRowKind::Pane { .. }
+            )
+        )
+    }
+
+    pub fn icon_column(&self) -> u16 {
+        1 + self.depth * 3
+    }
+
+    pub fn content_column(&self) -> u16 {
+        if self.branch() {
+            self.icon_column() + 2
+        } else {
+            3 + self.depth.saturating_sub(1) * 3
+        }
+    }
+
+    pub fn write_prefix(&self, label: &mut String, highlighted: bool) {
+        let spacer = matches!(self.kind, Kind::Native(SidebarRowKind::Spacer));
+        let end = self.depth + u16::from(spacer);
+        for level in 1..end {
+            label.push_str(if !highlighted && self.continuations & (1 << level) != 0 {
+                "│  "
+            } else {
+                "   "
+            });
+        }
+        if self.branch() && self.depth > 0 {
+            label.push_str(if highlighted {
+                "   "
+            } else if self.last_sibling {
+                "╰─╴"
+            } else {
+                "├─╴"
+            });
+        } else if matches!(self.kind, Kind::Native(SidebarRowKind::Projects { .. })) {
+            label.push_str(if highlighted { "  " } else { "│ " });
+        } else if matches!(self.kind, Kind::Native(SidebarRowKind::Detail { .. })) {
+            label.push_str("  ");
+        }
+    }
+}
+
 impl NavigationRow<Target> for TreeRow {
     fn target(&self) -> Option<&Target> {
         self.target.as_ref()
@@ -86,6 +146,31 @@ impl Tree {
     pub fn project_capacity(&self) -> u32 {
         self.project_capacity
     }
+    pub fn focus_edges(&self) -> [Option<FocusEdge>; 3] {
+        let mut edges = [None; 3];
+        let Some(cursor) = self.cursor.as_ref() else {
+            return edges;
+        };
+        let Some(mut child) = self.rows.iter().position(|row| {
+            row.target.as_ref() == Some(cursor)
+                && (row.branch() || matches!(row.kind, Kind::Session))
+        }) else {
+            return edges;
+        };
+        for edge in &mut edges {
+            let Some(parent) = self.rows[child].parent_row else {
+                break;
+            };
+            *edge = Some(FocusEdge {
+                depth: self.rows[child].depth,
+                start: parent + 1,
+                end: child,
+            });
+            child = parent;
+        }
+        edges
+    }
+
     pub fn reconcile(&mut self, sessions: Vec<Arc<Session>>, active: Owner) {
         let topology_changed = sessions.len() != self.sessions.len()
             || sessions.iter().zip(&self.sessions).any(|(a, b)| {
@@ -275,6 +360,18 @@ impl Tree {
         let multi = self.sessions.len() > 1;
         for session in &self.sessions {
             let owner = session.owner;
+            if !self.navigation.rows.is_empty() {
+                self.navigation.rows.push(TreeRow {
+                    target: None,
+                    owner,
+                    parent: None,
+                    kind: Kind::Native(SidebarRowKind::Spacer),
+                    depth: 0,
+                    last_sibling: true,
+                    continuations: 0,
+                    parent_row: None,
+                });
+            }
             let root = Target {
                 owner,
                 node: Node::Session,
@@ -286,6 +383,9 @@ impl Tree {
                     parent: None,
                     kind: Kind::Session,
                     depth: 0,
+                    last_sibling: true,
+                    continuations: 0,
+                    parent_row: None,
                 });
                 if self.collapsed.contains(&root) {
                     continue;
@@ -376,8 +476,46 @@ impl Tree {
                     parent,
                     kind: Kind::Native(kind),
                     depth,
+                    last_sibling: true,
+                    continuations: 0,
+                    parent_row: None,
                 });
             }
+        }
+        // Cache the visible hierarchy once; metadata rows do not end sibling groups.
+        let mut seen = 0u8;
+        for row in self.navigation.rows.iter_mut().rev() {
+            if matches!(row.kind, Kind::Session) {
+                seen = 0;
+            } else if row.branch() {
+                let bit = 1 << row.depth;
+                row.last_sibling = seen & bit == 0;
+                seen = (seen & (bit - 1)) | bit;
+            }
+        }
+        let mut continuations = 0u8;
+        let mut ancestors = [None; 4];
+        for (index, row) in self.navigation.rows.iter_mut().enumerate() {
+            let depth = usize::from(row.depth);
+            row.parent_row = depth
+                .checked_sub(1)
+                .and_then(|depth| ancestors.get(depth).copied().flatten());
+            if row.branch() || matches!(row.kind, Kind::Session) {
+                ancestors[depth] = Some(index);
+                ancestors[depth + 1..].fill(None);
+            }
+            if matches!(row.kind, Kind::Session) {
+                continuations = 0;
+            } else if row.branch() {
+                let bit = 1 << row.depth;
+                continuations &= bit - 1;
+                row.continuations = continuations;
+                if !row.last_sibling {
+                    continuations |= bit;
+                }
+                continue;
+            }
+            row.continuations = continuations;
         }
     }
     pub fn fold(&mut self, collapsed: Option<bool>) {
@@ -527,10 +665,10 @@ mod tests {
         Arc::new(Session {
             owner,
             group: SessionGroup {
-                label: format!("owner {}", owner.slot),
+                name: format!("owner {}", owner.slot),
+                host: None,
                 status,
                 detail: String::new(),
-                remote: false,
             },
             registry,
             rows: sidebar.rows.clone().into(),

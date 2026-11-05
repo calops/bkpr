@@ -8,6 +8,7 @@
 * Use the stable launch-local MCP name `bkpr` for Claude, Codex and Omp instead of a launch-ID suffix. Keep authentication launch-scoped and persistent configuration untouched.
 * Preserve the active keyboard layout when decoding Kitty control keys instead of substituting the alternate PC-101 key. Fix AZERTY Ctrl-W becoming Ctrl-Z while ordinary text remains correct.
 * Create one or many panes together with their final window layout through request-local references. Remove the TUI's spawn-then-layout workaround; validate the complete batch before execution, reserve capacity/ownership, publish once after durability, and reap unpublished children after startup or commit failure.
+* Publish current OSC 0/2 pane titles consistently through inspection, context and registry subscriptions, including hidden panes. Keep explicit names pinned, preserve naming intent across restart, and never persist transient terminal titles or infer harness status from them.
 
 ### Performance
 
@@ -41,13 +42,15 @@
 
 * Attach multiple local and existing remote sessions in one TUI with repeated `-s`. Use `host:name` for SSH, `local:name` to escape local colons, and `-r HOST` as the invocation-wide default host. Utilities remain single-target with literal names.
 * Keep one independent no-PTY OpenSSH/Yamux connection and remote helper per remote attachment. Preserve native process-bound authority, pinned identities, bounded admission, exact binary scenes/input/clipboard and unknown mutation outcomes without replay.
-* Present one owner-qualified session/workspace/window/pane tree. Keep passive navigation and popovers metadata-only; route explicit actions through their original owner and generation. Use the Nerd Font beekeeper icon and a framework Unicode connecting spinner.
+* Present one owner-qualified session/workspace/window/pane tree with a blank line between sessions and continuous multi-window connectors. Keep passive navigation and popovers metadata-only; route explicit actions through their original owner and generation. Use the beekeeper session icon, neutral two-cell `` window icons, ancestor-only bright guides and a full-width highlight covering both focused-pane rows.
+* Keep remote session names on the left and hosts right-aligned. Mute healthy host labels without an up badge; replace their network icon with a colored Nerd Font spinner or network-off error icon when needed.
 * Prepare local targets off the UI thread after terminal setup, once per invocation. Discover authoritative defaults before one-shot activation/takeover; remote-only startup needs no local HOME, CWD, daemon or session state.
 * Keep initial connection failures visibly offline for manual retry. Reconnect previously active attachments after transport loss without replaying input, bootstrap or takeover. Remove intentionally detached/ended sessions and exit when the last target ends; reject replacement logical identities instead of adopting them.
 * Share physical theme, rendering preference, sizing, device routing and transient toasts across attachments. Keep native resource IDs and held-button releases qualified by their originating attachment.
 * Preserve native retirement received before activation as a typed outcome, not a reconnect failure. Isolate transport cleanup under a child cancellation token so a failed SSH attempt cannot cancel its coordinator generation and hide its error.
 * Keep headless identity inspection, persistent JSON-line control and one-shot managed requests. EOF detaches only the client; explicit takeover reports its reason and unexpected loss remains a failure.
 * **Breaking:** replace the separate local/remote TUI entrypoints with `bkpr_client::run_sessions` and `SessionTarget`. Named TUI targets now interpret host prefixes; use `local:` for literal local colons. Native family 6, remote control 1 and durable schema 4 are unchanged.
+* **Breaking:** `bkpr_tui_framework::Spinner::new` now takes a static frame slice. The framework owns scheduling; clients choose animation glyphs.
 
 ### Daemon spawn defaults
 
