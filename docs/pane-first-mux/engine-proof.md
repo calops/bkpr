@@ -2043,6 +2043,111 @@ files; archived smoke sources and `verification-summary.json` retain reproductio
 and shared-check provenance. This is native backend acceptance, not a claim that
 remote TUI physical-surface verification has completed.
 
+## Direct remote TUI attachment
+
+The launcher now routes bare `bkpr -r HOST` directly into
+`bkpr_client::run_remote`, before local roots, state discovery or daemon startup.
+`-s/--session` is a literal remote name with default `bkpr`;
+`--remote-bkpr-bin` selects an already-installed helper. `--ssh-config` and
+explicit `--forward-agent` retain the shared OpenSSH endpoint policy. The old
+`--ssh` and `--helper` flags are removed, including for headless commands.
+
+Ownership decision: reuse `RemoteSession`/Yamux and the normal client attachment,
+input, rendering and shutdown paths. No new transport/dependency, local gateway,
+frontend emulator, federation cache or mixed-session ownership layer was added.
+The local terminal owns capabilities, theme, clipboard and presentation. The
+remote daemon owns execution, filesystem paths, layouts, processes and metadata.
+The client requires valid immutable remote spawn defaults, read before activation
+or `-d` takeover. Empty sessions stay empty until the user explicitly creates a
+workspace; those first processes use the remote daemon's policy, not local
+`HOME`, `SHELL` or CWD. Missing defaults fail closed.
+
+The first integrated protected incremental debug build is
+`target/smoke/remote-tui/verification/compiled-1415410320870103/manifest.json`:
+client `c1e91c563d827db5e298145dd6abac02487eacb3ad2fc652013745095f2d5fcc`,
+daemon `619a6071ff6e0906f21dfea9873ff688f700b1c9e86e76468d821fdd493c3423`.
+Formatting, all-target strict Clippy, workspace test builds/doctests and the
+host-UID test run in `verification/checks-1415518211391925/result.json` passed.
+That integrated working-source build also contains the separate latency WIP;
+publication verification uses a scoped source view without that WIP, recorded
+in `target/smoke/remote-tui/publication-verification.json`.
+
+The latency-excluded toast prerequisite passed all 828 top-level tests plus one
+isolated subprocess test (14 ignored), strict Clippy, formatting, doctests and
+actual local fancy/plain expiry/dismiss/input checks. The remote publication
+pair is client `e965e60325d38eaaf77756d4a5131797ed8e43e34bf20648fb026cdf46947141`
+with the same daemon above, frozen in
+`verification/compiled-1417665257873434/manifest.json`. Its strict compile checks,
+dark/light remote matrix and local toast regression passed:
+`kitty-dark-default-1417791993433915`, `kitty-light-default-1417873519077277`
+under `target/smoke/remote-tui/`, and
+`target/smoke/toasts/kitty-dark-default-1417907828645694`.
+
+Its full-suite rerun did **not** pass:
+`verification/checks-1418016847865801` records the backend
+`stale_observation_cannot_replace_newer_authenticated_native_binding` test
+panicking at `capture/tests.rs:966` because `automatic[pane_id]` was absent,
+followed by poisoned-state/destructor panics and the harness deadline. That
+backend executable is byte-identical to both earlier passing workspace runs;
+the cause is not established by the frontend work. All subsequently unreached
+targets, including framework, client and CLI, passed separately in
+`verification/checks-1418713600928277`. The failed backend target was not retried
+or omitted from the reported result. Every fixture cleanup has zero owned
+survivors. Signed publication was initially blocked by an unresponsive live
+Bkpr SSH-agent proxy; signing was not disabled.
+
+The later [stable authenticated-capture fixture repair](#stable-authenticated-capture-fixture)
+passed the complete latency-excluded workspace: 835 top-level tests plus one
+isolated subprocess, 14 ignored, strict Clippy, formatting and doctests.
+`target/smoke/capture-recovery/verification/checks-1420780905092158/result.json`
+records the new run after the fixture change, without erasing the earlier
+failure. Its client/daemon pair is byte-identical to the physical remote TUI
+proof above. Runtime foreground validation and recovery policy are unchanged.
+At that verification handoff, only signing-agent connectivity blocked publication.
+
+Actual remote GUI receipts:
+
+* `target/smoke/remote-tui/kitty-dark-default-1416576825976312/acceptance.json`
+* `target/smoke/remote-tui/kitty-light-default-1416936250987730/acceptance.json`
+* Existing local TUI regression:
+  `target/smoke/toasts/kitty-dark-default-1416936260897703/acceptance.json`.
+
+These run the real system OpenSSH 10.5p1 client/server, one no-PTY helper and an
+already-running matching daemon in a private owned rootless chroot. Kitty/Xvfb
+and the TUI run outside that chroot as host UID1000; remote CWD/home directories
+are absent from the local filesystem. Generated private keys, strict known-host
+checking, separate HOME/XDG roots, controlled PTY programs, no user profiles and
+no model/provider calls isolate the fixture. The surface is 120×36 cells at
+9×18 pixels, with complete controlled Unicode content; dark/light themes cover
+fancy and rounded plain rendering. This is functional evidence, not a
+full-screen editor, WAN or latency benchmark.
+
+The observed path covers remote session/SSH identity, exact key and bracketed
+paste bytes, local clipboard writes through native Bkpr consent, split creation,
+authoritative keyboard resize, separate terminal-window creation, ordinary
+second-client attachment, successful third-client takeover, safe failed
+initialization before takeover, detach and terminal-mode restoration. It also
+checks explicit first-workspace creation in an existing empty remote session,
+missing-session refusal, killed-helper failure, a stopped SSH transport reaching
+remote lease expiry, no post-failure input replay, and surviving remote programs.
+The final light run additionally waits for every remote view to retire.
+No local daemon, state directory or socket is created despite a deliberately
+inherited local `BKPR_SOCKET`. Cleanup verifies owned process identities and
+removes private credentials and roots.
+
+A clipboard-read attempt reached Kitty's own permission prompt. The fixture did
+not approve it or change host permissions, so host clipboard-read completion is
+not claimed. The completed clipboard proof is a remote OSC 52 write observed
+byte-for-byte in the private local X11 clipboard, with no consent keystroke
+leaked to the remote PTY. Explicit forwarding retains the earlier backend SSH
+proof; the GUI matrix does not claim a new forwarding/signing test.
+
+Transport failure revokes client authority and exits with the original error;
+it does not manufacture an empty layout or silently reconnect/replay. Detach
+and failed attachments do not own the remote daemon or its programs. Separate
+latency investigation changes remain uncommitted and are not part of this
+feature or its performance claims.
+
 ## Stable authenticated-capture fixture
 
 The remote TUI workspace run in
@@ -2100,3 +2205,4 @@ and the daemon remains
 They are byte-identical to the pair already exercised by the isolated remote
 TUI matrix. Public debug/release binaries and foreign frontend/latency sources
 were preserved; the frontend-owned Git index was not touched.
+

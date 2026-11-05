@@ -429,15 +429,20 @@ Restore remaining project/forge/CI enrichment after core TUI workflows, preservi
 The backend milestone is implemented through `RemoteSession` and `bkpr remote`;
 its [actual SSH proof](engine-proof.md#remote-session-backend-and-headless-connection)
 records exact binaries, bounds, native authority, failure behavior and limits.
-Native family 6 and durable schema 4 remain unchanged. This is not completion
-of the later TUI or aggregation milestones.
+The normal client now also [attaches directly to one remote session](engine-proof.md#direct-remote-tui-attachment)
+using that same endpoint, not a local gateway or a second transport.
+Native family 6 and durable schema 4 remain unchanged. Cross-session workspace
+aggregation remains deferred.
 
-Backend/headless support comes first. A compatible launcher/helper must already
-be installed on the remote host and the selected session must already be running.
-Connecting does not install software, create/restart a daemon, restore saved
-programs or merge local state. The remote daemon remains the sole owner of its
-panes, layouts, processes, harnesses, agent services and metadata. No TUI work or
-cross-session workspace routing is required by this milestone.
+A compatible launcher/helper must already be installed on the remote host and
+the selected session must already be running. Connecting does not install
+software, create/restart a daemon, restore saved programs or merge local state.
+The remote daemon remains the sole owner of its panes, layouts, processes,
+harnesses, agent services and metadata. Terminal capabilities, theme, clipboard
+and presentation stay local. The client discovers immutable remote launch
+defaults before activation, including takeover; it never interprets remote CWD
+or home paths against the local filesystem. Reuse the existing application and
+framework paths for remote input, rendering and shutdown.
 
 One local attachment owns one persistent system OpenSSH stdio connection with no
 transport PTY and one remote helper process. The helper resolves the exact name

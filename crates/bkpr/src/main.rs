@@ -15,13 +15,15 @@ const HELP: &str = r#"Bkpr — persistent named pane workspaces
   bkpr [tui] [-s NAME | --socket PATH --state-root PATH] [-d]
        [--cwd PATH] [--read-only] [--clipboard ask|allow|deny] [--bkprd PATH]
        [--home ISOLATED_FIXTURE_HOME] [-- SHELL ARGS...]
+  bkpr [tui] -r HOST [-s NAME] [--remote-bkpr-bin REMOTE_EXECUTABLE]
+       [--ssh-config PATH] [--forward-agent] [-d] [--read-only] [--clipboard ask|allow|deny]
   bkpr list
   bkpr stop [-s NAME | --socket PATH]
   bkpr resume [-s NAME | --socket PATH] [--pane PANE_ID]
   bkpr context [-s NAME | --socket PATH] [--pane PANE_ID] [--json]
   bkpr request [-s NAME | --socket PATH] 'VERSIONED_TYPED_JSON_REQUEST'
   bkpr keyboard --socket PATH --pane PANE_ID --view VIEW_ID '[PHYSICAL_BYTES]'
-  bkpr remote --ssh HOST --session NAME [--ssh-config PATH] [--helper REMOTE_EXECUTABLE]
+  bkpr remote -r HOST [-s NAME] [--ssh-config PATH] [--remote-bkpr-bin REMOTE_EXECUTABLE]
        inspect | request 'OPERATION_JSON' [--forward-agent] | connect [--forward-agent] [-d]
   bkpr run HARNESS [--] ARGS...
   bkpr install agy
@@ -39,11 +41,16 @@ intent without a fallback; direct bkprd startup without argv stays headless.
 Explicit --session overrides inherited BKPR_SOCKET. Headless context/request/
 keyboard/resume otherwise inherit pane routing; normal TUI/stop default to `bkpr`.
 Utilities do not initialize the TUI or automatically start a daemon.
-`remote` addresses one existing remote session, without local routing or bootstrap.
-`inspect` validates session identity read-only, without attaching or forwarding agents.
-`connect` keeps a single attachment for bounded Operation JSON lines; only connect
-accepts -d takeover. SSH host keys must already be trusted; agent forwarding is
-disabled unless explicitly requested by a remote request or connect invocation.
+-r / --remote selects a single existing remote session; its exact name defaults to
+`bkpr`, independently of local pane routing. The local TUI connects directly over
+SSH without starting a local daemon or creating, installing or restarting remotely.
+--remote-bkpr-bin selects the remote helper executable (default: remote PATH `bkpr`).
+`remote inspect` validates session identity read-only, without attaching or forwarding
+agents. `remote connect` keeps one attachment for bounded Operation JSON lines.
+Only the TUI and remote connect accept -d takeover. SSH host keys must already be
+trusted; agent forwarding is disabled unless explicitly requested by a remote TUI,
+request or connect invocation. Remote paths and process operations stay remote;
+terminal theme, capabilities and clipboard policy stay local.
 `resume` lists saved native conversations read-only; --pane selects one exact ID.
 Resume uses current native configuration, not saved argv/settings; process start
 is pending authenticated conversation binding, not proof the conversation loaded.
@@ -98,6 +105,18 @@ fn main() -> Result<()> {
     }
     if command == "remote" {
         return remote::execute(&matches);
+    }
+    if let Some(target) = remote::tui_target(&matches)? {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            bail!("TUI needs a terminal; use remote inspect or request for headless access");
+        }
+        let mut options = Options::remote();
+        options.read_only = matches.get_flag("read-only");
+        options.detach_others = matches.get_flag("detach-others");
+        if let Some(policy) = matches.get_one::<String>("clipboard") {
+            options.clipboard_policy.clone_from(policy);
+        }
+        return bkpr_client::run_remote(target, options);
     }
     let roots = session::Roots::inherited()?;
     if command == "list" {

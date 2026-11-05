@@ -1,5 +1,5 @@
-//! TUI application and typed local daemon transport. No backend implementation
-//! dependency is linked into a frontend.
+//! TUI application and typed local/remote daemon transport. No backend
+//! implementation dependency is linked into a frontend.
 mod app;
 mod appearance;
 mod chrome_graphics;
@@ -30,6 +30,12 @@ pub fn tui(socket: &Path, read_only: bool, clipboard_policy: &str) -> Result<()>
 }
 pub fn run(socket: &Path, options: Options) -> Result<()> {
     app::run(socket, options)
+}
+
+/// Attach the local terminal to one existing remote session, without local
+/// daemon/bootstrap state or automatic transport reconnection.
+pub fn run_remote(target: remote::RemoteTarget, options: Options) -> Result<()> {
+    app::run_remote(target, options)
 }
 
 /// Physical decoder probe: ordered acceptance, never child processing or replay.

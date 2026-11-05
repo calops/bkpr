@@ -218,6 +218,19 @@ pub struct Options {
     pub isolated_environment: bool,
 }
 impl Options {
+    /// Terminal-only options for a remote attachment. Remote launch authority
+    /// must never be synthesized from this process's directory or environment.
+    pub fn remote() -> Self {
+        Self {
+            read_only: false,
+            detach_others: false,
+            clipboard_policy: "ask".into(),
+            shell: Vec::new(),
+            cwd: PathBuf::new(),
+            home: PathBuf::new(),
+            isolated_environment: false,
+        }
+    }
     pub fn inherited() -> Result<Self> {
         Ok(Self {
             read_only: false,
@@ -234,6 +247,38 @@ impl Options {
             isolated_environment: false,
         })
     }
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteDefaultsReply {
+    session: SessionInfo,
+    #[serde(default)]
+    spawn_defaults: Option<SpawnDefaults>,
+}
+
+fn remote_spawn_defaults(endpoint: &Endpoint, expected: &SessionInfo) -> Result<SpawnDefaults> {
+    use std::os::unix::ffi::OsStrExt;
+    let reply: RemoteDefaultsReply =
+        serde_json::from_value(endpoint.checked(Operation::SessionInfo)?)
+            .context("reading authoritative remote spawn defaults before activation")?;
+    anyhow::ensure!(
+        reply.session == *expected,
+        "remote session or daemon changed while reading spawn defaults"
+    );
+    let defaults = reply.spawn_defaults.context(
+        "remote daemon does not provide authoritative spawn defaults; a compatible remote bkprd is required",
+    )?;
+    anyhow::ensure!(
+        !defaults.argv.is_empty()
+            && !defaults.argv[0].is_empty()
+            && defaults.argv.iter().all(|arg| !arg.contains('\0'))
+            && defaults.cwd.is_absolute()
+            && defaults.home.is_absolute()
+            && !defaults.cwd.as_os_str().as_bytes().contains(&0)
+            && !defaults.home.as_os_str().as_bytes().contains(&0),
+        "remote daemon returned invalid spawn defaults"
+    );
+    Ok(defaults)
 }
 struct Attached {
     view: String,
@@ -1970,6 +2015,19 @@ impl App<'_> {
         );
         Ok(())
     }
+    fn contextual_environment(&self) -> (PathBuf, bool) {
+        if self.socket.is_remote()
+            && let Some(pane) = self
+                .state
+                .focused
+                .as_ref()
+                .and_then(|id| self.registry.panes.iter().find(|pane| pane.id == *id))
+        {
+            (pane.home.clone(), pane.isolated_environment)
+        } else {
+            (self.options.home.clone(), self.options.isolated_environment)
+        }
+    }
     fn spawn(&mut self, size: Size, axis: Axis) -> Result<()> {
         if self.options.read_only {
             bail!("read-only client cannot create panes");
@@ -1992,7 +2050,13 @@ impl App<'_> {
         let spec = PaneSpawnSpec {
             argv: self.options.shell.clone(),
             cwd: parent
-                .map(|p| p.cwd.clone())
+                .map(|p| {
+                    if self.socket.is_remote() {
+                        p.foreground_cwd.as_ref().unwrap_or(&p.cwd).clone()
+                    } else {
+                        p.cwd.clone()
+                    }
+                })
                 .unwrap_or_else(|| self.options.cwd.clone()),
             home: parent
                 .map(|p| p.home.clone())
@@ -2460,6 +2524,7 @@ impl App<'_> {
                 {
                     bail!("focused execution is still live; it was not replaced");
                 }
+                let (home, isolated_environment) = self.contextual_environment();
                 self.manage(
                     management::Command::Reopen {
                         workspace_id,
@@ -2473,10 +2538,10 @@ impl App<'_> {
                             } else {
                                 cwd
                             },
-                            home: self.options.home.clone(),
+                            home,
                             size,
                             title: None,
-                            isolated_environment: self.options.isolated_environment,
+                            isolated_environment,
                         },
                     },
                     None,
@@ -2546,6 +2611,7 @@ impl App<'_> {
                 }
                 let workspace = self.form_workspace(form.target.as_ref())?;
                 let cwd = form.fields.directory();
+                let (home, isolated_environment) = self.contextual_environment();
                 self.manage(
                     management::Command::CreateWindow {
                         workspace_id: workspace.id,
@@ -2555,10 +2621,10 @@ impl App<'_> {
                         spec: PaneSpawnSpec {
                             argv: self.options.shell.clone(),
                             cwd,
-                            home: self.options.home.clone(),
+                            home,
                             size,
                             title: None,
-                            isolated_environment: self.options.isolated_environment,
+                            isolated_environment,
                         },
                     },
                     None,
@@ -4037,31 +4103,132 @@ pub fn run(socket: &Path, options: Options) -> Result<()> {
     if !matches!(options.clipboard_policy.as_str(), "ask" | "allow" | "deny") {
         bail!("clipboard must be ask, allow or deny");
     }
-    let mut client = RegisteredClient::register(socket)?;
-    let endpoint = client.endpoint().clone();
-    let socket = &endpoint;
-    let terminal = TerminalGuard::enter()?;
-    let initial_size = dimensions()?;
-    let jobs = jobs::Jobs::new(8)?;
-    let input = InputPump::new(socket)?;
-    let mut graphics = crate::chrome_graphics::ChromeGraphics::new()?;
-    let (resize_read, resize_write) = std::os::unix::net::UnixStream::pair()?;
-    resize_read.set_nonblocking(true)?;
-    resize_write.set_nonblocking(true)?;
-    struct ResizeSignal(signal_hook::SigId);
-    impl Drop for ResizeSignal {
-        fn drop(&mut self) {
-            signal_hook::low_level::unregister(self.0);
+    run_attached(
+        Attachment::Local(RegisteredClient::register(socket)?),
+        options,
+        None,
+    )
+}
+
+pub fn run_remote(target: crate::remote::RemoteTarget, mut options: Options) -> Result<()> {
+    if !matches!(options.clipboard_policy.as_str(), "ask" | "allow" | "deny") {
+        bail!("clipboard must be ask, allow or deny");
+    }
+    options.detach_others |= target.detach_others;
+    let provenance = (target.destination.clone(), target.session_name.clone());
+    run_attached(
+        Attachment::Remote(crate::remote::RemoteSession::register(target)?),
+        options,
+        Some(provenance),
+    )
+}
+
+enum Attachment {
+    Local(RegisteredClient),
+    Remote(crate::remote::RemoteSession),
+}
+impl Attachment {
+    fn endpoint(&self) -> Endpoint {
+        match self {
+            Self::Local(client) => client.endpoint().clone(),
+            Self::Remote(session) => session.endpoint(),
         }
     }
-    let _resize = ResizeSignal(signal_hook::low_level::pipe::register(
-        signal_hook::consts::SIGWINCH,
-        resize_write,
-    )?);
-    let mut resize_read = resize_read;
-    client.activate_once(options.detach_others)?;
+    fn initialize<T>(
+        &mut self,
+        detach_others: bool,
+        setup: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let ready = setup()?;
+        self.activate_once(detach_others)?;
+        Ok(ready)
+    }
+    fn activate_once(&mut self, detach_others: bool) -> Result<()> {
+        match self {
+            Self::Local(client) => client.activate_once(detach_others),
+            Self::Remote(session) => session.activate_once(detach_others),
+        }
+    }
+    fn consume_lifecycle(&mut self) -> Result<bool> {
+        match self {
+            Self::Local(client) => client.consume_lifecycle(),
+            Self::Remote(session) => session.poll_lifecycle(),
+        }
+    }
+    fn lifetime_fd(&self) -> std::os::fd::RawFd {
+        match self {
+            Self::Local(client) => client.lifetime_fd(),
+            Self::Remote(session) => session.lifetime_fd(),
+        }
+    }
+    fn close_for_shutdown(&mut self) {
+        match self {
+            Self::Local(client) => client.close_for_shutdown(),
+            Self::Remote(session) => session.close_for_shutdown(),
+        }
+    }
+    fn detach(&mut self) -> Result<()> {
+        match self {
+            Self::Local(client) => client.detach(),
+            Self::Remote(session) => session.disconnect(),
+        }
+    }
+}
+
+fn run_attached(
+    mut client: Attachment,
+    mut options: Options,
+    provenance: Option<(String, String)>,
+) -> Result<()> {
+    if !matches!(options.clipboard_policy.as_str(), "ask" | "allow" | "deny") {
+        bail!("clipboard must be ask, allow or deny");
+    }
+    let endpoint = client.endpoint();
+    let socket = &endpoint;
+    let remote_identity = match &client {
+        Attachment::Remote(session) => Some(session.info().clone()),
+        Attachment::Local(_) => None,
+    };
+    let (terminal, initial_size, jobs, input, mut graphics, mut resize_read, _resize) = client
+        .initialize(options.detach_others, || {
+            let terminal = TerminalGuard::enter()?;
+            let initial_size = dimensions()?;
+            let jobs = jobs::Jobs::new(8)?;
+            let input = InputPump::new(socket)?;
+            let graphics = crate::chrome_graphics::ChromeGraphics::new()?;
+            let (resize_read, resize_write) = std::os::unix::net::UnixStream::pair()?;
+            resize_read.set_nonblocking(true)?;
+            resize_write.set_nonblocking(true)?;
+            struct ResizeSignal(signal_hook::SigId);
+            impl Drop for ResizeSignal {
+                fn drop(&mut self) {
+                    signal_hook::low_level::unregister(self.0);
+                }
+            }
+            let resize = ResizeSignal(signal_hook::low_level::pipe::register(
+                signal_hook::consts::SIGWINCH,
+                resize_write,
+            )?);
+            if let Some(identity) = &remote_identity {
+                let defaults = remote_spawn_defaults(socket, identity)?;
+                options.shell = defaults.argv;
+                options.cwd = defaults.cwd;
+                options.home = defaults.home;
+                options.isolated_environment = defaults.isolated_environment;
+            }
+            Ok((
+                terminal,
+                initial_size,
+                jobs,
+                input,
+                graphics,
+                resize_read,
+                resize,
+            ))
+        })?;
     let registry: RegistryResult = serde_json::from_value(socket.checked(Operation::Inspect)?)?;
-    let state = Controller::new(&registry.registry);
+    let mut state = Controller::new(&registry.registry);
+    state.remote = provenance;
     let mut registry_pump = updates::registry(socket, registry.registry.revision)?;
     let mut app = App {
         socket,

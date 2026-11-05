@@ -312,3 +312,88 @@ fn client_ping_schedule_does_not_wait_for_previous_pong() {
         let _ = task.await;
     });
 }
+
+#[test]
+fn transport_failure_retires_every_endpoint_without_reconnect_or_empty_inspection() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Once {
+        stream: Mutex<Option<UnixStream>>,
+        opens: AtomicUsize,
+    }
+    impl Connector for Once {
+        fn remote(&self) -> bool {
+            true
+        }
+        fn connect(&self, _: ConnectionPurpose) -> Result<UnixStream> {
+            self.opens.fetch_add(1, Ordering::SeqCst);
+            self.stream
+                .lock()
+                .unwrap()
+                .take()
+                .context("unexpected reconnect")
+        }
+    }
+    let (lifetime, mut daemon) = UnixStream::pair().unwrap();
+    let connector = Arc::new(Once {
+        stream: Mutex::new(Some(lifetime)),
+        opens: AtomicUsize::new(0),
+    });
+    let identity = SessionInfo {
+        name: "remote".into(),
+        session_id: "existing-session".into(),
+        daemon_id: "existing-daemon".into(),
+    };
+    let expected = identity.clone();
+    let (close, close_now) = sync::sync_channel(1);
+    let server =
+        thread::spawn(move || {
+            let request = crate::transport::test_wire::read_request(&mut daemon).unwrap();
+            assert!(matches!(
+                request.operation,
+                bkpr_protocol::Operation::ClientRegister { .. }
+            ));
+            crate::transport::test_wire::write_response(&mut daemon, &bkpr_protocol::Response {
+            version: PROTOCOL_VERSION,
+            ok: true,
+            result: Some(serde_json::json!({
+                "session": expected,
+                "client": {"client_id": "remote-attachment", "token": "test-only-token"},
+            }).into()),
+            error: None,
+            failure: None,
+        }).unwrap();
+            close_now.recv_timeout(Duration::from_secs(3)).unwrap();
+        });
+    let client = RegisteredClient::register_connector(connector.clone(), identity, None).unwrap();
+    let (stop, _receiver) = watch::channel(false);
+    let mut remote = RemoteSession {
+        client,
+        supervisor: Supervisor {
+            stop,
+            thread: None,
+            failure: Arc::new(Mutex::new(Some("SSH connection lost: fixture".into()))),
+        },
+    };
+    let endpoint = remote.endpoint();
+    let worker_endpoint = endpoint.clone();
+    close.send(()).unwrap();
+    server.join().unwrap();
+    let error = remote.poll_lifecycle().unwrap_err();
+    assert!(format!("{error:#}").contains("SSH connection lost: fixture"));
+    assert!(endpoint.is_revoked());
+    assert!(
+        worker_endpoint
+            .checked(bkpr_protocol::Operation::Inspect)
+            .is_err()
+    );
+    assert!(
+        worker_endpoint
+            .checked(bkpr_protocol::Operation::ClientActivate {
+                detach_others: true,
+                agent_socket: None,
+            })
+            .is_err()
+    );
+    assert_eq!(connector.opens.load(Ordering::SeqCst), 1);
+    remote.disconnect().unwrap();
+}

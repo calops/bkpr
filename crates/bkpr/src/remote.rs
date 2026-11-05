@@ -1,4 +1,4 @@
-//! Headless remote attachment boundary. Session discovery stays on the remote host.
+//! Direct remote attachment boundary. Session discovery stays on the remote host.
 use anyhow::{Context, Result, ensure};
 use bkpr_client::remote::{RemoteSession, RemoteTarget, ResolvedSession};
 use bkpr_protocol::{Operation, SessionInfo, remote_wire::Hello};
@@ -67,6 +67,33 @@ fn validate_agent_socket(socket: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+pub fn tui_target(matches: &ArgMatches) -> Result<Option<RemoteTarget>> {
+    if matches.subcommand_name().unwrap_or("tui") != "tui"
+        || matches.get_one::<String>("remote").is_none()
+    {
+        return Ok(None);
+    }
+    target(matches).map(Some)
+}
+
+fn target(matches: &ArgMatches) -> Result<RemoteTarget> {
+    Ok(RemoteTarget {
+        destination: matches
+            .get_one::<String>("remote")
+            .context("remote requires --remote HOST")?
+            .clone(),
+        session_name: matches
+            .get_one::<String>("session")
+            .map(String::as_str)
+            .unwrap_or("bkpr")
+            .to_owned(),
+        helper: matches.get_one::<PathBuf>("remote-bkpr-bin").cloned(),
+        ssh_config: matches.get_one::<PathBuf>("ssh-config").cloned(),
+        forward_agent: matches.get_flag("forward-agent"),
+        detach_others: matches.get_flag("detach-others"),
+    })
+}
+
 pub fn execute(matches: &ArgMatches) -> Result<()> {
     let remote = matches
         .subcommand_matches("remote")
@@ -86,20 +113,7 @@ pub fn execute(matches: &ArgMatches) -> Result<()> {
     } else {
         None
     };
-    let target = RemoteTarget {
-        destination: remote
-            .get_one::<String>("ssh")
-            .context("remote requires --ssh HOST")?
-            .clone(),
-        session_name: matches
-            .get_one::<String>("session")
-            .context("remote requires --session NAME")?
-            .clone(),
-        helper: remote.get_one::<PathBuf>("helper").cloned(),
-        ssh_config: remote.get_one::<PathBuf>("ssh-config").cloned(),
-        forward_agent: remote.get_flag("forward-agent"),
-        detach_others: matches.get_flag("detach-others"),
-    };
+    let target = target(matches)?;
     if command == "inspect" {
         let session = RemoteSession::inspect(target)?;
         return emit(&mut std::io::stdout().lock(), &json!({"session":session}));
@@ -308,6 +322,65 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn remote_tui_selection_is_literal_and_does_not_resolve_local_session_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let helper = directory.path().join("absent remote root/bin/bkpr");
+        let matches = crate::cli::parse([
+            "bkpr".into(),
+            "-r".into(),
+            "user@alias".into(),
+            "-s".into(),
+            "a / λ".into(),
+            "--remote-bkpr-bin".into(),
+            helper.clone().into_os_string(),
+            "--ssh-config".into(),
+            "relative ssh/config".into(),
+            "--forward-agent".into(),
+            "-d".into(),
+        ])
+        .unwrap();
+        let selected = tui_target(&matches).unwrap().unwrap();
+        assert_eq!(selected.destination, "user@alias");
+        assert_eq!(selected.session_name, "a / λ");
+        assert_eq!(selected.helper, Some(helper));
+        assert_eq!(
+            selected.ssh_config,
+            Some(PathBuf::from("relative ssh/config"))
+        );
+        assert!(selected.forward_agent);
+        assert!(selected.detach_others);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn remote_session_defaults_do_not_inherit_local_target_selection() {
+        for values in [
+            vec!["bkpr", "-r", "alias"],
+            vec!["bkpr", "tui", "--remote", "alias"],
+            vec!["bkpr", "remote", "-r", "alias", "inspect"],
+        ] {
+            let matches =
+                crate::cli::parse(values.into_iter().map(std::ffi::OsString::from)).unwrap();
+            let selected = target(&matches).unwrap();
+            assert_eq!(selected.session_name, "bkpr");
+            assert!(selected.helper.is_none());
+            assert!(selected.ssh_config.is_none());
+            assert!(!selected.forward_agent);
+            assert!(!selected.detach_others);
+        }
+        for values in [
+            vec!["bkpr"],
+            vec!["bkpr", "-s", "local / λ"],
+            vec!["bkpr", "--socket", "/absent/socket"],
+            vec!["bkpr", "remote", "-r", "alias", "inspect"],
+        ] {
+            let matches =
+                crate::cli::parse(values.into_iter().map(std::ffi::OsString::from)).unwrap();
+            assert!(tui_target(&matches).unwrap().is_none());
+        }
     }
 
     #[test]
