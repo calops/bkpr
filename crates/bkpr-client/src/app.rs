@@ -6306,10 +6306,10 @@ mod tests {
         Arc::new(tree::Session {
             owner,
             group: SessionGroup {
-                label: format!("session {}", owner.slot),
+                name: format!("session {}", owner.slot),
+                host: None,
                 status,
                 detail: String::new(),
-                remote: false,
             },
             registry: Arc::new(app.registry.clone()),
             rows: sidebar.rows.clone().into(),

@@ -2603,3 +2603,75 @@ the observed readiness, X11 stacking, revision-guard and fixture-binary correcti
 These are functional debug/software-rendered checks, not WAN/second-host,
 hardware-GPU, full-screen editor or new comparative latency guarantees.
 
+## Session tree presentation and live native titles
+
+Evidence: `target/smoke/session-spacing/acceptance.json`, with immutable debug
+client `af6dae92` and daemon `ec672b1b`. Private loopback SSH, isolated HOME/XDG
+and Xvfb exercise three sessions, a private Git repository and two native windows.
+No model/provider, user session or installed executable is used.
+
+`kitty-dark-default-43874236839502` and
+`kitty-light-default-43874236856733` pass actual tree navigation, window changes,
+exact native input, two observed Nerd Font connecting frames, normal-rendering
+toggle, session removal, single-owner elision and TTY restoration. Fourteen
+complete native-grid captures retain whole unmasked native-body comparisons
+when the same pane/geometry/rendering state recurs. Physical samples distinguish
+active/inactive guides and verify that bright ancestor lines stop at each
+junction. Both focused item rows share the full-width background. The exact
+U+E0CC honeycomb reserves two cells, and window labels remain neutral.
+Session separators are nonselectable; arrows skip them. Healthy remote hosts
+are right-aligned and muted without `[up]` or a literal `remote` prefix.
+
+`xterm-dark-default-44376515957783` passes the same hierarchy/input/lifecycle
+path with normal rounded chrome and actual ANSI inverse selection. Hovering its
+metadata card preserves the focused item's background, measured as
+RGB `[216,222,233]` before and after, including its metadata row. Available
+font coverage differs: the private default XTerm font does not render all Nerd
+Font icons. Names and tree geometry remain available; two-cell reservation is
+not a claim that every host expands the glyph visually.
+
+The ANSI native-body oracle found 17 changed cell-edge pixels after reconnect,
+with maximum channel delta 7, in a complete 720×646 body. Original references,
+full differences and coordinates remain unmasked. All native cells match.
+This resembles the earlier default-font run-boundary observation, but its cause
+is not proven; the ANSI run does not claim exact pixel preservation.
+`kitty-dark-default-44088998258961` independently proves a visible network-off
+error, no implicit initial retry and exactly one new admission on manual retry.
+It is remote-only, not a mixed-owner failure-isolation claim.
+
+Native title proof is
+`kitty-dark-default-43244104092050/acceptance.json`: the same final daemon and
+prior client `4493171d` (before selected-row trailing-space padding). Actual OSC
+0/2 Unicode titles update visible and hidden pane metadata, and reattach retains
+the same process/birth. Empty titles return to the base label. Actual frontend
+rename wins over later parsed OSC; restart restores the custom stopped label,
+not transient title contents or arbitrary old argv. Ten complete native-grid
+captures, seven whole-native-body comparisons, exact input and both TTY restores
+pass. A `codex` title alone creates no harness facts. The initial GUI failure is
+retained: Inspect/context changed while the sidebar did not. Registry `Wait`
+now uses the same effective title projection instead of the raw saved record.
+
+Formatting, all-target strict Clippy, workspace test compilation, debug builds
+and doctests pass. Actual host-UID execution in
+`verification/checks-44345359154646/result.json` passes 948 top-level tests,
+with 14 ignored. The recovery-control fixture first failed with unavailable
+live context while its foreground command repeatedly forked `sleep`. Its single
+test now uses a stable shell builtin `read`; no production authority
+check, retry or other exit-gate fixture is weakened. The historical error alone
+does not identify which descendant syscall failed.
+
+Final protected compilation is `verification/compiled-44291313315953`;
+`../ssh-forwarding/protected-44291006724544/result.json` preserves all 197
+guarded inputs and entry debug/release output hashes. An earlier helper's
+preservation assertion failed; its symlinked cache children have been replaced
+with private bind mounts and direct/canonical-path self-checks. The original
+unexpected writer is not established; this is not a whole-task public-output
+preservation claim. Negative startup, fixture and oracle runs remain alongside
+successful evidence rather than being rewritten as acceptance.
+
+Selected runtime/test cleanup reports zero owned survivors and removes private
+credentials/root files. `controllers.zip` retains final reproduction controllers,
+transitive helpers, verification metadata and the 197 source inputs. These are
+functional software-rendered checks, not WAN, hardware-GPU, full-screen-editor
+or comparative latency acceptance.
+

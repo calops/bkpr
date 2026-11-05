@@ -2,21 +2,25 @@
 use std::time::{Duration, Instant};
 
 const PERIOD: Duration = Duration::from_millis(120);
-const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 pub struct Spinner {
     epoch: Instant,
     next: Option<Instant>,
     frame: usize,
+    frames: &'static [char],
     active: bool,
 }
 
 impl Spinner {
-    pub fn new(now: Instant) -> Self {
+    /// Frames are presentation policy supplied by the caller, with no per-tick allocation.
+    /// Each frame must occupy one display cell.
+    pub fn new(now: Instant, frames: &'static [char]) -> Self {
+        assert!(!frames.is_empty(), "a spinner requires at least one frame");
         Self {
             epoch: now,
             next: None,
             frame: 0,
+            frames,
             active: false,
         }
     }
@@ -39,7 +43,7 @@ impl Spinner {
         }
         let elapsed = now.duration_since(self.epoch).as_nanos();
         let period = PERIOD.as_nanos();
-        let frame = (elapsed / period % FRAMES.len() as u128) as usize;
+        let frame = (elapsed / period % self.frames.len() as u128) as usize;
         let changed = self.frame != frame;
         self.frame = frame;
         self.next = now.checked_add(PERIOD - Duration::from_nanos((elapsed % period) as u64));
@@ -47,7 +51,11 @@ impl Spinner {
     }
 
     pub fn glyph(&self) -> char {
-        if self.active { FRAMES[self.frame] } else { ' ' }
+        if self.active {
+            self.frames[self.frame]
+        } else {
+            ' '
+        }
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
@@ -59,10 +67,12 @@ impl Spinner {
 mod tests {
     use super::*;
 
+    const FRAMES: &[char] = &['a', 'b', 'c', 'd'];
+
     #[test]
     fn inactive_indicators_never_schedule_repaints() {
         let now = Instant::now();
-        let mut spinner = Spinner::new(now);
+        let mut spinner = Spinner::new(now, FRAMES);
         assert_eq!(spinner.next_deadline(), None);
         assert_eq!(spinner.glyph(), ' ');
         assert!(!spinner.advance(now + Duration::from_secs(30)));
@@ -77,7 +87,7 @@ mod tests {
     #[test]
     fn late_ticks_coalesce_and_keep_the_original_phase() {
         let now = Instant::now();
-        let mut spinner = Spinner::new(now);
+        let mut spinner = Spinner::new(now, FRAMES);
         spinner.set_active(true, now);
         assert!(!spinner.advance(now + PERIOD - Duration::from_nanos(1)));
         assert!(spinner.advance(now + PERIOD));
@@ -93,7 +103,7 @@ mod tests {
     #[test]
     fn reactivation_restarts_without_old_deadlines() {
         let now = Instant::now();
-        let mut spinner = Spinner::new(now);
+        let mut spinner = Spinner::new(now, FRAMES);
         spinner.set_active(true, now);
         let first = spinner.glyph();
         spinner.advance(now + PERIOD * 2);

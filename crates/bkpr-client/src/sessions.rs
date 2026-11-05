@@ -6,6 +6,16 @@ use tokio_util::sync::CancellationToken;
 
 const CONNECTION_WORKERS: usize = 8;
 const REMOTE_CONNECTION_WORKERS: usize = 6;
+const SESSION_SPINNER_FRAMES: &[char] = &[
+    '\u{f0a9e}',
+    '\u{f0a9f}',
+    '\u{f0aa0}',
+    '\u{f0aa1}',
+    '\u{f0aa2}',
+    '\u{f0aa3}',
+    '\u{f0aa4}',
+    '\u{f0aa5}',
+];
 
 #[derive(Clone)]
 pub(super) enum SessionAction {
@@ -416,8 +426,29 @@ fn refresh_presentation(index: usize, session: &mut Session, empty: &EmptyMetada
                 None,
             )
         };
+    let host = match &session.target {
+        SessionTarget::Remote(target) => Some(target.destination.as_str()),
+        SessionTarget::Local { .. } => None,
+    };
+    let name = match session.identity.as_ref() {
+        Some(identity) => std::borrow::Cow::Borrowed(identity.name.as_str()),
+        None => match &session.target {
+            SessionTarget::Remote(target) => {
+                std::borrow::Cow::Borrowed(target.session_name.as_str())
+            }
+            SessionTarget::Local {
+                name: Some(name), ..
+            } => std::borrow::Cow::Borrowed(name.as_str()),
+            SessionTarget::Local { socket, .. } => socket
+                .file_name()
+                .unwrap_or(socket.as_os_str())
+                .to_string_lossy(),
+        },
+    };
     if previous.is_some_and(|previous| {
         previous.owner == owner
+            && previous.group.name == name.as_ref()
+            && previous.group.host.as_deref() == host
             && previous.group.status == status
             && previous.group.detail == session.status
             && Arc::ptr_eq(&previous.registry, &registry)
@@ -434,13 +465,10 @@ fn refresh_presentation(index: usize, session: &mut Session, empty: &EmptyMetada
     session.presentation = Some(Arc::new(crate::tree::Session {
         owner,
         group: SessionGroup {
-            label: previous.map_or_else(
-                || session.target.label(),
-                |previous| previous.group.label.clone(),
-            ),
+            name: name.into_owned(),
+            host: host.map(str::to_owned),
             status,
             detail: session.status.clone(),
-            remote: matches!(&session.target, SessionTarget::Remote(_)),
         },
         registry,
         rows,
@@ -506,7 +534,7 @@ impl Coordinator {
             options,
             jobs,
             connections: Some(connections),
-            spinner: Spinner::new(Instant::now()),
+            spinner: Spinner::new(Instant::now(), SESSION_SPINNER_FRAMES),
             started: false,
             tree,
             toasts,
@@ -1617,6 +1645,38 @@ mod tests {
             }),
             now,
         )
+    }
+
+    #[test]
+    fn projection_keeps_literal_remote_fields_separate_and_uses_admitted_name() {
+        let mut session = pending_session(Instant::now());
+        let SessionTarget::Remote(target) = &mut session.target else {
+            unreachable!();
+        };
+        target.destination = "user@[2001:db8::1]".into();
+        target.session_name = "literal/session:name".into();
+        let empty = EmptyMetadata::new();
+        assert!(refresh_presentation(0, &mut session, &empty));
+        let group = &session.presentation.as_ref().unwrap().group;
+        assert_eq!(group.name, "literal/session:name");
+        assert_eq!(group.host.as_deref(), Some("user@[2001:db8::1]"));
+
+        session.identity = Some(SessionInfo {
+            name: "authoritative session".into(),
+            session_id: "logical".into(),
+            daemon_id: "daemon".into(),
+        });
+        assert!(refresh_presentation(0, &mut session, &empty));
+        assert_eq!(
+            session.presentation.as_ref().unwrap().group.name,
+            "authoritative session"
+        );
+        session.generation += 1;
+        session.phase = Phase::Offline;
+        assert!(refresh_presentation(0, &mut session, &empty));
+        let group = &session.presentation.as_ref().unwrap().group;
+        assert_eq!(group.name, "authoritative session");
+        assert_eq!(group.host.as_deref(), Some("user@[2001:db8::1]"));
     }
 
     #[test]

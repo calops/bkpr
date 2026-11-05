@@ -251,6 +251,18 @@ pub(crate) fn update_theme(theme: &mut Theme, host: &ColorProbe) -> bool {
     theme.update(host, 0, theme_styles)
 }
 
+pub(crate) fn inactive_tree_guide_ink(theme: &Theme) -> ColorSource {
+    match (
+        theme.ink(Role::Base, false),
+        theme.background(Role::Base, false),
+    ) {
+        (ColorSource::Rgb(foreground), ColorSource::Rgb(background)) => {
+            ColorSource::Rgb(blend(foreground, background, 35))
+        }
+        _ => ColorSource::Palette(8),
+    }
+}
+
 pub(crate) fn update_guide_theme(theme: &mut Theme, host: &ColorProbe, accent: Option<u8>) -> bool {
     theme.update(
         host,
