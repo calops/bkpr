@@ -1,6 +1,6 @@
 # TODO
 
-The native replacement branch is governed by the [implementation plan](docs/pane-first-mux/implementation-plan.md). `main` and the Zellij fork are starting code, not immutable designs or regression suites. Reuse, refactor or rewrite relevant pieces when their domain comes into scope.
+The native implementation is governed by the [implementation plan](docs/pane-first-mux/implementation-plan.md). The previous implementation in Git history and the retained Zellij fork are source material, not immutable designs or regression suites. Reuse, refactor or rewrite relevant pieces when their domain comes into scope.
 
 Current frontend priority is Bkpr's own main-branch product layer, including supporting fork edits, not general Zellij parity: functional sidebar, Bkpr popups/forms/finder, contextual effective-binding hints, window decorations, then Kitty-graphics chrome. One TUI can attach independently to multiple local and existing remote sessions through an owner-qualified sidebar tree. Mixed-owner layouts and cross-session workspace references remain deferred. Forge/PR/CI enrichment comes later; browser/web, GUI and mobile remain deferred.
 
@@ -124,4 +124,4 @@ The current CPU-efficiency level is accepted for now; further optimization is de
 
 - [ ] Revisit integration across shell/direnv environment transitions. Current private-PATH wrappers work only while their PATH entry survives; main's wrapper-free installer and explicit launch paths are useful starting points. Avoid rewriting shell profiles or direnv's saved environment as a workaround.
 
-- [ ] Restore release/package publication only after reproducible offline engine/toolchain acquisition, dependency/license review and supported-platform native verification. Main's distribution workflow is not yet replaced; exposed package targets alone do not establish runtime parity on each platform. No legacy runtime artifacts or no-op success workflows.
+- [x] Restore native release/package publication with a reproducible offline engine closure, dependency/license review and the existing three-platform Nix/Cachix pipeline. Branch preflight [42190759597](https://github.com/calops/bkpr/actions/runs/42190759597) builds and exercises packaged executable loaders on x86-64 Linux, ARM64 Linux and ARM64 macOS; an isolated Linux package smoke covers real PTYs, OSC subscriptions, persistence and shutdown. This does not claim complete runtime parity on every platform. No legacy runtime artifacts or no-op success workflows.
