@@ -2,9 +2,9 @@
 
 ## Product direction and source reuse
 
-This branch replaces the previous Bkpr implementation. It isn't a compatibility track. Don't maintain a Zellij/WASI backend, preserve obsolete interfaces or keep old tests passing for their own sake.
+The native implementation replaces the previous Zellij-based Bkpr. It isn't a compatibility track. Don't maintain a Zellij/WASI backend, preserve obsolete interfaces or keep old tests passing for their own sake.
 
-`main` and the retained `calops/bkpr-zellij` fork are starting material, not specifications. Inspect their relevant current code when a subsystem comes into scope. Reuse coherent useful pieces, refactor weak boundaries and replace designs where better ones fit. Keeping useful code immediately is fine; retaining disconnected legacy trees isn't. Record source revision/path and preserve applicable license notices when copying substantial code, including Zellij's MIT notice.
+The previous implementation in Git history and the retained `calops/bkpr-zellij` fork are source material, not specifications. Inspect their relevant code when a subsystem comes into scope. Reuse coherent useful pieces, refactor weak boundaries and replace designs where better ones fit. Keeping useful code immediately is fine; retaining disconnected legacy trees isn't. Record source revision/path and preserve applicable license notices when copying substantial code, including Zellij's MIT notice.
 
 The near-term delivery priority is usable TUI feature parity with `main`, in a coherent order: launch/restart and pane/workspace lifecycle, navigation/splits/resizing, scrollback/selection/copy/paste and action discovery before finishing-level forge/CI metadata or remote endpoints. Existing native harness and shared agent services retain their authority/lifecycle boundaries. Reuse or redesign main's relevant code against the new backend; parity does not require old APIs or implementation plumbing. Web, GUI and mobile frontends are deferred. Keep client/backend boundaries independent, but do not make another frontend or remote transport a prerequisite for a usable local TUI.
 
@@ -118,3 +118,5 @@ Tests should catch consumer-visible behavior, boundaries, state transitions and 
 ## Commits and releases
 
 Use Conventional Commits. Mark actual breaking changes with `!` and a `BREAKING CHANGE:` footer. Don't label maintenance as a feature merely to force a release. Automatic releases stay in `0.x`; changing to `1.0` requires deliberate user approval. Don't publish experimental builds as production-ready or retain obsolete release plumbing as a successful no-op.
+
+Release CI builds the native product and its independently cached engine for x86-64 Linux, ARM64 Linux and ARM64 macOS, using the existing `bkpr` Cachix cache. Keep the engine dependency closure pinned and sandbox-offline; don't substitute the networked developer preparation helper inside a package build. Package matching `bkpr` and `bkprd` together. A branch cache dispatch validates builds only; immutable release tags publish notes and advance `unstable` only after all three platform builds succeed. Local compilation stays bounded to eight jobs, including explicit packaging/release builds.

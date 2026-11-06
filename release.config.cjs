@@ -1,6 +1,4 @@
 module.exports = {
-  // Version planning only until native packaging and release acceptance exist.
-  dryRun: true,
   branches: ['main'],
   tagFormat: 'v${version}',
   plugins: [

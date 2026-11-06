@@ -1,26 +1,26 @@
 # Bkpr
 
-Bkpr is being rebuilt as a pane-first native terminal multiplexer on
-`feat/pane-first-mux`. This branch replaces the previous host runtime rather than
-maintaining a compatibility track. `bkpr` is the command-line entrypoint and opens
-the terminal client by default. A separate `bkprd` daemon owns independent PTYs,
-terminal state and workspace layouts. Closing a client does not close its panes.
+Bkpr is a pane-first native terminal multiplexer. It replaces the former
+Zellij-based implementation rather than maintaining a compatibility track.
+`bkpr` is the command-line entrypoint and opens the terminal client by default.
+A separate `bkprd` daemon owns independent PTYs, terminal state and workspace
+layouts. Closing a client does not close its panes.
 The terminal adapter uses the maintained `libghostty-rs` SDK over pinned
 libghostty-vt; the [implementation plan](docs/pane-first-mux/implementation-plan.md)
 describes the seven-crate boundaries.
 
-This is development code, not a production release. Workspace layouts and pane
-metadata survive daemon restarts; running processes and terminal contents do not.
+Bkpr remains pre-1.0. Workspace layouts and pane metadata survive daemon
+restarts; running processes and terminal contents do not.
 Foreground harness recognition, managed native conversation capture and OSC 7501
 status are available in the TUI, together with launch-scoped context, discovery
 and durable peer communication. Local Git/project snapshots and explicit native
-harness recovery are available; forge/CI metadata is not implemented yet. Earlier
-release notes describe the former implementation, not this branch.
+harness recovery are available; forge/CI metadata is not implemented yet.
+Release notes for version 0.4.2 and earlier describe the former implementation.
 One TUI can attach to multiple local and existing SSH sessions. Its sidebar groups
 workspaces under their owning session; cross-session layouts remain deferred.
 
-Current `main` and the native-terminal fork are useful starting material when a
-domain comes into scope, not frozen specifications or compatibility obligations.
+The previous implementation and the retained native-terminal fork are useful
+source material, not frozen specifications or compatibility obligations.
 Reuse, adaptation and redesign are all available; the product and security
 requirements determine the result. See the
 [implementation plan](docs/pane-first-mux/implementation-plan.md),
@@ -30,8 +30,9 @@ remaining acceptance gates.
 
 ## Build
 
-The supported path is Cargo with the pinned engine preparation helper. The Nix
-flake provides a **native-only development shell**, not a packaged application:
+For development, use Cargo with the pinned engine preparation helper. The
+default Nix shell supplies the toolchain; packaged installation is described
+under [Packaging and releases](#packaging-and-releases).
 
 ```sh
 nix develop
@@ -1244,34 +1245,50 @@ in the native plan rather than be inferred from a successful build.
 
 ## Packaging and releases
 
-There are intentionally **no Nix package or app outputs** on this branch, so
-`nix build .#bkpr` and `nix run` are not supported distribution paths. The old
-runtime's packaging, cache promotion and publication workflows have been
-removed rather than pointed at a placeholder package.
+The Nix flake provides `bkpr` and its matching `bkprd` together, plus the pinned
+native engine as a separately cached `libghostty-vt` output. Builds run on
+x86-64 Linux, ARM64 Linux and ARM64 macOS. Linux has the recorded full native
+runtime acceptance; macOS managed-capture limitations remain described above.
 
-Restoring native packaging requires a sandbox-compatible derivation for the
-existing pinned Ghostty source, clipboard patch and Zig toolchain, plus all Zig
-build dependencies supplied offline with reproducible hashes. It also requires
-native executable/closure checks and the product's runtime acceptance gates.
-The current preparation helper is a supported developer prerequisite, not a
-network fallback inside a Nix build. No new engine pin or vendoring design is
-introduced by this cutover.
+```sh
+nix run --accept-flake-config github:calops/bkpr
+nix profile install --accept-flake-config github:calops/bkpr
+
+# Build the local checkout instead.
+nix build --accept-flake-config .#bkpr .#libghostty-vt
+```
+
+The flake advertises the `bkpr.cachix.org` substituter and signing key. Accepting
+that configuration permits downloading cached builds. Engine sources, the
+clipboard patch, Zig and its dependencies are pinned; ordinary Nix builds use
+their supplied offline closure, not the developer preparation script's network
+access.
+
+**Upgrading from the Zellij implementation:** existing Zellij sessions are not
+adopted or converted. Keep the older executable available to finish those
+sessions. New sessions use the native daemon. An already-running native daemon
+also keeps its existing code until explicitly stopped; upgrading does not
+restart live programs automatically.
 
 Conventional Commits and the existing pre-1.0 policy remain: features and
 breaking changes advance the `0.x` minor version; fixes advance patch versions;
 maintenance alone is not releasable unless an explicit patch is requested.
-Leaving `0.x` requires a deliberate policy change. The retained release analyzer
-and notes configuration are for planning only; automated tagging/publication is
-not enabled. Optional policy checks use Node.js and the locked npm dependencies:
+Leaving `0.x` requires a deliberate policy change. The manual **Tag next release**
+workflow previews or publishes the next version. Policy checks use Node.js and
+the locked npm dependencies:
 
 ```sh
 npm ci
-npm run test:release-policy
+node --test .github/scripts/*.test.cjs .github/scripts/*.test.mjs
 ```
 
-`npm run release:preview` performs a dry-run plan on the configured release
-branch (`main`); it is not a feature-branch build, tag, package or release.
-Historical versions remain documented in [CHANGELOG.md](CHANGELOG.md).
+`npm run release -- --dry-run` previews the version on `main` without tagging.
+Publishing atomically updates `main` and its immutable version tag, then
+dispatches the three-platform Nix/Cachix build. Only a successful matrix may
+advance `unstable` or publish the GitHub release notes. Branch-dispatched cache
+builds provide the same build validation without promoting a tag or release.
+Distribution is through Nix/Cachix; the current workflow does not attach portable
+binary archives. Historical versions remain in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
