@@ -12,6 +12,7 @@ const evidence = resolve(evidenceArg);
 mkdirSync(evidence, { recursive: true });
 const fixture = mkdtempSync('/tmp/b-');
 const home = join(fixture, 'h');
+const readyPrompt = process.getuid() === 0 ? /#(?=[\x1b \r\n])/ : /\$(?=[\x1b \r\n])/;
 for (const path of ['h', 'config', 'cache', 'state', 'run']) mkdirSync(join(fixture, path), { mode: 0o700 });
 const env = {
   PATH: '/usr/bin:/bin', HOME: home, SHELL: '/bin/sh', TERM: 'xterm-256color', LANG: 'C.UTF-8',
@@ -77,6 +78,10 @@ try {
     return null;
   });
   owned.push(daemon);
+  // A daemon PID exists before its pane/view is ready to accept TUI input.
+  // Require the literal shell prompt followed by terminal output/whitespace;
+  // '$p' in a capability query and a partial query are not prompt readiness.
+  await until('default shell prompt rendered by the TUI', () => readyPrompt.test(transcript));
   const marker = join(home, 'pane-pid');
   const contextFile = join(home, 'pane-context.json');
   terminal.stdin.write(`'${bkpr}' context --json > '${contextFile}' && printf '%s\\n' "$$" > '${marker}'\n`);
