@@ -1,3 +1,98 @@
+## [0.5.0](https://github.com/calops/bkpr/compare/v0.4.2...v0.5.0) (2026-11-06)
+
+### ⚠ BREAKING CHANGES
+
+* **client:** Spinner::new now requires a static frame slice. Callers choose spinner glyphs instead of relying on framework-owned frames.
+* **client:** use `bkpr_client::run_sessions` with `SessionTarget` instead of separate local/remote TUI entrypoints. TUI `-s` accepts `host:name`; use `local:` to keep literal local colons. Utility target names stay literal.
+* **client:** terminal scene surfaces now include a per-client palette override; surface constructors must set the palette field.
+* **control:** MCP control now accepts {operation,arguments,scope?} instead of recovery-only {request:...}. Explicit input.* operations use the separate terminal_input tool.
+* **client:** Replace `--ssh` with `-r`/`--remote` and `--helper` with `--remote-bkpr-bin`, including headless remote commands. No aliases or host:session grammar are retained.
+* **tui:** Physical-input consumers must handle `ClientEvent::Mouse` and `InputPart::Mouse` with explicit SGR button/action metadata.
+* **core:** `PaneSpawn` now accepts `panes` and `layout` and returns `created_panes`. Native wire family 6 requires matching client/server binaries; existing incompatible sessions are not restarted.
+* **protocol:** Wire family 5 requires matching client/server binaries.
+Existing version-4 sessions remain usable with their old clients; new
+clients refuse them without restarting daemons or replaying requests.
+* **tui:** ProjectSnapshot adds the public color_slot field. UiSurface::apply_theme_with_backgrounds is replaced by apply_theme_with_colors, accepting explicit foreground and background spans; all workspace callers are migrated.
+* the Rust Cell.text field is CompactString rather than String; JSON consumers are unchanged.
+* **tui:** SurfaceContent adds CellsClipped. Exhaustive scene-content matches must handle clipped cell surfaces.
+* **context:** `bkpr context` now returns one live pane context, not the whole registry. Use the versioned `inspect` request for registry snapshots.
+* **recovery:** the registry now writes version 3. Older daemons can't read updated records.
+* **ssh:** control protocol 4 requires launch-local agent source publication during client activation.
+* Protocol 3 replaces the single workspace layout with owned windows. Existing daemons need a fresh matching runtime; schema-1 metadata upgrades only when ownership is unambiguous.
+* replace the combined prototype with bkpr/bkprd and version-2 control; remove the old daemon and request interfaces.
+* legacy commands, plugin integration, Zellij runtime and old package outputs are removed from this replacement branch. The native executable currently exposes daemon, TUI, request and keyboard operations; remaining product services are developed against the new pane-first model.
+* **agy:** Bridge readiness uses notification_transport instead of future_turn_transport. AGY peer notifications can now steer active turns.
+* **agy:** Relay protocol 4 requires an explicit broker restart and managed harness relaunches. Existing brokers are never replaced automatically.
+
+### Features
+
+* add keyboard and mouse pane resizing ([ad02b86](https://github.com/calops/bkpr/commit/ad02b86b7e734e7db76bea8189d3a0738eb232f6))
+* add pane-first workspaces and a native TUI client ([aca5ca5](https://github.com/calops/bkpr/commit/aca5ca50346421811f0137b85a704125be15eff5))
+* add per-view native terminal search ([2295a5f](https://github.com/calops/bkpr/commit/2295a5fad277f4e628c9b27a47942b2ce33264c3))
+* add per-view terminal selection and copy ([5f57cad](https://github.com/calops/bkpr/commit/5f57cade38a919410e47f93c87e55ea04a6a541f))
+* add per-view TUI scrollback navigation ([b70076e](https://github.com/calops/bkpr/commit/b70076ec79591f2bf4d32c958ad490766897ae74))
+* add persistent installs for Claude, omp and AGY ([1e2ba2c](https://github.com/calops/bkpr/commit/1e2ba2c417586384bb2706ba574be7918e54c8f4))
+* **agy:** add relay integration and MCP installation ([a651a89](https://github.com/calops/bkpr/commit/a651a89723b90cf95a0bf2bfd0264e35bb2807fa))
+* **agy:** prefer active-turn peer notifications ([6095b4f](https://github.com/calops/bkpr/commit/6095b4fdf05fa8d1eaf2e17e9f20962c1cda25b3))
+* **client:** add independent multi-session attachments ([329ca83](https://github.com/calops/bkpr/commit/329ca837cb045d79b445fe5a441cba7c3943d2c7))
+* **client:** add live theme selection and resume typing from scrollback ([62be190](https://github.com/calops/bkpr/commit/62be190e2467f49154eefc84da6061e372cdaad8))
+* **client:** attach the TUI directly to remote sessions ([476e6eb](https://github.com/calops/bkpr/commit/476e6eb3b67cf9e7ffcd4567a648099d71ad0306))
+* **context:** bind native exec snapshots and live pane identity ([43798ec](https://github.com/calops/bkpr/commit/43798ec4587de3be34d82195c71e6a6a46c8209d))
+* **control:** expose discoverable CLI and MCP operations ([b41d187](https://github.com/calops/bkpr/commit/b41d1873921f1eb116df2eec2f5b0654c54b80cb))
+* make TUI startup and pane reopening usable ([a387cde](https://github.com/calops/bkpr/commit/a387cde56430665b52d8734fd71f4fd2afce08ff))
+* **recovery:** resume native harness conversations with fresh authority ([20d9574](https://github.com/calops/bkpr/commit/20d957461da0327f9ac5e930209d32b3f704aafb))
+* **relay:** steer Omp and Claude at native turn boundaries ([cd242e7](https://github.com/calops/bkpr/commit/cd242e769cb644fa71bad2ed4407720ba2e91e4b))
+* **remote:** connect to existing sessions over SSH ([2785501](https://github.com/calops/bkpr/commit/2785501c27fe96f0b6ba5e11fea807bc8170de9d))
+* restore local project metadata ([12b1013](https://github.com/calops/bkpr/commit/12b1013c355276bb014016311ab1f9f541c739ef))
+* restore native agent communication ([96370f3](https://github.com/calops/bkpr/commit/96370f367c59accd3a4a297784b8f6aaefc08cea))
+* restore native harness capture ([1f09f5a](https://github.com/calops/bkpr/commit/1f09f5ab941d37b3f26e8b36dd6df66d2de474b0))
+* restore native session and workspace workflows ([c5f9623](https://github.com/calops/bkpr/commit/c5f9623d13ccf94e1b8f6d0223187a9ce56b9c85))
+* restore owned workspace windows and session closure ([0105d29](https://github.com/calops/bkpr/commit/0105d299ba91be58d2f32f4b09d08ac28bfd3709))
+* reuse focused overlays for pane and workspace rename ([ff99c8c](https://github.com/calops/bkpr/commit/ff99c8c8957a5d972246ce56e9dfe3dababc6f9a))
+* **server:** expose immutable daemon spawn defaults ([df77ada](https://github.com/calops/bkpr/commit/df77ada3946726ba55bf6f54f5ec5b651e626746))
+* **session:** restore shells and active harnesses on cold startup ([92ee87d](https://github.com/calops/bkpr/commit/92ee87d5689178ba2f173dfea6c045219230abc3))
+* **ssh:** forward agents through the owning daemon ([0b38e46](https://github.com/calops/bkpr/commit/0b38e468b06286bdff22fd1199eb6262a0e9a420))
+* **tui:** restore contextual chrome and terminal-aware colors ([6cf9d0e](https://github.com/calops/bkpr/commit/6cf9d0e95e3b6ca691cb7db259a1f792adaae95e))
+* **tui:** restore main-aligned finder cards and raised overlays ([101aa47](https://github.com/calops/bkpr/commit/101aa474c001bb83fcee4a12a36933338b9a4ace))
+* **tui:** restore sidebar metadata and project colors ([5c0a8ad](https://github.com/calops/bkpr/commit/5c0a8adb4dc76632cb85446e48ca7034f0f348f2))
+* **tui:** show transient notices as dismissible toasts ([c203ace](https://github.com/calops/bkpr/commit/c203aceada4aa8a1f56539289bf91ca2b04f0307))
+* **ui:** add structure to naming overlays ([b49160f](https://github.com/calops/bkpr/commit/b49160f7e58909925c79bb13e531f1a8b342617c))
+* **ui:** default new sessions to rounded full frames ([e723496](https://github.com/calops/bkpr/commit/e7234969b537300d4f1abc8919ceaf94d0530fd7))
+* **ui:** join sidebar hover items with raised details cards ([c87100f](https://github.com/calops/bkpr/commit/c87100f066c48484a516e345b27a388608d8b876))
+* **ui:** merge cached recessed pane frames ([f94c048](https://github.com/calops/bkpr/commit/f94c0487f72429ece383cd8c2f78d475a8e522c5))
+* **ui:** render cached bee and hive markers ([a447e58](https://github.com/calops/bkpr/commit/a447e58aae19944b08cf27ad8f6491f602c86062))
+* **ui:** render finder and forms as raised tinted cards ([63b97ee](https://github.com/calops/bkpr/commit/63b97ee0fc9e5fd79ac885ed3ae7757a3fdcc44c))
+* **ui:** render hint cards as raised palette-aware surfaces ([8f7ee10](https://github.com/calops/bkpr/commit/8f7ee10e4e9e00fd3c42165231ddac32faf8d5bf))
+* **ui:** toggle graphical pane borders with Alt Shift B ([8694841](https://github.com/calops/bkpr/commit/8694841559d697e8dc4e08f1029777f06b5cb3a1))
+
+### Bug Fixes
+
+* **build:** reuse the validated native engine in just recipes ([61b8a79](https://github.com/calops/bkpr/commit/61b8a79cb5733f007ee538924aa42cd3061d469a))
+* **client:** refine session tree presentation ([42c3de6](https://github.com/calops/bkpr/commit/42c3de6d0dc5de30220a46329a5e2d94f1a28b18))
+* close completed shell projections and retire input cleanly ([fa2d970](https://github.com/calops/bkpr/commit/fa2d9704fa2506582c0d0ac5ddd467a5d538f400))
+* **core:** create panes with their final layout atomically ([b6c329c](https://github.com/calops/bkpr/commit/b6c329c7e0c3ec7a835bee199d36d77f2d7eed19))
+* **core:** publish effective native pane titles ([643b217](https://github.com/calops/bkpr/commit/643b217050d8d9f0df4cbfdabf61784901f0a52a))
+* **deps:** pin native bold and faint rendering fix ([766c161](https://github.com/calops/bkpr/commit/766c161fb01660da6c156c02e10429fe5a3f93b1))
+* eliminate full-screen scene and rendering bottlenecks ([c572794](https://github.com/calops/bkpr/commit/c572794f33be35f0e1563e61e622aa4fbaa64e8c))
+* preserve keyboard layout for modified keys ([a7a260a](https://github.com/calops/bkpr/commit/a7a260ae2846d82982a931ebc3e4f8f00b3a0bb0))
+* **relay:** complete startup locking for idle shutdown ([bd418d6](https://github.com/calops/bkpr/commit/bd418d60d456d70621fd81ff56f1af39c4def91b))
+* remove blocking scene polls and full-screen typing repaints ([bfd52ef](https://github.com/calops/bkpr/commit/bfd52ef74fa3030e6d3285ac6ed48bf9f8624ebc))
+* **session:** exit cleanly on expected shutdown ([62fcf99](https://github.com/calops/bkpr/commit/62fcf99b8824a3233a47fd6dec7c95d57e3144a0))
+* **tui:** preserve sidebar graphics and focus through navigation ([8b3145c](https://github.com/calops/bkpr/commit/8b3145ce7ce742d99205f5ec5e6d637baa63fa51))
+* **ui:** balance form padding and accent finder borders ([65db355](https://github.com/calops/bkpr/commit/65db35590124e8450e2b5fbee01d6428fd4a5e0e))
+* use a stable launch-local MCP name ([47cf655](https://github.com/calops/bkpr/commit/47cf65527c13818fe444c6fc17dd85daea7c0b87))
+
+### Performance Improvements
+
+* **engine:** avoid redundant cell grapheme queries ([e13b4e3](https://github.com/calops/bkpr/commit/e13b4e3007f13da0d42b4437518527b1fd44e1ed))
+* keep short terminal cell text inline ([d4c4562](https://github.com/calops/bkpr/commit/d4c456216090978b03fcff614578fc4b922f262f))
+* **protocol:** replace native JSON IPC with Planus ([22b8fdc](https://github.com/calops/bkpr/commit/22b8fdc3e7aab0070307b656449f6a9d9c0c31b5))
+* **protocol:** reuse scene encoder run buffers ([7b124fa](https://github.com/calops/bkpr/commit/7b124fa5710eeb98133ff73857ae7476630198df))
+
+### Code Refactoring
+
+* replace Zellij companion with native pane runtime ([773bf77](https://github.com/calops/bkpr/commit/773bf775422350a505dccb619513bd6ac7fe7c91))
+
 ## Native implementation development notes
 
 These notes describe the native replacement. Versioned release entries are
