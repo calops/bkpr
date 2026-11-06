@@ -126,14 +126,8 @@ fn enhanced_keyboard_keeps_shift_shortcuts_alternates_and_event_types() {
             b"\x1b[58:47;2:3;47u".as_slice(),
             b"\x1b[58:47;2:3u".as_slice(),
         ),
-        (
-            b"\x1b[58:47;4;47u".as_slice(),
-            b"\x1b[58:47;4;47u".as_slice(),
-        ),
-        (
-            b"\x1b[58:47;6;47u".as_slice(),
-            b"\x1b[58:47;6;47u".as_slice(),
-        ),
+        (b"\x1b[58:47;4u".as_slice(), b"\x1b[58:47;4u".as_slice()),
+        (b"\x1b[58:47;6u".as_slice(), b"\x1b[58:47;6u".as_slice()),
         (
             b"\x1b[233:50;2;50u".as_slice(),
             b"\x1b[233:50;2;50u".as_slice(),
