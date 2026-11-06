@@ -1,3 +1,9 @@
+## [0.5.1](https://github.com/calops/bkpr/compare/v0.5.0...v0.5.1) (2026-11-06)
+
+### Bug Fixes
+
+* preserve layout text through native Shift encoding ([713d00b](https://github.com/calops/bkpr/commit/713d00b0c516f025a3e3741e610a6cbdc34c9f32))
+
 ## [0.5.0](https://github.com/calops/bkpr/compare/v0.4.2...v0.5.0) (2026-11-06)
 
 ### ⚠ BREAKING CHANGES
