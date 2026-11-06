@@ -1,4 +1,14 @@
-## Unreleased
+## Native implementation development notes
+
+These notes describe the native replacement. Versioned release entries are
+generated above this section by the release workflow. The former Zellij runtime
+is not retained as a backend or an upgrade path for existing sessions.
+
+### Packaging and releases
+
+* Restore sandboxed native Nix packages and app outputs for x86-64 Linux, ARM64 Linux and ARM64 macOS. Ship matching `bkpr` and `bkprd` executables together and cache the pinned Ghostty engine separately.
+* Restore the three-platform Cachix build, immutable Conventional Commit version tags and manual release preview. Branch dispatch validates the same packages without promoting `unstable` or publishing notes; tagged publication remains gated on every platform build.
+* Keep automatic versions in `0.x`, including the breaking native replacement. Earlier releases and their sessions belong to the former implementation; running native daemons also retain their existing code until explicitly restarted.
 
 ### Fixes
 
@@ -32,11 +42,11 @@
 
 ### Breaking branch replacement
 
-* `feat/pane-first-mux` replaces the previous runtime with seven focused crates: `bkpr`, `bkpr-client`, `bkpr-tui-framework`, `bkpr-server` (the `bkprd` executable), `bkpr-core`, `bkpr-protocol` and `bkpr-terminal-engine`. There is no legacy launcher, plugin, binary alias or compatibility track on this branch.
+* Replace the previous runtime with seven focused crates: `bkpr`, `bkpr-client`, `bkpr-tui-framework`, `bkpr-server` (the `bkprd` executable), `bkpr-core`, `bkpr-protocol` and `bkpr-terminal-engine`. There is no legacy launcher, plugin, binary alias or compatibility track.
 * Advance native wire family 5 → 6 for batch `pane_spawn` and explicit placement. Return `created_panes` reference-to-ID mappings; require a matching client/server pair and leave existing incompatible sessions running without automatic restart. Durable schema 4 is unchanged.
-* Remove the old host-runtime flake input, WASI build/export paths, sibling-runtime recipes and obsolete package/cache/publication automation. Nix now supplies only the default native development shell; Cargo plus the pinned engine preparation helper is the supported build path. Native Nix packaging requires a reproducible, offline engine dependency closure and runtime acceptance before package/app outputs return.
-* Expose the native daemon, TUI, typed version-6 control protocol and keyboard client. Backend-owned workspaces contain independent windows/layouts and owned panes; layout-only removal or client detach does not terminate a process. Metadata persists, but process and terminal-content recovery is not implemented. Forge/CI services remain unavailable. Source from current `main` and the native fork remains starting material for reuse or redesign, not a frozen API or regression requirement.
-* Native graphics initial-presentation gates remain unaccepted. This replacement is not production acceptance and does not modify installed applications or live sessions.
+* Remove the old host-runtime flake input, WASI build/export paths and sibling-runtime recipes. Native packages now use a reproducible, offline Ghostty dependency closure; the default devshell keeps the incremental Cargo development path.
+* Expose the native daemon, TUI, typed version-6 protocol and keyboard client. Backend-owned workspaces contain independent windows/layouts and owned panes; layout-only removal or client detach does not terminate a process. Layouts, directories and authenticated harness recovery intent persist, but running processes and terminal contents do not. Forge/CI services remain unavailable.
+* Native acceptance and remaining limitations are recorded in the engine report. Publication does not replace installed applications or restart live sessions.
 
 ### Remote sessions
 
