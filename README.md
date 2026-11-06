@@ -1289,8 +1289,9 @@ native clipboard patch and maintainer metadata still need upstream review.
 - `bkpr-VERSION-linux-x86_64.tar.gz`: adjacent `bin/bkpr` and `bin/bkprd`, plus
   `share/` licenses and build provenance. Extract it and keep both programs
   together; add its `bin/` directory to `PATH` or invoke `bin/bkpr` directly.
-- `bkpr_VERSION_amd64.deb`: installs the same programs under `/usr/bin` and data
-  under `/usr/share`. Install with `sudo apt install ./bkpr_VERSION_amd64.deb`.
+- `bkpr-VERSION-linux-x86_64.deb`: installs the same programs under `/usr/bin`
+  and data under `/usr/share`. Install with
+  `sudo apt install ./bkpr-VERSION-linux-x86_64.deb`.
 - `SHA256SUMS`: checksums for both archives.
 
 These downloads do **not** require Nix. They require glibc **2.39 or newer** and
