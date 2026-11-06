@@ -53,11 +53,19 @@
         system:
         let
           pkgs = pkgsFor system;
-          libghostty-vt = pkgs.callPackage ./nix/libghostty-vt.nix { };
-          bkpr = pkgs.callPackage ./nix/bkpr.nix {
-            inherit libghostty-vt src version;
-            toolchain = toolchainFor pkgs;
-          };
+          libghostty-vt = pkgs.callPackage ./nix/packages/libghostty-vt/package.nix { };
+          bkpr =
+            (pkgs.callPackage ./nix/packages/bkpr/package.nix {
+              inherit libghostty-vt;
+            }).overrideAttrs
+              {
+                inherit src version;
+                # The standalone package defaults to the published release and its
+                # cargoHash. Development/release CI uses this workspace's lock.
+                cargoDeps = pkgs.rustPlatform.importCargoLock {
+                  lockFile = ./Cargo.lock;
+                };
+              };
         in
         {
           inherit bkpr libghostty-vt;

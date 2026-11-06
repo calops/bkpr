@@ -104,6 +104,9 @@ is not retained as a backend or an upgrade path for existing sessions.
 * Restore sandboxed native Nix packages and app outputs for x86-64 Linux, ARM64 Linux and ARM64 macOS. Ship matching `bkpr` and `bkprd` executables together and cache the pinned Ghostty engine separately.
 * Restore the three-platform Cachix build, immutable Conventional Commit version tags and manual release preview. Branch dispatch validates the same packages without promoting `unstable` or publishing notes; tagged publication remains gated on every platform build.
 * Keep automatic versions in `0.x`, including the breaking native replacement. Earlier releases and their sessions belong to the former implementation; running native daemons also retain their existing code until explicitly restarted.
+* Add Linux x86-64 tarball and Debian release assets from the exact Nix-built `bkpr`/`bkprd` pair, with licenses, provenance and checksums. Relocate the ELF interpreter/search path for glibc 2.39+ hosts without Nix; verify default client/daemon discovery, authenticated pane context and shutdown in isolated Ubuntu containers.
+* Move native packages into self-contained nixpkgs-style folders with released source/Cargo pins and ordinary `callPackage` arguments. Keep checkout overrides in the flake and select `bkpr` as the package's main program.
+* Consolidate build/cache, Linux packaging/smoke and publication into one workflow graph. Keep manual version/tag planning separate; allow verified asset backfills without moving immutable tags, changing release notes or overwriting conflicting files. Downloadable macOS installers remain deferred.
 
 ### Fixes
 

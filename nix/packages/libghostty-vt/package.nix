@@ -1,58 +1,36 @@
 {
   lib,
   stdenv,
-  stdenvNoCC,
   fetchurl,
   callPackage,
   git,
   pkg-config,
   darwin,
   xcbuild,
+  zig_0_17 ? null,
 }:
 let
   revision = "93967b7f9478e94dcbb42125c8a90f34feb40d75";
   sourceSha256 = "af551aa496cf54ff734e11563d45fe2c49739ee754d1740d1ac984a67a42dc70";
   patchSha256 = "196b39997c6552d9158f763555a72784aae2dbf4fa61aa500554bfd07e28d32c";
-  platforms = {
-    x86_64-linux = {
-      platform = "x86_64-linux";
-      target = "x86_64-linux-gnu";
-      sha256 = "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026";
-    };
-    aarch64-linux = {
-      platform = "aarch64-linux";
-      target = "aarch64-linux-gnu";
-      sha256 = "9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8";
-    };
-    aarch64-darwin = {
-      platform = "aarch64-macos";
-      target = "aarch64-macos";
-      sha256 = "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a";
-    };
+  targets = {
+    x86_64-linux = "x86_64-linux-gnu";
+    aarch64-linux = "aarch64-linux-gnu";
+    aarch64-darwin = "aarch64-macos";
   };
-  host = platforms.${stdenv.hostPlatform.system};
-  zig = stdenvNoCC.mkDerivation {
-    pname = "bkpr-zig";
-    version = "0.17.0";
-    src = fetchurl {
-      url = "https://ziglang.org/download/0.17.0/zig-${host.platform}-0.17.0.tar.xz";
-      inherit (host) sha256;
-    };
-    dontConfigure = true;
-    dontBuild = true;
-    dontFixup = true;
-    installPhase = ''
-      mkdir -p "$out/bin"
-      cp -R lib LICENSE "$out/"
-      cp zig "$out/zig"
-      # Retain the official executable/lib layout; PATH uses a convenience link.
-      ln -s ../zig "$out/bin/zig"
-    '';
-    meta.license = lib.licenses.mit;
+  target = targets.${stdenv.hostPlatform.system};
+  # Use the ordinary nixpkgs compiler when available. The pinned nixpkgs
+  # snapshot only has Zig <= 0.16, which cannot build this native revision.
+  zig = if zig_0_17 != null then zig_0_17 else callPackage ./zig.nix { };
+  # Vendored zon2nix output from this exact Ghostty revision. Do not import
+  # it from a fetched derivation: every transitive source is fixed-hash.
+  dependencies = callPackage ./dependencies.nix { zig_0_17 = zig; };
+  # This contribution is not merged upstream. Fetch the exact reviewed patch
+  # from Bkpr's immutable release, independently of Bkpr's local source tree.
+  clipboardOfferPatch = fetchurl {
+    url = "https://raw.githubusercontent.com/calops/bkpr/v0.5.0/vendor/libghostty-rs/crates/libghostty-vt-sys/native/clipboard-offer.patch";
+    sha256 = patchSha256;
   };
-  # Vendored from this exact Ghostty revision, not imported from a fetched
-  # derivation at evaluation time. All transitive sources have fixed hashes.
-  dependencies = callPackage ./ghostty-dependencies.nix { zig_0_17 = zig; };
   simdutfLicense = fetchurl {
     url = "https://raw.githubusercontent.com/simdutf/simdutf/v9.0.0/LICENSE-MIT";
     sha256 = "fc8dbc04e03ad4efc08a647ffe7f995b811a95bc04c0e85a56d5277c6593fa5f";
@@ -66,13 +44,13 @@ stdenv.mkDerivation {
     url = "https://codeload.github.com/ghostty-org/ghostty/tar.gz/${revision}";
     sha256 = sourceSha256;
   };
-  patches = [ ../vendor/libghostty-rs/crates/libghostty-vt-sys/native/clipboard-offer.patch ];
+  patches = [ clipboardOfferPatch ];
   patchFlags = [
     "-p1"
     "--fuzz=0"
   ];
   prePatch = ''
-    printf '%s  %s\n' '${patchSha256}' '${../vendor/libghostty-rs/crates/libghostty-vt-sys/native/clipboard-offer.patch}' | sha256sum --check --status
+    printf '%s  %s\n' '${patchSha256}' '${clipboardOfferPatch}' | sha256sum --check --status
   '';
   nativeBuildInputs = [
     git
@@ -101,7 +79,7 @@ stdenv.mkDerivation {
     cp -R ${dependencies} zig-packages
     chmod -R u+w "$TMPDIR/zig" zig-packages
     "$TMPDIR/zig/bin/zig" build -j8 --system "$PWD/zig-packages" \
-      -Demit-lib-vt=true -Doptimize=ReleaseSafe -Dsimd=true -Dcpu=baseline -Dtarget=${host.target} \
+      -Demit-lib-vt=true -Doptimize=ReleaseSafe -Dsimd=true -Dcpu=baseline -Dtarget=${target} \
       -Dapp-runtime=none -Demit-xcframework=false \
       --prefix "$TMPDIR/ghostty-install"
     runHook postBuild
@@ -138,6 +116,6 @@ stdenv.mkDerivation {
       asl20
       bsd3
     ];
-    platforms = builtins.attrNames platforms;
+    platforms = builtins.attrNames targets;
   };
 }
