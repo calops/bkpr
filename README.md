@@ -1245,6 +1245,8 @@ in the native plan rather than be inferred from a successful build.
 
 ## Packaging and releases
 
+### Nix
+
 The Nix flake provides `bkpr` and its matching `bkprd` together, plus the pinned
 native engine as a separately cached `libghostty-vt` output. Builds run on
 x86-64 Linux, ARM64 Linux and ARM64 macOS. Linux has the recorded full native
@@ -1263,6 +1265,43 @@ that configuration permits downloading cached builds. Engine sources, the
 clipboard patch, Zig and its dependencies are pinned; ordinary Nix builds use
 their supplied offline closure, not the developer preparation script's network
 access.
+
+The flake exports `packages.bkpr` (also the default package) with both executables
+and `meta.mainProgram = "bkpr"`. The package recipes live in
+[`nix/packages/bkpr/package.nix`](nix/packages/bkpr/package.nix) and
+[`nix/packages/libghostty-vt/package.nix`](nix/packages/libghostty-vt/package.nix).
+They use ordinary nixpkgs `callPackage` arguments and pin released sources,
+Cargo dependencies and the native engine independently of the flake. The flake
+only overrides the product source/version and locked Cargo dependencies for the
+checkout being built; package builds use nixpkgs' Rust platform, not the devshell
+toolchain.
+
+The two package folders can be copied outside this repository and built without
+flake-specific arguments or access to its vendor tree. This is packaging
+structure, not a claim of nixpkgs acceptance: the official prebuilt Zig fallback,
+native clipboard patch and maintainer metadata still need upstream review.
+
+### Linux downloads
+
+[GitHub releases](https://github.com/calops/bkpr/releases) also provide native
+**Linux x86-64** assets built from the same Nix-produced executable pair:
+
+- `bkpr-VERSION-linux-x86_64.tar.gz`: adjacent `bin/bkpr` and `bin/bkprd`, plus
+  `share/` licenses and build provenance. Extract it and keep both programs
+  together; add its `bin/` directory to `PATH` or invoke `bin/bkpr` directly.
+- `bkpr_VERSION_amd64.deb`: installs the same programs under `/usr/bin` and data
+  under `/usr/share`. Install with `sudo apt install ./bkpr_VERSION_amd64.deb`.
+- `SHA256SUMS`: checksums for both archives.
+
+These downloads do **not** require Nix. They require glibc **2.39 or newer** and
+`libgcc_s.so.1` (`libgcc-s1` on Debian/Ubuntu); Ubuntu 24.04 is exercised in CI.
+The asset step replaces the Nix ELF interpreter and clears its runtime search
+path rather than shipping Nix wrappers or bundling libc. Git, GitHub CLI, SSH
+and harness programs are optional host installations, resolved from `PATH`.
+The first downloadable assets are Linux-only; macOS remains available through
+Nix, with a native macOS archive/installer deferred rather than a `.dmg`.
+
+### Upgrade and publication policy
 
 **Upgrading from the Zellij implementation:** existing Zellij sessions are not
 adopted or converted. Keep the older executable available to finish those
@@ -1284,11 +1323,17 @@ node --test .github/scripts/*.test.cjs .github/scripts/*.test.mjs
 
 `npm run release -- --dry-run` previews the version on `main` without tagging.
 Publishing atomically updates `main` and its immutable version tag, then
-dispatches the three-platform Nix/Cachix build. Only a successful matrix may
-advance `unstable` or publish the GitHub release notes. Branch-dispatched cache
-builds provide the same build validation without promoting a tag or release.
-Distribution is through Nix/Cachix; the current workflow does not attach portable
-binary archives. Historical versions remain in [CHANGELOG.md](CHANGELOG.md).
+dispatches **Build, cache and publish**. That single workflow shows the
+three-platform Nix/Cachix matrix, Linux tarball/Debian packaging, no-Nix runtime
+smokes and publication as one job graph. The separate **Tag next release**
+workflow is the manual version/tag entrypoint.
+
+Every platform build and both final Linux archive smokes must succeed before
+publishing assets or advancing `unstable`. Branch dispatch runs the same checks
+without publishing. An explicit `source_tag` dispatch can add verified assets
+to an existing immutable `0.x` release without changing its tag, notes or
+`unstable`; differing existing assets are never overwritten.
+Historical versions remain in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
