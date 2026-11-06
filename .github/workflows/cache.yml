@@ -4,11 +4,6 @@ on:
     tags:
       - "**"
   workflow_dispatch:
-    inputs:
-      source_tag:
-        description: Backfill assets for this existing immutable 0.x release tag (empty = normal branch preflight)
-        type: string
-        default: ""
 permissions:
   contents: read
 concurrency:
@@ -19,10 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       build: ${{ steps.policy.outputs.build }}
-      source_sha: ${{ steps.policy.outputs.source_sha }}
-      source_tag: ${{ steps.policy.outputs.source_tag }}
       release: ${{ steps.policy.outputs.release }}
-      backfill: ${{ steps.policy.outputs.backfill }}
       prerelease: ${{ steps.policy.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v5
@@ -32,33 +24,14 @@ jobs:
         env:
           REF_TYPE: ${{ github.ref_type }}
           TAG: ${{ github.ref_name }}
-          SOURCE_TAG: ${{ inputs.source_tag }}
         run: |
-          source_tag=''
-          backfill=false
-          if [[ -n "$SOURCE_TAG" ]]; then
-            test "$REF_TYPE" = branch
-            classification=$(bash .github/scripts/classify-tag.sh "$SOURCE_TAG")
-            [[ "$classification" == *'release=true'* ]]
-            source_tag=$SOURCE_TAG
-            source_sha=$(git rev-parse "refs/tags/$source_tag^{commit}")
-            backfill=true
-            echo 'build=true' >> "$GITHUB_OUTPUT"
-          elif [[ "$REF_TYPE" == tag ]]; then
+          if [[ "$REF_TYPE" == tag ]]; then
             bash .github/scripts/tag-policy.sh build "$TAG" >> "$GITHUB_OUTPUT"
-            source_tag=$TAG
-            source_sha=$(git rev-parse "refs/tags/$TAG^{commit}")
+            bash .github/scripts/classify-tag.sh "$TAG" >> "$GITHUB_OUTPUT"
           else
-            # Branch dispatch builds and smokes assets but never publishes.
+            # Branch dispatch builds and caches packages but never publishes.
             echo 'build=true' >> "$GITHUB_OUTPUT"
-            source_sha=$(git rev-parse HEAD)
           fi
-          {
-            echo "source_sha=$source_sha"
-            echo "source_tag=$source_tag"
-            echo "backfill=$backfill"
-            bash .github/scripts/classify-tag.sh "$source_tag"
-          } >> "$GITHUB_OUTPUT"
   build:
     if: needs.prepare.outputs.build == 'true'
     needs: prepare
@@ -75,8 +48,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.prepare.outputs.source_sha }}
       - name: Require Cachix upload token
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -98,117 +69,11 @@ jobs:
           package=$(nix path-info .#bkpr)
           "$package/bin/bkpr" --help
           "$package/bin/bkprd" --help
-  linux-assets:
-    name: Package and verify Linux assets
-    if: needs.prepare.outputs.build == 'true'
-    needs:
-      - prepare
-      - build
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          path: tooling
-          persist-credentials: false
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.prepare.outputs.source_sha }}
-          path: payload
-          persist-credentials: false
-      - uses: cachix/install-nix-action@v31
-        with:
-          github_access_token: ${{ github.token }}
-          extra_nix_config: |
-            max-jobs = 1
-            cores = 8
-      - uses: cachix/cachix-action@v17
-        with:
-          name: bkpr
-      - name: Install relocation tools
-        run: sudo apt-get update && sudo apt-get install --yes patchelf binutils
-      - name: Stage the exact Nix-built native pair
-        id: stage
-        env:
-          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
-          SOURCE_TAG: ${{ needs.prepare.outputs.release == 'true' && needs.prepare.outputs.source_tag || '' }}
-        run: |
-          test "$(git -C payload rev-parse HEAD)" = "$SOURCE_SHA"
-          version=$(node -e 'const fs = require("fs"); const text = fs.readFileSync("payload/Cargo.toml", "utf8"); const section = text.split("[workspace.package]")[1]?.split(/^\[/m)[0]; const match = section?.match(/^version\s*=\s*"([^"]+)"/m); if (!match) throw Error("missing workspace version"); console.log(match[1]);')
-          if [[ -n "$SOURCE_TAG" ]]; then test "$SOURCE_TAG" = "v$version"; fi
-          # Debian orders a prerelease before its stable version using '~'.
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "deb_version=${version/-/~}" >> "$GITHUB_OUTPUT"
-          epoch=$(git -C payload show -s --format=%ct HEAD)
-          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
-          binaries=$(nix build --no-link --print-out-paths ./payload#bkpr.binaries)
-          node tooling/.github/scripts/stage-linux-assets.mjs "$binaries" stage assets "$version" "$SOURCE_SHA" "$SOURCE_TAG" "$epoch"
-      - name: Build Debian package with build-deb-action v4.3.0
-        id: deb
-        uses: jiro4989/build-deb-action@a883c65147d80579cb359548b9a902ff0a35ae5b
-        env:
-          SOURCE_DATE_EPOCH: ${{ steps.stage.outputs.epoch }}
-        with:
-          package: bkpr
-          package_root: stage/deb-root
-          maintainer: Rémi Labeyrie <calops@tocards.net>
-          version: ${{ steps.stage.outputs.deb_version }}
-          arch: amd64
-          depends: libc6 (>= 2.39), libgcc-s1
-          homepage: https://github.com/calops/bkpr
-          section: utils
-          priority: optional
-          desc: Native terminal multiplexer; optional git, gh and ssh are resolved from host PATH
-      - name: Extract both final assets and verify Debian metadata
-        env:
-          DEB_FILE: ${{ steps.deb.outputs.file_name }}
-          VERSION: ${{ steps.stage.outputs.version }}
-          DEB_VERSION: ${{ steps.stage.outputs.deb_version }}
-        run: |
-          test "$(dpkg-deb --field "$DEB_FILE" Package)" = bkpr
-          test "$(dpkg-deb --field "$DEB_FILE" Architecture)" = amd64
-          test "$(dpkg-deb --field "$DEB_FILE" Version)" = "$DEB_VERSION"
-          test "$(dpkg-deb --field "$DEB_FILE" Depends)" = 'libc6 (>= 2.39), libgcc-s1'
-          mv "$DEB_FILE" "assets/bkpr-${VERSION}-linux-x86_64.deb"
-          mkdir tar-extracted deb-extracted evidence
-          tar -xzf "assets/bkpr-${VERSION}-linux-x86_64.tar.gz" -C tar-extracted
-          dpkg-deb --extract "assets/bkpr-${VERSION}-linux-x86_64.deb" deb-extracted
-          for program in bkpr bkprd; do
-            cmp "tar-extracted/bkpr-${VERSION}-linux-x86_64/bin/$program" "deb-extracted/usr/bin/$program"
-          done
-      - name: Smoke both delivered assets on Ubuntu without Nix
-        env:
-          VERSION: ${{ steps.stage.outputs.version }}
-        run: |
-          docker build --file tooling/packaging/linux-smoke.Dockerfile --tag bkpr-release-smoke tooling/packaging
-          for format in tar deb; do
-            if [[ "$format" == tar ]]; then payload="$PWD/tar-extracted/bkpr-${VERSION}-linux-x86_64"; else payload="$PWD/deb-extracted/usr"; fi
-            mkdir "evidence/$format"
-            docker run --rm --network none --read-only --user "$(id -u):$(id -g)" \
-              --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
-              --mount "type=bind,source=$payload,target=/payload,readonly" \
-              --mount "type=bind,source=$PWD/tooling/.github/scripts/smoke-linux-assets.mjs,target=/tooling/smoke-linux-assets.mjs,readonly" \
-              --mount "type=bind,source=$PWD/evidence/$format,target=/evidence" \
-              bkpr-release-smoke node /tooling/smoke-linux-assets.mjs /payload/bin "$VERSION" /evidence
-          done
-      - name: Hash final release files
-        run: (cd assets && sha256sum -- *.tar.gz *.deb > SHA256SUMS)
-      - uses: actions/upload-artifact@v7
-        with:
-          name: linux-x86_64-release-assets
-          path: assets/*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: linux-x86_64-release-evidence
-          path: evidence/
-          if-no-files-found: warn
   promote-unstable:
-    if: github.ref_type == 'tag' && github.ref_name != 'unstable' && needs.prepare.outputs.backfill != 'true'
+    if: github.ref_type == 'tag' && github.ref_name != 'unstable'
     needs:
       - prepare
       - build
-      - linux-assets
     runs-on: ubuntu-24.04
     concurrency:
       group: unstable-tag-promotion
@@ -224,68 +89,25 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: bash .github/scripts/tag-policy.sh promote "$TAG"
   release:
-    name: Publish verified release assets
-    if: needs.prepare.outputs.release == 'true'
+    name: Publish release notes
+    if: github.ref_type == 'tag' && needs.prepare.outputs.release == 'true'
     needs:
       - prepare
       - build
-      - linux-assets
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.prepare.outputs.source_sha }}
           fetch-depth: 0
-      - name: Revalidate immutable source tag
-        env:
-          TAG: ${{ needs.prepare.outputs.source_tag }}
-          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
-        run: test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$SOURCE_SHA"
-      - uses: actions/download-artifact@v8
-        with:
-          name: linux-x86_64-release-assets
-          path: assets
-      - name: Verify downloaded assets
-        run: (cd assets && sha256sum --check SHA256SUMS)
       - name: Prepare release notes
-        if: ${{ needs.prepare.outputs.backfill != 'true' }}
         env:
-          TAG: ${{ needs.prepare.outputs.source_tag }}
+          TAG: ${{ github.ref_name }}
           GH_TOKEN: ${{ github.token }}
         run: node .github/scripts/release-notes.mjs "$TAG" > release-notes.md
       - uses: softprops/action-gh-release@v3
-        if: ${{ needs.prepare.outputs.backfill != 'true' }}
         with:
           body_path: release-notes.md
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
-          tag_name: ${{ needs.prepare.outputs.source_tag }}
-          fail_on_unmatched_files: true
-          files: |
-            assets/*.tar.gz
-            assets/*.deb
-            assets/SHA256SUMS
-      - name: Backfill existing release assets without changing notes or tags
-        if: needs.prepare.outputs.backfill == 'true'
-        env:
-          TAG: ${{ needs.prepare.outputs.source_tag }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release view "$TAG" >/dev/null
-          mkdir existing-assets
-          for file in assets/*; do
-            name=${file##*/}
-            if gh release view "$TAG" --json assets --jq '.assets[].name' | grep --fixed-strings --line-regexp --quiet "$name"; then
-              gh release download "$TAG" --pattern "$name" --dir existing-assets
-              cmp "$file" "existing-assets/$name"
-            fi
-          done
-          # Validate every existing file before adding any new asset. Publish
-          # the checksum manifest last, after its archives are available.
-          for file in assets/*.tar.gz assets/*.deb assets/SHA256SUMS; do
-            name=${file##*/}
-            if [[ ! -f "existing-assets/$name" ]]; then
-              gh release upload "$TAG" "$file"
-            fi
-          done
+          tag_name: ${{ github.ref_name }}
