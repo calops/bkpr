@@ -79,6 +79,71 @@ fn layout_control_keys_do_not_use_the_pc101_alternate() {
     assert_eq!(terminal.encode_key(&event).unwrap(), b"w");
 }
 #[test]
+fn shifted_layout_text_survives_application_keyboard_modes() {
+    for mode in [b"".as_slice(), b"\x1b[>1u".as_slice()] {
+        let mut terminal = Terminal::new(size(8, 16)).unwrap();
+        terminal.feed(mode).unwrap();
+        for (wire, expected) in [
+            (b"\x1b[58:47;2;47u".as_slice(), b"/".as_slice()),
+            (b"\x1b[59:46;2;46u".as_slice(), b".".as_slice()),
+            (b"\x1b[49:33;2;33u".as_slice(), b"!".as_slice()),
+            (b"\x1b[97:65;2;65u".as_slice(), b"A".as_slice()),
+        ] {
+            let event = keys(wire).pop().unwrap();
+            assert_eq!(terminal.encode_key(&event).unwrap(), expected);
+        }
+        // The previous text-producing Shift must not consume a later
+        // navigation modifier or leave Shift stuck on an ordinary control key.
+        let arrow = keys(b"\x1b[1;2D").pop().unwrap();
+        assert_eq!(terminal.encode_key(&arrow).unwrap(), b"\x1b[1;2D");
+        let control = keys(b"\x1b[119::122;5;u").pop().unwrap();
+        assert_eq!(
+            terminal.encode_key(&control).unwrap(),
+            if mode.is_empty() {
+                b"\x17".as_slice()
+            } else {
+                b"\x1b[119;5u".as_slice()
+            }
+        );
+        let release = keys(b"\x1b[58:47;2:3;47u").pop().unwrap();
+        assert!(terminal.encode_key(&release).unwrap().is_empty());
+    }
+}
+#[test]
+fn enhanced_keyboard_keeps_shift_shortcuts_alternates_and_event_types() {
+    let mut terminal = Terminal::new(size(8, 16)).unwrap();
+    terminal.feed(b"\x1b[>31u").unwrap();
+    for (wire, expected) in [
+        (
+            b"\x1b[58:47;2;47u".as_slice(),
+            b"\x1b[58:47;2;47u".as_slice(),
+        ),
+        (
+            b"\x1b[58:47;2:2;47u".as_slice(),
+            b"\x1b[58:47;2:2;47u".as_slice(),
+        ),
+        (
+            b"\x1b[58:47;2:3;47u".as_slice(),
+            b"\x1b[58:47;2:3u".as_slice(),
+        ),
+        (
+            b"\x1b[58:47;4;47u".as_slice(),
+            b"\x1b[58:47;4;47u".as_slice(),
+        ),
+        (
+            b"\x1b[58:47;6;47u".as_slice(),
+            b"\x1b[58:47;6;47u".as_slice(),
+        ),
+        (
+            b"\x1b[233:50;2;50u".as_slice(),
+            b"\x1b[233:50;2;50u".as_slice(),
+        ),
+    ] {
+        let event = keys(wire).pop().unwrap();
+        assert_eq!(terminal.encode_key(&event).unwrap(), expected);
+    }
+}
+#[test]
 fn mouse_maps_cells_to_canonical_not_physical_metrics_and_rejects_padding() {
     assert_eq!(
         mouse_position(10, 5, size(8, 16), size(16, 24)),

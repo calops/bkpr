@@ -180,7 +180,6 @@ impl Terminal {
                 KeyAction::Repeat => sdk::key::Action::Repeat,
             })
             .set_mods(Mods::from_bits_retain(event.modifiers))
-            .set_consumed_mods(Mods::empty())
             .set_composing(false)
             .set_unshifted_codepoint(char::from_u32(event.unshifted_codepoint).unwrap_or('\0'));
         let text = if event.text.is_empty()
@@ -194,6 +193,20 @@ impl Terminal {
             Some(event.text.as_str())
         };
         self.key_event.set_utf8(text);
+        // Shift used to produce layout text is not an additional shortcut
+        // modifier. Otherwise Kitty disambiguation encodes AZERTY '/' as
+        // Shift+':' instead of forwarding its printable text.
+        let shift_consumed = event.modifiers & 1 != 0
+            && text.is_some_and(|text| {
+                text.chars()
+                    .next()
+                    .is_some_and(|c| c as u32 != event.unshifted_codepoint)
+            });
+        self.key_event.set_consumed_mods(if shift_consumed {
+            Mods::SHIFT
+        } else {
+            Mods::empty()
+        });
         let result = encoded(|buffer| self.key_encoder.encode(&self.key_event, buffer));
         self.key_event.set_utf8(None::<String>);
         result
