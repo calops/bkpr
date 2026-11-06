@@ -89,6 +89,7 @@
         in
         {
           default = pkgs.mkShell {
+            name = "bkpr";
             packages = [
               (toolchainFor pkgs)
               pkgs.just
