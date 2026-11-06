@@ -107,6 +107,7 @@ is not retained as a backend or an upgrade path for existing sessions.
 * Add Linux x86-64 tarball and Debian release assets from the exact Nix-built `bkpr`/`bkprd` pair, with licenses, provenance and checksums. Relocate the ELF interpreter/search path for glibc 2.39+ hosts without Nix; verify default client/daemon discovery, authenticated pane context and shutdown in isolated Ubuntu containers.
 * Move native packages into self-contained nixpkgs-style folders with released source/Cargo pins and ordinary `callPackage` arguments. Keep checkout overrides in the flake and select `bkpr` as the package's main program.
 * Consolidate build/cache, Linux packaging/smoke and publication into one workflow graph. Keep manual version/tag planning separate; allow verified asset backfills without moving immutable tags, changing release notes or overwriting conflicting files. Downloadable macOS installers remain deferred.
+* Wait for the default shell prompt to reach the TUI before sending release-smoke input; a daemon PID is not input readiness. Use current artifact actions instead of their deprecated Node 20 releases.
 
 ### Fixes
 
