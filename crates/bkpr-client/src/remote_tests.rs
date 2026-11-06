@@ -334,6 +334,9 @@ fn transport_failure_retires_every_endpoint_without_reconnect_or_empty_inspectio
         }
     }
     let (lifetime, mut daemon) = UnixStream::pair().unwrap();
+    // Model a descriptor inherited by another concurrently forking fixture.
+    // Dropping this server's descriptor alone must not be our EOF signal.
+    let _inherited_daemon = daemon.try_clone().unwrap();
     let connector = Arc::new(Once {
         stream: Mutex::new(Some(lifetime)),
         opens: AtomicUsize::new(0),
@@ -363,6 +366,9 @@ fn transport_failure_retires_every_endpoint_without_reconnect_or_empty_inspectio
             failure: None,
         }).unwrap();
             close_now.recv_timeout(Duration::from_secs(3)).unwrap();
+            // shutdown reaches the peer even if a concurrent fork temporarily
+            // retains another descriptor for this same socket.
+            daemon.shutdown(std::net::Shutdown::Both).unwrap();
         });
     let client = RegisteredClient::register_connector(connector.clone(), identity, None).unwrap();
     let (stop, _receiver) = watch::channel(false);
