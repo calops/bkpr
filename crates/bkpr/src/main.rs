@@ -45,6 +45,18 @@ fn main() -> Result<()> {
         print!("{}", help::KEYS);
         return Ok(());
     }
+    if let Some(arguments) = matches.subcommand_matches("completions") {
+        let shell = *arguments
+            .get_one::<clap_complete::Shell>("shell")
+            .context("missing shell")?;
+        clap_complete::generate(
+            shell,
+            &mut cli::command(),
+            "bkpr",
+            &mut std::io::stdout().lock(),
+        );
+        return Ok(());
+    }
     let roots = session::Roots::inherited()?;
     if command == "list" {
         println!("{}", serde_json::to_string(&session::list(&roots)?)?);
