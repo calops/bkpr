@@ -26,6 +26,8 @@ The current CPU-efficiency level is accepted for now; further optimization is de
 
 - [x] Restore Bkpr's main-branch frontend workflows: all-workspace sidebar with local selection, folding and scrolling; passive hover/selection detail popups; focused creation/rename/finder forms; effective contextual hints; reusable text-window decorations and static Kitty bee/hive chrome. Actual Kitty/xterm proof covers input/focus/pointer restoration, local clipboard paste and unsupported-host fallback. Pixel recessed/raised chrome remains tracked separately.
 
+- [ ] Ensure the sidebar scrolls when its content overflows and shows a scrollbar indicating position and visible extent. Preserve keyboard and mouse navigation, keep the selected row visible, and handle resize and tree expansion/collapse without losing selection or leaking pointer input to panes.
+
 - [x] Restore automatic per-client terminal-native colors in the reusable TUI framework: confirmed truecolor, observed foreground/background/ANSI palette, contrast-aware semantic roles, live notification-driven refresh and honest native/ANSI fallbacks. Apply the theme across Bkpr chrome without recoloring application panes; exercise dark/light/chromatic hosts, missing replies, live fields and large-window navigation.
 
 - [x] Restore separate terminal windows within a workspace for sidebar “Create terminal”, not a split. Each backend workspace belongs to one session and owns its terminals/windows/layouts; authoritative layouts reject foreign-window/workspace panes. Explicit document close terminates all owned terminals, including hidden or unprojected ones. Cross-session/remote whole-workspace routing is still separate work: references must allow normal same-user use through the owner, not read-only display or a new permissions framework. Client compositions never change ownership.
@@ -100,6 +102,15 @@ The current CPU-efficiency level is accepted for now; further optimization is de
 
 - [ ] Restore local cross-session agent discovery and messaging. Current `session`/`all` scopes stop at one daemon, unlike main's shared broker. Route explicitly widened discovery and exact-recipient sends across owned local daemons while preserving default execution-workspace scope, launch authentication, idempotency, receipts and native wake provenance. Unknown context fails closed. This is local multi-session parity, separate from SSH/remote-workspace support.
 
+- [ ] Build first-class IRC-style chatrooms for agents and users, turning Omp's internal agent IRC idea into a real, user-facing workspace communication system.
+  - Let users observe agent-to-agent conversations rather than leaving coordination hidden.
+  - Support broadcasts scoped to a workspace, session or window.
+  - Provide purpose-specific channels, especially a dedicated human-facing reports/results channel shared by the workspace's agents. Keep reports durable and easy to find after agents continue working, instead of burying them in individual harness threads. This is the central product goal.
+  - Route user questions, agent questions, decisions and results through appropriate channels, giving other agents passive awareness of work status without requiring direct messages to each participant.
+  - Allow chatrooms to become the user's sole interaction surface for a workspace with dozens of agents, without requiring them to follow every harness thread. Keep native harness interfaces available for their bespoke capabilities; this does not require ACP or replacing them with a normalized chat UI.
+  - Let agents coordinate in separate channels and jointly compile or consolidate reports for the user when useful.
+  - Explore multiple human participants later; do not make multi-user support a prerequisite for the initial agent/user rooms.
+
 - [ ] Add a human-attention inbox for native harness questions, approvals, blockers and review requests. Preserve the originating launch/conversation/request generation, available actions and resolution; reject stale responses after exit or reconnect. Integrate per harness through native hooks/plugins/APIs, never infer approval from terminal text or replace its interface.
 
 - [ ] Add task-linked communication and portable handoffs: reply/task/artifact references and bounded, inspectable continuation packets with exact worktree/commit, constraints, decisions, pending work and verification evidence. Include new semantic fields in idempotency validation; keep task completion, reviewed acceptance and processed-message acknowledgement distinct. Preserve default workspace scope and never pretend a handoff is native cross-harness conversation migration.
@@ -107,6 +118,8 @@ The current CPU-efficiency level is accepted for now; further optimization is de
 - [ ] Add explicit advisory resource reservations for worktrees, file sets, build slots and the Git index. Record authenticated owner, generation, release and expiry; expose contention and stale-owner retirement through shared control/communication. These are coordination aids, not OS-enforced access control, universal locks or distributed transactions.
 
 - [ ] Add reviewable result artifacts tied to owning workspace/worktree and exact base/head revisions: diffs, test/log/demo evidence, reviewer decisions and accepted revision. Preserve producer and retry lineage; a successful tool/turn or message acknowledgement does not establish reviewed acceptance or authorize merging. Supplement native harness interfaces rather than replace them.
+
+- [ ] Explore [Open Artifacts](https://open-artifacts.com/) and potential integration or synergy with Bkpr. Assess its capabilities and fit for harness-produced artifacts, reviewable results and task-linked handoffs; identify useful interoperability without replacing native harness interfaces or duplicating existing infrastructure.
 
 - [ ] Add coherent delivery diagnostics over existing identity, capability and receipt data: recognition, live authority, receiver subscription, queued notification, native wake outcome, inbox read and processed acknowledgement, with reasons and ages. Provide non-consuming metadata inspection and resumable event waits; preserve body-retention/privacy policy and do not equate a timeout or readiness flag with model consumption.
 
