@@ -79,7 +79,10 @@ fn search_coalesces_latest_query_and_rejects_old_generations_even_for_repeated_t
 fn search_retirement_hides_delayed_results_and_preserves_preexisting_key_release() {
     let (mut app, capture) = fixture();
     attach_fixture(&mut app);
-    app.held.insert("KeyA".into(), ("focused-pane".into(), "focused-view".into()));
+    app.key(key("KeyA"), &mut Vec::new(), size(), &[]).unwrap();
+    assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+        request: PaneRequest::Key { event, .. }, ..
+    } if event.action == KeyAction::Press));
     app.begin_search().unwrap();
     app.search_text("needle");
     app.flush_search().unwrap();

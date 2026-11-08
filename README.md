@@ -895,6 +895,14 @@ healthy panes. Ambiguous operations are reported and never automatically replaye
 Pointer gestures remain bound to their original pane/view, including clipped
 cross-pane drags and cancellation when that projection is removed.
 
+With keyboard release reporting, key-up stays bound to the pane/view that
+accepted key-down, even after switching panes or sessions. Physical terminal
+focus loss settles all held keys, including inactive sessions, so a swallowed
+compositor key-up cannot leave a hidden view retiring forever. Cleanup waits
+behind accepted paste/input work and retains its owner under local backpressure.
+Late hardware releases are consumed rather than delivered twice or to a new
+attachment generation. Switching inside Bkpr alone does not cancel held keys.
+
 `--read-only` denies application input and application-initiated clipboard access
 without making the visible client ineligible for sizing. Local selection and
 explicit user copy remain available unless `--clipboard deny` blocks export.

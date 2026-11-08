@@ -50,6 +50,8 @@ pub(crate) fn cleanup(request: &PaneRequest) -> bool {
             if !spec.visible && !spec.interactive && !spec.clipboard)
         || matches!(request, PaneRequest::Mouse { event, .. }
             if event.action == bkpr_protocol::MouseAction::Release)
+        || matches!(request, PaneRequest::Key { event, .. }
+            if event.action == bkpr_protocol::KeyAction::Release)
         || matches!(request, PaneRequest::Select { event, .. }
             if matches!(event.action, bkpr_protocol::SelectionAction::Release | bkpr_protocol::SelectionAction::Clear))
         || matches!(
@@ -1166,7 +1168,7 @@ mod tests {
         let gate = Arc::new(Mutex::new(gate));
         let server = thread::spawn(move || {
             let mut workers = Vec::new();
-            for _ in 0..4 {
+            for _ in 0..5 {
                 let (mut stream, _) = listener.accept().unwrap();
                 let observed = observed.clone();
                 let gate = gate.clone();
@@ -1174,7 +1176,7 @@ mod tests {
                     let request = transport::test_wire::read_request(&mut stream).unwrap();
                     let failing = matches!(&request.operation, Operation::Pane {
                         pane_id, request: PaneRequest::Key { event, .. },
-                    } if pane_id == "alpha" && event.key == "KeyA");
+                    } if pane_id == "alpha" && event.key == "KeyA" && event.action == KeyAction::Press);
                     observed.send(request.operation).unwrap();
                     if failing {
                         gate.lock()
@@ -1203,6 +1205,16 @@ mod tests {
             Operation::Pane { pane_id, .. } if pane_id == "alpha")
         );
         input.send(key("alpha", "KeyB")).unwrap();
+        let mut key_up = key("alpha", "KeyA");
+        let Operation::Pane {
+            request: PaneRequest::Key { event, .. },
+            ..
+        } = &mut key_up
+        else {
+            unreachable!()
+        };
+        event.action = KeyAction::Release;
+        input.send(key_up).unwrap();
         let retired = input.retire("alpha", "alpha-view", false).unwrap();
         let (done, completed) = mpsc::sync_channel(1);
         input
@@ -1217,6 +1229,11 @@ mod tests {
             .unwrap()
             .unwrap();
         release.send(()).unwrap();
+        assert!(
+            matches!(received.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Operation::Pane { pane_id, request: PaneRequest::Key { event, .. } }
+                if pane_id == "alpha" && event.key == "KeyA" && event.action == KeyAction::Release)
+        );
         assert!(
             matches!(received.recv_timeout(Duration::from_secs(2)).unwrap(),
             Operation::Pane { pane_id, request: PaneRequest::Detach { .. } } if pane_id == "alpha")

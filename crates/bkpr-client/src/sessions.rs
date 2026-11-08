@@ -762,6 +762,7 @@ impl Coordinator {
     }
 
     fn retire_current(&mut self, index: usize, graceful: bool) -> Result<()> {
+        self.remember_origins();
         let session = &mut self.sessions[index];
         let mut owner = session.owner.take();
         let retirement_token = if graceful && owner.is_some() {
@@ -1177,6 +1178,8 @@ impl Coordinator {
                     app.scope_input_result(selection)?;
                     app.complete_background()?;
                     app.expire_devices()?;
+                    let keys = app.flush_key_releases();
+                    app.scope_input_result(keys)?;
                     if let Some(registry) = session.registry.as_mut().unwrap().latest()?
                         && registry.revision >= app.registry.revision
                     {
@@ -1265,10 +1268,15 @@ impl Coordinator {
             events: libc::POLLIN,
             revents: 0,
         });
-        for session in &self.sessions {
+        for (index, session) in self.sessions.iter().enumerate() {
             for fd in [
                 session.owner.as_ref().map(Attachment::lifetime_fd),
                 session.registry.as_ref().map(|pump| pump.wake.as_raw_fd()),
+                session
+                    .app
+                    .as_ref()
+                    .filter(|_| index != self.selected)
+                    .map(|app| app.input.wake.as_raw_fd()),
             ]
             .into_iter()
             .flatten()
@@ -1336,8 +1344,21 @@ impl Coordinator {
 
     /// Key releases are addressed to the exact original view, even after a
     /// sidebar switch. A retired generation consumes its release as a tombstone.
-    pub fn route_release(&mut self, event: &ClientEvent) -> Result<bool> {
+    pub fn route_release(&mut self, event: &ClientEvent, size: Size) -> Result<bool> {
         self.remember_origins();
+        if matches!(event, ClientEvent::Reply(reply) if reply == b"focus;out") {
+            // Unlike selecting another session, losing the physical terminal
+            // can lose every outstanding hardware key-up, including the keys
+            // owned by an inactive attachment's retiring view.
+            for session in &mut self.sessions {
+                if let Some(app) = session.app.as_mut() {
+                    let cancelled = app.cancel_held_keys();
+                    if let Err(error) = app.scope_input_result(cancelled) {
+                        app.notify(format!("Held-key cleanup failed: {error:#}"));
+                    }
+                }
+            }
+        }
         if self.pointer_tombstone {
             match event {
                 ClientEvent::Mouse { button, action, .. }
@@ -1375,29 +1396,70 @@ impl Coordinator {
             ClientEvent::Legacy(InputEvent::Key(key)) => Some(key_event(key.clone())),
             _ => None,
         };
-        if let Some(key) = key.as_ref().filter(|key| key.action == KeyAction::Repeat)
-            && self
-                .release_owners
-                .get(&key.key)
-                .is_some_and(|(index, generation)| {
-                    *index != self.selected || *generation != self.sessions[*index].generation
-                })
-        {
-            return Ok(true);
-        }
-        if let Some(key) = key.filter(|key| key.action == KeyAction::Release)
-            && let Some((index, generation)) = self.release_owners.remove(&key.key)
-            && (index != self.selected || generation != self.sessions[index].generation)
-        {
-            if generation == self.sessions[index].generation
-                && let Some(app) = self.sessions[index].app.as_mut()
-            {
-                let result = app.key(key, &mut io::sink(), dimensions()?, &[]);
-                if let Err(error) = result {
-                    app.notify(format!("{error:#}"));
+        if let Some(key) = key {
+            match key.action {
+                KeyAction::Press => {
+                    if let Some((index, generation)) = self.release_owners.get(&key.key).copied() {
+                        if let Some(session) = self.sessions.get_mut(index)
+                            && session.present
+                            && session.generation == generation
+                            && let Some(app) = session.app.as_mut()
+                        {
+                            let cancelled = app.cancel_held_key(&key.key);
+                            app.scope_input_result(cancelled)?;
+                            if app.held.contains_key(&key.key) {
+                                // A fresh press cannot replace an older owner
+                                // whose cleanup has not yet entered its FIFO.
+                                app.notify(
+                                    "Previous key release is awaiting input admission".into(),
+                                );
+                                return Ok(true);
+                            }
+                        }
+                        self.release_owners.remove(&key.key);
+                    }
+                }
+                KeyAction::Repeat => {
+                    if let Some((index, generation)) = self.release_owners.get(&key.key)
+                        && (*index != self.selected
+                            || self.sessions.get(*index).is_none_or(|session| {
+                                !session.present
+                                    || session.generation != *generation
+                                    || session.app.as_ref().is_none_or(|app| {
+                                        app.held.get(&key.key).is_none_or(|held| held.pending)
+                                    })
+                            }))
+                    {
+                        return Ok(true);
+                    }
+                }
+                KeyAction::Release => {
+                    if let Some((name, (index, generation))) =
+                        self.release_owners.remove_entry(&key.key)
+                        && (index != self.selected
+                            || self.sessions.get(index).is_none_or(|session| {
+                                !session.present
+                                    || session.generation != generation
+                                    || session.app.is_none()
+                            }))
+                    {
+                        if let Some(session) = self.sessions.get_mut(index)
+                            && session.present
+                            && session.generation == generation
+                            && let Some(app) = session.app.as_mut()
+                        {
+                            let result = app.key(key, &mut io::sink(), size, &[]);
+                            if let Err(error) = result {
+                                app.notify(format!("{error:#}"));
+                            }
+                            if app.held.contains_key(&name) {
+                                self.release_owners.insert(name, (index, generation));
+                            }
+                        }
+                        return Ok(true);
+                    }
                 }
             }
-            return Ok(true);
         }
         Ok(false)
     }
@@ -1585,7 +1647,385 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::{attach_fixture, fixture, key, size};
     use super::*;
+
+    fn coordinator_fixture() -> (Coordinator, [updates::Capture; 2]) {
+        let (mut first, first_input) = fixture();
+        let (mut second, second_input) = fixture();
+        attach_fixture(&mut first);
+        attach_fixture(&mut second);
+        second.backgrounded = true;
+        second.host_focused = false;
+        let targets = (0..2)
+            .map(|index| {
+                let mut session = pending_session(Instant::now());
+                let SessionTarget::Remote(target) = &mut session.target else {
+                    unreachable!();
+                };
+                target.session_name = format!("session-{index}");
+                session.target
+            })
+            .collect();
+        let mut coordinator = Coordinator::new(targets, first.options.clone(), size()).unwrap();
+        for (index, mut app) in [first, second].into_iter().enumerate() {
+            app.namespace = (index as u64 + 1, 1);
+            let session = &mut coordinator.sessions[index];
+            session.generation = 1;
+            session.phase = Phase::Online;
+            session.next_attempt = None;
+            let mut registry = Pump::capture();
+            registry.cancel();
+            session.registry = Some(registry);
+            session.app = Some(app);
+        }
+        (coordinator, [first_input, second_input])
+    }
+
+    fn take_operations(capture: &updates::Capture) -> Vec<Operation> {
+        std::iter::from_fn(|| capture.try_recv().ok()).collect()
+    }
+
+    fn physical_key(action: KeyAction) -> ClientEvent {
+        let action = match action {
+            KeyAction::Press => 1,
+            KeyAction::Repeat => 2,
+            KeyAction::Release => 3,
+        };
+        ClientEvent::Reply(format!("key;97;1:{action}").into_bytes())
+    }
+
+    #[test]
+    fn in_host_session_switch_keeps_held_key_until_original_hardware_release() {
+        let (mut coordinator, [first_input, second_input]) = coordinator_fixture();
+        coordinator
+            .app_mut()
+            .key(key("KeyA"), &mut io::sink(), size(), &[])
+            .unwrap();
+        assert!(matches!(first_input.try_recv().unwrap(), Operation::Pane {
+            request: PaneRequest::Key { event, .. }, ..
+        } if event.action == KeyAction::Press));
+
+        coordinator.select(1, size()).unwrap();
+        assert!(
+            coordinator.sessions[0]
+                .app
+                .as_ref()
+                .unwrap()
+                .held
+                .contains_key("KeyA")
+        );
+        assert!(take_operations(&first_input).iter().all(|operation| {
+            !matches!(operation, Operation::Pane {
+                request: PaneRequest::Key { event, .. }, ..
+            } if event.action == KeyAction::Release)
+        }));
+        assert!(
+            coordinator
+                .route_release(&physical_key(KeyAction::Repeat), size())
+                .unwrap()
+        );
+        assert!(
+            coordinator
+                .route_release(&physical_key(KeyAction::Release), size())
+                .unwrap()
+        );
+        assert!(matches!(first_input.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { view_id, event },
+        } if pane_id == "focused-pane" && view_id == "focused-view"
+            && event.key == "KeyA" && event.action == KeyAction::Release));
+        assert!(second_input.try_recv().is_err());
+    }
+
+    #[test]
+    fn physical_focus_loss_releases_inactive_view_and_allows_its_retirement() {
+        let (mut coordinator, [first_input, second_input]) = coordinator_fixture();
+        coordinator
+            .app_mut()
+            .key(key("KeyA"), &mut io::sink(), size(), &[])
+            .unwrap();
+        take_operations(&first_input);
+        coordinator.select(1, size()).unwrap();
+        take_operations(&first_input);
+        coordinator
+            .app_mut()
+            .key(key("KeyB"), &mut io::sink(), size(), &[])
+            .unwrap();
+        take_operations(&second_input);
+        assert!(
+            coordinator.sessions[0].app.as_ref().unwrap().views["focused-pane"]
+                .retirement_requested
+        );
+
+        assert!(
+            !coordinator
+                .route_release(&ClientEvent::Reply(b"focus;out".to_vec()), size())
+                .unwrap()
+        );
+        for (capture, expected) in [(&first_input, "KeyA"), (&second_input, "KeyB")] {
+            assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+                pane_id, request: PaneRequest::Key { view_id, event },
+            } if pane_id == "focused-pane" && view_id == "focused-view"
+                && event.key == expected && event.action == KeyAction::Release));
+            assert!(capture.try_recv().is_err());
+        }
+        assert!(
+            coordinator
+                .sessions
+                .iter()
+                .all(|session| { session.app.as_ref().unwrap().held.is_empty() })
+        );
+        assert!(
+            coordinator
+                .route_release(&physical_key(KeyAction::Repeat), size())
+                .unwrap()
+        );
+        assert!(
+            coordinator
+                .route_release(&physical_key(KeyAction::Release), size())
+                .unwrap()
+        );
+        assert!(second_input.try_recv().is_err());
+
+        coordinator.tick(size()).unwrap();
+        assert!(take_operations(&first_input).iter().any(|operation| {
+            matches!(operation, Operation::Pane {
+                pane_id, request: PaneRequest::Detach { view_id },
+            } if pane_id == "focused-pane" && view_id == "focused-view")
+        }));
+        coordinator.tick(size()).unwrap();
+        let original = coordinator.sessions[0].app.as_ref().unwrap();
+        assert!(original.views.is_empty());
+        assert!(original.retiring.is_empty());
+    }
+
+    #[test]
+    fn failed_inactive_cleanup_does_not_prevent_another_sessions_key_release() {
+        let (mut coordinator, [first_input, second_input]) = coordinator_fixture();
+        coordinator
+            .app_mut()
+            .key(key("KeyA"), &mut io::sink(), size(), &[])
+            .unwrap();
+        take_operations(&first_input);
+        coordinator.select(1, size()).unwrap();
+        take_operations(&first_input);
+        coordinator
+            .app_mut()
+            .key(key("KeyB"), &mut io::sink(), size(), &[])
+            .unwrap();
+        take_operations(&second_input);
+        drop(first_input);
+        assert!(
+            !coordinator
+                .route_release(&ClientEvent::Reply(b"focus;out".to_vec()), size(),)
+                .unwrap()
+        );
+        assert!(coordinator.sessions[0].app.as_ref().unwrap().held["KeyA"].pending);
+        assert!(
+            coordinator.sessions[1]
+                .app
+                .as_ref()
+                .unwrap()
+                .held
+                .is_empty()
+        );
+        assert!(matches!(second_input.try_recv().unwrap(), Operation::Pane {
+            request: PaneRequest::Key { event, .. }, ..
+        } if event.key == "KeyB" && event.action == KeyAction::Release));
+    }
+
+    #[test]
+    fn inactive_pending_cleanup_retries_without_admitting_a_foreign_repress() {
+        let (mut coordinator, [first_input, second_input]) = coordinator_fixture();
+        coordinator
+            .app_mut()
+            .key(key("KeyA"), &mut io::sink(), size(), &[])
+            .unwrap();
+        take_operations(&first_input);
+        coordinator.select(1, size()).unwrap();
+        take_operations(&first_input);
+        let original = coordinator.sessions[0].app.as_ref().unwrap();
+        let reservations = std::iter::from_fn(|| {
+            original
+                .input
+                .reserve(Operation::Pane {
+                    pane_id: "busy".into(),
+                    request: PaneRequest::Key {
+                        view_id: "busy-view".into(),
+                        event: key("KeyB"),
+                    },
+                })
+                .ok()
+        })
+        .collect::<Vec<_>>();
+
+        coordinator
+            .route_release(&ClientEvent::Reply(b"focus;out".to_vec()), size())
+            .unwrap();
+        assert!(coordinator.sessions[0].app.as_ref().unwrap().held["KeyA"].pending);
+        assert!(
+            coordinator
+                .route_release(&physical_key(KeyAction::Release), size())
+                .unwrap()
+        );
+        assert!(coordinator.sessions[0].app.as_ref().unwrap().held["KeyA"].pending);
+        assert_eq!(coordinator.release_owners.get("KeyA"), Some(&(0, 1)));
+        assert!(
+            coordinator
+                .route_release(&physical_key(KeyAction::Press), size())
+                .unwrap()
+        );
+        assert_eq!(coordinator.release_owners.get("KeyA"), Some(&(0, 1)));
+        assert!(first_input.try_recv().is_err());
+        assert!(second_input.try_recv().is_err());
+
+        drop(reservations);
+        coordinator.tick(size()).unwrap();
+        let operations = take_operations(&first_input);
+        assert!(matches!(&operations[0], Operation::Pane {
+            request: PaneRequest::Key { view_id, event }, ..
+        } if view_id == "focused-view" && event.key == "KeyA"
+            && event.action == KeyAction::Release));
+        assert!(
+            coordinator.sessions[0]
+                .app
+                .as_ref()
+                .unwrap()
+                .held
+                .is_empty()
+        );
+        assert!(
+            !coordinator
+                .route_release(&physical_key(KeyAction::Press), size())
+                .unwrap()
+        );
+        assert!(!coordinator.release_owners.contains_key("KeyA"));
+        coordinator
+            .app_mut()
+            .key(key("KeyA"), &mut io::sink(), size(), &[])
+            .unwrap();
+        assert!(matches!(second_input.try_recv().unwrap(), Operation::Pane {
+            request: PaneRequest::Key { event, .. }, ..
+        } if event.key == "KeyA" && event.action == KeyAction::Press));
+    }
+
+    #[test]
+    fn focus_loss_preserves_inactive_paste_barrier_and_accepted_key_suffix() {
+        let (mut coordinator, [first_input, second_input]) = coordinator_fixture();
+        let app = coordinator.app_mut();
+        app.key(key("KeyA"), &mut io::sink(), size(), &[]).unwrap();
+        take_operations(&first_input);
+        app.paste_reply(b"5522;type=read:status=OK:pw=cHc=;")
+            .unwrap();
+        app.key(key("KeyB"), &mut io::sink(), size(), &[]).unwrap();
+        assert!(first_input.try_recv().is_err());
+        coordinator.select(1, size()).unwrap();
+        take_operations(&first_input);
+        coordinator
+            .route_release(&ClientEvent::Reply(b"focus;out".to_vec()), size())
+            .unwrap();
+        coordinator.tick(size()).unwrap();
+        assert!(first_input.try_recv().is_err());
+        assert!(
+            coordinator.sessions[0]
+                .app
+                .as_ref()
+                .unwrap()
+                .held
+                .values()
+                .all(|held| held.pending)
+        );
+
+        assert!(
+            coordinator
+                .route_device_reply(b"5522;type=read:status=DONE:pw=cHc=;")
+                .unwrap()
+        );
+        assert!(matches!(first_input.try_recv().unwrap(), Operation::Pane {
+            request: PaneRequest::Key { event, .. }, ..
+        } if event.key == "KeyB" && event.action == KeyAction::Press));
+        assert!(first_input.try_recv().is_err());
+        coordinator.tick(size()).unwrap();
+        let released = take_operations(&first_input)
+            .into_iter()
+            .filter_map(|operation| match operation {
+                Operation::Pane {
+                    pane_id,
+                    request: PaneRequest::Key { view_id, event },
+                } => {
+                    assert_eq!(pane_id, "focused-pane");
+                    assert_eq!(view_id, "focused-view");
+                    assert!(event.action == KeyAction::Release);
+                    Some(event.key)
+                }
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        assert_eq!(released, HashSet::from(["KeyA".into(), "KeyB".into()]));
+        assert!(second_input.try_recv().is_err());
+    }
+
+    #[test]
+    fn removed_and_replaced_generations_consume_old_repeat_and_release_tombstones() {
+        let (mut coordinator, [first_input, second_input]) = coordinator_fixture();
+        for name in ["KeyA", "KeyB"] {
+            coordinator
+                .app_mut()
+                .key(key(name), &mut io::sink(), size(), &[])
+                .unwrap();
+        }
+        take_operations(&first_input);
+        coordinator.remove(0, size(), false).unwrap();
+        assert_eq!(coordinator.selected, 1);
+        assert!(
+            coordinator
+                .route_release(&physical_key(KeyAction::Repeat), size())
+                .unwrap()
+        );
+        assert!(
+            coordinator
+                .route_release(&physical_key(KeyAction::Release), size())
+                .unwrap()
+        );
+        assert!(!coordinator.release_owners.contains_key("KeyA"));
+        assert!(second_input.try_recv().is_err());
+
+        let (mut replacement, replacement_input) = fixture();
+        attach_fixture(&mut replacement);
+        let session = &mut coordinator.sessions[0];
+        session.present = true;
+        session.generation += 1;
+        session.app = Some(replacement);
+        session.registry = Some(Pump::capture());
+        coordinator.select(0, size()).unwrap();
+        assert!(
+            coordinator
+                .route_release(&ClientEvent::Reply(b"key;98;1:2".to_vec()), size())
+                .unwrap()
+        );
+        assert!(
+            coordinator
+                .route_release(&ClientEvent::Reply(b"key;98;1:3".to_vec()), size())
+                .unwrap()
+        );
+        assert!(!coordinator.release_owners.contains_key("KeyB"));
+        assert!(replacement_input.try_recv().is_err());
+        assert!(
+            !coordinator
+                .route_release(&physical_key(KeyAction::Press), size())
+                .unwrap()
+        );
+        coordinator
+            .app_mut()
+            .key(key("KeyA"), &mut io::sink(), size(), &[])
+            .unwrap();
+        assert!(
+            matches!(replacement_input.try_recv().unwrap(), Operation::Pane {
+            request: PaneRequest::Key { event, .. }, ..
+        } if event.key == "KeyA" && event.action == KeyAction::Press)
+        );
+    }
+
     #[test]
     fn queued_remote_attempts_cannot_consume_the_local_admission_reserve() {
         assert!(!admission_available(6, 6, true));
