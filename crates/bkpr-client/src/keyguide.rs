@@ -126,7 +126,6 @@ pub enum Action {
     SendPrefix,
     ToggleSidebar,
     ToggleChrome,
-    EnterSidebar,
     EnterSessions,
     ReconnectSession,
     LeaveSidebar,
@@ -156,10 +155,6 @@ pub enum Action {
     StartResize,
     CopySelection,
     ProjectDetails,
-    RenameWorkspace,
-    RenamePane,
-    TerminatePane,
-    CloseWorkspace,
     ChooseWorkspace,
     ChooseWindow,
     ChoosePane,
@@ -188,7 +183,7 @@ impl Action {
             Self::CommandPrefix => "commands",
             Self::SendPrefix => "send Ctrl-b to app",
             Self::ToggleSidebar if matches!(context, Context::Sidebar { .. }) => "return to app",
-            Self::ToggleSidebar | Self::EnterSidebar => "sidebar",
+            Self::ToggleSidebar => "sidebar",
             Self::EnterSessions => "sessions",
             Self::ReconnectSession => "force reconnect session",
             Self::LeaveSidebar => "return to app",
@@ -246,10 +241,6 @@ impl Action {
             Self::StartResize => "resize pane",
             Self::CopySelection => "copy selection",
             Self::ProjectDetails => "project details",
-            Self::RenameWorkspace => "rename workspace",
-            Self::RenamePane => "rename pane",
-            Self::TerminatePane => "terminate pane",
-            Self::CloseWorkspace => "close workspace",
             Self::ChooseWorkspace => "choose workspace",
             Self::ChooseWindow => "choose window",
             Self::ChoosePane => "choose pane",
@@ -306,7 +297,6 @@ const DETAILS: u16 = 1 << 11;
 const CLIPBOARD_CONSENT: u16 = 1 << 12;
 const THEME: u16 = 1 << 13;
 const SESSIONS: u16 = 1 << 14;
-const ALL: u16 = (1 << 15) - 1;
 const SHIFT: u16 = 1;
 const CTRL: u16 = 2;
 const LOCKS: u16 = 16 | 32;
@@ -448,7 +438,6 @@ use Navigation as N;
 // Session roots and native rows share tree navigation; only session roots offer
 // reconnect, and native management remains tied to an owning native context.
 static BINDINGS: &[Binding] = &[
-    physical(ALL, "BracketRight", CTRL, "Ctrl-]", A::Detach, 90, false),
     text(SESSIONS, "R", A::ReconnectSession, 5),
     physical(
         APPLICATION | SIDEBAR | SESSIONS | HISTORY | SEARCH | RESIZE,
@@ -488,8 +477,7 @@ static BINDINGS: &[Binding] = &[
     ),
     physical(PREFIX, "KeyB", CTRL, "Ctrl-b", A::SendPrefix, 80, false),
     physical(PREFIX, "Escape", 0, "Esc", A::Cancel, 0, false),
-    text(PREFIX, "b", A::EnterSidebar, 1),
-    text(PREFIX | SIDEBAR | SESSIONS, "S", A::EnterSessions, 2),
+    text(SIDEBAR | SESSIONS, "S", A::EnterSessions, 2),
     text(PREFIX, "/", A::StartSearch, 10),
     text(PREFIX, "s", A::StartHistory, 11),
     text(PREFIX, "e", A::StartResize, 12),
@@ -497,12 +485,6 @@ static BINDINGS: &[Binding] = &[
     text(PREFIX, "i", A::ProjectDetails, 30),
     text(PREFIX, "g", A::ToggleChrome, 31),
     text(PREFIX, "t", A::OpenThemes, 32),
-    text(PREFIX, "c", A::CreateWorkspace, 20),
-    text(PREFIX, "N", A::CreateTerminal, 19),
-    text(PREFIX, "r", A::RenameWorkspace, 23),
-    text(PREFIX, "p", A::RenamePane, 24),
-    text(PREFIX, "!", A::TerminatePane, 40),
-    text(PREFIX, "X", A::CloseWorkspace, 41),
     text(PREFIX, "w", A::ChooseWorkspace, 14),
     text(PREFIX, "W", A::ChooseWindow, 15),
     text(PREFIX, "o", A::ChoosePane, 15),
@@ -667,7 +649,7 @@ static BINDINGS: &[Binding] = &[
         12,
         false,
     )),
-    text(SIDEBAR, "n", A::CreateWorkspace, 20),
+    text(SIDEBAR | SESSIONS, "n", A::CreateWorkspace, 20),
     selected(text(SIDEBAR, "N", A::CreateTerminal, 21)),
     selected(text(SIDEBAR, "r", A::RenameSelected, 25)),
     selected(text(SIDEBAR, "x", A::CloseSelected, 26)),
@@ -1293,29 +1275,6 @@ mod tests {
     }
 
     #[test]
-    fn active_context_replaces_commands_and_capability_denial_removes_them() {
-        for action in [
-            A::SplitHorizontal,
-            A::CreateWorkspace,
-            A::RemovePaneFromLayout,
-        ] {
-            let normal = hints_with(Context::Application, |_| true);
-            assert!(!normal.iter().any(|hint| hint.action == action));
-            let prefix = hints_with(Context::CommandPrefix, |_| true);
-            assert!(prefix.iter().any(|hint| hint.action == action));
-            let denied = hints_with(Context::CommandPrefix, |candidate| candidate != action);
-            assert!(!denied.iter().any(|hint| hint.action == action));
-        }
-        for context in [Context::Search, Context::History, Context::Resize] {
-            assert!(
-                !hints_with(context, |_| true)
-                    .iter()
-                    .any(|hint| matches!(hint.action, A::SplitHorizontal | A::CreateWorkspace))
-            );
-        }
-    }
-
-    #[test]
     fn every_keybind_popup_extends_right_without_moving_its_content() {
         let hints = [
             Hint {
@@ -1326,7 +1285,7 @@ mod tests {
             },
             Hint {
                 keys: vec!["b"],
-                action: A::EnterSidebar,
+                action: A::ToggleSidebar,
                 description: "open",
                 priority: 1,
             },
@@ -1392,7 +1351,7 @@ mod tests {
             },
             Hint {
                 keys: vec!["b"],
-                action: A::EnterSidebar,
+                action: A::ToggleSidebar,
                 description: "open",
                 priority: 1,
             },
@@ -1465,32 +1424,6 @@ mod tests {
             lookup(state.context(), &event("KeyN", "n", 0, KeyAction::Press)),
             Some(A::SplitHorizontal)
         );
-    }
-
-    #[test]
-    fn separate_window_creation_and_selector_are_discoverable_without_global_key_hijacks() {
-        let create = event("KeyN", "N", SHIFT, KeyAction::Press);
-        let choose = event("KeyW", "W", SHIFT, KeyAction::Press);
-        assert_eq!(
-            lookup(Context::CommandPrefix, &create),
-            Some(A::CreateTerminal)
-        );
-        assert_eq!(
-            lookup(Context::CommandPrefix, &choose),
-            Some(A::ChooseWindow)
-        );
-        assert_eq!(
-            lookup(
-                Context::CommandPrefix,
-                &event("KeyW", "w", 0, KeyAction::Press)
-            ),
-            Some(A::ChooseWorkspace)
-        );
-        assert_eq!(lookup(Context::Application, &create), None);
-        assert_eq!(lookup(Context::Application, &choose), None);
-        let hints = hints(Context::CommandPrefix);
-        assert!(hints.iter().any(|hint| hint.action == A::CreateTerminal));
-        assert!(hints.iter().any(|hint| hint.action == A::ChooseWindow));
     }
 
     #[test]

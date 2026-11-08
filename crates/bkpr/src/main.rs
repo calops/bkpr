@@ -61,7 +61,7 @@ Local startup options apply only to local targets; remote pane defaults stay rem
 Utilities accept at most one exact -s name (no host-prefix interpretation).
 Initial failures remain offline for explicit retry. Previously active attachments
 reconnect after transport loss, never restarting programs or replaying operations.
-Ctrl-b S selects the session tree context; R on a session row forces reconnect.
+Sidebar S selects the session tree context; R on a session row forces reconnect.
 An ended/detached session leaves the tree; ending the last exits after TTY restoration.
 `resume` lists saved native conversations read-only; --pane selects one exact ID.
 Resume uses current native configuration, not saved argv/settings; process start
@@ -76,20 +76,21 @@ Server: bkprd --help.
 preserves your HOME, environment and shell profiles in the invocation directory.
 
 Keyboard (Ctrl-b prefix, then one command):
-  c create workspace       n / % split left/right    " split top/bottom
-  r rename workspace       p rename pane            w workspace chooser
+  n / % split left/right   " split top/bottom        w workspace chooser
+  W window chooser         o pane chooser (including hidden/unassigned)
   [ / ] previous/next workspace    Tab next pane     arrows focus direction
   Shift+arrows exchange focused pane with its directional neighbour
   e resize: arrows 1 cell, Shift+arrows 5; Enter/Esc finish; drag dividers directly
   / search: type query, Enter next / Shift+Enter previous, Esc close
   s scrollback/history     y copy selection         i project details
-  S jump to session tree   R on session row: force reconnect
-  x remove layout leaf only (process survives)      ! close / terminate (yes)
-  X close workspace and all its owned terminals (confirm yes)
-  o show existing pane (including hidden/unassigned executions)
+  x remove layout leaf only (process survives)      R reopen unavailable pane
+  g toggle fancy/plain chrome                      t theme chooser
   d detach                 Ctrl-b Ctrl-b send Ctrl-b to focused pane
-Ctrl-] detaches directly. Click workspace or pane to focus; application mouse
-coordinates are pane-local. Drag selects/copies; Shift overrides application
+Ctrl-Space enters the sidebar: navigate/fold with arrows; Enter activates;
+S selects session root; R reconnects a session row. Sidebar n creates a workspace,
+N a separate terminal window, r renames, and x/Delete closes after confirmation.
+Click workspace or pane to focus; application mouse coordinates are pane-local.
+Drag selects/copies; Shift overrides application
 mouse tracking. History uses arrows/PgUp/PgDn/Home; Esc returns to live output.
 Forms use Enter apply / Esc cancel / Ctrl-u clear; pane focus is restored.
 Clipboard requests use y allow / n deny, bound to their originating pane.
