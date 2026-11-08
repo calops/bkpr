@@ -230,6 +230,11 @@ pub fn command() -> Command {
                 .about("Send an explicit physical keyboard probe")
                 .arg(Arg::new("payload").required(true)),
         )
+        .subcommand(
+            Command::new("completions")
+                .about("Generate a shell completion script")
+                .arg(Arg::new("shell").required(true).value_parser(value_parser!(clap_complete::Shell))),
+        )
         .subcommand(Command::new("keys").about("Show terminal keyboard shortcuts").override_help(crate::help::KEYS))
         .subcommand(
             Command::new("run")
