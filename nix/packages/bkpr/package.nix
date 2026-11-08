@@ -4,6 +4,7 @@
   rustPlatform,
   fetchFromGitHub,
   makeWrapper,
+  installShellFiles,
   git,
   gh,
   openssh,
@@ -28,6 +29,7 @@ stdenvNoCC.mkDerivation (
         cargoHash
         cargoDeps
         ;
+      nativeBuildInputs = [ installShellFiles ];
       BKPR_GHOSTTY_VT_DIR = libghostty-vt;
       GHOSTTY_INSTALL_DIR = libghostty-vt;
       # Precompiled std panic/source paths must not retain a Rust compiler in
@@ -55,28 +57,36 @@ stdenvNoCC.mkDerivation (
       # Process/PTY acceptance needs an actual host user and terminal, rather
       # than the isolated Nix builder. Run it in coordinated release checks.
       doCheck = false;
-      postInstall = ''
-        test -x "$out/bin/bkpr"
-        test -x "$out/bin/bkprd"
-        install -Dm444 LICENSE "$out/share/licenses/bkpr/LICENSE"
-        install -Dm444 vendor/libghostty-rs/LICENSE "$out/share/licenses/libghostty-rs/LICENSE"
-        cp -R ${libghostty-vt}/share/licenses/libghostty-vt "$out/share/licenses/"
-      '';
+      postInstall =
+        ''
+          test -x "$out/bin/bkpr"
+          test -x "$out/bin/bkprd"
+          install -Dm444 LICENSE "$out/share/licenses/bkpr/LICENSE"
+          install -Dm444 vendor/libghostty-rs/LICENSE "$out/share/licenses/libghostty-rs/LICENSE"
+          cp -R ${libghostty-vt}/share/licenses/libghostty-vt "$out/share/licenses/"
+        ''
+        + lib.optionalString (stdenvNoCC.buildPlatform.canExecute stdenvNoCC.hostPlatform) ''
+          "$out/bin/bkpr" completions bash > "$TMPDIR/bkpr"
+          "$out/bin/bkpr" completions zsh > "$TMPDIR/_bkpr"
+          "$out/bin/bkpr" completions fish > "$TMPDIR/bkpr.fish"
+          installShellCompletion --bash "$TMPDIR/bkpr" \
+            --zsh "$TMPDIR/_bkpr" --fish "$TMPDIR/bkpr.fish"
+        '';
       meta = finalAttrs.meta;
     };
   in
   {
     pname = "bkpr";
-    version = "0.5.0";
+    version = "0.5.1-unstable";
     src = fetchFromGitHub {
       owner = "calops";
       repo = "bkpr";
-      tag = "v${finalAttrs.version}";
-      hash = "sha256-fYZP8SknDrhz/JjOi0ovq1Mebj6g6NGjHP4ePruZK5k=";
+      rev = "9a4280014c406fff49f2094b52c3b2cc8732a51c";
+      hash = "sha256-aMQq/HF8ca/ppPn6MtrkVIA5I6v50A+NphtTXCrrED0=";
     };
-    cargoHash = "sha256-qIs+3JlbtNRztG3FrwavmbGBQrW6hKo2i3FIF8Qbgp4=";
+    cargoHash = "sha256-Tc6Hjqh0M+8F11nRt1I22OwQnrHP56sL2U/9YtRHMaw=";
     # Local development can override src/version and supply importCargoLock
-    # here without changing the independently pinned released default above.
+    # here without changing the independently pinned published source above.
     cargoDeps = null;
     nativeBuildInputs = [ makeWrapper ];
     dontUnpack = true;
@@ -105,7 +115,7 @@ stdenvNoCC.mkDerivation (
     meta = {
       description = "Pane-first native terminal multiplexer with persistent named workspaces";
       homepage = "https://github.com/calops/bkpr";
-      changelog = "https://github.com/calops/bkpr/releases/tag/v${finalAttrs.version}";
+      changelog = "https://github.com/calops/bkpr/releases";
       license = lib.licenses.mit;
       mainProgram = "bkpr";
       platforms = [

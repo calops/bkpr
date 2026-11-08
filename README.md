@@ -104,6 +104,18 @@ Help is split by task: `bkpr --help` shows the overview and common options,
 focuses on one command. Use `bkpr keys` for keyboard shortcuts.
 `bkpr help COMMAND` works too, including `bkpr help run` and `bkpr help install`.
 
+The Nix package installs Bash, Zsh and Fish completions in their standard
+`share/` locations. Enable your shell's normal completion support to load them.
+For other installations, `bkpr completions SHELL` writes a script to stdout;
+supported shells are Bash, Zsh, Fish, PowerShell and Elvish.
+Completions come from the same Clap command definitions as argument parsing,
+including subcommands, options and fixed values. They do not query live sessions
+or run harnesses. Completion generation does not create user state.
+The upstream Fish generator currently omits positional argument values; named
+option values still complete.
+For Fish value completion at the root, use `--clipboard=...`; the spaced form
+also works under `bkpr tui --clipboard ...`.
+
 Normal launches preserve your HOME, shell profiles and environment, using the
 invocation directory. Closing the client leaves the daemon and panes running.
 `-s` / `--session` selects an exact name; Unicode, spaces and slashes are
