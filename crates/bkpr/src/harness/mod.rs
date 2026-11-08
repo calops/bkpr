@@ -104,7 +104,7 @@ pub(crate) fn dispatch(program: &OsStr, arguments: Vec<OsString>) -> Result<Opti
         Some(command) if command == "run" => {
             let name = arguments.next().context(HARNESS_HELP)?;
             if name == "--help" || name == "-h" {
-                println!("{HARNESS_HELP}");
+                crate::help::print_command("run")?;
                 return Ok(Some(0));
             }
             let name = name
@@ -125,10 +125,26 @@ pub(crate) fn dispatch(program: &OsStr, arguments: Vec<OsString>) -> Result<Opti
         }
         Some(command) if command == "capture" => capture_command(arguments.collect()).map(Some),
         Some(command) if command == "install" => {
-            if arguments.next().as_deref() != Some(OsStr::new("agy")) {
+            let integration = arguments.next();
+            if integration
+                .as_deref()
+                .is_some_and(|argument| argument == "--help" || argument == "-h")
+            {
+                crate::help::print_command("install")?;
+                return Ok(Some(0));
+            }
+            if integration.as_deref() != Some(OsStr::new("agy")) {
                 bail!("usage: bkpr install agy");
             }
-            agy::install(arguments.collect()).map(Some)
+            let arguments: Vec<_> = arguments.collect();
+            if arguments
+                .iter()
+                .any(|argument| argument == "--help" || argument == "-h")
+            {
+                crate::help::print_command("install agy")?;
+                return Ok(Some(0));
+            }
+            agy::install(arguments).map(Some)
         }
         _ => Ok(None),
     }
