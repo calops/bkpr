@@ -99,6 +99,11 @@ and an independent persisted workspace/layout registry:
 "$CARGO_TARGET_DIR/debug/bkpr" stop -s work
 ```
 
+Help is split by task: `bkpr --help` shows the overview and common options,
+`bkpr tui --help` shows terminal/connection options, and `bkpr COMMAND --help`
+focuses on one command. Use `bkpr keys` for keyboard shortcuts.
+`bkpr help COMMAND` works too, including `bkpr help run` and `bkpr help install`.
+
 Normal launches preserve your HOME, shell profiles and environment, using the
 invocation directory. Closing the client leaves the daemon and panes running.
 `-s` / `--session` selects an exact name; Unicode, spaces and slashes are

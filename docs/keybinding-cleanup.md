@@ -21,9 +21,17 @@ Historical baseline: main at `30c467f`, including focus-loss fix `a82aec4`.
   presentation; `d` detaches while leaving programs running. `Ctrl-]` no longer
   detaches and follows ordinary input ownership instead.
 
-The CLI help binding list is synchronized with this policy. A full structural
-and readability rework remains an unchecked item in `TODO.md`; this change does
-not implement that overhaul or the other proposals recorded below.
+The CLI help now separates a concise overview, command-specific options and the
+keyboard reference (`bkpr keys`). The other proposals recorded below remain
+separate from the implemented binding and help changes.
+
+Help presentation continues to use Clap's existing argument metadata; no parallel
+option parser or hand-maintained option table was added. Full help-tree
+preparation runs only for help requests, not normal session startup.
+Actual CLI verification covers 29 help entrypoints, including wrapper and
+installer help, with private HOME/XDG and an unreachable inherited socket.
+Every page exits successfully without creating state. Captures and host-user
+workspace check results are under `target/smoke/cli-help/`.
 
 ## Cutover verification
 

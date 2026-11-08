@@ -7,6 +7,7 @@ fn shell() -> Arg {
         .last(true)
         .num_args(1..)
         .value_parser(value_parser!(OsString))
+        .help("Command for new local terminals (after --)")
 }
 
 fn session_argument() -> Arg {
@@ -14,8 +15,8 @@ fn session_argument() -> Arg {
         .long("session")
         .short('s')
         .action(ArgAction::Append)
-        .value_name("HOST:NAME|local:NAME|NAME")
-        .help("Attach a session; repeat for multiple TUI targets (local: escapes colons)")
+        .value_name("SESSION")
+        .help("Session name or HOST:NAME; repeat to combine sessions")
         .conflicts_with_all(["socket", "state-root"])
 }
 
@@ -43,14 +44,15 @@ pub fn command() -> Command {
     let mut command = Command::new("bkpr")
         .version(env!("CARGO_PKG_VERSION"))
         .about("Persistent named pane workspaces")
-        .after_help(crate::HELP)
+        .override_usage("bkpr [OPTIONS] [COMMAND]")
         .arg(session_argument().global(true))
         .arg(
             Arg::new("detach-others")
                 .long("detach-others")
                 .short('d')
                 .global(true)
-                .action(ArgAction::SetTrue),
+                .action(ArgAction::SetTrue)
+                .help("Detach other clients once this attachment is ready"),
         )
         .arg(
             Arg::new("remote")
@@ -58,21 +60,23 @@ pub fn command() -> Command {
                 .short('r')
                 .global(true)
                 .value_name("HOST")
-                .help("Default SSH host for every unqualified TUI target, or one remote utility"),
+                .help("Default SSH host for unqualified sessions"),
         )
         .arg(
             Arg::new("ssh-config")
                 .long("ssh-config")
                 .global(true)
                 .value_name("PATH")
-                .value_parser(value_parser!(PathBuf)),
+                .value_parser(value_parser!(PathBuf))
+                .help("Use an explicit OpenSSH config file"),
         )
         .arg(
             Arg::new("remote-bkpr-bin")
                 .long("remote-bkpr-bin")
                 .global(true)
                 .value_name("REMOTE_EXECUTABLE")
-                .value_parser(value_parser!(PathBuf)),
+                .value_parser(value_parser!(PathBuf))
+                .help("Remote bkpr executable [default: bkpr on remote PATH]"),
         )
         .arg(
             Arg::new("forward-agent")
@@ -88,11 +92,29 @@ pub fn command() -> Command {
                 .long(name)
                 .global(true)
                 .value_name("PATH")
-                .value_parser(value_parser!(PathBuf)),
+                .value_parser(value_parser!(PathBuf))
+                .help(match name {
+                    "socket" => "Connect to an explicit local daemon socket",
+                    "state-root" => "Recovery storage for an explicit local socket",
+                    "cwd" => "Starting directory for new local terminals",
+                    "home" => "Isolated HOME for local fixtures",
+                    "bkprd" => "Use an explicit local daemon executable",
+                    _ => unreachable!(),
+                }),
         );
     }
     for name in ["pane", "view"] {
-        command = command.arg(Arg::new(name).long(name).global(true));
+        command = command.arg(
+            Arg::new(name)
+                .long(name)
+                .global(true)
+                .value_name("ID")
+                .help(match name {
+                    "pane" => "Select an exact pane ID",
+                    "view" => "Select an exact attached view ID",
+                    _ => unreachable!(),
+                }),
+        );
     }
     for name in ["cols", "rows", "cell-width", "cell-height"] {
         command = command.arg(
@@ -107,17 +129,21 @@ pub fn command() -> Command {
             Arg::new("read-only")
                 .long("read-only")
                 .global(true)
-                .action(ArgAction::SetTrue),
+                .action(ArgAction::SetTrue)
+                .help("Inspect without sending input or changing pane state"),
         )
         .arg(
             Arg::new("clipboard")
                 .long("clipboard")
                 .global(true)
-                .value_parser(["ask", "allow", "deny"]),
+                .value_parser(["ask", "allow", "deny"])
+                .value_name("POLICY")
+                .hide_possible_values(true)
+                .help("Clipboard access: ask, allow or deny [default: ask]"),
         )
         .subcommand(
             Command::new("tui")
-                .about("Attach locally, starting if absent, or to an existing remote session")
+                .about("Open local or existing remote sessions")
                 .arg(shell()),
         )
         .subcommand(
@@ -138,7 +164,7 @@ pub fn command() -> Command {
         )
         .subcommand(
             Command::new("resume")
-                .about("List saved conversations read-only; --pane ID explicitly resumes one using current native configuration"),
+                .about("List saved conversations, or resume one with --pane ID"),
         )
         .subcommand(
             Command::new("request")
@@ -147,7 +173,7 @@ pub fn command() -> Command {
         )
         .subcommand(
             Command::new("api")
-                .about("Discover and call shared native control without starting a daemon or TUI")
+                .about("Discover and call native control operations")
                 .subcommand_required(true)
                 .disable_help_subcommand(true)
                 .subcommand(Command::new("help").about("Print the backend operation catalog as JSON"))
@@ -159,7 +185,6 @@ pub fn command() -> Command {
                 .subcommand(
                     Command::new("call")
                         .about("Dispatch one catalog operation once; never replay unknown mutations")
-                        .after_help("Managed launches use authenticated capture and default to their live workspace. Outside a managed launch, select --session NAME or --socket PATH; --remote HOST selects one existing remote session. Input must be explicit: text never adds Enter. Native acceptance is not application consumption. Inspect state before acting on an unknown outcome.")
                         .arg(Arg::new("operation").required(true))
                         .arg(
                             Arg::new("arguments")
@@ -204,6 +229,23 @@ pub fn command() -> Command {
             Command::new("keyboard")
                 .about("Send an explicit physical keyboard probe")
                 .arg(Arg::new("payload").required(true)),
+        )
+        .subcommand(Command::new("keys").about("Show terminal keyboard shortcuts").override_help(crate::help::KEYS))
+        .subcommand(
+            Command::new("run")
+                .about("Launch a harness with Bkpr integration")
+                .arg(Arg::new("harness").required(true).value_name("HARNESS").help("Harness to launch"))
+                .arg(Arg::new("args").value_name("ARGS").help("Arguments passed unchanged to the harness").trailing_var_arg(true).num_args(0..).allow_hyphen_values(true)),
+        )
+        .subcommand(
+            Command::new("install")
+                .about("Install an explicit harness integration")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("agy")
+                        .about("Register the Antigravity context/capture MCP server")
+                        .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue).help("Show changes without applying them")),
+                ),
         )
 }
 
@@ -265,8 +307,22 @@ pub fn tui_targets(matches: &ArgMatches) -> Result<Vec<TuiTarget>> {
 
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches> {
     let args: Vec<_> = args.into_iter().collect();
-    let scoped = scoped_session_arguments(command(), true).try_get_matches_from(args.clone())?;
+    let command = scoped_session_arguments(command(), true);
+    let help_requested = args
+        .iter()
+        .skip(1)
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "--help" || arg == "-h" || arg == "help");
+    let command = if help_requested {
+        crate::help::configure(command)
+    } else {
+        command
+    };
+    let scoped = command.try_get_matches_from(args.clone())?;
     let name = scoped.subcommand_name().unwrap_or("tui");
+    if matches!(name, "run" | "install") {
+        bail!("{name} must precede options; see bkpr {name} --help");
+    }
     if name != "tui" && session_count(&scoped) > 1 {
         bail!("multiple --session targets are only valid for a TUI attachment");
     }
@@ -274,7 +330,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches> {
         scoped
     } else {
         // Preserve existing utility callers' global single-target access.
-        command().try_get_matches_from(args)?
+        self::command().try_get_matches_from(args)?
     };
     let name = matches.subcommand_name().unwrap_or("tui");
     let remote_host = matches.get_one::<String>("remote").is_some();
@@ -619,10 +675,6 @@ mod tests {
             .is_ok()
         );
         assert!(parse(args(&["bkpr", "-s", "host:remote", "--cwd", "/local/cwd",])).is_err());
-        let help = command().render_long_help().to_string();
-        assert!(help.contains("local:foo:bar"));
-        assert!(help.contains("ALL unqualified TUI targets"));
-        assert!(help.contains("Utilities accept at most one exact -s name"));
     }
 
     #[test]

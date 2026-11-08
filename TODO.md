@@ -62,7 +62,7 @@ The current CPU-efficiency level is accepted for now; further optimization is de
 
 - [ ] Run a comprehensive keybinding cleanup phase for consistency and ergonomics across application, sidebar, prefix, history/search/selection, resize and popup/form contexts. Audit naming, aliases, modifier patterns, collisions, keyboard-layout behavior and terminal compatibility; keep dispatch, contextual hints and documentation synchronized. The [binding policy and historical inventory](docs/keybinding-cleanup.md) separates the implemented sidebar/prefix split from remaining proposals.
 
-- [ ] Rework the CLI help message for useful structure and readability: group invocation, options, workflows and keyboard contexts so users can find relevant guidance without scanning an undifferentiated wall of text.
+- [x] Rework CLI help for humans: a concise overview with common options/examples, scoped command help with unrelated flags hidden, grouped TUI options, and a separate `bkpr keys` reference. Keep native harness argument forwarding intact; help must not start sessions or write user state.
 
 - [x] Add a theme switcher with built-in Catppuccin, Solarized, Tokyo Night and PaperColor Light/Dark palettes. `Ctrl-b t` opens an undimmed fuzzy-search overlay with immediate keyboard/hover preview, Enter/click commit and Escape/outside rollback across chrome and terminal panes. Keep inferred terminal colors as the default, follow real terminal color changes and retain explicit presets. Choices are client-instance-local; default pane foreground/background and ANSI16 follow the palette, while application RGB and higher indexed colors remain unchanged. Muted, blended and semantic UI colors still use existing appearance policy.
 

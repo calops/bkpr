@@ -2,6 +2,7 @@ mod api;
 mod cli;
 mod context;
 mod harness;
+mod help;
 mod recovery;
 mod remote;
 mod session;
@@ -10,92 +11,6 @@ use anyhow::{Context, Result, bail};
 use bkpr_client::{Options, SessionTarget, SpawnDefaults};
 use bkpr_protocol::{Operation, Request};
 use std::{io::IsTerminal, path::PathBuf};
-
-const HELP: &str = r#"Bkpr — persistent named pane workspaces
-
-  bkpr [tui] [-s [HOST:]NAME ... | --socket PATH --state-root PATH] [-d]
-       [-r DEFAULT_HOST] [--cwd PATH] [--read-only] [--clipboard ask|allow|deny]
-       [--bkprd PATH] [--home ISOLATED_FIXTURE_HOME] [-- SHELL ARGS...]
-       [--remote-bkpr-bin REMOTE_EXECUTABLE] [--ssh-config PATH] [--forward-agent]
-  bkpr list
-  bkpr stop [-s NAME | --socket PATH]
-  bkpr resume [-s NAME | --socket PATH] [--pane PANE_ID]
-  bkpr context [-s NAME | --socket PATH] [--pane PANE_ID] [--json]
-  bkpr api help
-  bkpr api schema [OPERATION]
-  bkpr api call OPERATION [--arguments JSON_OBJECT] [--scope workspace|session|all]
-  bkpr request [-s NAME | --socket PATH] 'VERSIONED_TYPED_JSON_REQUEST'
-  bkpr keyboard --socket PATH --pane PANE_ID --view VIEW_ID '[PHYSICAL_BYTES]'
-  bkpr remote -r HOST [-s NAME] [--ssh-config PATH] [--remote-bkpr-bin REMOTE_EXECUTABLE]
-       inspect | request 'OPERATION_JSON' [--forward-agent] | connect [--forward-agent] [-d]
-  bkpr run HARNESS [--] ARGS...
-  bkpr install agy
-
-Bare bkpr connects or starts the named local session `bkpr`, then opens its TUI.
--s / --session repeats to attach independent local and remote sessions in one TUI.
-Use -s foo -s bar -s devbox:baz; local:foo:bar selects the literal local name foo:bar.
-Names remain exact (Unicode, spaces, slashes and colons are supported).
--d / --detach-others revokes other clients once this attachment is ready; it does
-not terminate their panes. Client exit/detach preserves daemon and pane processes.
-`list` discovers stored sessions without starting them; `stop` stops only the
-selected session and its programs. A cold named-session restart restores owned
-layouts and saved directories, using the current shell or a verified active
-native conversation's fixed resume adapter with fresh launch authority.
-Old arbitrary commands/settings are not replayed. Failed restoration retains
-intent without a fallback; direct bkprd startup without argv stays headless.
-Explicit --session overrides inherited BKPR_SOCKET. Headless context/request/
-keyboard/resume otherwise inherit pane routing; normal TUI/stop default to `bkpr`.
-Utilities do not initialize the TUI or automatically start a daemon.
--r / --remote supplies the default host for ALL unqualified TUI targets, regardless
-of argument position. Explicit HOST:NAME and local:NAME override it. Remote names
-default to `bkpr`, independently of local pane routing. The TUI connects directly
-over SSH without creating, installing or restarting remotely.
---remote-bkpr-bin selects the remote helper executable (default: remote PATH `bkpr`).
-`remote inspect` validates session identity read-only, without attaching or forwarding
-agents. `remote connect` keeps one attachment for bounded Operation JSON lines.
-Only the TUI and remote connect accept -d takeover. SSH host keys must already be
-trusted; agent forwarding is disabled unless explicitly requested by a remote TUI,
-request or connect invocation. Remote paths and process operations stay remote;
-terminal theme, capabilities and clipboard policy stay local.
-Local startup options apply only to local targets; remote pane defaults stay remote.
-Utilities accept at most one exact -s name (no host-prefix interpretation).
-Initial failures remain offline for explicit retry. Previously active attachments
-reconnect after transport loss, never restarting programs or replaying operations.
-Sidebar S selects the session tree context; R on a session row forces reconnect.
-An ended/detached session leaves the tree; ending the last exits after TTY restoration.
-`resume` lists saved native conversations read-only; --pane selects one exact ID.
-Resume uses current native configuration, not saved argv/settings; process start
-is pending authenticated conversation binding, not proof the conversation loaded.
-`context` reads current execution membership from the caller's verified native PTY,
-not inherited labels or client focus. Outside a pane, select an exact --pane ID.
-`run` preserves native arguments and captures supported interactive harnesses in
-an authenticated Bkpr pane. Recognized generic harnesses run without capture.
-`install agy` explicitly registers the launch-scoped context/capture MCP server.
-Server: bkprd --help.
---home explicitly selects isolated fixture child environment; the normal default
-preserves your HOME, environment and shell profiles in the invocation directory.
-
-Keyboard (Ctrl-b prefix, then one command):
-  n / % split left/right   " split top/bottom        w workspace chooser
-  W window chooser         o pane chooser (including hidden/unassigned)
-  [ / ] previous/next workspace    Tab next pane     arrows focus direction
-  Shift+arrows exchange focused pane with its directional neighbour
-  e resize: arrows 1 cell, Shift+arrows 5; Enter/Esc finish; drag dividers directly
-  / search: type query, Enter next / Shift+Enter previous, Esc close
-  s scrollback/history     y copy selection         i project details
-  x remove layout leaf only (process survives)      R reopen unavailable pane
-  g toggle fancy/plain chrome                      t theme chooser
-  d detach                 Ctrl-b Ctrl-b send Ctrl-b to focused pane
-Ctrl-Space enters the sidebar: navigate/fold with arrows; Enter activates;
-S selects session root; R reconnects a session row. Sidebar n creates a workspace,
-N a separate terminal window, r renames, and x/Delete closes after confirmation.
-Click workspace or pane to focus; application mouse coordinates are pane-local.
-Drag selects/copies; Shift overrides application
-mouse tracking. History uses arrows/PgUp/PgDn/Home; Esc returns to live output.
-Forms use Enter apply / Esc cancel / Ctrl-u clear; pane focus is restored.
-Clipboard requests use y allow / n deny, bound to their originating pane.
-Approved device transfers do not block unrelated pane input.
-"#;
 
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args_os().collect();
@@ -125,6 +40,10 @@ fn main() -> Result<()> {
     }
     if command == "tui" {
         return run_tui(&matches);
+    }
+    if command == "keys" {
+        print!("{}", help::KEYS);
+        return Ok(());
     }
     let roots = session::Roots::inherited()?;
     if command == "list" {
