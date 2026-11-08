@@ -230,8 +230,8 @@ trace only the selected item's path to its ancestors. The active pane's title
 and metadata share one full-width highlight.
 A single online session keeps the compact workspace tree. Hovering or browsing
 another owner's metadata does not activate its panes. Click or Enter activates
-the selected owner. `Ctrl-b S` jumps to the current session's tree context;
-`R` on a session row forces a fresh connection.
+the selected owner. In the sidebar, `S` jumps to the current session's tree
+context; `R` on a session row forces a fresh connection.
 
 Each remote attachment is direct: local TUI → one no-PTY OpenSSH/Yamux connection
 → remote `bkpr` helper → remote daemon. Remote-only invocations need no local
@@ -628,7 +628,7 @@ messaging require a ready canonical common-Git-directory identity.
 
 ### Sidebar, popups and presentation
 
-`Ctrl-Space` (or `Ctrl-b b`) enters the all-workspace sidebar. Selection is local:
+`Ctrl-Space` enters the all-workspace sidebar. Selection is local:
 browsing does not change the active application or attach hidden terminal views.
 Arrows or `j`/`k` move, Home/End and PageUp/PageDown reveal other rows, Left/Right
 fold or unfold a workspace or window, and Enter activates the selected workspace,
@@ -643,6 +643,15 @@ In the sidebar, `n` creates a workspace and its first terminal, `N` creates a
 separate full terminal window, and `r` renames the selected item. `x`/Delete closes
 the selected workspace, window or terminal after confirmation, terminating all
 its owned processes, including hidden terminals. A separate window is not a split.
+
+The sidebar owns local navigation and entity management. The `Ctrl-b` prefix
+owns global pane, layout and client actions: `w`/`W`/`o` choose a
+workspace/window/pane, `n`/`%` and `"` split, arrows focus, Shift-arrows exchange
+panes, `[`/`]` change workspace and Tab changes pane. `e` resizes, `x` removes a
+layout reference without terminating its process, `R` reopens an unavailable
+pane as a shell, `g`/`t` control presentation, and `d` detaches without stopping
+programs. Sidebar entry, creation, rename and close have no duplicate prefix
+commands; `Ctrl-]` is not a detach shortcut.
 
 New unnamed panes follow their application's OSC 0/2 title, including while
 hidden; an empty title restores the command-derived label. Explicit creation
@@ -812,14 +821,10 @@ Press `Ctrl-b`, then a command:
 
 | Command | Action |
 | --- | --- |
-| `b` | Enter the all-workspace sidebar |
-| `c` | Create workspace, window and first pane |
-| `N` (uppercase) | Create a separate full terminal window in the active workspace |
 | `n` or `%` | Spawn a pane in the active window, split left/right |
 | `"` | Spawn a pane in the active window, split top/bottom |
 | `e` | Enter keyboard split-resize mode |
 | `R` (uppercase) | Confirm a new configured shell in the focused unavailable pane's layout position |
-| `r` / `p` | Rename workspace / pane |
 | `w` / `o` | Choose workspace / show an existing pane |
 | `W` (uppercase) | Choose a window in the active workspace |
 | `i` | Inspect focused pane's local project/Git snapshot (arrows scroll) |
@@ -830,13 +835,13 @@ Press `Ctrl-b`, then a command:
 | Arrows / Tab | Focus direction / next pane |
 | Shift+Arrows | Exchange focused pane with nearest pane in that direction |
 | `x` | Remove a layout leaf; keep its process running |
-| `!` | Terminate a pane, after confirmation |
-| `X` | Close the workspace and all its owned terminals, after confirmation |
+| `g` / `t` | Toggle fancy/plain chrome / choose theme |
 | `d` | Detach client |
 | `Ctrl-b` | Send literal Ctrl-b to the application (live mode only) |
 
-`Ctrl-]` also detaches. Active workspace/window and per-window pane focus are
-client-local. Choosing an existing owned pane switches to its owning workspace
+Use `Ctrl-Space` for sidebar navigation and selected-entity creation, rename and
+close (`n`/`N`, `r`, `x`/Delete). Active workspace/window and per-window pane focus
+are client-local. Choosing an existing owned pane switches to its owning workspace
 and window; it does not borrow the pane into another layout. Unassigned
 administrative panes and retired exit receipts are not implicitly adopted.
 Layout removal and detach keep processes alive; closing a window or workspace

@@ -1,7 +1,53 @@
-# Keybinding inventory and cleanup proposal
+# Keybinding policy and historical cleanup inventory
 
-Status: inventory and proposal only. No bindings or runtime behavior changed.
-Baseline: main at `30c467f`, including the focus-loss fix `a82aec4`. Roadmap additions were committed and pushed before this audit.
+Status: the sidebar/prefix separation below is implemented policy. The original
+audit is retained as a historical inventory, not a current shortcut reference.
+Historical baseline: main at `30c467f`, including focus-loss fix `a82aec4`.
+
+## Implemented sidebar/prefix policy
+
+- `Ctrl-Space` is the sidebar entry point. Prefix `b` and `S` are removed.
+- The sidebar owns local navigation and selected-entity management: `n` creates
+  a workspace, `N` creates a separate terminal window, `r` renames, and
+  `x`/Delete closes the selected entity after confirmation. Sidebar `S` selects
+  the session-root context; session-row `R` reconnects its attachment.
+- Prefix `c`/`N`, `r`/`p` and `!`/`X` are removed; creation, rename and close
+  use the sidebar instead. A separate terminal window is not a split.
+- The `Ctrl-b` prefix retains global pane/layout/client actions: `w`/`W`/`o`
+  choosers, `n`/`%` and `"` splits, workspace/pane navigation, directional
+  focus/exchange, resize, search/history, copy and project inspection.
+  Prefix `x` removes only a layout reference; its process survives.
+- Prefix `R` reopens an unavailable pane as a shell; `g`/`t` control client
+  presentation; `d` detaches while leaving programs running. `Ctrl-]` no longer
+  detaches and follows ordinary input ownership instead.
+
+The CLI help binding list is synchronized with this policy. A full structural
+and readability rework remains an unchecked item in `TODO.md`; this change does
+not implement that overhaul or the other proposals recorded below.
+
+## Cutover verification
+
+Incremental debug build, bounded to eight jobs. Workspace unit/integration test
+executables pass as the actual host user; all-target strict Clippy and formatting
+pass. The headless creation ownership regression now exercises sidebar `n`.
+Public debug/release executable paths used by live sessions were preserved.
+
+An isolated real Kitty client/backend smoke verifies application receipt of
+`Ctrl-]` as byte `0x1d`, no accidental forms/mutations from removed prefix
+commands, sidebar create/rename/confirmed close, session-root `n` creation on
+the exact owner, and `Ctrl-b d` detach with programs surviving. Physical root
+creation used an existing session; empty-headless routing is covered by the
+ownership regression, not claimed as separate terminal acceptance.
+Evidence and cleanup receipts: `target/smoke/keybinding-cleanup/`,
+especially `final-actual-kitty-ready/result.json` and `build/host-tests.json`.
+
+
+## Historical audit boundary
+
+Everything from “Scope and evidence” through the original acceptance plan below
+describes the baseline audit and its proposals. Removed chords in those tables
+are historical evidence only. Source line numbers and the executed CLI help
+comparison refer to that baseline, not fresh verification of this change.
 
 ## Scope and evidence
 
@@ -11,7 +57,7 @@ Unqualified Rust source paths below are under `crates/bkpr-client/src/`. Framewo
 
 Historical source inspected: `pre-native-rewrite:crates/bkpr-zellij/src/keyguide.rs` at `e9ee40261bf25b929799d231602573818a0af243`. Its useful principle was to describe effective merged bindings and suppress local hints intercepted by native actions. Keep that principle, not Zellij's mode plumbing or its old shortcut assignments. No historical code was copied.
 
-The inventory follows `crates/bkpr-client/src/keyguide.rs` (`Context`, `Action`, `BINDINGS`, `lookup_with`, `hints_with`), actual `app.rs` dispatch, the session coordinator, and the context-specific modules cited below. The current debug CLI's `--help` was executed and compared with source. This is a source/dispatch audit plus an executed CLI advertisement check, not new physical-terminal acceptance of every chord. No Cargo builds, live-session mutations or executable replacements were performed. Before implementation, run the targeted terminal matrix below.
+At the baseline, the inventory followed `crates/bkpr-client/src/keyguide.rs` (`Context`, `Action`, `BINDINGS`, `lookup_with`, `hints_with`), actual `app.rs` dispatch, the session coordinator, and the context-specific modules cited below. The then-current debug CLI's `--help` was executed and compared with source. This was a source/dispatch audit plus an executed CLI advertisement check, not physical-terminal acceptance of every chord. No Cargo builds, live-session mutations or executable replacements were performed for that audit.
 
 ## Ownership and matching
 
@@ -23,7 +69,7 @@ The inventory follows `crates/bkpr-client/src/keyguide.rs` (`Context`, `Action`,
 
 Sources: `keyguide.rs:42-82,355-393,445-565,954-988`; `app.rs:731-881,3400-3830`; `sessions.rs` release-owner routing.
 
-## Application and command prefix
+## Historical application and command prefix
 
 `P` below means press `Ctrl-b`, then the listed key, not a simultaneous chord.
 
@@ -54,7 +100,7 @@ Sources: `keyguide.rs:42-82,355-393,445-565,954-988`; `app.rs:731-881,3400-3830`
 
 Sources: `keyguide.rs:450-565`; `app.rs:3511-3516,3671-3830`.
 
-## Tree, inspection and terminal modes
+## Historical tree, inspection and terminal modes
 
 | Context | Effective keys | Notes |
 | --- | --- | --- |
@@ -70,7 +116,7 @@ Sources: `keyguide.rs` sidebar/session/history/search/resize rows; `sidebar.rs`,
 
 Pointer behavior is part of the action surface: tree wheel scrolls three rows; a matching press/release activates a tree target; double click also toggles folding; hover is passive. Pane wheel becomes history navigation with Shift, primary-screen search, or appropriate native non-mouse-reporting state. Divider drag changes backend layout; sidebar-boundary drag changes client-local width. Captured gestures, overlays and toasts precede ordinary pane routing. Preserve capture and late-release tombstones during cleanup.
 
-## Modals and editing
+## Historical modals and editing
 
 | Context | Effective keys | Behavior / omissions |
 | --- | --- | --- |
@@ -90,9 +136,9 @@ The shared guide is hidden while a modal is open (`app.rs:953-968`), despite mod
 
 Sources: `app.rs:3530-3657`; `controller.rs:62-72,1800-2058`; `form_fields.rs:34-50,139-157`; `finder.rs:804-855,1080-1083`; `theme_switcher.rs:22-59`; `bkpr-tui-framework/src/search_list.rs:98-153`; `text_input.rs:52-99`.
 
-## Lifecycle actions that must not be conflated
+## Historical lifecycle entrypoints and lifetime distinctions
 
-| Action | Current entrypoint | Recovery/lifetime meaning |
+| Action | Baseline entrypoint | Recovery/lifetime meaning |
 | --- | --- | --- |
 | Detach client | `Ctrl-]`, `P d` | Leaves programs running |
 | Take over attachment | CLI `-d` | Revokes other clients, not programs |
@@ -105,9 +151,9 @@ Sources: `app.rs:3530-3657`; `controller.rs:62-72,1800-2058`; `form_fields.rs:34
 
 `Action` has no StopSession or ResumeConversation entry. Tree close is native workspace/window/pane management, not session-root shutdown. These are real discovery gaps, not missing backend shutdown/recovery machinery. See `crates/bkpr/src/main.rs:167-178`, `recovery.rs`, `app.rs:731-811,2917-3170`, `client_lifetime.rs:673-770`.
 
-## Findings and proposed decisions
+## Historical findings and proposed decisions
 
-| Priority | Evidence-backed finding | Proposed cleanup, not implemented |
+| Priority | Baseline finding | Proposed cleanup at audit time |
 | --- | --- | --- |
 | A | Shared physical matching is exact, but App intercepts Ctrl-b and Ctrl-] using `modifiers & CTRL != 0`; Ctrl-] also accepts repeats. Thus extra-modifier chords can be captured despite not matching the guide table | Make dispatch and guide use the same binding eligibility, with explicit exceptions for lifecycle ownership. Confirm policy for extra-modifier chords before changing interception |
 | A | Theme dispatch has a second framework keymap, including aliases absent from shared hints; Ctrl-b in that widget is shadowed by App | Keep a single inspectable source per effective action surface. Reuse or expose widget editing actions through the existing vocabulary rather than maintaining copied maps; don't advertise unreachable Ctrl-b editing |
@@ -123,7 +169,7 @@ Sources: `app.rs:3530-3657`; `controller.rs:62-72,1800-2058`; `form_fields.rs:34
 
 No recommendation to remove n/% split aliases, g/G tree navigation, or existing history paging aliases. No blanket Ctrl-c/Ctrl-d takeover: applications and permission prompts have distinct semantics. No configuration format or command palette is needed to complete this cleanup.
 
-## Proposed implementation order
+## Original proposed implementation order
 
 1. Agree modifier interception and lifecycle terminology. Keep existing familiar chords unless explicitly approved otherwise.
 2. Align effective dispatch, capability gating and hint extraction. Preserve release-before-modal ownership, pointer capture, repeats and pending mutation semantics. Reuse the existing Action/Context framework and maintained text widgets.
@@ -131,10 +177,10 @@ No recommendation to remove n/% split aliases, g/G tree navigation, or existing 
 4. Add confirmed StopSession presentation through the existing backend Shutdown path. For multiple local/remote attachments, show the exact owner and preserve unrelated sessions. Do not claim arbitrary-program checkpoint recovery.
 5. Apply approved additive bindings (consent Esc denial, chooser paging) and optional shared search-editor improvements.
 
-## Acceptance for implementation
+## Original acceptance plan (not a completion claim)
 
 Exercise actual Kitty enhanced input and a legacy terminal with QWERTY/AZERTY layouts: produced punctuation, non-ASCII text, Ctrl/Shift/Alt combinations, Caps/Num Lock, repeat and release. Check every local context's ownership, unknown keys, read-only/offline targets, modal close/rollback, unavailable operations and narrow-window hints. Include focus loss, held-key settlement, late real releases, cross-pane and multi-session generation routing. Do not replace the existing focus-loss regression with a binding-table test.
 
 Stop-session acceptance must prove confirmed shutdown, retained recovery records, no surviving owned daemon/programs, clean attached-client retirement and untouched unrelated sessions. Cancellation must make no mutation. An unknown dispatched outcome must be inspected, not replayed.
 
-This inventory does not authorize remapping or implement these proposals. The next user decision is the proposed modifier policy and additive lifecycle/consent/chooser actions above.
+The historical inventory did not authorize remapping. The implemented policy at the top records the subsequently approved removal and sidebar/prefix separation. Modifier matching, stop-session presentation, consent denial, chooser paging and shared editing improvements remain separate proposals; none is implied complete by this binding change.

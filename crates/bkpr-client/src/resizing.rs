@@ -278,9 +278,6 @@ impl App {
             .is_some_and(|gesture| matches!(gesture.mode, Mode::Drag))
     }
     pub(super) fn resize_key(&mut self, event: &KeyEvent, size: Size) -> Result<bool> {
-        if event.key == "BracketRight" && event.modifiers & 2 != 0 {
-            return Ok(false);
-        }
         if !self.resize_capturing() {
             return Ok(false);
         }

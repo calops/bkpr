@@ -743,7 +743,6 @@ impl App {
                     | Action::EnterSessions
                     | Action::ReconnectSession
                     | Action::ToggleSidebar
-                    | Action::EnterSidebar
                     | Action::LeaveSidebar
                     | Action::Navigate(_)
                     | Action::FoldSidebar
@@ -788,10 +787,6 @@ impl App {
             }
             Action::CreateWorkspace
             | Action::RenameSelected
-            | Action::RenameWorkspace
-            | Action::RenamePane
-            | Action::TerminatePane
-            | Action::CloseWorkspace
             | Action::ReopenPane
             | Action::SplitHorizontal
             | Action::SplitVertical
@@ -3140,10 +3135,6 @@ impl App {
                 | Action::CreateTerminal
                 | Action::RenameSelected
                 | Action::CloseSelected
-                | Action::RenameWorkspace
-                | Action::RenamePane
-                | Action::TerminatePane
-                | Action::CloseWorkspace
                 | Action::ChooseWorkspace
                 | Action::ChooseWindow
                 | Action::ChoosePane
@@ -3223,26 +3214,6 @@ impl App {
             Action::CloseSelected => self.edit_sidebar(true)?,
             Action::CreateWorkspace => self.open_form(FormKind::CreateWorkspace, String::new())?,
             Action::CreateTerminal => self.open_form(FormKind::CreateWindow, String::new())?,
-            Action::RenameWorkspace => {
-                let name = self
-                    .state
-                    .current(&self.registry)
-                    .context("no workspace")?
-                    .name
-                    .clone();
-                self.open_form(FormKind::RenameWorkspace, name)?;
-            }
-            Action::RenamePane => {
-                let pane = self
-                    .state
-                    .focused
-                    .as_ref()
-                    .and_then(|id| self.registry.panes.iter().find(|pane| pane.id == *id))
-                    .context("no focused terminal")?;
-                self.open_form(FormKind::RenamePane, pane.title.clone())?;
-            }
-            Action::TerminatePane => self.open_form(FormKind::TerminatePane, String::new())?,
-            Action::CloseWorkspace => self.open_form(FormKind::CloseWorkspace, String::new())?,
             Action::ChooseWorkspace => self.open_form(FormKind::ChooseWorkspace, String::new())?,
             Action::ChooseWindow => self.open_form(FormKind::ChooseWindow, String::new())?,
             Action::ChoosePane => self.open_form(FormKind::ChoosePane, String::new())?,
@@ -3508,12 +3479,6 @@ impl App {
                 return Ok(false);
             }
         }
-        if event.key == "BracketRight"
-            && event.modifiers & 2 != 0
-            && event.action != KeyAction::Release
-        {
-            return Ok(true);
-        }
         self.validate_sidebar_resize(size);
         if matches!(
             self.pointer_capture,
@@ -3731,37 +3696,9 @@ impl App {
                 Some(Action::StartSearch) => self.begin_search()?,
                 Some(Action::StartHistory) => self.enter_history(rects)?,
                 Some(Action::StartResize) => self.begin_keyboard_resize(size)?,
-                Some(Action::EnterSidebar) => self.enter_sidebar(),
                 Some(Action::CopySelection) => self.copy_focused_selection()?,
                 Some(Action::ProjectDetails) => {
                     self.open_form(FormKind::ProjectDetails, String::new())?
-                }
-                Some(Action::CreateWorkspace) => {
-                    self.open_form(FormKind::CreateWorkspace, String::new())?
-                }
-                Some(Action::CreateTerminal) => {
-                    self.open_form(FormKind::CreateWindow, String::new())?
-                }
-                Some(Action::RenameWorkspace) => {
-                    if let Some(workspace) = self.state.current(&self.registry) {
-                        self.open_form(FormKind::RenameWorkspace, workspace.name.clone())?;
-                    }
-                }
-                Some(Action::RenamePane) => {
-                    let title = self
-                        .state
-                        .focused
-                        .as_ref()
-                        .and_then(|id| self.registry.panes.iter().find(|p| p.id == *id))
-                        .map(|p| p.title.clone())
-                        .unwrap_or_default();
-                    self.open_form(FormKind::RenamePane, title)?;
-                }
-                Some(Action::TerminatePane) => {
-                    self.open_form(FormKind::TerminatePane, String::new())?
-                }
-                Some(Action::CloseWorkspace) => {
-                    self.open_form(FormKind::CloseWorkspace, String::new())?
                 }
                 Some(Action::ChooseWorkspace) => {
                     self.open_form(FormKind::ChooseWorkspace, String::new())?
@@ -6853,16 +6790,15 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn headless_online_tree_keeps_prefix_creation_on_its_exact_owner() {
+    fn headless_online_tree_keeps_sidebar_creation_on_its_exact_owner() {
         let (mut app, capture) = fixture();
         publish_test_tree(&mut app);
         app.enter_sessions();
         assert!(app.tree.lock().unwrap().rows.is_empty());
         assert!(app.state.sidebar.active);
         assert!(app.sidebar_target.is_none());
-        app.state.prefix = true;
-        let mut create = key("KeyC");
-        create.text = "c".into();
+        let mut create = key("KeyN");
+        create.text = "n".into();
         app.key(create, &mut Vec::new(), size(), &[]).unwrap();
         assert!(matches!(app.session_action, Some(SessionAction::Tree {
             target: TreeTarget { owner, node: TreeNode::Session },
@@ -7500,10 +7436,47 @@ pub(super) mod tests {
     #[test]
     fn detach_never_sends_a_termination() {
         let (mut app, received) = fixture();
-        let mut event = key("BracketRight");
-        event.modifiers = 2;
+        app.state.prefix = true;
+        let mut event = key("KeyD");
+        event.text = "d".into();
         assert!(app.key(event, &mut Vec::new(), size(), &[]).unwrap());
         assert!(received.try_recv().is_err());
+    }
+    #[test]
+    fn control_bracket_reaches_original_pane_with_balanced_key_lifecycle() {
+        let (mut app, received) = fixture();
+        attach_fixture(&mut app);
+        for action in [KeyAction::Press, KeyAction::Release] {
+            let mut event = key("BracketRight");
+            event.modifiers = 2;
+            event.text = if action == KeyAction::Press { "]" } else { "" }.into();
+            event.action = action;
+            assert!(!app.key(event, &mut io::sink(), size(), &[]).unwrap());
+            assert!(matches!(
+                received.try_recv().unwrap(),
+                Operation::Pane {
+                    pane_id,
+                    request: PaneRequest::Key { view_id, event },
+                } if pane_id == "focused-pane"
+                    && view_id == "focused-view"
+                    && event.key == "BracketRight"
+                    && event.modifiers == 2
+                    && event.action == action
+            ));
+        }
+        assert!(app.held.is_empty());
+    }
+    #[test]
+    fn removed_prefix_management_commands_do_not_mutate_or_open_sidebar_forms() {
+        let (mut app, received) = fixture();
+        attach_fixture(&mut app);
+        for command in ["b", "S", "c", "N", "r", "p", "!", "X"] {
+            physical_keys(&mut app, format!("\x02{command}").as_bytes()).unwrap();
+            assert!(app.state.form.is_none(), "{command}");
+            assert!(!app.state.sidebar.active, "{command}");
+            assert!(!app.state.prefix, "{command}");
+            assert!(received.try_recv().is_err(), "{command}");
+        }
     }
     #[test]
     fn read_only_is_independent_of_visible_interactive_size_eligibility() {
@@ -10350,9 +10323,9 @@ pub(super) mod tests {
                     prefix.modifiers = 2;
                     app.key(prefix, &mut Vec::new(), pointer.size, &pointer.rects)
                         .unwrap();
-                    let mut rename = key("KeyR");
-                    rename.text = "r".into();
-                    app.key(rename, &mut Vec::new(), pointer.size, &pointer.rects)
+                    let mut chooser = key("KeyW");
+                    chooser.text = "w".into();
+                    app.key(chooser, &mut Vec::new(), pointer.size, &pointer.rects)
                         .unwrap();
                     assert!(app.state.form.is_some());
                 }
@@ -10639,27 +10612,6 @@ pub(super) mod tests {
         assert_eq!(projected, vec!["owner-neighbor", "removed-pane"]);
         assert_eq!(serde_json::to_value(&app.registry).unwrap(), before);
         assert_eq!(app.management.len(), 1);
-    }
-
-    #[test]
-    fn create_terminal_and_window_chooser_use_the_typed_prefix_actions() {
-        let (mut app, capture) = fixture();
-        unavailable_fixture(&mut app);
-        physical_keys(&mut app, b"\x02N").unwrap();
-        let form = app.state.form.as_ref().unwrap();
-        assert_eq!(form.kind, FormKind::CreateWindow);
-        assert!(matches!(&form.target, Some((SidebarTarget::Workspace(id), 7)) if id == "history"));
-        assert_eq!(form.fields.directory(), PathBuf::from("/observed/cwd"));
-        app.state.cancel();
-        physical_keys(&mut app, b"\x02W").unwrap();
-        assert_eq!(
-            app.state.form.as_ref().unwrap().kind,
-            FormKind::ChooseWindow
-        );
-        app.apply_form(size()).unwrap();
-        assert_eq!(app.state.window.as_deref(), Some("history-window"));
-        assert!(app.management.is_empty());
-        assert!(capture.try_recv().is_err());
     }
 
     fn submitted_form_operation(kind: FormKind, prepare: impl FnOnce(&mut App)) -> Operation {

@@ -53,10 +53,6 @@ pub fn keyboard(socket: &Path, pane: &str, view: &str, bytes: &[u8]) -> Result<(
             },
             _ => bail!("keyboard probe accepts only keys and bracketed paste"),
         };
-        if matches!(&request,PaneRequest::Key{event,..}if event.key=="BracketRight"&&event.modifiers&2!=0)
-        {
-            bail!("detach shortcut is not a keyboard injection");
-        }
         input.send(Operation::Pane {
             pane_id: pane.into(),
             request,
