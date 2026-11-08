@@ -2675,3 +2675,70 @@ transitive helpers, verification metadata and the 197 source inputs. These are
 functional software-rendered checks, not WAN, hardware-GPU, full-screen-editor
 or comparative latency acceptance.
 
+## Lost keyboard releases and view retirement
+
+Evidence: `target/smoke/lost-key-release/fix/acceptance.json` and
+`runtime-acceptance.json`, based on native main `920625cd`. The immutable debug
+client is `eca51989`; daemon `643d464e` is unchanged from the diagnostic pair.
+The original [reported reproducer](https://gist.github.com/clemux/94aab0f358b602734d0b337196e5d6f6)
+and before/control receipts remain in `target/smoke/lost-key-release/`.
+Those supplied observations were reused, not rerun to confirm the reported bug:
+lost Super left the original pane retiring and rejected its probe; delivered
+key-up kept input working.
+
+The client now retains original pane/view and release identity until local
+release admission succeeds. Physical `focus;out` settles every attachment's
+held keys, including background views. Ordinary pane/session selection still
+keeps hardware key-up addressed to its original owner. Key releases use the
+existing command FIFO as cleanup; they do not inject a printable press or paste.
+Accepted enhanced-paste work and its suffix remain ahead of cleanup, full
+admission retains the held entry, and input completion wakes background owners.
+Retired generations keep routing tombstones; late hardware key-up does not
+become a second release or input for another attachment.
+
+This is Bkpr client lifecycle policy, not a second framework input decoder,
+generic keyboard subsystem or backend permission change. The native SDK,
+wire family, renderer and daemon are unchanged.
+
+The candidate passes the supplied lost-Super scenario, original delivered-up
+control and a lost ordinary-key variant. Each restored pane accepts the probe;
+a later real release preserves readiness. Actual private Kitty/Xvfb scenarios
+cover Super, ordinary `a`, and hiding the original view before focus loss.
+A native fixture requests CSI-u flags 31. Transparent util-linux `script`
+captures the real host's keyboard capability reply, XTest key-down, X11 focus
+out/in and delayed real key-up. Its original pane receives exactly one release
+before hardware key-up, and the peer pane receives no stale release.
+`final-physical-{lost-super,lost-ordinary,hidden-super}/restored.png` captures the
+actual restored UI after transient toasts expire.
+
+Unit regressions cover normal in-host session switching, physical focus loss
+across inactive sessions, original-view retirement, full queue admission,
+accepted paste/suffix ordering, cleanup failure isolation, removed/replaced
+generations and late key events. The existing stopped-command-lane test now
+also proves owed key-up can drain without replaying a failed press.
+The static coordinator fixtures cancel their disconnected capture receiver
+instead of accidentally treating it as a live registry stream.
+
+Final formatting, all-target strict Clippy, workspace test compilation, debug
+build and doctests pass in `fix/build/compiled-4589097018587/manifest.json`.
+Actual host-UID tests in `fix/build/checks-4829724532130/result.json` pass
+959 top-level tests, with 14 ignored; all 344 client tests pass.
+An earlier run alongside GUI fixtures hit the unchanged backend bind-storage
+test's global revision assertion (5 instead of 4). That failure remains in
+`fix/build/checks-4665510797504`; the quiet full suite passes, but its cause
+was not established and no backend test was weakened.
+
+Public debug/release executable bytes and inodes remain unchanged under the
+private output guard (`fix/build/protected-4588811526526/result.json`).
+The guard first detaches cache hardlinks without replacing live pathnames.
+All 20 runtime cleanup receipts and the final host test receipt report zero
+owned survivors. Controllers, exact source snapshots, binary hashes and check
+metadata are retained in `fix/controllers.zip`; loose throwaway scripts are
+removed after archive verification.
+
+This proves private Kitty/XTest focus loss with software rendering, not a real
+desktop compositor shortcut or a new responsiveness benchmark. Multi-session
+generation/backpressure cases are behavioral unit coverage, not remote-WAN
+physical-terminal acceptance. Live user sessions and installed programs were
+not restarted or changed.
+

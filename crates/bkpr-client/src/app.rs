@@ -409,6 +409,12 @@ struct AppRuntime {
     tree: Arc<Mutex<Tree>>,
     toasts: Arc<Mutex<toast::ToastStack>>,
 }
+struct HeldKey {
+    pane: String,
+    view: String,
+    release: KeyEvent,
+    pending: bool,
+}
 struct App {
     socket: Endpoint,
     options: Options,
@@ -434,7 +440,7 @@ struct App {
     retirement_budget: Option<usize>,
     responses: Vec<DeviceResponse>,
     unconfirmed_views: usize,
-    held: HashMap<String, (String, String)>,
+    held: HashMap<String, HeldKey>,
     key_events_report_releases: bool,
     input: InputPump,
     input_failures: HashMap<String, [Option<updates::InputFailure>; 3]>,
@@ -1595,6 +1601,78 @@ impl App {
         }
         result
     }
+    fn host_focus_changed(&mut self, focused: bool) -> Result<()> {
+        self.host_focused = focused;
+        if !focused {
+            let releases = self.cancel_held_keys();
+            self.scope_input_result(releases)?;
+            self.retire_resize("terminal focus lost");
+            self.clear_resize_hover();
+            self.sidebar_resize_hover = false;
+            if matches!(
+                self.pointer_capture,
+                Some(PointerCapture::SidebarResize { .. })
+            ) {
+                self.pointer_capture = Some(PointerCapture::Ui);
+            }
+            self.selection_focus_lost();
+            self.close_search();
+        }
+        if focused && let Some((pane, _)) = self.active() {
+            self.lease_pending.insert(pane);
+        }
+        self.notify_focus()
+    }
+    fn cancel_held_key(&mut self, key: &str) -> Result<()> {
+        if let Some(held) = self.held.get_mut(key) {
+            held.pending = true;
+            self.flush_key_releases()
+        } else {
+            Ok(())
+        }
+    }
+    fn cancel_held_keys(&mut self) -> Result<()> {
+        for held in self.held.values_mut() {
+            held.pending = true;
+        }
+        self.flush_key_releases()
+    }
+    fn flush_key_releases(&mut self) -> Result<()> {
+        let mut result = Ok(());
+        let mut held = std::mem::take(&mut self.held);
+        held.retain(|_, held| {
+            if self.execution_completed(&held.pane)
+                || self
+                    .views
+                    .get(&held.pane)
+                    .is_none_or(|view| view.view != held.view)
+            {
+                return false;
+            }
+            if !held.pending
+                || self
+                    .barrier_target()
+                    .is_some_and(|(pane, view)| pane == held.pane && view == held.view)
+            {
+                return true;
+            }
+            match self.enqueue(
+                &held.pane,
+                PaneRequest::Key {
+                    view_id: held.view.clone(),
+                    event: held.release.clone(),
+                },
+            ) {
+                Ok(()) => false,
+                Err(error) => {
+                    accumulate_cleanup(&mut result, Err(error));
+                    true
+                }
+            }
+        });
+        self.held = held;
+        result
+    }
     fn enqueue(&self, id: &str, request: PaneRequest) -> Result<()> {
         let lane = updates::InputLane::request(&request);
         if !updates::cleanup(&request)
@@ -1605,6 +1683,27 @@ impl App {
                 .filter(|failure| failure.stopped)
         {
             return Err(updates::InputRejected(failure.clone()).into());
+        }
+        if !updates::cleanup(&request)
+            && self.held.values().any(|held| {
+                held.pending
+                    && held.pane == id
+                    && matches!(&request,
+                    PaneRequest::Key { view_id, .. }
+                    | PaneRequest::Paste { view_id, .. }
+                    | PaneRequest::Mouse { view_id, .. }
+                    | PaneRequest::Focus { view_id, .. }
+                    | PaneRequest::Scroll { view_id, .. } if view_id == &held.view)
+            })
+        {
+            return Err(updates::InputFailure::admission(
+                &Operation::Pane {
+                    pane_id: id.into(),
+                    request,
+                },
+                "previous key release is awaiting input admission",
+            )
+            .into());
         }
         let target = self.barrier_target();
         let ordered = match &request {
@@ -1859,7 +1958,7 @@ impl App {
                     && !self
                         .held
                         .values()
-                        .any(|(origin, view)| origin == pane && view == &target.1)));
+                        .any(|held| held.pane == pane && held.view == target.1)));
         let receipt = match self.views.get_mut(pane).unwrap().retire(
             &self.input,
             pane,
@@ -1886,7 +1985,7 @@ impl App {
             self.notified_focus = None;
         }
         let attached = self.views.remove(pane).unwrap();
-        self.held.retain(|_, (origin, _)| origin != pane);
+        self.held.retain(|_, held| held.pane != pane);
         self.retiring.push(RetiringView { attached, receipt });
         cancellation
     }
@@ -3342,27 +3441,27 @@ impl App {
                 return Ok(false);
             }
             KeyAction::Press => {
+                self.cancel_held_key(&event.key)?;
+                if self.held.get(&event.key).is_some_and(|held| held.pending) {
+                    self.notify("Previous key release is awaiting input admission".into());
+                    return Ok(false);
+                }
                 self.state.suppressed.remove(&event.key);
             }
             _ => {}
         }
         if event.action == KeyAction::Release {
             self.search_release(&event.key);
-            if let Some((pane, view)) = self.held.remove(&event.key)
-                && !self.execution_completed(&pane)
-                && self
-                    .views
-                    .get(&pane)
-                    .is_some_and(|attached| attached.view == view)
-            {
-                self.enqueue(
-                    &pane,
-                    PaneRequest::Key {
-                        view_id: view,
-                        event,
-                    },
-                )?;
+            if let Some(held) = self.held.get_mut(&event.key) {
+                held.release = event;
+                held.pending = true;
             }
+            self.flush_key_releases()?;
+            return Ok(false);
+        }
+        if event.action == KeyAction::Repeat
+            && self.held.get(&event.key).is_some_and(|held| held.pending)
+        {
             return Ok(false);
         }
         let was_resizing = self.resize_capturing();
@@ -3738,13 +3837,29 @@ impl App {
         if !self.options.read_only {
             self.notify_focus()?;
             let target = if event.action == KeyAction::Repeat {
-                self.held.get(&event.key).cloned().or_else(|| self.active())
+                self.held
+                    .get(&event.key)
+                    .map(|held| (held.pane.clone(), held.view.clone()))
+                    .or_else(|| self.active())
             } else {
                 self.active()
             };
             if let Some((pane, view)) = target {
                 let held = (self.key_events_report_releases && event.action == KeyAction::Press)
-                    .then(|| (event.key.clone(), (pane.clone(), view.clone())));
+                    .then(|| {
+                        let mut release = event.clone();
+                        release.action = KeyAction::Release;
+                        release.modifiers = 0;
+                        (
+                            event.key.clone(),
+                            HeldKey {
+                                pane: pane.clone(),
+                                view: view.clone(),
+                                release,
+                                pending: false,
+                            },
+                        )
+                    });
                 self.enqueue(
                     &pane,
                     PaneRequest::Key {
@@ -4339,27 +4454,7 @@ impl App {
             return Ok(());
         }
         if response.starts_with(b"focus;") {
-            self.host_focused = response == b"focus;in";
-            if !self.host_focused {
-                self.retire_resize("terminal focus lost");
-                self.clear_resize_hover();
-                self.sidebar_resize_hover = false;
-                if matches!(
-                    self.pointer_capture,
-                    Some(PointerCapture::SidebarResize { .. })
-                ) {
-                    self.pointer_capture = Some(PointerCapture::Ui);
-                }
-                self.selection_focus_lost();
-                self.close_search();
-            }
-            if self.host_focused
-                && let Some((pane, _)) = self.active()
-            {
-                self.lease_pending.insert(pane);
-            }
-            self.notify_focus()?;
-            return Ok(());
+            return self.host_focus_changed(response == b"focus;in");
         }
         let response = terminal.observe_background_reply(response, out)?;
         let response = response.as_ref();
@@ -5889,7 +5984,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             };
             incoming.extend(decode_input(&mut parser, parts, available));
             while let Some(event) = incoming.pop_front() {
-                if sessions.route_release(&event)? {
+                if sessions.route_release(&event, input_size)? {
                     continue;
                 }
                 if let ClientEvent::Reply(response) = &event
@@ -6171,10 +6266,10 @@ fn detach_view(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::tree;
-    use std::path::Path;
+    use std::{io, path::Path};
     #[test]
     fn rich_material_clears_frame_labels_without_touching_application_cells() {
         let size = Size {
@@ -6209,7 +6304,7 @@ mod tests {
         );
     }
 
-    fn fixture() -> (App, updates::Capture) {
+    pub(super) fn fixture() -> (App, updates::Capture) {
         let registry = RegistrySnapshot {
             revision: 0,
             workspaces: Vec::new(),
@@ -6425,10 +6520,10 @@ mod tests {
         let (mut app, capture) = fixture();
         attach_fixture(&mut app);
         app.backgrounded = true;
-        app.held.insert(
-            "KeyA".into(),
-            ("focused-pane".into(), "focused-view".into()),
-        );
+        app.key(key("KeyA"), &mut io::sink(), size(), &[]).unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { event, .. },
+        } if pane_id == "focused-pane" && event.action == KeyAction::Press));
         app.retire_view("focused-pane", true).unwrap();
         assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
             pane_id, request: PaneRequest::Update { spec, .. },
@@ -6453,6 +6548,168 @@ mod tests {
         assert!(app.held.is_empty());
         app.retire_view("focused-pane", true).unwrap();
         assert!(!app.views.contains_key("focused-pane"));
+    }
+
+    #[test]
+    fn host_focus_loss_settles_all_keys_on_original_views_and_consumes_late_releases() {
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        for name in ["ShiftLeft", "KeyA"] {
+            app.key(key(name), &mut io::sink(), size(), &[]).unwrap();
+            capture.try_recv().unwrap();
+        }
+        attach_named_fixture(&mut app, "peer", "peer-view");
+        app.key(key("KeyB"), &mut io::sink(), size(), &[]).unwrap();
+        capture.try_recv().unwrap();
+        app.backgrounded = true;
+        app.retire_view("focused-pane", true).unwrap();
+        capture.try_recv().unwrap();
+        app.retire_view("focused-pane", true).unwrap();
+        assert!(app.views.contains_key("focused-pane"));
+
+        app.host_focus_changed(false).unwrap();
+        let mut released = HashSet::new();
+        while let Ok(operation) = capture.try_recv() {
+            if let Operation::Pane {
+                pane_id,
+                request: PaneRequest::Key { view_id, event },
+            } = operation
+            {
+                assert_eq!(event.action, KeyAction::Release);
+                released.insert((pane_id, view_id, event.key));
+            }
+        }
+        assert_eq!(
+            released,
+            HashSet::from([
+                (
+                    "focused-pane".into(),
+                    "focused-view".into(),
+                    "ShiftLeft".into()
+                ),
+                ("focused-pane".into(), "focused-view".into(), "KeyA".into()),
+                ("peer".into(), "peer-view".into(), "KeyB".into()),
+            ])
+        );
+        assert!(app.held.is_empty());
+        app.retire_view("focused-pane", true).unwrap();
+        assert!(!app.views.contains_key("focused-pane"));
+        while capture.try_recv().is_ok() {}
+        app.host_focus_changed(true).unwrap();
+        while capture.try_recv().is_ok() {}
+        for name in ["ShiftLeft", "KeyA", "KeyB"] {
+            let mut release = key(name);
+            release.action = KeyAction::Release;
+            app.key(release, &mut io::sink(), size(), &[]).unwrap();
+        }
+        assert!(
+            capture.try_recv().is_err(),
+            "late key-up reached another view"
+        );
+        app.key(key("KeyA"), &mut io::sink(), size(), &[]).unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { event, .. },
+        } if pane_id == "peer" && event.action == KeyAction::Press));
+    }
+
+    #[test]
+    fn key_release_keeps_its_owner_when_admission_is_full_and_retires_after_retry() {
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        app.key(key("KeyA"), &mut io::sink(), size(), &[]).unwrap();
+        capture.try_recv().unwrap();
+        let mut occupied = std::iter::from_fn(|| {
+            app.input
+                .reserve(Operation::Pane {
+                    pane_id: "busy".into(),
+                    request: PaneRequest::Key {
+                        view_id: "busy-view".into(),
+                        event: key("KeyB"),
+                    },
+                })
+                .ok()
+        })
+        .collect::<Vec<_>>();
+        app.host_focus_changed(false).unwrap();
+        assert!(app.held["KeyA"].pending);
+        assert!(app.flush_key_releases().is_err());
+        assert!(capture.try_recv().is_err());
+        app.retire_view("focused-pane", true).unwrap();
+        capture.try_recv().unwrap();
+        app.retire_view("focused-pane", true).unwrap();
+        assert!(app.views.contains_key("focused-pane"));
+        let mut physical_release = key("KeyA");
+        physical_release.action = KeyAction::Release;
+        physical_release.modifiers = 4;
+        assert!(
+            app.key(physical_release, &mut io::sink(), size(), &[])
+                .is_err()
+        );
+        assert!(app.key(key("KeyA"), &mut io::sink(), size(), &[]).is_err());
+        assert!(app.held["KeyA"].pending);
+        occupied.pop();
+        app.flush_key_releases().unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { view_id, event },
+        } if pane_id == "focused-pane" && view_id == "focused-view"
+            && event.action == KeyAction::Release && event.modifiers == 4));
+        assert!(app.held.is_empty());
+        app.flush_key_releases().unwrap();
+        assert!(capture.try_recv().is_err());
+        drop(occupied);
+        app.retire_view("focused-pane", true).unwrap();
+        assert!(!app.views.contains_key("focused-pane"));
+    }
+
+    #[test]
+    fn focus_loss_key_release_follows_accepted_paste_and_suffix_without_cancelling_them() {
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        app.key(key("KeyA"), &mut io::sink(), size(), &[]).unwrap();
+        capture.try_recv().unwrap();
+        let mut paste = consent(true);
+        paste.pane = "focused-pane".into();
+        paste.view = "focused-view".into();
+        app.consent = Some(paste);
+        app.enqueue(
+            "focused-pane",
+            PaneRequest::Key {
+                view_id: "focused-view".into(),
+                event: key("Enter"),
+            },
+        )
+        .unwrap();
+        app.host_focus_changed(false).unwrap();
+        assert!(app.held["KeyA"].pending);
+        assert!(capture.try_recv().is_err());
+        app.finish_consent(ClipboardResponse {
+            result: ClipboardResult::Success,
+            contents: vec![ClipboardContent {
+                mime: "text/plain".into(),
+                data: b"accepted-paste".to_vec(),
+            }],
+            available: Vec::new(),
+            remember: false,
+        })
+        .unwrap();
+        app.flush_key_releases().unwrap();
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::PasteContents { contents, .. },
+        } if pane_id == "focused-pane" && contents[0].data == b"accepted-paste"));
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { event, .. },
+        } if pane_id == "focused-pane" && event.key == "Enter" && event.action == KeyAction::Press));
+        assert!(matches!(
+            capture.try_recv().unwrap(),
+            Operation::Pane {
+                request: PaneRequest::Focus { focused: false, .. },
+                ..
+            }
+        ));
+        assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { event, .. },
+        } if pane_id == "focused-pane" && event.key == "KeyA" && event.action == KeyAction::Release));
+        assert!(app.held.is_empty());
     }
 
     #[test]
@@ -6837,7 +7094,7 @@ mod tests {
             },
         }
     }
-    fn key(name: &str) -> KeyEvent {
+    pub(super) fn key(name: &str) -> KeyEvent {
         KeyEvent {
             key: name.into(),
             text: String::new(),
@@ -6846,7 +7103,7 @@ mod tests {
             unshifted_codepoint: 0,
         }
     }
-    fn size() -> Size {
+    pub(super) fn size() -> Size {
         Size {
             cols: 80,
             rows: 24,
@@ -7257,10 +7514,10 @@ mod tests {
         assert!(spec.visible && spec.interactive);
         assert!(!spec.input && !spec.clipboard);
     }
-    fn attach_fixture(app: &mut App) {
+    pub(super) fn attach_fixture(app: &mut App) {
         attach_named_fixture(app, "focused-pane", "focused-view");
     }
-    fn attach_named_fixture(app: &mut App, pane: &str, view: &str) {
+    pub(super) fn attach_named_fixture(app: &mut App, pane: &str, view: &str) {
         app.registry.panes.push(PaneInfo {
             id: pane.into(),
             workspace_id: None,
