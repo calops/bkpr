@@ -1728,6 +1728,62 @@ fn render_theme_chrome<'a>(
             foreground,
         });
     }
+    // The shared sidebar separator belongs to sidebar chrome in both
+    // rendering modes, even though pane frame geometry starts in this cell.
+    if sidebar.width > 0 && sidebar.width < size.cols {
+        backgrounds.push(BackgroundSpan {
+            rect: Rect {
+                x: sidebar.x + sidebar.width,
+                y: sidebar.y,
+                width: 1,
+                height: sidebar.height,
+            },
+            background: theme.background(Role::Base, false),
+        });
+    }
+    for (index, entry) in tree
+        .rows
+        .iter()
+        .skip(tree.scroll)
+        .take(available)
+        .enumerate()
+    {
+        let Some(session) = tree.session(entry.owner) else {
+            continue;
+        };
+        // A rich attached popup owns its rounded item outline. Do not
+        // extend its flat plate into the sidebar's exterior padding.
+        if !pane_graphics.is_empty()
+            && tree_popup.is_some_and(|(target, _)| entry.target.as_ref() == Some(target))
+        {
+            continue;
+        }
+        let selected = tree.active && entry.target.is_some() && entry.target == tree.cursor;
+        let background = tree_popup
+            .filter(|(target, _)| entry.target.as_ref() == Some(*target))
+            .map(|(_, background)| background)
+            .or_else(|| {
+                (selected || focused_tree_pane(entry, session, active))
+                    .then(|| theme.background(Role::Base, true))
+            })
+            .or_else(|| {
+                (entry.target.is_some() && entry.target == tree.hover)
+                    .then(|| theme.background(Role::Hover, false))
+            });
+        if let Some(background) = background {
+            backgrounds.push(BackgroundSpan {
+                rect: Rect {
+                    x: sidebar.x,
+                    y: index as u16 + 2,
+                    width: sidebar
+                        .width
+                        .saturating_add(u16::from(sidebar.width < size.cols)),
+                    height: 1,
+                },
+                background,
+            });
+        }
+    }
     surface.apply_theme_with_colors(theme, Role::Base, &spans, foregrounds, &backgrounds);
 }
 pub(crate) fn project_detail_lines(
@@ -2905,6 +2961,19 @@ mod tests {
             } else {
                 theme.background(Role::Base, false)
             };
+            let separator = usize::from(
+                screen_geometry(size, state.sidebar.preferred_columns)
+                    .0
+                    .width,
+            );
+            for y in [pane_y, pane_y + 1] {
+                for x in [0, separator] {
+                    assert_eq!(
+                        surface.frame.rows[y].cells[x].style.background_source, background,
+                        "the entire two-line item must share its highlight"
+                    );
+                }
+            }
             assert_eq!(logo.style.background_source, background);
             let detail = &surface.frame.rows[pane_y + 1].cells;
             let added = detail.iter().find(|cell| cell.text == "+").unwrap();
@@ -3652,6 +3721,62 @@ mod tests {
             assert_eq!(
                 surface.frame, fresh.frame,
                 "retained chrome left obsolete geometry"
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_separator_uses_sidebar_background_in_rich_and_plain_modes() {
+        let (pane, _) = capture_fixture();
+        let registry = capture_registry(&pane);
+        let state = Controller::new(&registry);
+        let mut surface = capture_surface();
+        let size = surface.frame.size;
+        let area = screen_geometry(size, state.sidebar.preferred_columns).1;
+        let rects = [(pane.id.clone(), area)];
+        let ready = [area];
+        let host = bkpr_tui_framework::ColorProbe {
+            truecolor: true,
+            foreground: Some([220; 3]),
+            background: Some([20; 3]),
+            ..Default::default()
+        };
+        let mut theme = Theme::default();
+        crate::appearance::update_theme(&mut theme, &host);
+        for pane_graphics in [&ready[..], &[][..]] {
+            style_fixture(
+                &mut surface,
+                &theme,
+                FixtureChrome {
+                    sidebar_popup: None,
+                    size,
+                    state: &state,
+                    registry: &registry,
+                    rects: &rects,
+                    pane_graphics,
+                    guide_rows: 0,
+                },
+                |_| None,
+                &ProjectPalette::default(),
+                &[],
+                &mut Vec::new(),
+            );
+            let y = usize::from(area.y + 1);
+            assert_ne!(
+                theme.background(Role::Base, false),
+                theme.background(Role::Panel, false)
+            );
+            assert_eq!(
+                surface.frame.rows[y].cells[usize::from(area.x)]
+                    .style
+                    .background_source,
+                theme.background(Role::Base, false)
+            );
+            assert_eq!(
+                surface.frame.rows[y].cells[usize::from(area.x + 1)]
+                    .style
+                    .background_source,
+                theme.background(Role::Panel, false)
             );
         }
     }
