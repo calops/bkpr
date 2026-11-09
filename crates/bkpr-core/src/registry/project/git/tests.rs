@@ -47,7 +47,7 @@ impl Repository {
         let cancel = AtomicBool::new(false);
         let git = Git::new(self.path(), &cancel);
         let identity = git.identify().unwrap().unwrap();
-        git.repository(&identity).unwrap()
+        git.repository(&identity, None).unwrap()
     }
 }
 
@@ -145,7 +145,7 @@ fn unborn_detached_and_linked_worktrees_have_independent_heads_and_shared_common
     let cancel = AtomicBool::new(false);
     let git = Git::new(&path, &cancel);
     let identity = git.identify().unwrap().unwrap();
-    let linked = git.repository(&identity).unwrap();
+    let linked = git.repository(&identity, None).unwrap();
     assert!(detached.branch.is_none());
     assert_eq!(linked.branch.as_deref(), Some("linked"));
     assert_eq!(detached.common_dir, linked.common_dir);
@@ -166,7 +166,7 @@ fn subdirectory_discovery_counts_the_entire_worktree_and_preserves_non_utf8_cwds
     let cancel = AtomicBool::new(false);
     let git = Git::new(&subdirectory, &cancel);
     let identity = git.identify().unwrap().unwrap();
-    let snapshot = git.repository(&identity).unwrap();
+    let snapshot = git.repository(&identity, None).unwrap();
     assert_eq!(snapshot.untracked_files, 1);
     assert_eq!(
         identity.root.as_os_str().as_bytes(),
@@ -255,7 +255,7 @@ fn repository_paths_with_non_utf8_and_newlines_remain_exact() {
     let git = Git::new(&root, &cancel);
     let identity = git.identify().unwrap().unwrap();
     assert_eq!(identity.root, root);
-    let snapshot = git.repository(&identity).unwrap();
+    let snapshot = git.repository(&identity, None).unwrap();
     assert_eq!(snapshot.git_dir, root.join(".git"));
 }
 
@@ -273,7 +273,7 @@ fn configured_executable_filters_are_rejected_only_when_selected_by_tracked_path
     let cancel = AtomicBool::new(false);
     let git = Git::new(repository.path(), &cancel);
     let identity = git.identify().unwrap().unwrap();
-    let error = git.repository(&identity).unwrap_err();
+    let error = git.repository(&identity, None).unwrap_err();
     assert!(
         error
             .to_string()

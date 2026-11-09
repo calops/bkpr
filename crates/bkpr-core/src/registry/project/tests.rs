@@ -271,10 +271,11 @@ impl Publication {
             notify_wake: registry.inner.project_wake.clone(),
             installed: BTreeSet::new(),
             bindings: BTreeMap::new(),
+            canonical_cwds: BTreeMap::new(),
             cache: BTreeMap::new(),
             owners: BTreeMap::new(),
             color_slots: BTreeMap::new(),
-            rebind: false,
+            rebind: BTreeSet::new(),
             inputs_pending: false,
             watch_retry: None,
             retry_delay: Duration::from_secs(2),
@@ -404,6 +405,48 @@ impl Publication {
             self.worker.refresh(&key);
         }
         self.worker.publish();
+    }
+    fn coverage(&mut self) {
+        for entry in self.worker.cache.values_mut() {
+            let git = git::Git::new(&entry.source, &self.worker.cancel);
+            let plan = git.watches(entry.identity.as_ref()).unwrap();
+            entry.directories = plan.directories;
+            entry.external_files = plan.external_files;
+            entry.rebuild = false;
+        }
+        self.worker.installed = self
+            .worker
+            .cache
+            .values()
+            .flat_map(|entry| entry.directories.iter().cloned())
+            .collect();
+    }
+    fn event(&mut self, kind: EventKind, paths: &[PathBuf]) {
+        self.worker
+            .event_sender
+            .send(Ok(Event {
+                paths: paths.to_vec(),
+                ..Event::new(kind)
+            }))
+            .unwrap();
+        self.worker.drain_events();
+    }
+    fn refresh_dirty(&mut self) {
+        while self.worker.inputs_pending || !self.worker.rebind.is_empty() {
+            assert!(self.worker.sync_inputs());
+        }
+        let dirty: Vec<_> = self
+            .worker
+            .cache
+            .iter()
+            .filter(|(_, entry)| entry.due.is_some())
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in dirty {
+            // Native watch installation is covered by Fixture tests.
+            self.worker.cache.get_mut(&key).unwrap().rebuild = false;
+            self.worker.refresh(&key);
+        }
     }
     fn project(&self, id: &str) -> ProjectSnapshot {
         self.registry
@@ -538,31 +581,47 @@ fn broken_linked_metadata_keeps_error_truth_and_known_nonrepo_releases_the_slot(
     fixture.pane("pane-10", &linked);
     fixture.pane("pane-20", &other);
     fixture.ingest();
+    fixture.coverage();
     let marker = linked.join(".git");
     let original = fs::read(&marker).unwrap();
     let unavailable = fixture.root.path().join("unavailable-gitdir");
-    fs::write(&marker, format!("gitdir: {}\n", unavailable.display())).unwrap();
-    let key = fixture.worker.bindings.get(&linked).unwrap().clone();
-    fixture
-        .worker
-        .cache
-        .get_mut(&key)
-        .unwrap()
-        .invalidate(false);
+    let replacement = linked.join("replacement-git-marker");
+    fs::write(&replacement, format!("gitdir: {}\n", unavailable.display())).unwrap();
+    fs::rename(&replacement, &marker).unwrap();
+    fixture.event(
+        EventKind::Modify(notify::event::ModifyKind::Name(
+            notify::event::RenameMode::Both,
+        )),
+        &[replacement.clone(), marker.clone()],
+    );
+    assert_eq!(fixture.worker.rebind, BTreeSet::from([linked.clone()]));
+    assert!(fixture.worker.cache[&other].due.is_none());
     fixture.worker.publish();
     let loading = fixture.project("pane-10");
     assert_eq!(loading.state, ProjectState::Loading);
     assert_eq!(loading.color_slot, Some(0));
-    fixture.worker.rebind = true;
-    fixture.ingest();
+    fixture.refresh_dirty();
     let failed = fixture.project("pane-10");
     assert_eq!(failed.state, ProjectState::Error);
     assert!(failed.error.is_some());
     assert_eq!(failed.color_slot, Some(0));
     assert_eq!(fixture.project("pane-20").color_slot, Some(1));
-    fs::write(&marker, original).unwrap();
-    fixture.worker.rebind = true;
-    fixture.ingest();
+    fs::write(&replacement, original).unwrap();
+    fs::rename(&replacement, &marker).unwrap();
+    fixture.event(
+        EventKind::Modify(notify::event::ModifyKind::Name(
+            notify::event::RenameMode::Both,
+        )),
+        &[replacement, marker],
+    );
+    assert_eq!(fixture.worker.rebind, BTreeSet::from([linked.clone()]));
+    assert!(fixture.worker.cache[&other].due.is_none());
+    fixture.worker.publish();
+    let retry = fixture.project("pane-10");
+    assert_eq!(retry.state, ProjectState::Error);
+    assert_eq!(retry.error, failed.error);
+    assert_eq!(retry.repository, failed.repository);
+    fixture.refresh_dirty();
     let repaired = fixture.project("pane-10");
     assert_eq!(repaired.state, ProjectState::Ready);
     assert!(repaired.error.is_none());
@@ -654,4 +713,468 @@ fn native_completion_retires_project_metadata() {
         .unwrap();
     assert_eq!(pane.status, PaneStatus::Exited);
     assert!(pane.project.is_none());
+}
+
+#[test]
+fn worktree_and_local_index_events_do_not_recheck_linked_or_unrelated_repositories() {
+    let mut fixture = Publication::new();
+    let repository = fixture.repository("repository");
+    let linked = fixture.linked(&repository);
+    let other = fixture.repository("other");
+    fixture.pane("main", &repository);
+    fixture.pane("linked", &linked);
+    fixture.pane("other", &other);
+    fixture.ingest();
+    fixture.coverage();
+    let before = fixture.project("main");
+    let linked_generation = fixture.worker.cache[&linked].generation;
+    let other_generation = fixture.worker.cache[&other].generation;
+    fs::write(repository.join("new"), "new\n").unwrap();
+    fixture.event(
+        EventKind::Create(notify::event::CreateKind::File),
+        &[repository.join("new")],
+    );
+    fixture.worker.publish();
+    let loading = fixture.project("main");
+    assert_eq!(loading.state, ProjectState::Loading);
+    assert_eq!(loading.repository, before.repository);
+    assert_eq!(loading.color_slot, before.color_slot);
+    assert!(fixture.worker.cache[&repository].identity_known);
+    assert!(!fixture.worker.cache[&repository].metadata_dirty);
+    assert!(fixture.worker.rebind.is_empty());
+    assert!(fixture.worker.cache[&linked].due.is_none());
+    assert!(fixture.worker.cache[&other].due.is_none());
+    fixture.refresh_dirty();
+    assert_eq!(
+        fixture.project("main").repository.unwrap().untracked_files,
+        1
+    );
+    assert_eq!(fixture.worker.cache[&linked].generation, linked_generation);
+    assert_eq!(fixture.worker.cache[&other].generation, other_generation);
+
+    fixture.git(&repository, &["add", "new"]);
+    fixture.event(
+        EventKind::Modify(notify::event::ModifyKind::Name(
+            notify::event::RenameMode::Both,
+        )),
+        &[
+            repository.join(".git/index.lock"),
+            repository.join(".git/index"),
+        ],
+    );
+    assert!(fixture.worker.cache[&repository].rebuild);
+    assert!(!fixture.worker.cache[&repository].metadata_dirty);
+    assert!(fixture.worker.cache[&linked].due.is_none());
+    assert!(fixture.worker.cache[&other].due.is_none());
+    fixture.refresh_dirty();
+    assert_eq!(
+        fixture
+            .project("main")
+            .repository
+            .unwrap()
+            .staged
+            .insertions,
+        1
+    );
+}
+
+#[test]
+fn shared_refs_and_their_directory_renames_refresh_all_and_only_common_repository_worktrees() {
+    let mut fixture = Publication::new();
+    let repository = fixture.repository("repository");
+    let linked = fixture.linked(&repository);
+    let other = fixture.repository("other");
+    fixture.pane("main", &repository);
+    fixture.pane("linked", &linked);
+    fixture.pane("other", &other);
+    fixture.ingest();
+    fixture.coverage();
+    fixture.git(&repository, &["branch", "stack/base", "HEAD"]);
+    let refs = repository.join(".git/refs/heads/stack");
+    fixture.event(
+        EventKind::Create(notify::event::CreateKind::Folder),
+        std::slice::from_ref(&refs),
+    );
+    for root in [&repository, &linked] {
+        assert!(fixture.worker.cache[root].due.is_some());
+        assert!(fixture.worker.cache[root].metadata_dirty);
+        assert!(fixture.worker.cache[root].rebuild);
+    }
+    assert!(fixture.worker.cache[&other].due.is_none());
+    assert!(fixture.worker.rebind.is_empty());
+    fixture.refresh_dirty();
+    fixture.coverage();
+    let renamed = repository.join(".git/refs/heads/renamed");
+    fs::rename(&refs, &renamed).unwrap();
+    fixture.event(
+        EventKind::Modify(notify::event::ModifyKind::Name(
+            notify::event::RenameMode::Both,
+        )),
+        &[refs.clone(), renamed],
+    );
+    assert!(!fixture.worker.installed.contains(&refs));
+    assert!(fixture.worker.cache[&repository].rebuild);
+    assert!(fixture.worker.cache[&linked].rebuild);
+    assert!(fixture.worker.cache[&other].due.is_none());
+    assert!(fixture.worker.rebind.is_empty());
+}
+
+#[test]
+fn nested_git_marker_rebinds_only_descendant_cwds_and_sibling_markers_do_nothing() {
+    let mut fixture = Publication::new();
+    let repository = fixture.repository("repository");
+    let nested = repository.join("nested");
+    fs::create_dir(&nested).unwrap();
+    let other = fixture.repository("other");
+    fixture.pane("root", &repository);
+    fixture.pane("nested", &nested);
+    fixture.pane("other", &other);
+    fixture.ingest();
+    fixture.coverage();
+    let sibling = fixture.repository("sibling");
+    fixture.event(
+        EventKind::Create(notify::event::CreateKind::Folder),
+        &[sibling.join(".git")],
+    );
+    assert!(fixture.worker.rebind.is_empty());
+    assert!(
+        fixture
+            .worker
+            .cache
+            .values()
+            .all(|entry| entry.due.is_none())
+    );
+    fixture.git(&nested, &["init", "-b", "nested"]);
+    fixture.event(
+        EventKind::Create(notify::event::CreateKind::Folder),
+        &[nested.join(".git")],
+    );
+    assert_eq!(fixture.worker.rebind, BTreeSet::from([nested.clone()]));
+    assert!(fixture.worker.cache[&other].due.is_none());
+    fixture.refresh_dirty();
+    assert_eq!(fixture.project("root").repository.unwrap().root, repository);
+    assert_eq!(fixture.project("nested").repository.unwrap().root, nested);
+    assert!(fixture.worker.cache[&other].due.is_none());
+
+    fs::remove_dir_all(nested.join(".git")).unwrap();
+    fixture.coverage();
+    fixture.event(
+        EventKind::Remove(notify::event::RemoveKind::Folder),
+        &[nested.join(".git")],
+    );
+    assert_eq!(fixture.worker.rebind, BTreeSet::from([nested.clone()]));
+    fixture.refresh_dirty();
+    assert_eq!(fixture.worker.bindings[&nested], repository);
+    assert_eq!(
+        fixture.project("nested").repository.unwrap().root,
+        repository
+    );
+}
+
+#[test]
+fn pending_events_cannot_publish_a_completed_observation_as_fresh() {
+    let mut fixture = Publication::new();
+    let repository = fixture.repository("repository");
+    fixture.pane("pane", &repository);
+    fixture.ingest();
+    fixture.coverage();
+    let before = fixture.project("pane");
+    fs::write(repository.join("new"), "new\n").unwrap();
+    fixture
+        .worker
+        .cache
+        .get_mut(&repository)
+        .unwrap()
+        .invalidate(false);
+    // Queued after the coordinator's pre-refresh drain, just like an event
+    // arriving while Git is running; refresh must drain it before publication.
+    fixture
+        .worker
+        .event_sender
+        .send(Ok(Event::new(EventKind::Create(
+            notify::event::CreateKind::File,
+        ))
+        .add_path(repository.join("new"))))
+        .unwrap();
+    fixture.worker.refresh(&repository);
+    let pending = fixture.project("pane");
+    assert_eq!(pending.state, ProjectState::Loading);
+    assert_eq!(pending.color_slot, before.color_slot);
+    assert!(pending.repository.is_some());
+    assert!(fixture.worker.cache[&repository].due.is_some());
+    fixture.refresh_dirty();
+    assert_eq!(fixture.project("pane").state, ProjectState::Ready);
+}
+
+#[test]
+fn lost_events_invalidate_every_binding_and_retain_facts_until_full_resynchronization() {
+    let mut fixture = Publication::new();
+    let first = fixture.repository("first");
+    let second = fixture.repository("second");
+    fixture.pane("first", &first);
+    fixture.pane("second", &second);
+    fixture.ingest();
+    fixture.coverage();
+    fixture.worker.overflow.store(true, Ordering::Release);
+    fixture.worker.drain_events();
+    assert_eq!(
+        fixture.worker.rebind,
+        BTreeSet::from([first.clone(), second.clone()])
+    );
+    assert!(fixture.worker.installed.is_empty());
+    for id in ["first", "second"] {
+        let project = fixture.project(id);
+        assert_eq!(project.state, ProjectState::Error);
+        assert!(project.error.is_some());
+        assert!(project.repository.is_some());
+    }
+    assert!(fixture.worker.cache.values().all(|entry| {
+        !entry.identity_known && entry.metadata_dirty && entry.rebuild && entry.due.is_some()
+    }));
+}
+
+#[test]
+fn index_addition_installs_watches_for_preexisting_ignored_tracked_directories() {
+    let fixture = Fixture::new();
+    fixture.git(&["init", "-b", "main"]);
+    fs::write(fixture.repo.path().join(".gitignore"), "ignored/\n").unwrap();
+    fs::create_dir(fixture.repo.path().join("ignored")).unwrap();
+    fs::write(fixture.repo.path().join("ignored/tracked"), "one\n").unwrap();
+    fixture.git(&["add", ".gitignore"]);
+    fixture.wait(|project| {
+        project.state == ProjectState::Ready
+            && project.repository.as_ref().is_some_and(|repository| {
+                repository.untracked_files == 0 && repository.staged.insertions == 1
+            })
+    });
+    fixture.git(&["add", "--force", "ignored/tracked"]);
+    fixture.wait(|project| {
+        project.state == ProjectState::Ready
+            && project
+                .repository
+                .as_ref()
+                .is_some_and(|repository| repository.staged.insertions == 2)
+    });
+    fs::write(fixture.repo.path().join("ignored/tracked"), "one\ntwo\n").unwrap();
+    fixture.wait(|project| {
+        project.state == ProjectState::Ready
+            && project
+                .repository
+                .as_ref()
+                .is_some_and(|repository| repository.unstaged.insertions == 1)
+    });
+}
+
+#[test]
+fn symlinked_cwd_rebinds_on_its_canonical_nested_marker() {
+    let mut fixture = Publication::new();
+    let repository = fixture.repository("repository");
+    let nested = repository.join("nested");
+    fs::create_dir(&nested).unwrap();
+    let alias = fixture.root.path().join("alias");
+    std::os::unix::fs::symlink(&nested, &alias).unwrap();
+    fixture.pane("alias", &alias);
+    fixture.ingest();
+    fixture.coverage();
+    fixture.git(&nested, &["init", "-b", "nested"]);
+    fixture.event(
+        EventKind::Create(notify::event::CreateKind::Folder),
+        &[nested.join(".git")],
+    );
+    assert_eq!(fixture.worker.rebind, BTreeSet::from([alias.clone()]));
+    fixture.refresh_dirty();
+    let project = fixture.project("alias");
+    assert_eq!(project.cwd, alias);
+    assert_eq!(project.repository.unwrap().root, nested);
+}
+
+#[test]
+fn recreated_directory_paths_retire_watches_even_when_the_name_already_exists_again() {
+    let mut fixture = Publication::new();
+    let repository = fixture.repository("repository");
+    let watched = repository.join("watched");
+    fs::create_dir(&watched).unwrap();
+    fixture.pane("pane", &repository);
+    fixture.ingest();
+    fixture.coverage();
+    assert!(fixture.worker.installed.contains(&watched));
+    let moved = repository.join("moved");
+    fs::rename(&watched, &moved).unwrap();
+    fs::create_dir(&watched).unwrap();
+    fixture.event(
+        EventKind::Modify(notify::event::ModifyKind::Name(
+            notify::event::RenameMode::Both,
+        )),
+        &[watched.clone(), moved],
+    );
+    assert!(!fixture.worker.installed.contains(&watched));
+    assert!(fixture.worker.cache[&repository].rebuild);
+    assert!(fixture.worker.cache[&repository].due.is_some());
+}
+
+#[test]
+fn native_watch_discovers_new_ref_directories_then_observes_later_ref_updates() {
+    let fixture = Fixture::new();
+    fixture.git(&["init", "-b", "main"]);
+    fixture.git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+    ]);
+    fixture.git(&["switch", "-c", "feature"]);
+    fs::write(fixture.repo.path().join("tracked"), "one\n").unwrap();
+    fixture.git(&["add", "tracked"]);
+    fixture.git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-m",
+        "feature",
+    ]);
+    fixture.git(&["config", "branch.feature.gh-merge-base", "stack/base"]);
+    fixture.wait(|project| {
+        project.state == ProjectState::Ready
+            && project.repository.as_ref().is_some_and(|repository| {
+                repository.base_ref.as_deref() == Some("stack/base")
+                    && repository.base_sha.is_none()
+            })
+    });
+    fixture.git(&["branch", "stack/base", "main"]);
+    fixture.wait(|project| {
+        project.state == ProjectState::Ready
+            && project.repository.as_ref().is_some_and(|repository| {
+                repository
+                    .committed
+                    .is_some_and(|committed| committed.insertions == 1)
+            })
+    });
+    fixture.git(&["update-ref", "refs/heads/stack/base", "HEAD"]);
+    fixture.wait(|project| {
+        project.state == ProjectState::Ready
+            && project.repository.as_ref().is_some_and(|repository| {
+                repository
+                    .committed
+                    .is_some_and(|committed| committed.files == 0)
+            })
+    });
+}
+
+#[test]
+fn linked_head_and_main_private_refs_do_not_invalidate_other_worktrees() {
+    let mut fixture = Publication::new();
+    let repository = fixture.repository("repository");
+    let linked = fixture.linked(&repository);
+    let other = fixture.repository("other");
+    fixture.pane("main", &repository);
+    fixture.pane("linked", &linked);
+    fixture.pane("other", &other);
+    fixture.ingest();
+    fixture.coverage();
+    let linked_git = fixture.worker.cache[&linked]
+        .identity
+        .as_ref()
+        .unwrap()
+        .git_dir
+        .clone();
+    fixture.event(
+        EventKind::Modify(notify::event::ModifyKind::Data(
+            notify::event::DataChange::Any,
+        )),
+        &[linked_git.join("HEAD")],
+    );
+    assert!(fixture.worker.cache[&linked].due.is_some());
+    assert!(fixture.worker.cache[&linked].metadata_dirty);
+    assert!(fixture.worker.cache[&repository].due.is_none());
+    assert!(fixture.worker.cache[&other].due.is_none());
+    fixture.refresh_dirty();
+
+    fixture.git(
+        &repository,
+        &["update-ref", "refs/worktree/private", "HEAD"],
+    );
+    let private = repository.join(".git/refs/worktree");
+    fixture.coverage();
+    assert!(
+        fixture.worker.cache[&repository]
+            .directories
+            .contains(&private)
+    );
+    assert!(!fixture.worker.cache[&linked].directories.contains(&private));
+    fs::remove_dir_all(&private).unwrap();
+    fixture.event(
+        EventKind::Remove(notify::event::RemoveKind::Folder),
+        std::slice::from_ref(&private),
+    );
+    assert!(fixture.worker.cache[&repository].due.is_some());
+    assert!(fixture.worker.cache[&repository].metadata_dirty);
+    assert!(fixture.worker.cache[&linked].due.is_none());
+    assert!(fixture.worker.cache[&other].due.is_none());
+    assert!(fixture.worker.rebind.is_empty());
+    assert!(fixture.worker.cache.values().all(|entry| {
+        entry
+            .directories
+            .iter()
+            .all(|path| !path.starts_with(&private))
+    }));
+}
+
+#[test]
+fn same_path_repository_replacement_refreshes_head_and_branch_without_rechecking_other_repositories()
+ {
+    let mut fixture = Publication::new();
+    let repository = fixture.repository("repository");
+    fixture.git(&repository, &["commit", "--allow-empty", "-m", "original"]);
+    let replacement = fixture.repository("replacement");
+    fixture.git(&replacement, &["switch", "-c", "replacement"]);
+    fixture.git(
+        &replacement,
+        &["commit", "--allow-empty", "-m", "replacement"],
+    );
+    let other = fixture.repository("other");
+    fixture.pane("pane", &repository);
+    fixture.pane("other", &other);
+    fixture.ingest();
+    fixture.coverage();
+    let before = fixture.project("pane").repository.unwrap();
+    let other_generation = fixture.worker.cache[&other].generation;
+
+    let retired = fixture.root.path().join("retired");
+    fs::rename(&repository, &retired).unwrap();
+    fs::rename(&replacement, &repository).unwrap();
+    fixture.event(
+        EventKind::Modify(notify::event::ModifyKind::Name(
+            notify::event::RenameMode::Both,
+        )),
+        &[repository.clone(), retired],
+    );
+    assert_eq!(fixture.worker.rebind, BTreeSet::from([repository.clone()]));
+    assert!(fixture.worker.cache[&repository].metadata_dirty);
+    assert!(fixture.worker.cache[&other].due.is_none());
+    fixture.refresh_dirty();
+
+    let project = fixture.project("pane");
+    assert_eq!(project.state, ProjectState::Ready);
+    let after = project.repository.unwrap();
+    assert_eq!(after.root, before.root);
+    assert_eq!(after.common_dir, before.common_dir);
+    assert_eq!(after.git_dir, before.git_dir);
+    assert_eq!(after.branch.as_deref(), Some("replacement"));
+    assert_ne!(after.head_sha, before.head_sha);
+    assert_eq!(fixture.worker.cache[&other].generation, other_generation);
+    assert!(fixture.worker.cache[&other].due.is_none());
 }

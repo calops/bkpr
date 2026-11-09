@@ -632,9 +632,13 @@ stale. Fsmonitor, external diff and textconv are disabled for metadata commands.
 This is not an adversarial repository sandbox: configuration and attributes can
 change concurrently with the preflight and Git commands.
 
-The backend publishes cached snapshots outside input/render work. Loading,
-non-repository and error states are explicit; any retained repository values
-during loading/error are labeled stale. These live snapshots are not restored as
+The backend publishes cached snapshots outside input/render work. Worktree edits
+and index changes refresh only their owner; shared refs/config refresh affected
+linked worktrees, not unrelated repositories. Loading, non-repository and error
+states remain explicit. The sidebar uses its existing icon cell for `↻`
+(refreshing, stale) or `!` (failed, stale), keeping cached branch/count columns
+and semantic colors stable. The inspector has a fixed freshness row rather than
+shifting or recoloring cached facts during refresh. These live snapshots are not restored as
 current facts after daemon restart. Authenticated `whoami` and detailed agent
 discovery include the same backend project snapshot when it matches that launch's
 live foreground CWD; compact discovery omits it. Repository-scoped discovery and
