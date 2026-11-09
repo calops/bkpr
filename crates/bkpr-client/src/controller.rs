@@ -1243,7 +1243,7 @@ fn render_chrome<'a>(
                         registry: &session.registry,
                         entry,
                         known,
-                        width: sidebar.width,
+                        width: sidebar.width.saturating_sub(1),
                         row,
                         highlighted,
                     },
@@ -2549,6 +2549,30 @@ mod tests {
         assert!(!sidebar_pane_label(&pane, Some(&snapshot), 20).contains('\u{ec81}'));
         pane.status = PaneStatus::Exited;
         assert!(!sidebar_pane_label(&pane, None, 20).contains('\u{ec81}'));
+    }
+
+    #[test]
+    fn pane_activity_status_stays_inside_the_sidebar_text_viewport() {
+        let (mut pane, snapshot) = capture_fixture();
+        pane.harness_status = Some(working_record(Some("claude")));
+        let mut surface = capture_surface();
+        let hits = capture_chrome(&mut surface, &pane, &snapshot);
+        let row = hits
+            .iter()
+            .find_map(|(target, row)| {
+                matches!(target, SidebarTarget::Pane { pane: id, .. } if id == "pane")
+                    .then_some(*row)
+            })
+            .unwrap();
+        let sidebar = screen_geometry(surface.frame.size, None).0;
+        assert_eq!(
+            surface.frame.rows[usize::from(row)].cells[usize::from(sidebar.width - 2)].text,
+            "\u{f0150}"
+        );
+        assert_eq!(
+            surface.frame.rows[usize::from(row)].cells[usize::from(sidebar.width - 1)].text,
+            " "
+        );
     }
 
     #[test]
