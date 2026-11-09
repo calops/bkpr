@@ -7,7 +7,7 @@
 ### Fixes
 
 * Mute grouped-hint separator punctuation without dimming literal punctuation keys. Shorten descriptions, group workspace folding and sidebar exit bindings, and label `Ctrl-b x` as “remove from layout.”
-* Keep sidebar activity icons in the full text viewport by making the straight left gutter of an adjacent rich frame transparent; retain its corners and every internal opaque seam.
+* Keep sidebar activity icons in the full text viewport by making only the flat exterior matte of the adjacent straight rich frame transparent; preserve its bevel, inner shadow, corners and internal opaque seams.
 
 ## [0.5.1](https://github.com/calops/bkpr/compare/v0.5.0...v0.5.1) (2026-11-06)
 

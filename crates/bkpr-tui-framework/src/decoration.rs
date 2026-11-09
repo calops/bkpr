@@ -450,7 +450,10 @@ impl Material {
             _ => lx < f64::from(self.cell[0]) || ly < f64::from(self.cell[1]),
         };
         let opacity = f64::from(self.style.shadow_opacity_milli) / 1000.0;
-        if self.style.kind == DecorationKind::RecessedTransparentLeftGutter && tile == 3 {
+        if self.style.kind == DecorationKind::RecessedTransparentLeftGutter
+            && tile == 3
+            && distance < -f64::from(self.style.lip_width_milli) / 1000.0
+        {
             return [0.0; 4];
         }
         match self.style.kind {
@@ -592,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn transparent_left_gutter_removes_plain_and_shadow_ink() {
+    fn transparent_left_gutter_preserves_bevel_and_inner_shadow() {
         let normal = material();
         let transparent = DecorationStyle {
             kind: DecorationKind::RecessedTransparentLeftGutter,
@@ -609,10 +612,19 @@ mod tests {
             tile: atlas_size(transparent, cell).unwrap().map(|side| side / 3),
             cell,
         };
-        let normal_pixel = normal.sample(3, 8.0, 20.0);
-        let transparent_pixel = transparent.sample(3, 8.0, 20.0);
-        assert_eq!(normal_pixel[3], 255.0);
-        assert_eq!(transparent_pixel[3], 0.0);
+        let lip = f64::from(normal.style.lip_width_milli) / 1000.0;
+        let inset = f64::from(normal.style.inset_px[0]);
+        for x in [0.0, inset - lip - 0.5] {
+            assert_eq!(normal.sample(3, x, 20.0)[3], 255.0);
+            assert_eq!(transparent.sample(3, x, 20.0), [0.0; 4]);
+        }
+        for x in [inset - lip / 2.0, inset, inset + 1.0, inset + 8.0] {
+            assert_eq!(
+                transparent.sample(3, x, 20.0),
+                normal.sample(3, x, 20.0),
+                "bevel and inner shadow must survive at {x}"
+            );
+        }
     }
     fn prepared() -> PreparedDecoration {
         let style = material();
