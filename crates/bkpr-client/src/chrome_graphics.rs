@@ -112,7 +112,7 @@ impl PaneGeometry {
 }
 pub(crate) struct ChromeGraphics(
     SvgGraphics,
-    Option<[DecorationStyle; 11]>,
+    Option<[DecorationStyle; 12]>,
     Option<DecorationEvidence>,
     PaneGeometry,
 );
@@ -157,6 +157,10 @@ impl ChromeGraphics {
                         .unwrap_or(popup.background),
                     ..popup
                 };
+                let sidebar_edge = DecorationStyle {
+                    kind: bkpr_tui_framework::decoration::DecorationKind::RecessedTransparentLeftGutter,
+                    ..pane
+                };
                 [
                     pane,
                     popup,
@@ -169,6 +173,7 @@ impl ChromeGraphics {
                     region(Some(2)),
                     region(Some(3)),
                     region(Some(4)),
+                    sidebar_edge,
                 ]
             });
             self.2 = Some(evidence);
@@ -235,13 +240,23 @@ impl ChromeGraphics {
         rect: Rect,
         index: usize,
         base: u32,
+        transparent_left_gutter: bool,
     ) -> bool {
         self.3
             .rects
             .get(index)
             .is_some_and(|cached| *cached == rect)
             && self.3.placements.get(index).is_some_and(|geometry| {
-                self.decorate_window_with_geometry(frame, rect, false, base, &[], *geometry)
+                self.1.is_some_and(|styles| {
+                    self.0.decorate_window_with_geometry(
+                        frame,
+                        rect,
+                        styles[if transparent_left_gutter { 11 } else { 0 }],
+                        base,
+                        &[],
+                        *geometry,
+                    )
+                })
             })
     }
     /// Add static material without changing text/cursor/native geometry.
@@ -269,6 +284,7 @@ impl ChromeGraphics {
 
     /// Place a pane contour without moving its native content rectangle.
     /// Pixel bounds translate cached curves; the clip owns shared separators.
+    #[cfg(test)]
     pub(crate) fn decorate_window_with_geometry(
         &self,
         frame: &mut Frame,
@@ -676,7 +692,7 @@ mod tests {
             markers.push((artwork, frame, effects, original, image));
         }
         let mut rich = bkpr_tui_framework::blank(size);
-        assert!(chrome.decorate_pane(&mut rich, rect, 0, 64));
+        assert!(chrome.decorate_pane(&mut rich, rect, 0, 64, false));
         for raised in [false, true] {
             assert!(chrome.decorate_window_in_clipped(&mut rich, rect, raised, 128, &[]));
             assert!(chrome.decorate_window_with_geometry(
@@ -711,7 +727,7 @@ mod tests {
         let mut plain = bkpr_tui_framework::blank(size);
         bkpr_tui_framework::text(&mut plain, 1, 1, "retained title and content", false);
         let original = plain.clone();
-        assert!(!chrome.decorate_pane(&mut plain, rect, 0, 64));
+        assert!(!chrome.decorate_pane(&mut plain, rect, 0, 64, false));
         for raised in [false, true] {
             assert!(!chrome.decorate_window_in_clipped(&mut plain, rect, raised, 128, &[]));
             assert!(!chrome.decorate_window_with_geometry(
@@ -743,7 +759,7 @@ mod tests {
             ));
             assert!(std::sync::Arc::ptr_eq(image, &effects.images[0]));
         }
-        assert!(chrome.decorate_pane(&mut plain, rect, 0, 64));
+        assert!(chrome.decorate_pane(&mut plain, rect, 0, 64, false));
     }
 
     #[test]

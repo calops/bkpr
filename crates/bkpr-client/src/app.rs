@@ -4803,6 +4803,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             graphics.prepare(ui_colors, size, &marker_sources);
             graphics.prepare_panes(size, &rects);
             next_pane_graphics.clear();
+            let sidebar_width = app.screen_geometry(size).0.width;
             for (index, (_, rect)) in rects.iter().enumerate() {
                 if rect.width >= 3 && rect.height >= 3 {
                     let ready = graphics.decorate_pane(
@@ -4810,6 +4811,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         *rect,
                         index,
                         0x10000 + (index as u32) * 64,
+                        rect.x == sidebar_width,
                     );
                     if ready {
                         next_pane_graphics.push(*rect);
