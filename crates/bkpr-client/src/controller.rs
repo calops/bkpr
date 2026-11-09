@@ -1243,7 +1243,7 @@ fn render_chrome<'a>(
                         registry: &session.registry,
                         entry,
                         known,
-                        width: sidebar.width.saturating_sub(1),
+                        width: sidebar.width,
                         row,
                         highlighted,
                     },
@@ -2552,7 +2552,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_activity_status_stays_inside_the_sidebar_text_viewport() {
+    fn pane_activity_status_uses_the_full_sidebar_text_viewport() {
         let (mut pane, snapshot) = capture_fixture();
         pane.harness_status = Some(working_record(Some("claude")));
         let mut surface = capture_surface();
@@ -2566,12 +2566,8 @@ mod tests {
             .unwrap();
         let sidebar = screen_geometry(surface.frame.size, None).0;
         assert_eq!(
-            surface.frame.rows[usize::from(row)].cells[usize::from(sidebar.width - 2)].text,
-            "\u{f0150}"
-        );
-        assert_eq!(
             surface.frame.rows[usize::from(row)].cells[usize::from(sidebar.width - 1)].text,
-            " "
+            "\u{f0150}"
         );
     }
 

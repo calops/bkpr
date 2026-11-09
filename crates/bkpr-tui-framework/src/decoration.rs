@@ -32,6 +32,9 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecorationKind {
     Recessed,
+    /// A recessed frame whose left straight gutter is transparent. The caller
+    /// owns the matching cell surface and can therefore keep adjacent text ink.
+    RecessedTransparentLeftGutter,
     Raised,
     /// Opaque rounded surface plus the same outer shadow as `Raised`.
     RaisedSurface,
@@ -463,9 +466,14 @@ impl Material {
                     [0.0; 4]
                 }
             }
-            DecorationKind::Recessed if distance >= 0.0 => {
+            DecorationKind::Recessed | DecorationKind::RecessedTransparentLeftGutter
+                if distance >= 0.0 =>
+            {
                 let shadow = opacity * self.blurred_outside(tile, x, y);
-                if gutter {
+                if gutter
+                    && !(self.style.kind == DecorationKind::RecessedTransparentLeftGutter
+                        && tile == 3)
+                {
                     let [r, g, b] = self.style.background.map(|c| f64::from(c) * (1.0 - shadow));
                     [r, g, b, 255.0]
                 } else {
@@ -474,7 +482,7 @@ impl Material {
             }
             // Rounded corners may reach into native content cells. Their
             // outside mask stays opaque, as in the source recessed material.
-            DecorationKind::Recessed => {
+            DecorationKind::Recessed | DecorationKind::RecessedTransparentLeftGutter => {
                 let [r, g, b] = self.bevel(tile, x, y, distance);
                 [r, g, b, 255.0]
             }
@@ -581,6 +589,30 @@ mod tests {
             lip_highlight_milli: 240,
             lip_shade_milli: 240,
         }
+    }
+
+    #[test]
+    fn transparent_left_gutter_keeps_only_shadow_ink() {
+        let normal = material();
+        let transparent = DecorationStyle {
+            kind: DecorationKind::RecessedTransparentLeftGutter,
+            ..normal
+        };
+        let cell = [10, 20];
+        let normal = Material {
+            style: normal,
+            tile: atlas_size(normal, cell).unwrap().map(|side| side / 3),
+            cell,
+        };
+        let transparent = Material {
+            style: transparent,
+            tile: atlas_size(transparent, cell).unwrap().map(|side| side / 3),
+            cell,
+        };
+        let normal_pixel = normal.sample(3, 8.0, 20.0);
+        let transparent_pixel = transparent.sample(3, 8.0, 20.0);
+        assert_eq!(normal_pixel[3], 255.0);
+        assert!(transparent_pixel[3] < normal_pixel[3]);
     }
     fn prepared() -> PreparedDecoration {
         let style = material();
