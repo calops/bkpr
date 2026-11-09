@@ -67,6 +67,38 @@ pub(super) fn write_operation(
             let offset = g::OperationInspect::create(builder);
             g::Operation::create_operation_inspect(builder, offset)
         }
+        Operation::CiRefresh { target } => {
+            let pane_id = write_ci_text(builder, budget, &target.pane_id)?;
+            let cwd = path_bytes(&target.cwd)?;
+            budget.bytes(cwd.len())?;
+            let cwd = builder.create_vector(cwd.as_ref());
+            let provider = match target.repository.provider {
+                ForgeProvider::Github => g::ForgeProvider::Github,
+            };
+            let host = write_ci_text(builder, budget, &target.repository.host)?;
+            let path = write_ci_text(builder, budget, &target.repository.path)?;
+            let web_url = write_ci_text(builder, budget, &target.repository.web_url)?;
+            let head_sha = write_ci_text(builder, budget, &target.head_sha)?;
+            let local_head_sha = write_ci_text(builder, budget, &target.local_head_sha)?;
+            let checked_ref = target
+                .checked_ref
+                .as_deref()
+                .map(|text| write_ci_text(builder, budget, text))
+                .transpose()?;
+            let offset = g::OperationCiRefresh::create(
+                builder,
+                pane_id,
+                cwd,
+                provider,
+                host,
+                path,
+                web_url,
+                head_sha,
+                local_head_sha,
+                checked_ref,
+            );
+            g::Operation::create_operation_ci_refresh(builder, offset)
+        }
         Operation::Context { pane_id } => {
             let pane_id = pane_id
                 .as_ref()
@@ -484,6 +516,30 @@ pub(super) fn read_operation(
         },
         g::OperationRef::OperationClientDetach(_value) => Operation::ClientDetach,
         g::OperationRef::OperationInspect(_value) => Operation::Inspect,
+        g::OperationRef::OperationCiRefresh(value) => {
+            let cwd = value.cwd()?;
+            budget.bytes(cwd.len())?;
+            Operation::CiRefresh {
+                target: CiRefreshTarget {
+                    pane_id: read_ci_text(value.pane_id()?, budget)?,
+                    cwd: read_path(cwd)?,
+                    repository: ForgeRepository {
+                        provider: match value.provider()? {
+                            g::ForgeProvider::Github => ForgeProvider::Github,
+                        },
+                        host: read_ci_text(value.host()?, budget)?,
+                        path: read_ci_text(value.path()?, budget)?,
+                        web_url: read_ci_text(value.web_url()?, budget)?,
+                    },
+                    head_sha: read_ci_text(value.head_sha()?, budget)?,
+                    local_head_sha: read_ci_text(value.local_head_sha()?, budget)?,
+                    checked_ref: value
+                        .checked_ref()?
+                        .map(|text| read_ci_text(text, budget))
+                        .transpose()?,
+                },
+            }
+        }
         g::OperationRef::OperationContext(value) => Operation::Context {
             pane_id: value
                 .pane_id()?
@@ -974,4 +1030,18 @@ pub(super) fn read_request_failure(
             }
         }
     })
+}
+
+fn write_ci_text(
+    builder: &mut Builder,
+    budget: &mut Budget,
+    text: &str,
+) -> Result<planus::Offset<str>> {
+    budget.bytes(text.len())?;
+    Ok(builder.create_string(text))
+}
+
+fn read_ci_text(text: &str, budget: &mut Budget) -> Result<String> {
+    budget.bytes(text.len())?;
+    Ok(text.to_owned())
 }

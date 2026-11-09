@@ -147,6 +147,11 @@ use sessions::{Coordinator, SessionAction};
 enum Background {
     Management(management::Completion),
     Resize(management::Completion),
+    CiRefresh {
+        owner: TreeOwner,
+        target: bkpr_protocol::CiRefreshTarget,
+        result: Result<()>,
+    },
     Attached {
         pane: String,
         attached: Box<Attached>,
@@ -768,6 +773,11 @@ impl App {
             return false;
         }
         match action {
+            Action::RefreshCi => {
+                !self.options.read_only
+                    && self.state.sidebar.active
+                    && self.popover.refresh_available(&self.tree.lock().unwrap())
+            }
             Action::CommandPrefix => !self.resize_capturing() || self.resize_dragging(),
             Action::Resize { .. } => !self.options.read_only && !self.resize_dragging(),
             Action::CreateTerminal => {
@@ -897,7 +907,8 @@ impl App {
             | (u16::from(!self.management.is_empty()) << 8)
             | (u16::from(self.sidebar_backend_available) << 9)
             | (u16::from(self.sidebar_has_workspace) << 10)
-            | (u16::from(self.spawn_defaults.is_some() && !self.socket.is_revoked()) << 11);
+            | (u16::from(self.spawn_defaults.is_some() && !self.socket.is_revoked()) << 11)
+            | (u16::from(self.supports_action(crate::keyguide::Action::RefreshCi)) << 12);
         let sidebar_columns = self.screen_geometry(size).0.width;
         let key = GuideKey {
             context,
@@ -1216,6 +1227,54 @@ impl App {
     fn operation(&mut self, operation: Operation) -> Result<()> {
         self.manage(management::Command::Single(operation), None)
     }
+    fn refresh_popup_ci(&mut self, point: Option<(u16, u16)>) {
+        if self.options.read_only {
+            return;
+        }
+        let refresh = self.popover.refresh_at(&self.tree.lock().unwrap(), point);
+        if let Some((owner, target)) = refresh {
+            self.session_action = Some(SessionAction::CiRefresh { owner, target });
+        }
+    }
+    pub(super) fn ci_refresh_endpoint(
+        &self,
+        target: &bkpr_protocol::CiRefreshTarget,
+    ) -> Option<Endpoint> {
+        if self.options.read_only {
+            return None;
+        }
+        let project = self
+            .registry
+            .panes
+            .iter()
+            .find(|pane| pane.id == target.pane_id)?
+            .project
+            .as_ref()?;
+        crate::ci::matches_target(project, target).then(|| self.socket.to_owned())
+    }
+    pub(super) fn queue_ci_refresh(
+        &mut self,
+        owner: TreeOwner,
+        target: bkpr_protocol::CiRefreshTarget,
+        socket: Endpoint,
+    ) -> Result<()> {
+        let key = format!(
+            "ci-refresh:{}:{}:{}",
+            owner.slot, owner.generation, target.pane_id
+        );
+        self.jobs.submit(key, move || {
+            let result = socket
+                .checked(Operation::CiRefresh {
+                    target: target.clone(),
+                })
+                .map(|_| ());
+            Ok(Background::CiRefresh {
+                owner,
+                target,
+                result,
+            })
+        })
+    }
     fn accept_management(
         &mut self,
         result: management::Completion,
@@ -1276,6 +1335,19 @@ impl App {
                 .as_ref()
                 .is_some_and(|form| form.pending.as_deref() == Some(completion.key.as_str()));
             match completion.result {
+                Ok(Background::CiRefresh {
+                    owner,
+                    target,
+                    result,
+                }) => {
+                    let known = !result.as_ref().is_err_and(transport::outcome_unknown);
+                    self.popover.refresh_receipt(owner, &target, known);
+                    if let Err(error) = result {
+                        self.notify(format!(
+                            "CI refresh failed: {error:#}; no replay was attempted"
+                        ));
+                    }
+                }
                 Ok(Background::Management(result)) => {
                     if form_pending {
                         self.state.form = None;
@@ -3262,6 +3334,7 @@ impl App {
             Some(Action::FoldSidebar) => self.tree.lock().unwrap().fold(Some(true)),
             Some(Action::UnfoldSidebar) => self.tree.lock().unwrap().fold(Some(false)),
             Some(Action::ToggleFoldSidebar) => self.tree.lock().unwrap().fold(None),
+            Some(Action::RefreshCi) => self.refresh_popup_ci(None),
             Some(
                 action @ (Action::ActivateSelected
                 | Action::CreateWorkspace
@@ -3997,6 +4070,9 @@ impl App {
                     match button {
                         MouseButton::WheelUp => self.popover.scroll_by(-3),
                         MouseButton::WheelDown => self.popover.scroll_by(3),
+                        MouseButton::Left if action == MouseAction::Press => {
+                            self.refresh_popup_ci(Some((mouse.x, mouse.y)))
+                        }
                         _ => {}
                     }
                     return Ok(());
@@ -6009,6 +6085,15 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
                             detach_view(socket, &pane, &mut attached, false),
                         );
                     }
+                    Ok(Background::CiRefresh {
+                        owner,
+                        target,
+                        result,
+                    }) => {
+                        let known = !result.as_ref().is_err_and(transport::outcome_unknown);
+                        app.popover.refresh_receipt(owner, &target, known);
+                        accumulate_cleanup(&mut cleanup, result.context(completion.key));
+                    }
                     Ok(Background::Management(_) | Background::Resize(_)) => {}
                     Err(error) => {
                         accumulate_cleanup(&mut cleanup, Err(error.context(completion.key)))
@@ -7782,7 +7867,10 @@ pub(super) mod tests {
             target,
             action,
             size,
-        } = app.session_action.take().unwrap();
+        } = app.session_action.take().unwrap()
+        else {
+            panic!("expected tree action");
+        };
         let TreeNode::Native(native) = target.node else {
             panic!("expected native target");
         };
@@ -10743,6 +10831,62 @@ pub(super) mod tests {
         )
         .unwrap();
         worker.join().unwrap();
+    }
+    #[test]
+    fn passive_ci_hover_preserves_ordinary_pane_r_input_and_keyboard_focus() {
+        let (mut app, received) = fixture();
+        attach_fixture(&mut app);
+        app.registry.panes[0].workspace_id = Some("workspace".into());
+        app.registry.panes[0].window_id = Some("window".into());
+        app.registry.panes[0].project = Some(crate::ci::tests::project());
+        app.registry.workspaces.push(Workspace {
+            id: "workspace".into(),
+            name: "Workspace".into(),
+            revision: 1,
+            windows: vec![Window {
+                id: "window".into(),
+                name: "Window".into(),
+                revision: 1,
+                layout: Some(LayoutNode::Leaf {
+                    pane_id: "focused-pane".into(),
+                }),
+            }],
+        });
+        app.state.workspace = Some("workspace".into());
+        app.state.window = Some("window".into());
+        publish_test_tree(&mut app);
+        let target = TreeTarget {
+            owner: app.tree_owner(),
+            node: TreeNode::Native(SidebarTarget::Pane {
+                workspace: "workspace".into(),
+                pane: "focused-pane".into(),
+            }),
+        };
+        let shared = Arc::clone(&app.tree);
+        {
+            let mut tree = shared.lock().unwrap();
+            tree.hover(Some(&target));
+            app.popover
+                .paint_tree(&tree, Some(&target), 3, 24, size())
+                .unwrap();
+            assert!(app.popover.refresh_available(&tree));
+        }
+        app.synchronize_tree_focus();
+        assert!(!app.state.sidebar.active);
+        let focused = app.state.focused.clone();
+        let views = app.views.len();
+        let mut event = key("KeyR");
+        event.text = "R".into();
+        app.key(event, &mut Vec::new(), size(), &[]).unwrap();
+        assert!(matches!(received.try_recv().unwrap(), Operation::Pane {
+            pane_id, request: PaneRequest::Key { event, .. }
+        } if pane_id == "focused-pane" && event.text == "R"));
+        assert!(
+            app.session_action.is_none(),
+            "passive metadata cannot dispatch refresh"
+        );
+        assert_eq!(app.state.focused, focused);
+        assert_eq!(app.views.len(), views);
     }
     include!("attach_shutdown_tests.rs");
     include!("search_tests.rs");

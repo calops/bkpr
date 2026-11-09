@@ -1,9 +1,11 @@
 //! Off-path, event-driven local project cache. One coordinator owns bounded Git
 //! work and native watches; panes sharing a canonical worktree share its result.
 //! Registry/input/render locks never encompass Git, canonicalization or walks.
-mod git;
+pub(super) mod git;
 use super::*;
-use bkpr_protocol::{ProjectSnapshot, ProjectState};
+use bkpr_protocol::{
+    ChangeRequestBase, ChangeSummary, ProjectSnapshot, ProjectState, RepositoryInfo,
+};
 use crossbeam_channel::Receiver;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
@@ -26,7 +28,26 @@ pub(super) fn loading(cwd: &Path, color_slot: Option<u32>) -> ProjectSnapshot {
         color_slot,
         repository: None,
         error: None,
+        ci: None,
     }
+}
+
+pub(super) fn ci_base(
+    cwd: &Path,
+    repository: &RepositoryInfo,
+    base: Option<&ChangeRequestBase>,
+    cancel: &AtomicBool,
+) -> Result<(Option<String>, Option<String>, Option<ChangeSummary>)> {
+    git::Git::new(cwd, cancel).with_ci_base(repository, base)
+}
+
+#[cfg(test)]
+pub(super) fn inspect_repository(cwd: &Path, cancel: &AtomicBool) -> Result<RepositoryInfo> {
+    let git = git::Git::new(cwd, cancel);
+    let identity = git
+        .identify()?
+        .context("fixture path is not a repository")?;
+    git.repository(&identity, None)
 }
 struct Entry {
     source: PathBuf,
@@ -587,6 +608,28 @@ impl Worker {
                             self.rebind.insert(cwd.clone());
                         }
                     }
+                    let ci_dirty: Vec<_> = self
+                        .bindings
+                        .iter()
+                        .filter_map(|(cwd, key)| {
+                            let entry = self.cache.get(key)?;
+                            (self.rebind.contains(cwd)
+                                || event.paths.iter().any(|path| {
+                                    relevant(entry, path)
+                                        && (metadata_change(entry, path)
+                                            || path.file_name().is_some_and(|name| {
+                                                matches!(
+                                                    name.to_str(),
+                                                    Some(
+                                                        "config" | ".gitconfig" | "config.worktree"
+                                                    )
+                                                )
+                                            }))
+                                }))
+                            .then(|| cwd.clone())
+                        })
+                        .collect();
+                    self.invalidate_ci(ci_dirty);
                     for entry in self.cache.values_mut() {
                         let mut affected = false;
                         let mut rebuild = topology;
@@ -629,6 +672,7 @@ impl Worker {
         }
     }
     fn invalidate_all(&mut self, reason: &str) {
+        self.invalidate_ci(self.bindings.keys().cloned().collect());
         for entry in self.cache.values_mut() {
             entry.invalidate(true);
             entry.identity_known = false;
@@ -643,6 +687,24 @@ impl Worker {
         self.watcher.take();
         self.installed.clear();
         self.watch_retry = Some(Instant::now());
+    }
+    fn invalidate_ci(&self, cwds: Vec<PathBuf>) {
+        if cwds.is_empty() {
+            return;
+        }
+        let Some(inner) = self.registry.upgrade() else {
+            return;
+        };
+        let mut inputs = inner.ci_inputs.lock().unwrap();
+        let epoch = inner
+            .ci_input_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        for cwd in cwds {
+            inputs.insert(cwd, epoch);
+        }
+        drop(inputs);
+        let _ = inner.ci_wake.try_send(());
     }
     fn publish(&mut self) {
         let Some(inner) = self.registry.upgrade() else {
@@ -721,29 +783,67 @@ impl Worker {
                 .get(&pane.id)
                 .and_then(|common| self.color_slots.get(common))
                 .copied();
-            if pane.project.as_ref().is_some_and(|current| {
-                current.cwd == cwd
-                    && current.state == entry.snapshot.state
-                    && current.color_slot == color_slot
-                    && current.repository == entry.snapshot.repository
-                    && current.error == entry.snapshot.error
-            }) {
-                continue;
-            }
             let mut snapshot = entry.snapshot.clone();
             snapshot.cwd = cwd.to_owned();
             snapshot.color_slot = color_slot;
+            if let Some(current) = &pane.project {
+                merge_ci(&mut snapshot, current);
+            }
+            if pane.project.as_ref() == Some(&snapshot) {
+                continue;
+            }
             pane.project = Some(snapshot);
             changed = true;
         }
         if changed && let Ok(revision) = next_revision(state.record.registry.revision) {
             state.record.registry.revision = revision;
             inner.changed.notify_all();
+            let _ = inner.ci_wake.try_send(());
         }
     }
 }
-fn effective_cwd(pane: &PaneInfo) -> &Path {
+pub(super) fn effective_cwd(pane: &PaneInfo) -> &Path {
     pane.foreground_cwd.as_deref().unwrap_or(&pane.cwd)
+}
+
+// CI is an independently validated projection. The Git cache deliberately owns
+// no CI and must not erase it or oscillate revisions on ordinary file changes.
+fn merge_ci(next: &mut ProjectSnapshot, current: &ProjectSnapshot) {
+    let same = next.cwd == current.cwd
+        && next
+            .repository
+            .as_ref()
+            .zip(current.repository.as_ref())
+            .is_some_and(|(next, current)| {
+                next.root == current.root
+                    && next.head_sha == current.head_sha
+                    && next.branch == current.branch
+            });
+    if !same {
+        return;
+    }
+    next.ci = current
+        .ci
+        .as_ref()
+        .filter(|ci| {
+            next.repository.as_ref().is_some_and(|repository| {
+                repository.head_sha.as_deref() == Some(ci.local_head_sha.as_str())
+                    && repository.branch == ci.branch
+            })
+        })
+        .cloned();
+    if next
+        .ci
+        .as_ref()
+        .and_then(|ci| ci.change_request.as_ref())
+        .and_then(|request| request.base.as_ref())
+        .is_some()
+        && let (Some(next), Some(current)) = (&mut next.repository, &current.repository)
+    {
+        next.base_ref.clone_from(&current.base_ref);
+        next.base_sha.clone_from(&current.base_sha);
+        next.committed = current.committed;
+    }
 }
 fn is_ignore(path: &Path) -> bool {
     path.file_name().is_some_and(|name| {

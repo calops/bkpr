@@ -20,7 +20,7 @@ Linux [process cleanup](../../crates/bkpr-core/src/process_tree.rs) is scoped to
 
 ### IPC and resources
 
-The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses Planus binary wire family 6 for typed workspace/window registry operations, atomic pane creation/placement, one-shot client source publication and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. A fixed admission header checks family, message kind, required capabilities and the 8 MiB request / 96 MiB response bounds before allocating the payload. Control capacity remains reserved independently of long polls. These remain same-user local boundaries, not authenticated remote enrollment.
+The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses Planus binary wire family 7 for typed workspace/window registry operations, atomic pane creation/placement, one-shot client source publication, CI metadata/refresh and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. A fixed admission header checks family, message kind, required capabilities and the 8 MiB request / 96 MiB response bounds before allocating the payload. Control capacity remains reserved independently of long polls. These remain same-user local boundaries, not authenticated remote enrollment.
 
 Clients receive compact lossless binary scene runs and whole-row deltas on snapshot workers. Image receipts include ID and generation, avoiding stale pixels or needless retransmission. The received allocation owns borrowed scene slices; complete validation precedes expanded native cells/resources and failure-atomic application. CLI/MCP/provider and persistence JSON are not the native wire format. Workspace/window/pane metadata and revisioned layouts persist; terminal contents and processes do not. Restored records without runtimes are explicitly Stopped. Sustained-animation CPU work remains measured separately below.
 
@@ -2897,4 +2897,111 @@ source, check recipes and receipts. Owned loose scaffolds are removed after
 archive verification. These are isolated software-rendered correctness checks,
 not a responsiveness benchmark, full theme matrix or pixel-equivalence claim.
 No installed programs, live sessions or user configuration are changed.
+
+## Native CI and PR popup restoration
+
+Source: `pre-native-rewrite` (`e9ee40261bf25b929799d231602573818a0af243`),
+`crates/bkpr/src/{ci.rs,ci/github.rs,ci_contract.rs,project.rs}` and
+`crates/bkpr-zellij/src/ui.rs`. The [source ledger](implementation-plan.md#bkpr-source)
+records retained policy/artwork, replacement boundaries and dependency decisions.
+This restores the CI/PR item cards, not the old plugin/helper architecture.
+
+The backend resolves actual provider-side branch tips and retains separate
+local HEAD, checked remote SHA and checked ref. Verified PR targets override
+local base selection; totals compare local HEAD with the target's local merge
+base. Missing objects remain unknown, with no fetch or alternate-base fallback.
+Canonical Linear associations come from rendered PR comment anchors.
+The existing active `gh` account remains authoritative.
+
+The independent worker shares exact canonical-CWD source discovery, leases and
+completed results across panes. Other CWD/auth contexts remain separate.
+Ordinary worktree edits do not re-query CI. Auth configuration uses owned
+filesystem watches, including relative config roots, without reading credentials.
+Per-source monotonic epochs reject retired A-to-B-to-A results; unrelated
+status/layout changes cannot invalidate publication or repeat PR-base Git work.
+CI facts, auth state and provider backoff are transient, not recovery records.
+
+Provider work has a 20-second deadline, bounded temporary output, a 2-MiB parsed
+response limit and at most 8 KiB of inspected stderr; raw stderr is not published.
+Batch work is bounded to 16 targets in one compatible context, with global
+two-second minimum spacing and context-scoped backoff. Unfinished results
+refresh after 60 seconds; completed results stay idle until invalidated.
+Child groups are retired before their leader is reaped, using portable Unix
+`waitid(...WNOWAIT)` observation rather than a recycled PID/PGID.
+
+Valid hard retry deadlines are never shortened. An unrepresentable
+`Retry-After` makes only its context explicitly unavailable until auth retirement
+or restart, rather than panicking the worker or retrying early. At most
+320 active/historical context records are retained, derived from the existing
+256-record/64-live-pane bounds. Expired inactive records are released; capacity
+exhaustion is explicit backpressure, not dropped panes or evicted valid limits.
+
+The client restores eight CI glyphs, four PR-state glyphs, GitHub/Linear/workflow
+artwork, branch/base/+/- layout, semantic colors, check links and durations.
+Pane cards list checks; workspace cards summarize source-qualified facts.
+Fetch time has one complete, wrappable UTC row; provider errors appear once.
+Source-exact mouse/keyboard refresh uses the shared `project.ci.refresh`
+catalog operation, including cold named refs without a checked SHA. Queue
+acceptance is not provider completion. Passive hover never captures application
+`R`; inactive-session refresh does not activate its panes or create hidden views.
+
+### Accepted native evidence
+
+All paths below are under `target/smoke/ci-parity/`. The immutable pair is
+`pair-243d2d7e-3c2a1071/bin/`:
+
+| Executable | SHA-256 |
+| --- | --- |
+| `bkpr` | `243d2d7ec75f3a188eb52329b29011a3a701d9f2ef202b73aa963fe4f2b7abad` |
+| `bkprd` | `3c2a1071b9d6023b9f577ffc6ba9e141d1b2fe33e0102566e166c8ec8943227f` |
+
+- `headless-accepted/acceptance.json`: all 14 actual CLI cases pass in one run.
+  Real Git graphs distinguish local/tracking/provider SHAs; PR removal restores
+  local fallback; an unavailable PR base stays unknown without fetch. Same-CWD
+  cache reuse, distinct-CWD provider execution, stable loading, coalescing,
+  auth-error retention, exact/malformed target rejection, old-source retirement
+  and empty-checked-SHA recovery pass. The extreme `u64::MAX` retry header
+  retains facts, blocks early manual retry, permits another context to complete
+  and recovers on private auth-generation retirement.
+- `kitty-138897746569452/acceptance.json`: actual Kitty 0.49.2, isolated Xvfb,
+  fancy/plain and 62-column checks pass. Screenshots and terminal ANSI exports
+  retain historical icons, PR/Linear links, full `+1 -0` totals, local versus
+  checked SHA, durations and complete UTC time. Loading, auth errors, truncation,
+  missing branches and no-check results remain explicit. Completed physical
+  shell output appears while the provider is still blocked; passive `R` reaches
+  the application, while sidebar and button refresh work.
+- `foreign-138930767728797/acceptance.json`: one actual TUI attaches to two
+  private local sessions. An inactive owner's mouse refresh executes under
+  daemon 478808, not active daemon 478811. Its view set remains empty; the active
+  view/size owner is unchanged and subsequent physical input completes there.
+- Real family-7-to-family-6 refusal reports
+  `unsupported Bkpr wire family 6; expected 7`. The old daemon's PID/birth/socket
+  stay unchanged, and its matching old client remains usable. Remote/scene wire
+  versions and private recovery schema are unchanged; no automatic restart occurs.
+
+The completed CI thread remains asleep during the controlled 2.200440302-second
+idle sample: zero user/system tick and voluntary/involuntary context-switch
+deltas, with provider requests unchanged at one. Raw `/proc` observations are
+retained in `headless-accepted/observations.json`. This is thread-specific debug
+evidence, not whole-mux CPU, presentation-latency or cross-mux benchmarking.
+
+Rust 1.96.1/LLVM 22.1.2, incremental debug (`opt-level = 1`), eight build jobs:
+formatting, workspace/test compilation and all-target strict Clippy pass.
+The 12 test executables run as host UID 1000 with private HOME/XDG and a
+network-refusing `gh` guard: 1,081 top-level tests plus one nested subprocess
+pass, with 14 intentionally ignored. There are no blocked provider attempts.
+`build/host-tests.json` and `build/protected-138794454041358/result.json`
+retain the receipts. Public live debug/release executable hashes stay unchanged.
+All accepted runtime cleanup reports have no owned survivors.
+
+These are isolated Linux functional checks with fake providers, not real account
+or macOS acceptance, a browser-launch test or pixel equivalence to old Zellij.
+Managed workspace scope is covered by the behavioral admission regression;
+runtime exercises unbound-scope rejection without fabricating a managed launch.
+Finder previews remain data-only and `pr:`/`ci:`/`ticket:` filters unsupported;
+the focused project inspector retains its Git-detail view.
+Controller sources are retained in `controllers.zip`.
+Archive CRCs and per-controller SHA-256 values are verified before removing loose
+owned scripts and redundant guarded-build binary copies. The accepted immutable
+pair, screenshots, raw observations and build/test receipts remain available.
 

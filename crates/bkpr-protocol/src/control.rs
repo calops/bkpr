@@ -124,6 +124,7 @@ macro_rules! catalog {
 
 catalog! {
     "session.inspect" => InspectArguments {}, false, "Inspect registry in the selected daemon-local scope", |_a| Operation::Inspect;
+    "project.ci.refresh" => CiRefreshArguments { target:crate::CiRefreshTarget }, false, "Queue CI refresh for an exact retained pane project source; never fetch providers during this request", |a| Operation::CiRefresh { target:a.target };
     "recovery.list" => RecoveryArguments {}, false, "List saved native recovery candidates without starting them", |_a| Operation::RecoveryList;
     "pane.resume" => ResumeArguments { pane_id: String, expected: HarnessRecovery }, false, "Resume an exact saved native binding using guarded recovery", |a| Operation::PaneResume { pane_id:a.pane_id, expected:a.expected };
     "workspace.create" => WorkspaceCreateArguments { name: Option<String>, initial: Option<PaneSpawnSpec> }, false, "Create a workspace, optionally with its initial execution", |a| Operation::WorkspaceCreate { name:a.name, initial:a.initial };
@@ -152,6 +153,7 @@ pub fn validate_native(operation: &Operation) -> Result<()> {
     match operation {
         Operation::Inspect
         | Operation::RecoveryList
+        | Operation::CiRefresh { .. }
         | Operation::PaneResume { .. }
         | Operation::WorkspaceCreate { .. }
         | Operation::WorkspaceRename { .. }
@@ -225,7 +227,8 @@ fn result_schema(operation: &str) -> Value {
             "api.help" => "Operation inventory, supported daemon-local scopes and capability limits.",
             "api.schema" => "One generated contract, or an operations array of generated contracts.",
             "recovery.list" => "Current recovery policy and recoveries array, filtered to selected scope.",
-            _ => "Native registry result, filtered to selected scope; creation replies also identify created workspace/window/panes."
+            "project.ci.refresh" => "Current scoped registry with cached project CI provider/check/PR/issue facts; refresh is queued asynchronously, not provider completion.",
+            _ => "Native registry result, filtered to selected scope; pane project.ci contains cached provider/check/PR/issue facts with explicit loading/stale/error state; creation replies also identify created workspace/window/panes."
         }
     })
 }
@@ -233,6 +236,33 @@ fn result_schema(operation: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn refresh_decodes_exact_identity_and_rejects_missing_fields() {
+        let arguments = json!({"target":{
+            "pane_id":"pane", "cwd":"/project",
+            "repository":{"provider":"github","host":"github.com","path":"o/r","web_url":"https://github.com/o/r"},
+            "head_sha":"checked", "local_head_sha":"local", "checked_ref":"origin/topic"
+        }});
+        let ControlAction::Native(Operation::CiRefresh { target }) =
+            resolve("project.ci.refresh", arguments.clone()).unwrap()
+        else {
+            panic!("refresh did not resolve to native operation")
+        };
+        assert_eq!(target.pane_id, "pane");
+        assert_eq!(target.head_sha, "checked");
+        assert_eq!(target.local_head_sha, "local");
+        assert_eq!(target.checked_ref.as_deref(), Some("origin/topic"));
+        for field in ["pane_id", "cwd", "repository", "head_sha", "local_head_sha"] {
+            let mut missing = arguments.clone();
+            missing["target"].as_object_mut().unwrap().remove(field);
+            assert!(resolve("project.ci.refresh", missing).is_err());
+        }
+        let mut extra = arguments;
+        extra["target"]["session_id"] = json!("another-session");
+        assert!(resolve("project.ci.refresh", extra).is_err());
+        assert!(!is_input("project.ci.refresh"));
+    }
+
     #[test]
     fn catalog_schemas_and_decoder_share_closed_argument_types() {
         let ControlAction::Local(help) = resolve("api.help", json!({})).unwrap() else {

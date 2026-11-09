@@ -281,3 +281,49 @@ fn configured_executable_filters_are_rejected_only_when_selected_by_tracked_path
     );
     assert!(!marker.exists());
 }
+
+#[test]
+fn provider_base_overrides_local_stack_config_and_uses_local_head_without_fetching() {
+    let repository = Repository::new();
+    repository.git(&["commit", "--allow-empty", "-m", "initial"]);
+    repository.git(&["switch", "-c", "stack/parent"]);
+    repository.write("parent", "parent one\nparent two\n");
+    repository.commit();
+    let parent = repository.inspect().head_sha.unwrap();
+    repository.git(&["switch", "-c", "stack/child"]);
+    repository.write("child", "child only\n");
+    repository.commit();
+    repository.git(&["config", "branch.stack/child.gh-merge-base", "main"]);
+    let local = repository.inspect();
+    assert_eq!(local.committed.unwrap().insertions, 3);
+    let base = bkpr_protocol::ChangeRequestBase {
+        branch: "stack/parent".into(),
+        commit: parent.clone(),
+        repository: bkpr_protocol::ForgeRepository {
+            provider: bkpr_protocol::ForgeProvider::Github,
+            host: "github.com".into(),
+            path: "fixture/project".into(),
+            web_url: "https://github.com/fixture/project".into(),
+        },
+    };
+    repository.write("child", "worktree changes\nmust not count\n");
+    let cancel = AtomicBool::new(false);
+    let git = Git::new(repository.path(), &cancel);
+    let (reference, merge_base, committed) = git.with_ci_base(&local, Some(&base)).unwrap();
+    assert_eq!(reference.as_deref(), Some("stack/parent"));
+    assert_eq!(merge_base.as_deref(), Some(parent.as_str()));
+    assert_eq!(committed.unwrap().insertions, 1);
+    repository.git(&["update-ref", "refs/heads/stack/parent", "HEAD"]);
+    assert_eq!(git.with_ci_base(&local, Some(&base)).unwrap().2, committed);
+    let missing = bkpr_protocol::ChangeRequestBase {
+        commit: "f".repeat(40),
+        ..base.clone()
+    };
+    let unknown = git.with_ci_base(&local, Some(&missing)).unwrap();
+    assert_eq!(unknown.0.as_deref(), Some("stack/parent"));
+    assert_eq!(unknown.1, None);
+    assert_eq!(unknown.2, None);
+    let fallback = git.with_ci_base(&local, None).unwrap();
+    assert_eq!(fallback.0.as_deref(), Some("refs/heads/main"));
+    assert_eq!(fallback.2.unwrap().insertions, 3);
+}

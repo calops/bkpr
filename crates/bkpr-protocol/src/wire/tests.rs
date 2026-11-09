@@ -13,6 +13,52 @@ fn assert_request(operation: Operation) {
 }
 
 #[test]
+fn ci_refresh_preserves_exact_source_identity() {
+    for checked_ref in [None, Some("origin/feature/日本語".into())] {
+        let operation = Operation::CiRefresh {
+            target: CiRefreshTarget {
+                pane_id: "owning-pane".into(),
+                cwd: "/project/account-sensitive/subdirectory".into(),
+                repository: ForgeRepository {
+                    provider: ForgeProvider::Github,
+                    host: "github.example.test".into(),
+                    path: "owner/repository".into(),
+                    web_url: "https://github.example.test/owner/repository".into(),
+                },
+                head_sha: "remote-tip".into(),
+                local_head_sha: "unpublished-local-tip".into(),
+                checked_ref,
+            },
+        };
+        assert_request(operation.clone());
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let mut raw = operation.clone();
+            let Operation::CiRefresh { target } = &mut raw else {
+                unreachable!()
+            };
+            target.cwd = std::ffi::OsString::from_vec(b"/project/nonutf8-\xff".to_vec()).into();
+            assert_request(raw);
+        }
+        let mut codec = Codec::new();
+        let encoded = codec
+            .encode_request(&Request::new(operation))
+            .unwrap()
+            .to_vec();
+        let (_, operation_field) = root_field(&encoded, 2);
+        let operation_table = indirect(&encoded, operation_field);
+        // Dropped source identity must never decode as a broader refresh.
+        for slot in [0, 1, 3, 4, 5, 6, 7] {
+            let mut missing = encoded.clone();
+            let (entry, _) = table_field(&missing, operation_table, slot);
+            missing[entry..entry + 2].fill(0);
+            assert!(decode_request(&missing).is_err());
+        }
+    }
+}
+
+#[test]
 fn every_operation_and_optional_presence_roundtrips() {
     assert_request(Operation::SessionInfo);
     assert_request(Operation::ClientRegister {

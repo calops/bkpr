@@ -14,6 +14,7 @@ enum MouseButton : ubyte { None, Left, Middle, Right, WheelUp, WheelDown, WheelL
 enum MouseAction : ubyte { Press, Release, Motion }
 enum SelectionAction : ubyte { Press, Drag, Release, Clear, Tick }
 enum RequestOutcome : ubyte { NotDispatched, Unknown }
+enum ForgeProvider : ubyte { Github }
 struct Rgb { r:ubyte; g:ubyte; b:ubyte; }
 table Size {
   cols:ushort;
@@ -211,7 +212,18 @@ table OperationWait {
 table OperationShutdown {
 
 }
-union Operation { OperationSessionInfo, OperationClientRegister, OperationClient, OperationClientActivate, OperationClientDetach, OperationInspect, OperationContext, OperationRecoveryList, OperationPaneResume, OperationHarnessBegin, OperationHarnessEvent, OperationHarnessContext, OperationAgent, OperationWorkspaceCreate, OperationWorkspaceRename, OperationWorkspaceClose, OperationWindowCreate, OperationWindowRename, OperationWindowClose, OperationPaneSpawn, OperationPaneReopen, OperationPaneTerminate, OperationPaneForget, OperationPaneRename, OperationLayoutUpdate, OperationPane, OperationWait, OperationShutdown }
+table OperationCiRefresh {
+  pane_id:string (required);
+  cwd:[ubyte] (required);
+  provider:ForgeProvider;
+  host:string (required);
+  path:string (required);
+  web_url:string (required);
+  head_sha:string (required);
+  local_head_sha:string (required);
+  checked_ref:string;
+}
+union Operation { OperationSessionInfo, OperationClientRegister, OperationClient, OperationClientActivate, OperationClientDetach, OperationInspect, OperationContext, OperationRecoveryList, OperationPaneResume, OperationHarnessBegin, OperationHarnessEvent, OperationHarnessContext, OperationAgent, OperationWorkspaceCreate, OperationWorkspaceRename, OperationWorkspaceClose, OperationWindowCreate, OperationWindowRename, OperationWindowClose, OperationPaneSpawn, OperationPaneReopen, OperationPaneTerminate, OperationPaneForget, OperationPaneRename, OperationLayoutUpdate, OperationPane, OperationWait, OperationShutdown, OperationCiRefresh }
 table PaneRequestInspect {
 
 }

@@ -129,6 +129,7 @@ pub enum Action {
     ToggleChrome,
     EnterSessions,
     ReconnectSession,
+    RefreshCi,
     LeaveSidebar,
     Navigate(Navigation),
     CycleView,
@@ -184,6 +185,7 @@ impl Action {
             Self::ToggleSidebar => "sidebar",
             Self::EnterSessions => "sessions",
             Self::ReconnectSession => "force reconnect session",
+            Self::RefreshCi => "refresh checks",
             Self::LeaveSidebar => "return to app",
             Self::Navigate(Navigation::Previous) => "select previous",
             Self::Navigate(Navigation::Next) => "select next",
@@ -465,6 +467,7 @@ use Navigation as N;
 // reconnect, and native management remains tied to an owning native context.
 static BINDINGS: &[Binding] = &[
     text(SESSIONS, "R", A::ReconnectSession, 5),
+    selected(text(SIDEBAR, "R", A::RefreshCi, 6)),
     physical(
         APPLICATION | SIDEBAR | SESSIONS | HISTORY | SEARCH | RESIZE,
         "KeyB",

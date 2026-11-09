@@ -80,6 +80,38 @@ The native agent service revisited `relay.rs`, `relay_tests.rs`, Claude/Omp deli
 
 Local project metadata revisits `project.rs` and `project_watch.rs` at main `9ad93bd`. Base precedence, whole-tree merge-base comparisons and NUL-delimited statistics inform `bkpr-core::registry::project`; the old CI/helper/native-session delivery architecture is not retained. Maintained `notify` and `ignore` provide filesystem events and ignore-aware traversal. Canonical-worktree caches and transient pane snapshots replace request-time Git discovery, including repository-scoped agent discovery.
 
+CI/PR restoration uses `pre-native-rewrite` (`e9ee40261bf25b929799d231602573818a0af243`),
+specifically `crates/bkpr/src/{ci.rs,ci/github.rs,ci_contract.rs,project.rs}` and
+`crates/bkpr-zellij/src/ui.rs`. Useful source includes push/refspec discovery,
+provider-side branch-tip queries, verified PR selection, canonical Linear comment
+anchors, check normalization, PR-base comparisons and popup artwork/ordering.
+The native implementation keeps the same-repository MIT notices; it does not
+retain Zellij publication, plugin callbacks or the old Linux-only process driver.
+
+`bkpr-core::registry::ci` owns source generations, cache projection, provider
+scheduling and bounded children; `bkpr-protocol::ci` carries supplied facts and
+exact refresh targets. `bkpr-client` projects those through the existing sidebar,
+popup and common scene framework. No provider I/O runs in frontend code or under
+the global registry writer. Identical active canonical-CWD sources share their
+discovery/generation/result; different CWD/auth contexts remain separate.
+
+Dependency choices: the already-packaged maintained GitHub CLI preserves the
+user's active authentication context rather than adding a Rust HTTP SDK and
+credential layer. [`scraper` 0.29](https://docs.rs/scraper/0.29.0/scraper/) (ISC,
+default CLI/error features disabled) replaces hand-written HTML parsing.
+[`time` 0.3.55](https://docs.rs/time/0.3.55/time/) (MIT/Apache-2.0) parses RFC3339
+timestamps and formats static UTC freshness, replacing the copied calendar
+algorithm and avoiding a periodic age redraw. Existing `notify` 8.2 watches
+default/absolute/CWD-relative `gh` configuration without reading credentials.
+Bkpr owns source retirement, admission, batching/backoff and presentation policy,
+not HTML/date implementations or a second provider SDK.
+
+Native wire family 7 adds CI facts and the shared `project.ci.refresh` operation;
+remote framing, scene encoding and private recovery records keep their versions.
+Old native sessions require their matching client and are never automatically
+restarted. Runtime proof and tested limits are in
+[the CI restoration report](engine-proof.md#native-ci-and-pr-popup-restoration).
+
 
 ### Native fork source
 

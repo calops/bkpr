@@ -326,6 +326,70 @@ impl<'a> Git<'a> {
         }
         Ok(())
     }
+    /// Verified provider targets override local fallback selection, including an
+    /// explicit gh-merge-base. Never resolve a branch name supplied by a provider
+    /// or fetch its missing commit; unavailable targets remain unknown.
+    pub(super) fn with_ci_base(
+        &self,
+        repository: &RepositoryInfo,
+        base: Option<&bkpr_protocol::ChangeRequestBase>,
+    ) -> Result<(Option<String>, Option<String>, Option<ChangeSummary>)> {
+        let head = repository.head_sha.as_deref();
+        ensure!(
+            self.resolve("HEAD")?.as_deref() == head,
+            "CI diff source HEAD changed"
+        );
+        let branch = self.optional(&["symbolic-ref", "--quiet", "HEAD"], &[1])?;
+        ensure!(
+            branch
+                .as_deref()
+                .and_then(|reference| reference.strip_prefix("refs/heads/"))
+                == repository.branch.as_deref(),
+            "CI diff source branch changed"
+        );
+        let result = if let Some(base) = base {
+            ensure!(
+                matches!(base.commit.len(), 40 | 64)
+                    && base.commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "invalid provider base commit"
+            );
+            if let Some(target) = self.resolve(&base.commit)?
+                && let Some(head) = head
+                && let Some(merge_base) = self.optional(&["merge-base", &target, head], &[1])?
+            {
+                let committed = stats(&self.required(&[
+                    "diff",
+                    "--numstat",
+                    "-z",
+                    "--find-renames=50%",
+                    "--no-relative",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    &merge_base,
+                    head,
+                    "--",
+                ])?)?;
+                (Some(base.branch.clone()), Some(merge_base), Some(committed))
+            } else {
+                (Some(base.branch.clone()), None, None)
+            }
+        } else {
+            self.base(repository.branch.as_deref(), head)?
+        };
+        ensure!(
+            self.resolve("HEAD")?.as_deref() == head,
+            "CI diff source HEAD changed"
+        );
+        let branch = self.optional(&["symbolic-ref", "--quiet", "HEAD"], &[1])?;
+        ensure!(
+            branch
+                .as_deref()
+                .and_then(|reference| reference.strip_prefix("refs/heads/"))
+                == repository.branch.as_deref(),
+            "CI diff source branch changed"
+        );
+        Ok(result)
+    }
     fn base(
         &self,
         branch: Option<&str>,
@@ -695,7 +759,7 @@ fn diagnostic(bytes: &[u8]) -> String {
         .trim()
         .to_owned()
 }
-fn command(cwd: &Path) -> Command {
+pub(crate) fn command(cwd: &Path) -> Command {
     let mut command = Command::new("git");
     // Remove all launch-level overrides, including GIT_CONFIG_COUNT/PARAMETERS,
     // index/object/shallow namespaces and tracing. User/repository config remains.
@@ -730,7 +794,7 @@ fn nonblocking(fd: i32) -> Result<()> {
     );
     Ok(())
 }
-fn run(command: &mut Command, deadline: Instant, cancel: &AtomicBool) -> Result<Output> {
+pub(crate) fn run(command: &mut Command, deadline: Instant, cancel: &AtomicBool) -> Result<Output> {
     run_input(command, None, deadline, cancel)
 }
 fn run_input(

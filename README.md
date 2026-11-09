@@ -13,8 +13,8 @@ Bkpr remains pre-1.0. Workspace layouts and pane metadata survive daemon
 restarts; running processes and terminal contents do not.
 Foreground harness recognition, managed native conversation capture and OSC 7501
 status are available in the TUI, together with launch-scoped context, discovery
-and durable peer communication. Local Git/project snapshots and explicit native
-harness recovery are available; forge/CI metadata is not implemented yet.
+and durable peer communication. Local Git/project snapshots, GitHub PR/check
+metadata and explicit native harness recovery are available.
 Release notes for version 0.4.2 and earlier describe the former implementation.
 One TUI can attach to multiple local and existing SSH sessions. Its sidebar groups
 workspaces under their owning session; cross-session layouts remain deferred.
@@ -259,8 +259,8 @@ and native harness callbacks. Theme, graphics preference, terminal capabilities
 and transient toasts belong to the physical client instance. An initially empty
 existing session stays empty until an explicit creation action.
 
-Both hosts need compatible native builds. Native wire family 6 is unchanged,
-but remote TUI attachment also requires authoritative daemon spawn defaults.
+Both hosts need matching native wire family 7 builds. Remote TUI attachment
+also requires authoritative daemon spawn defaults.
 Unavailable defaults or an incompatible/missing session fail before takeover,
 without local-path fallbacks, installation, bootstrap or automatic restart.
 Local launch overrides (`--cwd`, `--home`, `--bkprd` and shell arguments) apply only
@@ -533,7 +533,7 @@ MCP discovery starts with
 `control({"operation":"api.help","arguments":{}})`, then, for example,
 `control({"operation":"api.schema","arguments":{"operation":"pane.create"}})`.
 Native operations include inspection, workspace/window/pane lifecycle, atomic
-pane batches with final placement, layout updates and explicit native recovery.
+pane batches with final placement, layout updates, CI refresh and native recovery.
 Use returned opaque IDs and the expected revision for the owning document.
 Workspace creation requires explicit session/all scope for managed agents.
 Programs use argv arrays, not shell-interpolated strings.
@@ -619,10 +619,11 @@ on narrow terminals without a sidebar.
 
 The inspector shows the observed CWD, worktree root, common/worktree Git
 directories, local HEAD, staged and unstaged file/line/binary totals and untracked
-file count. Committed totals compare HEAD directly with a suitable local merge
-base, not a sum of commits. An unavailable base or total is **unknown**, not zero;
-detached and unborn HEADs remain distinct. This is local Git data, not a PR diff,
-remote branch check or CI result. Bkpr does not fetch merely to display it.
+file count. Committed totals compare local HEAD with its merge base against the
+verified PR target's commit, or a suitable local fallback when no PR applies.
+An unavailable base or total is **unknown**, not zero; detached and unborn HEADs
+remain distinct. These are local comparisons, not provider job results or
+uncommitted worktree changes. Bkpr never fetches merely to display metadata.
 
 A preflight rejects tracked paths selecting configured executable Git `clean` or
 `process` filters with an explicit statistics error, rather than silently
@@ -643,6 +644,50 @@ current facts after daemon restart. Authenticated `whoami` and detailed agent
 discovery include the same backend project snapshot when it matches that launch's
 live foreground CWD; compact discovery omits it. Repository-scoped discovery and
 messaging require a ready canonical common-Git-directory identity.
+
+### GitHub pull requests and CI
+
+The daemon uses the existing active `gh` account on its owning host. It publishes
+GitHub repository/PR identity, draft/open/merged/closed state, canonical Linear
+links from rendered PR comments, check status, links and durations. No personal
+ticket mapping, account switching or frontend provider calls are involved.
+Nix packages already include `gh`; source-built daemons need it on their PATH.
+
+Named branches are checked at the actual provider-side remote tip, not a possibly
+stale local tracking ref. Popup details distinguish that ref/commit from local
+HEAD. PR-base comparisons still use local HEAD; a missing local base object stays
+unknown rather than triggering a fetch or silently choosing another base.
+
+Sidebar item cards restore the pre-rewrite PR/check/Linear artwork and semantic
+colors. Pane cards list checks; workspace cards summarize distinct sources.
+Loading retains cached facts, while stale results, provider errors, pagination
+limits and missing commits remain explicit. Fetch timestamps are absolute UTC,
+not frozen relative ages. Check names and PR/issue entries have safe HTTPS links.
+
+Click a source's refresh button, or press `R` in the sidebar when one exact
+current source is available. `R` on a session row still forces reconnection;
+passive hovering does not capture an application's `R`. A known named ref can be
+retried before its first checked SHA exists, including after cold authentication
+failure. Queue acceptance is not provider completion. Discover the same scoped
+operation through `bkpr api schema project.ci.refresh` or shared MCP control.
+Refresh never selects another session, grants input or replays an unknown result.
+
+CI runs independently of local Git refresh, input and rendering. Exact canonical
+CWD/source identities share discovery and cache entries across panes; different
+CWD/auth contexts remain separate. Requests are bounded and spaced at least two
+seconds apart, with unfinished results refreshed every 60 seconds and
+authentication/rate-limit backoff. Completed results stay idle until source,
+push, auth-context or explicit refresh invalidation. Ordinary worktree edits do
+not re-query CI; auth configuration uses filesystem watches, not idle polling.
+
+Rate-limit history is bounded to 320 active/historical provider-CWD contexts.
+If capacity is exhausted, new contexts show CI `Unavailable` until a record can
+be released or authentication is retired. Existing contexts and panes keep
+working; valid hard limits are never evicted or shortened to admit new work.
+
+GitHub.com is the supported forge. The focused `Ctrl-b i` inspector remains
+Git-only; sidebar cards and Finder previews consume the enriched metadata.
+Finder's `pr:`, `ci:` and `ticket:` search filters remain unsupported.
 
 
 
@@ -681,8 +726,9 @@ their original naming intent is unknown. Titles never establish harness status.
 
 `/` opens the metadata finder, distinct from `Ctrl-b /` terminal-content search.
 It supports fuzzy terms and `workspace:`, `window:`, `harness:`, `status:`, `cwd:`,
-`project:` and `branch:` filters, including quoted values. PR/CI/ticket filters explicitly
-report unavailable facts. Narrow windows use Tab to cycle input, results and
+`project:` and `branch:` filters, including quoted values. PR/CI/ticket search
+filters remain unsupported even when those facts are present in the preview.
+Narrow windows use Tab to cycle input, results and
 details; PageUp/PageDown scroll the preview. Selection activates the actual pane
 identity, not a row number.
 
@@ -842,8 +888,8 @@ references separately. Transparent graphics-only layers preserve native cells,
 cursor and hit testing; shadow pixels can shade edge content without changing
 canonical terminal state.
 Decorative animation and a command palette are outside the current main-parity pass.
-Forge/PR/CI card data and refresh still need a backend-owned contract; the
-frontend does not query providers or invent those facts.
+Forge/PR/CI card data and refresh use the daemon-owned metadata contract;
+the frontend does not query providers or invent those facts.
 
 ### Workspace, window and pane controls
 
@@ -1127,7 +1173,7 @@ The managed commands use the normal launchers, not a separate agent-spawn API:
 
 ```json
 {
-  "version": 6,
+  "version": 7,
   "op": "pane_spawn",
   "workspace_id": "WORKSPACE_ID",
   "window_id": "WINDOW_ID",
@@ -1193,14 +1239,14 @@ permission approval.
 
 ### Requests and explicit shutdown
 
-Native client/server connections use binary Planus wire family 6. Registry
+Native client/server connections use binary Planus wire family 7. Registry
 operations target workspaces, their independent windows and owned panes;
 terminal/view operations are pane-scoped. Active-window selection belongs to
 each client. The `request` utility still accepts and prints JSON; that is its
 human-facing boundary, not the socket format.
 
-Use a matching launcher/server pair. Existing family-4/5 sessions stay running
-and remain usable with their matching old client; a family-6 client refuses
+Use a matching launcher/server pair. Existing family-4/5/6 sessions stay running
+and remain usable with their matching old client; a family-7 client refuses
 attachment or takeover rather than restarting or replacing them. Retain the
 old binaries for those sessions, or explicitly stop the intended session before
 starting a fresh one. Recovery records keep their existing private schema.
@@ -1215,9 +1261,9 @@ Source paths are ephemeral, redacted from request debug output and never session
 ```sh
 "$CARGO_TARGET_DIR/debug/bkpr" context --socket "$BKPR_RUN/control.sock"
 "$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
-  '{"version":6,"op":"inspect"}'
+  '{"version":7,"op":"inspect"}'
 "$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
-  '{"version":6,"op":"shutdown"}'
+  '{"version":7,"op":"shutdown"}'
 ```
 
 Check `ok` and `error` before treating an operation as successful. Shutdown closes
@@ -1246,7 +1292,7 @@ stopped. Older metadata upgrades without inventing active native bindings;
 ambiguous foreign-workspace ownership is rejected without replacing the record.
 
 Retired metadata can be explicitly forgotten with
-`{"version":6,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
+`{"version":7,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
 has stopped, every layout reference has been removed and all its views detached.
 This releases record capacity; it is not termination or automatic history pruning.
 

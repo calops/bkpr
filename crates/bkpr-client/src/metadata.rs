@@ -27,6 +27,9 @@ pub(crate) struct Paragraph {
     pub role: Role,
     spans: Vec<(Range<usize>, Ink)>,
     right: Vec<(String, Role)>,
+    suffix: Vec<(String, Role)>,
+    link: Option<String>,
+    pub(crate) refresh: Option<bkpr_protocol::CiRefreshTarget>,
     truncate: bool,
 }
 pub(crate) struct PreviewLine {
@@ -34,6 +37,8 @@ pub(crate) struct PreviewLine {
     pub role: Role,
     pub spans: Vec<RoleSpan>,
     pub projects: Vec<ProjectSpan>,
+    pub link: Option<(u16, String)>,
+    pub refresh: Option<(Rect, bkpr_protocol::CiRefreshTarget)>,
 }
 
 impl Paragraph {
@@ -43,6 +48,9 @@ impl Paragraph {
             role,
             spans: Vec::new(),
             right: Vec::new(),
+            suffix: Vec::new(),
+            link: None,
+            refresh: None,
             truncate: false,
         }
     }
@@ -53,14 +61,26 @@ impl Paragraph {
             .push((0..paragraph.text.len(), Ink::Project(slot)));
         paragraph
     }
-    fn append(&mut self, text: impl AsRef<str>, role: Role) {
+    pub(crate) fn append(&mut self, text: impl AsRef<str>, role: Role) {
         let start = self.text.len();
         self.text.push_str(&clean(text.as_ref()));
         self.spans.push((start..self.text.len(), Ink::Role(role)));
     }
-    fn right(&mut self, text: impl AsRef<str>, role: Role) {
+    pub(crate) fn right(&mut self, text: impl AsRef<str>, role: Role) {
         self.right.push((clean(text.as_ref()), role));
         self.truncate = true;
+    }
+    pub(crate) fn suffix(&mut self, text: impl AsRef<str>, role: Role) {
+        self.suffix.push((clean(text.as_ref()), role));
+        self.truncate = true;
+    }
+    pub(crate) fn linked(mut self, url: &str) -> Self {
+        self.link = crate::ci::safe_link(url).map(str::to_owned);
+        self
+    }
+    pub(crate) fn single_line(mut self) -> Self {
+        self.truncate = true;
+        self
     }
 }
 
@@ -96,19 +116,26 @@ pub(crate) fn content(
     pane: &PaneInfo,
     registry: &RegistrySnapshot,
     known: Option<&PaneSnapshot>,
+    refresh_controls: bool,
 ) -> Vec<Paragraph> {
     let harness = crate::controller::recognized_harness(pane, known);
     let activity = crate::controller::harness_status(pane, known);
     let mut rows = Vec::new();
-    push(
-        &mut rows,
-        if pane.title.is_empty() {
-            "Untitled terminal"
-        } else {
-            &pane.title
-        },
-        Role::Title,
-    );
+    let title = if pane.title.is_empty() {
+        "Untitled terminal"
+    } else {
+        &pane.title
+    };
+    if let Some(harness) = harness {
+        let mut row = Paragraph::new(
+            format!("{} ", crate::controller::harness_icon(harness.kind)),
+            crate::controller::harness_role(harness.kind),
+        );
+        row.append(title, Role::Title);
+        rows.push(row);
+    } else {
+        push(&mut rows, title, Role::Title);
+    }
     rows.push(pane_summary(pane, known, false));
     if let Some(workspace) = registry
         .workspaces
@@ -130,12 +157,22 @@ pub(crate) fn content(
     }
     push(
         &mut rows,
-        pane.foreground_cwd
-            .as_ref()
-            .unwrap_or(&pane.cwd)
-            .to_string_lossy(),
+        format!(
+            "\u{f07b} {}",
+            pane.foreground_cwd.as_ref().unwrap_or(&pane.cwd).display()
+        ),
         Role::Muted,
     );
+    if let Some(conversation) = harness
+        .and_then(|h| h.managed.as_ref())
+        .and_then(|managed| managed.conversation.as_ref())
+    {
+        push(
+            &mut rows,
+            format!("\u{f0efe} Agent ID: {}", conversation.id),
+            Role::Muted,
+        );
+    }
     if let Some(activity) = activity {
         heading(&mut rows, "Activity");
         push(&mut rows, &activity.state, activity_role(&activity.state));
@@ -164,12 +201,18 @@ pub(crate) fn content(
         push(&mut rows, error, Role::Error);
     }
     heading(&mut rows, "Repository");
-    project_content(pane.project.as_ref(), true, &mut rows);
-    heading(&mut rows, "Checks & tickets");
-    push(
+    if let Some(project) = &pane.project {
+        rows.push(crate::ci::repository_heading(project));
+        if let Some(ci) = &project.ci {
+            crate::ci::request_content(ci, &mut rows);
+        }
+    }
+    project_content(pane.project.as_ref(), false, &mut rows);
+    crate::ci::content(
+        pane.project.as_ref(),
+        refresh_controls.then_some(pane.id.as_str()),
+        true,
         &mut rows,
-        "Forge, CI and ticket metadata are not available",
-        Role::Muted,
     );
     rows
 }
@@ -209,27 +252,47 @@ pub(crate) fn project_content(
         return;
     };
     if include_name {
-        rows.push(Paragraph::project(
-            &repository.name,
-            Role::Accent,
-            project.color_slot,
-        ));
+        rows.push(crate::ci::repository_heading(project));
     }
     push(
         rows,
         format!("Worktree · {}", repository.root.display()),
         Role::Muted,
     );
-    let branch = match (&repository.branch, &repository.head_sha) {
-        (Some(branch), _) => format!("Branch · {branch}"),
-        (None, Some(sha)) => format!(
-            "Detached HEAD · {}",
-            sha.chars().take(10).collect::<String>()
-        ),
-        (None, None) => "Branch unavailable · no HEAD commit".to_owned(),
-    };
-    let mut branch = Paragraph::new(branch, Role::Panel);
+    let mut branch = Paragraph::new(
+        match (&repository.branch, &repository.head_sha) {
+            (Some(branch), _) => format!("\u{f062c} {branch}"),
+            (None, Some(sha)) => format!(
+                "\u{f062c} detached @ {}",
+                sha.chars().take(10).collect::<String>()
+            ),
+            (None, None) => "Branch unavailable · no HEAD commit".to_owned(),
+        },
+        Role::Panel,
+    );
     branch.truncate = true;
+    if let Some(base) = project
+        .ci
+        .as_ref()
+        .and_then(|ci| ci.change_request.as_ref())
+        .and_then(|request| request.base.as_ref())
+        .map(|base| base.branch.as_str())
+        .or(repository.base_ref.as_deref())
+    {
+        branch.right(
+            format!(
+                "\u{f419} {}",
+                base.strip_prefix("refs/heads/")
+                    .or_else(|| base.strip_prefix("refs/remotes/"))
+                    .unwrap_or(base)
+            ),
+            Role::Muted,
+        );
+    }
+    if let Some(changes) = repository.committed {
+        branch.suffix(format!(" +{}", changes.insertions), Role::Success);
+        branch.suffix(format!(" -{}", changes.deletions), Role::Error);
+    }
     rows.push(branch);
     heading(rows, "Worktree changes");
     if repository.staged == ChangeSummary::default()
@@ -363,6 +426,11 @@ fn body_line(paragraph: &Paragraph, range: Range<usize>) -> PreviewLine {
         role: paragraph.role,
         spans: Vec::new(),
         projects: Vec::new(),
+        link: paragraph
+            .link
+            .as_ref()
+            .map(|url| (width(text) as u16, url.clone())),
+        refresh: None,
     };
     for (span, ink) in &paragraph.spans {
         let start = span.start.max(range.start);
@@ -390,12 +458,27 @@ fn truncate(paragraph: &Paragraph, columns: usize) -> PreviewLine {
         .map(|(text, _)| width(text))
         .sum::<usize>()
         .min(columns / 2);
-    let budget = columns.saturating_sub(right + usize::from(right > 0));
+    let suffix_width = paragraph
+        .suffix
+        .iter()
+        .map(|(text, _)| width(text))
+        .sum::<usize>();
+    let suffix_width = if suffix_width + right + 3 <= columns {
+        suffix_width
+    } else {
+        0
+    };
+    let budget = columns.saturating_sub(right + usize::from(right > 0) + suffix_width);
     let clipped = width(&paragraph.text) > budget;
     let end = prefix(&paragraph.text, budget.saturating_sub(usize::from(clipped)));
     let mut line = body_line(paragraph, 0..end);
     if clipped && budget > 0 {
         append_span(&mut line, "…", Role::Muted);
+    }
+    if suffix_width > 0 {
+        for (text, role) in &paragraph.suffix {
+            append_span(&mut line, text, *role);
+        }
     }
     if right > 0 {
         line.text.extend(std::iter::repeat_n(
@@ -407,6 +490,20 @@ fn truncate(paragraph: &Paragraph, columns: usize) -> PreviewLine {
             let end = prefix(text, remaining);
             append_span(&mut line, &text[..end], *role);
             remaining = remaining.saturating_sub(width(&text[..end]));
+        }
+        if let Some(target) = &paragraph.refresh
+            && right == width(crate::ci::REFRESH)
+            && paragraph.right.len() == 1
+        {
+            line.refresh = Some((
+                Rect {
+                    x: (columns - right) as u16,
+                    y: 0,
+                    width: right as u16,
+                    height: 1,
+                },
+                target.clone(),
+            ));
         }
     }
     line
@@ -446,6 +543,8 @@ pub(crate) fn wrap(paragraphs: &[Paragraph], columns: u16, lines: &mut Vec<Previ
                         role: paragraph.role,
                         spans: Vec::new(),
                         projects: Vec::new(),
+                        link: None,
+                        refresh: None,
                     });
                     byte += glyph.len();
                 } else {
@@ -472,6 +571,7 @@ mod tests {
             cwd: "/project".into(),
             state,
             error: None,
+            ci: None,
             repository: Some(RepositoryInfo {
                 name: "project".into(),
                 root: "/project".into(),
