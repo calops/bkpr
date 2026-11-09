@@ -454,9 +454,8 @@ recognition-only.
 The sidebar distinguishes recognized, managed-unbound, bound and capture-error
 states without replacing user pane names. Semantic status is a separate OSC 7501
 fact: `.` idle, `~` working, `+` done, `?` blocked, `!` error. Ordinary programs
-never acquire harness badges merely by setting a title. The pane chooser
-(`Ctrl-b o`) shows the native conversation ID, foreground directory and capture
-diagnostics. Backgrounding a job hides its foreground identity; resuming it can
+never acquire harness badges merely by setting a title. Backgrounding a job hides
+its foreground identity; resuming it can
 restore the same live binding. Returning to the shell or replacing/exiting a
 launch clears stale facts.
 
@@ -739,6 +738,9 @@ one and five cells stay separate. Commas separate related actions; slashes
 separate alternative keys for the same action, such as `↑/k, ↓/j`.
 Only available bindings contribute. Narrow rows repeat shared modifiers when
 wrapping, and notices reserve their space before whole hint groups are laid out.
+Sidebar folding combines `←, →, Space`; `Esc, Ctrl-Space` share the return-to-app
+row. Scope parentheses, commas and alias slashes use muted text; literal
+punctuation keys keep their keycap accent.
 
 Chrome follows each client's reported terminal foreground, background and ANSI
 palette. Confirmed `Tc`/`RGB` support plus observed foreground/background enables
@@ -849,8 +851,6 @@ Press `Ctrl-b`, then a command:
 | `"` | Spawn a pane in the active window, split top/bottom |
 | `e` | Enter keyboard split-resize mode |
 | `R` (uppercase) | Confirm a new configured shell in the focused unavailable pane's layout position |
-| `w` / `o` | Choose workspace / show an existing pane |
-| `W` (uppercase) | Choose a window in the active workspace |
 | `i` | Inspect focused pane's local project/Git snapshot (arrows scroll) |
 | `s` | Enter focused pane's scrollback and page upward |
 | `y` | Copy the focused view's terminal selection to the host clipboard |

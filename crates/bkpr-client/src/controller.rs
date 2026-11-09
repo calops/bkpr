@@ -26,9 +26,6 @@ pub enum FormKind {
     },
     CloseWorkspace,
     CloseWindow,
-    ChooseWorkspace,
-    ChooseWindow,
-    ChoosePane,
     ProjectDetails,
 }
 #[derive(Clone, Debug)]
@@ -68,7 +65,7 @@ impl Form {
                 Context::Confirmation
             }
             FormKind::ProjectDetails => Context::Details,
-            _ => Context::Chooser,
+            FormKind::ReopenPane { .. } => Context::Chooser,
         }
     }
 }
@@ -662,32 +659,6 @@ pub(crate) fn harness_status<'a>(
     })
 }
 
-fn harness_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>) -> Option<String> {
-    let harness = recognized_harness(pane, snapshot)?;
-    let binding = match &harness.managed {
-        None => "recognized",
-        Some(managed) if managed.error.is_some() => "capture error",
-        Some(managed) if managed.conversation.is_some() => "bound",
-        Some(_) => "binding",
-    };
-    let mut label = format!("{} / {binding}", harness.kind.display_name());
-    if let Some(status) = harness_status(pane, snapshot) {
-        label.push_str(" / ");
-        label.push_str(&status.state);
-    }
-    Some(label)
-}
-fn execution_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>) -> &'static str {
-    match pane.status {
-        PaneStatus::Running => "live",
-        PaneStatus::Stopped => "stopped / unavailable",
-        PaneStatus::Exited if snapshot.is_some_and(|snapshot| snapshot.error.is_none()) => {
-            "exited / retained scene"
-        }
-        PaneStatus::Exited => "exited / scene not loaded",
-    }
-}
-
 pub(crate) fn harness_icon(kind: HarnessKind) -> &'static str {
     match kind {
         HarnessKind::Omp => "\u{f03ff}",
@@ -873,44 +844,6 @@ pub(crate) fn project_details(project: Option<&ProjectSnapshot>) -> Vec<String> 
         if project.state != ProjectState::Ready {
             lines.push("Repository values above are last-known, not a ready result.".into());
         }
-    }
-    lines
-}
-
-fn pane_details(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>) -> Vec<String> {
-    let mut lines = Vec::new();
-    if let Some(harness) = recognized_harness(pane, snapshot) {
-        lines.push(format!(
-            "Harness: {} (recognized)",
-            harness.kind.display_name()
-        ));
-        if let Some(managed) = &harness.managed {
-            lines.push(format!("Managed launch: {}", managed.launch_id));
-            lines.push(match &managed.conversation {
-                Some(conversation) => format!("Conversation: {}", conversation.id),
-                None => "Conversation: awaiting binding".into(),
-            });
-            if let Some(error) = &managed.error {
-                lines.push(format!("Capture error: {error}"));
-            }
-        } else {
-            lines.push("Capture: unmanaged".into());
-        }
-        if let Some(status) = harness_status(pane, snapshot) {
-            let mut label = format!("OSC 7501: {}", status.state);
-            if let Some(kind) = &status.kind {
-                label.push_str(" / ");
-                label.push_str(kind);
-            }
-            if let Some(message) = &status.message {
-                label.push_str(" / ");
-                label.push_str(message);
-            }
-            lines.push(label);
-        }
-    }
-    if let Some(cwd) = &pane.foreground_cwd {
-        lines.push(format!("Foreground CWD: {}", cwd.display()));
     }
     lines
 }
@@ -1815,13 +1748,7 @@ pub(crate) fn project_detail_lines(
         .collect()
 }
 
-pub fn modal<'a>(
-    surface: &mut UiSurface,
-    size: Size,
-    form: &Form,
-    registry: &RegistrySnapshot,
-    snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
-) {
+pub fn modal(surface: &mut UiSurface, size: Size, form: &Form, registry: &RegistrySnapshot) {
     let x = 0;
     let y = 0;
     let width = size.cols;
@@ -1835,9 +1762,6 @@ pub fn modal<'a>(
         FormKind::ReopenPane { .. } => "Open a new shell here",
         FormKind::CloseWorkspace => "Close workspace, all its windows and owned terminals?",
         FormKind::CloseWindow => "Close window and all its owned terminals?",
-        FormKind::ChooseWorkspace => "Switch workspace (arrows / Enter)",
-        FormKind::ChooseWindow => "Switch window (arrows / Enter)",
-        FormKind::ChoosePane => "Switch to terminal's owning window",
         FormKind::ProjectDetails => "Focused project (arrows scroll)",
     };
     if matches!(
@@ -1912,108 +1836,6 @@ pub fn modal<'a>(
             "↑/↓ choose directory · no old program or conversation is resumed",
             false,
         ));
-    } else if matches!(
-        form.kind,
-        FormKind::ChooseWorkspace | FormKind::ChooseWindow | FormKind::ChoosePane
-    ) {
-        let labels = if form.kind == FormKind::ChooseWorkspace {
-            registry
-                .workspaces
-                .iter()
-                .map(|w| w.name.clone())
-                .collect::<Vec<_>>()
-        } else if form.kind == FormKind::ChooseWindow {
-            form.target
-                .as_ref()
-                .and_then(|(target, _)| {
-                    registry
-                        .workspaces
-                        .iter()
-                        .find(|w| w.id == target.workspace())
-                })
-                .map(|workspace| {
-                    workspace
-                        .windows
-                        .iter()
-                        .map(|window| window.name.clone())
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            registry
-                .panes
-                .iter()
-                .map(|p| {
-                    format!(
-                        "{} [{}] {}{}{}",
-                        p.title,
-                        execution_label(p, snapshot(&p.id)),
-                        p.workspace_id
-                            .as_ref()
-                            .and_then(|id| registry.workspaces.iter().find(|w| w.id == *id))
-                            .map(|w| w.name.as_str())
-                            .unwrap_or("unassigned"),
-                        p.workspace_id
-                            .as_ref()
-                            .and_then(|id| registry.workspaces.iter().find(|w| w.id == *id))
-                            .and_then(|w| w
-                                .windows
-                                .iter()
-                                .find(|window| Some(&window.id) == p.window_id.as_ref()))
-                            .map(|window| format!(" / {}", window.name))
-                            .unwrap_or_default(),
-                        harness_label(p, snapshot(&p.id))
-                            .map(|label| format!(" | {label}"))
-                            .unwrap_or_default()
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-        let mut list_row = y.saturating_add(2);
-        let end_row = size.rows.saturating_sub(3);
-        if form.kind == FormKind::ChoosePane
-            && let Some(pane) = registry.panes.get(form.selection)
-        {
-            // Keep at least one selectable row; details never take focus or
-            // acquire a cursor and use the same clipping/surface as the list.
-            let detail_limit = end_row.saturating_sub(list_row + 1) / 2;
-            let details = pane_details(pane, snapshot(&pane.id));
-            let details = details
-                .iter()
-                .flat_map(|detail| wrapped(detail, width as usize))
-                .collect::<Vec<_>>();
-            for detail in details.iter().take(detail_limit as usize) {
-                lines.push(line(x, list_row, width, detail, false));
-                list_row += 1;
-            }
-            if details.len() > detail_limit as usize && detail_limit > 0 {
-                lines.pop();
-                lines.push(line(
-                    x,
-                    list_row - 1,
-                    width,
-                    "… details clipped; enlarge terminal",
-                    false,
-                ));
-            }
-            if detail_limit > 0 && !details.is_empty() && list_row.saturating_add(1) < end_row {
-                list_row += 1;
-            }
-        }
-        let available = end_row.saturating_sub(list_row) as usize;
-        let offset = form
-            .selection
-            .saturating_add(1)
-            .saturating_sub(available.max(1));
-        for (index, label) in labels.iter().enumerate().skip(offset).take(available) {
-            lines.push(line(
-                x,
-                list_row + (index - offset) as u16,
-                width,
-                label.clone(),
-                index == form.selection,
-            ));
-        }
     } else {
         let target = match form.target.as_ref().map(|(target, _)| target) {
             Some(SidebarTarget::Workspace(id)) => registry
@@ -3263,7 +3085,7 @@ mod tests {
 
     #[test]
     fn narrow_project_inspector_keeps_wrapped_details_accessible() {
-        let (mut pane, snapshot) = capture_fixture();
+        let (mut pane, _) = capture_fixture();
         pane.project = Some(project_fixture());
         let registry = capture_registry(&pane);
         let size = Size {
@@ -3283,7 +3105,7 @@ mod tests {
         for (index, detail) in details.iter().enumerate() {
             assert!(unicode_width::UnicodeWidthStr::width(detail.as_str()) <= width as usize);
             form.selection = index;
-            modal(&mut surface, size, &form, &registry, |_| Some(&snapshot));
+            modal(&mut surface, size, &form, &registry);
             assert!(painted_text(&surface).contains(detail));
             assert!(!surface.frame.cursor.visible);
         }
@@ -3474,21 +3296,6 @@ mod tests {
         state.reconcile(&registry);
         assert_eq!(state.window.as_deref(), Some("first"));
         assert_eq!(state.focused.as_deref(), Some("a"));
-    }
-
-    #[test]
-    fn window_chooser_uses_its_captured_workspace_instead_of_registry_position() {
-        let mut registry = selection_registry();
-        let mut form = Form::new(FormKind::ChooseWindow, String::new(), None);
-        form.target = Some((SidebarTarget::Workspace("work".into()), 10));
-        registry.workspaces.reverse();
-        let mut surface = capture_surface();
-        let size = surface.frame.size;
-        modal(&mut surface, size, &form, &registry, |_| None);
-        let text = painted_text(&surface);
-        assert!(text.contains("first") && text.contains("second"));
-        assert!(!text.contains("third"));
-        assert!(!surface.frame.cursor.visible);
     }
 
     #[test]
@@ -3740,13 +3547,6 @@ mod tests {
         )
     }
 
-    fn capture_chooser(surface: &mut UiSurface, pane: &PaneInfo, snapshot: &PaneSnapshot) {
-        let registry = capture_registry(pane);
-        let form = Form::new(FormKind::ChoosePane, String::new(), Some(pane.id.clone()));
-        let size = surface.frame.size;
-        modal(surface, size, &form, &registry, |_| Some(snapshot));
-    }
-
     #[test]
     fn retained_chrome_matches_fresh_projection_after_layout_change() {
         let (first, _) = capture_fixture();
@@ -3920,21 +3720,11 @@ mod tests {
         assert!(text.contains("Design notes") && text.contains("User workspace"));
         assert!(!text.contains("working") && !text.contains("[live]"));
 
-        capture_chooser(&mut surface, &pane, &snapshot);
-        let text = painted_text(&surface);
-        assert!(text.contains("unmanaged") && text.contains("/current/project"));
-        assert!(!text.contains("awaiting binding"));
-
         pane.harness.as_mut().unwrap().managed = Some(ManagedHarness {
             launch_id: "launch-1".into(),
             conversation: None,
             error: None,
         });
-        capture_chooser(&mut surface, &pane, &snapshot);
-        let text = painted_text(&surface);
-        assert!(text.contains("launch-1") && text.contains("awaiting binding"));
-        assert!(!text.contains("unmanaged") && !text.contains("working"));
-
         pane.harness
             .as_mut()
             .unwrap()
@@ -3949,10 +3739,6 @@ mod tests {
         capture_chrome(&mut surface, &pane, &snapshot);
         let text = painted_text(&surface);
         assert!(text.contains("Design notes") && !text.contains("working"));
-        capture_chooser(&mut surface, &pane, &snapshot);
-        let text = painted_text(&surface);
-        assert!(text.contains("native-conversation-EXACT"));
-        assert!(!text.contains("awaiting binding"));
 
         pane.harness
             .as_mut()
@@ -3961,11 +3747,8 @@ mod tests {
             .as_mut()
             .unwrap()
             .error = Some("native hook rejected capture".into());
-        capture_chooser(&mut surface, &pane, &snapshot);
-        let text = painted_text(&surface);
-        assert!(text.contains("native-conversation-EXACT"));
-        assert!(text.contains("native hook rejected capture"));
-        assert!(!text.contains("working"));
+        capture_chrome(&mut surface, &pane, &snapshot);
+        assert!(!painted_text(&surface).contains("working"));
     }
 
     fn working_record(app: Option<&str>) -> ProgramStatus {
@@ -4075,8 +3858,6 @@ mod tests {
         });
         pane.harness_status = Some(working_record(Some("claude")));
         let mut surface = capture_surface();
-        capture_chooser(&mut surface, &pane, &snapshot);
-        assert!(painted_text(&surface).contains("previous-native-conversation"));
 
         let replacement = pane.harness.as_mut().unwrap();
         replacement.pid = 42; // Same birth tick is not the same process.
@@ -4085,17 +3866,11 @@ mod tests {
             conversation: None,
             error: None,
         });
-        capture_chooser(&mut surface, &pane, &snapshot);
-        let text = painted_text(&surface);
-        assert!(!text.contains("launch-2") && !text.contains("awaiting binding"));
-        assert!(!text.contains("previous-native-conversation") && !text.contains("working"));
 
         snapshot.program_identity = Some(ProcessIdentity {
             pid: 42,
             birth: "100".into(),
         });
-        capture_chooser(&mut surface, &pane, &snapshot);
-        assert!(painted_text(&surface).contains("awaiting binding"));
         capture_chrome(&mut surface, &pane, &snapshot);
         let working_frame = surface.frame.clone();
         pane.harness.as_mut().unwrap().birth = "200".into();
@@ -4104,16 +3879,11 @@ mod tests {
 
         for lifecycle in ["exited", "terminated"] {
             snapshot.lifecycle = lifecycle.into();
-            capture_chooser(&mut surface, &pane, &snapshot);
-            let text = painted_text(&surface);
-            assert!(!text.contains("launch-2") && !text.contains("working"));
+            assert!(recognized_harness(&pane, Some(&snapshot)).is_none());
         }
         snapshot.lifecycle = "running".into();
         pane.harness = None;
-        capture_chooser(&mut surface, &pane, &snapshot);
-        let text = painted_text(&surface);
-        assert!(!text.contains("launch-2") && !text.contains("Claude"));
-        assert!(text.contains("/current/project"));
+        assert!(recognized_harness(&pane, Some(&snapshot)).is_none());
     }
 
     #[test]
@@ -4198,8 +3968,6 @@ mod tests {
         });
         pane.harness_status = Some(working_record(Some("claude")));
         let mut surface = capture_surface();
-        capture_chooser(&mut surface, &pane, &snapshot);
-        assert!(painted_text(&surface).contains("previous-conversation"));
 
         // Pane-stream-first return to shell, replacement at the same birth
         // tick, and PID reuse must all retire the old registry association.
@@ -4215,45 +3983,11 @@ mod tests {
             }),
         ] {
             snapshot.program_identity = identity;
-            capture_chooser(&mut surface, &pane, &snapshot);
-            let text = painted_text(&surface);
-            assert!(!text.contains("previous-conversation") && !text.contains("previous-launch"));
-            assert!(!text.contains("Claude") && !text.contains("working"));
-            assert!(text.contains("/current/project"));
             capture_chrome(&mut surface, &pane, &snapshot);
             let text = painted_text(&surface);
             assert!(!text.contains("Claude") && !text.contains("[claude"));
             assert!(!text.contains("bound") && !text.contains("working"));
             assert!(text.contains("Design notes") && text.contains("User workspace"));
-        }
-    }
-
-    #[test]
-    fn short_pane_chooser_keeps_selected_item_when_details_do_not_fit() {
-        let (mut pane, snapshot) = capture_fixture();
-        let size = Size {
-            cols: 60,
-            rows: 8,
-            cell_width: 9,
-            cell_height: 18,
-        };
-        let mut surface = UiSurface::new(size);
-        for has_harness in [true, false] {
-            if !has_harness {
-                pane.harness = None;
-                pane.foreground_cwd = None;
-            }
-            capture_chooser(&mut surface, &pane, &snapshot);
-            assert!(surface.frame.rows.iter().any(|row| {
-                row.cells.iter().any(|cell| cell.style.inverse)
-                    && row
-                        .cells
-                        .iter()
-                        .map(|cell| cell.text.as_str())
-                        .collect::<String>()
-                        .contains("Design notes")
-            }));
-            assert!(!surface.frame.cursor.visible);
         }
     }
 
@@ -4294,17 +4028,6 @@ mod tests {
             hits.iter().map(|(_, y)| y).collect::<Vec<_>>(),
             next_hits.iter().map(|(_, y)| y).collect::<Vec<_>>()
         );
-        capture_chooser(&mut surface, &pane, &snapshot);
-        assert!(!surface.frame.cursor.visible);
-        assert_eq!(surface.frame.rows.len(), size.rows as usize);
-        assert!(
-            surface
-                .frame
-                .rows
-                .iter()
-                .all(|row| row.cells.len() == size.cols as usize)
-        );
-        assert!(painted_text(&surface).contains("clipped"));
     }
     #[test]
     fn popup_highlight_clears_guides_and_shares_one_background_then_restores() {

@@ -836,12 +836,16 @@ impl App {
         {
             Some(ModalContext::ClipboardConsent)
         } else if let Some(form) = &self.state.form {
-            Some(match form.context() {
-                Context::Create => ModalContext::Create,
-                Context::Edit => ModalContext::Edit,
-                Context::Confirmation => ModalContext::Confirmation,
-                Context::Details => ModalContext::Details,
-                _ => ModalContext::Chooser,
+            Some(match form.kind {
+                FormKind::CreateWorkspace | FormKind::CreateWindow => ModalContext::Create,
+                FormKind::RenameWorkspace | FormKind::RenameWindow | FormKind::RenamePane => {
+                    ModalContext::Edit
+                }
+                FormKind::TerminatePane | FormKind::CloseWorkspace | FormKind::CloseWindow => {
+                    ModalContext::Confirmation
+                }
+                FormKind::ProjectDetails => ModalContext::Details,
+                FormKind::ReopenPane { .. } => ModalContext::Chooser,
             })
         } else if self.finder.is_some() {
             Some(ModalContext::Finder)
@@ -1070,13 +1074,12 @@ impl App {
             .state
             .current(&self.registry)
             .and_then(|workspace| match &kind {
-                FormKind::CreateWindow
-                | FormKind::ChooseWindow
-                | FormKind::RenameWorkspace
-                | FormKind::CloseWorkspace => Some((
-                    SidebarTarget::Workspace(workspace.id.clone()),
-                    workspace.revision,
-                )),
+                FormKind::CreateWindow | FormKind::RenameWorkspace | FormKind::CloseWorkspace => {
+                    Some((
+                        SidebarTarget::Workspace(workspace.id.clone()),
+                        workspace.revision,
+                    ))
+                }
                 FormKind::RenameWindow | FormKind::CloseWindow => {
                     self.state.current_window(&self.registry).map(|window| {
                         (
@@ -2792,43 +2795,6 @@ impl App {
                     None,
                 )?;
             }
-            FormKind::ChooseWorkspace => {
-                self.state.form = None;
-                if let Some(workspace) = self.registry.workspaces.get(form.selection) {
-                    self.switch(workspace.id.clone());
-                }
-            }
-            FormKind::ChooseWindow => {
-                let workspace_id = form
-                    .target
-                    .as_ref()
-                    .map(|(target, _)| target.workspace())
-                    .context("window chooser has no captured workspace")?;
-                let workspace = self
-                    .registry
-                    .workspaces
-                    .iter()
-                    .find(|entry| entry.id == workspace_id)
-                    .context("window chooser's workspace no longer exists")?;
-                let window = workspace
-                    .windows
-                    .get(form.selection)
-                    .context("selected window no longer exists")?
-                    .id
-                    .clone();
-                let workspace = workspace.id.clone();
-                self.state.form = None;
-                if self.state.workspace.as_ref() != Some(&workspace) {
-                    self.switch(workspace);
-                }
-                self.switch_window(window);
-            }
-            FormKind::ChoosePane => {
-                self.state.form = None;
-                if let Some(pane) = self.registry.panes.get(form.selection) {
-                    self.show_existing(pane.id.clone())?;
-                }
-            }
             FormKind::CreateWorkspace => {
                 if self.options.read_only {
                     bail!("read-only client cannot create workspaces");
@@ -3115,9 +3081,6 @@ impl App {
                 | Action::CreateTerminal
                 | Action::RenameSelected
                 | Action::CloseSelected
-                | Action::ChooseWorkspace
-                | Action::ChooseWindow
-                | Action::ChoosePane
                 | Action::ReopenPane
                 | Action::SplitHorizontal
                 | Action::SplitVertical
@@ -3194,9 +3157,6 @@ impl App {
             Action::CloseSelected => self.edit_sidebar(true)?,
             Action::CreateWorkspace => self.open_form(FormKind::CreateWorkspace, String::new())?,
             Action::CreateTerminal => self.open_form(FormKind::CreateWindow, String::new())?,
-            Action::ChooseWorkspace => self.open_form(FormKind::ChooseWorkspace, String::new())?,
-            Action::ChooseWindow => self.open_form(FormKind::ChooseWindow, String::new())?,
-            Action::ChoosePane => self.open_form(FormKind::ChoosePane, String::new())?,
             Action::ProjectDetails => self.open_form(FormKind::ProjectDetails, String::new())?,
             Action::ReopenPane => self.confirm_reopen()?,
             Action::SplitHorizontal => self.spawn(size, Axis::Horizontal)?,
@@ -3547,18 +3507,6 @@ impl App {
                     FormKind::ProjectDetails => {
                         project_detail_lines(form_size, form, &self.registry).len()
                     }
-                    FormKind::ChooseWorkspace => self.registry.workspaces.len(),
-                    FormKind::ChooseWindow => self
-                        .registry
-                        .workspaces
-                        .iter()
-                        .find(|workspace| {
-                            form.target
-                                .as_ref()
-                                .is_some_and(|(target, _)| target.workspace() == workspace.id)
-                        })
-                        .map_or(0, |workspace| workspace.windows.len()),
-                    FormKind::ChoosePane => self.registry.panes.len(),
                     FormKind::ReopenPane { .. } => 2,
                     _ => 0,
                 };
@@ -3680,13 +3628,6 @@ impl App {
                 Some(Action::ProjectDetails) => {
                     self.open_form(FormKind::ProjectDetails, String::new())?
                 }
-                Some(Action::ChooseWorkspace) => {
-                    self.open_form(FormKind::ChooseWorkspace, String::new())?
-                }
-                Some(Action::ChooseWindow) => {
-                    self.open_form(FormKind::ChooseWindow, String::new())?
-                }
-                Some(Action::ChoosePane) => self.open_form(FormKind::ChoosePane, String::new())?,
                 Some(Action::ReopenPane) => self.confirm_reopen()?,
                 Some(Action::SplitHorizontal) => self.spawn(size, Axis::Horizontal)?,
                 Some(Action::SplitVertical) => self.spawn(size, Axis::Vertical)?,
@@ -5123,9 +5064,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     finder.paint(&mut popup_surface, local);
                     finder.apply_theme(&mut popup_surface, &theme, ui_colors, &project_palette);
                 } else if let Some(form) = &app.state.form {
-                    modal(&mut popup_surface, local, form, &app.registry, |pane| {
-                        app.views.get(pane).map(|view| &view.metadata)
-                    });
+                    modal(&mut popup_surface, local, form, &app.registry);
                     let form_palette = if let Some(accent) = form_region {
                         crate::appearance::update_region_theme(&mut form_theme, ui_colors, accent);
                         &form_theme
@@ -8172,7 +8111,8 @@ pub(super) mod tests {
         assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
             pane_id, request: PaneRequest::Key { event, .. },
         } if pane_id == "focused-pane" && event.key == "KeyX"));
-        app.open_form(FormKind::ChoosePane, String::new()).unwrap();
+        app.open_form(FormKind::ProjectDetails, String::new())
+            .unwrap();
         pointer.send(&mut app, 0, dismiss.x, dismiss.y, false);
         pointer.send(&mut app, 0, dismiss.x, dismiss.y, true);
         assert!(app.toasts.lock().unwrap().is_empty());
@@ -8249,7 +8189,8 @@ pub(super) mod tests {
     fn outside_modal_click_cancels_without_starting_a_native_gesture() {
         let (mut app, capture) = fixture();
         let pointer = PointerFixture::new(&mut app);
-        app.open_form(FormKind::ChoosePane, String::new()).unwrap();
+        app.open_form(FormKind::ProjectDetails, String::new())
+            .unwrap();
         let placement = OverlayPlacement::centered(pointer.size, 30, 10);
         app.overlays
             .present("ui:modal", placement, OverlayPolicy::MODAL, None);
@@ -10297,15 +10238,15 @@ pub(super) mod tests {
                 "focus" => app.focus("beta".into()),
                 "workspace" => app.switch("other".into()),
                 "geometry" => new_size.cols += 1,
-                "modal" => app.state.open(FormKind::ChoosePane, String::new()),
+                "modal" => app.state.open(FormKind::ProjectDetails, String::new()),
                 "modal-prefix" => {
                     let mut prefix = key("KeyB");
                     prefix.modifiers = 2;
                     app.key(prefix, &mut Vec::new(), pointer.size, &pointer.rects)
                         .unwrap();
-                    let mut chooser = key("KeyW");
-                    chooser.text = "w".into();
-                    app.key(chooser, &mut Vec::new(), pointer.size, &pointer.rects)
+                    let mut details = key("KeyI");
+                    details.text = "i".into();
+                    app.key(details, &mut Vec::new(), pointer.size, &pointer.rects)
                         .unwrap();
                     assert!(app.state.form.is_some());
                 }
@@ -10345,7 +10286,7 @@ pub(super) mod tests {
         assert!(pointer.try_send(&mut app, 0, divider.x, 3, false).is_err());
         pointer.send(&mut app, 0, divider.x, 3, true);
         app.options.read_only = false;
-        app.state.open(FormKind::ChoosePane, String::new());
+        app.state.open(FormKind::ProjectDetails, String::new());
         pointer.send(&mut app, 0, divider.x, 3, false);
         pointer.send(&mut app, 0, divider.x + 8, 3, true);
         assert!(!app.resize_capturing());
