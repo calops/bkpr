@@ -728,6 +728,20 @@ fn sidebar_branch(pane: &PaneInfo, width: u16) -> String {
             _ => String::new(),
         };
     };
+    // Freshness owns the existing icon cell, not branch/count columns. Cached
+    // facts keep their geometry and semantic ink while their status changes.
+    let marker = match project.state {
+        ProjectState::Ready => "\u{f062c}",
+        ProjectState::Loading => "↻",
+        ProjectState::Error | ProjectState::NotRepository => "!",
+    };
+    if width < 2 {
+        return if width == 0 {
+            String::new()
+        } else {
+            marker.into()
+        };
+    }
     let branch = repository.branch.as_deref().unwrap_or("detached");
     // Only observed committed totals correspond to main's branch-versus-base
     // counts. Missing comparison data is not a fabricated zero.
@@ -735,25 +749,16 @@ fn sidebar_branch(pane: &PaneInfo, width: u16) -> String {
         .committed
         .map(|changes| format!(" +{} -{}", changes.insertions, changes.deletions))
         .unwrap_or_default();
-    let stale = if project.state == ProjectState::Ready {
-        ""
-    } else {
-        " · stale"
-    };
-    let reserved = unicode_width::UnicodeWidthStr::width(counts.as_str())
-        + unicode_width::UnicodeWidthStr::width(stale);
+    let reserved = unicode_width::UnicodeWidthStr::width(counts.as_str());
     let counts = if reserved + 5 <= usize::from(width) {
         counts.as_str()
     } else {
         ""
     };
-    let available = width.saturating_sub(
-        (unicode_width::UnicodeWidthStr::width(counts)
-            + unicode_width::UnicodeWidthStr::width(stale)
-            + 2) as u16,
-    );
+    let available =
+        width.saturating_sub((unicode_width::UnicodeWidthStr::width(counts) + 2) as u16);
     let branch = bkpr_tui_framework::window::fit(branch, available);
-    format!("\u{f062c} {branch}{counts}{stale}")
+    format!("{marker} {branch}{counts}")
 }
 
 fn project_label(project: &ProjectSnapshot) -> String {
@@ -1592,7 +1597,24 @@ fn render_theme_chrome<'a>(
         }
         if let SidebarRowKind::Detail { index: pane_index } = kind
             && let Some(project) = &registry.panes[pane_index].project
-            && project.state == ProjectState::Ready
+            && project.state != ProjectState::Ready
+        {
+            spans.push(RoleSpan {
+                rect: Rect {
+                    x: entry.content_column(),
+                    y: row,
+                    width: 1.min(sidebar.width.saturating_sub(entry.content_column())),
+                    height: 1,
+                },
+                role: if project.state == ProjectState::Loading {
+                    Role::Warning
+                } else {
+                    Role::Error
+                },
+            });
+        }
+        if let SidebarRowKind::Detail { index: pane_index } = kind
+            && let Some(project) = &registry.panes[pane_index].project
             && let Some(changes) = project
                 .repository
                 .as_ref()
@@ -2704,6 +2726,98 @@ mod tests {
             branch.style.foreground_source
         };
         assert_eq!(ink, theme.ink(Role::Muted, true));
+    }
+
+    #[test]
+    fn refreshing_sidebar_preserves_cached_labels_counts_colors_and_hit_geometry() {
+        let (mut pane, snapshot) = capture_fixture();
+        let mut project = project_fixture();
+        project.color_slot = Some(1);
+        project.repository.as_mut().unwrap().committed = Some(ChangeSummary {
+            files: 2,
+            insertions: 13,
+            deletions: 7,
+            binary_files: 0,
+        });
+        pane.project = Some(project);
+        for columns in [24, 48, 120] {
+            let render = |pane: &PaneInfo| {
+                let registry = capture_registry(pane);
+                let state = Controller::new(&registry);
+                let mut surface = UiSurface::new(Size {
+                    cols: columns,
+                    ..capture_surface().frame.size
+                });
+                let context = FixtureChrome {
+                    sidebar_popup: None,
+                    size: surface.frame.size,
+                    state: &state,
+                    registry: &registry,
+                    rects: &[],
+                    pane_graphics: &[],
+                    guide_rows: 0,
+                };
+                let mut projects = Vec::new();
+                let hits = paint_fixture(
+                    &mut surface,
+                    context,
+                    |_| None,
+                    |_| Some(&snapshot),
+                    |_| None,
+                    &mut projects,
+                );
+                let host = bkpr_tui_framework::ColorProbe::default();
+                let mut theme = Theme::default();
+                crate::appearance::update_theme(&mut theme, &host);
+                let mut palette = ProjectPalette::default();
+                palette.update(&host, 2);
+                style_fixture(
+                    &mut surface,
+                    &theme,
+                    context,
+                    |_| Some(&snapshot),
+                    &palette,
+                    &projects,
+                    &mut Vec::new(),
+                );
+                (surface, hits)
+            };
+            let (ready, ready_hits) = render(&pane);
+            for state in [ProjectState::Loading, ProjectState::Error] {
+                let mut stale = pane.clone();
+                stale.project.as_mut().unwrap().state = state;
+                let (stale, hits) = render(&stale);
+                assert_eq!(ready_hits, hits);
+                for (ready_row, stale_row) in ready.frame.rows.iter().zip(&stale.frame.rows) {
+                    for (ready_cell, stale_cell) in ready_row.cells.iter().zip(&stale_row.cells) {
+                        if ready_cell.text == "\u{f062c}" {
+                            assert_eq!(
+                                stale_cell.text,
+                                if state == ProjectState::Loading {
+                                    "↻"
+                                } else {
+                                    "!"
+                                }
+                            );
+                        } else {
+                            assert_eq!(ready_cell.text, stale_cell.text);
+                            assert_eq!(ready_cell.style, stale_cell.style);
+                        }
+                    }
+                }
+            }
+        }
+        for width in 0..=40 {
+            let ready = sidebar_branch(&pane, width);
+            let mut stale = pane.clone();
+            stale.project.as_mut().unwrap().state = ProjectState::Loading;
+            let loading = sidebar_branch(&stale, width);
+            assert!(unicode_width::UnicodeWidthStr::width(loading.as_str()) <= usize::from(width));
+            assert_eq!(
+                ready.chars().skip(1).collect::<String>(),
+                loading.chars().skip(1).collect::<String>()
+            );
+        }
     }
 
     #[test]

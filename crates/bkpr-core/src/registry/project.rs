@@ -36,6 +36,7 @@ struct Entry {
     directories: BTreeSet<PathBuf>,
     external_files: BTreeSet<PathBuf>,
     rebuild: bool,
+    metadata_dirty: bool,
     coverage_error: Option<String>,
     generation: u64,
     dirty_since: Option<Instant>,
@@ -51,6 +52,7 @@ impl Entry {
             directories: BTreeSet::new(),
             rebuild: true,
             external_files: BTreeSet::new(),
+            metadata_dirty: true,
             coverage_error: None,
             generation: 0,
             dirty_since: Some(Instant::now()),
@@ -63,13 +65,11 @@ impl Entry {
         self.due = Some((now + DEBOUNCE).min(first + MAX_COALESCE));
         self.generation = self.generation.wrapping_add(1);
         self.rebuild |= rebuild;
-        self.identity_known = false;
-        self.snapshot.state = if self.coverage_error.is_some() {
-            ProjectState::Error
-        } else {
-            ProjectState::Loading
-        };
-        self.snapshot.error = self.coverage_error.clone();
+        // Cached identity and facts survive ordinary edits. An error remains
+        // observable until a successful observation replaces it.
+        if self.snapshot.error.is_none() {
+            self.snapshot.state = ProjectState::Loading;
+        }
     }
 }
 struct Worker {
@@ -83,12 +83,13 @@ struct Worker {
     notify_wake: crossbeam_channel::Sender<()>,
     installed: BTreeSet<PathBuf>,
     bindings: BTreeMap<PathBuf, PathBuf>,
+    canonical_cwds: BTreeMap<PathBuf, PathBuf>,
     cache: BTreeMap<PathBuf, Entry>,
     // Adapted from main 9ad93bd native.rs::sync_project_colors. Unlike main's
     // recovered model, these reservations exist only for this live worker.
     owners: BTreeMap<String, PathBuf>,
     color_slots: BTreeMap<PathBuf, u32>,
-    rebind: bool,
+    rebind: BTreeSet<PathBuf>,
     inputs_pending: bool,
     watch_retry: Option<Instant>,
     retry_delay: Duration,
@@ -115,10 +116,11 @@ impl Registry {
                     notify_wake,
                     installed: BTreeSet::new(),
                     bindings: BTreeMap::new(),
+                    canonical_cwds: BTreeMap::new(),
                     cache: BTreeMap::new(),
                     owners: BTreeMap::new(),
                     color_slots: BTreeMap::new(),
-                    rebind: false,
+                    rebind: BTreeSet::new(),
                     inputs_pending: false,
                     watch_retry: None,
                     retry_delay: Duration::from_secs(2),
@@ -201,20 +203,21 @@ impl Worker {
                 .collect()
         };
         drop(inner);
-        if self.rebind {
-            self.bindings.clear();
-            self.rebind = false;
-        }
         let desired_count = {
             let desired_cwds: BTreeSet<_> = desired.values().collect();
             self.bindings.retain(|cwd, _| desired_cwds.contains(cwd));
+            self.canonical_cwds
+                .retain(|cwd, _| desired_cwds.contains(cwd));
+            self.rebind.retain(|cwd| desired_cwds.contains(cwd));
             desired_cwds.len()
         };
         for cwd in desired.into_values() {
-            if self.bindings.contains_key(&cwd) {
+            if self.bindings.contains_key(&cwd) && !self.rebind.contains(&cwd) {
                 continue;
             }
+            self.rebind.remove(&cwd);
             let source = fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+            self.canonical_cwds.insert(cwd.clone(), source.clone());
             let git = git::Git::new(&source, &self.cancel);
             let discovered = git.identify();
             let identity = discovered.as_ref().ok().cloned().flatten();
@@ -231,6 +234,9 @@ impl Worker {
                 .cache
                 .entry(key.clone())
                 .or_insert_with(|| Entry::new(source.clone(), identity.clone(), identity_known));
+            if entry.identity != identity || !entry.identity_known {
+                entry.metadata_dirty = true;
+            }
             if identity_known && entry.identity != identity {
                 entry.source = source;
                 entry.identity = identity;
@@ -238,6 +244,9 @@ impl Worker {
                 entry.invalidate(true);
             }
             entry.identity_known = identity_known;
+            if !entry.directories.contains(&self.canonical_cwds[&cwd]) {
+                entry.invalidate(true);
+            }
             if let Err(error) = discovered {
                 entry.snapshot.state = ProjectState::Error;
                 entry.snapshot.error = Some(format!("{error:#}"));
@@ -249,7 +258,7 @@ impl Worker {
             // worktrees receive ingestion before the next cold CWD.
             break;
         }
-        self.inputs_pending = self.bindings.len() < desired_count;
+        self.inputs_pending = self.bindings.len() < desired_count || !self.rebind.is_empty();
         let active: BTreeSet<_> = self.bindings.values().cloned().collect();
         let before = self.cache.len();
         if !self.inputs_pending {
@@ -269,19 +278,43 @@ impl Worker {
         let rebuild = entry.rebuild;
         let previous_identity = entry.identity.clone();
         let git = git::Git::new(&source, &self.cancel);
-        let discovered = git.identify();
+        let discovered = if entry.identity_known {
+            Ok(previous_identity.clone())
+        } else {
+            git.identify()
+        };
         let identity_known = discovered.is_ok();
         let identity = match &discovered {
             Ok(identity) => identity.clone(),
             Err(_) => previous_identity.clone(),
         };
         let result = match discovered {
-            Ok(Some(identity)) => git.repository(&identity).map(Some),
+            Ok(Some(identity)) => git
+                .repository(
+                    &identity,
+                    (!entry.metadata_dirty && entry.snapshot.error.is_none())
+                        .then_some(entry.snapshot.repository.as_ref())
+                        .flatten(),
+                )
+                .map(Some),
             Ok(None) => Ok(None),
             Err(error) => Err(error),
         };
         let watches = if rebuild || identity != previous_identity {
-            Some(git.watches(identity.as_ref()).and_then(|plan| {
+            Some(git.watches(identity.as_ref()).and_then(|mut plan| {
+                // A pane can live in an ignored directory or enter through a
+                // symlink. Its canonical ancestry still needs topology coverage
+                // so a nested repository can replace that binding.
+                for (cwd, bound) in &self.bindings {
+                    if bound.as_path() == key {
+                        plan.directories.extend(
+                            self.canonical_cwds[cwd]
+                                .ancestors()
+                                .filter(|path| path.is_dir())
+                                .map(Path::to_path_buf),
+                        );
+                    }
+                }
                 // Admit a complete plan before retaining it: inactive/failed
                 // plans cannot accumulate beyond the daemon's native budget.
                 let mut combined: BTreeSet<_> = self
@@ -314,6 +347,7 @@ impl Worker {
         entry.due = None;
         entry.dirty_since = None;
         entry.rebuild = false;
+        entry.metadata_dirty = false;
         let mut snapshot = entry.snapshot.clone();
         if identity_known && identity != previous_identity {
             snapshot.repository = None;
@@ -337,7 +371,8 @@ impl Worker {
         if let Some(watches) = watches {
             match watches {
                 Ok(plan) => {
-                    watches_changed = plan.directories != entry.directories;
+                    watches_changed = plan.directories != entry.directories
+                        || !plan.directories.is_subset(&self.installed);
                     entry.directories = plan.directories;
                     entry.external_files = plan.external_files;
                 }
@@ -387,6 +422,7 @@ impl Worker {
         self.drain_events();
         if let Some(entry) = self.cache.get_mut(key)
             && entry.generation != generation
+            && entry.snapshot.error.is_none()
         {
             entry.snapshot.state = ProjectState::Loading;
         }
@@ -448,12 +484,42 @@ impl Worker {
                     // Rebuild coverage as well as statistics: configuration or
                     // directories may have changed before their watches existed.
                     for entry in self.cache.values_mut() {
-                        if !was_retry && entry.directories.is_disjoint(&added) {
+                        if entry.directories.is_disjoint(&added)
+                            && !(was_retry && (entry.coverage_error.is_some() || entry.rebuild))
+                        {
                             continue;
                         }
                         entry.coverage_error = None;
+                        let identity_gap = entry.identity.as_ref().is_none_or(|identity| {
+                            added.iter().any(|path| {
+                                identity.git_dir.starts_with(path)
+                                    || identity.common.starts_with(path)
+                            })
+                        });
+                        entry.identity_known &= !identity_gap;
+                        entry.metadata_dirty |= was_retry
+                            || identity_gap
+                            || added.iter().any(|path| {
+                                metadata_change(entry, path)
+                                    || entry
+                                        .external_files
+                                        .iter()
+                                        .any(|file| file.starts_with(path))
+                            });
                         entry.invalidate(true);
                     }
+                    // Close discovery/subscription gaps for nested or ignored
+                    // pane CWDs as well as the repository's own marker.
+                    self.rebind.extend(
+                        self.bindings
+                            .keys()
+                            .filter(|cwd| {
+                                self.canonical_cwds[*cwd]
+                                    .ancestors()
+                                    .any(|path| added.contains(path))
+                            })
+                            .cloned(),
+                    );
                 }
             }
             Err(error) => {
@@ -492,31 +558,67 @@ impl Worker {
                     };
                     if topology {
                         for path in &event.paths {
-                            if !path.is_dir() {
-                                self.installed.retain(|watched| !watched.starts_with(path));
-                            }
+                            // A rename/replacement may already have recreated
+                            // this pathname. Never retain the old inode's watch
+                            // merely because is_dir() is true again.
+                            self.installed.retain(|watched| {
+                                if !watched.starts_with(path) {
+                                    return true;
+                                }
+                                if let Some(watcher) = &mut self.watcher {
+                                    let _ = watcher.unwatch(watched);
+                                }
+                                false
+                            });
+                        }
+                    }
+                    for (cwd, key) in &self.bindings {
+                        let Some(entry) = self.cache.get(key) else {
+                            continue;
+                        };
+                        if event.paths.iter().any(|path| {
+                            identity_change(
+                                &self.canonical_cwds[cwd],
+                                entry.identity.as_ref(),
+                                path,
+                                topology,
+                            )
+                        }) {
+                            self.rebind.insert(cwd.clone());
                         }
                     }
                     for entry in self.cache.values_mut() {
-                        if event.paths.iter().any(|path| relevant(entry, path)) {
-                            let external_rules = event.paths.iter().any(|path| {
-                                entry
+                        let mut affected = false;
+                        let mut rebuild = topology;
+                        let mut metadata = false;
+                        for path in &event.paths {
+                            if !relevant(entry, path) {
+                                continue;
+                            }
+                            affected = true;
+                            let rules = is_ignore(path)
+                                || entry
                                     .external_files
                                     .iter()
-                                    .any(|file| file == path || file.starts_with(path))
-                            });
-                            entry.invalidate(
-                                topology
-                                    || external_rules
-                                    || event.paths.iter().any(|path| is_ignore(path)),
-                            );
-                            if event
-                                .paths
-                                .iter()
-                                .any(|path| path.file_name().is_some_and(|name| name == ".git"))
-                            {
-                                self.rebind = true;
+                                    .any(|file| file == path || file.starts_with(path));
+                            rebuild |= rules
+                                || entry
+                                    .identity
+                                    .as_ref()
+                                    .is_some_and(|identity| local_index(identity, path));
+                            metadata |= rules || metadata_change(entry, path);
+                        }
+                        if affected {
+                            if topology {
+                                // Other affected entries may refresh later.
+                                // Their old plans must not reinstall deleted or
+                                // renamed paths in the meantime.
+                                entry.directories.retain(|watched| {
+                                    !event.paths.iter().any(|path| watched.starts_with(path))
+                                });
                             }
+                            entry.metadata_dirty |= metadata;
+                            entry.invalidate(rebuild);
                         }
                     }
                 }
@@ -529,10 +631,12 @@ impl Worker {
     fn invalidate_all(&mut self, reason: &str) {
         for entry in self.cache.values_mut() {
             entry.invalidate(true);
+            entry.identity_known = false;
+            entry.metadata_dirty = true;
             entry.snapshot.state = ProjectState::Error;
             entry.snapshot.error = Some(reason.to_owned());
         }
-        self.rebind = true;
+        self.rebind.extend(self.bindings.keys().cloned());
         self.publish();
         // Lost events may include deletion and recreation at the same path.
         // A remembered pathname is not proof its old native watch still exists.
@@ -653,6 +757,7 @@ fn is_ignore(path: &Path) -> bool {
                     | "config"
                     | ".gitconfig"
                     | "config.worktree"
+                    | ".gitattributes"
             )
         )
     })
@@ -663,43 +768,45 @@ fn relevant(entry: &Entry, path: &Path) -> bool {
         .is_some_and(|parent| entry.directories.contains(parent));
     let Some(identity) = &entry.identity else {
         return parent_watched
-            && (entry
-                .source
-                .ancestors()
-                .any(|ancestor| path.starts_with(ancestor.join(".git")))
-                || entry.source.starts_with(path));
+            && (path.ancestors().any(|marker| {
+                marker.file_name().is_some_and(|name| name == ".git")
+                    && marker
+                        .parent()
+                        .is_some_and(|root| entry.source.starts_with(root))
+            }) || entry.source.starts_with(path));
     };
     // Common/git parents are topology watches, not subscriptions to unrelated
     // worktrees, object creation, logs, hooks or the surrounding filesystem.
     for metadata in [&identity.git_dir, &identity.common] {
         if let Ok(relative) = path.strip_prefix(metadata) {
             let first = relative.components().next().map(|part| part.as_os_str());
+            let local = metadata == &identity.git_dir;
+            // Git's documented exceptions to shared refs remain local even
+            // though the main worktree stores them beneath the common dir.
+            if !local
+                && ["refs/bisect", "refs/worktree", "refs/rewritten"]
+                    .iter()
+                    .any(|namespace| relative.starts_with(namespace))
+            {
+                return false;
+            }
             return first.is_none()
                 || first.is_some_and(|name| {
                     matches!(
                         name.to_str(),
-                        Some(
-                            "HEAD"
-                                | "index"
-                                | "commondir"
-                                | "config"
-                                | "config.worktree"
-                                | "packed-refs"
-                                | "refs"
-                                | "info"
-                                | "shallow"
-                        )
-                    )
+                        Some("config" | "packed-refs" | "refs" | "info" | "shallow")
+                    ) || (local
+                        && matches!(
+                            name.to_str(),
+                            Some("HEAD" | "index" | "commondir" | "config.worktree")
+                        ))
                 });
         }
     }
     if path.starts_with(&identity.root) {
         return parent_watched || identity.root.starts_with(path);
     }
-    if identity.root.starts_with(path)
-        || entry.source.starts_with(path)
-        || path.file_name().is_some_and(|name| name == ".git")
-    {
+    if identity.root.starts_with(path) || entry.source.starts_with(path) {
         return parent_watched;
     }
     // Parents of configured global ignore files are deliberately nonrecursive.
@@ -708,6 +815,52 @@ fn relevant(entry: &Entry, path: &Path) -> bool {
             .external_files
             .iter()
             .any(|file| file == path || file.starts_with(path))
+}
+
+// Only a marker on this CWD's ancestry can change its repository association.
+// Metadata parents are watched for replacement, not for sibling repositories.
+fn identity_change(
+    cwd: &Path,
+    identity: Option<&git::Identity>,
+    path: &Path,
+    topology: bool,
+) -> bool {
+    if (path.file_name().is_some_and(|name| name == ".git")
+        && path.parent().is_some_and(|root| cwd.starts_with(root)))
+        || (topology && cwd.starts_with(path))
+    {
+        return true;
+    }
+    identity.is_some_and(|identity| {
+        [&identity.git_dir, &identity.common]
+            .iter()
+            .any(|metadata| path == metadata.as_path() || (topology && metadata.starts_with(path)))
+            || path
+                .strip_prefix(&identity.git_dir)
+                .is_ok_and(|relative| relative == Path::new("commondir"))
+    })
+}
+
+fn metadata_change(entry: &Entry, path: &Path) -> bool {
+    if path
+        .file_name()
+        .is_some_and(|name| name == ".gitattributes")
+    {
+        return true;
+    }
+    entry.identity.as_ref().is_none_or(|identity| {
+        [&identity.git_dir, &identity.common]
+            .iter()
+            .any(|metadata| {
+                (path.starts_with(metadata) || metadata.starts_with(path))
+                    && !local_index(identity, path)
+            })
+    })
+}
+
+fn local_index(identity: &git::Identity, path: &Path) -> bool {
+    path.strip_prefix(&identity.git_dir)
+        .is_ok_and(|relative| relative == Path::new("index"))
 }
 
 fn make_watcher(

@@ -158,21 +158,33 @@ impl<'a> Git<'a> {
             git_dir,
         }))
     }
-    pub fn repository(&self, identity: &Identity) -> Result<RepositoryInfo> {
+    pub fn repository(
+        &self,
+        identity: &Identity,
+        previous: Option<&RepositoryInfo>,
+    ) -> Result<RepositoryInfo> {
         Git {
             cwd: &identity.root,
             deadline: self.deadline,
             cancel: self.cancel,
         }
-        .repository_at_root(identity)
+        .repository_at_root(identity, previous)
     }
-    fn repository_at_root(&self, identity: &Identity) -> Result<RepositoryInfo> {
-        let symbolic = self.optional(&["symbolic-ref", "--quiet", "HEAD"], &[1])?;
-        let branch = symbolic
-            .as_deref()
-            .and_then(|reference| reference.strip_prefix("refs/heads/"))
-            .map(str::to_owned);
-        let head_sha = self.resolve("HEAD")?;
+    fn repository_at_root(
+        &self,
+        identity: &Identity,
+        previous: Option<&RepositoryInfo>,
+    ) -> Result<RepositoryInfo> {
+        let (branch, head_sha) = if let Some(previous) = previous {
+            (previous.branch.clone(), previous.head_sha.clone())
+        } else {
+            let symbolic = self.optional(&["symbolic-ref", "--quiet", "HEAD"], &[1])?;
+            let branch = symbolic
+                .as_deref()
+                .and_then(|reference| reference.strip_prefix("refs/heads/"))
+                .map(str::to_owned);
+            (branch, self.resolve("HEAD")?)
+        };
         self.reject_executable_filters()?;
         let staged = stats(&self.required(&[
             "diff",
@@ -197,7 +209,17 @@ impl<'a> Git<'a> {
         ])?)?;
         let untracked = self.required(&["ls-files", "--others", "--exclude-standard", "-z"])?;
         let untracked_files = paths(&untracked)?.count() as u64;
-        let (base_ref, base_sha, committed) = self.base(branch.as_deref(), head_sha.as_deref())?;
+        // Worktree/index changes cannot change the selected base or committed
+        // delta. Reuse the last observation until refs/config/attributes change.
+        let (base_ref, base_sha, committed) = if let Some(previous) = previous {
+            (
+                previous.base_ref.clone(),
+                previous.base_sha.clone(),
+                previous.committed,
+            )
+        } else {
+            self.base(branch.as_deref(), head_sha.as_deref())?
+        };
         // Naming follows main: linked worktrees share the common repository name.
         let named_root = if identity
             .common
@@ -515,8 +537,21 @@ impl<'a> Git<'a> {
             }
         }
         let mut pending = vec![identity.common.join("refs")];
+        if identity.git_dir != identity.common {
+            pending.push(identity.git_dir.join("refs"));
+        }
         while let Some(path) = pending.pop() {
             self.check()?;
+            if identity.git_dir != identity.common
+                && ["refs/bisect", "refs/worktree", "refs/rewritten"]
+                    .iter()
+                    .any(|namespace| {
+                        path.strip_prefix(&identity.common)
+                            .is_ok_and(|relative| relative.starts_with(namespace))
+                    })
+            {
+                continue;
+            }
             if !path.is_dir() {
                 continue;
             }

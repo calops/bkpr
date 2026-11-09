@@ -1094,11 +1094,28 @@ mod tests {
                 .count(),
             2
         );
-        assert!(
+        registry
+            .panes
+            .last_mut()
+            .unwrap()
+            .project
+            .as_mut()
+            .unwrap()
+            .state = ProjectState::Ready;
+        let refreshed = build_content(&registry, &SidebarTarget::Workspace("work".into()), |_| {
+            None
+        })
+        .unwrap();
+        assert_eq!(content.rows.len(), refreshed.rows.len());
+        assert_eq!(
             content
                 .rows
                 .iter()
-                .any(|row| row.text == "Branch · /tree/b" && row.role == Role::Warning)
+                .zip(&refreshed.rows)
+                .filter(|(loading, ready)| loading.text != ready.text)
+                .count(),
+            1,
+            "one worktree's freshness changes without replacing other worktree facts"
         );
     }
     #[test]

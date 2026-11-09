@@ -26,7 +26,6 @@ pub(crate) struct Paragraph {
     pub text: String,
     pub role: Role,
     spans: Vec<(Range<usize>, Ink)>,
-    suffix: Vec<(String, Role)>,
     right: Vec<(String, Role)>,
     truncate: bool,
 }
@@ -43,7 +42,6 @@ impl Paragraph {
             text: clean(text.as_ref()),
             role,
             spans: Vec::new(),
-            suffix: Vec::new(),
             right: Vec::new(),
             truncate: false,
         }
@@ -185,15 +183,22 @@ pub(crate) fn project_content(
         push(rows, "Local project metadata unavailable", Role::Muted);
         return;
     };
-    let stale = project.state != ProjectState::Ready;
-    match project.state {
-        ProjectState::Loading => push(rows, "Refreshing local Git metadata…", Role::Muted),
-        ProjectState::NotRepository => {
-            push(rows, "Local directory · not a Git repository", Role::Muted);
+    // Keep one freshness row even for ready data. A refresh changes this row,
+    // not the identity, semantic colors or positions of last-known facts.
+    let (status, role) = match (project.state, project.repository.is_some()) {
+        (ProjectState::Ready, _) => ("Git: current", Role::Muted),
+        (ProjectState::Loading, true) => ("Git: stale · refreshing", Role::Warning),
+        (ProjectState::Loading, false) => ("Git: loading", Role::Muted),
+        (ProjectState::Error, true) => ("Git: stale · refresh failed", Role::Error),
+        (ProjectState::Error, false) => ("Git: unavailable", Role::Error),
+        (ProjectState::NotRepository, true) => ("Git: stale · not a repository", Role::Warning),
+        (ProjectState::NotRepository, false) => {
+            ("Local directory · not a Git repository", Role::Muted)
         }
-        ProjectState::Error => push(rows, "Local Git metadata unavailable", Role::Warning),
-        ProjectState::Ready => {}
-    }
+    };
+    let mut status = Paragraph::new(status, role);
+    status.truncate = true;
+    rows.push(status);
     if let Some(error) = &project.error {
         push(rows, error, Role::Error);
     }
@@ -203,15 +208,12 @@ pub(crate) fn project_content(
         }
         return;
     };
-    if stale {
-        push(rows, "Last-known repository facts · stale", Role::Warning);
-    }
     if include_name {
-        rows.push(if stale {
-            Paragraph::new(&repository.name, Role::Warning)
-        } else {
-            Paragraph::project(&repository.name, Role::Accent, project.color_slot)
-        });
+        rows.push(Paragraph::project(
+            &repository.name,
+            Role::Accent,
+            project.color_slot,
+        ));
     }
     push(
         rows,
@@ -226,50 +228,29 @@ pub(crate) fn project_content(
         ),
         (None, None) => "Branch unavailable · no HEAD commit".to_owned(),
     };
-    let mut branch = Paragraph::new(branch, if stale { Role::Warning } else { Role::Panel });
+    let mut branch = Paragraph::new(branch, Role::Panel);
     branch.truncate = true;
-    if stale {
-        branch.suffix.push((" · stale".into(), Role::Warning));
-    }
     rows.push(branch);
-    heading(
-        rows,
-        if stale {
-            "Worktree changes · stale"
-        } else {
-            "Worktree changes"
-        },
-    );
+    heading(rows, "Worktree changes");
     if repository.staged == ChangeSummary::default()
         && repository.unstaged == ChangeSummary::default()
         && repository.untracked_files == 0
     {
-        push(
-            rows,
-            "Clean working tree",
-            if stale { Role::Warning } else { Role::Success },
-        );
+        push(rows, "Clean working tree", Role::Success);
     } else {
-        change_row(rows, "Staged", &repository.staged, stale);
-        change_row(rows, "Unstaged", &repository.unstaged, stale);
+        change_row(rows, "Staged", &repository.staged);
+        change_row(rows, "Unstaged", &repository.unstaged);
         push(
             rows,
             format!("Untracked · {} files", repository.untracked_files),
             Role::Muted,
         );
     }
-    heading(
-        rows,
-        if stale {
-            "Branch changes · stale"
-        } else {
-            "Branch changes"
-        },
-    );
+    heading(rows, "Branch changes");
     match (&repository.base_ref, &repository.committed) {
         (Some(base), Some(summary)) => {
             push(rows, format!("HEAD vs merge base of {base}"), Role::Muted);
-            change_row(rows, "Committed", summary, stale);
+            change_row(rows, "Committed", summary);
         }
         _ => push(
             rows,
@@ -330,22 +311,13 @@ pub(crate) fn pane_summary(
     row
 }
 
-fn change_row(rows: &mut Vec<Paragraph>, label: &str, summary: &ChangeSummary, stale: bool) {
+fn change_row(rows: &mut Vec<Paragraph>, label: &str, summary: &ChangeSummary) {
     let mut row = Paragraph::new(format!("{label} · {} files · ", summary.files), Role::Muted);
-    row.append(
-        format!("+{}", summary.insertions),
-        if stale { Role::Warning } else { Role::Success },
-    );
+    row.append(format!("+{}", summary.insertions), Role::Success);
     row.append(" ", Role::Muted);
-    row.append(
-        format!("−{}", summary.deletions),
-        if stale { Role::Warning } else { Role::Error },
-    );
+    row.append(format!("−{}", summary.deletions), Role::Error);
     if summary.binary_files > 0 {
         row.append(format!(" · {} binary", summary.binary_files), Role::Muted);
-    }
-    if stale {
-        row.append(" · stale", Role::Warning);
     }
     rows.push(row);
 }
@@ -417,31 +389,13 @@ fn truncate(paragraph: &Paragraph, columns: usize) -> PreviewLine {
         .iter()
         .map(|(text, _)| width(text))
         .sum::<usize>()
-        .min(if paragraph.suffix.is_empty() {
-            columns / 2
-        } else {
-            columns / 3
-        });
-    let body = columns.saturating_sub(right + usize::from(right > 0));
-    let suffix_width = paragraph
-        .suffix
-        .iter()
-        .map(|(text, _)| width(text))
-        .sum::<usize>();
-    let suffix = if suffix_width < body {
-        &paragraph.suffix[..]
-    } else {
-        &[]
-    };
-    let budget = body.saturating_sub(if suffix.is_empty() { 0 } else { suffix_width });
+        .min(columns / 2);
+    let budget = columns.saturating_sub(right + usize::from(right > 0));
     let clipped = width(&paragraph.text) > budget;
     let end = prefix(&paragraph.text, budget.saturating_sub(usize::from(clipped)));
     let mut line = body_line(paragraph, 0..end);
     if clipped && budget > 0 {
         append_span(&mut line, "…", Role::Muted);
-    }
-    for (text, role) in suffix {
-        append_span(&mut line, text, *role);
     }
     if right > 0 {
         line.text.extend(std::iter::repeat_n(
@@ -628,6 +582,45 @@ mod tests {
     }
 
     #[test]
+    fn refresh_keeps_cached_fact_text_geometry_and_semantic_inks() {
+        let mut ready = project(ProjectState::Ready);
+        ready.color_slot = Some(3);
+        let mut refreshing = ready.clone();
+        refreshing.state = ProjectState::Loading;
+        for columns in [1, 3, 8, 24, 40, 80] {
+            let render = |project: &ProjectSnapshot| {
+                let mut rows = Vec::new();
+                project_content(Some(project), true, &mut rows);
+                let mut lines = Vec::new();
+                wrap(&rows, columns, &mut lines);
+                lines
+            };
+            let current = render(&ready);
+            let stale = render(&refreshing);
+            assert_eq!(current.len(), stale.len());
+            assert_eq!(current[0].role, Role::Muted);
+            assert_eq!(stale[0].role, Role::Warning);
+            for (current, stale) in current[1..].iter().zip(&stale[1..]) {
+                assert_eq!(current.text, stale.text);
+                assert_eq!(current.role, stale.role);
+                assert_eq!(current.spans, stale.spans);
+                assert_eq!(
+                    current
+                        .projects
+                        .iter()
+                        .map(|span| (span.rect, span.slot))
+                        .collect::<Vec<_>>(),
+                    stale
+                        .projects
+                        .iter()
+                        .map(|span| (span.rect, span.slot))
+                        .collect::<Vec<_>>(),
+                );
+            }
+        }
+    }
+
+    #[test]
     fn unavailable_repository_states_never_claim_cached_success_is_current() {
         for state in [
             ProjectState::Loading,
@@ -638,23 +631,14 @@ mod tests {
             project.error = Some("Git refresh failed\u{1b}\nretry later".into());
             let mut rows = Vec::new();
             project_content(Some(&project), true, &mut rows);
-            assert!(
-                rows.iter()
-                    .any(|row| row.role == Role::Warning && row.text.contains("stale"))
-            );
+            assert!(rows.iter().any(|row| row.text.contains("stale")));
             assert!(
                 rows.iter()
                     .any(|row| row.role == Role::Error && row.text.contains("refresh failed"))
             );
-            assert!(!rows.iter().any(|row| row.role == Role::Success));
             let mut lines = Vec::new();
             wrap(&rows, 40, &mut lines);
-            assert!(
-                !lines
-                    .iter()
-                    .flat_map(|line| &line.spans)
-                    .any(|span| span.role == Role::Success)
-            );
+            assert!(lines.iter().any(|line| line.text.contains("stale")));
             assert!(
                 lines
                     .iter()

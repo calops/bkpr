@@ -363,6 +363,61 @@ One off-path coordinator shares cached results across panes in the same canonica
 
 TUI headers/sidebar annotate project/worktree/branch without changing execution membership or names. **Ctrl-b, then i** opens focused project details; arrows scroll wrapped content, Enter/Esc return focus. Details distinguish current values, stale values, unavailable bases and errors.
 
+### Targeted Git refresh and stable cached presentation (2026-11-09)
+
+Routine refresh no longer rediscovers every cached CWD. Exact marker/ancestor
+changes rebind affected CWDs, including canonical symlink/nested-repository
+associations. Local HEAD/index and private refs are distinguished from shared
+refs/config. Worktree/index-only refreshes reuse observed identity and
+HEAD/base/committed facts; metadata changes invalidate those caches. Same-path
+repository replacement is a cache barrier even when identity path strings match.
+Index changes rebuild tracked-directory coverage; renamed/recreated directories
+retire native watches. Overflow still forces full recovery, and genuine errors
+remain visible until successful observation. No Git or filesystem work moved to
+the input/render path; refresh timing and supported Git facts were not reduced.
+
+The stale suffix formerly truncated the branch and removed added/deleted colors.
+The sidebar now changes only its existing status cell (`↻` refreshing, `!`
+failed); cached labels/count columns and semantic/project colors remain stable.
+The popup keeps one freshness row and labels retained values explicitly stale.
+Actual isolated Kitty at 120×40, 9×18 cells, reproduces the old flicker and verifies
+pixel-identical cached branch/count crops during refresh in fancy and plain
+modes. Unrelated rows remain unchanged. The fixture also exercises a linked
+worktree, 20-write burst, explicit Git failure/recovery and stable popup fact rows.
+This is not CI monitoring or historical popup-content/icon parity.
+
+Three matched debug repetitions trace successful Git `execve` calls from the
+real daemon, with two independent repositories, a linked worktree and an observed
+non-repository directory. Medians below count all affected worktrees unless noted.
+They measure subprocess work, not CPU percentages or input/presentation latency.
+
+| Workload | Before Git calls | After Git calls |
+| --- | ---: | ---: |
+| Edit tracked file | 16 | 4 |
+| Stage file in main worktree | 31 | 7 |
+| Initialize observed sibling repo: unrelated worktrees only | 9 | 0 |
+| Update shared ref | 32 | 24 |
+| Force-add file in previously ignored directory | 51 | 12 |
+| Later edit of that tracked ignored file | 15 | 4 |
+
+Shared-ref changes still refresh both related worktrees; unrelated beta remains
+untouched. Index-only changes no longer refresh the linked worktree. Earlier
+ad-hoc fixtures already observed tracked ignored-file edits, so a baseline
+coverage failure is not claimed: a focused native regression covers preexisting
+ignored directories and later tracked edits.
+
+Evidence: `target/smoke/git-refresh/comparison.json`, `baseline-discovery*/`,
+`final-discovery-{1,2,3}/`, `frontend-proof.json` and
+`final-130591851859681/`. Raw Git arguments, snapshots, screenshots and cleanup
+receipts are retained. Candidate CLI SHA-256
+`763598cbdb6bdfd823b6b9eaa427b42cf4b016355b6557c5683321d54df610b2`;
+daemon `15262499e3d9d227b71c725837f7869b96ae6eadd1941d73828672e755262eb0`.
+Incremental debug checks used eight jobs and this checkout's cache: all workspace
+unit/integration executables pass as host UID 1000, strict all-target Clippy and
+formatting pass. Protected builds preserved live public executables; all fixture
+cleanup receipts report zero survivors. No provider or live session participated.
+
+
 Git commands have three-second child and ten-second ingestion deadlines, bounded input and 16 MiB per output stream, process-group kill/reap on timeout/cancellation and sanitized `GIT_*` overrides. Fsmonitor, external diff and textconv are disabled. Preflight rejects tracked executable clean/process filters rather than calculating semantically different raw counts; even clean filtered worktrees can report this limitation. This is not a sandbox against hostile concurrent configuration/attribute changes. Watch planning admits at most 32,768 resources per project and 65,536 native watches daemon-wide; failures are explicit errors with bounded repair backoff, not a normal recurring Git poll. Filesystem syscalls themselves are not preemptible by the cooperative walk deadline. One serial worker means slow repositories can delay other metadata collection, not application input.
 
 ### Corrections found during integration
