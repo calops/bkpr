@@ -208,6 +208,7 @@ is not retained as a backend or an upgrade path for existing sessions.
 
 ### Bkpr frontend restoration
 
+* Group related keybinding hints through explicit action membership while retaining each concrete action and alias. Share modifier-aware chord formatting, Unicode measurements and whole-chord wrapping through the reusable framework; keep descriptions, priority and availability in Bkpr. Reserve notice rows before layout so narrow popups never cut a group in half.
 * Restore the all-workspace sidebar's independent keyboard selection, folding, scrolling, rename/create/close-terminal actions and passive metadata popovers.
 * Restore focused name/directory forms, grapheme-boundary editing and paste, identity-bound modal intent, honest asynchronous errors and the metadata-only fuzzy finder with filters and responsive previews.
 * Share typed binding dispatch with contextual hints that always appear in passive popups. Preserve native pointer gestures and consume UI keys; normalize raw legacy C0 aliases without dropping their native control bytes.

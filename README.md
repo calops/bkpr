@@ -733,6 +733,13 @@ is not forced to the card midpoint. A hint is shown whole or omitted with an
 overflow indication, preserving lifecycle explanations. Keycap colors come from
 layout spans, not parsing rendered descriptions.
 
+Related actions share a row through declared presentation groups. Pane focus
+uses `←, →, ↑, ↓`; pane movement uses `Shift-(←, →, ↑, ↓)`. Resize steps of
+one and five cells stay separate. Commas separate related actions; slashes
+separate alternative keys for the same action, such as `↑/k, ↓/j`.
+Only available bindings contribute. Narrow rows repeat shared modifiers when
+wrapping, and notices reserve their space before whole hint groups are laid out.
+
 Chrome follows each client's reported terminal foreground, background and ANSI
 palette. Confirmed `Tc`/`RGB` support plus observed foreground/background enables
 subdued RGB surfaces, muted text, selection shading and palette-derived
