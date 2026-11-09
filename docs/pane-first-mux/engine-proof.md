@@ -2794,3 +2794,52 @@ These are isolated Xvfb/software-rendered functional checks, not every
 directional combination, a pixel-equivalence oracle or a new performance
 benchmark. Installed programs and live user sessions remain untouched.
 
+## Grouped-hint punctuation and sidebar refinement
+
+Evidence: `target/smoke/hint-refinements/acceptance.json`, source base
+`df89ad9`, immutable debug client `f0c39524` and unchanged daemon `643d464e`.
+Bkpr styles non-keycap ranges as muted, preserving literal punctuation keys as
+accented keys. Folding and sidebar exit use declared action groups; descriptions
+are shorter, and `Ctrl-b x` reads “remove from layout.” The redundant
+`Ctrl-b w/W/o` shortcuts, actions and dedicated forms are removed. Reopening
+an unavailable pane retains its independently reachable directory-choice form
+and original navigation/confirmation semantics.
+
+Actual private Kitty rich/plain passes in `kitty-97130679640118`; read-only
+passes in `kitty-97138705412739`; natural XTerm fallback passes in
+`xterm-97209252230525`. Complete screenshots show `←, →, Space` on one
+folding row and `Esc, Ctrl-Space` on one return-to-app row. Physical folding,
+both sidebar exits, history, resize, narrow-sidebar/host wrapping and ordinary
+application input pass. Removed chooser keys do not open a form, mutate the
+registry or leak input to an application.
+
+Kitty's actual ANSI screen exports retain separate foreground/faint styles for
+parentheses, commas and alias slashes versus both accented keys and ordinary
+descriptions, in rich and plain modes. This is a real terminal style observation,
+not a framebuffer-color equivalence oracle. XTerm fallback is screenshot-checked;
+unit coverage establishes exact `Role::Muted` assignment and keeps a literal
+slash key accented. Group tests retain every concrete fold/exit action and its
+dispatch while checking partial availability.
+
+Formatting, all-target strict Clippy, test compilation, debug builds and
+doctests pass in `build/compiled-97066563662557/manifest.json`. Host-UID
+execution in `build/checks-97114850588503/result.json` passes 977 top-level
+tests with 14 ignored, including 167 framework and 351 client tests. Two
+remaining retired chooser test callers were migrated to project details after
+the initial compiler diagnostics; their failure evidence is retained.
+
+All selected terminal runs detach with exit 0, identical before/after termios
+and zero surviving owned processes. Guard
+`build/protected-97066274343010/result.json` preserves the public debug/release
+executable bytes and inodes. The initial XTerm attempt used an obsolete history
+label as its Escape-readiness condition; its failed exact input and cleanup
+remain recorded. Waiting for actual history-guide withdrawal fixes the fixture,
+without changing product decoding or suppressing the failure.
+
+Both exact executed controller revisions are archived as `controllers.zip` and
+`controllers-before-readiness-fix.zip`; `verification.zip` retains the frozen
+source, check recipes and receipts. Owned loose scaffolds are removed after
+archive verification. These are isolated software-rendered correctness checks,
+not a responsiveness benchmark, full theme matrix or pixel-equivalence claim.
+No installed programs, live sessions or user configuration are changed.
+

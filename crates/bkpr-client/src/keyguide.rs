@@ -156,9 +156,6 @@ pub enum Action {
     StartResize,
     CopySelection,
     ProjectDetails,
-    ChooseWorkspace,
-    ChooseWindow,
-    ChoosePane,
     ReopenPane,
     SplitHorizontal,
     SplitVertical,
@@ -242,13 +239,10 @@ impl Action {
             Self::StartResize => "resize pane",
             Self::CopySelection => "copy selection",
             Self::ProjectDetails => "project details",
-            Self::ChooseWorkspace => "choose workspace",
-            Self::ChooseWindow => "choose window",
-            Self::ChoosePane => "choose pane",
             Self::ReopenPane => "reopen shell",
             Self::SplitHorizontal => "split side by side",
             Self::SplitVertical => "split above / below",
-            Self::RemovePaneFromLayout => "remove from layout (keep process)",
+            Self::RemovePaneFromLayout => "remove from layout",
             Self::PreviousWorkspace => "previous workspace",
             Self::NextWorkspace => "next workspace",
             Self::NextPane => "next pane",
@@ -517,9 +511,6 @@ static BINDINGS: &[Binding] = &[
     text(PREFIX, "i", A::ProjectDetails, 30),
     text(PREFIX, "g", A::ToggleChrome, 31),
     text(PREFIX, "t", A::OpenThemes, 32),
-    text(PREFIX, "w", A::ChooseWorkspace, 14),
-    text(PREFIX, "W", A::ChooseWindow, 15),
-    text(PREFIX, "o", A::ChoosePane, 15),
     text(PREFIX, "R", A::ReopenPane, 42),
     text(PREFIX, "n", A::SplitHorizontal, 21),
     text(PREFIX, "%", A::SplitHorizontal, 21),
@@ -1013,6 +1004,18 @@ struct PresentationGroup {
 // Descriptions remain truthful when capability filtering leaves a partial group.
 static PRESENTATION_GROUPS: &[PresentationGroup] = &[
     PresentationGroup {
+        contexts: SIDEBAR,
+        actions: &[A::LeaveSidebar, A::ToggleSidebar],
+        description: "return to app",
+        priority: 0,
+    },
+    PresentationGroup {
+        contexts: SIDEBAR | SESSIONS,
+        actions: &[A::FoldSidebar, A::UnfoldSidebar, A::ToggleFoldSidebar],
+        description: "fold/unfold workspace",
+        priority: 13,
+    },
+    PresentationGroup {
         contexts: PREFIX,
         actions: &[
             A::FocusPane(D::Left),
@@ -1089,19 +1092,19 @@ static PRESENTATION_GROUPS: &[PresentationGroup] = &[
     PresentationGroup {
         contexts: SIDEBAR | SESSIONS | CHOOSER | DETAILS,
         actions: &[A::Navigate(N::First), A::Navigate(N::Last)],
-        description: "jump to list boundary",
+        description: "jump to start/end",
         priority: 33,
     },
     PresentationGroup {
         contexts: SIDEBAR | SESSIONS | DETAILS | THEME,
         actions: &[A::Navigate(N::PagePrevious), A::Navigate(N::PageNext)],
-        description: "navigate by page",
+        description: "change page",
         priority: 35,
     },
     PresentationGroup {
         contexts: FINDER,
         actions: &[A::Navigate(N::PagePrevious), A::Navigate(N::PageNext)],
-        description: "scroll preview by page",
+        description: "scroll preview",
         priority: 35,
     },
     PresentationGroup {
@@ -1113,25 +1116,25 @@ static PRESENTATION_GROUPS: &[PresentationGroup] = &[
     PresentationGroup {
         contexts: HISTORY,
         actions: &[A::History(H::LineUp), A::History(H::LineDown)],
-        description: "scroll history by line",
+        description: "scroll history",
         priority: 10,
     },
     PresentationGroup {
         contexts: APPLICATION,
         actions: &[A::History(H::PageUp), A::History(H::PageDown)],
-        description: "scroll history by page",
+        description: "scroll history",
         priority: 10,
     },
     PresentationGroup {
         contexts: HISTORY,
         actions: &[A::History(H::PageUp), A::History(H::PageDown)],
-        description: "scroll history by page",
+        description: "scroll history",
         priority: 12,
     },
     PresentationGroup {
         contexts: SEARCH,
         actions: &[A::NextMatch, A::PreviousMatch],
-        description: "navigate matches",
+        description: "find next/previous",
         priority: 10,
     },
 ];
@@ -1292,17 +1295,26 @@ impl<'a> Body<'a> {
                 if let Some(keys) = keys.get(line) {
                     let x = key_columns - keys.width;
                     row.extend(std::iter::repeat_n(' ', x));
+                    let mut push_span = |start: usize, end: usize, role| {
+                        if start < end {
+                            roles.push(RoleSpan {
+                                rect: Rect {
+                                    x: (x + start) as u16,
+                                    y: rows.len() as u16,
+                                    width: (end - start) as u16,
+                                    height: 1,
+                                },
+                                role,
+                            });
+                        }
+                    };
+                    let mut end = 0;
                     for keycap in &keys.keycaps {
-                        roles.push(RoleSpan {
-                            rect: Rect {
-                                x: (x + keycap.start) as u16,
-                                y: rows.len() as u16,
-                                width: keycap.len() as u16,
-                                height: 1,
-                            },
-                            role: Role::Accent,
-                        });
+                        push_span(end, keycap.start, Role::Muted);
+                        push_span(keycap.start, keycap.end, Role::Accent);
+                        end = keycap.end;
                     }
+                    push_span(end, keys.width, Role::Muted);
                     row.push_str(&keys.text);
                 } else {
                     row.extend(std::iter::repeat_n(' ', key_columns));
@@ -1500,8 +1512,13 @@ mod tests {
     }
 
     fn keycaps(rows: &[String], spans: &[RoleSpan]) -> Vec<String> {
+        styled_text(rows, spans, Role::Accent)
+    }
+
+    fn styled_text(rows: &[String], spans: &[RoleSpan], role: Role) -> Vec<String> {
         spans
             .iter()
+            .filter(|span| span.role == role)
             .map(|span| {
                 let mut column = 0;
                 rows[usize::from(span.rect.y)]
@@ -1515,6 +1532,68 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn chord_punctuation_is_muted_but_literal_punctuation_keys_are_accented() {
+        let mut group = hint(
+            A::MovePane(D::Left),
+            &[modified("←", &["Shift"]), modified("/", &["Shift"])],
+            "move",
+            0,
+        );
+        group.members.push(HintMember {
+            action: A::MovePane(D::Right),
+            aliases: vec![modified("→", &["Shift"])],
+        });
+        let guide = render_hints(Context::CommandPrefix, &[group], 38, 120, 8, None);
+        assert_eq!(
+            keycaps(&guide.expanded, &guide.expanded_roles),
+            ["Shift-", "←", "/", "→"]
+        );
+        assert_eq!(
+            styled_text(&guide.expanded, &guide.expanded_roles, Role::Muted),
+            ["(", "/", ", ", ")"]
+        );
+    }
+
+    #[test]
+    fn sidebar_fold_and_exit_groups_retain_each_concrete_binding() {
+        let context = Context::Sidebar { selected: true };
+        for (actions, keys) in [
+            (
+                &[A::LeaveSidebar, A::ToggleSidebar][..],
+                vec![
+                    event("Escape", "", 0, KeyAction::Press),
+                    event("Space", "", CTRL, KeyAction::Press),
+                ],
+            ),
+            (
+                &[A::FoldSidebar, A::UnfoldSidebar, A::ToggleFoldSidebar][..],
+                vec![
+                    event("ArrowLeft", "", 0, KeyAction::Press),
+                    event("ArrowRight", "", 0, KeyAction::Press),
+                    event("Space", " ", 0, KeyAction::Press),
+                ],
+            ),
+        ] {
+            let rows = hints_with(context, |action| actions.contains(&action));
+            assert_eq!(rows.len(), 1);
+            assert_eq!(
+                rows[0]
+                    .members
+                    .iter()
+                    .map(|member| member.action)
+                    .collect::<Vec<_>>(),
+                actions
+            );
+            for (action, key) in actions.iter().zip(keys) {
+                assert_eq!(lookup(context, &key), Some(*action));
+            }
+            let partial = hints_with(context, |action| action == actions[0]);
+            assert_eq!(partial[0].members.len(), 1);
+            assert_eq!(partial[0].members[0].action, actions[0]);
+        }
     }
 
     #[test]
@@ -2246,6 +2325,7 @@ mod tests {
         let (rows, spans) = Body::new(std::slice::from_ref(&hint)).render(24, 12);
         let keys: Vec<String> = spans
             .iter()
+            .filter(|span| span.role == Role::Accent)
             .map(|span| {
                 rows[span.rect.y as usize]
                     .chars()

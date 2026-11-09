@@ -162,6 +162,13 @@ Notices reserve rows before hint layout rather than truncating rendered groups.
 Existing `unicode-width`, `window::clean` and `textwrap` cover this small
 presentation layer; no new hotkey registry, parser, UI framework or dependency
 is introduced. Prepared guide output retains the existing invalidation cache.
+Bkpr applies `Role::Muted` to gaps between the framework's exact keycap spans,
+not to characters recognized as punctuation. Literal `/` keys therefore remain
+accented while alias slashes, commas and scope parentheses are muted. Explicit
+groups include folding and sidebar exit without changing concrete dispatch.
+The redundant workspace/window/pane chooser shortcuts and forms are removed;
+the independently reachable reopen-directory chooser keeps its original semantics.
+
 
 
 

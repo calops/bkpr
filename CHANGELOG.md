@@ -1,3 +1,13 @@
+## Unreleased
+
+### Breaking changes
+
+* Remove the `Ctrl-b w`, `Ctrl-b W` and `Ctrl-b o` chooser shortcuts and their dedicated forms. Use the sidebar or finder instead; keep the directory-choice overlay for reopening an unavailable pane.
+
+### Fixes
+
+* Mute grouped-hint separator punctuation without dimming literal punctuation keys. Shorten descriptions, group workspace folding and sidebar exit bindings, and label `Ctrl-b x` as “remove from layout.”
+
 ## [0.5.1](https://github.com/calops/bkpr/compare/v0.5.0...v0.5.1) (2026-11-06)
 
 ### Bug Fixes
