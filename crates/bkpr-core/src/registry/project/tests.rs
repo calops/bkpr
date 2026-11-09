@@ -14,6 +14,7 @@ impl Fixture {
         let home = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
         let registry = Registry::open(state.path()).unwrap();
+        registry.stop_ci();
         let value = registry
             .request(Request::new(Operation::PaneSpawn {
                 workspace_id: None,
@@ -181,6 +182,7 @@ fn live_project_metadata_is_neither_durable_nor_restored_as_a_live_fact() {
         color_slot: Some(37),
         repository: None,
         error: Some("not a live fact".into()),
+        ci: None,
     })
     .unwrap();
     fs::write(
@@ -258,6 +260,7 @@ impl Publication {
         fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let registry = Registry::open(state.path()).unwrap();
         registry.stop_projects();
+        registry.stop_ci();
         let (_, wake) = crossbeam_channel::bounded(1);
         let (event_sender, events) = crossbeam_channel::bounded(256);
         let worker = Worker {
@@ -459,6 +462,113 @@ impl Publication {
             .project
             .unwrap()
     }
+}
+
+#[test]
+fn ordinary_git_publication_preserves_ci_and_does_not_oscillate_revisions() {
+    let mut fixture = Publication::new();
+    let cwd = fixture.repository("ci-project");
+    fixture.git(&cwd, &["commit", "--allow-empty", "-m", "initial"]);
+    fixture.pane("ci-pane", &cwd);
+    fixture.ingest();
+    let mut current = fixture.project("ci-pane");
+    let repository = current.repository.as_ref().unwrap();
+    let sha = repository.head_sha.clone().unwrap();
+    current.ci = Some(bkpr_protocol::CiSnapshot {
+        status: bkpr_protocol::CiStatus::Passed,
+        checks: Vec::new(),
+        change_request: None,
+        fetch_state: bkpr_protocol::CiFetchState::Ready,
+        updated_at: 42,
+        stale: false,
+        error: None,
+        repository: bkpr_protocol::ForgeRepository {
+            provider: bkpr_protocol::ForgeProvider::Github,
+            host: "github.com".into(),
+            path: "fixture/project".into(),
+            web_url: "https://github.com/fixture/project".into(),
+        },
+        head_sha: "remote-provider-tip".into(),
+        local_head_sha: sha,
+        checked_ref: Some("origin/main".into()),
+        branch: Some("main".into()),
+        truncated: false,
+        commit_missing: false,
+    });
+    {
+        let mut state = fixture.registry.inner.state.lock().unwrap();
+        state
+            .record
+            .registry
+            .panes
+            .iter_mut()
+            .find(|pane| pane.id == "ci-pane")
+            .unwrap()
+            .project = Some(current.clone());
+    }
+    let revision = fixture.registry.snapshot().unwrap().revision;
+    fixture.worker.publish();
+    fixture.worker.publish();
+    assert_eq!(fixture.registry.snapshot().unwrap().revision, revision);
+    assert_eq!(fixture.project("ci-pane").ci, current.ci);
+    fs::write(cwd.join("ordinary-file"), "ordinary edit\n").unwrap();
+    let key = fixture.worker.bindings[&cwd].clone();
+    fixture
+        .worker
+        .cache
+        .get_mut(&key)
+        .unwrap()
+        .invalidate(false);
+    fixture.refresh_dirty();
+    assert_eq!(fixture.project("ci-pane").ci, current.ci);
+    let mut changed = current.clone();
+    changed.repository.as_mut().unwrap().head_sha = Some("different-head".into());
+    changed.ci = None;
+    merge_ci(&mut changed, &current);
+    assert!(changed.ci.is_none());
+}
+
+#[test]
+fn metadata_events_advance_ci_inputs_even_when_repository_facts_do_not_change() {
+    let mut fixture = Publication::new();
+    let cwd = fixture.repository("source-project");
+    fixture.git(&cwd, &["commit", "--allow-empty", "-m", "initial"]);
+    fixture.pane("source-pane", &cwd);
+    fixture.ingest();
+    fixture.coverage();
+    let before = fixture
+        .registry
+        .inner
+        .ci_inputs
+        .lock()
+        .unwrap()
+        .get(&cwd)
+        .copied()
+        .unwrap_or(0);
+    fixture
+        .worker
+        .event_sender
+        .send(Ok(notify::Event::new(EventKind::Modify(
+            notify::event::ModifyKind::Data(notify::event::DataChange::Content),
+        ))
+        .add_path(cwd.join(".git/config"))))
+        .unwrap();
+    fixture.worker.drain_events();
+    let after = fixture.registry.inner.ci_inputs.lock().unwrap()[&cwd];
+    assert!(after > before);
+    fixture
+        .worker
+        .event_sender
+        .send(Ok(notify::Event::new(EventKind::Modify(
+            notify::event::ModifyKind::Data(notify::event::DataChange::Content),
+        ))
+        .add_path(cwd.join("ordinary"))))
+        .unwrap();
+    fixture.worker.drain_events();
+    assert_eq!(
+        fixture.registry.inner.ci_inputs.lock().unwrap()[&cwd],
+        after
+    );
 }
 impl Drop for Publication {
     fn drop(&mut self) {

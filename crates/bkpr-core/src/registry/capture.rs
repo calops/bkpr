@@ -569,6 +569,17 @@ impl Registry {
             }
         }
         let project_cwd = cwd.as_deref().unwrap_or(&info.cwd);
+        let previous_cwd = super::project::effective_cwd(info);
+        if previous_cwd != project_cwd {
+            let mut epochs = self.inner.ci_inputs.lock().unwrap();
+            let epoch = self
+                .inner
+                .ci_input_generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+                .wrapping_add(1);
+            epochs.insert(previous_cwd.to_owned(), epoch);
+            epochs.insert(project_cwd.to_owned(), epoch);
+        }
         if info
             .project
             .as_ref()
@@ -585,6 +596,10 @@ impl Registry {
         state.record.registry.revision = next_revision(state.record.registry.revision)?;
         self.inner.changed.notify_all();
         let _ = self.inner.project_wake.try_send(());
+        self.inner
+            .ci_input_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let _ = self.inner.ci_wake.try_send(());
         Ok(())
     }
     pub(super) fn start_observer(&self) -> Result<()> {

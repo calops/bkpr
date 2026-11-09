@@ -39,6 +39,10 @@ pub enum Operation {
     },
     ClientDetach,
     Inspect,
+    /// Queue a provider refresh only for this exact retained project source.
+    CiRefresh {
+        target: crate::CiRefreshTarget,
+    },
     /// Query live execution membership; omission selects the authenticated OS peer's pane.
     Context {
         pane_id: Option<String>,

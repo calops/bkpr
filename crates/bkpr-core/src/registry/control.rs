@@ -388,6 +388,7 @@ fn validate_targets(
     }
     match operation {
         Operation::Inspect | Operation::RecoveryList => Ok(()),
+        Operation::CiRefresh { target } => pane(&target.pane_id, None),
         Operation::WorkspaceCreate { .. } => {
             ensure!(
                 scope.is_none(),
@@ -462,5 +463,46 @@ fn validate_targets(
         | Operation::PaneRename { pane_id, .. }
         | Operation::Pane { pane_id, .. } => pane(pane_id, None),
         _ => bail!("agent control operation is not supported"),
+    }
+}
+
+#[cfg(test)]
+mod ci_scope_tests {
+    use super::*;
+
+    #[test]
+    fn refresh_targets_only_an_existing_pane_in_the_admitted_workspace() {
+        let registry: RegistrySnapshot = serde_json::from_value(json!({
+            "revision":1, "workspaces":[],
+            "panes":[{
+                "id":"pane", "workspace_id":"own", "window_id":"window",
+                "title":"title", "status":"running", "exit_code":null,
+                "cwd":"/project", "home":"/home", "isolated_environment":false
+            }]
+        }))
+        .unwrap();
+        let mut operation = Operation::CiRefresh {
+            target: CiRefreshTarget {
+                pane_id: "pane".into(),
+                cwd: "/project".into(),
+                repository: ForgeRepository {
+                    provider: ForgeProvider::Github,
+                    host: "github.com".into(),
+                    path: "o/r".into(),
+                    web_url: "https://github.com/o/r".into(),
+                },
+                head_sha: "remote".into(),
+                local_head_sha: "local".into(),
+                checked_ref: None,
+            },
+        };
+        assert!(validate_targets(&registry, &operation, Some("own")).is_ok());
+        assert!(validate_targets(&registry, &operation, Some("other")).is_err());
+        assert!(validate_targets(&registry, &operation, None).is_ok());
+        let Operation::CiRefresh { target } = &mut operation else {
+            unreachable!()
+        };
+        target.pane_id = "missing".into();
+        assert!(validate_targets(&registry, &operation, None).is_err());
     }
 }

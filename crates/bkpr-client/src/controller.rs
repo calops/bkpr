@@ -664,7 +664,13 @@ pub(crate) fn harness_icon(kind: HarnessKind) -> &'static str {
         HarnessKind::Omp => "\u{f03ff}",
         HarnessKind::Claude => "\u{ec82}",
         HarnessKind::Codex => "\u{ec81}",
-        _ => "\u{f120}",
+        HarnessKind::Opencode => "\u{f0174}",
+        HarnessKind::Agy => "\u{f0463}",
+        HarnessKind::Cursor => "\u{f01bf}",
+        HarnessKind::Copilot => "\u{ec1e}",
+        HarnessKind::Aider => "\u{f03eb}",
+        HarnessKind::Cline => "\u{f06a9}",
+        HarnessKind::Goose => "\u{f01e5}",
     }
 }
 
@@ -731,7 +737,11 @@ fn sidebar_branch(pane: &PaneInfo, width: u16) -> String {
     // Freshness owns the existing icon cell, not branch/count columns. Cached
     // facts keep their geometry and semantic ink while their status changes.
     let marker = match project.state {
-        ProjectState::Ready => "\u{f062c}",
+        ProjectState::Ready => project
+            .ci
+            .as_ref()
+            .and_then(|ci| ci.change_request.as_ref())
+            .map_or("\u{f062c}", |request| crate::ci::request(request.state).0),
         ProjectState::Loading => "↻",
         ProjectState::Error | ProjectState::NotRepository => "!",
     };
@@ -742,6 +752,12 @@ fn sidebar_branch(pane: &PaneInfo, width: u16) -> String {
             marker.into()
         };
     }
+    let badge = if project.ci.is_some() && width >= 6 {
+        format!(" {} ", crate::ci::WORKFLOW)
+    } else {
+        String::new()
+    };
+    let width = width.saturating_sub(unicode_width::UnicodeWidthStr::width(badge.as_str()) as u16);
     let branch = repository.branch.as_deref().unwrap_or("detached");
     // Only observed committed totals correspond to main's branch-versus-base
     // counts. Missing comparison data is not a fabricated zero.
@@ -758,7 +774,7 @@ fn sidebar_branch(pane: &PaneInfo, width: u16) -> String {
     let available =
         width.saturating_sub((unicode_width::UnicodeWidthStr::width(counts) + 2) as u16);
     let branch = bkpr_tui_framework::window::fit(branch, available);
-    format!("{marker} {branch}{counts}")
+    format!("{marker} {branch}{counts}{badge}")
 }
 
 fn project_label(project: &ProjectSnapshot) -> String {
@@ -980,13 +996,30 @@ fn native_row_label(
     match kind {
         SidebarRowKind::Workspace { index, collapsed } => {
             let workspace = &registry.workspaces[index];
-            write!(
-                label,
-                "● {}{}",
-                workspace.name,
-                if collapsed { " ···" } else { "" }
-            )
-            .unwrap();
+            let sources = registry
+                .panes
+                .iter()
+                .filter(|pane| pane.workspace_id.as_ref() == Some(&workspace.id))
+                .filter_map(|pane| pane.project.as_ref())
+                .filter_map(|project| project.ci.as_ref());
+            let badge = collapsed
+                && sources.count() > 0
+                && width.saturating_sub(entry.content_column()) >= 6;
+            if badge {
+                let name = bkpr_tui_framework::window::fit(
+                    &workspace.name,
+                    width.saturating_sub(entry.content_column() + 3),
+                );
+                write!(label, "● {name} {} ", crate::ci::WORKFLOW).unwrap();
+            } else {
+                write!(
+                    label,
+                    "● {}{}",
+                    workspace.name,
+                    if collapsed { " ···" } else { "" }
+                )
+                .unwrap();
+            }
         }
         SidebarRowKind::Projects { index } => {
             let workspace = &registry.workspaces[index];
@@ -1595,6 +1628,68 @@ fn render_theme_chrome<'a>(
                 });
             }
         }
+        let ci_status = match kind {
+            SidebarRowKind::Detail { index } => registry.panes[index]
+                .project
+                .as_ref()
+                .and_then(|project| project.ci.as_ref())
+                .map(crate::ci::state),
+            SidebarRowKind::Workspace {
+                index,
+                collapsed: true,
+            } => {
+                let mut sources = registry
+                    .panes
+                    .iter()
+                    .filter(|pane| {
+                        pane.workspace_id.as_ref() == Some(&registry.workspaces[index].id)
+                    })
+                    .filter_map(|pane| pane.project.as_ref())
+                    .filter_map(|project| project.ci.as_ref())
+                    .map(crate::ci::state)
+                    .peekable();
+                sources
+                    .peek()
+                    .is_some()
+                    .then(|| bkpr_protocol::CiStatus::aggregate(sources))
+            }
+            _ => None,
+        };
+        if let Some(status) = ci_status {
+            let cells = &surface.frame.rows[usize::from(row)].cells[..usize::from(sidebar.width)];
+            if let Some(x) = cells
+                .iter()
+                .position(|cell| cell.text == crate::ci::WORKFLOW)
+            {
+                spans.push(RoleSpan {
+                    rect: Rect {
+                        x: x as u16,
+                        y: row,
+                        width: 1,
+                        height: 1,
+                    },
+                    role: crate::ci::role(status),
+                });
+            }
+        }
+        if let SidebarRowKind::Detail { index } = kind
+            && let Some(project) = &registry.panes[index].project
+            && project.state == ProjectState::Ready
+            && let Some(request) = project
+                .ci
+                .as_ref()
+                .and_then(|ci| ci.change_request.as_ref())
+        {
+            spans.push(RoleSpan {
+                rect: Rect {
+                    x: entry.content_column(),
+                    y: row,
+                    width: 1,
+                    height: 1,
+                },
+                role: crate::ci::request(request.state).1,
+            });
+        }
         if let SidebarRowKind::Detail { index: pane_index } = kind
             && let Some(project) = &registry.panes[pane_index].project
             && project.state != ProjectState::Ready
@@ -1622,11 +1717,15 @@ fn render_theme_chrome<'a>(
         {
             let added = changes.insertions.checked_ilog10().unwrap_or(0) as usize + 1;
             let removed = changes.deletions.checked_ilog10().unwrap_or(0) as usize + 1;
-            let available = usize::from(sidebar.width.saturating_sub(entry.content_column()));
+            let badge_width = if project.ci.is_some() { 3 } else { 0 };
+            let available = usize::from(sidebar.width.saturating_sub(entry.content_column()))
+                .saturating_sub(badge_width);
             if added + removed + 9 <= available {
                 let y = row;
                 let cells = &surface.frame.rows[usize::from(y)].cells[..usize::from(sidebar.width)];
-                if let Some(end) = cells.iter().rposition(|cell| cell.text != " ")
+                if let Some(end) = cells
+                    .iter()
+                    .rposition(|cell| cell.text != " " && cell.text != crate::ci::WORKFLOW)
                     && let Some(remove_x) = (end + 1).checked_sub(removed + 1)
                     && let Some(add_x) = remove_x.checked_sub(added + 2)
                     && cells[remove_x].text == "-"
@@ -3261,6 +3360,7 @@ mod tests {
     fn project_fixture() -> ProjectSnapshot {
         ProjectSnapshot {
             color_slot: None,
+            ci: None,
             cwd: "/repo/linked/日本語".into(),
             state: ProjectState::Ready,
             repository: Some(RepositoryInfo {
@@ -4184,13 +4284,27 @@ mod tests {
             popover
                 .paint_tree(&tree, Some(&target), 2, 24, size)
                 .unwrap();
-            assert!(painted_text(&popover.surface).contains("Claude"));
+            let recognized = painted_text(&popover.surface);
+            assert!(
+                recognized.contains('\u{ec82}'),
+                "recognized harness artwork must be presented"
+            );
+            assert!(recognized.contains(&pane.title));
             snapshot.program_identity = None;
             let tree = fixture_tree(&context, |_| None, |_| Some(&snapshot), |_| None);
             popover
                 .paint_tree(&tree, Some(&target), 2, 24, size)
                 .unwrap();
-            assert!(!painted_text(&popover.surface).contains("Claude"));
+            let retired = painted_text(&popover.surface);
+            assert!(
+                !retired.contains('\u{ec82}'),
+                "retired identity cannot retain harness artwork"
+            );
+            assert!(
+                retired.contains(&pane.title),
+                "terminal identity must remain present"
+            );
+            assert_ne!(recognized, retired);
         }
     }
     #[test]

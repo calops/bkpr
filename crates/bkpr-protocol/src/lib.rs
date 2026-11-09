@@ -1,8 +1,10 @@
 //! Canonical terminal scenes and versioned backend registry protocol.
 mod agent;
 pub use agent::*;
+mod ci;
 mod context;
 pub mod control;
+pub use ci::*;
 pub use context::*;
 mod harness;
 pub use harness::*;
@@ -26,7 +28,7 @@ mod payload;
 pub use payload::*;
 pub mod remote_wire;
 pub mod wire;
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 /// Maximum aggregate input, paste or clipboard-response payload accepted per request.
 pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
 /// Maximum UTF-8 query bytes; rejected rather than truncated.

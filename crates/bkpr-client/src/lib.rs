@@ -4,6 +4,7 @@ mod app;
 mod appearance;
 pub mod attachments;
 mod chrome_graphics;
+mod ci;
 mod controller;
 mod finder;
 mod form_fields;

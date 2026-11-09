@@ -24,6 +24,10 @@ pub(super) enum SessionAction {
         action: crate::keyguide::Action,
         size: Size,
     },
+    CiRefresh {
+        owner: crate::tree::Owner,
+        target: bkpr_protocol::CiRefreshTarget,
+    },
 }
 
 pub(super) enum Attachment {
@@ -1021,13 +1025,32 @@ impl Coordinator {
 
     pub fn tick(&mut self, size: Size) -> Result<()> {
         self.remember_origins();
-        if let Some(SessionAction::Tree {
-            target,
-            action,
-            size,
-        }) = self.app_mut().session_action.take()
-        {
-            self.dispatch_tree(target, action, size)?;
+        match self.app_mut().session_action.take() {
+            Some(SessionAction::Tree {
+                target,
+                action,
+                size,
+            }) => self.dispatch_tree(target, action, size)?,
+            Some(SessionAction::CiRefresh { owner, target }) => {
+                let endpoint = self
+                    .sessions
+                    .get(owner.slot)
+                    .filter(|session| session.present && session.generation == owner.generation)
+                    .and_then(|session| session.app.as_ref())
+                    .and_then(|app| app.ci_refresh_endpoint(&target));
+                if let Some(endpoint) = endpoint {
+                    if let Err(error) =
+                        self.app_mut()
+                            .queue_ci_refresh(owner, target.clone(), endpoint)
+                    {
+                        self.app_mut().popover.refresh_receipt(owner, &target, true);
+                        self.app_mut().notify(format!("{error:#}"));
+                    }
+                } else {
+                    self.app_mut().popover.refresh_receipt(owner, &target, true);
+                }
+            }
+            None => {}
         }
         for completion in self.retirement_jobs.as_mut().unwrap().latest()? {
             if let Err(error) = self.complete_retirement(completion) {

@@ -4,6 +4,7 @@ use crate::{Pane, SpawnSpec};
 mod agents;
 mod automatic;
 mod capture;
+mod ci;
 mod context;
 mod control;
 mod directories;
@@ -147,6 +148,12 @@ struct Inner {
     project_wake: crossbeam_channel::Sender<()>,
     project_cancel: Arc<std::sync::atomic::AtomicBool>,
     project_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    ci_wake: crossbeam_channel::Sender<()>,
+    ci_cancel: Arc<std::sync::atomic::AtomicBool>,
+    ci_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    ci_refresh: Mutex<Vec<CiRefreshTarget>>,
+    ci_inputs: Mutex<BTreeMap<PathBuf, u64>>,
+    ci_input_generation: std::sync::atomic::AtomicU64,
     public_handles: std::sync::atomic::AtomicUsize,
     changed: Condvar,
     _lease: Lease,
@@ -172,6 +179,9 @@ impl Drop for Inner {
         self.project_cancel
             .store(true, std::sync::atomic::Ordering::Release);
         let _ = self.project_wake.try_send(());
+        self.ci_cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+        let _ = self.ci_wake.try_send(());
         // The retention worker owns only Agents, not the registry lease. Drain its
         // writer and close admission before releasing ownership of the durable root.
         let _ = self.agents.shutdown();
@@ -451,6 +461,7 @@ impl Drop for Registry {
             // A worker's temporary Inner reference is not an owner of the state
             // root. Join while this last public handle still retains the lease.
             self.stop_projects();
+            self.stop_ci();
         }
     }
 }
@@ -520,6 +531,7 @@ impl Registry {
         }
         let (status_wake, status_events) = crossbeam_channel::bounded(1);
         let (project_wake, project_events) = crossbeam_channel::bounded(1);
+        let (ci_wake, ci_events) = crossbeam_channel::bounded(1);
         let agents = Arc::new(agents::Agents::open(root)?);
         let registry = Self {
             inner: Arc::new(Inner {
@@ -561,6 +573,12 @@ impl Registry {
                 project_wake,
                 project_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 project_worker: Mutex::new(None),
+                ci_wake,
+                ci_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                ci_worker: Mutex::new(None),
+                ci_refresh: Mutex::new(Vec::new()),
+                ci_inputs: Mutex::new(BTreeMap::new()),
+                ci_input_generation: std::sync::atomic::AtomicU64::new(0),
                 public_handles: std::sync::atomic::AtomicUsize::new(1),
                 changed: Condvar::new(),
                 _lease: lease,
@@ -586,6 +604,7 @@ impl Registry {
         };
         registry.start_agent_maintenance()?;
         registry.start_projects(project_events)?;
+        registry.start_ci(ci_events)?;
         Ok(registry)
     }
     pub fn is_fresh(&self) -> bool {
@@ -751,6 +770,12 @@ impl Registry {
                 bail!("client operations require authenticated attachment transport")
             }
             Operation::Inspect => Ok(json!({"registry":self.snapshot()?})),
+            Operation::CiRefresh { target } => {
+                self.observe_control(control)?;
+                let _transaction = self.inner.transaction.lock().unwrap();
+                self.authorize_control(control)?;
+                Ok(json!({"registry":self.refresh_ci(&target)?}))
+            }
             Operation::Context {
                 pane_id: Some(pane_id),
             } => self.pane_context(&pane_id),
@@ -1923,6 +1948,7 @@ impl Registry {
         let forwarding = self.inner.ssh_agent.lock().unwrap().clone();
         let forwarding_shutdown = forwarding.map(|relay| relay.shutdown()).transpose();
         self.stop_projects();
+        self.stop_ci();
         let mut first_error = directory_capture
             .err()
             .or_else(|| agent_shutdown.err())
@@ -2774,6 +2800,10 @@ fn commit(
     publish(&mut state);
     inner.changed.notify_all();
     let _ = inner.project_wake.try_send(());
+    inner
+        .ci_input_generation
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    let _ = inner.ci_wake.try_send(());
     Ok(registry_snapshot(&state))
 }
 

@@ -66,6 +66,7 @@ fn same_project_context(
 ) -> bool {
     left.state == right.state
         && left.error == right.error
+        && left.ci == right.ci
         && match (&left.repository, &right.repository) {
             (Some(left), Some(right)) => left == right,
             (None, None) => left.cwd == right.cwd,
@@ -92,7 +93,7 @@ pub fn build_content<'a>(
             .iter()
             .find(|candidate| candidate.id == *pane)?;
         return Some(Content {
-            rows: metadata::content(pane, registry, snapshot(&pane.id)),
+            rows: metadata::content(pane, registry, snapshot(&pane.id), true),
         });
     }
     let window = target
@@ -167,28 +168,65 @@ pub fn build_content<'a>(
     }
     for group in projects {
         rows.push(Paragraph::new("", Role::Panel));
-        let name = group[0].repository.as_ref().map_or_else(
-            || group[0].cwd.to_string_lossy().into_owned(),
-            |repository| repository.name.clone(),
-        );
-        rows.push(if group[0].repository.is_some() {
-            Paragraph::project(name, Role::Title, group[0].color_slot)
-        } else {
-            Paragraph::new(name, Role::Title)
-        });
+        rows.push(crate::ci::repository_heading(group[0]));
+        let mut requests = std::collections::BTreeSet::new();
+        for project in &group {
+            if let Some(ci) = &project.ci
+                && let Some(request) = &ci.change_request
+                && requests.insert((&ci.repository, request.number))
+            {
+                if requests.len() > 1 {
+                    rows.push(crate::ci::repository_heading(project));
+                }
+                crate::ci::request_content(ci, &mut rows);
+            }
+        }
+        let mut sources: Vec<&bkpr_protocol::ProjectSnapshot> = Vec::new();
         for (index, project) in group.iter().enumerate() {
             if index > 0 {
                 rows.push(Paragraph::new("", Role::Panel));
             }
             metadata::project_content(Some(project), false, &mut rows);
+            let Some(ci) = &project.ci else {
+                continue;
+            };
+            if let Some(prior) = sources.iter_mut().find(|prior| {
+                let old = prior.ci.as_ref().unwrap();
+                old.repository == ci.repository
+                    && old.head_sha == ci.head_sha
+                    && old.local_head_sha == ci.local_head_sha
+                    && old.checked_ref == ci.checked_ref
+                    && old.change_request.as_ref().map(|request| request.number)
+                        == ci.change_request.as_ref().map(|request| request.number)
+            }) {
+                let old = prior.ci.as_ref().unwrap();
+                if ci.updated_at > old.updated_at
+                    || (ci.updated_at == old.updated_at
+                        && crate::ci::state(ci) == bkpr_protocol::CiStatus::Unknown)
+                {
+                    *prior = project;
+                }
+            } else {
+                sources.push(project);
+            }
+        }
+        if sources.is_empty() {
+            crate::ci::content(Some(group[0]), None, false, &mut rows);
+        }
+        for project in sources {
+            let pane = panes.iter().find(|pane| {
+                pane.project
+                    .as_ref()
+                    .is_some_and(|candidate| std::ptr::eq(candidate, project))
+            });
+            crate::ci::content(
+                Some(project),
+                pane.map(|pane| pane.id.as_str()),
+                false,
+                &mut rows,
+            );
         }
     }
-    rows.push(Paragraph::new("", Role::Panel));
-    rows.push(Paragraph::new("Checks & tickets", Role::Title));
-    rows.push(Paragraph::new(
-        "Forge, CI and ticket metadata are not available",
-        Role::Muted,
-    ));
     Some(Content { rows })
 }
 
@@ -252,6 +290,9 @@ pub struct Popover {
     roles: Vec<RoleSpan>,
     projects: Vec<ProjectSpan>,
     foregrounds: Vec<ForegroundSpan>,
+    refresh_hits: Vec<(Rect, bkpr_protocol::CiRefreshTarget)>,
+    links: Vec<(u16, u16, u16, String)>,
+    refresh_pending: Option<(crate::tree::Owner, bkpr_protocol::CiRefreshTarget)>,
     graphical: bool,
 }
 impl Popover {
@@ -272,6 +313,9 @@ impl Popover {
             projects: Vec::new(),
             foregrounds: Vec::new(),
             graphical: false,
+            refresh_hits: Vec::new(),
+            links: Vec::new(),
+            refresh_pending: None,
         }
     }
     pub(crate) fn set_graphical(&mut self, graphical: bool) -> bool {
@@ -290,6 +334,23 @@ impl Popover {
         self.rect = None;
         self.scroll = 0;
         self.max_scroll = 0;
+        self.refresh_hits.clear();
+        self.clear_links();
+    }
+    fn clear_links(&mut self) {
+        for (x, y, cells, _) in &self.links {
+            if let Some(row) = self.surface.frame.rows.get_mut(usize::from(*y)) {
+                for cell in row
+                    .cells
+                    .iter_mut()
+                    .skip(usize::from(*x))
+                    .take(usize::from(*cells))
+                {
+                    cell.hyperlink = None;
+                }
+            }
+        }
+        self.links.clear();
     }
     /// Positive values scroll down. Parent routes wheel input only over this rect.
     pub fn scroll_by(&mut self, rows: i32) {
@@ -386,6 +447,17 @@ impl Popover {
             self.hide();
             return None;
         };
+        if let Some((pending_owner, pending)) = &self.refresh_pending
+            && (*pending_owner != owner
+                || registry
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == pending.pane_id)
+                    .and_then(|pane| pane.project.as_ref())
+                    .is_none_or(|project| !crate::ci::matches_target(project, pending)))
+        {
+            self.refresh_pending = None;
+        }
         let unchanged = self.content_key.as_ref().is_some_and(|key| {
             key.owner == owner
                 && key.target.as_ref() == Some(target)
@@ -516,6 +588,8 @@ impl Popover {
         };
         self.roles = window::theme_spans(local).to_vec();
         self.projects.clear();
+        self.refresh_hits.clear();
+        self.clear_links();
         if local.cols >= 3 && local.rows >= 3 {
             self.roles.push(RoleSpan {
                 rect: Rect {
@@ -559,6 +633,20 @@ impl Popover {
                     },
                     slot: span.slot,
                 }));
+            if let Some((cells, url)) = &line.link {
+                self.links
+                    .push((inner.x, inner.y + index as u16, *cells, url.clone()));
+            }
+            if let Some((hit, target)) = &line.refresh {
+                self.refresh_hits.push((
+                    Rect {
+                        x: rect.x + inner.x + hit.x,
+                        y: rect.y + inner.y + index as u16,
+                        ..*hit
+                    },
+                    target.clone(),
+                ));
+            }
             lines.push((
                 Rect {
                     x: inner.x,
@@ -596,12 +684,113 @@ impl Popover {
             ));
         }
         self.surface.paint(local, lines, None);
+        for (x, y, cells, url) in &self.links {
+            for cell in self.surface.frame.rows[usize::from(*y)]
+                .cells
+                .iter_mut()
+                .skip(usize::from(*x))
+                .take(usize::from(*cells))
+            {
+                cell.hyperlink = Some(url.clone());
+            }
+        }
         self.rect = Some(rect);
         self.paint_key = Some(PaintKey {
             scroll: self.scroll,
             ..key
         });
         Some(rect)
+    }
+    /// Only a current, visibly painted owner/source may issue refresh. This is
+    /// independent of active terminal focus and rejects stale session generations.
+    fn refresh_candidate(
+        &self,
+        tree: &crate::tree::Tree,
+        point: Option<(u16, u16)>,
+    ) -> Option<(crate::tree::Owner, &bkpr_protocol::CiRefreshTarget)> {
+        let key = self.content_key.as_ref()?;
+        let session = tree.session(key.owner)?;
+        if session.group.status != crate::controller::SessionStatus::Online {
+            return None;
+        }
+        if key.registry_revision != session.registry.revision
+            || crate::controller::tree_popup_target(tree, false).is_none_or(|target| {
+                target.owner != key.owner
+                    || match &target.node {
+                        crate::tree::Node::Native(native) => key.target.as_ref() != Some(native),
+                        _ => true,
+                    }
+            })
+        {
+            return None;
+        }
+        let mut targets = self
+            .content
+            .as_ref()?
+            .rows
+            .iter()
+            .filter_map(|row| row.refresh.as_ref())
+            .filter(|target| {
+                point.is_none_or(|(x, y)| {
+                    self.refresh_hits
+                        .iter()
+                        .any(|(rect, visible)| visible == *target && rect.contains(x, y))
+                })
+            });
+        let target = targets.next()?;
+        if targets.next().is_some() {
+            return None;
+        }
+        let current = session
+            .registry
+            .panes
+            .iter()
+            .find(|pane| pane.id == target.pane_id)?
+            .project
+            .as_ref()?;
+        if !crate::ci::matches_target(current, target) {
+            return None;
+        }
+        if self
+            .refresh_pending
+            .as_ref()
+            .is_some_and(|(owner, pending)| *owner == key.owner && pending == target)
+        {
+            return None;
+        }
+        Some((key.owner, target))
+    }
+    pub(crate) fn refresh_available(&self, tree: &crate::tree::Tree) -> bool {
+        self.refresh_candidate(tree, None).is_some()
+    }
+    pub(crate) fn refresh_at(
+        &mut self,
+        tree: &crate::tree::Tree,
+        point: Option<(u16, u16)>,
+    ) -> Option<(crate::tree::Owner, bkpr_protocol::CiRefreshTarget)> {
+        let (owner, target) = self.refresh_candidate(tree, point)?;
+        let result = (owner, target.clone());
+        self.refresh_pending = Some(result.clone());
+        Some(result)
+    }
+    /// A command receipt is not provider completion. Release only its exact
+    /// pending action; actual Loading metadata continues to disable the button.
+    pub(crate) fn refresh_receipt(
+        &mut self,
+        owner: crate::tree::Owner,
+        target: &bkpr_protocol::CiRefreshTarget,
+        known: bool,
+    ) {
+        if known
+            && self
+                .refresh_pending
+                .as_ref()
+                .is_some_and(|(pending_owner, pending)| {
+                    *pending_owner == owner && pending == target
+                })
+        {
+            self.refresh_pending = None;
+        }
     }
     /// Screen-space opaque text body; the logical frame retains its complete
     /// outer rounded border for the plain fallback.
@@ -915,7 +1104,7 @@ mod tests {
         let mut snapshot = snapshot();
         snapshot.error = Some("Current engine error".into());
         let popup = build_content(&registry, &target, |_| Some(&snapshot)).unwrap();
-        let finder = metadata::content(&registry.panes[0], &registry, Some(&snapshot));
+        let finder = metadata::content(&registry.panes[0], &registry, Some(&snapshot), false);
         assert_eq!(
             popup
                 .rows
@@ -1049,6 +1238,7 @@ mod tests {
         use bkpr_protocol::{ChangeSummary, ProjectSnapshot, ProjectState, RepositoryInfo};
         let project = |cwd: &str, root: &str, state| ProjectSnapshot {
             color_slot: None,
+            ci: None,
             cwd: cwd.into(),
             state,
             error: None,
@@ -1233,5 +1423,261 @@ mod tests {
                 original_content = Some(content);
             }
         }
+    }
+    #[test]
+    fn ci_refresh_and_links_follow_exact_painted_owner_source_and_revision() {
+        use crate::controller::{Controller, SessionGroup, SessionStatus};
+        use crate::tree::{Node, Owner, Session, Target, Tree};
+        use std::sync::Arc;
+        let screen = Size {
+            cols: 120,
+            rows: 40,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let owner = Owner {
+            slot: 3,
+            generation: 7,
+        };
+        let target = Target {
+            owner,
+            node: Node::Native(SidebarTarget::Pane {
+                workspace: "work".into(),
+                pane: "terminal".into(),
+            }),
+        };
+        let mut registry = registry();
+        registry.panes[0].project = Some(crate::ci::tests::project());
+        let session = |registry: RegistrySnapshot, owner| {
+            let state = Controller::new(&registry);
+            Arc::new(Session {
+                owner,
+                group: SessionGroup {
+                    name: "Exact owner".into(),
+                    host: None,
+                    status: SessionStatus::Online,
+                    detail: String::new(),
+                },
+                registry: Arc::new(registry),
+                rows: state.sidebar.rows.clone().into(),
+                workspace: state.workspace,
+                window: state.window,
+                focused: state.focused,
+                snapshots: Default::default(),
+                statuses: Default::default(),
+                history: Default::default(),
+            })
+        };
+        let mut tree = Tree::new();
+        tree.reconcile(vec![session(registry.clone(), owner)], owner);
+        tree.hover = Some(target.clone());
+        let mut popup = Popover::new(screen);
+        popup
+            .paint_tree(&tree, Some(&target), 3, 28, screen)
+            .unwrap();
+        popup.scroll_by(i32::MAX);
+        popup
+            .paint_tree(&tree, Some(&target), 3, 28, screen)
+            .unwrap();
+        let hit = popup.refresh_hits[0].0;
+        let accepted = popup.refresh_at(&tree, Some((hit.x, hit.y))).unwrap();
+        assert_eq!(accepted.0, owner);
+        assert_eq!(accepted.1.pane_id, "terminal");
+        assert_eq!(accepted.1.head_sha, "remoteabcdef");
+        assert!(popup.refresh_at(&tree, Some((hit.x, hit.y))).is_none());
+        // A new URL with unchanged visible check labels must invalidate annotations.
+        registry.revision += 1;
+        registry.panes[0]
+            .project
+            .as_mut()
+            .unwrap()
+            .ci
+            .as_mut()
+            .unwrap()
+            .checks[0]
+            .url = Some("https://github.com/owner/repo/actions/runs/99".into());
+        tree.reconcile(vec![session(registry.clone(), owner)], owner);
+        tree.hover = Some(target.clone());
+        assert!(popup.refresh_at(&tree, Some((hit.x, hit.y))).is_none());
+        popup
+            .paint_tree(&tree, Some(&target), 3, 28, screen)
+            .unwrap();
+        assert!(
+            popup
+                .surface
+                .frame
+                .rows
+                .iter()
+                .flat_map(|row| &row.cells)
+                .any(|cell| cell.hyperlink.as_deref()
+                    == Some("https://github.com/owner/repo/actions/runs/99"))
+        );
+        assert!(
+            !popup
+                .surface
+                .frame
+                .rows
+                .iter()
+                .flat_map(|row| &row.cells)
+                .any(|cell| cell.hyperlink.as_deref()
+                    == Some("https://github.com/owner/repo/actions/runs/7"))
+        );
+        registry.revision += 1;
+        registry.panes[0]
+            .project
+            .as_mut()
+            .unwrap()
+            .ci
+            .as_mut()
+            .unwrap()
+            .checks[0]
+            .url = Some("javascript:invalid".into());
+        tree.reconcile(vec![session(registry.clone(), owner)], owner);
+        tree.hover = Some(target.clone());
+        popup
+            .paint_tree(&tree, Some(&target), 3, 28, screen)
+            .unwrap();
+        assert!(
+            !popup
+                .surface
+                .frame
+                .rows
+                .iter()
+                .flat_map(|row| &row.cells)
+                .any(|cell| cell.hyperlink.as_deref()
+                    == Some("https://github.com/owner/repo/actions/runs/99"))
+        );
+        // Same labels and styles, different exact source: old refresh cannot win.
+        registry.revision += 1;
+        registry.panes[0].project.as_mut().unwrap().cwd = "/fixture/repo/subdirectory".into();
+        tree.reconcile(vec![session(registry.clone(), owner)], owner);
+        tree.hover = Some(target.clone());
+        assert!(popup.refresh_at(&tree, Some((hit.x, hit.y))).is_none());
+        popup
+            .paint_tree(&tree, Some(&target), 3, 28, screen)
+            .unwrap();
+        let refreshed = popup.refresh_at(&tree, None).unwrap().1;
+        assert_eq!(
+            refreshed.cwd,
+            std::path::Path::new("/fixture/repo/subdirectory")
+        );
+        assert_eq!(refreshed.head_sha, "remoteabcdef");
+        let replacement = Owner {
+            generation: 8,
+            ..owner
+        };
+        tree.reconcile(vec![session(registry, replacement)], replacement);
+        assert!(popup.refresh_at(&tree, Some((hit.x, hit.y))).is_none());
+        tree.hover = Some(target);
+        assert!(popup.refresh_at(&tree, Some((hit.x, hit.y))).is_none());
+    }
+
+    #[test]
+    fn workspace_ci_deduplicates_provider_sources_and_requests_but_keeps_local_contexts() {
+        let mut registry = registry();
+        registry.panes[0].project = Some(crate::ci::tests::project());
+        let mut duplicate = registry.panes[0].clone();
+        duplicate.id = "duplicate".into();
+        duplicate
+            .project
+            .as_mut()
+            .unwrap()
+            .repository
+            .as_mut()
+            .unwrap()
+            .root = "/fixture/linked".into();
+        registry.panes.push(duplicate);
+        let content = build_content(&registry, &SidebarTarget::Workspace("work".into()), |_| {
+            None
+        })
+        .unwrap();
+        let text = content
+            .rows
+            .iter()
+            .map(|row| row.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(text.matches("Restore project metadata").count(), 1);
+        assert_eq!(text.matches("CI ·").count(), 1);
+        assert_eq!(text.matches("Worktree ·").count(), 2);
+        assert_eq!(
+            content
+                .rows
+                .iter()
+                .filter(|row| row.refresh.is_some())
+                .count(),
+            1
+        );
+        assert!(!text.contains("unit tests"));
+        let ci = registry.panes[1]
+            .project
+            .as_mut()
+            .unwrap()
+            .ci
+            .as_mut()
+            .unwrap();
+        ci.head_sha = "otherremote".into();
+        let request = ci.change_request.as_mut().unwrap();
+        request.number = 43;
+        request.url = "https://github.com/owner/repo/pull/43".into();
+        let content = build_content(&registry, &SidebarTarget::Workspace("work".into()), |_| {
+            None
+        })
+        .unwrap();
+        let text = content
+            .rows
+            .iter()
+            .map(|row| row.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(text.matches("#42").count(), 1);
+        assert_eq!(text.matches("#43").count(), 1);
+        assert_eq!(text.matches("CI ·").count(), 2);
+        assert_eq!(
+            content
+                .rows
+                .iter()
+                .filter(|row| row.refresh.is_some())
+                .count(),
+            2
+        );
+    }
+    #[test]
+    fn fast_command_receipts_and_known_rejections_release_only_their_exact_pending_action() {
+        let screen = Size {
+            cols: 100,
+            rows: 40,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let mut popup = Popover::new(screen);
+        let owner = crate::tree::Owner {
+            slot: 0,
+            generation: 4,
+        };
+        let target = crate::ci::target(&crate::ci::tests::project(), "exact-pane").unwrap();
+        for _known_outcome in ["queued", "known admission failure"] {
+            popup.refresh_pending = Some((owner, target.clone()));
+            popup.refresh_receipt(owner, &target, true);
+            assert!(popup.refresh_pending.is_none());
+        }
+        popup.refresh_pending = Some((owner, target.clone()));
+        popup.refresh_receipt(owner, &target, false);
+        assert!(
+            popup.refresh_pending.is_some(),
+            "ambiguous dispatch cannot authorize a replay"
+        );
+        let retired = crate::tree::Owner {
+            generation: 3,
+            ..owner
+        };
+        popup.refresh_receipt(retired, &target, true);
+        assert!(popup.refresh_pending.is_some());
+        let mut wrong_source = target.clone();
+        wrong_source.local_head_sha = "another-local-head".into();
+        popup.refresh_receipt(owner, &wrong_source, true);
+        assert!(popup.refresh_pending.is_some());
+        popup.refresh_receipt(owner, &target, true);
+        assert!(popup.refresh_pending.is_none());
     }
 }

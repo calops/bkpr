@@ -3,7 +3,7 @@
 //! Query tokenization and nucleo matching adapted from bkpr-zellij's
 //! pane_search.rs (Copyright (c) 2026 Rémi Labeyrie, MIT). The repository's
 //! MIT license notice applies. Projection, identity, and retained painting here
-//! use only the current protocol. Forge PR/CI/ticket facts are not available.
+//! use only current supplied protocol facts, including forge, CI and tickets.
 
 use bkpr_protocol::{
     Cursor, CursorShape, KeyAction, KeyEvent, PaneSnapshot, PaneStatus, RegistrySnapshot, Size,
@@ -459,7 +459,7 @@ impl Finder {
                     .as_ref()
                     .is_some_and(|project| project.state != bkpr_protocol::ProjectState::Ready),
                 project_slot: pane.project.as_ref().and_then(|project| project.color_slot),
-                preview: metadata::content(pane, registry, known),
+                preview: metadata::content(pane, registry, known, false),
             };
             // First value is always the title, including for an unnamed pane.
             document.values.push(Value::new(
@@ -954,7 +954,7 @@ impl Finder {
         }
         let message = if !self.unsupported.is_empty() {
             Some(format!(
-                "Unavailable metadata filters: {}",
+                "Unsupported filters: {}",
                 self.unsupported.join(", ")
             ))
         } else if self.input.error().is_some() && layout.title.height == 0 {
@@ -1733,6 +1733,7 @@ mod tests {
         registry.panes[0].id = "private-pane-uuid".into();
         registry.panes[0].project = Some(ProjectSnapshot {
             color_slot: None,
+            ci: None,
             cwd: "/work/project".into(),
             state: ProjectState::Loading,
             error: None,

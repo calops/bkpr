@@ -12,6 +12,8 @@ pub struct ProjectSnapshot {
     /// is temporarily unknown; absent for unrecognized/nonrepository projects.
     pub color_slot: Option<u32>,
     pub repository: Option<RepositoryInfo>,
+    /// Cached provider facts, fetched independently of local Git observation.
+    pub ci: Option<crate::CiSnapshot>,
     pub error: Option<String>,
 }
 

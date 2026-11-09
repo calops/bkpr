@@ -1,4 +1,4 @@
-//! Independent, bounded SSH attachment control protocol. Native wire family 6 is unchanged.
+//! Independent, bounded SSH attachment control protocol, versioned separately from native wire.
 //!
 //! `remote_wire/remote.fbs` is generated with planus-cli =1.3.0, using
 //! `planus rust --format false -o remote_wire/generated.rs remote_wire/remote.fbs`.
