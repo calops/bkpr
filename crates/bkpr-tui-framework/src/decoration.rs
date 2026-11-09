@@ -450,6 +450,9 @@ impl Material {
             _ => lx < f64::from(self.cell[0]) || ly < f64::from(self.cell[1]),
         };
         let opacity = f64::from(self.style.shadow_opacity_milli) / 1000.0;
+        if self.style.kind == DecorationKind::RecessedTransparentLeftGutter && tile == 3 {
+            return [0.0; 4];
+        }
         match self.style.kind {
             DecorationKind::Raised | DecorationKind::RaisedSurface => {
                 if distance < 0.0 {
@@ -470,10 +473,7 @@ impl Material {
                 if distance >= 0.0 =>
             {
                 let shadow = opacity * self.blurred_outside(tile, x, y);
-                if gutter
-                    && !(self.style.kind == DecorationKind::RecessedTransparentLeftGutter
-                        && tile == 3)
-                {
+                if gutter {
                     let [r, g, b] = self.style.background.map(|c| f64::from(c) * (1.0 - shadow));
                     [r, g, b, 255.0]
                 } else {
@@ -592,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn transparent_left_gutter_keeps_only_shadow_ink() {
+    fn transparent_left_gutter_removes_plain_and_shadow_ink() {
         let normal = material();
         let transparent = DecorationStyle {
             kind: DecorationKind::RecessedTransparentLeftGutter,
@@ -612,7 +612,7 @@ mod tests {
         let normal_pixel = normal.sample(3, 8.0, 20.0);
         let transparent_pixel = transparent.sample(3, 8.0, 20.0);
         assert_eq!(normal_pixel[3], 255.0);
-        assert!(transparent_pixel[3] < normal_pixel[3]);
+        assert_eq!(transparent_pixel[3], 0.0);
     }
     fn prepared() -> PreparedDecoration {
         let style = material();
