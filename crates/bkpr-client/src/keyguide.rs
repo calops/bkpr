@@ -5,6 +5,7 @@
 //! not import Zellij modes, actions, SDK keymaps or terminal-output rendering.
 
 use bkpr_protocol::{KeyAction, KeyEvent};
+use bkpr_tui_framework::chord::{Chord, ChordGroup};
 use bkpr_tui_framework::{EditAction, Rect, Role, RoleSpan};
 use unicode_width::UnicodeWidthStr;
 
@@ -301,6 +302,28 @@ const SHIFT: u16 = 1;
 const CTRL: u16 = 2;
 const LOCKS: u16 = 16 | 32;
 
+// Protocol modifier bits are shift/control/alt/super in the low four bits.
+// Physical bindings select their structured labels at const construction, so
+// every combination is supported without a render-time parser or panic.
+const MODIFIER_LABELS: [&[&str]; 16] = [
+    &[],
+    &["Shift"],
+    &["Ctrl"],
+    &["Ctrl", "Shift"],
+    &["Alt"],
+    &["Alt", "Shift"],
+    &["Ctrl", "Alt"],
+    &["Ctrl", "Alt", "Shift"],
+    &["Super"],
+    &["Shift", "Super"],
+    &["Ctrl", "Super"],
+    &["Ctrl", "Shift", "Super"],
+    &["Alt", "Super"],
+    &["Alt", "Shift", "Super"],
+    &["Ctrl", "Alt", "Super"],
+    &["Ctrl", "Alt", "Shift", "Super"],
+];
+
 impl Context {
     fn mask(self) -> u16 {
         match self {
@@ -357,7 +380,8 @@ pub struct Binding {
     key: Key,
     selected: bool,
     repeat: bool,
-    pub label: &'static str,
+    /// Structured display chord; produced-text bindings have no extra modifier.
+    pub chord: Chord<'static>,
     pub action: Action,
     pub priority: u8,
 }
@@ -388,17 +412,22 @@ const fn physical(
     contexts: u16,
     key: &'static str,
     modifiers: u16,
-    label: &'static str,
+    keycap: &'static str,
     action: Action,
     priority: u8,
     repeat: bool,
 ) -> Binding {
+    // Locks are ignored by dispatch, and cannot be required by a binding.
+    assert!(modifiers < MODIFIER_LABELS.len() as u16);
     Binding {
         contexts,
         key: Key::Physical(key, modifiers),
         selected: false,
         repeat,
-        label,
+        chord: Chord {
+            key: keycap,
+            modifiers: MODIFIER_LABELS[modifiers as usize],
+        },
         action,
         priority,
     }
@@ -410,7 +439,10 @@ const fn text(contexts: u16, key: &'static str, action: Action, priority: u8) ->
         key: Key::Text(key),
         selected: false,
         repeat: false,
-        label: key,
+        chord: Chord {
+            key,
+            modifiers: &[],
+        },
         action,
         priority,
     }
@@ -443,7 +475,7 @@ static BINDINGS: &[Binding] = &[
         APPLICATION | SIDEBAR | SESSIONS | HISTORY | SEARCH | RESIZE,
         "KeyB",
         CTRL,
-        "Ctrl-b",
+        "b",
         A::CommandPrefix,
         1,
         false,
@@ -452,7 +484,7 @@ static BINDINGS: &[Binding] = &[
         APPLICATION | SIDEBAR | SESSIONS | HISTORY,
         "Space",
         CTRL,
-        "Ctrl-Space",
+        "Space",
         A::ToggleSidebar,
         0,
         false,
@@ -461,7 +493,7 @@ static BINDINGS: &[Binding] = &[
         APPLICATION,
         "PageUp",
         SHIFT,
-        "Shift-PgUp",
+        "PgUp",
         A::History(H::PageUp),
         10,
         true,
@@ -470,12 +502,12 @@ static BINDINGS: &[Binding] = &[
         APPLICATION,
         "PageDown",
         SHIFT,
-        "Shift-PgDn",
+        "PgDn",
         A::History(H::PageDown),
         11,
         true,
     ),
-    physical(PREFIX, "KeyB", CTRL, "Ctrl-b", A::SendPrefix, 80, false),
+    physical(PREFIX, "KeyB", CTRL, "b", A::SendPrefix, 80, false),
     physical(PREFIX, "Escape", 0, "Esc", A::Cancel, 0, false),
     text(SIDEBAR | SESSIONS, "S", A::EnterSessions, 2),
     text(PREFIX, "/", A::StartSearch, 10),
@@ -513,7 +545,7 @@ static BINDINGS: &[Binding] = &[
         PREFIX,
         "ArrowLeft",
         SHIFT,
-        "Shift-←",
+        "←",
         A::MovePane(D::Left),
         6,
         false,
@@ -522,25 +554,17 @@ static BINDINGS: &[Binding] = &[
         PREFIX,
         "ArrowRight",
         SHIFT,
-        "Shift-→",
+        "→",
         A::MovePane(D::Right),
         7,
         false,
     ),
-    physical(
-        PREFIX,
-        "ArrowUp",
-        SHIFT,
-        "Shift-↑",
-        A::MovePane(D::Up),
-        8,
-        false,
-    ),
+    physical(PREFIX, "ArrowUp", SHIFT, "↑", A::MovePane(D::Up), 8, false),
     physical(
         PREFIX,
         "ArrowDown",
         SHIFT,
-        "Shift-↓",
+        "↓",
         A::MovePane(D::Down),
         9,
         false,
@@ -702,19 +726,19 @@ static BINDINGS: &[Binding] = &[
         CREATE | EDIT | FINDER | SEARCH | THEME,
         "KeyU",
         CTRL,
-        "Ctrl-u",
+        "u",
         A::Edit(E::Clear),
         41,
         false,
     ),
     physical(CREATE, "Tab", 0, "Tab", A::CycleField, 10, false),
-    physical(CREATE, "Tab", SHIFT, "Shift-Tab", A::CycleField, 10, false),
+    physical(CREATE, "Tab", SHIFT, "Tab", A::CycleField, 10, false),
     physical(FINDER, "Tab", 0, "Tab", A::CycleView, 12, false),
     physical(
         FINDER | THEME,
         "KeyP",
         CTRL,
-        "Ctrl-p",
+        "p",
         A::Navigate(N::Previous),
         10,
         true,
@@ -723,7 +747,7 @@ static BINDINGS: &[Binding] = &[
         FINDER | THEME,
         "KeyN",
         CTRL,
-        "Ctrl-n",
+        "n",
         A::Navigate(N::Next),
         11,
         true,
@@ -805,7 +829,7 @@ static BINDINGS: &[Binding] = &[
         HISTORY,
         "PageUp",
         SHIFT,
-        "Shift-PgUp",
+        "PgUp",
         A::History(H::PageUp),
         12,
         true,
@@ -814,7 +838,7 @@ static BINDINGS: &[Binding] = &[
         HISTORY,
         "PageDown",
         SHIFT,
-        "Shift-PgDn",
+        "PgDn",
         A::History(H::PageDown),
         13,
         true,
@@ -824,15 +848,7 @@ static BINDINGS: &[Binding] = &[
     physical(HISTORY, "Enter", 0, "Enter", A::History(H::Live), 0, false),
     physical(HISTORY, "End", 0, "End", A::History(H::Live), 0, false),
     physical(SEARCH, "Enter", 0, "Enter", A::NextMatch, 10, true),
-    physical(
-        SEARCH,
-        "Enter",
-        SHIFT,
-        "Shift-Enter",
-        A::PreviousMatch,
-        11,
-        true,
-    ),
+    physical(SEARCH, "Enter", SHIFT, "Enter", A::PreviousMatch, 11, true),
     physical(RESIZE, "Enter", 0, "Enter", A::FinishResize, 0, false),
     physical(RESIZE, "Escape", 0, "Esc", A::FinishResize, 0, false),
     physical(
@@ -887,7 +903,7 @@ static BINDINGS: &[Binding] = &[
         RESIZE,
         "ArrowLeft",
         SHIFT,
-        "Shift-←",
+        "←",
         A::Resize {
             direction: D::Left,
             cells: 5,
@@ -899,7 +915,7 @@ static BINDINGS: &[Binding] = &[
         RESIZE,
         "ArrowRight",
         SHIFT,
-        "Shift-→",
+        "→",
         A::Resize {
             direction: D::Right,
             cells: 5,
@@ -911,7 +927,7 @@ static BINDINGS: &[Binding] = &[
         RESIZE,
         "ArrowUp",
         SHIFT,
-        "Shift-↑",
+        "↑",
         A::Resize {
             direction: D::Up,
             cells: 5,
@@ -923,7 +939,7 @@ static BINDINGS: &[Binding] = &[
         RESIZE,
         "ArrowDown",
         SHIFT,
-        "Shift-↓",
+        "↓",
         A::Resize {
             direction: D::Down,
             cells: 5,
@@ -970,13 +986,155 @@ pub fn lookup_with(
         .map(|binding| binding.action)
 }
 
+/// One executable action and all of its available alternative chords.
+#[derive(Clone, Debug)]
+pub struct HintMember {
+    pub action: Action,
+    pub aliases: Vec<Chord<'static>>,
+}
+
+/// A presentation row retains every concrete action; dispatch never uses rows.
 #[derive(Clone, Debug)]
 pub struct Hint {
-    pub keys: Vec<&'static str>,
-    pub action: Action,
+    pub members: Vec<HintMember>,
     pub description: &'static str,
     pub priority: u8,
+    group: Option<usize>,
 }
+
+struct PresentationGroup {
+    contexts: u16,
+    actions: &'static [Action],
+    description: &'static str,
+    priority: u8,
+}
+
+// Membership, order and row priority are product policy, not label heuristics.
+// Descriptions remain truthful when capability filtering leaves a partial group.
+static PRESENTATION_GROUPS: &[PresentationGroup] = &[
+    PresentationGroup {
+        contexts: PREFIX,
+        actions: &[
+            A::FocusPane(D::Left),
+            A::FocusPane(D::Right),
+            A::FocusPane(D::Up),
+            A::FocusPane(D::Down),
+        ],
+        description: "focus pane",
+        priority: 2,
+    },
+    PresentationGroup {
+        contexts: PREFIX,
+        actions: &[
+            A::MovePane(D::Left),
+            A::MovePane(D::Right),
+            A::MovePane(D::Up),
+            A::MovePane(D::Down),
+        ],
+        description: "move pane",
+        priority: 6,
+    },
+    PresentationGroup {
+        contexts: RESIZE,
+        actions: &[
+            A::Resize {
+                direction: D::Left,
+                cells: 1,
+            },
+            A::Resize {
+                direction: D::Right,
+                cells: 1,
+            },
+            A::Resize {
+                direction: D::Up,
+                cells: 1,
+            },
+            A::Resize {
+                direction: D::Down,
+                cells: 1,
+            },
+        ],
+        description: "resize by 1 cell",
+        priority: 10,
+    },
+    PresentationGroup {
+        contexts: RESIZE,
+        actions: &[
+            A::Resize {
+                direction: D::Left,
+                cells: 5,
+            },
+            A::Resize {
+                direction: D::Right,
+                cells: 5,
+            },
+            A::Resize {
+                direction: D::Up,
+                cells: 5,
+            },
+            A::Resize {
+                direction: D::Down,
+                cells: 5,
+            },
+        ],
+        description: "resize by 5 cells",
+        priority: 20,
+    },
+    PresentationGroup {
+        contexts: SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME,
+        actions: &[A::Navigate(N::Previous), A::Navigate(N::Next)],
+        description: "select item",
+        priority: 10,
+    },
+    PresentationGroup {
+        contexts: SIDEBAR | SESSIONS | CHOOSER | DETAILS,
+        actions: &[A::Navigate(N::First), A::Navigate(N::Last)],
+        description: "jump to list boundary",
+        priority: 33,
+    },
+    PresentationGroup {
+        contexts: SIDEBAR | SESSIONS | DETAILS | THEME,
+        actions: &[A::Navigate(N::PagePrevious), A::Navigate(N::PageNext)],
+        description: "navigate by page",
+        priority: 35,
+    },
+    PresentationGroup {
+        contexts: FINDER,
+        actions: &[A::Navigate(N::PagePrevious), A::Navigate(N::PageNext)],
+        description: "scroll preview by page",
+        priority: 35,
+    },
+    PresentationGroup {
+        contexts: PREFIX,
+        actions: &[A::PreviousWorkspace, A::NextWorkspace],
+        description: "switch workspace",
+        priority: 16,
+    },
+    PresentationGroup {
+        contexts: HISTORY,
+        actions: &[A::History(H::LineUp), A::History(H::LineDown)],
+        description: "scroll history by line",
+        priority: 10,
+    },
+    PresentationGroup {
+        contexts: APPLICATION,
+        actions: &[A::History(H::PageUp), A::History(H::PageDown)],
+        description: "scroll history by page",
+        priority: 10,
+    },
+    PresentationGroup {
+        contexts: HISTORY,
+        actions: &[A::History(H::PageUp), A::History(H::PageDown)],
+        description: "scroll history by page",
+        priority: 12,
+    },
+    PresentationGroup {
+        contexts: SEARCH,
+        actions: &[A::NextMatch, A::PreviousMatch],
+        description: "navigate matches",
+        priority: 10,
+    },
+];
 
 #[cfg(test)]
 pub fn hints(context: Context) -> Vec<Hint> {
@@ -986,17 +1144,59 @@ pub fn hints(context: Context) -> Vec<Hint> {
 pub fn hints_with(context: Context, supported: impl Fn(Action) -> bool) -> Vec<Hint> {
     let mut hints: Vec<Hint> = Vec::new();
     for binding in bindings_with(context, supported) {
-        if let Some(hint) = hints.iter_mut().find(|hint| hint.action == binding.action) {
-            if !hint.keys.contains(&binding.label) {
-                hint.keys.push(binding.label);
+        let group = PRESENTATION_GROUPS.iter().position(|group| {
+            group.contexts & context.mask() != 0 && group.actions.contains(&binding.action)
+        });
+        let existing = hints.iter_mut().find(|hint| {
+            if let Some(group) = group {
+                hint.group == Some(group)
+            } else {
+                hint.group.is_none()
+                    && hint
+                        .members
+                        .iter()
+                        .any(|member| member.action == binding.action)
+            }
+        });
+        let hint = if let Some(hint) = existing {
+            hint
+        } else {
+            let (description, priority) = group.map_or(
+                (binding.action.description(context), binding.priority),
+                |index| {
+                    let group = &PRESENTATION_GROUPS[index];
+                    (group.description, group.priority)
+                },
+            );
+            hints.push(Hint {
+                members: Vec::new(),
+                description,
+                priority,
+                group,
+            });
+            hints.last_mut().unwrap()
+        };
+        let chord = binding.chord;
+        if let Some(member) = hint
+            .members
+            .iter_mut()
+            .find(|member| member.action == binding.action)
+        {
+            if !member.aliases.contains(&chord) {
+                member.aliases.push(chord);
             }
         } else {
-            hints.push(Hint {
-                keys: vec![binding.label],
+            hint.members.push(HintMember {
                 action: binding.action,
-                description: binding.action.description(context),
-                priority: binding.priority,
+                aliases: vec![chord],
             });
+        }
+    }
+    for hint in &mut hints {
+        if let Some(index) = hint.group {
+            let order = PRESENTATION_GROUPS[index].actions;
+            hint.members
+                .sort_by_key(|member| order.iter().position(|action| *action == member.action));
         }
     }
     hints.sort_by_key(|hint| hint.priority);
@@ -1016,59 +1216,38 @@ pub struct Guide {
     pub expanded_roles: Vec<RoleSpan>,
 }
 
-fn alias_width(keys: &[&str]) -> usize {
-    keys.iter().map(|key| width(key)).sum::<usize>() + keys.len().saturating_sub(1)
-}
-
-/// Keep each executable chord intact; only the separators between aliases wrap.
-fn alias_rows(keys: &[&str], columns: usize) -> Option<Vec<std::ops::Range<usize>>> {
-    let mut rows = Vec::new();
-    let mut start = 0;
-    let mut used = 0;
-    for (index, key) in keys.iter().enumerate() {
-        let cells = width(key);
-        if cells > columns {
-            return None;
-        }
-        if index > start && used + 1 + cells > columns {
-            rows.push(start..index);
-            start = index;
-            used = 0;
-        }
-        used += usize::from(index > start) + cells;
-    }
-    if start < keys.len() {
-        rows.push(start..keys.len());
-    }
-    Some(rows)
-}
-
 struct Body<'a> {
     hints: &'a [Hint],
-    single_key: usize,
-    aliases: usize,
+    chords: Vec<ChordGroup>,
+    minimum_key: usize,
+    key_width: usize,
     description: usize,
 }
 
 impl<'a> Body<'a> {
     fn new(hints: &'a [Hint]) -> Self {
-        let mut single_key = 0;
-        let mut aliases = 0;
-        let mut description = 0;
-        for hint in hints {
-            let mut full = hint.keys.len().saturating_sub(1);
-            for key in &hint.keys {
-                let cells = width(key);
-                single_key = single_key.max(cells);
-                full += cells;
-            }
-            aliases = aliases.max(full);
-            description = description.max(width(hint.description));
-        }
+        let chords: Vec<_> = hints
+            .iter()
+            .map(|hint| {
+                ChordGroup::new(
+                    hint.members
+                        .iter()
+                        .map(|member| member.aliases.iter().copied()),
+                )
+            })
+            .collect();
+        let minimum_key = chords.iter().map(ChordGroup::min_width).max().unwrap_or(0);
+        let key_width = chords.iter().map(ChordGroup::width).max().unwrap_or(0);
+        let description = hints
+            .iter()
+            .map(|hint| width(hint.description))
+            .max()
+            .unwrap_or(0);
         Self {
             hints,
-            single_key,
-            aliases,
+            chords,
+            minimum_key,
+            key_width,
             description,
         }
     }
@@ -1077,10 +1256,10 @@ impl<'a> Body<'a> {
         if columns < 4 || max_rows == 0 || self.hints.is_empty() {
             return (Vec::new(), Vec::new());
         }
-        let key_columns = if self.aliases + 2 + self.description <= columns {
-            self.aliases
+        let key_columns = if self.key_width + 2 + self.description <= columns {
+            self.key_width
         } else {
-            self.single_key.max(self.aliases.div_ceil(2))
+            self.minimum_key.max(self.key_width.div_ceil(2))
         }
         .clamp(1, columns - 3);
         let description_columns = columns - key_columns - 2;
@@ -1092,8 +1271,8 @@ impl<'a> Body<'a> {
         let mut roles = Vec::new();
         let mut omitted = 0;
         let mut last_group = None;
-        for hint in self.hints {
-            let Some(keys) = alias_rows(&hint.keys, key_columns) else {
+        for (hint, chords) in self.hints.iter().zip(&self.chords) {
+            let Some(keys) = chords.wrap(key_columns) else {
                 omitted += 1;
                 continue;
             };
@@ -1110,28 +1289,21 @@ impl<'a> Body<'a> {
             last_group = Some((rows.len(), roles.len()));
             for line in 0..count {
                 let mut row = String::with_capacity(columns);
-                if let Some(range) = keys.get(line) {
-                    let aliases = &hint.keys[range.clone()];
-                    let mut x = key_columns - alias_width(aliases);
+                if let Some(keys) = keys.get(line) {
+                    let x = key_columns - keys.width;
                     row.extend(std::iter::repeat_n(' ', x));
-                    for (index, key) in aliases.iter().enumerate() {
-                        if index > 0 {
-                            row.push('/');
-                            x += 1;
-                        }
-                        let cells = width(key);
+                    for keycap in &keys.keycaps {
                         roles.push(RoleSpan {
                             rect: Rect {
-                                x: x as u16,
+                                x: (x + keycap.start) as u16,
                                 y: rows.len() as u16,
-                                width: cells as u16,
+                                width: keycap.len() as u16,
                                 height: 1,
                             },
                             role: Role::Accent,
                         });
-                        row.push_str(key);
-                        x += cells;
                     }
+                    row.push_str(&keys.text);
                 } else {
                     row.extend(std::iter::repeat_n(' ', key_columns));
                 }
@@ -1172,23 +1344,20 @@ pub fn render_with(
     max_columns: u16,
     max_rows: usize,
     supported: impl Fn(Action) -> bool,
+    notice: Option<&str>,
 ) -> Guide {
     if max_columns == 0 || max_rows == 0 {
         return Guide::default();
     }
-    let mut hints = hints_with(context, supported);
-    for hint in &mut hints {
-        hint.keys.sort_by_key(|key| {
-            let arrow = key.chars().last().is_some_and(|c| "←↓↑→".contains(c));
-            (
-                !arrow,
-                width(key),
-                key.len() == 1 && key.as_bytes()[0].is_ascii_uppercase(),
-                *key,
-            )
-        });
-    }
-    render_hints(context, &hints, sidebar_columns, max_columns, max_rows)
+    let hints = hints_with(context, supported);
+    render_hints(
+        context,
+        &hints,
+        sidebar_columns,
+        max_columns,
+        max_rows,
+        notice,
+    )
 }
 
 fn render_hints(
@@ -1197,6 +1366,7 @@ fn render_hints(
     sidebar_columns: u16,
     max_columns: u16,
     max_rows: usize,
+    notice: Option<&str>,
 ) -> Guide {
     if max_columns == 0 || max_rows == 0 {
         return Guide::default();
@@ -1204,15 +1374,27 @@ fn render_hints(
     let body = Body::new(hints);
     let title_columns = width(context.title()) + 5;
     let limit = usize::from(max_columns.min(sidebar_columns.max(72)));
-    let provisional = (body.aliases + 2 + body.description + 4)
+    let provisional = (body.key_width + 2 + body.description + 4)
         .max(title_columns)
         .max(usize::from(sidebar_columns))
         .min(limit);
     let padding = usize::from(provisional >= 8);
     let overhead = 2 + 2 * padding;
     let inner_columns = provisional.saturating_sub(overhead);
-    let (mut expanded, mut expanded_roles) = body.render(inner_columns, max_rows);
-    if expanded.is_empty() {
+    // Reserve notice rows before laying out whole logical groups. A notice must
+    // never force the caller to truncate a chord group or its explanation.
+    let notice: Vec<_> = notice
+        .filter(|_| provisional >= 8)
+        .map(|text| {
+            textwrap::wrap(text, inner_columns)
+                .into_iter()
+                .take(max_rows)
+                .collect()
+        })
+        .unwrap_or_default();
+    let body_rows = max_rows - notice.len();
+    let (mut expanded, mut expanded_roles) = body.render(inner_columns, body_rows);
+    if expanded.is_empty() && body_rows > 0 {
         let message = if hints.is_empty() {
             "No configured shortcuts"
         } else {
@@ -1235,7 +1417,8 @@ fn render_hints(
         .max()
         .unwrap_or(0)
         .saturating_sub(left);
-    let columns = (outline + overhead)
+    let notice_columns = notice.iter().map(|line| width(line)).max().unwrap_or(0);
+    let columns = (outline.max(notice_columns) + overhead)
         .max(title_columns)
         .max(usize::from(sidebar_columns))
         .min(limit) as u16;
@@ -1250,7 +1433,15 @@ fn render_hints(
     }
     for span in &mut expanded_roles {
         span.rect.x = span.rect.x.saturating_sub(left as u16) + offset as u16;
+        span.rect.y += notice.len() as u16;
     }
+    let notice_padding = " ".repeat(padding);
+    expanded.splice(
+        0..0,
+        notice
+            .iter()
+            .map(|line| format!("{notice_padding}{line}{notice_padding}")),
+    );
     // Keep the shared right margin outside content centering and wrapping.
     let columns = columns.saturating_add(1).min(max_columns);
     Guide {
@@ -1274,21 +1465,362 @@ mod tests {
         }
     }
 
+    fn hint(
+        action: Action,
+        aliases: &[Chord<'static>],
+        description: &'static str,
+        priority: u8,
+    ) -> Hint {
+        Hint {
+            members: vec![HintMember {
+                action,
+                aliases: aliases.to_vec(),
+            }],
+            description,
+            priority,
+            group: None,
+        }
+    }
+
+    fn plain(key: &'static str) -> Chord<'static> {
+        Chord {
+            key,
+            modifiers: &[],
+        }
+    }
+
+    fn modified(key: &'static str, modifiers: &'static [&'static str]) -> Chord<'static> {
+        Chord { key, modifiers }
+    }
+
+    fn advertised(context: Context) -> impl Iterator<Item = Action> {
+        hints(context)
+            .into_iter()
+            .flat_map(|hint| hint.members.into_iter().map(|member| member.action))
+    }
+
+    fn keycaps(rows: &[String], spans: &[RoleSpan]) -> Vec<String> {
+        spans
+            .iter()
+            .map(|span| {
+                let mut column = 0;
+                rows[usize::from(span.rect.y)]
+                    .chars()
+                    .filter(|character| {
+                        let start = column;
+                        column += unicode_width::UnicodeWidthChar::width(*character).unwrap_or(0);
+                        start >= usize::from(span.rect.x)
+                            && start < usize::from(span.rect.x + span.rect.width)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_physical_modifier_combination_has_structured_labels() {
+        for modifiers in 0..16 {
+            let binding = physical(PREFIX, "KeyA", modifiers, "a", A::SendPrefix, 0, false);
+            assert_eq!(binding.chord.key, "a");
+            assert_eq!(
+                binding.chord.modifiers.len(),
+                modifiers.count_ones() as usize
+            );
+            for (mask, label) in [(1, "Shift"), (2, "Ctrl"), (4, "Alt"), (8, "Super")] {
+                assert_eq!(
+                    binding.chord.modifiers.contains(&label),
+                    modifiers & mask != 0
+                );
+            }
+            assert!(binding.matches(&event("KeyA", "", modifiers | LOCKS, KeyAction::Press)));
+        }
+        let produced = text(PREFIX, "%", A::SplitHorizontal, 0);
+        assert_eq!(produced.chord, plain("%"));
+    }
+
+    #[test]
+    fn directional_rows_retain_each_action_and_dispatch_its_own_chord() {
+        let context = Context::CommandPrefix;
+        let rows = hints_with(context, |action| {
+            matches!(action, A::FocusPane(_) | A::MovePane(_))
+        });
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows.iter().map(|row| row.priority).collect::<Vec<_>>(),
+            [2, 6]
+        );
+        for (row, shifted) in rows.iter().zip([false, true]) {
+            assert_eq!(row.members.len(), 4);
+            for (member, direction) in row.members.iter().zip([D::Left, D::Right, D::Up, D::Down]) {
+                let expected = if shifted {
+                    A::MovePane(direction)
+                } else {
+                    A::FocusPane(direction)
+                };
+                assert_eq!(member.action, expected);
+                assert_eq!(member.aliases.len(), 1);
+                assert_eq!(
+                    member.aliases[0].modifiers,
+                    if shifted { &["Shift"][..] } else { &[][..] }
+                );
+                assert_eq!(
+                    lookup(
+                        context,
+                        &event(
+                            direction.key(),
+                            "",
+                            if shifted { SHIFT } else { 0 },
+                            KeyAction::Press
+                        )
+                    ),
+                    Some(expected)
+                );
+            }
+        }
+        let guide = render_hints(context, &rows, 38, 120, 8, None);
+        assert_eq!(
+            guide.expanded.len(),
+            2,
+            "each direction family fits one compact row"
+        );
+        assert_eq!(
+            keycaps(&guide.expanded, &guide.expanded_roles),
+            ["←", "→", "↑", "↓", "Shift-", "←", "→", "↑", "↓"]
+        );
+    }
+
+    #[test]
+    fn unsupported_directions_leave_only_real_members_at_declared_priority() {
+        let supported = |action| matches!(action, A::FocusPane(D::Right | D::Down));
+        let rows = hints_with(Context::CommandPrefix, supported);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].priority, 2,
+            "priority belongs to the group, not its first surviving binding"
+        );
+        assert_eq!(
+            rows[0]
+                .members
+                .iter()
+                .map(|member| member.action)
+                .collect::<Vec<_>>(),
+            [A::FocusPane(D::Right), A::FocusPane(D::Down)]
+        );
+        let guide = render_hints(Context::CommandPrefix, &rows, 38, 120, 8, None);
+        assert_eq!(guide.expanded.len(), 1);
+        assert_eq!(keycaps(&guide.expanded, &guide.expanded_roles), ["→", "↓"]);
+        for (direction, expected) in [
+            (D::Left, None),
+            (D::Right, Some(A::FocusPane(D::Right))),
+            (D::Up, None),
+            (D::Down, Some(A::FocusPane(D::Down))),
+        ] {
+            assert_eq!(
+                lookup_with(
+                    Context::CommandPrefix,
+                    &event(direction.key(), "", 0, KeyAction::Press),
+                    supported
+                ),
+                expected
+            );
+        }
+        assert!(hints_with(Context::CommandPrefix, |_| false).is_empty());
+    }
+
+    #[test]
+    fn grouped_actions_and_same_action_aliases_remain_distinct() {
+        let rows = hints_with(Context::Sidebar { selected: true }, |action| {
+            matches!(action, A::Navigate(N::Previous | N::Next))
+        });
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].members.len(), 2);
+        assert_eq!(rows[0].members[0].aliases, [plain("↑"), plain("k")]);
+        assert_eq!(rows[0].members[1].aliases, [plain("↓"), plain("j")]);
+        let group = ChordGroup::new(
+            rows[0]
+                .members
+                .iter()
+                .map(|member| member.aliases.iter().copied()),
+        );
+        assert_eq!(group.wrap(group.width()).unwrap()[0].text, "↑/k, ↓/j");
+        let aliases = hints_with(Context::CommandPrefix, |action| {
+            action == A::SplitHorizontal
+        });
+        assert_eq!(aliases.len(), 1);
+        assert_eq!(aliases[0].members.len(), 1);
+        assert_eq!(aliases[0].members[0].aliases, [plain("n"), plain("%")]);
+        assert_eq!(
+            lookup(
+                Context::CommandPrefix,
+                &event("Digit5", "%", SHIFT, KeyAction::Press)
+            ),
+            Some(A::SplitHorizontal)
+        );
+        assert_eq!(
+            lookup(
+                Context::CommandPrefix,
+                &event("Digit5", "%", CTRL | SHIFT, KeyAction::Press)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn resize_step_sizes_have_separate_complete_modifier_scopes() {
+        let rows = hints_with(Context::Resize, |action| matches!(action, A::Resize { .. }));
+        assert_eq!(rows.len(), 2);
+        for (row, cells, modifiers) in [(&rows[0], 1, 0), (&rows[1], 5, SHIFT)] {
+            assert_eq!(row.members.len(), 4);
+            for (member, direction) in row.members.iter().zip([D::Left, D::Right, D::Up, D::Down]) {
+                let expected = A::Resize { direction, cells };
+                assert_eq!(member.action, expected);
+                assert_eq!(
+                    lookup(
+                        Context::Resize,
+                        &event(direction.key(), "", modifiers, KeyAction::Repeat)
+                    ),
+                    Some(expected)
+                );
+            }
+        }
+        let guide = render_hints(Context::Resize, &rows, 38, 120, 8, None);
+        assert_eq!(guide.expanded.len(), 2);
+        assert!(guide.expanded[1].contains("Shift-("));
+        assert_eq!(
+            keycaps(&guide.expanded, &guide.expanded_roles),
+            ["←", "→", "↑", "↓", "Shift-", "←", "→", "↑", "↓"]
+        );
+    }
+
+    #[test]
+    fn contextual_groups_preserve_every_available_alias_exactly_once() {
+        for context in [
+            Context::Application,
+            Context::CommandPrefix,
+            Context::Sidebar { selected: true },
+            Context::Sidebar { selected: false },
+            Context::Sessions,
+            Context::Create,
+            Context::Edit,
+            Context::Confirmation,
+            Context::Finder,
+            Context::Chooser,
+            Context::Details,
+            Context::ClipboardConsent,
+            Context::History,
+            Context::Search,
+            Context::Resize,
+            Context::Theme,
+        ] {
+            let rows = hints(context);
+            assert!(
+                rows.windows(2)
+                    .all(|pair| pair[0].priority <= pair[1].priority)
+            );
+            for binding in bindings_with(context, |_| true) {
+                let members: Vec<_> = rows
+                    .iter()
+                    .flat_map(|row| &row.members)
+                    .filter(|member| member.action == binding.action)
+                    .collect();
+                assert_eq!(members.len(), 1);
+                assert!(members[0].aliases.contains(&binding.chord));
+            }
+            for row in &rows {
+                if let Some(group) = row.group {
+                    let declaration = &PRESENTATION_GROUPS[group];
+                    assert_eq!(row.priority, declaration.priority);
+                    let positions: Vec<_> = row
+                        .members
+                        .iter()
+                        .map(|member| {
+                            declaration
+                                .actions
+                                .iter()
+                                .position(|action| *action == member.action)
+                                .unwrap()
+                        })
+                        .collect();
+                    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+                }
+            }
+        }
+    }
+
+    fn wrapping_group() -> Hint {
+        Hint {
+            members: vec![
+                HintMember {
+                    action: A::FocusPane(D::Left),
+                    aliases: vec![modified("LongKeyA", &["Ctrl"])],
+                },
+                HintMember {
+                    action: A::FocusPane(D::Right),
+                    aliases: vec![modified("LongKeyB", &["Ctrl"])],
+                },
+            ],
+            description: "move input",
+            priority: 0,
+            group: None,
+        }
+    }
+
+    #[test]
+    fn narrow_groups_wrap_complete_chords_or_omit_the_whole_row() {
+        let row = wrapping_group();
+        let (lines, roles) = Body::new(std::slice::from_ref(&row)).render(30, 8);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            keycaps(&lines, &roles),
+            ["Ctrl-", "LongKeyA", "Ctrl-", "LongKeyB"]
+        );
+        assert!(lines.iter().all(|line| width(line) <= 30));
+        for (columns, max_rows) in [(30, 1), (16, 8)] {
+            let (lines, roles) = Body::new(std::slice::from_ref(&row)).render(columns, max_rows);
+            assert!(
+                roles.is_empty(),
+                "partial logical rows must not publish any executable chord"
+            );
+            assert_eq!(lines.len(), 1);
+        }
+    }
+
+    #[test]
+    fn notices_reserve_rows_before_whole_group_layout() {
+        let hints = [wrapping_group()];
+        let normal = render_hints(Context::CommandPrefix, &hints, 34, 34, 2, None);
+        assert_eq!(normal.expanded.len(), 2);
+        assert!(!normal.expanded_roles.is_empty());
+        let omitted = render_hints(Context::CommandPrefix, &hints, 34, 34, 2, Some("pending"));
+        assert_eq!(omitted.expanded.len(), 2);
+        assert!(omitted.expanded[0].contains("pending"));
+        assert!(
+            omitted.expanded_roles.is_empty(),
+            "notice cannot truncate a multiline group"
+        );
+        let complete = render_hints(Context::CommandPrefix, &hints, 34, 34, 3, Some("pending"));
+        assert_eq!(complete.expanded.len(), 3);
+        assert!(complete.expanded_roles.iter().all(|span| span.rect.y >= 1));
+        assert_eq!(
+            keycaps(&complete.expanded, &complete.expanded_roles),
+            ["Ctrl-", "LongKeyA", "Ctrl-", "LongKeyB"]
+        );
+        let notice_only = render_hints(Context::CommandPrefix, &hints, 34, 34, 1, Some("pending"));
+        assert_eq!(notice_only.expanded.len(), 1);
+        assert!(notice_only.expanded[0].contains("pending"));
+        assert!(notice_only.expanded_roles.is_empty());
+    }
+
     #[test]
     fn every_keybind_popup_extends_right_without_moving_its_content() {
         let hints = [
-            Hint {
-                keys: vec!["Ctrl-a", "a"],
-                action: A::ActivateSelected,
-                description: "select",
-                priority: 0,
-            },
-            Hint {
-                keys: vec!["b"],
-                action: A::ToggleSidebar,
-                description: "open",
-                priority: 1,
-            },
+            hint(
+                A::ActivateSelected,
+                &[modified("a", &["Ctrl"]), plain("a")],
+                "select",
+                0,
+            ),
+            hint(A::ToggleSidebar, &[plain("b")], "open", 1),
         ];
         for context in [
             Context::Application,
@@ -1309,8 +1841,15 @@ mod tests {
         ] {
             for sidebar_columns in [38, 80] {
                 let constrained =
-                    render_hints(context, &hints, sidebar_columns, sidebar_columns, 8);
-                let padded = render_hints(context, &hints, sidebar_columns, sidebar_columns + 1, 8);
+                    render_hints(context, &hints, sidebar_columns, sidebar_columns, 8, None);
+                let padded = render_hints(
+                    context,
+                    &hints,
+                    sidebar_columns,
+                    sidebar_columns + 1,
+                    8,
+                    None,
+                );
                 assert_eq!(constrained.columns, sidebar_columns);
                 assert_eq!(padded.columns, sidebar_columns + 1);
                 assert_eq!(padded.expanded, constrained.expanded);
@@ -1321,13 +1860,13 @@ mod tests {
 
     #[test]
     fn asymmetric_descriptions_keep_a_content_sized_gutter() {
-        let hint = Hint {
-            keys: vec!["x"],
-            action: A::RemovePaneFromLayout,
-            description: "remove the layout entry while keeping the terminal process",
-            priority: 0,
-        };
-        let guide = render_hints(Context::CommandPrefix, &[hint], 20, 120, 8);
+        let hint = hint(
+            A::RemovePaneFromLayout,
+            &[plain("x")],
+            "remove the layout entry while keeping the terminal process",
+            0,
+        );
+        let guide = render_hints(Context::CommandPrefix, &[hint], 20, 120, 8, None);
         let key = &guide.expanded_roles[0].rect;
         let key_end = key.x + key.width;
         assert!(
@@ -1343,20 +1882,15 @@ mod tests {
     #[test]
     fn short_table_aligns_aliases_and_description_columns() {
         let hints = [
-            Hint {
-                keys: vec!["Ctrl-a", "a"],
-                action: A::ActivateSelected,
-                description: "select",
-                priority: 0,
-            },
-            Hint {
-                keys: vec!["b"],
-                action: A::ToggleSidebar,
-                description: "open",
-                priority: 1,
-            },
+            hint(
+                A::ActivateSelected,
+                &[modified("a", &["Ctrl"]), plain("a")],
+                "select",
+                0,
+            ),
+            hint(A::ToggleSidebar, &[plain("b")], "open", 1),
         ];
-        let guide = render_hints(Context::CommandPrefix, &hints, 38, 120, 8);
+        let guide = render_hints(Context::CommandPrefix, &hints, 38, 120, 8, None);
         let endpoints: Vec<_> = (0..guide.expanded.len())
             .map(|row| {
                 guide
@@ -1380,20 +1914,15 @@ mod tests {
     #[test]
     fn omitted_long_description_does_not_expand_the_visible_card() {
         let hints = [
-            Hint {
-                keys: vec!["Enter"],
-                action: A::Submit,
-                description: "apply",
-                priority: 0,
-            },
-            Hint {
-                keys: vec!["z"],
-                action: A::RemovePaneFromLayout,
-                description: "this complete explanation needs several wrapped rows to describe an operation without losing any of its important terminal process lifetime and layout ownership semantics",
-                priority: 1,
-            },
+            hint(A::Submit, &[plain("Enter")], "apply", 0),
+            hint(
+                A::RemovePaneFromLayout,
+                &[plain("z")],
+                "this complete explanation needs several wrapped rows to describe an operation without losing any of its important terminal process lifetime and layout ownership semantics",
+                1,
+            ),
         ];
-        let guide = render_hints(Context::CommandPrefix, &hints, 24, 120, 2);
+        let guide = render_hints(Context::CommandPrefix, &hints, 24, 120, 2, None);
         assert!(guide.expanded[0].contains("apply"));
         assert!(guide.expanded[1].contains("more"));
         assert_eq!(guide.expanded_roles.len(), 1);
@@ -1480,8 +2009,8 @@ mod tests {
             lookup(context, &event("KeyR", "r", 0, KeyAction::Press)),
             None
         );
-        assert!(!hints(context).iter().any(|hint| matches!(
-            hint.action,
+        assert!(!advertised(context).any(|action| matches!(
+            action,
             A::CreateTerminal | A::RenameSelected | A::CloseSelected | A::ActivateSelected
         )));
         assert_eq!(
@@ -1579,9 +2108,7 @@ mod tests {
     fn readonly_picker_and_details_have_no_editing_bindings() {
         for context in [Context::Chooser, Context::Details] {
             assert!(
-                !hints(context)
-                    .iter()
-                    .any(|hint| matches!(hint.action, A::Edit(_) | A::CycleField))
+                !advertised(context).any(|action| matches!(action, A::Edit(_) | A::CycleField))
             );
             assert_eq!(
                 lookup(context, &event("ArrowDown", "", 0, KeyAction::Repeat)),
@@ -1659,11 +2186,7 @@ mod tests {
             lookup(context, &event("Escape", "", 0, KeyAction::Press)),
             None
         );
-        assert!(
-            !hints(context)
-                .iter()
-                .any(|hint| matches!(hint.action, A::Submit | A::Cancel))
-        );
+        assert!(!advertised(context).any(|action| matches!(action, A::Submit | A::Cancel)));
     }
 
     #[test]
@@ -1671,17 +2194,14 @@ mod tests {
         let context = Context::Sidebar { selected: true };
         let key = event("KeyN", "N", SHIFT, KeyAction::Press);
         assert_eq!(lookup(context, &key), Some(A::CreateTerminal));
-        assert!(
-            hints(context)
-                .iter()
-                .any(|hint| hint.action == A::CreateTerminal)
-        );
+        assert!(advertised(context).any(|action| action == A::CreateTerminal));
         let supported = |action| action != A::CreateTerminal;
         assert_eq!(lookup_with(context, &key, supported), None);
         assert!(
             !hints_with(context, supported)
                 .iter()
-                .any(|hint| hint.action == A::CreateTerminal)
+                .flat_map(|hint| &hint.members)
+                .any(|member| member.action == A::CreateTerminal)
         );
         assert_eq!(
             lookup_with(context, &key, |_| true),
@@ -1690,7 +2210,8 @@ mod tests {
         assert!(
             hints_with(context, |_| true)
                 .iter()
-                .any(|hint| hint.action == A::CreateTerminal)
+                .flat_map(|hint| &hint.members)
+                .any(|member| member.action == A::CreateTerminal)
         );
     }
 
@@ -1698,7 +2219,7 @@ mod tests {
     fn narrow_expanded_guide_keeps_the_complete_action_explanation() {
         let context = Context::CommandPrefix;
         let action = A::RemovePaneFromLayout;
-        let guide = render_with(context, 38, 32, 8, |candidate| candidate == action);
+        let guide = render_with(context, 38, 32, 8, |candidate| candidate == action, None);
         let visible = guide
             .expanded
             .join(" ")
@@ -1712,12 +2233,16 @@ mod tests {
     }
     #[test]
     fn wrapped_aliases_keep_complete_keycaps_and_never_style_description_continuations() {
-        let hint = Hint {
-            keys: vec!["Ctrl-Left", "Ctrl-h", "/"],
-            action: A::Edit(EditAction::Left),
-            description: "move the input cursor by a complete grapheme",
-            priority: 0,
-        };
+        let hint = hint(
+            A::Edit(EditAction::Left),
+            &[
+                modified("Left", &["Ctrl"]),
+                modified("h", &["Ctrl"]),
+                plain("/"),
+            ],
+            "move the input cursor by a complete grapheme",
+            0,
+        );
         let (rows, spans) = Body::new(std::slice::from_ref(&hint)).render(24, 12);
         let keys: Vec<String> = spans
             .iter()
@@ -1729,7 +2254,7 @@ mod tests {
                     .collect()
             })
             .collect();
-        assert_eq!(keys, hint.keys);
+        assert_eq!(keys, ["Ctrl-Left", "Ctrl-h", "/"]);
         assert!(rows.iter().all(|row| width(row) <= 24));
         let (_, clipped) = Body::new(&[hint]).render(24, 1);
         assert!(
@@ -1759,18 +2284,32 @@ mod tests {
         for context in contexts {
             for columns in 0..=100 {
                 for max_rows in 0..=8 {
-                    let guide = render_with(context, columns, columns, max_rows, |_| true);
-                    assert!(guide.columns <= columns);
-                    assert!(guide.expanded.len() <= max_rows);
-                    assert!(
-                        guide
-                            .expanded
-                            .iter()
-                            .all(|row| width(row) <= usize::from(guide.columns.saturating_sub(2)))
-                    );
-                    for span in &guide.expanded_roles {
-                        assert!(usize::from(span.rect.y) < guide.expanded.len());
-                        assert!(span.rect.x + span.rect.width <= guide.columns.saturating_sub(2));
+                    for guide in [
+                        render_with(context, columns, columns, max_rows, |_| true, None),
+                        render_with(
+                            context,
+                            columns,
+                            columns,
+                            max_rows,
+                            |_| true,
+                            Some("Operation pending; other panes remain interactive"),
+                        ),
+                    ] {
+                        assert!(guide.columns <= columns);
+                        assert!(guide.expanded.len() <= max_rows);
+                        assert!(
+                            guide
+                                .expanded
+                                .iter()
+                                .all(|row| width(row)
+                                    <= usize::from(guide.columns.saturating_sub(2)))
+                        );
+                        for span in &guide.expanded_roles {
+                            assert!(usize::from(span.rect.y) < guide.expanded.len());
+                            assert!(
+                                span.rect.x + span.rect.width <= guide.columns.saturating_sub(2)
+                            );
+                        }
                     }
                 }
             }

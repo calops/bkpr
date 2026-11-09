@@ -2742,3 +2742,55 @@ generation/backpressure cases are behavioral unit coverage, not remote-WAN
 physical-terminal acceptance. Live user sessions and installed programs were
 not restarted or changed.
 
+## Declarative grouped keybinding hints
+
+Evidence: `target/smoke/grouped-hints/acceptance.json`, source base `be13a74a`,
+immutable debug client `10cf44b2` and unchanged daemon `643d464e`.
+Client presentation groups retain all concrete actions and available aliases;
+the framework formats structured chords without Bkpr actions, modifier-bit
+interpretation or label heuristics. Notice rows are reserved before whole-group
+layout. The source/dependency decision is in the implementation ledger.
+
+Actual private Kitty rich/plain and read-only cases pass in
+`kitty-95454571623462` and `kitty-95454570680106`; natural XTerm fallback
+passes in `xterm-95454570611799`. At 160×54, focus and movement each occupy
+one row: `←, →, ↑, ↓` and `Shift-(←, →, ↑, ↓)`. Resize by one and five
+cells remain separate rows. Sidebar selection shows `↑/k, ↓/j`, distinguishing
+aliases from related actions. History retains both ordinary and shifted page
+aliases. Read-only mode hides unavailable mutation and clipboard actions.
+
+The sidebar is physically dragged narrow; a 34×30 host repeats shared Shift
+scope on each wrapped movement row, preserves the complete `n/%` alias and
+reports omitted groups as `… 3 more`. Final screenshots follow transient-toast
+expiry; whole native surfaces, raw device/input bytes and registry snapshots
+remain available without masking.
+
+Representative dispatch stays unchanged: directional focus leaves window
+revision 3 unchanged, pane exchange advances 3→4, and resize advances 4→5→6
+with actual native width deltas +1 and +5. Exact application markers, no
+shortcut leakage, original pane/process/view identities, clean detach exit 0
+and identical termios pass. Real Kitty graphics ACK and Tc/RGB responses are
+captured through transparent util-linux `script`; XTerm retains normal text
+fallback without fabricated capability responses.
+
+Formatting, all-target strict Clippy, workspace test compilation, debug builds
+and doctests pass in `build/compiled-95170141555358/manifest.json`.
+Actual host-UID execution in `build/checks-95244570491403/result.json` passes
+977 top-level tests, with 14 ignored, including 167 framework and 351 client
+tests. Generic tests cover non-directional and partial groups, mixed/shared
+modifiers, aliases, Unicode widths/spans and narrow boundaries. Client tests
+cover filtered membership, unchanged concrete dispatch, produced-text chords,
+declared order/priority and notice-only/whole-group row budgets.
+
+Guard `build/protected-95169850759153/result.json` preserves live public
+debug/release executable bytes and inodes. Selected runtime/test cleanup
+reports zero owned survivors. `controllers.zip` retains the exact physical
+controllers; `verification.zip` retains source snapshots, build/check recipes
+and verification metadata. Loose owned controllers are removed after archive
+verification. Earlier fixture-only readiness, Escape framing and transient
+toast corrections remain recorded in the aggregate evidence.
+
+These are isolated Xvfb/software-rendered functional checks, not every
+directional combination, a pixel-equivalence oracle or a new performance
+benchmark. Installed programs and live user sessions remain untouched.
+

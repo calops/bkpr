@@ -907,38 +907,18 @@ impl App {
             let available = size.rows;
             let tree_rows = available.div_ceil(2).min(4);
             let max_rows = available.saturating_sub(tree_rows).saturating_sub(2) as usize;
-            let mut content = crate::keyguide::render_with(
+            let notice = self.resize_hint().or_else(|| {
+                (!self.management.is_empty())
+                    .then_some("Operation pending; other panes remain interactive")
+            });
+            let content = crate::keyguide::render_with(
                 context,
                 sidebar_columns,
                 size.cols,
                 max_rows,
                 |action| self.supports_action(action),
+                notice,
             );
-            let hint = self.resize_hint().or_else(|| {
-                (!self.management.is_empty())
-                    .then_some("Operation pending; other panes remain interactive")
-            });
-            if let Some(hint) = hint
-                && content.columns >= 8
-                && max_rows > 0
-            {
-                let hints = textwrap::wrap(hint, usize::from(content.columns - 4));
-                let count = hints.len().min(max_rows);
-                content.expanded.truncate(max_rows - count);
-                content
-                    .expanded_roles
-                    .retain(|span| usize::from(span.rect.y) < content.expanded.len());
-                for span in &mut content.expanded_roles {
-                    span.rect.y += count as u16;
-                }
-                content.expanded.splice(
-                    0..0,
-                    hints
-                        .into_iter()
-                        .take(count)
-                        .map(|line| format!(" {line} ")),
-                );
-            }
             self.guide = GuideCache {
                 key: Some(key),
                 content,

@@ -148,6 +148,22 @@ Use maintained `nucleo-matcher` 0.3 for metadata ranking, plus `unicode-segmenta
 
 Key-guide formatting adapts main `keyguide.rs::{Body,alias_rows,render_expanded}` without its ANSI writer or native modes. Product grouping, priority, width and descriptions stay in `bkpr-client`; framework windows, roles and Scene remain the presentation engine. [`textwrap` 0.16.4](https://docs.rs/textwrap/0.16.4/textwrap/fn.wrap.html) supplies maintained word wrapping instead of another generic implementation. Its [manifest](https://docs.rs/crate/textwrap/0.16.4/source/Cargo.toml) records MIT and MSRV 1.88, supported by this development toolchain; [upstream maintenance](https://github.com/mgeisler/textwrap/commit/07fdbbb92103a22c48a61be271dca36c739fdde3) includes current padding fixes. Only Unicode-width support is enabled: first-fit, no word breaking or hyphenation, no ICU/SMAWK/terminal probing. One measured layout produces rows and exact key spans on guide invalidation, replacing repeated hint collection and text-based span inference.
 
+Grouped hints now declare concrete action membership, order, common description
+and priority in client `PRESENTATION_GROUPS`. Filtering precedes grouping;
+each row retains every member action and its actual alias chords. Main
+`9ad93bd`'s `keyguide.rs::add_hint` grouped by description and priority; the
+native version deliberately uses explicit semantic membership instead of text
+identity or direction-name heuristics. No additional legacy implementation is copied.
+Framework `chord::{Chord,ChordGroup,ChordLine}` owns protocol-neutral modifier
+labels, alias/member separators, Unicode cell measurements, keycap spans and
+whole-chord wrapping with repeated, explicit modifier scope. Client code owns
+context, descriptions, popup width/priority policy and notice composition.
+Notices reserve rows before hint layout rather than truncating rendered groups.
+Existing `unicode-width`, `window::clean` and `textwrap` cover this small
+presentation layer; no new hotkey registry, parser, UI framework or dependency
+is introduced. Prepared guide output retains the existing invalidation cache.
+
+
 
 Use maintained Linebender [`resvg/usvg` 0.49.0](https://github.com/linebender/resvg/blob/v0.49.0/crates/resvg/Cargo.toml), pinned with default features disabled for trusted path-only embedded artwork. MSRV 1.85 fits this edition-2024 workspace; the [release history](https://github.com/linebender/resvg/blob/v0.49.0/CHANGELOG.md) includes current bounding/filter robustness fixes. Resvg/usvg are Apache-2.0 OR MIT; tiny-skia 0.12 is BSD-3-Clause. One coalescing worker owns parsing/raster/tint/LRU work; cell dimensions and observed colors invalidate bounded resources. Explicit matching APC query replies—not TERM or truecolor—enable decorations. Ordinary Frame images/placements retain renderer namespaces, clipping and upload deduplication.
 
