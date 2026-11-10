@@ -1,3 +1,9 @@
+## Unreleased
+
+### Fixes
+
+* Strip OMP leading pi/status decoration from recognized harness titles in sidebar, pane captions, popups and finder, preserving raw titles and ordinary program text.
+
 ## [0.6.0](https://github.com/calops/bkpr/compare/v0.5.1...v0.6.0) (2026-11-10)
 
 ### ⚠ BREAKING CHANGES

@@ -462,12 +462,13 @@ impl Finder {
                 preview: metadata::content(pane, registry, known, false),
             };
             // First value is always the title, including for an unnamed pane.
+            let title = metadata::pane_title(pane, known);
             document.values.push(Value::new(
                 Field::Text,
-                if pane.title.is_empty() {
+                if title.is_empty() {
                     "Untitled terminal"
                 } else {
-                    &pane.title
+                    title
                 },
             ));
             document.add(Field::Text, &pane.id);

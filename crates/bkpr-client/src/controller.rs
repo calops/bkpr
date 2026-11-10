@@ -717,7 +717,10 @@ fn sidebar_pane_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>, width: u
         .map(|icon| format!("{icon} "))
         .unwrap_or_default();
     let reserved = unicode_width::UnicodeWidthStr::width(prefix.as_str()) + suffix_width;
-    let name = bkpr_tui_framework::window::fit(&pane.title, width.saturating_sub(reserved) as u16);
+    let name = bkpr_tui_framework::window::fit(
+        crate::metadata::pane_title(pane, snapshot),
+        width.saturating_sub(reserved) as u16,
+    );
     let padding =
         width.saturating_sub(reserved + unicode_width::UnicodeWidthStr::width(name.as_str()));
     format!("{prefix}{name}{}{status}", " ".repeat(padding))
@@ -1365,7 +1368,7 @@ fn render_chrome<'a>(
                 let status = pane_activity(pane, known);
                 format!(
                     "{icon}{}{}",
-                    pane.title,
+                    crate::metadata::pane_title(pane, known),
                     if status.is_empty() {
                         String::new()
                     } else {
@@ -2707,6 +2710,41 @@ mod tests {
             (surface.frame.cursor.x, surface.frame.cursor.y),
             (size.cols, size.rows)
         );
+    }
+
+    #[test]
+    fn omp_titles_strip_only_recognized_leading_harness_decoration() {
+        let (mut pane, mut snapshot) = capture_fixture();
+        pane.harness.as_mut().unwrap().kind = HarnessKind::Omp;
+        for prefix in [
+            "π: ", "π > ", "π ! ", "π : ", "π ⠋ ", "π ⠴ ", "π ◑ ", "π / ",
+        ] {
+            pane.title = format!("{prefix}Fix π > 日本語");
+            assert_eq!(
+                crate::metadata::pane_title(&pane, Some(&snapshot)),
+                "Fix π > 日本語"
+            );
+            let label = sidebar_pane_label(&pane, Some(&snapshot), 80);
+            assert!(label.contains("Fix π > 日本語"));
+            assert!(!label.contains(pane.title.as_str()));
+        }
+        for title in ["π task", "π >task", "Task > name", "π", "Task"] {
+            pane.title = title.into();
+            assert_eq!(crate::metadata::pane_title(&pane, Some(&snapshot)), title);
+        }
+        pane.title = "π > Task".into();
+        pane.harness.as_mut().unwrap().kind = HarnessKind::Claude;
+        assert_eq!(
+            crate::metadata::pane_title(&pane, Some(&snapshot)),
+            "π > Task"
+        );
+        pane.harness.as_mut().unwrap().kind = HarnessKind::Omp;
+        snapshot.program_identity.as_mut().unwrap().birth = "stale".into();
+        assert_eq!(
+            crate::metadata::pane_title(&pane, Some(&snapshot)),
+            "π > Task"
+        );
+        assert_eq!(pane.title, "π > Task");
     }
 
     #[test]
