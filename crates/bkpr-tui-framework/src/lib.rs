@@ -2,6 +2,7 @@
 //! No application terminal parser or second physical output backend lives here.
 mod render;
 pub use render::*;
+pub mod animation;
 pub mod chord;
 pub mod decoration;
 pub mod graphics;
