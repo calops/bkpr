@@ -3,9 +3,14 @@
 ### Breaking changes
 
 * Remove the `Ctrl-b w`, `Ctrl-b W` and `Ctrl-b o` chooser shortcuts and their dedicated forms. Use the sidebar or finder instead; keep the directory-choice overlay for reopening an unavailable pane.
+* Native wire family 8 requires matching `bkpr`/`bkprd` binaries. Agent/control replies are compact by default; full metadata/body reads require explicit detail, pagination or `--reply full`. Existing incompatible daemons are not restarted automatically.
 
 ### Fixes
 
+* Bound MCP tool output, shorten shared instructions and return IDs/revisions instead of whole registries. Add filtered inspection, trimmed revision-fenced viewport pages, complete message body pages and authenticated temporary result expansion.
+* Separate unread summaries, explicit processed acknowledgements and quiet delivery; release expired wake claims without replaying ambiguous wakes. Keep historical delivery receipts and recovery metadata.
+* Reap verified adopted zombies while panes remain alive, retain birth-bound root ownership through sampling gaps, retry faulted-pane cleanup and narrow window-close reservations.
+* Recognize native Claude installer paths, expose body-free first-prompt and OSC status-change observations, and add private bounded lifecycle diagnostics without logging prompts, argv or message/terminal bodies.
 * Mute grouped-hint separator punctuation without dimming literal punctuation keys. Shorten descriptions, group workspace folding and sidebar exit bindings, and label `Ctrl-b x` as “remove from layout.”
 * Keep sidebar activity icons in the full text viewport by making only the flat exterior matte of the adjacent straight rich frame transparent; preserve its bevel, inner shadow, corners and internal opaque seams.
 * Keep the sidebar separator column on the sidebar background in both rich and plain rendering, independently of pane frame colors.

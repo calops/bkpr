@@ -1087,7 +1087,7 @@ mod tests {
             Operation::Agent {
                 launch_id: "copied".into(),
                 token: "copied".into(),
-                request: bkpr_protocol::AgentRequest::Whoami,
+                request: bkpr_protocol::AgentRequest::Whoami { detail: false },
             },
         ] {
             assert!(endpoint.checked(operation).is_err());

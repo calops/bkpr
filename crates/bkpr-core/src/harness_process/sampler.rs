@@ -68,13 +68,6 @@ fn published(state: &State) -> Result<Arc<Table>> {
         .clone()
         .ok_or_else(|| anyhow::anyhow!("initial process observation pending"))
 }
-/// Cache-only, constant-time read. It never performs OS I/O or waits for a scan.
-#[cfg(target_os = "linux")]
-pub(crate) fn snapshot() -> Result<Arc<Table>> {
-    let sampler = shared()?;
-    let state = sampler.state.lock().unwrap();
-    published(&state)
-}
 /// Explicit lifecycle barriers coalesce into the same worker scan. Not an input path API.
 pub(crate) fn fresh_snapshot() -> Result<Arc<Table>> {
     let sampler = shared()?;
@@ -113,6 +106,10 @@ fn sample(sampler: Arc<Sampler>) {
         drop(state);
         // All procfs/libproc work happens outside the publication mutex.
         let result = super::platform::snapshot();
+        #[cfg(target_os = "linux")]
+        if let Ok(table) = &result {
+            crate::process_tree::observe_sample(table);
+        }
         let mut state = sampler.state.lock().unwrap();
         match result {
             Ok(table) => {

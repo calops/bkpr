@@ -1,4 +1,4 @@
-//! Observe the TUI's own native API responses, never global thread notifications.
+//! Observe the TUI's own native thread selections and prompt submissions, never global notifications.
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
@@ -206,7 +206,12 @@ fn tap_connection(
                 |bytes| {
                     let message =
                         serde_json::from_slice(bytes).context("parse Codex native request")?;
-                    selections.lock().request_on(connection, &message)
+                    let mut state = selections.lock();
+                    state.request_on(connection, &message)?;
+                    if let Some(thread) = state.prompt_on(connection, &message) {
+                        selected.lock()("turn/start", &thread)?;
+                    }
+                    Ok(())
                 },
             );
             stopped.store(true, Ordering::Release);
@@ -266,6 +271,8 @@ struct Selections {
     sequence: u64,
     connection: u64,
     pending: BTreeMap<(u64, String), Selection>,
+    selected_thread: Option<String>,
+    prompt_observed: bool,
 }
 
 struct Selection {
@@ -300,6 +307,7 @@ impl Selections {
             .sequence
             .checked_add(1)
             .context("Codex selection sequence exhausted")?;
+        self.selected_thread = None;
         let expected_thread = if method == "thread/resume" {
             Some(
                 message
@@ -358,7 +366,29 @@ impl Selections {
         {
             bail!("Codex resumed a different native thread than the TUI requested");
         }
+        self.selected_thread = Some(thread.to_owned());
         Ok(Some((selection.method, thread.to_owned())))
+    }
+
+    fn prompt_on(&mut self, connection: u64, message: &RequestMetadata<'_>) -> Option<String> {
+        if self.prompt_observed
+            || connection != self.connection
+            || message.method.as_deref() != Some("turn/start")
+            || !message
+                .id
+                .as_ref()
+                .is_some_and(|id| id.is_string() || id.is_i64() || id.is_u64())
+        {
+            return None;
+        }
+        let thread = message.params.as_ref()?.thread_id.as_deref()?;
+        if self.selected_thread.as_deref() != Some(thread) {
+            return None;
+        }
+        // The actual originating TUI request is a submission fact, not native
+        // acceptance, model processing or semantic OSC status. No input is kept.
+        self.prompt_observed = true;
+        Some(thread.to_owned())
     }
 
     #[cfg(test)]
@@ -607,6 +637,46 @@ mod tests {
     }
 
     #[test]
+    fn prompt_submission_requires_the_current_tui_connection_and_selected_thread() -> Result<()> {
+        let mut state = Selections::default();
+        let prompt: RequestMetadata<'_> = serde_json::from_slice(
+            br#"{"id":"prompt","method":"turn/start","params":{"threadId":"root","input":[{"type":"text","text":"PRIVATE_PROMPT"}]}}"#,
+        )?;
+        assert!(state.prompt_on(0, &prompt).is_none());
+        state.request(&json!({"id":1,"method":"thread/resume","params":{"threadId":"root"}}))?;
+        state.response(&json!({"id":1,"result":{"thread":{"id":"root"}}}))?;
+        assert!(state.prompt_on(1, &prompt).is_none());
+        let foreign: RequestMetadata<'_> = serde_json::from_slice(
+            br#"{"id":"foreign","method":"turn/start","params":{"threadId":"another-thread"}}"#,
+        )?;
+        assert!(state.prompt_on(0, &foreign).is_none());
+        let notification: RequestMetadata<'_> =
+            serde_json::from_slice(br#"{"method":"turn/started","params":{"threadId":"root"}}"#)?;
+        assert!(state.prompt_on(0, &notification).is_none());
+        assert_eq!(state.prompt_on(0, &prompt).as_deref(), Some("root"));
+        assert!(state.prompt_on(0, &prompt).is_none());
+        state.request(&json!({"id":2,"method":"thread/resume","params":{"threadId":"root"}}))?;
+        state.response(&json!({"id":2,"result":{"thread":{"id":"root"}}}))?;
+        assert!(state.prompt_on(0, &prompt).is_none(), "one fact per launch");
+        Ok(())
+    }
+
+    #[test]
+    fn pending_new_selection_cannot_attribute_an_old_thread_prompt() -> Result<()> {
+        let mut state = Selections::default();
+        state.request(&json!({"id":1,"method":"thread/resume","params":{"threadId":"old"}}))?;
+        state.response(&json!({"id":1,"result":{"thread":{"id":"old"}}}))?;
+        state.request(&json!({"id":2,"method":"thread/start","params":{"threadSource":"user"}}))?;
+        let prompt: RequestMetadata<'_> = serde_json::from_slice(
+            br#"{"id":"prompt","method":"turn/start","params":{"threadId":"old"}}"#,
+        )?;
+        assert!(state.prompt_on(0, &prompt).is_none());
+        state.response(&json!({"id":2,"result":{"thread":{"id":"new"}}}))?;
+        assert!(state.prompt_on(0, &prompt).is_none());
+        Ok(())
+    }
+
+    #[test]
     fn rebinds_on_selection_after_first() -> Result<()> {
         let mut state = Selections::default();
         state.request(&json!({"id":1,"method":"thread/start","params":{"threadSource":"user"}}))?;
@@ -806,6 +876,45 @@ mod tests {
         consumer.read_to_end(&mut received)?;
         assert_eq!(received, wire);
         assert_eq!(observed, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn native_turn_request_is_forwarded_unchanged_and_observed_without_prompt_content() -> Result<()>
+    {
+        let mut state = Selections::default();
+        state.request(&json!({"id":1,"method":"thread/resume","params":{"threadId":"root"}}))?;
+        state.response(&json!({"id":1,"result":{"thread":{"id":"root"}}}))?;
+        let message = serde_json::to_vec(&json!({
+            "id":2, "method":"turn/start",
+            "params":{"threadId":"root","input":[{"type":"text","text":"PRIVATE_PROMPT"}]},
+        }))?;
+        let wire = [UPGRADE, &frame(1, true, &message, true)].concat();
+        let (mut producer, mut source) = UnixStream::pair()?;
+        let (mut destination, mut consumer) = UnixStream::pair()?;
+        producer.write_all(&wire)?;
+        producer.shutdown(Shutdown::Write)?;
+        let mut observed = Vec::new();
+        forward(
+            &mut source,
+            &mut destination,
+            &AtomicBool::new(false),
+            true,
+            |bytes| {
+                let request: RequestMetadata<'_> = serde_json::from_slice(bytes)?;
+                state.request_on(0, &request)?;
+                if let Some(thread) = state.prompt_on(0, &request) {
+                    observed.push(("turn/start", thread));
+                }
+                Ok(())
+            },
+        )?;
+        destination.shutdown(Shutdown::Write)?;
+        let mut forwarded = Vec::new();
+        consumer.read_to_end(&mut forwarded)?;
+        assert_eq!(forwarded, wire);
+        assert_eq!(observed, vec![("turn/start", "root".to_owned())]);
+        assert!(!serde_json::to_string(&observed)?.contains("PRIVATE_PROMPT"));
         Ok(())
     }
 

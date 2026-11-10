@@ -9,6 +9,13 @@ pub enum AgentScope {
     Repository,
     All,
 }
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentDelivery {
+    #[default]
+    Notify,
+    Quiet,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentReceiverMode {
@@ -25,12 +32,17 @@ pub enum AgentWakeOutcome {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentRequest {
-    Whoami,
+    Whoami {
+        #[serde(default)]
+        detail: bool,
+    },
     /// Shared typed control; implementation allowlists supported operations.
     Control {
         request: Box<crate::Operation>,
         #[serde(default)]
         scope: AgentScope,
+        #[serde(default)]
+        reply: crate::control::ControlReply,
     },
     SetTitle {
         title: String,
@@ -40,6 +52,14 @@ pub enum AgentRequest {
         scope: AgentScope,
         #[serde(default)]
         detail: bool,
+        #[serde(default)]
+        launch_id: Option<String>,
+        #[serde(default)]
+        pane_id: Option<String>,
+        #[serde(default)]
+        after: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
     },
     SendMessage {
         to: String,
@@ -47,12 +67,25 @@ pub enum AgentRequest {
         idempotency_key: String,
         #[serde(default)]
         scope: AgentScope,
+        #[serde(default)]
+        delivery: AgentDelivery,
     },
     ReadInbox {
         #[serde(default)]
         after: Option<String>,
         #[serde(default)]
         limit: Option<usize>,
+        #[serde(default)]
+        ack_ids: Vec<String>,
+        #[serde(default)]
+        include_read: bool,
+    },
+    ReadMessage {
+        message_id: String,
+        #[serde(default)]
+        offset: Option<usize>,
+        #[serde(default)]
+        max_bytes: Option<usize>,
     },
     AckMessage {
         ids: Vec<String>,

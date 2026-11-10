@@ -5,6 +5,63 @@ use planus::{Builder, Offset};
 
 use super::paths::{path_bytes, read_path};
 
+pub(super) fn write_text(
+    builder: &mut Builder,
+    text: &str,
+    budget: &mut Budget,
+) -> Result<Offset<str>> {
+    budget.bytes(text.len())?;
+    Ok(builder.create_string(text))
+}
+
+pub(super) fn read_text(text: &str, budget: &mut Budget) -> Result<String> {
+    budget.bytes(text.len())?;
+    Ok(text.to_owned())
+}
+
+pub(super) fn write_optional_text(
+    builder: &mut Builder,
+    text: Option<&str>,
+    budget: &mut Budget,
+) -> Result<Option<Offset<str>>> {
+    text.map(|text| write_text(builder, text, budget))
+        .transpose()
+}
+
+pub(super) fn read_optional_text(
+    text: Option<&str>,
+    budget: &mut Budget,
+) -> Result<Option<String>> {
+    text.map(|text| read_text(text, budget)).transpose()
+}
+
+pub(super) fn write_optional_usize(
+    builder: &mut Builder,
+    value: Option<usize>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Option<Offset<g::OptionalUsize>>> {
+    value
+        .map(|value| {
+            budget.node(depth)?;
+            Ok(g::OptionalUsize::create(builder, u64::try_from(value)?))
+        })
+        .transpose()
+}
+
+pub(super) fn read_optional_usize(
+    value: Option<g::OptionalUsizeRef<'_>>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Option<usize>> {
+    value
+        .map(|value| {
+            budget.node(depth)?;
+            Ok(usize::try_from(value.value()?)?)
+        })
+        .transpose()
+}
+
 pub(super) fn write_harness_kind(value: HarnessKind) -> g::HarnessKind {
     match value {
         HarnessKind::Claude => g::HarnessKind::Claude,

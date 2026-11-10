@@ -39,6 +39,13 @@ pub enum Operation {
     },
     ClientDetach,
     Inspect,
+    ControlInspect {
+        query: crate::control::InspectQuery,
+    },
+    ControlPaneRead {
+        pane_id: String,
+        query: crate::control::TerminalReadQuery,
+    },
     /// Queue a provider refresh only for this exact retained project source.
     CiRefresh {
         target: crate::CiRefreshTarget,
@@ -266,6 +273,9 @@ pub struct PaneInfo {
     /// Backend-selected, identity-scoped OSC fact, including when no view is attached.
     #[serde(default)]
     pub harness_status: Option<crate::ProgramStatus>,
+    /// Backend observation time of the selected OSC semantic status transition.
+    #[serde(default)]
+    pub harness_status_changed_at_ms: Option<u64>,
     /// Live backend cache result for the effective foreground CWD; never restored.
     #[serde(default)]
     pub project: Option<crate::ProjectSnapshot>,
@@ -294,10 +304,11 @@ pub struct Response {
 }
 
 /// Machine-readable failure facts; an error string alone grants no shutdown semantics.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RequestFailure {
     SessionClosing { outcome: RequestOutcome },
+    Busy { target_id: String },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

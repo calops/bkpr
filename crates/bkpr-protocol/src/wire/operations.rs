@@ -67,6 +67,50 @@ pub(super) fn write_operation(
             let offset = g::OperationInspect::create(builder);
             g::Operation::create_operation_inspect(builder, offset)
         }
+        Operation::ControlInspect { query } => {
+            budget.node(depth + 1)?;
+            let workspace_id = write_optional_text(builder, query.workspace_id.as_deref(), budget)?;
+            let window_id = write_optional_text(builder, query.window_id.as_deref(), budget)?;
+            let pane_id = write_optional_text(builder, query.pane_id.as_deref(), budget)?;
+            let after = write_optional_text(builder, query.after.as_deref(), budget)?;
+            let limit = write_optional_usize(builder, query.limit, budget, depth + 2)?;
+            let query = g::InspectQuery::create(
+                builder,
+                workspace_id,
+                window_id,
+                pane_id,
+                query.detail,
+                query.include_retired,
+                after,
+                limit,
+            );
+            let offset = g::OperationControlInspect::create(builder, query);
+            g::Operation::create_operation_control_inspect(builder, offset)
+        }
+        Operation::ControlPaneRead { pane_id, query } => {
+            budget.node(depth + 1)?;
+            let pane_id = write_text(builder, pane_id, budget)?;
+            let tail_rows = write_optional_usize(builder, query.tail_rows, budget, depth + 2)?;
+            let offset = write_optional_usize(builder, query.offset, budget, depth + 2)?;
+            let max_bytes = write_optional_usize(builder, query.max_bytes, budget, depth + 2)?;
+            let expected_revision = query
+                .expected_revision
+                .map(|value| {
+                    budget.node(depth + 2)?;
+                    Ok::<_, anyhow::Error>(g::OptionalU64::create(builder, value))
+                })
+                .transpose()?;
+            let query = g::TerminalReadQuery::create(
+                builder,
+                query.text,
+                tail_rows,
+                offset,
+                max_bytes,
+                expected_revision,
+            );
+            let offset = g::OperationControlPaneRead::create(builder, pane_id, query);
+            g::Operation::create_operation_control_pane_read(builder, offset)
+        }
         Operation::CiRefresh { target } => {
             let pane_id = write_ci_text(builder, budget, &target.pane_id)?;
             let cwd = path_bytes(&target.cwd)?;
@@ -516,6 +560,41 @@ pub(super) fn read_operation(
         },
         g::OperationRef::OperationClientDetach(_value) => Operation::ClientDetach,
         g::OperationRef::OperationInspect(_value) => Operation::Inspect,
+        g::OperationRef::OperationControlInspect(value) => {
+            budget.node(depth + 1)?;
+            let query = value.query()?;
+            Operation::ControlInspect {
+                query: control::InspectQuery {
+                    workspace_id: read_optional_text(query.workspace_id()?, budget)?,
+                    window_id: read_optional_text(query.window_id()?, budget)?,
+                    pane_id: read_optional_text(query.pane_id()?, budget)?,
+                    detail: query.detail()?,
+                    include_retired: query.include_retired()?,
+                    after: read_optional_text(query.after()?, budget)?,
+                    limit: read_optional_usize(query.limit()?, budget, depth + 2)?,
+                },
+            }
+        }
+        g::OperationRef::OperationControlPaneRead(value) => {
+            budget.node(depth + 1)?;
+            let query = value.query()?;
+            Operation::ControlPaneRead {
+                pane_id: read_text(value.pane_id()?, budget)?,
+                query: control::TerminalReadQuery {
+                    text: query.text()?,
+                    tail_rows: read_optional_usize(query.tail_rows()?, budget, depth + 2)?,
+                    offset: read_optional_usize(query.offset()?, budget, depth + 2)?,
+                    max_bytes: read_optional_usize(query.max_bytes()?, budget, depth + 2)?,
+                    expected_revision: query
+                        .expected_revision()?
+                        .map(|value| {
+                            budget.node(depth + 2)?;
+                            Ok::<_, anyhow::Error>(value.value()?)
+                        })
+                        .transpose()?,
+                },
+            }
+        }
         g::OperationRef::OperationCiRefresh(value) => {
             let cwd = value.cwd()?;
             budget.bytes(cwd.len())?;
@@ -960,6 +1039,15 @@ pub(super) fn write_capture_event(
             let offset = g::CaptureEventBind::create(builder, conversation_id, source);
             g::CaptureEvent::create_capture_event_bind(builder, offset)
         }
+        CaptureEvent::PromptSubmitted {
+            conversation_id,
+            source,
+        } => {
+            let conversation_id = write_text(builder, conversation_id, budget)?;
+            let source = write_conversation_source(*source);
+            let offset = g::CaptureEventPromptSubmitted::create(builder, conversation_id, source);
+            g::CaptureEvent::create_capture_event_prompt_submitted(builder, offset)
+        }
         CaptureEvent::Error { message } => {
             let message = {
                 budget.bytes(message.len())?;
@@ -990,6 +1078,10 @@ pub(super) fn read_capture_event(
             },
             source: read_conversation_source(value.source()?),
         },
+        g::CaptureEventRef::CaptureEventPromptSubmitted(value) => CaptureEvent::PromptSubmitted {
+            conversation_id: read_text(value.conversation_id()?, budget)?,
+            source: read_conversation_source(value.source()?),
+        },
         g::CaptureEventRef::CaptureEventError(value) => CaptureEvent::Error {
             message: {
                 let text = value.message()?;
@@ -1014,6 +1106,11 @@ pub(super) fn write_request_failure(
             let offset = g::RequestFailureSessionClosing::create(builder, outcome);
             g::RequestFailure::create_request_failure_session_closing(builder, offset)
         }
+        RequestFailure::Busy { target_id } => {
+            let target_id = write_text(builder, target_id, budget)?;
+            let offset = g::RequestFailureBusy::create(builder, target_id);
+            g::RequestFailure::create_request_failure_busy(builder, offset)
+        }
     })
 }
 
@@ -1029,6 +1126,9 @@ pub(super) fn read_request_failure(
                 outcome: read_request_outcome(value.outcome()?),
             }
         }
+        g::RequestFailureRef::RequestFailureBusy(value) => RequestFailure::Busy {
+            target_id: read_text(value.target_id()?, budget)?,
+        },
     })
 }
 

@@ -110,6 +110,7 @@ impl Captures {
                     launch_id: grant.launch_id.clone(),
                     conversation: None,
                     error: None,
+                    first_prompt_submitted_at_ms: None,
                 },
                 grant: grant.clone(),
                 control: crate::ControlLease::default(),
@@ -185,6 +186,33 @@ impl Captures {
                     generation,
                 });
                 launch.managed.error = None;
+            }
+            CaptureEvent::PromptSubmitted {
+                conversation_id,
+                source,
+            } => {
+                ensure!(
+                    source.harness() == launch.grant.kind
+                        && launch
+                            .managed
+                            .conversation
+                            .as_ref()
+                            .is_some_and(|conversation| conversation.id == conversation_id
+                                && conversation.source == source),
+                    "prompt submission does not match the bound native conversation"
+                );
+                let managed = &mut self.launches.get_mut(launch_id).unwrap().managed;
+                if managed.first_prompt_submitted_at_ms.is_some() {
+                    return Ok(());
+                }
+                managed.first_prompt_submitted_at_ms = Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                        .try_into()
+                        .unwrap_or(u64::MAX),
+                );
             }
             CaptureEvent::Error { message } => {
                 ensure!(
@@ -336,6 +364,101 @@ mod tests {
             .insert(process(2), process(1), "pane".into(), HarnessKind::Claude)
             .unwrap();
         (captures, grant)
+    }
+    #[test]
+    fn prompt_submission_is_launch_bound_and_recorded_once() {
+        let (mut state, grant) = captures();
+        let submit = |id: &str, source| CaptureEvent::PromptSubmitted {
+            conversation_id: id.into(),
+            source,
+        };
+        assert_eq!(
+            state
+                .lookup(&grant.launch_id, &grant.token)
+                .unwrap()
+                .managed
+                .first_prompt_submitted_at_ms,
+            None
+        );
+        assert!(
+            state
+                .event(
+                    &grant.launch_id,
+                    &grant.token,
+                    submit("native", ConversationSource::ClaudeHook)
+                )
+                .is_err()
+        );
+        state
+            .event(
+                &grant.launch_id,
+                &grant.token,
+                CaptureEvent::Bind {
+                    conversation_id: "native".into(),
+                    source: ConversationSource::ClaudeHook,
+                },
+            )
+            .unwrap();
+        assert!(
+            state
+                .event(
+                    &grant.launch_id,
+                    &grant.token,
+                    submit("other", ConversationSource::ClaudeHook)
+                )
+                .is_err()
+        );
+        assert!(
+            state
+                .event(
+                    &grant.launch_id,
+                    &grant.token,
+                    submit("native", ConversationSource::OmpExtension)
+                )
+                .is_err()
+        );
+        state
+            .event(
+                &grant.launch_id,
+                &grant.token,
+                submit("native", ConversationSource::ClaudeHook),
+            )
+            .unwrap();
+        let first = state
+            .lookup(&grant.launch_id, &grant.token)
+            .unwrap()
+            .managed
+            .first_prompt_submitted_at_ms
+            .unwrap();
+        let version = state.version;
+        state
+            .event(
+                &grant.launch_id,
+                &grant.token,
+                submit("native", ConversationSource::ClaudeHook),
+            )
+            .unwrap();
+        assert_eq!(
+            state
+                .lookup(&grant.launch_id, &grant.token)
+                .unwrap()
+                .managed
+                .first_prompt_submitted_at_ms,
+            Some(first)
+        );
+        assert_eq!(state.version, version);
+        state.retire_pane(&grant.pane_id);
+        let fresh = state
+            .insert(process(3), process(1), "pane".into(), HarnessKind::Claude)
+            .unwrap();
+        assert_eq!(
+            state
+                .lookup(&fresh.launch_id, &fresh.token)
+                .unwrap()
+                .managed
+                .first_prompt_submitted_at_ms,
+            None
+        );
     }
     #[test]
     fn many_launches_keep_exact_authority_and_retire_only_their_pane() {

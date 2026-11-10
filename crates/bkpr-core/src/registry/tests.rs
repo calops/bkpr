@@ -183,6 +183,7 @@ fn unavailable(registry: &Registry, workspace_id: &str, home: &Path) -> (String,
                 harness_status: None,
                 project: None,
                 isolated_environment: true,
+                harness_status_changed_at_ms: None,
             });
             let workspace = r
                 .workspaces

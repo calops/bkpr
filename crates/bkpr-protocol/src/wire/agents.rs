@@ -14,14 +14,22 @@ pub(super) fn write_agent_request(
 ) -> Result<UnionOffset<g::AgentRequest>> {
     budget.node(depth)?;
     Ok(match value {
-        AgentRequest::Whoami => {
-            let offset = g::AgentRequestWhoami::create(builder);
+        AgentRequest::Whoami { detail } => {
+            let offset = g::AgentRequestWhoami::create(builder, *detail);
             g::AgentRequest::create_agent_request_whoami(builder, offset)
         }
-        AgentRequest::Control { request, scope } => {
+        AgentRequest::Control {
+            request,
+            scope,
+            reply,
+        } => {
             let request = write_operation(builder, request, budget, depth + 1)?;
             let scope = write_agent_scope(*scope);
-            let offset = g::AgentRequestControl::create(builder, request, scope);
+            let reply = match reply {
+                control::ControlReply::Receipt => g::ControlReply::Receipt,
+                control::ControlReply::Full => g::ControlReply::Full,
+            };
+            let offset = g::AgentRequestControl::create(builder, request, scope, reply);
             g::AgentRequest::create_agent_request_control(builder, offset)
         }
         AgentRequest::SetTitle { title } => {
@@ -32,10 +40,22 @@ pub(super) fn write_agent_request(
             let offset = g::AgentRequestSetTitle::create(builder, title);
             g::AgentRequest::create_agent_request_set_title(builder, offset)
         }
-        AgentRequest::DiscoverAgents { scope, detail } => {
+        AgentRequest::DiscoverAgents {
+            scope,
+            detail,
+            launch_id,
+            pane_id,
+            after,
+            limit,
+        } => {
             let scope = write_agent_scope(*scope);
-            let detail = *detail;
-            let offset = g::AgentRequestDiscoverAgents::create(builder, scope, detail);
+            let launch_id = write_optional_text(builder, launch_id.as_deref(), budget)?;
+            let pane_id = write_optional_text(builder, pane_id.as_deref(), budget)?;
+            let after = write_optional_text(builder, after.as_deref(), budget)?;
+            let limit = write_optional_usize(builder, *limit, budget, depth + 1)?;
+            let offset = g::AgentRequestDiscoverAgents::create(
+                builder, scope, *detail, launch_id, pane_id, after, limit,
+            );
             g::AgentRequest::create_agent_request_discover_agents(builder, offset)
         }
         AgentRequest::SendMessage {
@@ -43,6 +63,7 @@ pub(super) fn write_agent_request(
             text,
             idempotency_key,
             scope,
+            delivery,
         } => {
             let to = {
                 budget.bytes(to.len())?;
@@ -57,29 +78,48 @@ pub(super) fn write_agent_request(
                 builder.create_string(idempotency_key.as_str())
             };
             let scope = write_agent_scope(*scope);
-            let offset =
-                g::AgentRequestSendMessage::create(builder, to, text, idempotency_key, scope);
+            let delivery = match delivery {
+                AgentDelivery::Notify => g::AgentDelivery::Notify,
+                AgentDelivery::Quiet => g::AgentDelivery::Quiet,
+            };
+            let offset = g::AgentRequestSendMessage::create(
+                builder,
+                to,
+                text,
+                idempotency_key,
+                scope,
+                delivery,
+            );
             g::AgentRequest::create_agent_request_send_message(builder, offset)
         }
-        AgentRequest::ReadInbox { after, limit } => {
-            let after = after
-                .as_ref()
-                .map(|value| -> Result<_> {
-                    Ok({
-                        budget.bytes(value.len())?;
-                        builder.create_string(value.as_str())
-                    })
-                })
-                .transpose()?;
-            let limit = limit
-                .as_ref()
-                .map(|value| -> Result<_> {
-                    let value = u64::try_from(*value)?;
-                    Ok(g::OptionalUsize::create(builder, value))
-                })
-                .transpose()?;
-            let offset = g::AgentRequestReadInbox::create(builder, after, limit);
+        AgentRequest::ReadInbox {
+            after,
+            limit,
+            ack_ids,
+            include_read,
+        } => {
+            let after = write_optional_text(builder, after.as_deref(), budget)?;
+            let limit = write_optional_usize(builder, *limit, budget, depth + 1)?;
+            budget.vector(ack_ids.len(), 8)?;
+            let mut ids = Vec::with_capacity(ack_ids.len());
+            for id in ack_ids {
+                ids.push(write_text(builder, id, budget)?);
+            }
+            let ack_ids = builder.create_vector(&ids);
+            let offset =
+                g::AgentRequestReadInbox::create(builder, after, limit, ack_ids, *include_read);
             g::AgentRequest::create_agent_request_read_inbox(builder, offset)
+        }
+        AgentRequest::ReadMessage {
+            message_id,
+            offset,
+            max_bytes,
+        } => {
+            let message_id = write_text(builder, message_id, budget)?;
+            let offset = write_optional_usize(builder, *offset, budget, depth + 1)?;
+            let max_bytes = write_optional_usize(builder, *max_bytes, budget, depth + 1)?;
+            let offset = g::AgentRequestReadMessage::create(builder, message_id, offset, max_bytes);
+            g::AgentRequest::create_agent_request_read_message(builder, offset)
         }
         AgentRequest::AckMessage { ids } => {
             let ids = {
@@ -212,10 +252,16 @@ pub(super) fn read_agent_request(
 ) -> Result<AgentRequest> {
     budget.node(depth)?;
     Ok(match value {
-        g::AgentRequestRef::AgentRequestWhoami(_value) => AgentRequest::Whoami,
+        g::AgentRequestRef::AgentRequestWhoami(value) => AgentRequest::Whoami {
+            detail: value.detail()?,
+        },
         g::AgentRequestRef::AgentRequestControl(value) => AgentRequest::Control {
             request: Box::new(read_operation(value.request()?, budget, depth + 1)?),
             scope: read_agent_scope(value.scope()?),
+            reply: match value.reply()? {
+                g::ControlReply::Receipt => control::ControlReply::Receipt,
+                g::ControlReply::Full => control::ControlReply::Full,
+            },
         },
         g::AgentRequestRef::AgentRequestSetTitle(value) => AgentRequest::SetTitle {
             title: {
@@ -227,6 +273,10 @@ pub(super) fn read_agent_request(
         g::AgentRequestRef::AgentRequestDiscoverAgents(value) => AgentRequest::DiscoverAgents {
             scope: read_agent_scope(value.scope()?),
             detail: value.detail()?,
+            launch_id: read_optional_text(value.launch_id()?, budget)?,
+            pane_id: read_optional_text(value.pane_id()?, budget)?,
+            after: read_optional_text(value.after()?, budget)?,
+            limit: read_optional_usize(value.limit()?, budget, depth + 1)?,
         },
         g::AgentRequestRef::AgentRequestSendMessage(value) => AgentRequest::SendMessage {
             to: {
@@ -245,22 +295,27 @@ pub(super) fn read_agent_request(
                 text.to_owned()
             },
             scope: read_agent_scope(value.scope()?),
+            delivery: match value.delivery()? {
+                g::AgentDelivery::Notify => AgentDelivery::Notify,
+                g::AgentDelivery::Quiet => AgentDelivery::Quiet,
+            },
         },
         g::AgentRequestRef::AgentRequestReadInbox(value) => AgentRequest::ReadInbox {
-            after: value
-                .after()?
-                .map(|value| -> Result<_> {
-                    Ok({
-                        let text = value;
-                        budget.bytes(text.len())?;
-                        text.to_owned()
-                    })
-                })
-                .transpose()?,
-            limit: value
-                .limit()?
-                .map(|value| -> Result<_> { Ok(usize::try_from(value.value()?)?) })
-                .transpose()?,
+            after: read_optional_text(value.after()?, budget)?,
+            limit: read_optional_usize(value.limit()?, budget, depth + 1)?,
+            ack_ids: {
+                let ids = value.ack_ids()?;
+                budget.vector(ids.len(), std::mem::size_of::<String>())?;
+                ids.iter()
+                    .map(|id| read_text(id?, budget))
+                    .collect::<Result<Vec<_>>>()?
+            },
+            include_read: value.include_read()?,
+        },
+        g::AgentRequestRef::AgentRequestReadMessage(value) => AgentRequest::ReadMessage {
+            message_id: read_text(value.message_id()?, budget)?,
+            offset: read_optional_usize(value.offset()?, budget, depth + 1)?,
+            max_bytes: read_optional_usize(value.max_bytes()?, budget, depth + 1)?,
         },
         g::AgentRequestRef::AgentRequestAckMessage(value) => AgentRequest::AckMessage {
             ids: {

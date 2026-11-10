@@ -4,6 +4,7 @@ use crate::{
     harness::{Launch, Peer},
     harness_process as proc,
 };
+use bkpr_protocol::AgentDelivery;
 use sha2::{Digest, Sha256};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 mod messages;
@@ -37,6 +38,8 @@ struct Message {
     key: String,
     digest: String,
     scope: AgentScope,
+    #[serde(default)]
+    delivery: AgentDelivery,
     sequence: u64,
     created_at: u64,
     read_at: Option<u64>,
@@ -66,6 +69,10 @@ struct Notification {
     state: String,
     reason: Option<String>,
     claimed_at: u64,
+    #[serde(default)]
+    message_count: usize,
+    #[serde(default)]
+    unread_count: usize,
 }
 #[derive(Clone)]
 struct Receiver {
@@ -100,9 +107,31 @@ struct ContextFact {
     active: bool,
     pane: PaneInfo,
     workspace_name: Option<String>,
-    session_id: Option<String>,
+    conversation: Option<NativeConversation>,
     cwd: Option<PathBuf>,
     repository: Option<PathBuf>,
+    registry_revision: u64,
+    workspace_revision: Option<u64>,
+    window_revision: Option<u64>,
+    pane_revision: Option<u64>,
+    first_prompt_submitted_at_ms: Option<u64>,
+    status: Value,
+}
+#[derive(Default)]
+struct ContextSelection<'a> {
+    all: bool,
+    recipient: Option<&'a str>,
+    launch_id: Option<&'a str>,
+    pane_id: Option<&'a str>,
+    successor_pane: Option<&'a str>,
+}
+struct DiscoveryQuery<'a> {
+    scope: AgentScope,
+    detail: bool,
+    launch_id: Option<&'a str>,
+    pane_id: Option<&'a str>,
+    after: Option<&'a str>,
+    limit: Option<usize>,
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -125,13 +154,17 @@ fn unread(m: &Message) -> bool {
     pending(m) && m.read_at.is_none()
 }
 fn claimable(m: &Message) -> bool {
-    unread(m) && m.notification_id.is_none()
+    unread(m) && m.delivery == AgentDelivery::Notify && m.notification_id.is_none()
 }
 fn summary(m: &Message) -> Value {
-    json!({"id":m.id,"message_id":m.id,"from":m.from,"to":m.to,"scope":m.scope,"created_at":m.created_at,"read_at":m.read_at,"acknowledged_at":m.acknowledged_at,"expired_at":m.expired_at,"wake_failure":m.wake_failure,"delivery":{"state":m.wake_state,"reason":m.wake_reason,"notification_id":m.notification_id,"generation":m.generation}})
+    json!({"message_id":m.id,"from":m.from,"to":m.to,"scope":m.scope,"delivery_mode":m.delivery,"created_at":m.created_at,"read_at":m.read_at,"acknowledged_at":m.acknowledged_at,"expired_at":m.expired_at,"wake_failure":m.wake_failure,"delivery":{"state":m.wake_state,"reason":m.wake_reason,"notification_id":m.notification_id,"generation":m.generation}})
 }
 fn receipt(m: &Message, duplicate: bool) -> Value {
-    json!({"message_id":m.id,"durable":true,"duplicate":duplicate,"status":summary(m)})
+    let mut value = json!({"message_id":m.id,"durable":true,"duplicate":duplicate,"wake":{"state":m.wake_state}});
+    if let Some(reason) = &m.wake_reason {
+        value["wake"]["reason"] = json!(reason);
+    }
+    value
 }
 fn healthy_agents(state: &AgentState) -> Result<()> {
     ensure!(
@@ -318,7 +351,11 @@ impl Agents {
             healthy_agents(&state)?;
             state.store.clone()
         };
-        let (result, changed) = change(&mut candidate)?;
+        let (result, mut changed) = change(&mut candidate)?;
+        {
+            let state = self.state.lock().unwrap();
+            changed |= prune_retired(&mut candidate, now(), &state);
+        }
         if !changed {
             return Ok(result);
         }
@@ -498,6 +535,26 @@ fn expire(store: &mut Store, timestamp: u64) -> bool {
     }
     changed
 }
+fn prune_retired(store: &mut Store, timestamp: u64, state: &AgentState) -> bool {
+    let referenced = store
+        .messages
+        .values()
+        .flat_map(|message| [&message.from, &message.to])
+        .collect::<BTreeSet<_>>();
+    let before = store.agents.len();
+    // Existing seven-day retention applies only to unreferenced launch bookkeeping.
+    // Message receipts and pane/recovery history have no new deletion policy.
+    store.agents.retain(|id, agent| {
+        agent
+            .exited_at
+            .is_none_or(|exit| timestamp < exit.saturating_add(RETENTION_MS))
+            || agent.notification.is_some()
+            || referenced.contains(id)
+            || state.receivers.contains_key(id)
+            || state.waiters.contains_key(id)
+    });
+    before != store.agents.len()
+}
 fn in_scope(
     scope: AgentScope,
     sender: &ContextFact,
@@ -527,22 +584,139 @@ fn current_subscribers(state: &AgentState, launch_id: &str) -> usize {
         .copied()
         .unwrap_or(0)
 }
+// Bound encoded JSON bytes, not only UTF-8 source bytes (C0 escapes expand sixfold).
+fn preview_end(text: &str, encoded_bytes: usize) -> usize {
+    let mut used = 2;
+    for (offset, ch) in text.char_indices() {
+        let bytes = match ch {
+            '"' | '\\' | '\u{08}' | '\t' | '\n' | '\u{0c}' | '\r' => 2,
+            '\0'..='\u{1f}' => 6,
+            _ => ch.len_utf8(),
+        };
+        if used + bytes > encoded_bytes {
+            return offset;
+        }
+        used += bytes;
+    }
+    text.len()
+}
+
+fn status_summary(status: Option<&bkpr_protocol::ProgramStatus>) -> Value {
+    let Some(status) = status else {
+        return Value::Null;
+    };
+    let mut truncated = Vec::new();
+    let mut preview = |field, text: &str, budget| {
+        let end = preview_end(text, budget);
+        if end < text.len() {
+            truncated.push(field);
+        }
+        json!(&text[..end])
+    };
+    let mut value = json!({
+        "state":preview("state", &status.state, 24),
+        "app":status.app.as_ref().map(|app| preview("app", app, 32)),
+        "id":preview("id", &status.id, 64),
+        "progress":status.progress,
+    });
+    if !truncated.is_empty() {
+        value["truncated_fields"] = json!(truncated);
+    }
+    value
+}
 fn public(
     fact: &ContextFact,
     agent: &Agent,
     receiver: Option<&Receiver>,
     subscribers: usize,
+    detail: bool,
 ) -> Value {
-    let mut value = json!({"agent_id":fact.launch_id,"launch_id":fact.launch_id,"harness":agent.harness.as_str(),"title":agent.title,"session_id":fact.session_id,"pane_id":fact.pane.id,"pane_name":fact.pane.title,"workspace_id":fact.pane.workspace_id,"workspace_name":fact.workspace_name,"cwd":fact.cwd.as_deref().map(path_wire::WirePath),"attached":fact.active,"status":fact.pane.harness_status,"notification_ready":receiver.is_some() && subscribers > 0,"readiness":{"can_notify":receiver.is_some() && subscribers > 0},"receiver_mode":receiver.map(|r| r.mode)});
-    value["window_id"] = json!(fact.pane.window_id);
-    value["project"] = serde_json::to_value(
-        fact.pane
-            .project
-            .as_ref()
-            .filter(|project| fact.active && fact.cwd.as_ref() == Some(&project.cwd)),
-    )
-    .expect("serializable project snapshot");
+    let ready = receiver.is_some() && subscribers > 0;
+    let mut value = json!({
+        "launch_id":fact.launch_id,"pane_id":fact.pane.id,
+        "conversation":fact.conversation,
+        "workspace_id":fact.pane.workspace_id,"window_id":fact.pane.window_id,
+        "registry_revision":fact.registry_revision,
+        "workspace_revision":fact.workspace_revision,"window_revision":fact.window_revision,
+        "pane_revision":fact.pane_revision,"harness":agent.harness.as_str(),
+        "status":fact.status,
+        "status_changed_at_ms":fact.pane.harness_status_changed_at_ms,
+        "first_prompt_submitted_at_ms":fact.first_prompt_submitted_at_ms,
+        "notification_ready":ready,"attached":fact.active
+    });
+    if detail {
+        value["status"] = json!(fact.pane.harness_status);
+        value["title"] = json!(agent.title);
+        value["pane_name"] = json!(fact.pane.title);
+        value["workspace_name"] = json!(fact.workspace_name);
+        value["cwd"] = json!(fact.cwd.as_deref().map(path_wire::WirePath));
+        value["receiver_mode"] = json!(receiver.map(|r| r.mode));
+        value["project"] = serde_json::to_value(
+            fact.pane
+                .project
+                .as_ref()
+                .filter(|project| fact.active && fact.cwd.as_ref() == Some(&project.cwd)),
+        )
+        .expect("serializable project snapshot");
+    }
     value
+}
+fn discover(
+    state: &AgentState,
+    contexts: &BTreeMap<String, ContextFact>,
+    own: &ContextFact,
+    query: DiscoveryQuery<'_>,
+) -> Result<Value> {
+    require_scope(query.scope, own, &state.store)?;
+    let limit = messages::page_limit(query.limit)?;
+    let mut candidates = contexts.values().filter(|other| {
+        other.launch_id != own.launch_id
+            && other.active
+            && state
+                .store
+                .agents
+                .get(&other.launch_id)
+                .is_some_and(|a| a.exited_at.is_none())
+            && in_scope(query.scope, own, other, &state.store)
+            && query.launch_id.is_none_or(|id| other.launch_id == id)
+            && query.pane_id.is_none_or(|id| other.pane.id == id)
+            && query
+                .after
+                .is_none_or(|after| other.launch_id.as_str() > after)
+    });
+    let page = candidates.by_ref().take(limit).collect::<Vec<_>>();
+    let has_more = candidates.next().is_some();
+    let values = page
+        .iter()
+        .map(|other| {
+            let agent = &state.store.agents[&other.launch_id];
+            let ready = state.receivers.contains_key(&other.launch_id)
+                && current_subscribers(state, &other.launch_id) > 0;
+            if query.detail {
+                public(
+                    other,
+                    agent,
+                    state.receivers.get(&other.launch_id),
+                    current_subscribers(state, &other.launch_id),
+                    true,
+                )
+            } else {
+                json!({
+                    "launch_id":other.launch_id,"pane_id":other.pane.id,
+                    "workspace_id":other.pane.workspace_id,"window_id":other.pane.window_id,
+                    "harness":agent.harness.as_str(),"status":other.status,
+                    "status_changed_at_ms":other.pane.harness_status_changed_at_ms,
+                    "first_prompt_submitted_at_ms":other.first_prompt_submitted_at_ms,
+                    "notification_ready":ready,
+                })
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut value = json!({"agents":values,"scope":query.scope,"has_more":has_more});
+    if has_more {
+        value["next_cursor"] = json!(page.last().map(|other| &other.launch_id));
+    }
+    Ok(value)
 }
 fn cursor_start(
     messages: &[&Message],
@@ -630,8 +804,8 @@ impl Registry {
         &self,
         resolve_repository: bool,
         own_id: &str,
-        recipient: Option<&str>,
-        all: bool,
+        selection: ContextSelection<'_>,
+        detail: bool,
     ) -> Result<BTreeMap<String, ContextFact>> {
         let launches = self
             .inner
@@ -641,7 +815,12 @@ impl Registry {
             .launches
             .values()
             .filter(|l| {
-                all || l.grant.launch_id == own_id || Some(l.grant.launch_id.as_str()) == recipient
+                l.grant.launch_id == own_id
+                    || Some(l.grant.launch_id.as_str()) == selection.recipient
+                    || Some(l.grant.pane_id.as_str()) == selection.successor_pane
+                    || (selection.all
+                        && selection.launch_id.is_none_or(|id| l.grant.launch_id == id)
+                        && selection.pane_id.is_none_or(|id| l.grant.pane_id == id))
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -658,16 +837,58 @@ impl Registry {
         Ok(observed
             .into_iter()
             .filter_map(|(launch, active, cwd)| {
-                let pane = state
-                    .record
-                    .registry
-                    .panes
-                    .iter()
-                    .find(|p| p.id == launch.grant.pane_id && p.status == PaneStatus::Running)?
-                    .clone();
+                let original =
+                    state.record.registry.panes.iter().find(|p| {
+                        p.id == launch.grant.pane_id && p.status == PaneStatus::Running
+                    })?;
+                let pane = PaneInfo {
+                    id: original.id.clone(),
+                    workspace_id: original.workspace_id.clone(),
+                    window_id: original.window_id.clone(),
+                    title: if detail {
+                        original.title.clone()
+                    } else {
+                        String::new()
+                    },
+                    status: original.status,
+                    exit_code: original.exit_code,
+                    cwd: if detail {
+                        original.cwd.clone()
+                    } else {
+                        PathBuf::new()
+                    },
+                    foreground_cwd: if detail {
+                        original.foreground_cwd.clone()
+                    } else {
+                        None
+                    },
+                    harness: if detail {
+                        original.harness.clone()
+                    } else {
+                        None
+                    },
+                    harness_status: if detail {
+                        original.harness_status.clone()
+                    } else {
+                        None
+                    },
+                    harness_status_changed_at_ms: original.harness_status_changed_at_ms,
+                    project: if detail {
+                        original.project.clone()
+                    } else {
+                        None
+                    },
+                    home: if detail {
+                        original.home.clone()
+                    } else {
+                        PathBuf::new()
+                    },
+                    isolated_environment: original.isolated_environment,
+                };
                 let repository = resolve_repository
                     .then(|| {
-                        pane.project
+                        original
+                            .project
                             .as_ref()
                             .filter(|project| {
                                 active
@@ -678,18 +899,27 @@ impl Registry {
                             .map(|repository| repository.common_dir.clone())
                     })
                     .flatten();
-                let workspace_name = pane
-                    .workspace_id
-                    .as_ref()
-                    .and_then(|id| {
-                        state
-                            .record
-                            .registry
-                            .workspaces
-                            .iter()
-                            .find(|w| &w.id == id)
+                let workspace = pane.workspace_id.as_ref().and_then(|id| {
+                    state
+                        .record
+                        .registry
+                        .workspaces
+                        .iter()
+                        .find(|w| &w.id == id)
+                });
+                let workspace_name = detail.then(|| workspace.map(|w| w.name.clone())).flatten();
+                let workspace_revision = workspace.map(|w| w.revision);
+                let window_revision = workspace
+                    .and_then(|w| {
+                        pane.window_id
+                            .as_ref()
+                            .and_then(|id| w.windows.iter().find(|window| &window.id == id))
                     })
-                    .map(|w| w.name.clone());
+                    .map(|window| window.revision);
+                let pane_revision = state
+                    .live
+                    .get(&pane.id)
+                    .map(|pane| pane.shared.published.lock().unwrap().revision);
                 let id = launch.grant.launch_id;
                 Some((
                     id.clone(),
@@ -698,9 +928,15 @@ impl Registry {
                         active,
                         pane,
                         workspace_name,
-                        session_id: launch.managed.conversation.map(|c| c.id),
+                        conversation: launch.managed.conversation,
                         cwd,
                         repository,
+                        registry_revision: state.record.registry.revision,
+                        workspace_revision,
+                        window_revision,
+                        pane_revision,
+                        first_prompt_submitted_at_ms: launch.managed.first_prompt_submitted_at_ms,
+                        status: status_summary(original.harness_status.as_ref()),
                     },
                 ))
             })
@@ -792,16 +1028,20 @@ impl Registry {
             text,
             idempotency_key,
             scope,
+            delivery,
         } = &request
         {
             let state = self.inner.agents.state.lock().unwrap();
             if let Some(receipt) = messages::retry(
                 &state.store,
                 id,
-                to,
-                text,
+                messages::SendPayload {
+                    to,
+                    text,
+                    scope: *scope,
+                    delivery: *delivery,
+                },
                 idempotency_key,
-                *scope,
                 &launch.grant.token,
             )? {
                 return Ok(receipt);
@@ -814,13 +1054,18 @@ impl Registry {
             }
         }
         match request {
-            AgentRequest::Control { request, scope } => {
+            AgentRequest::Control {
+                request,
+                scope,
+                reply,
+            } => {
                 bkpr_protocol::control::validate_native(&request)?;
                 ensure!(
                     scope != AgentScope::Repository,
                     "repository-scoped control is not supported; explicitly select workspace or session scope"
                 );
-                let contexts = self.agent_contexts(false, id, None, false)?;
+                let contexts =
+                    self.agent_contexts(false, id, ContextSelection::default(), false)?;
                 let own = contexts.get(id).context("live agent context unavailable")?;
                 ensure!(own.active, "live foreground agent context unavailable");
                 {
@@ -871,20 +1116,28 @@ impl Registry {
                                 .context("control test barrier was not released")?;
                         }
                         ensure!(is_connected(), "agent control caller disconnected");
+                        let operation = Operation::PaneResume {
+                            pane_id: pane_id.clone(),
+                            expected: expected.clone(),
+                        };
                         let result = self.resume_scoped(
                             &pane_id,
                             expected,
                             workspace.clone(),
                             Some((&launch, peer)),
                         )?;
-                        Ok(super::control::scope_control_result(
-                            result,
-                            workspace.as_deref(),
-                        ))
+                        let result =
+                            super::control::scope_control_result(result, workspace.as_deref());
+                        match reply {
+                            bkpr_protocol::control::ControlReply::Receipt => {
+                                bkpr_protocol::control::mutation_receipt(&operation, result)
+                            }
+                            bkpr_protocol::control::ControlReply::Full => Ok(result),
+                        }
                     }
                     operation => {
                         ensure!(is_connected(), "agent control caller disconnected");
-                        self.request_for_control(operation, &launch, peer, workspace)
+                        self.request_for_control(operation, &launch, peer, workspace, reply)
                     }
                 }
             }
@@ -942,23 +1195,61 @@ impl Registry {
                 );
                 let needs_context = matches!(
                     &request,
-                    AgentRequest::Whoami
+                    AgentRequest::Whoami { .. }
                         | AgentRequest::DiscoverAgents { .. }
                         | AgentRequest::SendMessage { .. }
                 );
-                let recipient = if let AgentRequest::SendMessage { to, .. } = &request {
-                    Some(to.as_str())
-                } else {
-                    None
+                let (selection, detail, successor_pane) = match &request {
+                    AgentRequest::DiscoverAgents {
+                        launch_id,
+                        pane_id,
+                        detail,
+                        ..
+                    } => (
+                        ContextSelection {
+                            all: true,
+                            launch_id: launch_id.as_deref(),
+                            pane_id: pane_id.as_deref(),
+                            ..Default::default()
+                        },
+                        *detail,
+                        None,
+                    ),
+                    AgentRequest::SendMessage { to, .. } => {
+                        let state = self.inner.agents.state.lock().unwrap();
+                        let pane = state
+                            .store
+                            .agents
+                            .get(to)
+                            .filter(|agent| agent.exited_at.is_some())
+                            .map(|agent| agent.pane_id.clone());
+                        (
+                            ContextSelection {
+                                recipient: Some(to),
+                                ..Default::default()
+                            },
+                            false,
+                            pane,
+                        )
+                    }
+                    AgentRequest::Whoami { detail } => (ContextSelection::default(), *detail, None),
+                    _ => (ContextSelection::default(), false, None),
                 };
-                let all = matches!(&request, AgentRequest::DiscoverAgents { .. });
                 let contexts = if needs_context {
-                    self.agent_contexts(resolve_repository, id, recipient, all)?
+                    self.agent_contexts(
+                        resolve_repository,
+                        id,
+                        ContextSelection {
+                            successor_pane: successor_pane.as_deref(),
+                            ..selection
+                        },
+                        detail,
+                    )?
                 } else {
                     BTreeMap::new()
                 };
                 match request {
-                    AgentRequest::Whoami => {
+                    AgentRequest::Whoami { detail } => {
                         let state = self.inner.agents.state.lock().unwrap();
                         let own = contexts.get(id).context("live agent context unavailable")?;
                         Ok(public(
@@ -966,17 +1257,32 @@ impl Registry {
                             &state.store.agents[id],
                             state.receivers.get(id),
                             current_subscribers(&state, id),
+                            detail,
                         ))
                     }
-                    AgentRequest::DiscoverAgents { scope, detail } => {
+                    AgentRequest::DiscoverAgents {
+                        scope,
+                        detail,
+                        launch_id,
+                        pane_id,
+                        after,
+                        limit,
+                    } => {
                         let state = self.inner.agents.state.lock().unwrap();
                         let own = contexts.get(id).context("live agent context unavailable")?;
-                        require_scope(scope, own, &state.store)?;
-                        let agents = contexts.values().filter(|other| other.launch_id != *id && other.active && state.store.agents.get(&other.launch_id).is_some_and(|a| a.exited_at.is_none()) && in_scope(scope, own, other, &state.store)).map(|other| {
-                            let value=public(other,&state.store.agents[&other.launch_id],state.receivers.get(&other.launch_id),current_subscribers(&state,&other.launch_id));
-                            if detail {value} else {json!({"agent_id":value["agent_id"],"launch_id":value["launch_id"],"harness":value["harness"],"title":value["title"],"pane_id":value["pane_id"],"pane_name":value["pane_name"],"workspace_id":value["workspace_id"],"window_id":value["window_id"],"status":value["status"],"notification_ready":value["notification_ready"]})}
-                        }).collect::<Vec<_>>();
-                        Ok(json!({"agents":agents,"scope":scope}))
+                        discover(
+                            &state,
+                            &contexts,
+                            own,
+                            DiscoveryQuery {
+                                scope,
+                                detail,
+                                launch_id: launch_id.as_deref(),
+                                pane_id: pane_id.as_deref(),
+                                after: after.as_deref(),
+                                limit,
+                            },
+                        )
                     }
                     AgentRequest::InspectOutbox {
                         message_id,
@@ -1028,8 +1334,14 @@ impl Registry {
                         text,
                         idempotency_key,
                         scope,
+                        delivery,
                     } => {
                         let own = contexts.get(id).context("live agent context unavailable")?;
+                        let receiver_ready = {
+                            let state = self.inner.agents.state.lock().unwrap();
+                            state.receivers.contains_key(&to)
+                                && current_subscribers(&state, &to) > 0
+                        };
                         self.inner.agents.transaction(|store| {
                             messages::send(
                                 store,
@@ -1041,16 +1353,36 @@ impl Registry {
                                     text,
                                     idempotency_key,
                                     scope,
+                                    delivery,
+                                    receiver_ready,
                                 },
                                 &launch.grant.token,
                             )
                         })
                     }
-                    AgentRequest::ReadInbox { after, limit } => {
-                        self.inner.agents.transaction_maybe(|store| {
-                            messages::read(store, id, after.as_deref(), limit, now())
-                        })
-                    }
+                    AgentRequest::ReadInbox {
+                        after,
+                        limit,
+                        ack_ids,
+                        include_read,
+                    } => self.inner.agents.transaction_maybe(|store| {
+                        messages::read(
+                            store,
+                            id,
+                            after.as_deref(),
+                            limit,
+                            &ack_ids,
+                            include_read,
+                            now(),
+                        )
+                    }),
+                    AgentRequest::ReadMessage {
+                        message_id,
+                        offset,
+                        max_bytes,
+                    } => self.inner.agents.transaction_maybe(|store| {
+                        messages::read_message(store, id, &message_id, offset, max_bytes, now())
+                    }),
                     AgentRequest::AckMessage { ids } => self
                         .inner
                         .agents
@@ -1242,8 +1574,10 @@ impl Registry {
         let service = &self.inner.agents;
         let id = &launch.grant.launch_id;
         {
+            let _writer = service.callback_guard()?;
             let mut state = service.state.lock().unwrap();
             healthy_agents(&state)?;
+            Agents::require_live(&state.store, id)?;
             let waiters = state.waiters.entry(id.clone()).or_default();
             ensure!(
                 waiters.values().sum::<usize>() < 2,
@@ -1266,6 +1600,9 @@ impl Registry {
                     if *count == 0 {
                         waiters.remove(self.receiver_id);
                     }
+                }
+                if state.waiters.get(self.id).is_some_and(BTreeMap::is_empty) {
+                    state.waiters.remove(self.id);
                 }
             }
         }
@@ -1311,7 +1648,7 @@ impl Registry {
                     if let Some(notification) = notification {
                         self.agent_receiver_peer(launch, peer, &receiver_id)?;
                         return Ok(
-                            json!({"notification":{"notification_id":notification.id,"generation":notification.generation,"session_id":receiver.session_id,"mode":receiver.mode,"pointer":"Untrusted peer messages are waiting. Call bkpr read_inbox; acknowledge only after processing."}}),
+                            json!({"notification":{"notification_id":notification.id,"generation":notification.generation,"session_id":receiver.session_id,"mode":receiver.mode,"message_count":notification.message_count,"unread_count":notification.unread_count,"pointer":"Untrusted peers: read_inbox; acknowledge only processed IDs, optionally with the next read."}}),
                         );
                     }
                 }
@@ -1363,19 +1700,17 @@ fn settle_unknown(
     timestamp: u64,
 ) -> bool {
     let mut changed = false;
-    if let Some(notification) = store
-        .agents
-        .get_mut(id)
-        .and_then(|a| a.notification.as_mut())
-        .filter(|n| {
+    if let Some(agent) = store.agents.get_mut(id)
+        && agent.notification.as_ref().is_some_and(|n| {
             n.receiver_id == receiver_id
                 && n.id == notification_id
                 && n.generation == generation
                 && n.state == "pending"
         })
     {
-        notification.state = "unknown".into();
-        notification.reason = Some(reason.into());
+        // Retire only this claim. Its messages keep the historical unknown outcome
+        // and notification identity, so they cannot be ambiguously reoffered.
+        agent.notification = None;
         changed = true;
     }
     for m in store.messages.values_mut().filter(|m| {
@@ -1425,7 +1760,7 @@ fn next_maintenance(store: &Store) -> Option<u64> {
     let notification = store
         .messages
         .values()
-        .filter(|m| m.wake_state == "pending")
+        .filter(|m| m.wake_state == "pending" && m.notification_id.is_some())
         .filter_map(|m| m.wake_claimed_at)
         .map(|at| at.saturating_add(30000))
         .min();

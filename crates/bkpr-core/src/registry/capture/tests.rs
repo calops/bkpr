@@ -151,11 +151,17 @@ fn managed_peer_fixture() {
         false
     );
     let native = home.join("native/claude");
+    let installed_executable = fs::canonicalize(&native).unwrap();
+    assert_eq!(
+        installed_executable.file_name().unwrap(),
+        "2.1.321",
+        "fixture must exercise the installer executable, not a named hard link"
+    );
     let nested = home.join("nested/claude");
     // Keep the recognized native process stable while sampling its descendants.
     // Repeatedly forking `sleep` makes procfs executable identity transient.
     let mut child = ChildGuard(Command::new(&native)
-        .args(["-c", r#"printf '\033]7501;state=working:app=claude\007'; "$1" -c '"$1" --ignored --exact registry::capture::tests::nested_peer_fixture --nocapture --test-threads=1; result=$?; exit "$result"' nested "$2" || exit "$?"; printf ready > "$HOME/native-ready"; IFS= read -r hold"#, "native"])
+        .args(["-c", r#"printf '\033]7501;state=working:app=claude\007'; "$1" -c '"$1" --ignored --exact registry::capture::tests::nested_peer_fixture --nocapture --test-threads=1; result=$?; exit "$result"' nested "$2" || exit "$?"; "$HOME/runtime/node" -c 'printf ready > "$HOME/runtime-ready"; IFS= read -r hold' <&0 & printf ready > "$HOME/native-ready"; IFS= read -r hold"#, "native"])
         .arg(&nested).arg(std::env::current_exe().unwrap())
         .env("FIXTURE_CAPTURE_TOKEN", &grant.token).env("FIXTURE_CAPTURE_LAUNCH", &grant.launch_id)
         .current_dir(home.join("native-cwd"))
@@ -163,6 +169,7 @@ fn managed_peer_fixture() {
         .spawn().unwrap());
     await_file(&home.join("nested-result.json"));
     await_file(&home.join("native-ready"));
+    await_file(&home.join("runtime-ready"));
     for id in ["native-one", "native-one", "native-two"] {
         assert_eq!(
             wire(
@@ -195,6 +202,18 @@ fn managed_peer_fixture() {
         )["ok"],
         true
     );
+    for id in ["wrong-conversation", "native-two", "native-two"] {
+        assert_eq!(
+            wire(
+                &socket,
+                event(CaptureEvent::PromptSubmitted {
+                    conversation_id: id.into(),
+                    source: ConversationSource::ClaudeHook,
+                })
+            )["ok"],
+            id == "native-two"
+        );
+    }
     fs::write(home.join("ready.json"), serde_json::to_vec(&json!({"launch_id":grant.launch_id,"native_pid":child.0.id(),"context":context()["result"]})).unwrap()).unwrap();
     if home.join("test-rebind-enabled").exists() {
         await_file(&home.join("rebind"));
@@ -263,10 +282,19 @@ impl Fixture {
         let home = root.path().join("home");
         crate::prepare_home(&home).unwrap();
         fs::write(home.join("capture-fixture"), b"owned capture fixture").unwrap();
-        for dir in ["native", "nested"] {
-            fs::create_dir(home.join(dir)).unwrap();
-            fs::copy("/bin/sh", home.join(dir).join("claude")).unwrap();
+        for dir in [
+            "native",
+            "nested",
+            "runtime",
+            "native/share/claude/versions",
+        ] {
+            fs::create_dir_all(home.join(dir)).unwrap();
         }
+        fs::copy("/bin/sh", home.join("native/share/claude/versions/2.1.321")).unwrap();
+        std::os::unix::fs::symlink("share/claude/versions/2.1.321", home.join("native/claude"))
+            .unwrap();
+        fs::copy("/bin/sh", home.join("nested/claude")).unwrap();
+        fs::copy("/bin/sh", home.join("runtime/node")).unwrap();
         fs::create_dir(home.join("native-cwd")).unwrap();
         Self {
             registry,
@@ -405,6 +433,13 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
             .generation,
         2
     );
+    assert!(
+        info.managed
+            .as_ref()
+            .unwrap()
+            .first_prompt_submitted_at_ms
+            .is_some()
+    );
     assert_eq!(
         snapshot
             .panes
@@ -535,6 +570,11 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
             .harness_status
             .is_none()
     );
+    assert!(
+        registry.snapshot().unwrap().panes[0]
+            .harness_status_changed_at_ms
+            .is_none()
+    );
     assert!(fixture.snapshot(&pane_id).program_status.is_empty());
     assert!(
         registry
@@ -553,6 +593,11 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
     assert!(
         registry.snapshot().unwrap().panes[0]
             .harness_status
+            .is_none()
+    );
+    assert!(
+        registry.snapshot().unwrap().panes[0]
+            .harness_status_changed_at_ms
             .is_none()
     );
     assert!(
@@ -622,6 +667,7 @@ fn restored_foreground_facts_are_stripped_and_metadata_writes_do_not_persist_the
             title: String::new(),
             progress: None,
         }),
+        harness_status_changed_at_ms: Some(123),
         foreground_cwd: Some(fixture.home.clone()),
         harness: Some(HarnessInfo {
             kind: HarnessKind::Claude,
@@ -636,6 +682,7 @@ fn restored_foreground_facts_are_stripped_and_metadata_writes_do_not_persist_the
                     generation: 1,
                 }),
                 error: None,
+                first_prompt_submitted_at_ms: Some(456),
             }),
         }),
     };
@@ -684,6 +731,11 @@ fn restored_foreground_facts_are_stripped_and_metadata_writes_do_not_persist_the
     assert!(
         reopened.snapshot().unwrap().panes[0]
             .harness_status
+            .is_none()
+    );
+    assert!(
+        reopened.snapshot().unwrap().panes[0]
+            .harness_status_changed_at_ms
             .is_none()
     );
     assert!(

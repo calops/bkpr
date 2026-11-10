@@ -416,6 +416,7 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write, capture: &Capture) -
     live_context(capture)?; // Authenticate source before advertising even the tool descriptions.
     let mut initialized = false;
     let mut ready = false;
+    let pages = agent::output::Pages::default();
     while let Some(frame) = read_frame(input)? {
         let message = match strict_json(&frame) {
             Ok(value) => value,
@@ -495,6 +496,8 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write, capture: &Capture) -
             }
             "tools/call" if ready => {
                 let mut receiver_instructions = None;
+                let mut origin = None;
+                let mut dispatched = false;
                 let result = (|| -> Result<Value> {
                     let root = root_metadata(&message)?;
                     capture.bind(ConversationSource::AgyMcp, root)?;
@@ -508,6 +511,7 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write, capture: &Capture) -
                     // Obtain readiness before any user mutation: a later diagnostic failure must
                     // never hide a durable send's successful result.
                     let identity = agent::call(capture, "whoami", json!({}))?;
+                    origin = Some(agent::output::Owner::from_identity(&identity)?);
                     let instructions = bootstrap(capture)?;
                     let value = if name == "context" {
                         ensure!(
@@ -515,27 +519,44 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write, capture: &Capture) -
                             "context accepts no arguments"
                         );
                         live_context(capture)?
-                    } else if name == "whoami" {
-                        ensure!(
-                            arguments.as_object().is_some_and(|value| value.is_empty()),
-                            "whoami accepts no arguments"
-                        );
+                    } else if name == "read_result" {
+                        pages.read(
+                            origin.as_ref().expect("authenticated tool origin"),
+                            arguments,
+                        )?
+                    } else if name == "whoami"
+                        && arguments.as_object().is_some_and(|value| value.is_empty())
+                    {
                         identity.clone()
                     } else {
+                        dispatched = true;
                         agent::call(capture, name, arguments)?
                     };
-                    if identity["readiness"]["can_notify"] != true {
+                    if identity["notification_ready"] != true {
                         receiver_instructions = Some(instructions);
                     }
+                    let value = match receiver_instructions {
+                        Some(instructions) => {
+                            let mut value = value;
+                            if let Some(object) = value.as_object_mut() {
+                                object.insert("receiver_instructions".into(), json!(instructions));
+                                value
+                            } else {
+                                json!({"result":value,"receiver_instructions":instructions})
+                            }
+                        }
+                        None => value,
+                    };
                     Ok(value)
                 })();
-                let mut result = agent::tool_result(result);
-                if let Some(instructions) = receiver_instructions {
-                    result["content"]
-                        .as_array_mut()
-                        .expect("MCP tool results always contain a content array")
-                        .push(json!({"type":"text","text":instructions}));
-                }
+                let result = if dispatched {
+                    result
+                } else {
+                    result.map_err(agent::before_dispatch_error)
+                };
+                let result = agent::tool_result(&pages, result, origin.as_ref(), || {
+                    agent::output::Owner::from_identity(&agent::call(capture, "whoami", json!({}))?)
+                });
                 json!({"jsonrpc":"2.0","id":id,"result":result})
             }
             "initialize" => rpc_error(id, -32600, "MCP connection is already initialized"),
@@ -670,33 +691,6 @@ mod tests {
         assert!(strict_json(br#"{"params":{"x":1,"x":2}}"#).is_err());
         assert!(strict_json(br#"{"x":1}{}"#).is_err());
         assert!(read_frame(&mut &b""[..]).unwrap().is_none());
-    }
-
-    #[test]
-    fn full_escaped_inbox_page_fits_the_actual_mcp_response_budget() -> Result<()> {
-        let messages: Vec<_> = (0..10)
-            .map(|index| {
-                json!({
-                    "id":format!("opaque-{index}"), "text":"\u{0001}".repeat(64 * 1024),
-                })
-            })
-            .collect();
-        let inbox = json!({"messages":messages, "has_more":false});
-        let response =
-            json!({"jsonrpc":"2.0","id":1,"result":agent::tool_result(Ok(inbox.clone()))});
-        let mut wire = Vec::new();
-        write_frame(&mut wire, &response)?;
-        assert!(wire.len() > MAX_FRAME);
-        assert!(wire.len() <= MAX_RESPONSE);
-        let received: Value = serde_json::from_slice(&wire)?;
-        assert_eq!(received["result"]["structuredContent"], inbox);
-        assert_eq!(
-            serde_json::from_str::<Value>(
-                received["result"]["content"][0]["text"].as_str().unwrap()
-            )?,
-            inbox
-        );
-        Ok(())
     }
 
     #[test]

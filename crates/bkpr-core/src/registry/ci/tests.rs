@@ -107,6 +107,7 @@ impl Fixture {
                     error: None,
                     ci: None,
                 }),
+                harness_status_changed_at_ms: None,
             });
     }
     fn sync(&mut self) {

@@ -7442,6 +7442,7 @@ pub(super) mod tests {
             project: None,
             home: app.defaults().unwrap().home.clone(),
             isolated_environment: true,
+            harness_status_changed_at_ms: None,
         });
         let metadata = PaneSnapshot {
             pane_id: pane.into(),
@@ -7708,6 +7709,7 @@ pub(super) mod tests {
                 project: None,
                 home: app.defaults().unwrap().home.clone(),
                 isolated_environment: true,
+                harness_status_changed_at_ms: None,
             })
             .collect();
         app.state = Controller::new(&app.registry);

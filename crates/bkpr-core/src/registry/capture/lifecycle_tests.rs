@@ -95,6 +95,141 @@ fn seed_launch_command(
     )
 }
 #[test]
+fn native_prompt_fact_is_launch_scoped_and_never_invents_semantic_status() {
+    let fixture = Fixture::new();
+    let (pane_id, grant, peer) =
+        seed_launch_command(&fixture, HarnessKind::Claude, "IFS= read -r hold");
+    let event = |event| {
+        Request::new(Operation::HarnessEvent {
+            launch_id: grant.launch_id.clone(),
+            token: grant.token.clone(),
+            event,
+        })
+    };
+    let published = || {
+        fixture
+            .registry
+            .snapshot()
+            .unwrap()
+            .panes
+            .into_iter()
+            .find(|pane| pane.id == pane_id)
+            .unwrap()
+    };
+    assert!(
+        published()
+            .harness
+            .unwrap()
+            .managed
+            .unwrap()
+            .first_prompt_submitted_at_ms
+            .is_none()
+    );
+    fixture
+        .registry
+        .request_authenticated(
+            event(CaptureEvent::Bind {
+                conversation_id: "native-one".into(),
+                source: ConversationSource::ClaudeHook,
+            }),
+            &peer,
+        )
+        .unwrap();
+    assert!(
+        fixture
+            .registry
+            .request_authenticated(
+                event(CaptureEvent::PromptSubmitted {
+                    conversation_id: "wrong-native".into(),
+                    source: ConversationSource::ClaudeHook,
+                }),
+                &peer
+            )
+            .is_err()
+    );
+    for _ in 0..2 {
+        fixture
+            .registry
+            .request_authenticated(
+                event(CaptureEvent::PromptSubmitted {
+                    conversation_id: "native-one".into(),
+                    source: ConversationSource::ClaudeHook,
+                }),
+                &peer,
+            )
+            .unwrap();
+    }
+    let first = published();
+    assert!(first.harness_status.is_none() && first.harness_status_changed_at_ms.is_none());
+    let first_time = first
+        .harness
+        .unwrap()
+        .managed
+        .unwrap()
+        .first_prompt_submitted_at_ms
+        .unwrap();
+    fixture
+        .registry
+        .request_authenticated(
+            event(CaptureEvent::Bind {
+                conversation_id: "native-two".into(),
+                source: ConversationSource::ClaudeHook,
+            }),
+            &peer,
+        )
+        .unwrap();
+    assert!(
+        fixture
+            .registry
+            .request_authenticated(
+                event(CaptureEvent::PromptSubmitted {
+                    conversation_id: "native-one".into(),
+                    source: ConversationSource::ClaudeHook,
+                }),
+                &peer
+            )
+            .is_err()
+    );
+    fixture
+        .registry
+        .request_authenticated(
+            event(CaptureEvent::PromptSubmitted {
+                conversation_id: "native-two".into(),
+                source: ConversationSource::ClaudeHook,
+            }),
+            &peer,
+        )
+        .unwrap();
+    let after = published();
+    assert!(after.harness_status.is_none() && after.harness_status_changed_at_ms.is_none());
+    assert_eq!(
+        after
+            .harness
+            .unwrap()
+            .managed
+            .unwrap()
+            .first_prompt_submitted_at_ms,
+        Some(first_time)
+    );
+    fixture
+        .registry
+        .request_authenticated(event(CaptureEvent::End), &peer)
+        .unwrap();
+    assert!(
+        fixture
+            .registry
+            .request_authenticated(
+                event(CaptureEvent::PromptSubmitted {
+                    conversation_id: "native-two".into(),
+                    source: ConversationSource::ClaudeHook,
+                }),
+                &peer
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn execution_exit_revokes_before_late_callbacks_and_preserves_shell_exit() {
     let fixture = Fixture::new();
     let (pane_id, grant, peer) = seed_launch(&fixture);
@@ -440,6 +575,7 @@ fn agent_recovery_control_defaults_to_live_workspace_and_cannot_resume_foreign_o
             request: AgentRequest::Control {
                 request: Box::new(operation),
                 scope,
+                reply: bkpr_protocol::control::ControlReply::Full,
             },
         })
     };
@@ -754,6 +890,7 @@ fn closing_one_window_keeps_other_window_native_binding_and_agent_context_live()
     );
     let closing_pane = fixture.registry.capture_pane(&closing_id).unwrap();
     let hold = closing_pane.shared.requests.lock().unwrap();
+    let closing_window = windows[0].clone();
     let closing_registry = fixture.registry.clone();
     let close = thread::spawn(move || {
         closing_registry.request(Request::new(Operation::WindowClose {
@@ -763,19 +900,22 @@ fn closing_one_window_keeps_other_window_native_binding_and_agent_context_live()
         }))
     });
     let deadline = Instant::now() + Duration::from_secs(8);
-    while fixture
-        .registry
-        .inner
-        .state
-        .lock()
-        .unwrap()
-        .closing_workspaces
-        .is_empty()
-    {
-        assert!(
-            Instant::now() < deadline,
-            "window close never reached native termination"
-        );
+    loop {
+        let reserved = fixture
+            .registry
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .closing_windows
+            .contains(&closing_window);
+        if reserved {
+            break;
+        }
+        if Instant::now() >= deadline {
+            drop(hold);
+            panic!("window close never reached native termination");
+        }
         thread::yield_now();
     }
     let binding = bind_native(&fixture.registry, &grant, &peer, "surviving-window-thread");
@@ -783,7 +923,7 @@ fn closing_one_window_keeps_other_window_native_binding_and_agent_context_live()
         Request::new(Operation::Agent {
             launch_id: grant.launch_id.clone(),
             token: grant.token.clone(),
-            request: AgentRequest::Whoami,
+            request: AgentRequest::Whoami { detail: false },
         }),
         &peer,
     );
@@ -875,6 +1015,7 @@ fn ended_agent_cannot_execute_recovery_after_scope_sampling_before_spawn_reserva
                 expected,
             }),
             scope: AgentScope::Session,
+            reply: bkpr_protocol::control::ControlReply::Receipt,
         },
     });
     let control = thread::spawn(move || {

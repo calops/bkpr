@@ -92,7 +92,7 @@ fn registry_watcher_receives_hidden_harness_status_without_admitting_any_views()
         .as_str()
         .unwrap()
         .to_owned();
-    let script = r#"while [ ! -f working ]; do sleep 0.01; done; printf '\033]7501;state=working:app=claude\007'; while [ ! -f blocked ]; do sleep 0.01; done; printf '\033]7501;state=blocked:app=claude:id=task\007'; while [ ! -f error ]; do sleep 0.01; done; printf '\033]7501;state=error:app=claude:id=task\007'; while [ ! -f done ]; do sleep 0.01; done; printf '\033]7501;state=clear\007\033]7501;state=done:app=claude:id=result\007'; while [ ! -f clear ]; do sleep 0.01; done; printf '\033]7501;state=clear\007'; exec sleep 60"#;
+    let script = r#"while [ ! -f working ]; do sleep 0.01; done; printf '\033]7501;state=working:app=claude\007'; while [ ! -f duplicate ]; do sleep 0.01; done; printf '\033]7501;state=working:app=claude\007\033]2;duplicate-seen\007'; while [ ! -f title ]; do sleep 0.01; done; printf '\033]2;title-seen\007'; while [ ! -f blocked ]; do sleep 0.01; done; printf '\033]7501;state=blocked:app=claude:id=task\007'; while [ ! -f error ]; do sleep 0.01; done; printf '\033]7501;state=error:app=claude:id=task\007'; while [ ! -f done ]; do sleep 0.01; done; printf '\033]7501;state=clear\007\033]7501;state=done:app=claude:id=result\007'; while [ ! -f clear ]; do sleep 0.01; done; printf '\033]7501;state=clear\007'; exec sleep 60"#;
     let result = fixture
         .registry
         .request(Request::new(Operation::WindowCreate {
@@ -135,8 +135,11 @@ fn registry_watcher_receives_hidden_harness_status_without_admitting_any_views()
     }
     let durable = fs::read(fixture._root.path().join("registry.json")).unwrap();
     let mut revision = fixture.registry.snapshot().unwrap().revision;
+    let mut changed_at_ms = None;
     for (gate, expected) in [
         ("working", Some("working")),
+        ("duplicate", Some("working")),
+        ("title", Some("working")),
         ("blocked", Some("blocked")),
         ("error", Some("error")),
         ("done", Some("done")),
@@ -167,7 +170,21 @@ fn registry_watcher_receives_hidden_harness_status_without_admitting_any_views()
                 .as_ref()
                 .map(|status| status.state.as_str())
                 == expected
+                && (!matches!(gate, "duplicate" | "title") || info.title == format!("{gate}-seen"))
             {
+                if expected.is_some() {
+                    let observed = info
+                        .harness_status_changed_at_ms
+                        .expect("OSC observation time");
+                    if matches!(gate, "duplicate" | "title") {
+                        assert_eq!(Some(observed), changed_at_ms);
+                    } else if let Some(previous) = changed_at_ms {
+                        assert!(observed >= previous);
+                    }
+                    changed_at_ms = Some(observed);
+                } else {
+                    assert!(info.harness_status_changed_at_ms.is_none());
+                }
                 break;
             }
             assert!(

@@ -41,6 +41,7 @@ fn large_saved_registry_round_trips_and_automatic_names_follow_existing_document
                     harness_status: None,
                     project: None,
                     isolated_environment: false,
+                    harness_status_changed_at_ms: None,
                 });
             }
             Ok(())

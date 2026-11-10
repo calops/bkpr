@@ -326,6 +326,19 @@ fn callback_input(input: impl Read) -> Result<Value> {
     serde_json::from_slice(&bytes).context("parse Claude capture hook JSON")
 }
 
+fn publish_conversation(capture: &Capture, value: &Value, id: &str) -> Result<()> {
+    if matches!(
+        value["hook_event_name"].as_str(),
+        Some("SessionStart" | "UserPromptSubmit")
+    ) {
+        capture.bind(ConversationSource::ClaudeHook, id)?;
+        if value["hook_event_name"] == "UserPromptSubmit" {
+            capture.prompt_submitted(ConversationSource::ClaudeHook, id)?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn hook() -> Result<()> {
     // Claude may discard stderr for a failed SessionStart hook. Publish an
     // authenticated diagnostic as well, without inventing a conversation/status.
@@ -338,12 +351,7 @@ pub(super) fn hook() -> Result<()> {
         let Some(id) = root_session(&value)? else {
             return Ok(());
         };
-        if matches!(
-            value["hook_event_name"].as_str(),
-            Some("SessionStart" | "UserPromptSubmit")
-        ) {
-            capture.bind(ConversationSource::ClaudeHook, id)?;
-        }
+        publish_conversation(&capture, &value, id)?;
         claude_inbox::hook(&capture, &value, id, &mut std::io::stdout().lock())
     })();
     if let Err(error) = &result {
@@ -455,5 +463,72 @@ mod tests {
         }
         assert!(callback_input(&b"{broken"[..]).is_err());
         assert!(callback_input(std::io::repeat(b' ').take(MAX_CALLBACK_BYTES + 1)).is_err());
+    }
+    #[test]
+    fn native_prompt_callback_sends_only_bound_body_free_facts() {
+        use bkpr_protocol::{CaptureEvent, CaptureGrant, Operation, Request, Response, wire};
+        use std::{os::unix::net::UnixListener, sync::atomic::AtomicBool, thread};
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("capture.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let capture = Capture {
+            grant: CaptureGrant {
+                launch_id: "launch".into(),
+                token: "x".repeat(64),
+                pane_id: "pane".into(),
+                kind: HarnessKind::Claude,
+            },
+            program: "/unused/bkpr".into(),
+            socket,
+            revoke_on_drop: false,
+            ended: AtomicBool::new(false),
+        };
+        let server = thread::spawn(move || {
+            let mut received = Vec::new();
+            let mut codec = wire::Codec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let bytes =
+                    wire::read_frame(&mut stream, wire::Kind::Request, wire::MAX_REQUEST).unwrap();
+                let request: Request = wire::decode_request(&bytes).unwrap();
+                received.push(request.operation);
+                let response = Response {
+                    version: bkpr_protocol::PROTOCOL_VERSION,
+                    ok: true,
+                    result: Some(json!({"accepted":true}).into()),
+                    error: None,
+                    failure: None,
+                };
+                let bytes = codec.encode_response(&response).unwrap();
+                wire::write_frame(&mut stream, wire::Kind::Response, bytes).unwrap();
+            }
+            received
+        });
+        for event in ["SessionStart", "UserPromptSubmit", "PostToolUse"] {
+            let value = json!({"hook_event_name":event, "session_id":"native",
+                "prompt":"PRIVATE_PROMPT", "tool_input":{"text":"PRIVATE_TOOL"}});
+            let id = root_session(&value).unwrap().unwrap();
+            publish_conversation(&capture, &value, id).unwrap();
+        }
+        let received = server.join().unwrap();
+        assert!(matches!(
+            &received[0],
+            Operation::HarnessEvent {
+                event: CaptureEvent::Bind { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            &received[1],
+            Operation::HarnessEvent {
+                event: CaptureEvent::Bind { .. },
+                ..
+            }
+        ));
+        assert!(matches!(&received[2], Operation::HarnessEvent {
+            event:CaptureEvent::PromptSubmitted{conversation_id,source:ConversationSource::ClaudeHook},..
+        } if conversation_id == "native"));
+        let encoded = serde_json::to_string(&received).unwrap();
+        assert!(!encoded.contains("PRIVATE_PROMPT") && !encoded.contains("PRIVATE_TOOL"));
     }
 }

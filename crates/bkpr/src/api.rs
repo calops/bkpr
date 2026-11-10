@@ -1,23 +1,24 @@
 //! Discoverable CLI boundary for the same operation catalog as MCP.
 use anyhow::{Context, Result, bail, ensure};
-use bkpr_protocol::control::{self, ControlAction};
+use bkpr_protocol::control::{self, ControlAction, ControlReply};
 use clap::ArgMatches;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-fn invocation(matches: &ArgMatches) -> Result<(String, Value, Option<String>)> {
+fn invocation(matches: &ArgMatches) -> Result<(String, Value, Option<String>, ControlReply)> {
     let api = matches
         .subcommand_matches("api")
         .context("missing api command")?;
     let (name, args) = api.subcommand().context("missing api operation")?;
     match name {
-        "help" => Ok(("api.help".into(), json!({}), None)),
+        "help" => Ok(("api.help".into(), json!({}), None, ControlReply::Receipt)),
         "schema" => Ok((
             "api.schema".into(),
             args.get_one::<String>("operation")
                 .map(|operation| json!({"operation":operation}))
                 .unwrap_or_else(|| json!({})),
             None,
+            ControlReply::Receipt,
         )),
         "call" => {
             let operation = args
@@ -34,6 +35,10 @@ fn invocation(matches: &ArgMatches) -> Result<(String, Value, Option<String>)> {
                 operation,
                 arguments,
                 args.get_one::<String>("scope").cloned(),
+                match args.get_one::<String>("reply").map(String::as_str) {
+                    Some("full") => ControlReply::Full,
+                    _ => ControlReply::Receipt,
+                },
             ))
         }
         _ => bail!("unknown api command"),
@@ -41,7 +46,7 @@ fn invocation(matches: &ArgMatches) -> Result<(String, Value, Option<String>)> {
 }
 
 fn execute(matches: &ArgMatches) -> Result<Value> {
-    let (operation, arguments, scope) = invocation(matches)?;
+    let (operation, arguments, scope, reply) = invocation(matches)?;
     let action = control::resolve(&operation, arguments.clone())?;
     if let ControlAction::Local(value) = action {
         return Ok(value);
@@ -59,6 +64,7 @@ fn execute(matches: &ArgMatches) -> Result<Value> {
             "method":if control::is_input(&operation) { "terminal_input" } else { "control" },
             "operation":operation,
             "arguments":arguments,
+            "reply":reply,
         });
         if let Some(scope) = scope {
             request["scope"] = json!(scope);
@@ -72,8 +78,13 @@ fn execute(matches: &ArgMatches) -> Result<Value> {
     let ControlAction::Native(operation) = action else {
         unreachable!("local action returned above")
     };
+    let projection = if reply == ControlReply::Receipt {
+        control::MutationProjection::for_operation(&operation)
+    } else {
+        None
+    };
     if matches.get_one::<String>("remote").is_some() {
-        return crate::remote::api_call(matches, operation);
+        return project_result(projection, crate::remote::api_call(matches, operation)?);
     }
     ensure!(
         matches.contains_id("session") || matches.contains_id("socket"),
@@ -90,7 +101,17 @@ fn execute(matches: &ArgMatches) -> Result<Value> {
         false,
     )?;
     crate::session::validate_target(&paths)?;
-    bkpr_client::transport::checked(&paths.socket, operation)
+    project_result(
+        projection,
+        bkpr_client::transport::checked(&paths.socket, operation)?,
+    )
+}
+
+fn project_result(projection: Option<control::MutationProjection>, result: Value) -> Result<Value> {
+    match projection {
+        Some(projection) => projection.apply(result),
+        None => Ok(result),
+    }
 }
 
 pub fn run(matches: &ArgMatches) -> Result<()> {
@@ -130,8 +151,9 @@ mod tests {
             vec!["bkpr", "api", "schema"],
             vec!["bkpr", "api", "schema", "pane.create"],
         ] {
-            let (operation, arguments, scope) = invocation(&parse(&args)).unwrap();
+            let (operation, arguments, scope, reply) = invocation(&parse(&args)).unwrap();
             assert!(scope.is_none());
+            assert_eq!(reply, ControlReply::Receipt);
             assert!(matches!(
                 control::resolve(&operation, arguments).unwrap(),
                 ControlAction::Local(_)
@@ -151,11 +173,50 @@ mod tests {
             "--scope",
             "session",
         ]);
-        let (operation, arguments, scope) = invocation(&matches).unwrap();
+        let (operation, arguments, scope, reply) = invocation(&matches).unwrap();
         assert_eq!(operation, "input.text");
         assert_eq!(arguments["text"], "literal\n");
         assert_eq!(scope.as_deref(), Some("session"));
+        assert_eq!(reply, ControlReply::Receipt);
         let bad = parse(&["bkpr", "api", "call", "recovery.list", "--arguments", "[]"]);
         assert!(invocation(&bad).is_err());
+    }
+
+    #[test]
+    fn mutation_output_defaults_to_receipt_and_full_requires_explicit_choice() {
+        let matches = parse(&[
+            "bkpr",
+            "api",
+            "call",
+            "window.close",
+            "--arguments",
+            r#"{"workspace_id":"w","window_id":"n","expected_revision":3}"#,
+        ]);
+        let (name, arguments, _, reply) = invocation(&matches).unwrap();
+        assert_eq!(reply, ControlReply::Receipt);
+        let ControlAction::Native(operation) = control::resolve(&name, arguments).unwrap() else {
+            panic!()
+        };
+        let result = json!({"registry":{"revision":9,"workspaces":[],"panes":[{"project":"not-a-receipt"}]},"closed_pane_ids":["p"]});
+        let receipt = project_result(
+            control::MutationProjection::for_operation(&operation),
+            result.clone(),
+        )
+        .unwrap();
+        assert!(receipt.get("registry").is_none());
+        assert_eq!(receipt["window_id"], "n");
+        assert_eq!(receipt["closed_pane_ids"], json!(["p"]));
+        assert_eq!(receipt["window_closed"], true);
+        let matches = parse(&["bkpr", "api", "call", "window.close", "--reply", "full"]);
+        assert_eq!(invocation(&matches).unwrap().3, ControlReply::Full);
+        assert_eq!(project_result(None, result.clone()).unwrap(), result);
+        assert!(
+            crate::cli::parse(
+                ["bkpr", "api", "call", "window.close", "--reply", "unknown"]
+                    .into_iter()
+                    .map(OsString::from)
+            )
+            .is_err()
+        );
     }
 }

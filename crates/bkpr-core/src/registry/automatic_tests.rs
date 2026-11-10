@@ -525,6 +525,7 @@ fn native_end_keeps_explicit_receipt_but_clears_automatic_role_and_shutdown_pres
             kind: expected.kind,
         },
         managed: ManagedHarness {
+            first_prompt_submitted_at_ms: None,
             launch_id: "private-test-launch".into(),
             conversation: Some(NativeConversation {
                 id: expected.conversation_id.clone(),

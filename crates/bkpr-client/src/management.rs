@@ -541,6 +541,7 @@ mod tests {
                     project: None,
                     home: "/tmp".into(),
                     isolated_environment: false,
+                    harness_status_changed_at_ms: None,
                 })
                 .collect(),
         }

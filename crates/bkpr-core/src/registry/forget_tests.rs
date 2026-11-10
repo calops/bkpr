@@ -125,6 +125,7 @@ fn retained_history_is_not_pruned_by_spawn_and_only_explicit_forget_removes_reco
                     harness_status: None,
                     project: None,
                     isolated_environment: false,
+                    harness_status_changed_at_ms: None,
                 });
             }
             Ok(())

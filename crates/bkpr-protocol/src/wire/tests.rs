@@ -106,7 +106,7 @@ fn every_operation_and_optional_presence_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "日本語\0🦀".into(),
         token: "日本語\0🦀".into(),
-        request: AgentRequest::Whoami,
+        request: AgentRequest::Whoami { detail: false },
     });
     assert_request(Operation::WorkspaceCreate {
         name: None,
@@ -264,7 +264,7 @@ fn every_operation_and_optional_presence_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "日本語\0🦀".into(),
         token: "日本語\0🦀".into(),
-        request: AgentRequest::Whoami,
+        request: AgentRequest::Whoami { detail: false },
     });
     assert_request(Operation::WorkspaceCreate {
         name: Some("日本語\0🦀".into()),
@@ -600,7 +600,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
-        request: AgentRequest::Whoami,
+        request: AgentRequest::Whoami { detail: true },
     });
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
@@ -608,6 +608,7 @@ fn every_nested_request_variant_roundtrips() {
         request: AgentRequest::Control {
             request: Box::new(Operation::SessionInfo),
             scope: AgentScope::All,
+            reply: control::ControlReply::Full,
         },
     });
     assert_request(Operation::Agent {
@@ -623,6 +624,10 @@ fn every_nested_request_variant_roundtrips() {
         request: AgentRequest::DiscoverAgents {
             scope: AgentScope::All,
             detail: true,
+            launch_id: Some("日本語\0🦀".into()),
+            pane_id: Some("日本語\0🦀".into()),
+            after: Some("日本語\0🦀".into()),
+            limit: Some(usize::MAX),
         },
     });
     assert_request(Operation::Agent {
@@ -633,6 +638,7 @@ fn every_nested_request_variant_roundtrips() {
             text: "日本語\0🦀".into(),
             idempotency_key: "日本語\0🦀".into(),
             scope: AgentScope::All,
+            delivery: AgentDelivery::Quiet,
         },
     });
     assert_request(Operation::Agent {
@@ -641,6 +647,8 @@ fn every_nested_request_variant_roundtrips() {
         request: AgentRequest::ReadInbox {
             after: Some("日本語\0🦀".into()),
             limit: Some(usize::MAX),
+            ack_ids: vec!["日本語\0🦀".into()],
+            include_read: true,
         },
     });
     assert_request(Operation::Agent {
@@ -1520,4 +1528,253 @@ fn invalid_utf8_and_empty_palette_presence_are_not_silently_normalized() {
             },
         });
     }
+}
+
+#[test]
+fn compact_control_and_agent_options_preserve_absence_zero_and_expansion() {
+    assert_request(Operation::ControlInspect {
+        query: control::InspectQuery::default(),
+    });
+    assert_request(Operation::ControlPaneRead {
+        pane_id: "pane".into(),
+        query: control::TerminalReadQuery::default(),
+    });
+    for value in [0, 1, usize::MAX] {
+        assert_request(Operation::ControlInspect {
+            query: control::InspectQuery {
+                workspace_id: Some("workspace\0日本語".into()),
+                window_id: Some("window".into()),
+                pane_id: Some("pane".into()),
+                detail: true,
+                include_retired: true,
+                after: Some("cursor".into()),
+                limit: Some(value),
+            },
+        });
+        assert_request(Operation::ControlPaneRead {
+            pane_id: "pane".into(),
+            query: control::TerminalReadQuery {
+                text: false,
+                tail_rows: Some(value),
+                offset: Some(value),
+                max_bytes: Some(value),
+                expected_revision: Some(value as u64),
+            },
+        });
+        assert_request(Operation::Agent {
+            launch_id: "launch".into(),
+            token: "secret".into(),
+            request: AgentRequest::ReadMessage {
+                message_id: "message\0日本語".into(),
+                offset: Some(value),
+                max_bytes: Some(value),
+            },
+        });
+    }
+    for request in [
+        AgentRequest::Control {
+            request: Box::new(Operation::ControlInspect {
+                query: control::InspectQuery::default(),
+            }),
+            scope: AgentScope::Workspace,
+            reply: control::ControlReply::Receipt,
+        },
+        AgentRequest::DiscoverAgents {
+            scope: AgentScope::Workspace,
+            detail: false,
+            launch_id: None,
+            pane_id: None,
+            after: None,
+            limit: None,
+        },
+        AgentRequest::SendMessage {
+            to: "recipient".into(),
+            text: "body".into(),
+            idempotency_key: "key".into(),
+            scope: AgentScope::Workspace,
+            delivery: AgentDelivery::Notify,
+        },
+        AgentRequest::ReadInbox {
+            after: None,
+            limit: None,
+            ack_ids: vec![],
+            include_read: false,
+        },
+        AgentRequest::ReadMessage {
+            message_id: "message".into(),
+            offset: None,
+            max_bytes: None,
+        },
+    ] {
+        assert_request(Operation::Agent {
+            launch_id: "launch".into(),
+            token: "secret".into(),
+            request,
+        });
+    }
+    for source in [
+        ConversationSource::ClaudeHook,
+        ConversationSource::OmpExtension,
+        ConversationSource::CodexStart,
+        ConversationSource::CodexResume,
+        ConversationSource::CodexFork,
+        ConversationSource::AgyMcp,
+    ] {
+        assert_request(Operation::HarnessEvent {
+            launch_id: "launch".into(),
+            token: "secret".into(),
+            event: CaptureEvent::PromptSubmitted {
+                conversation_id: "conversation\0日本語".into(),
+                source,
+            },
+        });
+    }
+}
+
+#[test]
+fn family_seven_is_rejected_before_body_traversal_or_allocation_charge() {
+    assert_eq!(PROTOCOL_VERSION, 8);
+    let mut codec = Codec::new();
+    let mut bytes = codec
+        .encode_request(&Request::new(Operation::Shutdown))
+        .unwrap()
+        .to_vec();
+    let (_, version) = root_field(&bytes, 0);
+    bytes[version..version + 4].copy_from_slice(&7_u32.to_le_bytes());
+    let (_, tag) = root_field(&bytes, 1);
+    bytes[tag] = 255;
+    let mut charge = 0;
+    let result = decode_request_charged(&bytes, &mut |bytes| {
+        charge += bytes;
+        Ok(())
+    });
+    assert!(result.unwrap_err().to_string().contains("version 7"));
+    assert_eq!(charge, 0);
+    assert!(
+        codec
+            .encode_request(&Request {
+                version: 7,
+                operation: Operation::Shutdown
+            })
+            .is_err()
+    );
+    let response = Response {
+        version: PROTOCOL_VERSION,
+        ok: false,
+        result: None,
+        error: Some("old family".into()),
+        failure: None,
+    };
+    let mut bytes = codec.encode_response(&response).unwrap().to_vec();
+    let (_, version) = root_field(&bytes, 0);
+    bytes[version..version + 4].copy_from_slice(&7_u32.to_le_bytes());
+    assert!(decode_response(&bytes).is_err());
+}
+
+#[test]
+fn compact_query_and_ack_required_fields_cannot_disappear() {
+    let mut codec = Codec::new();
+    for (operation, slot) in [
+        (
+            Operation::ControlInspect {
+                query: control::InspectQuery::default(),
+            },
+            0,
+        ),
+        (
+            Operation::ControlPaneRead {
+                pane_id: "pane".into(),
+                query: control::TerminalReadQuery::default(),
+            },
+            1,
+        ),
+    ] {
+        let mut bytes = codec
+            .encode_request(&Request::new(operation))
+            .unwrap()
+            .to_vec();
+        let (_, field) = root_field(&bytes, 2);
+        let table = indirect(&bytes, field);
+        let (entry, _) = table_field(&bytes, table, slot);
+        bytes[entry..entry + 2].fill(0);
+        assert!(decode_request(&bytes).is_err());
+    }
+    let mut bytes = codec
+        .encode_request(&Request::new(Operation::Agent {
+            launch_id: "launch".into(),
+            token: "secret".into(),
+            request: AgentRequest::ReadInbox {
+                after: None,
+                limit: None,
+                ack_ids: vec!["processed".into()],
+                include_read: true,
+            },
+        }))
+        .unwrap()
+        .to_vec();
+    let (_, field) = root_field(&bytes, 2);
+    let operation = indirect(&bytes, field);
+    let (_, field) = table_field(&bytes, operation, 3);
+    let request = indirect(&bytes, field);
+    let (entry, _) = table_field(&bytes, request, 2);
+    bytes[entry..entry + 2].fill(0);
+    assert!(decode_request(&bytes).is_err());
+}
+
+#[test]
+fn compact_reply_and_delivery_unknown_values_fail_closed() {
+    let mut codec = Codec::new();
+    for (request, slot) in [
+        (
+            AgentRequest::Control {
+                request: Box::new(Operation::Inspect),
+                scope: AgentScope::All,
+                reply: control::ControlReply::Full,
+            },
+            3,
+        ),
+        (
+            AgentRequest::SendMessage {
+                to: "to".into(),
+                text: "body".into(),
+                idempotency_key: "key".into(),
+                scope: AgentScope::All,
+                delivery: AgentDelivery::Quiet,
+            },
+            4,
+        ),
+    ] {
+        let mut bytes = codec
+            .encode_request(&Request::new(Operation::Agent {
+                launch_id: "launch".into(),
+                token: "secret".into(),
+                request,
+            }))
+            .unwrap()
+            .to_vec();
+        let (_, field) = root_field(&bytes, 2);
+        let operation = indirect(&bytes, field);
+        let (_, field) = table_field(&bytes, operation, 3);
+        let request = indirect(&bytes, field);
+        let (_, field) = table_field(&bytes, request, slot);
+        bytes[field] = 255;
+        assert!(decode_request(&bytes).is_err());
+    }
+}
+
+#[test]
+fn typed_busy_failure_roundtrips_exact_target_without_registry() {
+    let original = Response {
+        version: PROTOCOL_VERSION,
+        ok: false,
+        result: None,
+        error: Some("reserved target".into()),
+        failure: Some(RequestFailure::Busy {
+            target_id: "window\0日本語".into(),
+        }),
+    };
+    let mut codec = Codec::new();
+    let decoded = decode_response(codec.encode_response(&original).unwrap()).unwrap();
+    assert_eq!(decoded.failure, original.failure);
+    assert!(decoded.result.is_none());
 }

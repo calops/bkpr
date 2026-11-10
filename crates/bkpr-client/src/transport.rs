@@ -100,6 +100,18 @@ pub fn outcome_unknown(error: &anyhow::Error) -> bool {
     error.is::<OutcomeUnknown>()
 }
 
+/// A proven pre-dispatch reservation conflict, not authorization to replay.
+#[derive(Debug)]
+pub struct RequestBusy {
+    pub target_id: String,
+}
+impl std::fmt::Display for RequestBusy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "target {} is busy", self.target_id)
+    }
+}
+impl std::error::Error for RequestBusy {}
+
 pub(crate) fn mark_outcome_unknown(error: anyhow::Error) -> anyhow::Error {
     error.context(OutcomeUnknown)
 }
@@ -252,6 +264,9 @@ fn checked_payload_response(response: Response) -> Result<Payload> {
                 } else {
                     error
                 });
+            }
+            Some(RequestFailure::Busy { target_id }) => {
+                return Err(anyhow::Error::msg(message).context(RequestBusy { target_id }));
             }
             None => anyhow::Error::msg(message),
         };
@@ -416,5 +431,24 @@ mod tests {
         }));
         assert!(outcome_unknown(&error));
         assert!(!expected_shutdown(&error, true));
+    }
+
+    #[test]
+    fn typed_busy_preserves_target_and_is_known_even_with_ambiguous_error_words() {
+        let error = rejected_reply(reply(Response {
+            version: PROTOCOL_VERSION,
+            ok: false,
+            result: None,
+            error: Some("outcome unknown is a target label, not a dispatch outcome".into()),
+            failure: Some(RequestFailure::Busy {
+                target_id: "window-exact".into(),
+            }),
+        }));
+        assert!(!outcome_unknown(&error));
+        assert!(!expected_shutdown(&error, true));
+        assert_eq!(
+            error.downcast_ref::<RequestBusy>().unwrap().target_id,
+            "window-exact"
+        );
     }
 }

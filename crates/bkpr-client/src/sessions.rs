@@ -2237,6 +2237,7 @@ mod tests {
             project: None,
             home: PathBuf::new(),
             isolated_environment: false,
+            harness_status_changed_at_ms: None,
         });
         assert!(!membership.observe(&registry));
         registry.panes[0].status = PaneStatus::Stopped;

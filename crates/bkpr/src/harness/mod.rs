@@ -188,6 +188,11 @@ fn capture_command(arguments: Vec<OsString>) -> Result<i32> {
             Capture::from_environment()?.bind(source, &id)?;
             Ok(0)
         }
+        Some(command) if command == "prompt-submitted" => {
+            let (source, id) = bind_arguments(arguments.collect())?;
+            Capture::from_environment()?.prompt_submitted(source, &id)?;
+            Ok(0)
+        }
         Some(command) if command == "agent" => agent::cli(arguments.collect()),
         Some(command) if command == "agent-subscribe" => agent::subscribe(arguments.collect()),
         Some(command) if command == "claude-wait" => {
@@ -478,6 +483,21 @@ impl Capture {
             launch_id: self.grant.launch_id.clone(),
             token: self.grant.token.clone(),
             event: CaptureEvent::Bind {
+                conversation_id: id.to_owned(),
+                source,
+            },
+        })?;
+        Ok(())
+    }
+    pub(super) fn prompt_submitted(&self, source: ConversationSource, id: &str) -> Result<()> {
+        if source.harness() != self.grant.kind {
+            bail!("capture source does not match harness");
+        }
+        validate_text(id, 1024, "native conversation ID")?;
+        self.request(Operation::HarnessEvent {
+            launch_id: self.grant.launch_id.clone(),
+            token: self.grant.token.clone(),
+            event: CaptureEvent::PromptSubmitted {
                 conversation_id: id.to_owned(),
                 source,
             },
@@ -866,6 +886,11 @@ mod tests {
             .bind(ConversationSource::ClaudeHook, "exact-native-id")
             .unwrap_err();
         assert_eq!(error.to_string(), "capture source does not match harness");
+        assert!(
+            capture
+                .prompt_submitted(ConversationSource::ClaudeHook, "exact-native-id")
+                .is_err()
+        );
     }
 
     #[test]
