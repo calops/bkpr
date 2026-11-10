@@ -1,3 +1,37 @@
+## [0.6.0](https://github.com/calops/bkpr/compare/v0.5.1...v0.6.0) (2026-11-10)
+
+### ⚠ BREAKING CHANGES
+
+* **agents:** Native wire family 8 requires matching bkpr and bkprd binaries. Agent/control outputs are compact by default; use explicit detail, full replies and body/result pagination. Existing incompatible sessions are not restarted automatically.
+* **core:** the exported fixed-count admission constants are removed from bkpr-protocol. Native wire family 7 and operation encodings remain unchanged.
+* **ci:** `bkpr` and `bkprd` require matching native wire family 7. Existing family 4/5/6 sessions need their matching old client or an explicit stop before upgrading.
+* **client:** Remove `Ctrl-b w`, `Ctrl-b W` and `Ctrl-b o` chooser shortcuts and their dedicated forms. Use the sidebar or finder instead.
+* **client:** Ctrl-] no longer detaches. Use Ctrl-b d. Prefix b/S, c/N, r/p and !/X are removed; use Ctrl-Space and sidebar n/N/r/x instead.
+
+### Features
+
+* **ci:** restore GitHub checks and PR cards ([88902be](https://github.com/calops/bkpr/commit/88902be428c62d109848714026bfd1ca3bc59dce))
+* **client:** group related keybinding hints ([df89ad9](https://github.com/calops/bkpr/commit/df89ad99c7b8fa8919f4a443a3a031d46c82dcb9))
+* **cli:** generate shell completions from clap ([9a42800](https://github.com/calops/bkpr/commit/9a4280014c406fff49f2094b52c3b2cc8732a51c))
+
+### Bug Fixes
+
+* **agents:** bound tool output and release retired resources ([6556b97](https://github.com/calops/bkpr/commit/6556b9756a0685ace3495d8ca3340cd35c9571b9))
+* **client:** keep sidebar status icons inside viewport ([41bb5ed](https://github.com/calops/bkpr/commit/41bb5edf0937f514c6df85df39ca1efd21169d84))
+* **client:** preserve sidebar separator and highlight ownership ([7513b13](https://github.com/calops/bkpr/commit/7513b137ffee91636f4e8b6b1cb5d8ea7e18c1a8))
+* **client:** refine grouped hints and remove chooser shortcuts ([cdf88d1](https://github.com/calops/bkpr/commit/cdf88d1df10bf12dbfaa7b76ae5efb1e5888aec6))
+* **client:** settle held keys on terminal focus loss ([a82aec4](https://github.com/calops/bkpr/commit/a82aec4577328ce1d70be1dac9686cf86d41af3c))
+* **cli:** make help concise and task-focused ([11b88e2](https://github.com/calops/bkpr/commit/11b88e2e6f6d581690e609ce35a1af9b9f85a69a))
+* **core:** remove fixed pane and attachment ceilings ([2318408](https://github.com/calops/bkpr/commit/23184081ab252af1c69040b4cf88d43969555293))
+* **git:** isolate refreshes and stabilize cached metadata displays ([3113c65](https://github.com/calops/bkpr/commit/3113c65479fc6367bd5007da28d8d88abd3e7639))
+* **tui:** clear complete sidebar frame gutter ([740507b](https://github.com/calops/bkpr/commit/740507b25426cdb89fbd73d6b969d9e363147dac))
+* **tui:** crop sidebar-adjacent frame gutter ([7d833a6](https://github.com/calops/bkpr/commit/7d833a6a0e3d33643386632c6540e0a885f908ce))
+* **tui:** preserve sidebar frame bevel and shadow ([d486adf](https://github.com/calops/bkpr/commit/d486adf74264e989cd691945bb9418749f00d462))
+
+### Code Refactoring
+
+* **client:** separate sidebar management from prefix commands ([dd56c77](https://github.com/calops/bkpr/commit/dd56c773ca171390a44e1b94c690f0bfdc9af58d))
+
 ## Unreleased
 
 ### Breaking changes
