@@ -944,7 +944,15 @@ clipped fragments, instead of per-cell textures. Live consumers hold shared asse
 references separately. Transparent graphics-only layers preserve native cells,
 cursor and hit testing; shadow pixels can shade edge content without changing
 canonical terminal state.
-Decorative animation and a command palette are outside the current main-parity pass.
+Visible sidebar pane titles with current harness status `working` receive a subtle
+palette-derived foreground sweep when truecolor is confirmed. The framework owns
+the reusable animation clock and text effect; Bkpr chooses its colors, width and
+80-ms/2-second cadence. Icons, tree guides, status and branch metadata remain
+static. Selection backgrounds and whole Unicode glyphs are preserved. Hidden,
+modal-covered and non-working titles schedule no animation; unsupported color
+capabilities retain static native ink. Decorative ticks reuse retained presentation
+and differential output without backend refreshes or graphics preparation.
+A command palette remains outside the current main-parity pass.
 Forge/PR/CI card data and refresh use the daemon-owned metadata contract;
 the frontend does not query providers or invent those facts.
 

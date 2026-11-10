@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Features
+
+* Animate visible working sidebar titles with a palette-derived gradient sweep, backed by reusable framework timing/text effects and dormant idle scheduling.
+
 ### Fixes
 
 * Include the serving daemon's native wire family as `protocol_version` in compact and detailed `whoami` replies.

@@ -704,7 +704,11 @@ fn pane_activity(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>) -> &'static s
     }
 }
 
-fn sidebar_pane_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>, width: usize) -> String {
+fn sidebar_pane_label(
+    pane: &PaneInfo,
+    snapshot: Option<&PaneSnapshot>,
+    width: usize,
+) -> (String, std::ops::Range<u16>) {
     let status = bkpr_tui_framework::window::fit(pane_activity(pane, snapshot), width as u16);
     let suffix_width = unicode_width::UnicodeWidthStr::width(status.as_str());
     let icon = recognized_harness(pane, snapshot).map(|harness| harness_icon(harness.kind));
@@ -721,9 +725,13 @@ fn sidebar_pane_label(pane: &PaneInfo, snapshot: Option<&PaneSnapshot>, width: u
         crate::metadata::pane_title(pane, snapshot),
         width.saturating_sub(reserved) as u16,
     );
-    let padding =
-        width.saturating_sub(reserved + unicode_width::UnicodeWidthStr::width(name.as_str()));
-    format!("{prefix}{name}{}{status}", " ".repeat(padding))
+    let title_start = unicode_width::UnicodeWidthStr::width(prefix.as_str());
+    let title_width = unicode_width::UnicodeWidthStr::width(name.as_str());
+    let padding = width.saturating_sub(reserved + title_width);
+    (
+        format!("{prefix}{name}{}{status}", " ".repeat(padding)),
+        title_start as u16..(title_start + title_width) as u16,
+    )
 }
 
 fn sidebar_branch(pane: &PaneInfo, width: u16) -> String {
@@ -984,6 +992,7 @@ fn native_row_label(
     kind: SidebarRowKind,
     context: NativeRowContext<'_>,
     project_spans: &mut Vec<ProjectSpan>,
+    working_titles: &mut Vec<Rect>,
 ) -> (String, u16) {
     let NativeRowContext {
         registry,
@@ -1093,17 +1102,23 @@ fn native_row_label(
                 },
                 slot: pane.project.as_ref().and_then(|project| project.color_slot),
             });
-            write!(
-                label,
-                "{} {}",
-                if projected { "●" } else { "◌" },
-                sidebar_pane_label(
-                    pane,
-                    known,
-                    usize::from(width.saturating_sub(entry.content_column()))
-                )
-            )
-            .unwrap();
+            let (text, title) = sidebar_pane_label(
+                pane,
+                known,
+                usize::from(width.saturating_sub(entry.content_column())),
+            );
+            if pane.status == PaneStatus::Running
+                && harness_status(pane, known).is_some_and(|status| status.state == "working")
+                && !title.is_empty()
+            {
+                working_titles.push(Rect {
+                    x: entry.content_column() + title.start,
+                    y: row,
+                    width: title.end - title.start,
+                    height: 1,
+                });
+            }
+            write!(label, "{} {text}", if projected { "●" } else { "◌" }).unwrap();
         }
         SidebarRowKind::Detail { index } => {
             let pane = &registry.panes[index];
@@ -1123,6 +1138,7 @@ pub(crate) fn tree_chrome<'a>(
     snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
     history: impl Fn(&str) -> Option<(u64, u64)>,
     project_spans: &mut Vec<ProjectSpan>,
+    working_titles: &mut Vec<Rect>,
 ) -> Vec<(crate::tree::Target, u16)> {
     let mut hits = Vec::new();
     render_chrome(
@@ -1131,7 +1147,7 @@ pub(crate) fn tree_chrome<'a>(
         pane_status,
         snapshot,
         history,
-        project_spans,
+        (project_spans, working_titles),
         |node, owner, row| hits.push((crate::tree::Target { owner, node }, row)),
     );
     hits
@@ -1186,7 +1202,7 @@ fn render_chrome<'a>(
     pane_status: impl Fn(&str) -> Option<&'static str>,
     snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
     history: impl Fn(&str) -> Option<(u64, u64)>,
-    project_spans: &mut Vec<ProjectSpan>,
+    (project_spans, working_titles): (&mut Vec<ProjectSpan>, &mut Vec<Rect>),
     mut hit: impl FnMut(crate::tree::Node, crate::tree::Owner, u16),
 ) {
     let TreeChromeContext {
@@ -1204,6 +1220,7 @@ fn render_chrome<'a>(
         guide_rows,
     } = context;
     project_spans.clear();
+    working_titles.clear();
     let (sidebar, area) = screen_geometry(size, tree.preferred_columns);
     let mut lines = Vec::new();
     // Hidden cursors still determine terminal cursor trails. Only a rendered
@@ -1289,6 +1306,7 @@ fn render_chrome<'a>(
                         highlighted,
                     },
                     project_spans,
+                    working_titles,
                 )
             }
         };
@@ -2270,6 +2288,7 @@ mod tests {
             snapshot,
             history,
             projects,
+            &mut Vec::new(),
         )
         .into_iter()
         .filter_map(|(target, row)| match target.node {
@@ -2385,6 +2404,7 @@ mod tests {
             |_| panic!("Unavailable body cannot poll panes"),
             |_| panic!("No native pane frame"),
             &mut Vec::new(),
+            &mut Vec::new(),
         );
         let text = painted_text(&surface);
         assert!(text.contains("first session details"));
@@ -2440,6 +2460,7 @@ mod tests {
             |_| panic!("No native pane frame"),
             |_| panic!("Tree snapshots must come from their owner"),
             |_| panic!("No native pane frame"),
+            &mut Vec::new(),
             &mut Vec::new(),
         );
         assert!(matches!(&hits[0], (Target { owner, node: Node::Session }, 2) if *owner == first));
@@ -2724,7 +2745,7 @@ mod tests {
                 crate::metadata::pane_title(&pane, Some(&snapshot)),
                 "Fix π > 日本語"
             );
-            let label = sidebar_pane_label(&pane, Some(&snapshot), 80);
+            let (label, _) = sidebar_pane_label(&pane, Some(&snapshot), 80);
             assert!(label.contains("Fix π > 日本語"));
             assert!(!label.contains(pane.title.as_str()));
         }
@@ -2753,7 +2774,7 @@ mod tests {
         pane.harness.as_mut().unwrap().kind = HarnessKind::Codex;
         pane.title = "日本語".into();
         for width in 0..12 {
-            let label = sidebar_pane_label(&pane, Some(&snapshot), width);
+            let (label, _) = sidebar_pane_label(&pane, Some(&snapshot), width);
             assert!(unicode_width::UnicodeWidthStr::width(label.as_str()) <= width);
             assert_eq!(label.contains('\u{ec81}'), width >= 2);
             if width >= 2 {
@@ -2761,9 +2782,88 @@ mod tests {
             }
         }
         snapshot.program_identity.as_mut().unwrap().birth = "stale".into();
-        assert!(!sidebar_pane_label(&pane, Some(&snapshot), 20).contains('\u{ec81}'));
+        assert!(
+            !sidebar_pane_label(&pane, Some(&snapshot), 20)
+                .0
+                .contains('\u{ec81}')
+        );
         pane.status = PaneStatus::Exited;
-        assert!(!sidebar_pane_label(&pane, None, 20).contains('\u{ec81}'));
+        assert!(!sidebar_pane_label(&pane, None, 20).0.contains('\u{ec81}'));
+    }
+
+    #[test]
+    fn working_title_spans_follow_clipped_native_titles_and_current_semantics() {
+        let (mut pane, mut snapshot) = capture_fixture();
+        pane.title = "日本語 title with enough text to truncate well past the sidebar".into();
+        pane.harness_status = Some(working_record(Some("claude")));
+        let paint = |pane: &PaneInfo, snapshot: &PaneSnapshot, guide_rows: u16| {
+            let registry = capture_registry(pane);
+            let state = Controller::new(&registry);
+            let mut surface = capture_surface();
+            let context = FixtureChrome {
+                size: surface.frame.size,
+                state: &state,
+                registry: &registry,
+                rects: &[],
+                pane_graphics: &[],
+                guide_rows,
+                sidebar_popup: None,
+            };
+            let tree = fixture_tree(&context, |_| None, |_| Some(snapshot), |_| None);
+            let mut titles = Vec::new();
+            tree_chrome(
+                &mut surface,
+                TreeChromeContext {
+                    native: context.native(),
+                    tree: &tree,
+                    active: FIXTURE_OWNER,
+                    popup: None,
+                },
+                |_| None,
+                |_| Some(snapshot),
+                |_| None,
+                &mut Vec::new(),
+                &mut titles,
+            );
+            (surface, titles)
+        };
+        let (surface, titles) = paint(&pane, &snapshot, 0);
+        assert_eq!(titles.len(), 1, "No workspace/window/detail spans");
+        let title = titles[0];
+        let row = &surface.frame.rows[usize::from(title.y)].cells;
+        let text = row[usize::from(title.x)..usize::from(title.x + title.width)]
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>();
+        assert!(text.starts_with("日本語"));
+        assert_eq!(
+            text,
+            bkpr_tui_framework::window::fit(&pane.title, title.width)
+        );
+        assert!(
+            text.len() < pane.title.len(),
+            "Clipped title excludes padding/status"
+        );
+        assert!(!text.contains('\u{ec82}'), "Harness logo is static");
+        assert!(!text.contains('\u{f0150}'), "Activity glyph is static");
+        assert_eq!(row[usize::from(title.x - 1)].text, " ");
+        assert!(title.x + title.width < screen_geometry(surface.frame.size, None).0.width);
+        assert!(
+            paint(&pane, &snapshot, surface.frame.size.rows)
+                .1
+                .is_empty()
+        );
+        for state in ["idle", "done", "blocked", "error", "unrecognized"] {
+            pane.harness_status.as_mut().unwrap().state = state.into();
+            assert!(paint(&pane, &snapshot, 0).1.is_empty(), "{state}");
+        }
+        pane.harness_status = Some(working_record(Some("codex")));
+        assert!(paint(&pane, &snapshot, 0).1.is_empty(), "Wrong harness app");
+        pane.harness_status = Some(working_record(Some("claude")));
+        snapshot.program_identity.as_mut().unwrap().birth = "stale".into();
+        assert!(paint(&pane, &snapshot, 0).1.is_empty(), "Stale identity");
+        pane.status = PaneStatus::Exited;
+        assert!(paint(&pane, &snapshot, 0).1.is_empty(), "Exited pane");
     }
 
     #[test]

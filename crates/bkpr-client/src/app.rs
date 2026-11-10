@@ -404,6 +404,113 @@ struct HeldKey {
     release: KeyEvent,
     pending: bool,
 }
+struct TitleSweepSpan {
+    rect: Rect,
+    effect: bkpr_tui_framework::animation::TextSweep,
+}
+
+/// Stable, themed title ink is retained only across decorative-only wakeups.
+/// Every ordinary presentation rebuild replaces it after selection/hover styling.
+struct SidebarTitleAnimation {
+    clock: bkpr_tui_framework::animation::AnimationClock,
+    spans: Vec<TitleSweepSpan>,
+    styles: Vec<Style>,
+}
+impl SidebarTitleAnimation {
+    fn new(now: Instant) -> Self {
+        Self {
+            clock: bkpr_tui_framework::animation::AnimationClock::new(
+                now,
+                Duration::from_millis(80),
+                Duration::from_secs(2),
+            ),
+            spans: Vec::new(),
+            styles: Vec::new(),
+        }
+    }
+
+    fn capture(
+        &mut self,
+        frame: &bkpr_protocol::Frame,
+        titles: &[Rect],
+        theme: &Theme,
+        truecolor: bool,
+        occluded: impl Fn(Rect) -> bool,
+        now: Instant,
+    ) {
+        self.spans.clear();
+        self.styles.clear();
+        if truecolor && let ColorSource::Rgb(accent) = theme.ink(Role::BrightAccent, false) {
+            for &rect in titles {
+                if occluded(rect) {
+                    continue;
+                }
+                let Some(row) = frame.rows.get(usize::from(rect.y)) else {
+                    continue;
+                };
+                let left = usize::from(rect.x).min(row.cells.len());
+                let right = usize::from(rect.x.saturating_add(rect.width)).min(row.cells.len());
+                let Some(first) = row.cells.get(left).filter(|_| left < right) else {
+                    continue;
+                };
+                let Some(ColorSource::Rgb(ink)) = theme.effective_ink(&first.style) else {
+                    continue;
+                };
+                // Keep even selected/inverse ink close to its own contrast,
+                // rather than replacing it with an unrelated bright color.
+                let highlight = std::array::from_fn(|channel| {
+                    ((u16::from(ink[channel]) * 2 + u16::from(accent[channel])) / 3) as u8
+                });
+                self.spans.push(TitleSweepSpan {
+                    rect: Rect {
+                        width: (right - left) as u16,
+                        ..rect
+                    },
+                    effect: bkpr_tui_framework::animation::TextSweep {
+                        highlight,
+                        width: 0.28,
+                    },
+                });
+                self.styles
+                    .extend(row.cells[left..right].iter().map(|cell| cell.style.clone()));
+            }
+        }
+        self.clock.set_active(!self.spans.is_empty(), now);
+        self.clock.advance(now);
+    }
+
+    fn restore(&self, frame: &mut bkpr_protocol::Frame) {
+        let mut styles = self.styles.iter();
+        for span in &self.spans {
+            let row = &mut frame.rows[usize::from(span.rect.y)];
+            let left = usize::from(span.rect.x);
+            let right = left + usize::from(span.rect.width);
+            for cell in &mut row.cells[left..right] {
+                cell.style
+                    .clone_from(styles.next().expect("retained title style"));
+            }
+        }
+    }
+
+    fn apply(&self, frame: &mut bkpr_protocol::Frame) {
+        self.restore(frame);
+        for span in &self.spans {
+            span.effect.apply(frame, span.rect, self.clock.phase());
+        }
+    }
+
+    fn timeout(&self, deadline: Instant, now: Instant) -> i32 {
+        let deadline = self
+            .clock
+            .next_deadline()
+            .map_or(deadline, |next| next.min(deadline));
+        let remaining = deadline.saturating_duration_since(now);
+        let millis =
+            remaining.as_millis() + u128::from(!remaining.subsec_nanos().is_multiple_of(1_000_000));
+        millis.min(i32::MAX as u128) as i32
+    }
+}
+
 struct App {
     socket: Endpoint,
     options: Options,
@@ -4568,6 +4675,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut project_palette = crate::project_colors::ProjectPalette::default();
         let mut chrome_projects = Vec::new();
         let mut chrome_foregrounds = Vec::new();
+        let mut working_titles = Vec::new();
+        let mut title_animation = SidebarTitleAnimation::new(Instant::now());
         let mut guide_theme = Theme::default();
         let mut toast_theme = Theme::default();
         let mut popover_theme = Theme::default();
@@ -4610,6 +4719,9 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut session_fds = Vec::new();
         let mut fds = Vec::new();
         loop {
+            // UiSurface may retain identical text/theme inputs. Remove the last
+            // transient effect before any ordinary styling/layout update.
+            title_animation.restore(&mut chrome_surface.frame);
             let size = dimensions()?;
             sessions.tick(size)?;
             if sessions.should_exit() {
@@ -4768,6 +4880,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 |pane| app.views.get(pane).map(|view| &view.metadata),
                 |pane| app.history(pane),
                 &mut chrome_projects,
+                &mut working_titles,
             );
             crate::appearance::update_theme(&mut theme, ui_colors);
             project_palette.update(ui_colors, tree.project_capacity());
@@ -4853,6 +4966,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     |pane| app.views.get(pane).map(|view| &view.metadata),
                     |pane| app.history(pane),
                     &mut chrome_projects,
+                    &mut working_titles,
                 );
                 crate::controller::theme_tree_chrome(
                     &mut chrome_surface,
@@ -5441,309 +5555,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             let faint_background = popup
                 && (consent_open || app.theme_picker.is_none())
                 && crate::appearance::MODAL_BACKGROUND_FAINT;
-            let mut surfaces = vec![Surface {
-                palette: None,
-                id: "ui:chrome",
-                content: SurfaceContent::Cells,
-                rect: Rect {
-                    x: 0,
-                    y: 0,
-                    width: size.cols,
-                    height: size.rows,
-                },
-                frame: &chrome_surface.frame,
-                selection: &[],
-                search: &[],
-                focused: app.host_focused && sidebar_active && !popup && !searching,
-                faint: faint_background,
-            }];
-            for (id, rect) in &rects {
-                let rect = content(*rect);
-                if rect.height == 0 || rect.width == 0 {
-                    continue;
-                }
-                if let Some(frame) = app
-                    .views
-                    .get(id)
-                    .and_then(|v| v.frame.as_ref())
-                    .or_else(|| placeholders.get(id).map(|surface| &surface.frame))
-                {
-                    surfaces.push(Surface {
-                        palette: pane_palette,
-                        id,
-                        content: SurfaceContent::All,
-                        rect,
-                        frame,
-                        selection: app.selection_spans(id),
-                        search: app.search_spans(id),
-                        faint: faint_background,
-                        focused: !popup
-                            && !searching
-                            && !sidebar_active
-                            && app.state.focused.as_ref() == Some(id)
-                            && app.input_enabled(id)
-                            && app.history(id).is_none()
-                            && app
-                                .registry
-                                .panes
-                                .iter()
-                                .any(|p| p.id == *id && p.status == PaneStatus::Running),
-                    });
-                }
-            }
-            surfaces.push(Surface {
-                palette: None,
-                id: "ui:chrome:graphics",
-                content: SurfaceContent::Graphics,
-                rect: Rect {
-                    x: 0,
-                    y: 0,
-                    width: size.cols,
-                    height: size.rows,
-                },
-                frame: &chrome_surface.frame,
-                selection: &[],
-                search: &[],
-                focused: false,
-                faint: faint_background,
-            });
-            for segment in &resize_feedback_regions {
-                surfaces.push(Surface {
-                    palette: None,
-                    id: "ui:resize:edges",
-                    content: SurfaceContent::CellsWithUnderlay(*segment),
-                    rect: Rect {
-                        x: 0,
-                        y: 0,
-                        width: size.cols,
-                        height: size.rows,
-                    },
-                    frame: &resize_feedback_surface.frame,
-                    selection: &[],
-                    search: &[],
-                    focused: false,
-                    faint: false,
-                });
-            }
-            // Artwork may extend into the joined item's framing column. Keep
-            // it above passive materials, but below modal contents and effects.
-            let mut artwork_surface = Some(Surface {
-                palette: None,
-                id: "ui:sidebar:artwork",
-                content: SurfaceContent::Graphics,
-                rect: Rect {
-                    x: 0,
-                    y: 0,
-                    width: size.cols,
-                    height: size.rows,
-                },
-                frame: &artwork_effects,
-                selection: &[],
-                search: &[],
-                focused: false,
-                faint: faint_background,
-            });
-            for layer in app.overlays.layers() {
-                if layer.policy.modal
-                    && let Some(artwork) = artwork_surface.take()
-                {
-                    surfaces.push(artwork);
-                }
-                if layer.id == "ui:modal"
-                    && let Some(regions) = finder_cards
-                {
-                    for (index, (_, body)) in regions.into_iter().enumerate() {
-                        surfaces.push(Surface {
-                            palette: None,
-                            id: ["ui:modal:input", "ui:modal:results", "ui:modal:preview"][index],
-                            content: SurfaceContent::CellsClipped(body),
-                            rect: layer.placement.outer,
-                            frame: &popup_surface.frame,
-                            selection: &[],
-                            search: &[],
-                            focused: index == 0 && app.overlays.keyboard_owner() == Some(layer.id),
-                            faint: false,
-                        });
-                    }
-                } else if layer.id == crate::popover::SURFACE_ID && popover_graphical {
-                    if let Some(rect) = tooltip {
-                        // Full cells in the joined contour include the card's
-                        // framing column at the bridge, not just its text body.
-                        let body = rect;
-                        let first = surfaces.len();
-                        for span in graphics.joined_opaque_spans() {
-                            if span.row < body.y
-                                || span.row >= body.y.saturating_add(body.height).min(size.rows)
-                            {
-                                continue;
-                            }
-                            let left = span.start.max(body.x);
-                            let right = span
-                                .end
-                                .min(body.x.saturating_add(body.width))
-                                .min(size.cols);
-                            if left >= right {
-                                continue;
-                            }
-                            let clip = Rect {
-                                x: left - layer.placement.outer.x,
-                                y: span.row - layer.placement.outer.y,
-                                width: right - left,
-                                height: 1,
-                            };
-                            if surfaces.len() > first
-                                && let Some(last) = surfaces.last_mut()
-                                && let SurfaceContent::CellsClipped(previous) = &mut last.content
-                                && previous.x == clip.x
-                                && previous.width == clip.width
-                                && previous.y.saturating_add(previous.height) == clip.y
-                            {
-                                previous.height += 1;
-                                continue;
-                            }
-                            surfaces.push(Surface {
-                                palette: None,
-                                id: layer.id,
-                                content: SurfaceContent::CellsClipped(clip),
-                                rect: layer.placement.outer,
-                                frame: &app.popover.surface.frame,
-                                selection: &[],
-                                search: &[],
-                                focused: false,
-                                faint: faint_background,
-                            });
-                        }
-                    }
-                } else {
-                    let (frame, rect, content) = match layer.id {
-                        crate::popover::SURFACE_ID => (
-                            &app.popover.surface.frame,
-                            layer.placement.outer,
-                            SurfaceContent::All,
-                        ),
-                        "ui:guide" => (
-                            &guide_surface.frame,
-                            guide_draw_rect.expect("presented guide has a cell projection"),
-                            SurfaceContent::All,
-                        ),
-                        "ui:modal" => {
-                            if !modal_graphical {
-                                surfaces.push(Surface {
-                                    palette: None,
-                                    id: "ui:window",
-                                    content: SurfaceContent::All,
-                                    rect: layer.placement.outer,
-                                    frame: &window_surface.frame,
-                                    selection: &[],
-                                    search: &[],
-                                    focused: false,
-                                    faint: false,
-                                });
-                            }
-                            (
-                                &popup_surface.frame,
-                                layer.placement.content,
-                                SurfaceContent::All,
-                            )
-                        }
-                        _ => continue,
-                    };
-                    surfaces.push(Surface {
-                        palette: None,
-                        id: layer.id,
-                        content,
-                        rect,
-                        frame,
-                        selection: &[],
-                        search: &[],
-                        focused: app.overlays.keyboard_owner() == Some(layer.id),
-                        faint: faint_background && !layer.policy.modal,
-                    });
-                }
-                let (effects, effects_id) = match layer.id {
-                    crate::popover::SURFACE_ID => (&popover_effects, "ui:popover:graphics"),
-                    "ui:guide" => (&guide_effects, "ui:guide:graphics"),
-                    "ui:modal" => (&window_effects, "ui:modal:graphics"),
-                    _ => continue,
-                };
-                surfaces.push(Surface {
-                    palette: None,
-                    id: effects_id,
-                    content: SurfaceContent::Graphics,
-                    rect: Rect {
-                        x: 0,
-                        y: 0,
-                        width: size.cols,
-                        height: size.rows,
-                    },
-                    frame: effects,
-                    selection: &[],
-                    search: &[],
-                    focused: false,
-                    faint: faint_background && !layer.policy.modal,
-                });
-            }
-            if let Some(artwork) = artwork_surface {
-                surfaces.push(artwork);
-            }
-            if searching && !popup {
-                surfaces.push(Surface {
-                    palette: None,
-                    id: "ui:search",
-                    content: SurfaceContent::All,
-                    rect: search_rect.expect("search overlay has an owning pane footer"),
-                    frame: &search_surface.frame,
-                    selection: &[],
-                    search: &[],
-                    focused: true,
-                    faint: false,
-                });
-            }
-            for slot in &toast_order[..toast_count] {
-                let card = toast_frames[*slot]
-                    .as_ref()
-                    .expect("visible toast presentation");
-                surfaces.push(Surface {
-                    palette: None,
-                    id: "ui:toast",
-                    content: if card.graphical {
-                        SurfaceContent::CellsClipped(Rect {
-                            x: card.body.x - card.outer.x,
-                            y: card.body.y - card.outer.y,
-                            width: card.body.width,
-                            height: card.body.height,
-                        })
-                    } else {
-                        SurfaceContent::All
-                    },
-                    rect: card.outer,
-                    frame: &card.frame,
-                    selection: &[],
-                    search: &[],
-                    focused: false,
-                    faint: false,
-                });
-            }
-            if !toast_effects.placements.is_empty() {
-                surfaces.push(Surface {
-                    palette: None,
-                    id: "ui:toast:graphics",
-                    content: SurfaceContent::Graphics,
-                    rect: Rect {
-                        x: 0,
-                        y: 0,
-                        width: size.cols,
-                        height: size.rows,
-                    },
-                    frame: &toast_effects,
-                    selection: &[],
-                    search: &[],
-                    focused: false,
-                    faint: false,
-                });
-            }
-            let scene = Scene { size, surfaces };
-            let hits = scene.hit_map();
             // The application chooses the matte; the framework owns its physical
             // lifetime. Prepared requests alone are not visible pane materials.
             let background = if app.chrome_graphics_enabled
@@ -5761,7 +5572,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 None
             };
             terminal.set_background(&mut out, background)?;
-            renderer.render(&mut out, &scene, &app.colors, &mut terminal)?;
             fds.clear();
             fds.extend([
                 libc::pollfd {
@@ -5813,12 +5623,362 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             } else {
                 0
             };
-            let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
-            if ready < 0
-                && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
-            {
-                return Err(std::io::Error::last_os_error().into());
-            }
+            title_animation.capture(
+                &chrome_surface.frame,
+                &working_titles,
+                &theme,
+                app.colors.truecolor,
+                |title| {
+                    app.overlays.layers().any(|layer| {
+                        layer.policy.modal
+                            && title.x
+                                < layer
+                                    .placement
+                                    .outer
+                                    .x
+                                    .saturating_add(layer.placement.outer.width)
+                            && layer.placement.outer.x < title.x.saturating_add(title.width)
+                            && title.y
+                                < layer
+                                    .placement
+                                    .outer
+                                    .y
+                                    .saturating_add(layer.placement.outer.height)
+                            && layer.placement.outer.y < title.y.saturating_add(title.height)
+                    })
+                },
+                Instant::now(),
+            );
+            // Decorative ticks share the current presentation. Keep the original
+            // non-animation deadline fixed so clipboard/input/session timers cannot
+            // be postponed by an animation, and return on every ready descriptor.
+            let presentation_deadline = Instant::now() + Duration::from_millis(timeout as u64);
+            let hits = loop {
+                title_animation.apply(&mut chrome_surface.frame);
+                let mut surfaces = vec![Surface {
+                    palette: None,
+                    id: "ui:chrome",
+                    content: SurfaceContent::Cells,
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        width: size.cols,
+                        height: size.rows,
+                    },
+                    frame: &chrome_surface.frame,
+                    selection: &[],
+                    search: &[],
+                    focused: app.host_focused && sidebar_active && !popup && !searching,
+                    faint: faint_background,
+                }];
+                for (id, rect) in &rects {
+                    let rect = content(*rect);
+                    if rect.height == 0 || rect.width == 0 {
+                        continue;
+                    }
+                    if let Some(frame) = app
+                        .views
+                        .get(id)
+                        .and_then(|v| v.frame.as_ref())
+                        .or_else(|| placeholders.get(id).map(|surface| &surface.frame))
+                    {
+                        surfaces.push(Surface {
+                            palette: pane_palette,
+                            id,
+                            content: SurfaceContent::All,
+                            rect,
+                            frame,
+                            selection: app.selection_spans(id),
+                            search: app.search_spans(id),
+                            faint: faint_background,
+                            focused: !popup
+                                && !searching
+                                && !sidebar_active
+                                && app.state.focused.as_ref() == Some(id)
+                                && app.input_enabled(id)
+                                && app.history(id).is_none()
+                                && app
+                                    .registry
+                                    .panes
+                                    .iter()
+                                    .any(|p| p.id == *id && p.status == PaneStatus::Running),
+                        });
+                    }
+                }
+                surfaces.push(Surface {
+                    palette: None,
+                    id: "ui:chrome:graphics",
+                    content: SurfaceContent::Graphics,
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        width: size.cols,
+                        height: size.rows,
+                    },
+                    frame: &chrome_surface.frame,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: faint_background,
+                });
+                for segment in &resize_feedback_regions {
+                    surfaces.push(Surface {
+                        palette: None,
+                        id: "ui:resize:edges",
+                        content: SurfaceContent::CellsWithUnderlay(*segment),
+                        rect: Rect {
+                            x: 0,
+                            y: 0,
+                            width: size.cols,
+                            height: size.rows,
+                        },
+                        frame: &resize_feedback_surface.frame,
+                        selection: &[],
+                        search: &[],
+                        focused: false,
+                        faint: false,
+                    });
+                }
+                // Artwork may extend into the joined item's framing column. Keep
+                // it above passive materials, but below modal contents and effects.
+                let mut artwork_surface = Some(Surface {
+                    palette: None,
+                    id: "ui:sidebar:artwork",
+                    content: SurfaceContent::Graphics,
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        width: size.cols,
+                        height: size.rows,
+                    },
+                    frame: &artwork_effects,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: faint_background,
+                });
+                for layer in app.overlays.layers() {
+                    if layer.policy.modal
+                        && let Some(artwork) = artwork_surface.take()
+                    {
+                        surfaces.push(artwork);
+                    }
+                    if layer.id == "ui:modal"
+                        && let Some(regions) = finder_cards
+                    {
+                        for (index, (_, body)) in regions.into_iter().enumerate() {
+                            surfaces.push(Surface {
+                                palette: None,
+                                id: ["ui:modal:input", "ui:modal:results", "ui:modal:preview"]
+                                    [index],
+                                content: SurfaceContent::CellsClipped(body),
+                                rect: layer.placement.outer,
+                                frame: &popup_surface.frame,
+                                selection: &[],
+                                search: &[],
+                                focused: index == 0
+                                    && app.overlays.keyboard_owner() == Some(layer.id),
+                                faint: false,
+                            });
+                        }
+                    } else if layer.id == crate::popover::SURFACE_ID && popover_graphical {
+                        if let Some(rect) = tooltip {
+                            // Full cells in the joined contour include the card's
+                            // framing column at the bridge, not just its text body.
+                            let body = rect;
+                            let first = surfaces.len();
+                            for span in graphics.joined_opaque_spans() {
+                                if span.row < body.y
+                                    || span.row >= body.y.saturating_add(body.height).min(size.rows)
+                                {
+                                    continue;
+                                }
+                                let left = span.start.max(body.x);
+                                let right = span
+                                    .end
+                                    .min(body.x.saturating_add(body.width))
+                                    .min(size.cols);
+                                if left >= right {
+                                    continue;
+                                }
+                                let clip = Rect {
+                                    x: left - layer.placement.outer.x,
+                                    y: span.row - layer.placement.outer.y,
+                                    width: right - left,
+                                    height: 1,
+                                };
+                                if surfaces.len() > first
+                                    && let Some(last) = surfaces.last_mut()
+                                    && let SurfaceContent::CellsClipped(previous) =
+                                        &mut last.content
+                                    && previous.x == clip.x
+                                    && previous.width == clip.width
+                                    && previous.y.saturating_add(previous.height) == clip.y
+                                {
+                                    previous.height += 1;
+                                    continue;
+                                }
+                                surfaces.push(Surface {
+                                    palette: None,
+                                    id: layer.id,
+                                    content: SurfaceContent::CellsClipped(clip),
+                                    rect: layer.placement.outer,
+                                    frame: &app.popover.surface.frame,
+                                    selection: &[],
+                                    search: &[],
+                                    focused: false,
+                                    faint: faint_background,
+                                });
+                            }
+                        }
+                    } else {
+                        let (frame, rect, content) = match layer.id {
+                            crate::popover::SURFACE_ID => (
+                                &app.popover.surface.frame,
+                                layer.placement.outer,
+                                SurfaceContent::All,
+                            ),
+                            "ui:guide" => (
+                                &guide_surface.frame,
+                                guide_draw_rect.expect("presented guide has a cell projection"),
+                                SurfaceContent::All,
+                            ),
+                            "ui:modal" => {
+                                if !modal_graphical {
+                                    surfaces.push(Surface {
+                                        palette: None,
+                                        id: "ui:window",
+                                        content: SurfaceContent::All,
+                                        rect: layer.placement.outer,
+                                        frame: &window_surface.frame,
+                                        selection: &[],
+                                        search: &[],
+                                        focused: false,
+                                        faint: false,
+                                    });
+                                }
+                                (
+                                    &popup_surface.frame,
+                                    layer.placement.content,
+                                    SurfaceContent::All,
+                                )
+                            }
+                            _ => continue,
+                        };
+                        surfaces.push(Surface {
+                            palette: None,
+                            id: layer.id,
+                            content,
+                            rect,
+                            frame,
+                            selection: &[],
+                            search: &[],
+                            focused: app.overlays.keyboard_owner() == Some(layer.id),
+                            faint: faint_background && !layer.policy.modal,
+                        });
+                    }
+                    let (effects, effects_id) = match layer.id {
+                        crate::popover::SURFACE_ID => (&popover_effects, "ui:popover:graphics"),
+                        "ui:guide" => (&guide_effects, "ui:guide:graphics"),
+                        "ui:modal" => (&window_effects, "ui:modal:graphics"),
+                        _ => continue,
+                    };
+                    surfaces.push(Surface {
+                        palette: None,
+                        id: effects_id,
+                        content: SurfaceContent::Graphics,
+                        rect: Rect {
+                            x: 0,
+                            y: 0,
+                            width: size.cols,
+                            height: size.rows,
+                        },
+                        frame: effects,
+                        selection: &[],
+                        search: &[],
+                        focused: false,
+                        faint: faint_background && !layer.policy.modal,
+                    });
+                }
+                if let Some(artwork) = artwork_surface {
+                    surfaces.push(artwork);
+                }
+                if searching && !popup {
+                    surfaces.push(Surface {
+                        palette: None,
+                        id: "ui:search",
+                        content: SurfaceContent::All,
+                        rect: search_rect.expect("search overlay has an owning pane footer"),
+                        frame: &search_surface.frame,
+                        selection: &[],
+                        search: &[],
+                        focused: true,
+                        faint: false,
+                    });
+                }
+                for slot in &toast_order[..toast_count] {
+                    let card = toast_frames[*slot]
+                        .as_ref()
+                        .expect("visible toast presentation");
+                    surfaces.push(Surface {
+                        palette: None,
+                        id: "ui:toast",
+                        content: if card.graphical {
+                            SurfaceContent::CellsClipped(Rect {
+                                x: card.body.x - card.outer.x,
+                                y: card.body.y - card.outer.y,
+                                width: card.body.width,
+                                height: card.body.height,
+                            })
+                        } else {
+                            SurfaceContent::All
+                        },
+                        rect: card.outer,
+                        frame: &card.frame,
+                        selection: &[],
+                        search: &[],
+                        focused: false,
+                        faint: false,
+                    });
+                }
+                if !toast_effects.placements.is_empty() {
+                    surfaces.push(Surface {
+                        palette: None,
+                        id: "ui:toast:graphics",
+                        content: SurfaceContent::Graphics,
+                        rect: Rect {
+                            x: 0,
+                            y: 0,
+                            width: size.cols,
+                            height: size.rows,
+                        },
+                        frame: &toast_effects,
+                        selection: &[],
+                        search: &[],
+                        focused: false,
+                        faint: false,
+                    });
+                }
+                let scene = Scene { size, surfaces };
+                renderer.render(&mut out, &scene, &app.colors, &mut terminal)?;
+                let ready = unsafe {
+                    libc::poll(
+                        fds.as_mut_ptr(),
+                        fds.len() as _,
+                        title_animation.timeout(presentation_deadline, Instant::now()),
+                    )
+                };
+                if ready < 0
+                    && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+                {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                let now = Instant::now();
+                if ready == 0 && now < presentation_deadline && title_animation.clock.advance(now) {
+                    continue;
+                }
+                break scene.hit_map();
+            };
             let mut resized = [0u8; 64];
             let mut geometry_changed = false;
             while matches!(resize_read.read(&mut resized),Ok(n)if n>0) {
@@ -7741,6 +7901,7 @@ pub(super) mod tests {
             |_| None,
             |_| None,
             &mut Vec::new(),
+            &mut Vec::new(),
         );
         let row = surface
             .frame
@@ -7968,6 +8129,106 @@ pub(super) mod tests {
             assert_eq!(events[0].2.action, MouseAction::Press);
             assert_eq!(events[1].2.action, MouseAction::Release);
         }
+    }
+
+    #[test]
+    fn title_sweep_restores_stable_selected_and_hover_ink_without_accumulation() {
+        let now = Instant::now();
+        for selected in [false, true] {
+            let size = Size {
+                cols: 32,
+                rows: 1,
+                cell_width: 9,
+                cell_height: 18,
+            };
+            let rect = Rect {
+                x: 3,
+                y: 0,
+                width: 24,
+                height: 1,
+            };
+            let mut surface = UiSurface::new(size);
+            surface.paint(
+                size,
+                vec![(rect, "A visible working title".into(), selected)],
+                None,
+            );
+            let mut colors = ColorProbe {
+                truecolor: true,
+                foreground: Some([220, 230, 240]),
+                background: Some([20, 30, 40]),
+                ..Default::default()
+            };
+            colors.palette.insert(12, [210, 130, 220]);
+            let mut theme = Theme::default();
+            crate::appearance::update_theme(&mut theme, &colors);
+            surface.apply_theme(&theme, Role::Base, &[]);
+            for cell in &mut surface.frame.rows[0].cells {
+                cell.style.underline = 1; // Hover intent remains independent.
+            }
+            let baseline = surface.frame.clone();
+            let mut animation = SidebarTitleAnimation::new(now);
+            animation.capture(&surface.frame, &[rect], &theme, true, |_| false, now);
+            assert!(animation.clock.next_deadline().is_some());
+            assert!(animation.clock.advance(now + Duration::from_secs(1)));
+            animation.apply(&mut surface.frame);
+            assert_ne!(surface.frame, baseline);
+            let first = surface.frame.clone();
+            animation.apply(&mut surface.frame);
+            assert_eq!(surface.frame, first, "No accumulated blends");
+            for (cell, original) in surface.frame.rows[0]
+                .cells
+                .iter()
+                .zip(&baseline.rows[0].cells)
+            {
+                assert_eq!(cell.text, original.text);
+                assert_eq!(cell.width, original.width);
+                assert_eq!(cell.style.inverse, original.style.inverse);
+                assert_eq!(cell.style.underline, original.style.underline);
+                if original.style.inverse {
+                    assert_eq!(
+                        cell.style.foreground_source,
+                        original.style.foreground_source
+                    );
+                } else {
+                    assert_eq!(
+                        cell.style.background_source,
+                        original.style.background_source
+                    );
+                }
+            }
+            animation.restore(&mut surface.frame);
+            assert_eq!(
+                surface.frame, baseline,
+                "Stable style restored before cached paint/theme"
+            );
+            for (truecolor, covered, titles) in [
+                (false, false, vec![rect]),
+                (true, true, vec![rect]),
+                (true, false, Vec::new()),
+            ] {
+                animation.capture(&surface.frame, &titles, &theme, truecolor, |_| covered, now);
+                assert!(animation.clock.next_deadline().is_none());
+                animation.apply(&mut surface.frame);
+                assert_eq!(
+                    surface.frame, baseline,
+                    "Fallback/covered/offscreen is static"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn title_sweep_deadline_does_not_extend_other_presentation_deadlines() {
+        let now = Instant::now();
+        let animation = SidebarTitleAnimation::new(now);
+        let deadline = now + Duration::from_millis(40);
+        assert_eq!(animation.timeout(deadline, now), 40);
+        assert_eq!(
+            animation.timeout(deadline, deadline - Duration::from_nanos(1)),
+            1
+        );
+        assert_eq!(animation.timeout(deadline, deadline), 0);
     }
 
     #[test]

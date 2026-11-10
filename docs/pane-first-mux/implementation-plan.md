@@ -245,6 +245,24 @@ The existing renderer retains source-valid inactive native projections by last v
 
 Actual debug rich/plain, live-theme, draft/gesture, local Git and framed two-client correction evidence is recorded in the [engine report](engine-proof.md#main-aligned-chrome-correction); the earlier functional pass is retained separately, not treated as visual parity. Provider-owned forge/PR/issues/CI snapshots and refresh remain unavailable; no frontend network calls, fake fields or no-op actions substitute for that deferred backend contract. Animation and a command palette remain outside this pass.
 
+The user subsequently authorized a narrow animation extension: visible working
+sidebar titles sweep their foreground toward a client-selected palette accent.
+Framework `animation::{AnimationClock, TextSweep}` owns epoch-aligned coalesced
+deadlines and allocation-free glyph-safe foreground mixing; the client owns
+eligibility, style retention, colors, width and cadence. Existing `Instant`,
+protocol styles, Unicode cell metadata and the differential scene renderer suffice;
+no additional scheduler, graphics engine or dependency is needed for this small
+effect. Animation-only ticks reuse presentation without backend observation,
+graphics preparation or hit-map rebuilding. There are no animation deadlines
+without eligible visible truecolor titles. Native/default ink remains static.
+
+Debug evidence is under `target/smoke/title-sweep/`: protected workspace checks,
+host-run tests, and a generic 160x50 Kitty renderer demo with ordinary/selected
+Unicode titles plus a static graphics resource. Content-ready captures show
+changes confined to the title band, identical idle frames and no graphics
+commands after the initial frame. This is physical framework-effect evidence,
+not an authenticated harness-status end-to-end screenshot.
+
 
 ### Terminal-native theme
 
