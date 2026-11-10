@@ -574,9 +574,12 @@ not terminal input, to communicate with another agent.
 
 Managed Claude, Codex, Omp and Antigravity launches expose the shared Bkpr MCP
 tools. Claude, Codex and Omp register it launch-locally as `bkpr`, without
-changing persistent MCP configuration. Omp's extension handles native conversation binding
-and wake notifications only; its launch-local `bkpr-control` skill describes the
-available control and communication tools. No persistent Omp configuration is changed.
+changing persistent MCP configuration. Omp's extension handles native conversation
+binding and wake notifications; its launch-local `bkpr-control` skill describes the
+available control and communication tools. It also enables inline Kitty images
+through Omp's native TUI capability API, without spoofing terminal identity.
+Explicit `PI_FORCE_IMAGE_PROTOCOL` preferences, including `off`, remain authoritative.
+No persistent Omp configuration is changed.
 
 | Tool | Purpose |
 | --- | --- |

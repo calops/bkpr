@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from '@oh-my-pi/pi-coding-agent';
+import { ImageProtocol, isImageProtocolForced, setTerminalImageProtocol } from '@oh-my-pi/pi-tui';
 import { spawn, type ChildProcess } from 'node:child_process';
 
 const MAX_FRAME = 1024 * 1024;
@@ -26,6 +27,7 @@ export default function bkpr(pi: ExtensionAPI): void {
   const program = process.env.BKPR_CAPTURE_PROGRAM;
   const managed = process.env.BKPR_CAPTURE_HARNESS === 'omp';
   if (!managed || !program) return;
+  if (!isImageProtocolForced()) setTerminalImageProtocol(ImageProtocol.Kitty);
   // Omp re-instantiates extension factories in child sessions. Keep this launch's
   // capability in this root factory only, not in inherited shell/child env.
   const launchEnvironment = { ...process.env };
