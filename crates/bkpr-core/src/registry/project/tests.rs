@@ -365,6 +365,7 @@ impl Publication {
                 harness_status: None,
                 project: Some(loading(cwd, None)),
                 isolated_environment: true,
+                harness_status_changed_at_ms: None,
             });
     }
     fn cwd(&self, id: &str, cwd: &Path) {

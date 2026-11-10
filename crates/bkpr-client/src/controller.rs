@@ -3680,6 +3680,7 @@ mod tests {
             project: None,
             home: "/".into(),
             isolated_environment: true,
+            harness_status_changed_at_ms: None,
         })
         .collect();
         let registry = RegistrySnapshot {
@@ -3745,6 +3746,7 @@ mod tests {
             project: None,
             home: "/home/fixture".into(),
             isolated_environment: true,
+            harness_status_changed_at_ms: None,
         };
         let snapshot = PaneSnapshot {
             pane_id: pane.id.clone(),
@@ -4080,6 +4082,7 @@ mod tests {
         assert!(!text.contains("working") && !text.contains("[live]"));
 
         pane.harness.as_mut().unwrap().managed = Some(ManagedHarness {
+            first_prompt_submitted_at_ms: None,
             launch_id: "launch-1".into(),
             conversation: None,
             error: None,
@@ -4207,6 +4210,7 @@ mod tests {
     fn replacement_and_completed_execution_clear_previous_status_and_conversation() {
         let (mut pane, mut snapshot) = capture_fixture();
         pane.harness.as_mut().unwrap().managed = Some(ManagedHarness {
+            first_prompt_submitted_at_ms: None,
             launch_id: "launch-1".into(),
             conversation: Some(NativeConversation {
                 id: "previous-native-conversation".into(),
@@ -4221,6 +4225,7 @@ mod tests {
         let replacement = pane.harness.as_mut().unwrap();
         replacement.pid = 42; // Same birth tick is not the same process.
         replacement.managed = Some(ManagedHarness {
+            first_prompt_submitted_at_ms: None,
             launch_id: "launch-2".into(),
             conversation: None,
             error: None,
@@ -4331,6 +4336,7 @@ mod tests {
         let (pane, mut snapshot) = capture_fixture();
         let mut pane = pane;
         pane.harness.as_mut().unwrap().managed = Some(ManagedHarness {
+            first_prompt_submitted_at_ms: None,
             launch_id: "previous-launch".into(),
             conversation: Some(NativeConversation {
                 id: "previous-conversation".into(),
@@ -4369,6 +4375,7 @@ mod tests {
         let (mut pane, snapshot) = capture_fixture();
         pane.title = "界界界 user title".into();
         pane.harness.as_mut().unwrap().managed = Some(ManagedHarness {
+            first_prompt_submitted_at_ms: None,
             launch_id: "launch".into(),
             conversation: Some(NativeConversation {
                 id: "native-conversation-that-wraps-without-overflow".into(),

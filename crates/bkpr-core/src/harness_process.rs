@@ -27,8 +27,6 @@ pub(crate) struct Process {
 }
 pub(crate) use platform::{cwd, process};
 mod sampler;
-#[cfg(target_os = "linux")]
-pub(crate) use sampler::snapshot;
 pub(crate) use sampler::{ObservationLease, fresh_snapshot};
 
 pub(crate) fn lineage(
@@ -199,7 +197,24 @@ fn recognize_python(args: &[OsString]) -> Result<Option<HarnessKind>> {
     }
     Ok(None)
 }
+fn claude_native_install(executable: &Path) -> bool {
+    executable.parent().is_some_and(|versions| {
+        versions.file_name().is_some_and(|name| name == "versions")
+            && versions
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "claude")
+    }) && executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|version| semver::Version::parse(version).is_ok())
+}
 fn recognize(executable: &Path, args: &[OsString]) -> Option<HarnessKind> {
+    // The official installer launcher is a symlink; the kernel reports the
+    // versioned native executable, not the launcher's `claude` basename.
+    if claude_native_install(executable) {
+        return Some(HarnessKind::Claude);
+    }
     let name = executable_name(executable)?;
     match name {
         "node" | "nodejs" | "bun" => recognize_js(js_entrypoint(args).ok().flatten()?),
@@ -688,6 +703,97 @@ mod tests {
             ),
             Some(HarnessKind::Aider)
         );
+    }
+    #[test]
+    fn recognizes_only_the_native_installer_version_layout() {
+        for path in [
+            "/home/owned/.local/share/claude/versions/2.1.321",
+            "/custom/share/claude/versions/2.1.321-beta.1",
+        ] {
+            assert_eq!(recognize(Path::new(path), &[]), Some(HarnessKind::Claude));
+        }
+        for path in [
+            "/home/owned/.local/share/other/versions/2.1.321",
+            "/home/owned/.local/share/claude/versions/latest",
+            "/home/owned/.local/share/claude/versions/2.1",
+            "/home/owned/.local/share/claude/versions/2.1.321 (deleted)",
+            "/home/owned/.local/share/claude/versions/2.1.321/tool",
+            "2.1.321",
+        ] {
+            assert_eq!(recognize(Path::new(path), &[]), None, "{path}");
+        }
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kernel_executable_recognizes_installer_symlink_but_not_an_unrelated_version_file() {
+        use std::{fs, process::Command};
+        let home = tempfile::tempdir().unwrap();
+        fs::write(
+            home.path().join("installer-fixture"),
+            b"owned installer fixture",
+        )
+        .unwrap();
+        let module = module_path!().split_once("::").unwrap().1;
+        let fixture = format!("{module}::native_installer_kernel_fixture");
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                &fixture,
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("HOME", home.path())
+            .env("BKPR_NATIVE_INSTALLER_FIXTURE", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated installer fixture failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "subprocess-only installer fixture with explicit private HOME"]
+    fn native_installer_kernel_fixture() {
+        use std::{
+            fs,
+            process::{Command, Stdio},
+        };
+        assert_eq!(
+            std::env::var("BKPR_NATIVE_INSTALLER_FIXTURE").as_deref(),
+            Ok("1")
+        );
+        let home = PathBuf::from(std::env::var_os("HOME").expect("private fixture HOME"));
+        assert_eq!(
+            fs::read(home.join("installer-fixture")).unwrap(),
+            b"owned installer fixture"
+        );
+        // Keep copied executable writes and forks out of the parallel test host.
+        let root = tempfile::tempdir_in(home).unwrap();
+        for (directory, expected) in [("claude", Some(HarnessKind::Claude)), ("unrelated", None)] {
+            let versions = root.path().join(directory).join("versions");
+            fs::create_dir_all(&versions).unwrap();
+            let executable = versions.join("2.1.321");
+            fs::copy("/bin/sh", &executable).unwrap();
+            let launcher = root.path().join(format!("{directory}-launcher"));
+            std::os::unix::fs::symlink(&executable, &launcher).unwrap();
+            let mut child = Command::new(launcher)
+                .args(["-c", "IFS= read -r hold"])
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let observed_kind = kind(child.id() as i32);
+            let observed_binding = binding_kind(child.id() as i32);
+            child.kill().unwrap();
+            child.wait().unwrap();
+            assert_eq!(observed_kind.unwrap(), expected);
+            assert_eq!(observed_binding.unwrap(), expected);
+            assert_eq!(kind(child.id() as i32).unwrap(), None);
+        }
     }
     #[test]
     fn lineage_binds_birth_and_foreground_tty() {

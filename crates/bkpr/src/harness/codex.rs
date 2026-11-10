@@ -409,6 +409,7 @@ fn managed(
         .args(arguments)
         .spawn()
         .context("start Codex TUI")?;
+    let mut selected_thread: Option<(ConversationSource, String)> = None;
     let status = startup::supervise(
         tui,
         listener,
@@ -416,6 +417,15 @@ fn managed(
         &mut server.0,
         &cancelled,
         |method, id| {
+            if method == "turn/start" {
+                let (source, selected) = selected_thread
+                    .as_ref()
+                    .context("Codex submitted a prompt before binding its native thread")?;
+                if selected != id {
+                    bail!("Codex prompt does not match the bound native thread");
+                }
+                return capture.prompt_submitted(*source, id);
+            }
             let source = match method {
                 "thread/start" => ConversationSource::CodexStart,
                 "thread/resume" => ConversationSource::CodexResume,
@@ -426,7 +436,9 @@ fn managed(
                 capture
                     .bind(source, id)
                     .context("bind TUI-selected Codex native thread before response")
-            })
+            })?;
+            selected_thread = Some((source, id.to_owned()));
+            Ok(())
         },
     );
     let signal = cancelled.load(Ordering::Acquire);

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use bkpr_core::{registry::Registry, transport};
+use bkpr_core::{diagnostics, registry::Registry, transport};
 use bkpr_protocol::{PaneSpawnSpec, Size, SpawnDefaults};
 use clap::Parser;
 use std::path::PathBuf;
@@ -49,6 +49,17 @@ fn main() {
 fn run(cli: Cli) -> Result<()> {
     ensure!(cli.socket.is_absolute(), "socket must be absolute");
     let registry = Registry::open_named(&cli.state_root, &cli.session)?;
+    // Daemon-local opt-in, not a process-global logger installed by the library.
+    // Diagnostics are never a prerequisite for durable control or pane startup.
+    let diagnostic_guard =
+        match diagnostics::install(&cli.state_root, registry.diagnostic_session_id()) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                eprintln!("bkprd: private diagnostics disabled: {error}");
+                None
+            }
+        };
+    diagnostics::record("daemon.start", None, "success");
     let result = (|| -> Result<()> {
         let initial_requested = !cli.argv.is_empty();
         let startup = (|| -> Result<Option<PaneSpawnSpec>> {
@@ -107,9 +118,29 @@ fn run(cli: Cli) -> Result<()> {
         };
         registry.configure_harnesses(&cli.socket, &executable)?;
         registry.configure_agent_forwarding(&cli.socket)?;
+        diagnostics::record("daemon.listen", None, "success");
         listener.serve_bootstrap(registry.clone(), initial)
     })();
     // Even startup/bind failures must tear down only the children this daemon owns.
     let cleanup = registry.shutdown();
+    diagnostics::record(
+        "daemon.stop",
+        None,
+        if result.is_ok() && cleanup.is_ok() {
+            "success"
+        } else {
+            "failed"
+        },
+    );
+    if let Some(guard) = diagnostic_guard {
+        let report = guard.finish();
+        if report.dropped != 0 || report.io_failures != 0 || report.pending != 0 || !report.stopped
+        {
+            eprintln!(
+                "bkprd: best-effort diagnostics: written={} dropped={} io_failures={} pending={} stopped={}",
+                report.written, report.dropped, report.io_failures, report.pending, report.stopped,
+            );
+        }
+    }
     result.and(cleanup)
 }

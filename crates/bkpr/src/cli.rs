@@ -197,6 +197,13 @@ pub fn command() -> Command {
                                 .long("scope")
                                 .value_parser(["workspace", "session", "all"])
                                 .help("Explicit daemon-local scope for authenticated managed calls"),
+                        )
+                        .arg(
+                            Arg::new("reply")
+                                .long("reply")
+                                .value_parser(["receipt", "full"])
+                                .default_value("receipt")
+                                .help("Compact mutation receipt, or explicit full scoped native result"),
                         ),
                 ),
         )

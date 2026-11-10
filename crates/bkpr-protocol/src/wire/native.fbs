@@ -6,6 +6,8 @@ enum HarnessKind : ubyte { Claude, Codex, Omp, Agy, Opencode, Cursor, Copilot, A
 enum ConversationSource : ubyte { ClaudeHook, OmpExtension, CodexStart, CodexResume, CodexFork, AgyMcp }
 enum AgentScope : ubyte { Workspace, Session, Repository, All }
 enum AgentReceiverMode : ubyte { ActiveTurn, FutureTurn }
+enum AgentDelivery : ubyte { Notify, Quiet }
+enum ControlReply : ubyte { Receipt, Full }
 enum Axis : ubyte { Horizontal, Vertical }
 enum ClipboardLocation : ubyte { Standard, Selection, Primary }
 enum ClipboardResult : ubyte { Success, Denied, Unsupported, Busy, InvalidData, IoError }
@@ -105,6 +107,29 @@ table OperationClientDetach {
 }
 table OperationInspect {
 
+}
+table InspectQuery {
+  workspace_id:string;
+  window_id:string;
+  pane_id:string;
+  detail:bool;
+  include_retired:bool;
+  after:string;
+  limit:OptionalUsize;
+}
+table TerminalReadQuery {
+  text:bool = true;
+  tail_rows:OptionalUsize;
+  offset:OptionalUsize;
+  max_bytes:OptionalUsize;
+  expected_revision:OptionalU64;
+}
+table OperationControlInspect {
+  query:InspectQuery (required);
+}
+table OperationControlPaneRead {
+  pane_id:string (required);
+  query:TerminalReadQuery (required);
 }
 table OperationContext {
   pane_id:string;
@@ -223,7 +248,7 @@ table OperationCiRefresh {
   local_head_sha:string (required);
   checked_ref:string;
 }
-union Operation { OperationSessionInfo, OperationClientRegister, OperationClient, OperationClientActivate, OperationClientDetach, OperationInspect, OperationContext, OperationRecoveryList, OperationPaneResume, OperationHarnessBegin, OperationHarnessEvent, OperationHarnessContext, OperationAgent, OperationWorkspaceCreate, OperationWorkspaceRename, OperationWorkspaceClose, OperationWindowCreate, OperationWindowRename, OperationWindowClose, OperationPaneSpawn, OperationPaneReopen, OperationPaneTerminate, OperationPaneForget, OperationPaneRename, OperationLayoutUpdate, OperationPane, OperationWait, OperationShutdown, OperationCiRefresh }
+union Operation { OperationSessionInfo, OperationClientRegister, OperationClient, OperationClientActivate, OperationClientDetach, OperationInspect, OperationContext, OperationRecoveryList, OperationPaneResume, OperationHarnessBegin, OperationHarnessEvent, OperationHarnessContext, OperationAgent, OperationWorkspaceCreate, OperationWorkspaceRename, OperationWorkspaceClose, OperationWindowCreate, OperationWindowRename, OperationWindowClose, OperationPaneSpawn, OperationPaneReopen, OperationPaneTerminate, OperationPaneForget, OperationPaneRename, OperationLayoutUpdate, OperationPane, OperationWait, OperationShutdown, OperationCiRefresh, OperationControlInspect, OperationControlPaneRead }
 table PaneRequestInspect {
 
 }
@@ -357,13 +382,18 @@ table CaptureEventError {
 table CaptureEventEnd {
 
 }
-union CaptureEvent { CaptureEventBind, CaptureEventError, CaptureEventEnd }
+table CaptureEventPromptSubmitted {
+  conversation_id:string (required);
+  source:ConversationSource;
+}
+union CaptureEvent { CaptureEventBind, CaptureEventError, CaptureEventEnd, CaptureEventPromptSubmitted }
 table AgentRequestWhoami {
-
+  detail:bool;
 }
 table AgentRequestControl {
   request:Operation (required);
   scope:AgentScope;
+  reply:ControlReply;
 }
 table AgentRequestSetTitle {
   title:string (required);
@@ -371,16 +401,28 @@ table AgentRequestSetTitle {
 table AgentRequestDiscoverAgents {
   scope:AgentScope;
   detail:bool;
+  launch_id:string;
+  pane_id:string;
+  after:string;
+  limit:OptionalUsize;
 }
 table AgentRequestSendMessage {
   to:string (required);
   text:string (required);
   idempotency_key:string (required);
   scope:AgentScope;
+  delivery:AgentDelivery;
 }
 table AgentRequestReadInbox {
   after:string;
   limit:OptionalUsize;
+  ack_ids:[string] (required);
+  include_read:bool;
+}
+table AgentRequestReadMessage {
+  message_id:string (required);
+  offset:OptionalUsize;
+  max_bytes:OptionalUsize;
 }
 table AgentRequestAckMessage {
   ids:[string] (required);
@@ -410,7 +452,7 @@ table AgentRequestWakeOutcome {
   generation:ulong;
   outcome:AgentWakeOutcome (required);
 }
-union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome }
+union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestReadMessage }
 table AgentWakeOutcomeAccepted {
 
 }
@@ -424,7 +466,10 @@ union AgentWakeOutcome { AgentWakeOutcomeAccepted, AgentWakeOutcomeFailed, Agent
 table RequestFailureSessionClosing {
   outcome:RequestOutcome;
 }
-union RequestFailure { RequestFailureSessionClosing }
+table RequestFailureBusy {
+  target_id:string (required);
+}
+union RequestFailure { RequestFailureSessionClosing, RequestFailureBusy }
 table OptionalU64 {
   value:ulong;
 }

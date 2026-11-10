@@ -112,6 +112,12 @@ Old native sessions require their matching client and are never automatically
 restarted. Runtime proof and tested limits are in
 [the CI restoration report](engine-proof.md#native-ci-and-pr-popup-restoration).
 
+Native wire family 8 adds compact agent/control replies, explicit query/body
+pagination, quiet delivery, prompt/status observations and typed busy outcomes.
+The full native registry remains available to the TUI; agent-facing expansion is
+explicit. Remote framing, scene encoding, engine ABI and private recovery schema
+remain unchanged. Existing live family-7 sessions need their matching binaries.
+
 
 ### Native fork source
 

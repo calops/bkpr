@@ -635,6 +635,7 @@ mod tests {
             project: None,
             home: "/fixture".into(),
             isolated_environment: true,
+            harness_status_changed_at_ms: None,
         };
         let window = |id: &str, pane: &str| Window {
             id: id.into(),

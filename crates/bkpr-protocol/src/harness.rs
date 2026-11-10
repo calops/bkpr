@@ -100,6 +100,10 @@ pub struct ManagedHarness {
     pub launch_id: String,
     pub conversation: Option<NativeConversation>,
     pub error: Option<String>,
+    /// First authenticated native prompt submission observed in this launch.
+    /// Unix milliseconds; absent means unknown, not that no prompt was submitted.
+    #[serde(default)]
+    pub first_prompt_submitted_at_ms: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HarnessInfo {
@@ -137,6 +141,11 @@ impl std::fmt::Debug for CaptureGrant {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CaptureEvent {
     Bind {
+        conversation_id: String,
+        source: ConversationSource,
+    },
+    /// A body-free native event for the currently bound conversation.
+    PromptSubmitted {
         conversation_id: String,
         source: ConversationSource,
     },

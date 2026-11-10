@@ -1,5 +1,5 @@
 use super::*;
-use bkpr_protocol::control::{ControlAction, resolve};
+use bkpr_protocol::control::{ControlAction, ControlReply, resolve};
 
 struct ControlFixture {
     fixture: Fixture,
@@ -12,6 +12,11 @@ struct ControlFixture {
 }
 impl ControlFixture {
     fn new() -> Self {
+        Self::with_command(
+            "printf 'READY\\346\\227\\245\\346\\234\\254\\n'; printf ready > control-ready; while IFS= read -r line; do printf '%s' \"$line\" > control-input; done",
+        )
+    }
+    fn with_command(script: &str) -> Self {
         let fixture = Fixture::new();
         fixture
             .registry
@@ -19,11 +24,7 @@ impl ControlFixture {
             .unwrap();
         // A stable native executable blocked in shell builtins: no fork/exec
         // classifier races and no real provider, external account or HOME.
-        let (pane, grant, peer) = seed_launch_command(
-            &fixture,
-            HarnessKind::Claude,
-            "printf 'READY\\346\\227\\245\\346\\234\\254\\n'; printf ready > control-ready; while IFS= read -r line; do printf '%s' \"$line\" > control-input; done",
-        );
+        let (pane, grant, peer) = seed_launch_command(&fixture, HarnessKind::Claude, script);
         await_file(&fixture.home.join("control-ready"));
         let (workspace, windows) = own_windows(&fixture.registry, std::slice::from_ref(&pane));
         let launch =
@@ -112,12 +113,45 @@ fn control_spec(home: &Path, script: &str) -> PaneSpawnSpec {
         isolated_environment: true,
     }
 }
+
+fn assert_receipt_owner_revisions(registry: &Registry, receipt: &Value) {
+    let snapshot = registry.snapshot().unwrap();
+    let workspace = snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| Some(workspace.id.as_str()) == receipt["workspace_id"].as_str())
+        .unwrap();
+    let window = workspace
+        .windows
+        .iter()
+        .find(|window| Some(window.id.as_str()) == receipt["window_id"].as_str())
+        .unwrap();
+    assert_eq!(receipt["workspace_revision"], workspace.revision);
+    assert_eq!(receipt["window_revision"], window.revision);
+}
 fn control_request(
     registry: &Registry,
     grant: &CaptureGrant,
     peer: &Peer,
     operation: Operation,
     scope: AgentScope,
+) -> Result<Value> {
+    control_request_reply(
+        registry,
+        grant,
+        peer,
+        operation,
+        scope,
+        ControlReply::Receipt,
+    )
+}
+fn control_request_reply(
+    registry: &Registry,
+    grant: &CaptureGrant,
+    peer: &Peer,
+    operation: Operation,
+    scope: AgentScope,
+    reply: ControlReply,
 ) -> Result<Value> {
     registry
         .request_authenticated(
@@ -127,6 +161,7 @@ fn control_request(
                 request: AgentRequest::Control {
                     request: Box::new(operation),
                     scope,
+                    reply,
                 },
             }),
             peer,
@@ -162,18 +197,32 @@ fn human_view(f: &ControlFixture) -> String {
 }
 
 #[test]
-fn authenticated_control_filters_every_registry_reply_and_fences_foreign_ids() {
+fn authenticated_control_returns_flat_scoped_ids_and_receipts_and_fences_foreign_ids() {
     let f = ControlFixture::new();
     let own = f
         .call("session.inspect", json!({}), AgentScope::Workspace)
         .unwrap();
-    assert_eq!(own["registry"]["workspaces"].as_array().unwrap().len(), 1);
-    assert_eq!(own["registry"]["panes"].as_array().unwrap().len(), 1);
-    assert_eq!(own["registry"]["panes"][0]["id"], f.pane);
+    let own_items = own["items"].as_array().unwrap();
+    assert_eq!(own_items.len(), 3);
+    assert!(
+        own_items
+            .iter()
+            .any(|item| item["pane_id"] == f.pane && item["kind"] == "pane")
+    );
+    assert!(
+        own_items
+            .iter()
+            .all(|item| item["workspace_id"] == f.workspace)
+    );
+    assert!(
+        own_items
+            .iter()
+            .all(|item| item.get("detail").is_none() && item.get("layout").is_none())
+    );
     let all = f
         .call("session.inspect", json!({}), AgentScope::Session)
         .unwrap();
-    assert_eq!(all["registry"]["workspaces"].as_array().unwrap().len(), 2);
+    assert_eq!(all["items"].as_array().unwrap().len(), 6);
     for (operation, arguments) in [
         (
             "pane.rename",
@@ -215,8 +264,42 @@ fn authenticated_control_filters_every_registry_reply_and_fences_foreign_ids() {
             AgentScope::Workspace,
         )
         .unwrap();
-    assert_eq!(rename["registry"]["panes"].as_array().unwrap().len(), 1);
-    assert_eq!(rename["registry"]["panes"][0]["title"], "controlled");
+    assert!(rename.get("registry").is_none());
+    assert_eq!(rename["pane_id"], f.pane);
+    assert_eq!(rename["accepted"], true);
+    assert_eq!(rename["workspace_id"], f.workspace);
+    assert_eq!(rename["window_id"], f.window);
+    assert_receipt_owner_revisions(&f.fixture.registry, &rename);
+    f.call(
+        "window.rename",
+        json!({"workspace_id":rename["workspace_id"],
+        "window_id":rename["window_id"],"expected_revision":rename["window_revision"],
+        "name":"receipt-CAS"}),
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    let renamed = f
+        .call(
+            "session.inspect",
+            json!({"pane_id":f.pane,"detail":true}),
+            AgentScope::Workspace,
+        )
+        .unwrap();
+    assert_eq!(renamed["items"][0]["detail"]["title"], "controlled");
+    let full = control_request_reply(
+        &f.fixture.registry,
+        &f.grant,
+        &f.peer,
+        Operation::PaneRename {
+            pane_id: f.pane.clone(),
+            title: "full".into(),
+        },
+        AgentScope::Workspace,
+        ControlReply::Full,
+    )
+    .unwrap();
+    assert_eq!(full["registry"]["panes"].as_array().unwrap().len(), 1);
+    assert_eq!(full["registry"]["panes"][0]["title"], "full");
     assert!(
         f.call("session.inspect", json!({}), AgentScope::Repository)
             .is_err()
@@ -233,6 +316,73 @@ fn authenticated_control_filters_every_registry_reply_and_fences_foreign_ids() {
     }
     assert!(!f.fixture.home.join("forbidden-start").exists());
     assert!(f.fixture.snapshot(&f.foreign).views.is_empty());
+}
+
+#[test]
+fn control_creation_and_close_receipts_keep_current_revision_owners_and_affected_ids() {
+    let f = ControlFixture::new();
+    let workspace_revision = f
+        .fixture
+        .registry
+        .snapshot()
+        .unwrap()
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == f.workspace)
+        .unwrap()
+        .revision;
+    let created = f.call("window.create",json!({
+        "workspace_id":f.workspace,"expected_revision":workspace_revision,
+        "name":"receipt-window","spec":control_spec(&f.fixture.home,"while IFS= read -r line; do :; done")
+    }),AgentScope::Workspace).unwrap();
+    assert!(created.get("registry").is_none());
+    assert_receipt_owner_revisions(&f.fixture.registry, &created);
+    assert!(created["workspace_revision"].as_u64().unwrap() > workspace_revision);
+    assert!(created["pane_id"].is_string());
+    let closed = f
+        .call(
+            "window.close",
+            json!({
+                "workspace_id":f.workspace,"window_id":created["window_id"],"expected_revision":created["window_revision"]
+            }),
+            AgentScope::Workspace,
+        )
+        .unwrap();
+    assert_eq!(closed["window_id"], created["window_id"]);
+    assert_eq!(closed["window_closed"], true);
+    assert_eq!(closed["workspace_closed"], false);
+    let current_workspace_revision = f
+        .fixture
+        .registry
+        .snapshot()
+        .unwrap()
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == f.workspace)
+        .unwrap()
+        .revision;
+    assert_eq!(closed["workspace_revision"], current_workspace_revision);
+    assert!(
+        closed["closed_pane_ids"]
+            .as_array()
+            .unwrap()
+            .contains(&created["pane_id"])
+    );
+    let created = f.call("workspace.create",json!({
+        "name":"receipt-workspace","initial":control_spec(&f.fixture.home,"while IFS= read -r line; do :; done")
+    }),AgentScope::Session).unwrap();
+    assert_receipt_owner_revisions(&f.fixture.registry, &created);
+    assert!(created["window_id"].is_string());
+    let closed = f.call("workspace.close",json!({
+        "workspace_id":created["workspace_id"],"expected_revision":created["workspace_revision"]
+    }),AgentScope::Session).unwrap();
+    assert_eq!(closed["workspace_closed"], true);
+    assert!(
+        closed["closed_pane_ids"]
+            .as_array()
+            .unwrap()
+            .contains(&created["pane_id"])
+    );
 }
 
 #[test]
@@ -303,7 +453,10 @@ fn authenticated_control_batch_checks_all_existing_refs_and_stale_revision_befor
     let result = f.raw(operation, AgentScope::Workspace).unwrap();
     await_file(&f.fixture.home.join("batch-ready"));
     let created = result["created_panes"]["new"].as_str().unwrap();
-    assert_eq!(result["registry"]["panes"].as_array().unwrap().len(), 3);
+    assert!(result.get("registry").is_none());
+    assert_eq!(result["window_revision"], 3);
+    assert_eq!(result["workspace_id"], f.workspace);
+    assert_eq!(result["window_id"], f.window);
     let registry = f.fixture.registry.snapshot().unwrap();
     let window = registry
         .workspaces
@@ -321,6 +474,328 @@ fn authenticated_control_batch_checks_all_existing_refs_and_stale_revision_befor
         window.layout.as_ref().unwrap(),
         result["created_panes"]["second"].as_str().unwrap()
     ));
+}
+
+#[test]
+fn control_inspection_filters_before_paging_and_preserves_revision_owners() {
+    let f = ControlFixture::new();
+    let mut after = Value::Null;
+    let mut items = Vec::new();
+    loop {
+        let page = f
+            .call(
+                "session.inspect",
+                json!({"limit":1,"after":after}),
+                AgentScope::Workspace,
+            )
+            .unwrap();
+        assert!(page["items"].as_array().unwrap().len() <= 1);
+        items.extend(page["items"].as_array().unwrap().iter().cloned());
+        after = page["next_cursor"].clone();
+        if !page["has_more"].as_bool().unwrap() {
+            break;
+        }
+        // Unrelated transient/global revisions do not invalidate identity cursors.
+        f.call(
+            "pane.rename",
+            json!({"pane_id":f.foreign,"title":"foreign-change"}),
+            AgentScope::Session,
+        )
+        .unwrap();
+    }
+    assert_eq!(items.len(), 3);
+    assert!(items.iter().all(|item| item["workspace_id"] == f.workspace));
+    let window = f
+        .call(
+            "session.inspect",
+            json!({"window_id":f.window,"limit":1}),
+            AgentScope::Session,
+        )
+        .unwrap();
+    assert_eq!(window["items"].as_array().unwrap().len(), 1);
+    assert_eq!(window["items"][0]["workspace_id"], f.workspace);
+    assert_eq!(window["items"][0]["window_id"], f.window);
+    assert_eq!(
+        window["items"][0]["workspace_revision"],
+        items[0]["workspace_revision"]
+    );
+    assert_eq!(window["items"][0]["window_revision"], 1);
+    f.call(
+        "pane.rename",
+        json!({"pane_id":f.pane,"title":"t".repeat(256)}),
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    let compact = f
+        .call(
+            "session.inspect",
+            json!({"pane_id":f.pane}),
+            AgentScope::Workspace,
+        )
+        .unwrap();
+    assert!(serde_json::to_vec(&compact).unwrap().len() < 2048);
+    assert!(compact["items"][0].get("title").is_none());
+    let expanded = f
+        .call(
+            "session.inspect",
+            json!({"pane_id":f.pane,"detail":true}),
+            AgentScope::Workspace,
+        )
+        .unwrap();
+    assert_eq!(
+        expanded["items"][0]["detail"]["title"]
+            .as_str()
+            .unwrap()
+            .len(),
+        256
+    );
+}
+
+#[test]
+fn idle_live_terminal_continuations_survive_read_view_wakes_but_reject_real_output() {
+    let rows = format!("{}\n", "日本".repeat(19)).repeat(20);
+    let script = format!(
+        "printf '%s' '{rows}'; printf 'END\\n'; printf ready > control-ready; while IFS= read -r line; do printf 'UPDATED\\n'; done"
+    );
+    let f = ControlFixture::with_command(&script);
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let whole = loop {
+        let read = f
+            .call(
+                "pane.read",
+                json!({"pane_id":f.pane,"max_bytes":16384}),
+                AgentScope::Workspace,
+            )
+            .unwrap();
+        if read["text"].as_str().unwrap().contains("END") {
+            break read;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fixture output did not reach canonical viewport"
+        );
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert!(whole["total_bytes"].as_u64().unwrap() > 2048);
+    let revision = whole["revision"].clone();
+    let mut text = String::new();
+    let mut offset = 0;
+    loop {
+        let page = f
+            .call(
+                "pane.read",
+                json!({"pane_id":f.pane,"max_bytes":512,
+            "offset":offset,"expected_revision":revision}),
+                AgentScope::Workspace,
+            )
+            .unwrap();
+        assert_eq!(page["revision"], revision);
+        text.push_str(page["text"].as_str().unwrap());
+        if page["complete"] == true {
+            break;
+        }
+        let next = page["next_offset"].as_u64().unwrap();
+        assert!(next > offset);
+        offset = next;
+        // Permit the temporary attach/detach resize wake to publish between
+        // requests. An unchanged viewport must not invalidate its continuation.
+        thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(text, whole["text"].as_str().unwrap());
+    assert!(f.fixture.snapshot(&f.pane).views.is_empty());
+    f.call(
+        "input.text",
+        json!({"pane_id":f.pane,"text":"update\n"}),
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let read = f
+            .call(
+                "pane.inspect",
+                json!({"pane_id":f.pane}),
+                AgentScope::Workspace,
+            )
+            .unwrap();
+        if read["revision"] != revision {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "real PTY output did not change terminal revision"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    let stale = f
+        .call(
+            "pane.read",
+            json!({"pane_id":f.pane,"offset":512,"expected_revision":revision}),
+            AgentScope::Workspace,
+        )
+        .unwrap_err();
+    assert!(stale.to_string().contains("stale terminal revision"));
+}
+
+#[test]
+fn control_exact_id_hints_are_scoped_and_retired_membership_errors_are_explicit() {
+    let f = ControlFixture::new();
+    let error = f
+        .call(
+            "pane.read",
+            json!({"pane_id":&f.pane[..8]}),
+            AgentScope::Workspace,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&f.pane));
+    assert!(!error.contains(&f.foreign));
+    let error = f
+        .call(
+            "window.close",
+            json!({"workspace_id":f.workspace,"window_id":&f.window[..8],"expected_revision":1}),
+            AgentScope::Workspace,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&f.window));
+    f.call(
+        "pane.close",
+        json!({"pane_id":f.foreign}),
+        AgentScope::Session,
+    )
+    .unwrap();
+    let error = f
+        .call(
+            "pane.read",
+            json!({"pane_id":f.foreign}),
+            AgentScope::Workspace,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("retired or unowned"));
+    assert!(error.contains("session/all"));
+    let normal = f
+        .call(
+            "session.inspect",
+            json!({"pane_id":f.foreign}),
+            AgentScope::Session,
+        )
+        .unwrap();
+    assert!(normal["items"].as_array().unwrap().is_empty());
+    let retained = f
+        .call(
+            "session.inspect",
+            json!({"pane_id":f.foreign,"include_retired":true}),
+            AgentScope::Session,
+        )
+        .unwrap();
+    assert_eq!(retained["items"][0]["pane_id"], f.foreign);
+    assert!(retained["items"][0]["workspace_id"].is_null());
+    assert!(
+        f.fixture
+            .registry
+            .snapshot()
+            .unwrap()
+            .panes
+            .iter()
+            .any(|pane| pane.id == f.foreign)
+    );
+}
+
+#[test]
+fn control_terminal_text_is_trimmed_utf8_pageable_and_revision_fenced() {
+    let f = ControlFixture::new();
+    let whole = f
+        .call(
+            "pane.read",
+            json!({"pane_id":f.pane}),
+            AgentScope::Workspace,
+        )
+        .unwrap();
+    assert_eq!(whole["complete"], true);
+    let text = whole["text"].as_str().unwrap();
+    assert!(text.contains("READY日本"));
+    assert!(text.split('\n').all(|row| !row.ends_with(' ')));
+    let mut recovered = String::new();
+    let mut offset = 0;
+    loop {
+        let page = f.call("pane.read",json!({"pane_id":f.pane,"max_bytes":4,"offset":offset,"expected_revision":whole["revision"]}),AgentScope::Workspace).unwrap();
+        let part = page["text"].as_str().unwrap();
+        assert!(part.len() <= 4);
+        recovered.push_str(part);
+        if page["complete"] == true {
+            break;
+        }
+        let next = page["next_offset"].as_u64().unwrap();
+        assert!(next > offset);
+        offset = next;
+    }
+    assert_eq!(recovered, text);
+    let tail = f
+        .call(
+            "pane.read",
+            json!({"pane_id":f.pane,"tail_rows":1}),
+            AgentScope::Workspace,
+        )
+        .unwrap();
+    assert_eq!(
+        tail["start_row"].as_u64().unwrap() + 1,
+        tail["total_rows"].as_u64().unwrap()
+    );
+    assert_eq!(tail["text"], "");
+    assert!(
+        f.call(
+            "pane.read",
+            json!({"pane_id":f.pane,"offset":6,"expected_revision":whole["revision"]}),
+            AgentScope::Workspace
+        )
+        .is_err()
+    );
+    let stale = f
+        .call(
+            "pane.read",
+            json!({"pane_id":f.pane,"expected_revision":0}),
+            AgentScope::Workspace,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(stale.contains("current_revision"));
+    assert!(f.fixture.snapshot(&f.pane).views.is_empty());
+}
+
+#[test]
+fn control_terminal_text_projection_pages_continue_inside_an_oversized_native_grapheme() {
+    use bkpr_protocol::control::TerminalReadQuery;
+    let f = ControlFixture::new();
+    let expected = format!("Z{}end", "\u{301}".repeat(3000));
+    let rows = {
+        let pane = f.fixture.registry.inner.state.lock().unwrap().live[&f.pane].clone();
+        let published = pane.shared.published.lock().unwrap();
+        let mut cell = published.frame.as_ref().unwrap().rows[0].cells[0].clone();
+        cell.text = expected.clone().into();
+        cell.width = 1;
+        vec![bkpr_protocol::Row { cells: vec![cell] }]
+    };
+    // Exercise the immutable typed-row consumer boundary, not a live published
+    // frame that asynchronous native view wakes are entitled to replace.
+    let mut recovered = String::new();
+    let mut offset = 0;
+    while offset < expected.len() {
+        let query = TerminalReadQuery {
+            offset: Some(offset),
+            ..Default::default()
+        };
+        let (start_row, total_bytes, text) =
+            crate::registry::control::viewport_text(&rows, &query).unwrap();
+        assert_eq!(start_row, 0);
+        assert_eq!(total_bytes, expected.len());
+        assert!(!text.is_empty());
+        assert!(text.len() <= 2048);
+        recovered.push_str(&text);
+        offset += text.len();
+    }
+    assert_eq!(recovered, expected);
 }
 
 #[test]
@@ -563,7 +1038,9 @@ fn authenticated_control_observation_does_not_hold_the_registry_writer() {
             &registry,
             &grant,
             &peer,
-            Operation::Inspect,
+            Operation::ControlInspect {
+                query: Default::default(),
+            },
             AgentScope::Workspace,
         )
     });

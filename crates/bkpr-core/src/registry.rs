@@ -38,6 +38,21 @@ impl std::fmt::Display for SessionClosing {
 }
 impl std::error::Error for SessionClosing {}
 
+#[derive(Debug)]
+pub struct RegistryBusy {
+    pub target_id: String,
+}
+impl std::fmt::Display for RegistryBusy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "target busy: close in progress ({})",
+            self.target_id
+        )
+    }
+}
+impl std::error::Error for RegistryBusy {}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Record {
     version: u32,
@@ -115,6 +130,7 @@ struct State {
     spawn_workspaces: BTreeSet<String>,
     spawn_workspace_names: BTreeMap<String, String>,
     closing_workspaces: BTreeSet<String>,
+    closing_windows: BTreeSet<String>,
     closing_panes: BTreeSet<String>,
     closing_document_panes: BTreeSet<String>,
     resuming: BTreeMap<String, recovery::ResumeAttempt>,
@@ -253,6 +269,9 @@ impl SpawnTarget {
         }
     }
     fn check(&self, state: &State) -> Result<()> {
+        if let Some(window_id) = self.window_id() {
+            window_available(state, window_id)?;
+        }
         let r = &state.record.registry;
         match self {
             Self::Place {
@@ -340,10 +359,7 @@ impl SpawnTarget {
                 Ok(())
             }
             Self::CreateWorkspace { name, .. } => {
-                ensure!(
-                    state.closing_workspaces.is_empty(),
-                    "session busy: workspace close in progress"
-                );
+                workspace_creation_available(state)?;
                 if let Some(name) = name.as_deref().filter(|name| !name.trim().is_empty()) {
                     valid_name(name)?;
                 }
@@ -362,7 +378,7 @@ impl SpawnTarget {
                     .context("unknown workspace")?;
                 ensure!(
                     w.revision == *expected_revision,
-                    "stale workspace revision: current {}",
+                    "stale workspace revision for {workspace_id}: current {}",
                     w.revision
                 );
                 if let Some(name) = name.as_deref().filter(|name| !name.trim().is_empty()) {
@@ -454,6 +470,9 @@ impl Drop for Registry {
 }
 
 impl Registry {
+    pub fn diagnostic_session_id(&self) -> &str {
+        &self.inner.session.session_id
+    }
     pub fn open(root: &Path) -> Result<Self> {
         Self::open_named(root, DEFAULT_SESSION_NAME)
     }
@@ -499,6 +518,7 @@ impl Registry {
             pane.foreground_cwd = None;
             pane.harness = None;
             pane.harness_status = None;
+            pane.harness_status_changed_at_ms = None;
             pane.project = None;
             if pane.status != PaneStatus::Stopped {
                 // No persisted pane has a terminal handle after daemon restart.
@@ -534,6 +554,7 @@ impl Registry {
                     spawn_workspaces: BTreeSet::new(),
                     spawn_workspace_names: BTreeMap::new(),
                     closing_workspaces: BTreeSet::new(),
+                    closing_windows: BTreeSet::new(),
                     closing_panes: BTreeSet::new(),
                     closing_document_panes: BTreeSet::new(),
                     resuming: BTreeMap::new(),
@@ -674,14 +695,16 @@ impl Registry {
         &self,
         edit: impl FnOnce(&mut RegistrySnapshot) -> Result<()>,
     ) -> Result<RegistrySnapshot> {
-        self.mutate_inner(None, None, edit)
+        Ok(serde_json::from_value(
+            self.mutate_inner(None, None, edit)?,
+        )?)
     }
     fn mutate_inner(
         &self,
         workspace_id: Option<&str>,
         control: Option<&control::ControlOrigin<'_>>,
         edit: impl FnOnce(&mut RegistrySnapshot) -> Result<()>,
-    ) -> Result<RegistrySnapshot> {
+    ) -> Result<Value> {
         self.mutate_record_inner(workspace_id, control, |record| edit(&mut record.registry))
     }
     fn mutate_record_inner(
@@ -689,7 +712,7 @@ impl Registry {
         workspace_id: Option<&str>,
         control: Option<&control::ControlOrigin<'_>>,
         edit: impl FnOnce(&mut Record) -> Result<()>,
-    ) -> Result<RegistrySnapshot> {
+    ) -> Result<Value> {
         self.observe_control(control)?;
         let _transaction = self.inner.transaction.lock().unwrap();
         self.authorize_control(control)?;
@@ -707,9 +730,37 @@ impl Registry {
             state.record.clone()
         };
         edit(&mut next)?;
+        {
+            let state = self.inner.state.lock().unwrap();
+            // Workspace-level metadata can advance independently, but a reserved
+            // window's layout/revision/membership cannot change under its close.
+            for workspace in &state.record.registry.workspaces {
+                for window in &workspace.windows {
+                    if state.closing_windows.contains(&window.id) {
+                        let unchanged = next
+                            .registry
+                            .workspaces
+                            .iter()
+                            .flat_map(|workspace| &workspace.windows)
+                            .any(|next| next.id == window.id && next.revision == window.revision);
+                        ensure!(
+                            unchanged,
+                            RegistryBusy {
+                                target_id: window.id.clone()
+                            }
+                        );
+                    }
+                }
+            }
+        }
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
-        commit(&self.inner, next, |_| {})
+        commit_projected(
+            &self.inner,
+            next,
+            |_| {},
+            |state| response_snapshot(state, control),
+        )
     }
     /// Publish validated startup defaults once, without touching environment or disk.
     pub fn configure_spawn_defaults(&self, defaults: SpawnDefaults) -> Result<()> {
@@ -744,6 +795,12 @@ impl Registry {
         {
             client.ensure_active()?;
         }
+        if matches!(
+            &request.operation,
+            Operation::ControlInspect { .. } | Operation::ControlPaneRead { .. }
+        ) {
+            bkpr_protocol::control::validate_native(&request.operation)?;
+        }
         match request.operation {
             Operation::SessionInfo => Ok(json!({
                 "session": self.inner.session,
@@ -756,6 +813,18 @@ impl Registry {
                 bail!("client operations require authenticated attachment transport")
             }
             Operation::Inspect => Ok(json!({"registry":self.snapshot()?})),
+            Operation::ControlInspect { query } => {
+                self.control_inspect(&query, control)
+            }
+            Operation::ControlPaneRead { pane_id, query } => {
+                let pane = {
+                    let state = self.inner.state.lock().unwrap();
+                    healthy(&state)?;
+                    state.live.get(&pane_id).cloned()
+                        .context("pane is stopped; terminal contents were not recovered")?
+                };
+                return self.control_pane_read(&pane, &query, control, client);
+            }
             Operation::CiRefresh { target } => {
                 self.observe_control(control)?;
                 let _transaction = self.inner.transaction.lock().unwrap();
@@ -813,10 +882,7 @@ impl Registry {
                 }
                 let registry = self.mutate_inner(None, control, |r| {
                     let state = self.inner.state.lock().unwrap();
-                    ensure!(
-                        state.closing_workspaces.is_empty(),
-                        "session busy: workspace close in progress"
-                    );
+                    workspace_creation_available(&state)?;
                     let name = available_name(
                         name.as_deref(),
                         "Workspace",
@@ -1005,18 +1071,20 @@ impl Registry {
                     let _transaction = self.inner.transaction.lock().unwrap();
                     self.authorize_control(control)?;
                 }
-                let pane = {
+                let (pane, workspace_id, window_id) = {
                     let state = self.inner.state.lock().unwrap();
                     healthy(&state)?;
-                    ensure!(
-                        state.record.registry.panes.iter().any(|p| p.id == pane_id),
-                        "unknown pane"
-                    );
-                    state.live.get(&pane_id).cloned().context("pane execution unavailable; reopen it or explicitly close its window/workspace")?
+                    let info = state.record.registry.panes.iter().find(|pane| pane.id == pane_id).context("unknown pane")?;
+                    let pane = state.live.get(&pane_id).cloned().context("pane execution unavailable; reopen it or explicitly close its window/workspace")?;
+                    (pane, info.workspace_id.clone(), info.window_id.clone())
                 };
                 pane.request(PaneRequest::Shutdown)?;
                 self.record_completion(&pane_id)?;
-                Ok(json!({"registry":self.snapshot()?,"pane_id":pane_id}))
+                let state = self.inner.state.lock().unwrap();
+                Ok(json!({
+                    "registry":response_snapshot_target(&state, control, workspace_id.as_deref().map(|id| (id, window_id.as_deref()))),
+                    "pane_id":pane_id,"workspace_id":workspace_id,"window_id":window_id,
+                }))
             }
             Operation::Pane { pane_id, request } => {
                 ensure!(
@@ -1179,6 +1247,7 @@ impl Registry {
                 foreground_cwd: None,
                 harness: None,
                 harness_status: None,
+                harness_status_changed_at_ms: None,
                 project: Some(project::loading(&entry.spec.cwd, None)),
                 isolated_environment: entry.spec.isolated_environment,
             });
@@ -1223,7 +1292,7 @@ impl Registry {
                             .load(std::sync::atomic::Ordering::Acquire)
                     })
             }) {
-                return Ok(json!({"registry":registry_snapshot(&state)}));
+                return Ok(json!({"registry":response_snapshot(&state, control)}));
             }
             target.check(&state)?;
             if let SpawnTarget::Place {
@@ -1388,7 +1457,7 @@ impl Registry {
                 }
             }
         }
-        let result = (|| -> Result<RegistrySnapshot> {
+        let result = (|| -> Result<Value> {
             self.observe_control(control)?;
             let _transaction = self.inner.transaction.lock().unwrap();
             self.authorize_control(control)?;
@@ -1408,12 +1477,23 @@ impl Registry {
             };
             // Rebuild against current metadata, merging unrelated workspace commits.
             let next = spawn_record(current, &infos, &automatic_titles, &target, layout.as_ref())?;
-            commit(&self.inner, next, |state| {
-                for (info, pane) in infos.iter().zip(&children.panes) {
-                    self.install_spawn_callbacks(&info.id, pane);
-                    state.live.insert(info.id.clone(), pane.clone());
-                }
-            })
+            commit_projected(
+                &self.inner,
+                next,
+                |state| {
+                    for (info, pane) in infos.iter().zip(&children.panes) {
+                        self.install_spawn_callbacks(&info.id, pane);
+                        state.live.insert(info.id.clone(), pane.clone());
+                    }
+                },
+                |state| {
+                    response_snapshot_target(
+                        state,
+                        control,
+                        target.workspace_id().map(|id| (id, target.window_id())),
+                    )
+                },
+            )
         })();
         let registry = result?;
         children.committed = true;
@@ -1433,10 +1513,14 @@ impl Registry {
         let registry = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
-            if state.record.registry.revision == registry.revision {
+            if Some(state.record.registry.revision) == registry["revision"].as_u64() {
                 registry
             } else {
-                registry_snapshot(&state)
+                response_snapshot_target(
+                    &state,
+                    control,
+                    target.workspace_id().map(|id| (id, target.window_id())),
+                )
             }
         };
         let mut result = json!({
@@ -1556,6 +1640,9 @@ impl Registry {
             if let Some(workspace_id) = &info.workspace_id {
                 workspace_available(&state, workspace_id)?;
             }
+            if let Some(window_id) = &info.window_id {
+                window_available(&state, window_id)?;
+            }
             ensure!(
                 info.status != PaneStatus::Running,
                 "cannot forget a running pane"
@@ -1591,6 +1678,13 @@ impl Registry {
             window.revision = next_revision(window.revision)?;
             w.revision = next_revision(w.revision)?;
         }
+        let (workspace_id, window_id) = next
+            .registry
+            .panes
+            .iter()
+            .find(|pane| pane.id == id)
+            .map(|pane| (pane.workspace_id.clone(), pane.window_id.clone()))
+            .unwrap_or_default();
         next.registry.panes.retain(|pane| pane.id != id);
         next.recoveries.remove(id);
         next.directories.remove(id);
@@ -1598,19 +1692,32 @@ impl Registry {
         next.automatic_titles.remove(id);
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
-        let registry = commit(&self.inner, next, |state| {
-            if let Some(pane) = &pane {
-                pane.shared
-                    .forgotten
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
-            state.live.remove(id);
-            // Forgotten identities cannot be restored. Keep retirement
-            // reservations bounded by the remaining pane records.
-            state.project_retired.remove(id);
-            state.closing_panes.remove(id);
-        })?;
-        Ok(json!({"registry":registry,"pane_id":id}))
+        let registry = commit_projected(
+            &self.inner,
+            next,
+            |state| {
+                if let Some(pane) = &pane {
+                    pane.shared
+                        .forgotten
+                        .store(true, std::sync::atomic::Ordering::Release);
+                }
+                state.live.remove(id);
+                // Forgotten identities cannot be restored. Keep retirement
+                // reservations bounded by the remaining pane records.
+                state.project_retired.remove(id);
+                state.closing_panes.remove(id);
+            },
+            |state| {
+                response_snapshot_target(
+                    state,
+                    control,
+                    workspace_id.as_deref().map(|id| (id, window_id.as_deref())),
+                )
+            },
+        )?;
+        Ok(
+            json!({"registry":registry,"pane_id":id,"workspace_id":workspace_id,"window_id":window_id}),
+        )
     }
     fn record_completion(&self, id: &str) -> Result<()> {
         let pane = { self.inner.state.lock().unwrap().live.get(id).cloned() };
@@ -1643,6 +1750,7 @@ impl Registry {
         {
             let mut published = pane.shared.published.lock().unwrap();
             published.status.clear();
+            published.status_changed_at_ms.clear();
             published.program_identity = None;
             pane.shared
                 .status_reset
@@ -1665,6 +1773,7 @@ impl Registry {
                     .is_some_and(|id| {
                         state.closing_workspaces.contains(id) || state.spawn_workspaces.contains(id)
                     })
+                || state.closing_document_panes.contains(id)
                 || state
                     .spawn_workspaces
                     .iter()
@@ -1690,15 +1799,21 @@ impl Registry {
         info.foreground_cwd = None;
         info.harness = None;
         info.harness_status = None;
+        info.harness_status_changed_at_ms = None;
         info.project = None;
         if status == PaneStatus::Exited && !closing && !reserved {
             close_membership(&mut next.registry, id)?;
         }
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
-        commit(&self.inner, next, |state| {
-            state.project_retired.insert(id.to_owned());
-        })?;
+        commit_projected(
+            &self.inner,
+            next,
+            |state| {
+                state.project_retired.insert(id.to_owned());
+            },
+            |_| (),
+        )?;
         drop(_transaction);
         self.notify_session_end();
         // Keep the final in-memory scene readable until daemon shutdown; no pixels go to disk.
@@ -1713,7 +1828,7 @@ impl Registry {
         control: Option<&control::ControlOrigin<'_>>,
     ) -> Result<Value> {
         self.observe_control(control)?;
-        let (panes, closing_documents) = {
+        let (panes, closing_documents, reserves_workspace) = {
             let _transaction = self.inner.transaction.lock().unwrap();
             self.authorize_control(control)?;
             let mut state = self.inner.state.lock().unwrap();
@@ -1723,15 +1838,6 @@ impl Registry {
                 SessionClosing("session is closing")
             );
             workspace_available(&state, workspace_id)?;
-            ensure!(
-                !state.spawn_workspaces.iter().any(|id| !state
-                    .record
-                    .registry
-                    .workspaces
-                    .iter()
-                    .any(|w| &w.id == id)),
-                "session busy: workspace creation in progress"
-            );
             let w = state
                 .record
                 .registry
@@ -1739,6 +1845,38 @@ impl Registry {
                 .iter()
                 .find(|w| w.id == workspace_id)
                 .context("unknown workspace")?;
+            if window_id.is_none() {
+                if let Some(window) = w
+                    .windows
+                    .iter()
+                    .find(|window| state.closing_windows.contains(&window.id))
+                {
+                    bail!(RegistryBusy {
+                        target_id: window.id.clone()
+                    });
+                }
+            } else if let Some(window_id) = window_id {
+                window_available(&state, window_id)?;
+            }
+            // The last available window owns the workspace/session transition.
+            // Other window closes reserve only their own window and pane documents.
+            let reserves_workspace = window_id.is_none()
+                || w.windows
+                    .iter()
+                    .filter(|window| !state.closing_windows.contains(&window.id))
+                    .count()
+                    <= 1;
+            if reserves_workspace {
+                ensure!(
+                    !state.spawn_workspaces.iter().any(|id| !state
+                        .record
+                        .registry
+                        .workspaces
+                        .iter()
+                        .any(|w| &w.id == id)),
+                    "session busy: workspace creation in progress"
+                );
+            }
             if let Some(id) = window_id {
                 let window = w
                     .windows
@@ -1747,13 +1885,13 @@ impl Registry {
                     .context("unknown window")?;
                 ensure!(
                     window.revision == revision,
-                    "stale window revision: current {}",
+                    "stale window revision for {id}: current {}",
                     window.revision
                 );
             } else {
                 ensure!(
                     w.revision == revision,
-                    "stale workspace revision: current {}",
+                    "stale workspace revision for {workspace_id}: current {}",
                     w.revision
                 );
             }
@@ -1795,12 +1933,17 @@ impl Registry {
             if next.recoveries != state.record.recoveries {
                 next.registry.revision = next_revision(next.registry.revision)?;
                 drop(state);
-                commit(&self.inner, next, |_| {})?;
+                commit_projected(&self.inner, next, |_| {}, |_| ())?;
                 state = self.inner.state.lock().unwrap();
             }
-            state.closing_workspaces.insert(workspace_id.to_owned());
+            if reserves_workspace {
+                state.closing_workspaces.insert(workspace_id.to_owned());
+            }
+            if let Some(window_id) = window_id {
+                state.closing_windows.insert(window_id.to_owned());
+            }
             state.closing_document_panes.extend(removed.iter().cloned());
-            (panes, removed)
+            (panes, removed, reserves_workspace)
         };
         // Native waits must not hold the durable writer or global state locks.
         let mut failures = Vec::new();
@@ -1812,7 +1955,7 @@ impl Registry {
                 failures.push(format!("{} completion: {error:#}", pane.shared.pane_id));
             }
         }
-        let result = (|| -> Result<RegistrySnapshot> {
+        let result = (|| -> Result<Value> {
             let _transaction = self.inner.transaction.lock().unwrap();
             let mut next = {
                 let state = self.inner.state.lock().unwrap();
@@ -1855,13 +1998,22 @@ impl Registry {
             }
             next.registry.revision = next_revision(next.registry.revision)?;
             validate_record(&next)?;
-            commit(&self.inner, next, |_| {}).context(
-                "close executions completed but document persistence failed; restart required",
+            commit_projected(
+                &self.inner,
+                next,
+                |_| {},
+                |state| response_snapshot(state, control),
             )
+            .context("close executions completed but document persistence failed; restart required")
         })();
         {
             let mut state = self.inner.state.lock().unwrap();
-            state.closing_workspaces.remove(workspace_id);
+            if reserves_workspace {
+                state.closing_workspaces.remove(workspace_id);
+            }
+            if let Some(window_id) = window_id {
+                state.closing_windows.remove(window_id);
+            }
             state
                 .closing_document_panes
                 .retain(|id| !closing_documents.contains(id));
@@ -1872,11 +2024,25 @@ impl Registry {
         let registry = if drained.context(
             "close committed but deferred completion failed; inspect before another action",
         )? {
-            self.snapshot()?
+            response_snapshot(&self.inner.state.lock().unwrap(), control)
         } else {
             registry
         };
-        Ok(json!({"registry":registry}))
+        let workspace_closed = !registry["workspaces"].as_array().is_some_and(|workspaces| {
+            workspaces
+                .iter()
+                .any(|workspace| workspace["id"] == workspace_id)
+        });
+        crate::diagnostics::record(
+            "document.close",
+            Some(window_id.unwrap_or(workspace_id)),
+            "completed",
+        );
+        Ok(json!({
+            "registry":registry,"workspace_id":workspace_id,"window_id":window_id,
+            "workspace_closed":workspace_closed,"window_closed":window_id.is_some(),
+            "closed_pane_ids":closing_documents,
+        }))
     }
     pub fn shutdown(&self) -> Result<()> {
         // Observe while the process tree still exists; never derive intent from teardown.
@@ -1938,12 +2104,38 @@ fn healthy(state: &State) -> Result<()> {
 fn workspace_available(state: &State, workspace_id: &str) -> Result<()> {
     ensure!(
         !state.closing_workspaces.contains(workspace_id),
-        "workspace busy: close in progress"
+        RegistryBusy {
+            target_id: workspace_id.to_owned()
+        }
     );
     ensure!(
         !state.spawn_workspaces.contains(workspace_id),
         "workspace busy: pane spawn in progress"
     );
+    Ok(())
+}
+fn window_available(state: &State, window_id: &str) -> Result<()> {
+    ensure!(
+        !state.closing_windows.contains(window_id),
+        RegistryBusy {
+            target_id: window_id.to_owned()
+        }
+    );
+    Ok(())
+}
+fn workspace_creation_available(state: &State) -> Result<()> {
+    if !state.record.registry.workspaces.is_empty()
+        && state
+            .record
+            .registry
+            .workspaces
+            .iter()
+            .all(|workspace| state.closing_workspaces.contains(&workspace.id))
+    {
+        bail!(RegistryBusy {
+            target_id: state.record.registry.workspaces[0].id.clone()
+        });
+    }
     Ok(())
 }
 fn next_revision(revision: u64) -> Result<u64> {
@@ -2123,7 +2315,7 @@ fn workspace<'a>(
         .context("unknown workspace")?;
     ensure!(
         w.revision == revision,
-        "stale workspace revision: current {}",
+        "stale workspace revision for {id}: current {}",
         w.revision
     );
     Ok(w)
@@ -2150,7 +2342,7 @@ fn window<'a>(workspace: &'a mut Workspace, id: &str, revision: u64) -> Result<&
         .context("unknown window")?;
     ensure!(
         w.revision == revision,
-        "stale window revision: current {}",
+        "stale window revision for {id}: current {}",
         w.revision
     );
     Ok(w)
@@ -2166,7 +2358,7 @@ fn check_spawn_window(
             let w = find_window(r, workspace_id, window_id)?;
             ensure!(
                 w.revision == revision,
-                "stale window revision: current {}",
+                "stale window revision for {window_id}: current {}",
                 w.revision
             );
         }
@@ -2700,12 +2892,110 @@ fn registry_snapshot(state: &State) -> RegistrySnapshot {
     }
     registry
 }
+/// Build only elementary target revision metadata for a compact control receipt.
+/// The native/TUI and explicit full paths still receive the canonical snapshot.
+fn response_snapshot(state: &State, origin: Option<&control::ControlOrigin<'_>>) -> Value {
+    response_snapshot_target(state, origin, None)
+}
+fn response_snapshot_target(
+    state: &State,
+    origin: Option<&control::ControlOrigin<'_>>,
+    target: Option<(&str, Option<&str>)>,
+) -> Value {
+    let Some(origin) =
+        origin.filter(|origin| origin.reply == bkpr_protocol::control::ControlReply::Receipt)
+    else {
+        return json!(registry_snapshot(state));
+    };
+    let registry = &state.record.registry;
+    let (workspace_id, window_id, pane_id) = match &origin.operation {
+        Operation::WorkspaceCreate { .. } => (
+            registry
+                .workspaces
+                .last()
+                .map(|workspace| workspace.id.as_str()),
+            registry
+                .workspaces
+                .last()
+                .and_then(|workspace| workspace.windows.last())
+                .map(|window| window.id.as_str()),
+            None,
+        ),
+        Operation::WorkspaceRename { workspace_id, .. }
+        | Operation::WorkspaceClose { workspace_id, .. } => {
+            (Some(workspace_id.as_str()), None, None)
+        }
+        Operation::WindowCreate { workspace_id, .. } => (
+            Some(workspace_id.as_str()),
+            registry
+                .workspaces
+                .iter()
+                .find(|w| &w.id == workspace_id)
+                .and_then(|w| w.windows.last())
+                .map(|w| w.id.as_str()),
+            None,
+        ),
+        Operation::WindowRename {
+            workspace_id,
+            window_id,
+            ..
+        }
+        | Operation::WindowClose {
+            workspace_id,
+            window_id,
+            ..
+        }
+        | Operation::LayoutUpdate {
+            workspace_id,
+            window_id,
+            ..
+        }
+        | Operation::PaneReopen {
+            workspace_id,
+            window_id,
+            ..
+        } => (Some(workspace_id.as_str()), Some(window_id.as_str()), None),
+        Operation::PaneSpawn {
+            workspace_id,
+            window_id,
+            ..
+        } => (workspace_id.as_deref(), window_id.as_deref(), None),
+        Operation::PaneRename { pane_id, .. }
+        | Operation::PaneTerminate { pane_id }
+        | Operation::PaneForget { pane_id }
+        | Operation::PaneResume { pane_id, .. } => (None, None, Some(pane_id.as_str())),
+        _ => (None, None, None),
+    };
+    let (workspace_id, window_id) = target
+        .map_or((workspace_id, window_id), |(workspace, window)| {
+            (Some(workspace), window)
+        });
+    let pane = pane_id.and_then(|id| registry.panes.iter().find(|pane| pane.id == id));
+    let workspace_id = workspace_id.or_else(|| pane.and_then(|pane| pane.workspace_id.as_deref()));
+    let window_id = window_id.or_else(|| pane.and_then(|pane| pane.window_id.as_deref()));
+    let workspaces = registry.workspaces.iter().filter(|workspace| Some(workspace.id.as_str()) == workspace_id)
+        .map(|workspace| json!({
+            "id":workspace.id, "revision":workspace.revision,
+            "windows":workspace.windows.iter().filter(|window| Some(window.id.as_str()) == window_id)
+                .map(|window| json!({"id":window.id,"revision":window.revision})).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>();
+    let panes = pane.map(|pane| json!({"id":pane.id,"workspace_id":pane.workspace_id,"window_id":pane.window_id})).into_iter().collect::<Vec<_>>();
+    json!({"revision":registry.revision,"workspaces":workspaces,"panes":panes})
+}
 // Caller owns transaction; no state guard may cross this durability boundary.
 fn commit(
     inner: &Inner,
     next: Record,
     publish: impl FnOnce(&mut State),
 ) -> Result<RegistrySnapshot> {
+    commit_projected(inner, next, publish, registry_snapshot)
+}
+fn commit_projected<T>(
+    inner: &Inner,
+    next: Record,
+    publish: impl FnOnce(&mut State),
+    response: impl FnOnce(&State) -> T,
+) -> Result<T> {
     #[cfg(test)]
     {
         let barrier = inner.persist_barrier.lock().unwrap().take();
@@ -2745,7 +3035,7 @@ fn commit(
         .ci_input_generation
         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     let _ = inner.ci_wake.try_send(());
-    Ok(registry_snapshot(&state))
+    Ok(response(&state))
 }
 
 #[cfg(test)]

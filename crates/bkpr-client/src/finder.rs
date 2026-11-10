@@ -1312,6 +1312,7 @@ mod tests {
             project: None,
             home: "/home/user".into(),
             isolated_environment: false,
+            harness_status_changed_at_ms: None,
         };
         RegistrySnapshot {
             revision: 1,

@@ -192,6 +192,7 @@ fn excessive_requested_layout_is_rejected_before_child_setup_or_exec() {
                     harness_status: None,
                     project: None,
                     isolated_environment: false,
+                    harness_status_changed_at_ms: None,
                 });
             }
             r.workspaces[0].windows.push(Window {
@@ -313,7 +314,7 @@ fn close_reserves_owned_documents_without_locking_unrelated_controls_or_starting
             }),
         }))
         .unwrap_err();
-    assert!(error.to_string().contains("workspace busy"));
+    assert_eq!(error.downcast_ref::<RegistryBusy>().unwrap().target_id, a);
     assert!(!home.exists());
     assert!(
         registry
@@ -335,6 +336,127 @@ fn close_reserves_owned_documents_without_locking_unrelated_controls_or_starting
     );
     drop(blocked);
     worker.join().unwrap().unwrap();
+}
+
+#[test]
+fn window_close_allows_other_windows_and_workspace_creation_but_reserves_its_target() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let workspace_id = create(registry, "parallel windows");
+    let pane_id = spawn(
+        registry,
+        &fixture.home("closing"),
+        Some(workspace_id.clone()),
+        Some(1),
+    );
+    let before = registry.snapshot().unwrap();
+    let owner = before
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == workspace_id)
+        .unwrap();
+    let closing = owner.windows[0].clone();
+    let second = send(
+        registry,
+        Operation::WindowCreate {
+            workspace_id: workspace_id.clone(),
+            expected_revision: owner.revision,
+            name: None,
+            spec: sentinel_spec(&fixture.home("other")),
+        },
+    );
+    let second_id = second["window_id"].as_str().unwrap().to_owned();
+    let state = registry.snapshot().unwrap();
+    let second_revision = find_window(&state, &workspace_id, &second_id)
+        .unwrap()
+        .revision;
+    let pane = registry.inner.state.lock().unwrap().live[&pane_id].clone();
+    let admission = pane.shared.requests.lock().unwrap();
+    let worker_registry = registry.clone();
+    let target_workspace = workspace_id.clone();
+    let target_window = closing.id.clone();
+    let close = std::thread::spawn(move || {
+        worker_registry.request(Request::new(Operation::WindowClose {
+            workspace_id: target_workspace,
+            window_id: target_window,
+            expected_revision: closing.revision,
+        }))
+    });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !registry
+        .inner
+        .state
+        .lock()
+        .unwrap()
+        .closing_windows
+        .contains(&closing.id)
+    {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let error = registry
+        .request(Request::new(Operation::WindowRename {
+            workspace_id: workspace_id.clone(),
+            window_id: closing.id.clone(),
+            expected_revision: closing.revision,
+            name: "must not change".into(),
+        }))
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<RegistryBusy>().unwrap().target_id,
+        closing.id
+    );
+    send(
+        registry,
+        Operation::WindowRename {
+            workspace_id: workspace_id.clone(),
+            window_id: second_id.clone(),
+            expected_revision: second_revision,
+            name: "independent".into(),
+        },
+    );
+    let created_workspace = create(registry, "new workspace during close");
+    let current = registry.snapshot().unwrap();
+    let owner = current
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == workspace_id)
+        .unwrap();
+    let third_home = fixture.home("third");
+    let third = send(
+        registry,
+        Operation::WindowCreate {
+            workspace_id: workspace_id.clone(),
+            expected_revision: owner.revision,
+            name: None,
+            spec: sentinel_spec(&third_home),
+        },
+    );
+    wait_for_sentinel(&third_home);
+    send(
+        registry,
+        Operation::WindowClose {
+            workspace_id: workspace_id.clone(),
+            window_id: second_id,
+            expected_revision: second_revision + 1,
+        },
+    );
+    drop(admission);
+    close.join().unwrap().unwrap();
+    let after = registry.snapshot().unwrap();
+    assert!(
+        after
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.id == created_workspace)
+    );
+    let owner = after
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == workspace_id)
+        .unwrap();
+    assert_eq!(owner.windows.len(), 1);
+    assert_eq!(owner.windows[0].id, third["window_id"].as_str().unwrap());
 }
 
 #[test]

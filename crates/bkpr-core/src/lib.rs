@@ -1,5 +1,6 @@
 //! Native pane ownership, terminal state and independent client projections for Bkpr.
 pub mod authority;
+pub mod diagnostics;
 #[cfg(target_os = "linux")]
 mod process_tree;
 use bkpr_protocol::scene_wire;
@@ -62,12 +63,15 @@ struct PasteGrants {
 struct Published {
     frame: Option<Arc<Frame>>,
     revision: u64,
+    // Canonical scene identity, independent of attachment/search/status publication.
+    scene_revision: u64,
     events: VecDeque<Event>,
     event_sequence: u64,
     scroll_frames: BTreeMap<String, Arc<Frame>>,
     selections: BTreeMap<String, (u64, SelectionSnapshot)>,
     searches: BTreeMap<String, (u64, SearchSnapshot)>,
     status: Vec<ProgramStatus>,
+    status_changed_at_ms: BTreeMap<String, u64>,
     title: Option<String>,
     title_changed: bool,
     program_identity: Option<bkpr_protocol::ProcessIdentity>,
@@ -84,10 +88,12 @@ impl Default for Published {
             selections: BTreeMap::new(),
             searches: BTreeMap::new(),
             status: Vec::new(),
+            status_changed_at_ms: BTreeMap::new(),
             title: None,
             title_changed: false,
             program_identity: None,
             revision: 0,
+            scene_revision: 0,
             events: VecDeque::new(),
             event_sequence: 0,
             lifecycle: "starting".into(),
@@ -96,6 +102,71 @@ impl Default for Published {
             pid: None,
         }
     }
+}
+impl Published {
+    fn set_frame(&mut self, frame: Arc<Frame>) -> Result<()> {
+        if self
+            .frame
+            .as_ref()
+            .is_none_or(|previous| !same_scene(previous, &frame))
+        {
+            self.scene_revision = self
+                .scene_revision
+                .checked_add(1)
+                .context("terminal scene revision exhausted")?;
+        }
+        self.frame = Some(frame);
+        Ok(())
+    }
+    fn set_status(&mut self, status: Vec<ProgramStatus>) -> bool {
+        if self.status == status {
+            return false;
+        }
+        let observed_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        self.status_changed_at_ms
+            .retain(|id, _| status.iter().any(|record| &record.id == id));
+        for record in &status {
+            if !self.status.iter().any(|previous| previous == record) {
+                self.status_changed_at_ms
+                    .insert(record.id.clone(), observed_at_ms);
+            }
+        }
+        self.status = status;
+        true
+    }
+}
+/// Snapshot extraction already owns the cells. Compare them without another copy
+/// or serialization; immutable image generations identify pixels without scanning
+/// potentially large pixel buffers on attachment-only publications.
+fn same_scene(previous: &Frame, current: &Frame) -> bool {
+    previous.size == current.size
+        && previous.cursor == current.cursor
+        && previous.foreground == current.foreground
+        && previous.background == current.background
+        && previous.palette == current.palette
+        && previous.alternate_screen == current.alternate_screen
+        && previous.mouse_reporting == current.mouse_reporting
+        && previous.scrollback_total == current.scrollback_total
+        && previous.scrollback_offset == current.scrollback_offset
+        && previous.placements == current.placements
+        && previous.images.len() == current.images.len()
+        && previous
+            .images
+            .iter()
+            .zip(&current.images)
+            .all(|(previous, current)| {
+                previous.id == current.id
+                    && previous.generation == current.generation
+                    && previous.width == current.width
+                    && previous.height == current.height
+                    && previous.format == current.format
+            })
+        && previous.rows == current.rows
 }
 enum Mutation {
     Colors {
@@ -242,6 +313,8 @@ struct Shared {
     authority: Mutex<Authority>,
     published: Mutex<Published>,
     clipboard: Mutex<Option<ClipboardWait>>,
+    // Retain wait/tree ownership after a worker fault so close can retry cleanup.
+    cleanup: Mutex<Option<OwnedChild>>,
     // Preserve native/input command FIFO without blocking view-policy acceptance.
     requests: Mutex<()>,
     // Submission and final queue retirement are atomic; never hold while awaiting a reply.
@@ -349,6 +422,7 @@ impl Pane {
             authority: Mutex::new(Authority::default()),
             published: Mutex::new(Published::default()),
             clipboard: Mutex::new(None),
+            cleanup: Mutex::new(None),
             requests: Mutex::new(()),
             command_gate: Mutex::new(()),
             view_policy: Mutex::new(()),
@@ -393,6 +467,19 @@ impl Pane {
                     ready_tx,
                     &mut termination_reply,
                 );
+                diagnostics::record(
+                    if result.is_ok() {
+                        "pane.exit"
+                    } else {
+                        "pane.fault"
+                    },
+                    Some(&state.pane_id),
+                    if result.is_ok() {
+                        "completed"
+                    } else {
+                        "failed"
+                    },
+                );
                 let _gate = state.command_gate.lock().unwrap();
                 let mut published = state.published.lock().unwrap();
                 published.selections.clear();
@@ -428,6 +515,7 @@ impl Pane {
             .recv()
             .context("pane worker stopped during spawn")?
             .map_err(anyhow::Error::msg)?;
+        diagnostics::record("pane.spawn", Some(&shared.pane_id), "started");
         Ok(Self { shared, commands })
     }
     #[cfg(test)]
@@ -459,6 +547,13 @@ impl Pane {
             let _gate = self.shared.command_gate.lock().unwrap();
             let published = self.shared.published.lock().unwrap();
             if self.shared.finished.load(Ordering::Acquire)
+                && matches!(&mutation, Mutation::Terminate)
+            {
+                drop(published);
+                drop(_gate);
+                return self.retry_cleanup();
+            }
+            if self.shared.finished.load(Ordering::Acquire)
                 || (published.lifecycle != "running" && !matches!(&mutation, Mutation::Terminate))
             {
                 return completed_command(&published, &mutation).map_err(anyhow::Error::msg);
@@ -476,6 +571,33 @@ impl Pane {
         rx.recv_timeout(Duration::from_secs(8))
             .context("pane command timed out; outcome unknown, do not retry input")?
             .map_err(anyhow::Error::msg)
+    }
+    fn retry_cleanup(&self) -> Result<CommandOutcome> {
+        let before_terminate = self.shared.before_terminate.lock().unwrap().clone();
+        if let Some(before_terminate) = before_terminate {
+            before_terminate()?;
+        }
+        let mut cleanup = self.shared.cleanup.lock().unwrap();
+        if let Some(child) = cleanup.as_mut()
+            && let Err(error) = child.terminate()
+        {
+            diagnostics::record("pane.cleanup", Some(&self.shared.pane_id), "failed");
+            return Err(error);
+        }
+        cleanup.take();
+        drop(cleanup);
+        let mut published = self.shared.published.lock().unwrap();
+        if published.lifecycle == "fault" {
+            // Keep the original diagnostic available after successful resource cleanup.
+            published.lifecycle = "terminated".into();
+        }
+        drop(published);
+        self.shared.changes.notify();
+        if let Some(notify) = self.shared.on_finish.lock().unwrap().clone() {
+            notify();
+        }
+        diagnostics::record("pane.cleanup", Some(&self.shared.pane_id), "completed");
+        Ok(CommandOutcome::Completed)
     }
     fn cancel_clipboard(&self, view: Option<&str>) {
         let mut pending = self.shared.clipboard.lock().unwrap();
@@ -1210,13 +1332,12 @@ fn publish(terminal: &mut Terminal, shared: &Shared) -> Result<()> {
     if shared.status_reset.swap(false, Ordering::AcqRel) {
         terminal.clear_program_status();
     }
-    p.frame = Some(frame);
+    p.set_frame(frame)?;
     p.scroll_frames = frames;
     p.selections = selections;
     p.searches = searches;
     let status = terminal.program_status();
-    let status_changed = p.status != status;
-    p.status = status;
+    let status_changed = p.set_status(status);
     p.revision += 1;
     drop(p);
     if status_changed {
@@ -1447,17 +1568,19 @@ fn run_pane(
             tree,
             #[cfg(target_os = "linux")]
             exit_observed: false,
-            last_observed: Instant::now(),
         };
         Ok((pair.master, child, terminal))
     })();
-    let (master, mut child, mut terminal) = match setup {
+    let (master, child, mut terminal) = match setup {
         Ok(v) => v,
         Err(e) => {
             let _ = ready.send(Err(format!("{e:#}")));
             return Err(e);
         }
     };
+    let mut cleanup_owner = shared.cleanup.lock().unwrap();
+    *cleanup_owner = Some(child);
+    let child = cleanup_owner.as_mut().unwrap();
     let pid = child.pid;
     let fd = master
         .as_raw_fd()
@@ -1592,7 +1715,7 @@ fn run_pane(
         let mut p = shared.published.lock().unwrap();
         p.pid = pid;
         p.lifecycle = "running".into();
-        p.frame = Some(Arc::new(terminal.snapshot()?));
+        p.set_frame(Arc::new(terminal.snapshot()?))?;
         p.revision += 1;
     }
     shared.changes.notify();
@@ -1605,7 +1728,6 @@ fn run_pane(
         let mut pending_output = None;
         let no_output = crossbeam_channel::never();
         loop {
-            child.observe();
             let mut dirty = false;
             let stale = shared.authority.lock().unwrap().expire(Instant::now());
             for view in &stale {
@@ -1782,8 +1904,7 @@ fn run_pane(
                         let mut published = shared.published.lock().unwrap();
                         published.exit_code = Some(status.exit_code());
                         let program_status = terminal.program_status();
-                        let status_changed = published.status != program_status;
-                        published.status = program_status;
+                        let status_changed = published.set_status(program_status);
                         let complete = eof && terminal.sync_output_remaining().is_none();
                         published.lifecycle = if complete { "exited" } else { "draining" }.into();
                         published.selections.clear();
@@ -2034,8 +2155,7 @@ fn run_pane(
                 let status_changed =
                     p.exit_code != Some(status.exit_code()) || p.lifecycle != lifecycle;
                 let program_status = terminal.program_status();
-                let program_status_changed = p.status != program_status;
-                p.status = program_status;
+                let program_status_changed = p.set_status(program_status);
                 p.exit_code = Some(status.exit_code());
                 p.lifecycle = lifecycle.into();
                 p.selections.clear();
@@ -2056,6 +2176,18 @@ fn run_pane(
     })();
     // Always tear down the owned session even on an engine/PTY error.
     let cleanup = child.terminate();
+    if child.cleaned {
+        cleanup_owner.take();
+    }
+    diagnostics::record(
+        "pane.cleanup",
+        Some(&shared.pane_id),
+        if cleanup.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        },
+    );
     writer.stop();
     reader_stop.0.store(true, Ordering::Release);
     drop(master);
@@ -2076,7 +2208,6 @@ struct OwnedChild {
     inner: Box<dyn portable_pty::Child + Send + Sync>,
     pid: Option<u32>,
     cleaned: bool,
-    last_observed: Instant,
     #[cfg(target_os = "linux")]
     tree: Option<process_tree::Tree>,
     #[cfg(target_os = "linux")]
@@ -2117,16 +2248,6 @@ impl OwnedChild {
         }
         Ok(self.inner.try_wait()?)
     }
-    fn observe(&mut self) {
-        if self.last_observed.elapsed() < Duration::from_millis(100) {
-            return;
-        }
-        self.last_observed = Instant::now();
-        #[cfg(target_os = "linux")]
-        if let Some(tree) = self.tree.as_mut() {
-            tree.observe();
-        }
-    }
     fn terminate(&mut self) -> Result<()> {
         if self.cleaned {
             return Ok(());
@@ -2163,19 +2284,20 @@ impl OwnedChild {
             let exited = self.try_wait()?.is_some();
             #[cfg(target_os = "linux")]
             let remaining = if let Some(tree) = self.tree.as_mut() {
-                tree.reap();
-                tree.remaining()
+                tree.remaining().context("observe owned process cleanup")?
             } else {
-                false
+                0
             };
             #[cfg(not(target_os = "linux"))]
-            let remaining = false;
-            if exited && !remaining {
+            let remaining = 0;
+            if exited && remaining == 0 {
                 self.cleaned = true;
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                bail!("owned process cleanup deadline exceeded; termination is incomplete");
+                bail!(
+                    "owned process cleanup deadline exceeded; termination is incomplete (root_exited={exited}, owned_survivors={remaining})"
+                );
             }
             thread::sleep(Duration::from_millis(4));
         }
@@ -2269,6 +2391,7 @@ mod snapshot_tests {
                     ..Published::default()
                 }),
                 clipboard: Mutex::new(None),
+                cleanup: Mutex::new(None),
                 requests: Mutex::new(()),
                 command_gate: Mutex::new(()),
                 view_policy: Mutex::new(()),

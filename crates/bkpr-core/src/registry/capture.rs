@@ -438,8 +438,10 @@ impl Registry {
         }
         if ended {
             info.harness_status = None;
+            info.harness_status_changed_at_ms = None;
             let mut published = pane.shared.published.lock().unwrap();
             published.status.clear();
+            published.status_changed_at_ms.clear();
             published.program_identity = info.harness.as_ref().map(|h| ProcessIdentity {
                 pid: h.pid,
                 birth: h.birth.clone(),
@@ -558,12 +560,15 @@ impl Registry {
             if published.program_identity != identity || old_launch != new_launch {
                 if !initial_child {
                     published.status.clear();
+                    published.status_changed_at_ms.clear();
                     pane.shared.status_reset.store(true, Ordering::Release);
                 }
                 published.program_identity = identity;
                 pane.shared.changes.notify();
             }
             let summary = harness_summary(harness.as_ref(), &published);
+            info.harness_status_changed_at_ms =
+                summary.and_then(|status| published.status_changed_at_ms.get(&status.id).copied());
             if info.harness_status.as_ref() != summary {
                 info.harness_status = summary.cloned();
             }
@@ -709,11 +714,17 @@ impl Registry {
             let mut published = pane.shared.published.lock().unwrap();
             let title_changed = std::mem::take(&mut published.title_changed);
             let summary = harness_summary(info.harness.as_ref(), &published);
-            if info.harness_status.as_ref() != summary || (automatic_title && title_changed) {
+            let changed_at_ms =
+                summary.and_then(|status| published.status_changed_at_ms.get(&status.id).copied());
+            if info.harness_status.as_ref() != summary
+                || info.harness_status_changed_at_ms != changed_at_ms
+                || (automatic_title && title_changed)
+            {
                 let Some(revision) = registry.revision.checked_add(1) else {
                     continue;
                 };
                 info.harness_status = summary.cloned();
+                info.harness_status_changed_at_ms = changed_at_ms;
                 registry.revision = revision;
                 self.inner.changed.notify_all();
             }
@@ -897,12 +908,26 @@ fn binding_cwd(launch: &Launch, callback_chain: &[Process]) -> Result<PathBuf> {
         .context("launch root exited during binding")?;
     let mut selected: Option<(usize, &Process)> = None;
     let mut ambiguous = false;
+    let mut classification_fault: Option<(usize, anyhow::Error)> = None;
     for candidate in table.values() {
         let Some(chain) = proc::lineage(candidate, root, &table) else {
             continue;
         };
-        if proc::binding_kind(candidate.pid)? != Some(launch.grant.kind) {
+        if selected.is_some_and(|(depth, _)| depth < chain.len()) {
             continue;
+        }
+        match proc::binding_kind(candidate.pid) {
+            Ok(Some(kind)) if kind == launch.grant.kind => {}
+            Ok(_) => continue,
+            Err(error) => {
+                if classification_fault
+                    .as_ref()
+                    .is_none_or(|(depth, _)| chain.len() < *depth)
+                {
+                    classification_fault = Some((chain.len(), error));
+                }
+                continue;
+            }
         }
         let mut nested = false;
         for ancestor in chain.iter().skip(1).take(chain.len().saturating_sub(2)) {
@@ -922,6 +947,13 @@ fn binding_cwd(launch: &Launch, callback_chain: &[Process]) -> Result<PathBuf> {
                 ambiguous = false;
             }
         }
+    }
+    // A deeper helper cannot replace the selected outer native process. Unknown
+    // classifiers at its depth or above still fail closed, regardless of scan order.
+    if let Some((depth, error)) = classification_fault
+        && selected.is_none_or(|(selected_depth, _)| depth <= selected_depth)
+    {
+        return Err(error);
     }
     ensure!(!ambiguous, "native working directory is ambiguous");
     let native = selected
@@ -948,12 +980,29 @@ pub(super) fn foreground_context_in(
         .filter(|p| p.identity == launch.pane_root.identity)
         .context("pane root exited")?;
     let mut selected: Option<(usize, &Process, HarnessKind)> = None;
+    let mut classification_fault: Option<(usize, anyhow::Error)> = None;
     for candidate in table.values().filter(|p| proc::foreground(p, pane_root)) {
         let Some(chain) = proc::lineage(candidate, pane_root, table) else {
             continue;
         };
-        let Some(kind) = proc::kind(candidate.pid)? else {
+        if selected
+            .as_ref()
+            .is_some_and(|(depth, _, _)| *depth < chain.len())
+        {
             continue;
+        }
+        let kind = match proc::kind(candidate.pid) {
+            Ok(Some(kind)) => kind,
+            Ok(None) => continue,
+            Err(error) => {
+                if classification_fault
+                    .as_ref()
+                    .is_none_or(|(depth, _)| chain.len() < *depth)
+                {
+                    classification_fault = Some((chain.len(), error));
+                }
+                continue;
+            }
         };
         if selected
             .as_ref()
@@ -961,6 +1010,13 @@ pub(super) fn foreground_context_in(
         {
             selected = Some((chain.len(), candidate, kind));
         }
+    }
+    if let Some((depth, error)) = classification_fault
+        && selected
+            .as_ref()
+            .is_none_or(|(selected_depth, _, _)| depth <= *selected_depth)
+    {
+        return Err(error);
     }
     let process = if let Some((_, candidate, kind)) = selected {
         let chain = proc::lineage(candidate, &launch.root, table);

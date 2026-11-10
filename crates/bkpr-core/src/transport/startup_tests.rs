@@ -97,6 +97,7 @@ fn startup_control_peer_fixture() {
             token: grant.token,
             request: AgentRequest::Control {
                 scope: AgentScope::Session,
+                reply: bkpr_protocol::control::ControlReply::Full,
                 request: Box::new(Operation::PaneResume {
                     pane_id: target["pane_id"].as_str().unwrap().into(),
                     expected: serde_json::from_value(target["expected"].clone()).unwrap(),

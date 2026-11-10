@@ -435,12 +435,13 @@ fn review_regression_window_close_drains_sibling_normal_completion() {
         .unwrap()
         .clone();
     // Hold this pane's request admission, not publication: background metadata
-    // may read publication while reserving registry state. The close still
-    // reserves the workspace while its sibling can publish a real completion.
+    // may read publication while reserving registry state. An independent
+    // window's natural completion must progress before this close is released.
     let held = closing.shared.requests.lock().unwrap();
     let other = registry.clone();
     let id = workspace_id.clone();
     let window_id = window.id.clone();
+    let target_window = window_id.clone();
     let revision = window.revision;
     let worker = std::thread::spawn(move || {
         other.request(Request::new(Operation::WindowClose {
@@ -455,17 +456,17 @@ fn review_regression_window_close_drains_sibling_normal_completion() {
         .state
         .lock()
         .unwrap()
-        .closing_workspaces
-        .contains(&workspace_id)
+        .closing_windows
+        .contains(&target_window)
         && Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(5));
     }
     fs::write(home.join("finish"), b"").unwrap();
-    let deferred = loop {
+    let completed_while_closing = loop {
         let state = registry.inner.state.lock().unwrap();
         let observed = state.record.registry.panes.iter().any(|p| {
-            p.id == sibling_id && p.status == PaneStatus::Exited && p.workspace_id.is_some()
+            p.id == sibling_id && p.status == PaneStatus::Exited && p.workspace_id.is_none()
         });
         drop(state);
         if observed || Instant::now() >= deadline {
@@ -476,7 +477,7 @@ fn review_regression_window_close_drains_sibling_normal_completion() {
     drop(held);
     let result = worker.join().unwrap().unwrap().into_json().unwrap();
     assert!(
-        deferred,
+        completed_while_closing,
         "did not exercise completion during the close reservation"
     );
     assert!(registry.session_end_requested());

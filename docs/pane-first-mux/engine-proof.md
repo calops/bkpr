@@ -20,7 +20,7 @@ Linux [process cleanup](../../crates/bkpr-core/src/process_tree.rs) is scoped to
 
 ### IPC and resources
 
-The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses Planus binary wire family 7 for typed workspace/window registry operations, atomic pane creation/placement, one-shot client source publication, CI metadata/refresh and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. A fixed admission header checks family, message kind, required capabilities and the 8 MiB request / 96 MiB response bounds before allocating the payload. Small and large frames have separate byte accounting; short codec permits are never held across dispatch, long polls or socket writes. These remain same-user local boundaries, not authenticated remote enrollment.
+The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses Planus binary wire family 8 for typed workspace/window registry operations, compact control queries, atomic pane creation/placement, one-shot client source publication, CI metadata/refresh and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. A fixed admission header checks family, message kind, required capabilities and the 8 MiB request / 96 MiB response bounds before allocating the payload. Small and large frames have separate byte accounting; short codec permits are never held across dispatch, long polls or socket writes. These remain same-user local boundaries, not authenticated remote enrollment.
 
 Clients receive compact lossless binary scene runs and whole-row deltas on snapshot workers. Image receipts include ID and generation, avoiding stale pixels or needless retransmission. The received allocation owns borrowed scene slices; complete validation precedes expanded native cells/resources and failure-atomic application. CLI/MCP/provider and persistence JSON are not the native wire format. Workspace/window/pane metadata and revisioned layouts persist; terminal contents and processes do not. Restored records without runtimes are explicitly Stopped. Sustained-animation CPU work remains measured separately below.
 
@@ -3083,4 +3083,14 @@ passing test. The final protected strict-check receipt after this test-only
 cleanup correction is `build/protected-182402979149218/result.json`; executable
 hashes match the same immutable pair. All accepted cleanup receipts have zero
 owned survivors.
+
+
+## Bounded agent output and resource lifetimes
+
+The [agent cost/resource review](../agent-resource-review.md) records the family-8
+cutover, measured compact MCP output, UTF-8/body/result pagination, live process
+cleanup, native facts, private diagnostics, all 24 archive findings and deliberate
+retention/environment boundaries. Accepted raw evidence is retained under
+`target/smoke/agent-costs/`; earlier communication sections above are historical
+checkpoints, not the current default output contract.
 

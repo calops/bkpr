@@ -57,7 +57,7 @@ impl NativeContext {
         if identity["harness"] != "agy" || identity["attached"] != true {
             bail!("native Antigravity receiver requires an authenticated attached AGY launch");
         }
-        if identity["session_id"].as_str() != Some(self.root.as_str()) {
+        if identity["conversation"]["id"].as_str() != Some(self.root.as_str()) {
             bail!(
                 "native Antigravity child does not match the MCP-bound root conversation; call Bkpr whoami from the root first"
             );
@@ -401,15 +401,16 @@ mod tests {
         .unwrap();
         assert!(
             native
-                .authenticate(&json!({"harness":"agy","attached":true,"session_id":ROOT}))
+                .authenticate(&json!({"harness":"agy","attached":true,"conversation":{"id":ROOT}}))
                 .is_ok()
         );
         for identity in [
-            json!({"harness":"agy","attached":true,"session_id":"fce9f077-6258-41b0-9ad3-e30b561120e4"}),
-            json!({"harness":"agy","attached":true,"session_id":null}),
-            json!({"harness":"omp","attached":true,"session_id":ROOT}),
-            json!({"harness":"agy","attached":false,"session_id":ROOT}),
-            json!({"harness":"agy","active":true,"session_id":ROOT}),
+            json!({"harness":"agy","attached":true,"conversation":{"id":"fce9f077-6258-41b0-9ad3-e30b561120e4"}}),
+            json!({"harness":"agy","attached":true,"conversation":null}),
+            json!({"harness":"omp","attached":true,"conversation":{"id":ROOT}}),
+            json!({"harness":"agy","attached":false,"conversation":{"id":ROOT}}),
+            json!({"harness":"agy","active":true,"conversation":{"id":ROOT}}),
+            json!({"harness":"agy","attached":true,"session_id":ROOT}),
         ] {
             assert!(native.authenticate(&identity).is_err());
         }

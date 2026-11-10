@@ -21,6 +21,7 @@ fn launch(id: &str) -> Launch {
                 generation: 1,
             }),
             error: None,
+            first_prompt_submitted_at_ms: None,
         },
     }
 }
@@ -39,14 +40,25 @@ fn context(id: &str, workspace: Option<&str>) -> ContextFact {
             foreground_cwd: None,
             harness: None,
             harness_status: None,
+            harness_status_changed_at_ms: None,
             project: None,
             home: PathBuf::from("/"),
             isolated_environment: false,
         },
         workspace_name: workspace.map(str::to_owned),
-        session_id: Some(format!("native-{id}")),
+        conversation: Some(NativeConversation {
+            id: format!("native-{id}"),
+            source: ConversationSource::OmpExtension,
+            generation: 1,
+        }),
         cwd: Some(PathBuf::from("/")),
         repository: Some(PathBuf::from("/repository.git")),
+        registry_revision: 7,
+        workspace_revision: Some(3),
+        window_revision: Some(2),
+        pane_revision: Some(5),
+        first_prompt_submitted_at_ms: None,
+        status: Value::Null,
     }
 }
 fn fixture() -> (tempfile::TempDir, Agents, BTreeMap<String, ContextFact>) {
@@ -80,6 +92,8 @@ fn send(
                 text: text.into(),
                 idempotency_key: key.into(),
                 scope,
+                delivery: AgentDelivery::Notify,
+                receiver_ready: false,
             },
             &"a".repeat(64),
         )
@@ -181,6 +195,8 @@ fn exact_retry_survives_recipient_exit_and_membership_change_but_conflicts_fail(
                 text: "hello".into(),
                 idempotency_key: "same".into(),
                 scope: AgentScope::Workspace,
+                delivery: AgentDelivery::Notify,
+                receiver_ready: false,
             },
             &"a".repeat(64),
         )
@@ -204,7 +220,7 @@ fn window_membership_is_reported_without_narrowing_workspace_agent_scope() {
         .is_ok()
     );
     let state = service.state.lock().unwrap();
-    let payload = public(&contexts["b"], &state.store.agents["b"], None, 0);
+    let payload = public(&contexts["b"], &state.store.agents["b"], None, 0, false);
     assert_eq!(payload["window_id"], "independent-window");
     assert_eq!(payload["workspace_id"], "one");
 }
@@ -273,7 +289,7 @@ fn read_pages_do_not_ack_or_mark_hidden_bodies_and_ack_keeps_exact_receipt() {
     let second = send(&service, &contexts, "two", "second", AgentScope::Workspace).unwrap();
     let n = claim(&service, 100);
     let page = service
-        .transaction_maybe(|store| messages::read(store, "b", None, Some(1), 200))
+        .transaction_maybe(|store| messages::read(store, "b", None, Some(1), &[], false, 200))
         .unwrap();
     assert_eq!(page["messages"].as_array().unwrap().len(), 1);
     assert_eq!(page["has_more"], true);
@@ -293,7 +309,9 @@ fn read_pages_do_not_ack_or_mark_hidden_bodies_and_ack_keeps_exact_receipt() {
     }
     let cursor = page["next_cursor"].as_str().unwrap();
     service
-        .transaction_maybe(|store| messages::read(store, "b", Some(cursor), Some(1), 201))
+        .transaction_maybe(|store| {
+            messages::read(store, "b", Some(cursor), Some(1), &[], false, 201)
+        })
         .unwrap();
     assert!(
         service.state.lock().unwrap().store.agents["b"]
@@ -316,7 +334,12 @@ fn read_pages_do_not_ack_or_mark_hidden_bodies_and_ack_keeps_exact_receipt() {
     );
     let retry = send(&service, &contexts, "one", "first", AgentScope::Workspace).unwrap();
     assert_eq!(retry["message_id"], id);
-    assert_eq!(retry["status"]["acknowledged_at"], 300);
+    assert_eq!(retry["duplicate"], true);
+    assert!(retry.get("status").is_none());
+    assert_eq!(
+        service.state.lock().unwrap().store.messages[&id].acknowledged_at,
+        Some(300)
+    );
     // Read consumed the notification, but its exact generation receipt can settle late.
     service
         .transaction(|store| {
@@ -635,6 +658,8 @@ fn empty_reads_and_duplicate_acks_do_not_commit_storage() {
     let request = AgentRequest::ReadInbox {
         after: None,
         limit: Some(1),
+        ack_ids: Vec::new(),
+        include_read: false,
     };
     assert!(
         messages::unchanged(&service.state.lock().unwrap().store, "b", &request)
@@ -644,7 +669,7 @@ fn empty_reads_and_duplicate_acks_do_not_commit_storage() {
     let state_path = service.root.join("state.json");
     let initial_inode = fs::metadata(&state_path).unwrap().ino();
     service
-        .transaction_maybe(|store| messages::read(store, "b", None, Some(1), 100))
+        .transaction_maybe(|store| messages::read(store, "b", None, Some(1), &[], false, 100))
         .unwrap();
     assert_eq!(initial_inode, fs::metadata(&state_path).unwrap().ino());
     let sent = send(
@@ -756,10 +781,7 @@ fn subscriptions_are_bounded_and_shutdown_wakes_real_waiters() {
             .unwrap()
             .waiters
             .get("a")
-            .unwrap()
-            .values()
-            .copied()
-            .sum::<usize>(),
+            .map_or(0, |waiters| waiters.values().copied().sum::<usize>()),
         0
     );
 }
@@ -786,10 +808,7 @@ fn committed_send_pushes_pointer_without_reading_and_disconnect_retires_readines
             .unwrap()
             .waiters
             .get("a")
-            .unwrap()
-            .values()
-            .copied()
-            .sum::<usize>(),
+            .map_or(0, |waiters| waiters.values().copied().sum::<usize>()),
         0
     );
     registry
@@ -836,11 +855,14 @@ fn committed_send_pushes_pointer_without_reading_and_disconnect_retires_readines
                     text: "private peer body".into(),
                     idempotency_key: "push".into(),
                     scope: AgentScope::Workspace,
+                    delivery: AgentDelivery::Notify,
+                    receiver_ready: true,
                 },
                 &"a".repeat(64),
             )
         })
         .unwrap();
+    assert_eq!(sent["wake"]["state"], "pending");
     let notification = worker.join().unwrap().unwrap();
     assert_eq!(
         notification["notification"]["notification_id"],
@@ -923,7 +945,7 @@ fn historical_pending_receipt_settles_after_read_without_touching_new_generation
     let first = send(&service, &contexts, "one", "first", AgentScope::Workspace).unwrap();
     let n1 = claim(&service, 100);
     service
-        .transaction_maybe(|store| messages::read(store, "b", None, None, 200))
+        .transaction_maybe(|store| messages::read(store, "b", None, None, &[], false, 200))
         .unwrap();
     let second = send(&service, &contexts, "two", "second", AgentScope::Workspace).unwrap();
     let n2 = claim(&service, 100000);
@@ -1000,6 +1022,8 @@ fn native_rebind_does_not_replay_old_ambiguity_but_new_messages_get_new_generati
                     text: key.into(),
                     idempotency_key: key.into(),
                     scope: AgentScope::Workspace,
+                    delivery: AgentDelivery::Notify,
+                    receiver_ready: true,
                 },
                 &"a".repeat(64),
             )
@@ -1077,6 +1101,8 @@ fn receiver_mode_replacement_retires_old_claim_without_replaying_it() {
                     text: key.into(),
                     idempotency_key: key.into(),
                     scope: AgentScope::Workspace,
+                    delivery: AgentDelivery::Notify,
+                    receiver_ready: true,
                 },
                 &"a".repeat(64),
             )
@@ -1184,9 +1210,9 @@ fn replacement_readiness_excludes_old_live_subscription() {
             &state.store.agents["a"],
             state.receivers.get("a"),
             current_subscribers(&state, "a"),
+            true,
         );
         assert_eq!(identity["notification_ready"], false);
-        assert_eq!(identity["readiness"]["can_notify"], false);
     }
     release_tx.send(()).unwrap();
     assert!(worker.join().unwrap().is_err());
@@ -1215,6 +1241,7 @@ fn replacement_readiness_excludes_old_live_subscription() {
             &state.store.agents["a"],
             state.receivers.get("a"),
             current_subscribers(&state, "a"),
+            true,
         );
         assert_eq!(identity["notification_ready"], true);
     }
@@ -1261,4 +1288,549 @@ fn rename_then_sync_failure_reports_unknown_and_restart_reconciles_committed_sen
     assert_eq!(state.store.messages.len(), 1);
     assert!(state.store.messages.contains_key(&saved.id));
     assert!(Agents::require_live(&state.store, "a").is_err());
+}
+
+#[test]
+fn inbox_defaults_to_unread_and_combines_only_explicit_previously_read_acks_atomically() {
+    let (_dir, service, contexts) = fixture();
+    let first = send(
+        &service,
+        &contexts,
+        "first",
+        "processed later",
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    let first_id = first["message_id"].as_str().unwrap().to_owned();
+    let read = service
+        .transaction_maybe(|store| messages::read(store, "b", None, None, &[], false, 10))
+        .unwrap();
+    assert_eq!(read["messages"][0]["id"], first_id);
+    assert_eq!(read["acknowledged"], 0);
+    let second = send(
+        &service,
+        &contexts,
+        "second",
+        "new task",
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    let second_id = second["message_id"].as_str().unwrap().to_owned();
+    let invalid = service.transaction_maybe(|store| {
+        messages::read(
+            store,
+            "b",
+            None,
+            None,
+            &[first_id.clone(), second_id.clone()],
+            false,
+            20,
+        )
+    });
+    assert!(invalid.is_err());
+    let before = service.state.lock().unwrap().store.messages.clone();
+    assert!(before[&first_id].acknowledged_at.is_none());
+    assert!(before[&second_id].read_at.is_none());
+    let page = service
+        .transaction_maybe(|store| {
+            messages::read(
+                store,
+                "b",
+                None,
+                None,
+                std::slice::from_ref(&first_id),
+                false,
+                30,
+            )
+        })
+        .unwrap();
+    assert_eq!(page["acknowledged"], 1);
+    assert_eq!(page["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(page["messages"][0]["id"], second_id);
+    let empty = service
+        .transaction_maybe(|store| messages::read(store, "b", None, None, &[], false, 40))
+        .unwrap();
+    assert!(empty["messages"].as_array().unwrap().is_empty());
+    let recovery = service
+        .transaction_maybe(|store| messages::read(store, "b", None, None, &[], true, 50))
+        .unwrap();
+    assert_eq!(recovery["messages"][0]["id"], second_id);
+    assert!(
+        service
+            .transaction_maybe(|store| messages::read(
+                store,
+                "a",
+                None,
+                None,
+                std::slice::from_ref(&second_id),
+                false,
+                60
+            ))
+            .is_err()
+    );
+    let saved = service.state.lock().unwrap().store.messages.clone();
+    assert_eq!(saved[&first_id].acknowledged_at, Some(30));
+    assert!(saved[&first_id].text.is_none());
+    assert!(saved[&second_id].acknowledged_at.is_none());
+    assert!(saved[&second_id].text.is_some());
+}
+
+#[test]
+fn large_inbox_snippets_and_recipient_only_utf8_pages_preserve_every_body_byte() {
+    let (_dir, service, contexts) = fixture();
+    let body = "🦀".repeat(2048);
+    for index in 0..12 {
+        send(
+            &service,
+            &contexts,
+            &format!("large-{index}"),
+            &body,
+            AgentScope::Workspace,
+        )
+        .unwrap();
+    }
+    let page = service
+        .transaction_maybe(|store| messages::read(store, "b", None, None, &[], false, 10))
+        .unwrap();
+    let rows = page["messages"].as_array().unwrap();
+    assert_eq!(rows.len(), 10);
+    assert_eq!(page["has_more"], true);
+    assert!(serde_json::to_vec(&page).unwrap().len() < 8192);
+    for row in rows {
+        assert_eq!(row["body_complete"], false);
+        assert_eq!(row["body_bytes"], body.len());
+        assert!(row["text"].as_str().unwrap().len() <= 192);
+    }
+    let message_id = rows[0]["id"].as_str().unwrap();
+    assert!(
+        service
+            .transaction_maybe(|store| messages::read_message(
+                store, "a", message_id, None, None, 20
+            ))
+            .is_err()
+    );
+    assert!(
+        service
+            .transaction_maybe(|store| messages::read_message(
+                store,
+                "b",
+                message_id,
+                Some(1),
+                None,
+                20
+            ))
+            .is_err()
+    );
+    let mut restored = rows[0]["text"].as_str().unwrap().to_owned();
+    let mut offset = rows[0]["next_offset"].as_u64().unwrap() as usize;
+    loop {
+        let part = service
+            .transaction_maybe(|store| {
+                messages::read_message(store, "b", message_id, Some(offset), Some(4095), 20)
+            })
+            .unwrap();
+        assert_eq!(part["offset"], offset);
+        let text = part["text"].as_str().unwrap();
+        assert!(text.len() <= 4095);
+        restored.push_str(text);
+        if part["has_more"] == false {
+            assert!(part.get("next_offset").is_none());
+            break;
+        }
+        let next = part["next_offset"].as_u64().unwrap() as usize;
+        assert!(next > offset);
+        offset = next;
+    }
+    assert_eq!(restored, body);
+    let remaining = service
+        .transaction_maybe(|store| messages::read(store, "b", None, None, &[], false, 30))
+        .unwrap();
+    assert_eq!(remaining["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(remaining["has_more"], false);
+    let retained = service.state.lock().unwrap().store.messages[message_id].clone();
+    assert!(retained.acknowledged_at.is_none());
+    assert_eq!(retained.text.as_ref().unwrap().as_str(), body);
+}
+
+#[test]
+fn quiet_delivery_never_wakes_or_joins_a_claim_and_changed_delivery_conflicts() {
+    let (_dir, registry, launch, receiver_id) = receiver_fixture();
+    registry
+        .inner
+        .agents
+        .register(&super::tests::launch("b"))
+        .unwrap();
+    let contexts = [
+        ("a".into(), context("a", Some("one"))),
+        ("b".into(), context("b", Some("one"))),
+    ]
+    .into_iter()
+    .collect::<BTreeMap<_, _>>();
+    let send_to_a = |key: &str, delivery| {
+        registry.inner.agents.transaction(|store| {
+            messages::send(
+                store,
+                "b",
+                &contexts["b"],
+                &contexts,
+                SendInput {
+                    to: "a".into(),
+                    text: "body-free wake test body".into(),
+                    idempotency_key: key.into(),
+                    scope: AgentScope::Workspace,
+                    delivery,
+                    receiver_ready: false,
+                },
+                &"a".repeat(64),
+            )
+        })
+    };
+    let quiet = send_to_a("quiet", AgentDelivery::Quiet).unwrap();
+    assert_eq!(quiet["wake"]["state"], "quiet");
+    assert!(send_to_a("quiet", AgentDelivery::Notify).is_err());
+    let peer = Peer {
+        pid: std::process::id() as i32,
+        uid: unsafe { libc::geteuid() },
+        birth: launch.root.identity.clone(),
+    };
+    let empty = registry
+        .agent_subscribe(&launch, &peer, receiver_id.clone(), 0, &|| true)
+        .unwrap();
+    assert!(empty["notification"].is_null());
+    let notifying = send_to_a("notify", AgentDelivery::Notify).unwrap();
+    assert_eq!(notifying["wake"]["state"], "blocked");
+    let pointer = registry
+        .agent_subscribe(&launch, &peer, receiver_id.clone(), 0, &|| true)
+        .unwrap();
+    assert_eq!(pointer["notification"]["message_count"], 1);
+    assert_eq!(pointer["notification"]["unread_count"], 2);
+    assert!(!pointer.to_string().contains("body-free wake test body"));
+    let later_quiet = send_to_a("later-quiet", AgentDelivery::Quiet).unwrap();
+    let saved = registry
+        .inner
+        .agents
+        .state
+        .lock()
+        .unwrap()
+        .store
+        .messages
+        .clone();
+    for receipt in [quiet, later_quiet] {
+        let message = &saved[receipt["message_id"].as_str().unwrap()];
+        assert!(message.notification_id.is_none());
+        assert!(message.read_at.is_none());
+        assert!(message.acknowledged_at.is_none());
+    }
+    registry.shutdown().unwrap();
+}
+
+#[test]
+fn timed_out_claim_releases_only_its_slot_and_later_distinct_messages_wake() {
+    let (_dir, service, contexts) = fixture();
+    let old = send(
+        &service,
+        &contexts,
+        "old",
+        "ambiguous old wake",
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    let old_claim = claim(&service, 100);
+    service.maintain(30100).unwrap();
+    let old_id = old["message_id"].as_str().unwrap();
+    let old_outcome = {
+        let state = service.state.lock().unwrap();
+        summary(&state.store.messages[old_id])
+    };
+    assert_eq!(old_outcome["delivery"]["state"], "unknown");
+    assert!(
+        service
+            .transaction(|store| messages::claim(store, "b", "receiver", 30200))
+            .unwrap()
+            .is_none()
+    );
+    let new = send(
+        &service,
+        &contexts,
+        "new",
+        "distinct wake",
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    let new_claim = claim(&service, 30300);
+    assert_ne!(new_claim.id, old_claim.id);
+    assert!(new_claim.generation > old_claim.generation);
+    assert_eq!(new_claim.id, new["message_id"]);
+    let unchanged = {
+        let state = service.state.lock().unwrap();
+        summary(&state.store.messages[old_id])
+    };
+    assert_eq!(unchanged, old_outcome);
+}
+
+#[test]
+fn compact_identity_and_scoped_exact_discovery_are_bounded_and_pageable() {
+    let (_dir, service, mut contexts) = fixture();
+    for index in 0..25 {
+        let id = format!("peer-{index:02}");
+        service.register(&launch(&id)).unwrap();
+        contexts.insert(
+            id.clone(),
+            context(&id, Some(if index < 13 { "other" } else { "one" })),
+        );
+    }
+    let state = service.state.lock().unwrap();
+    let own = &contexts["a"];
+    let identity = public(own, &state.store.agents["a"], None, 0, false);
+    let detailed = public(own, &state.store.agents["a"], None, 0, true);
+    let first = discover(
+        &state,
+        &contexts,
+        own,
+        DiscoveryQuery {
+            scope: AgentScope::Workspace,
+            detail: false,
+            launch_id: None,
+            pane_id: None,
+            after: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let second = discover(
+        &state,
+        &contexts,
+        own,
+        DiscoveryQuery {
+            scope: AgentScope::Workspace,
+            detail: false,
+            launch_id: None,
+            pane_id: None,
+            after: Some(cursor),
+            limit: None,
+        },
+    )
+    .unwrap();
+    let exact = discover(
+        &state,
+        &contexts,
+        own,
+        DiscoveryQuery {
+            scope: AgentScope::Workspace,
+            detail: false,
+            launch_id: Some("peer-20"),
+            pane_id: Some("pane-peer-20"),
+            after: None,
+            limit: Some(1),
+        },
+    )
+    .unwrap();
+    let foreign = discover(
+        &state,
+        &contexts,
+        own,
+        DiscoveryQuery {
+            scope: AgentScope::Workspace,
+            detail: false,
+            launch_id: Some("peer-00"),
+            pane_id: None,
+            after: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    let mismatch = discover(
+        &state,
+        &contexts,
+        own,
+        DiscoveryQuery {
+            scope: AgentScope::Workspace,
+            detail: false,
+            launch_id: Some("peer-20"),
+            pane_id: Some("pane-b"),
+            after: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    drop(state);
+    assert!(identity.get("project").is_none());
+    assert!(identity.get("cwd").is_none());
+    assert_eq!(identity["workspace_revision"], 3);
+    assert_eq!(identity["window_revision"], 2);
+    assert_eq!(identity["pane_revision"], 5);
+    assert!(detailed.get("project").is_some());
+    assert_eq!(first["agents"].as_array().unwrap().len(), 10);
+    assert_eq!(first["has_more"], true);
+    assert_eq!(second["agents"].as_array().unwrap().len(), 3);
+    assert_eq!(second["has_more"], false);
+    assert_eq!(exact["agents"].as_array().unwrap().len(), 1);
+    assert_eq!(exact["agents"][0]["launch_id"], "peer-20");
+    assert!(foreign["agents"].as_array().unwrap().is_empty());
+    assert!(mismatch["agents"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn retired_recipient_successor_hint_is_scoped_read_only_and_never_replays() {
+    let (_dir, service, mut contexts) = fixture();
+    let old = send(
+        &service,
+        &contexts,
+        "old-send",
+        "retained body",
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    service.retire(&["b".into()], now()).unwrap();
+    contexts.remove("b");
+    let mut successor = launch("successor");
+    successor.grant.pane_id = "pane-b".into();
+    service.register(&successor).unwrap();
+    let mut successor_context = context("successor", Some("other"));
+    successor_context.pane.id = "pane-b".into();
+    contexts.insert("successor".into(), successor_context);
+    let private = send(
+        &service,
+        &contexts,
+        "attempt",
+        "new body",
+        AgentScope::Workspace,
+    )
+    .unwrap_err();
+    assert!(!private.to_string().contains("launch_id=successor"));
+    contexts.get_mut("successor").unwrap().pane.workspace_id = Some("one".into());
+    let hint = send(
+        &service,
+        &contexts,
+        "attempt",
+        "new body",
+        AgentScope::Workspace,
+    )
+    .unwrap_err();
+    assert!(hint.to_string().contains("launch_id=successor"));
+    let messages = service.state.lock().unwrap().store.messages.clone();
+    assert_eq!(messages.len(), 1);
+    let retained = &messages[old["message_id"].as_str().unwrap()];
+    assert_eq!(retained.to, "b");
+    assert_eq!(retained.text.as_ref().unwrap().as_str(), "retained body");
+}
+
+#[test]
+fn retired_bookkeeping_prunes_only_after_existing_retention_without_any_references() {
+    let (_dir, service, contexts) = fixture();
+    let sent = send(
+        &service,
+        &contexts,
+        "keep",
+        "retained message",
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    service.register(&launch("unreferenced")).unwrap();
+    service
+        .transaction(|store| {
+            let old = now().saturating_sub(RETENTION_MS + 1);
+            store.agents.get_mut("unreferenced").unwrap().exited_at = Some(old);
+            store.agents.get_mut("b").unwrap().exited_at = Some(old);
+            Ok(())
+        })
+        .unwrap();
+    let state = service.state.lock().unwrap();
+    let unreferenced_exists = state.store.agents.contains_key("unreferenced");
+    let retained_recipient_exists = state.store.agents.contains_key("b");
+    let retained_message_exists = state
+        .store
+        .messages
+        .contains_key(sent["message_id"].as_str().unwrap());
+    drop(state);
+    assert!(!unreferenced_exists);
+    assert!(retained_recipient_exists);
+    assert!(retained_message_exists);
+}
+
+#[test]
+fn control_escaped_inbox_bodies_stay_bounded_with_explicit_complete_recovery() {
+    let (_dir, service, contexts) = fixture();
+    let body = (0..32u8).map(char::from).collect::<String>().repeat(2048);
+    for index in 0..10 {
+        send(
+            &service,
+            &contexts,
+            &format!("escaped-{index}"),
+            &body,
+            AgentScope::Workspace,
+        )
+        .unwrap();
+    }
+    let page = service
+        .transaction_maybe(|store| messages::read(store, "b", None, None, &[], false, 10))
+        .unwrap();
+    assert!(serde_json::to_vec(&page).unwrap().len() < 8192);
+    let first = &page["messages"][0];
+    assert_eq!(first["body_bytes"], 65536);
+    assert_eq!(first["body_complete"], false);
+    let snippet = first["text"].as_str().unwrap();
+    let mut offset = first["next_offset"].as_u64().unwrap() as usize;
+    assert_eq!(offset, snippet.len());
+    let message_id = first["id"].as_str().unwrap();
+    let mut reconstructed = snippet.to_owned();
+    let mut explicit_limit = false;
+    loop {
+        let max_bytes = explicit_limit.then_some(4096);
+        let part = service
+            .transaction_maybe(|store| {
+                messages::read_message(store, "b", message_id, Some(offset), max_bytes, 20)
+            })
+            .unwrap();
+        assert_eq!(part["offset"], offset);
+        let text = part["text"].as_str().unwrap();
+        assert!(text.len() <= max_bytes.unwrap_or(2048));
+        assert!(serde_json::to_vec(text).unwrap().len() <= 4096);
+        assert!(serde_json::to_vec(&part).unwrap().len() < 8192);
+        reconstructed.push_str(text);
+        if part["has_more"] == false {
+            assert!(part.get("next_offset").is_none());
+            break;
+        }
+        let next_offset = part["next_offset"].as_u64().unwrap() as usize;
+        assert_eq!(next_offset, offset + text.len());
+        assert!(next_offset > offset);
+        offset = next_offset;
+        explicit_limit = !explicit_limit;
+    }
+    assert_eq!(reconstructed, body);
+}
+
+#[test]
+fn default_status_is_elementary_bounded_and_detail_recovers_full_osc_fields() {
+    let (_dir, service, mut contexts) = fixture();
+    let status = bkpr_protocol::ProgramStatus {
+        state: "\u{01}".repeat(4096),
+        kind: Some("task".into()),
+        app: Some("🦀".repeat(4096)),
+        message: Some("private OSC message".repeat(4096)),
+        id: "large-status-id".repeat(4096),
+        title: "private OSC title".repeat(4096),
+        progress: Some(42),
+    };
+    let own = contexts.get_mut("a").unwrap();
+    own.status = status_summary(Some(&status));
+    own.pane.harness_status = Some(status.clone());
+    let state = service.state.lock().unwrap();
+    let compact = public(own, &state.store.agents["a"], None, 0, false);
+    let detailed = public(own, &state.store.agents["a"], None, 0, true);
+    drop(state);
+    assert!(serde_json::to_vec(&compact["status"]).unwrap().len() < 256);
+    assert_eq!(compact["status"]["progress"], 42);
+    assert_eq!(
+        compact["status"]["truncated_fields"],
+        json!(["state", "app", "id"])
+    );
+    assert!(compact["status"].get("message").is_none());
+    assert!(compact["status"].get("title").is_none());
+    assert_eq!(detailed["status"], serde_json::to_value(status).unwrap());
+    assert_eq!(compact["conversation"]["id"], "native-a");
+    assert_eq!(compact["conversation"]["generation"], 1);
+    assert_eq!(compact["attached"], true);
 }

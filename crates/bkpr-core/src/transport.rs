@@ -1,4 +1,4 @@
-use crate::registry::{Registry, SessionClosing};
+use crate::registry::{Registry, RegistryBusy, SessionClosing};
 mod capacity;
 mod clients;
 use anyhow::{Context, Result, bail};
@@ -121,6 +121,89 @@ fn startup_callback(operation: &Operation) -> bool {
         | Operation::Shutdown => true,
         _ => false,
     }
+}
+
+struct DiagnosticOperation {
+    name: &'static str,
+    target: Option<crate::diagnostics::OpaqueId>,
+    success: &'static str,
+}
+fn diagnostic_operation(operation: &Operation) -> Option<DiagnosticOperation> {
+    // An allowlist, not Debug/serde: even failure paths cannot persist request
+    // bodies, paths, titles, capabilities, input or provider error text.
+    let (name, target, success) = match operation {
+        Operation::Client { request, .. } => return diagnostic_operation(request),
+        Operation::Agent {
+            launch_id, request, ..
+        } => match request {
+            AgentRequest::Control { request, .. } => return diagnostic_operation(request),
+            AgentRequest::SetTitle { .. } => ("agent.title", Some(launch_id.as_str()), "success"),
+            AgentRequest::SendMessage { to, .. } => ("agent.send", Some(to.as_str()), "success"),
+            AgentRequest::AckMessage { .. } => ("agent.ack", Some(launch_id.as_str()), "success"),
+            AgentRequest::ReceiverRegister { .. } => {
+                ("agent.receiver", Some(launch_id.as_str()), "success")
+            }
+            AgentRequest::WakeOutcome { outcome, .. } => {
+                let outcome = match outcome {
+                    bkpr_protocol::AgentWakeOutcome::Accepted => "accepted",
+                    bkpr_protocol::AgentWakeOutcome::Failed { .. } => "failed",
+                    bkpr_protocol::AgentWakeOutcome::Unknown { .. } => "unknown",
+                };
+                ("agent.wake", Some(launch_id.as_str()), outcome)
+            }
+            _ => return None,
+        },
+        Operation::ClientRegister { .. } => ("client.register", None, "success"),
+        Operation::ClientActivate { .. } => ("client.activate", None, "success"),
+        Operation::ClientDetach => ("client.detach", None, "success"),
+        Operation::HarnessBegin { .. } => ("harness.begin", None, "success"),
+        Operation::HarnessEvent {
+            launch_id, event, ..
+        } => {
+            let name = match event {
+                bkpr_protocol::CaptureEvent::Bind { .. } => "harness.bind",
+                bkpr_protocol::CaptureEvent::Error { .. } => "harness.error",
+                bkpr_protocol::CaptureEvent::End => "harness.end",
+                _ => return None,
+            };
+            (name, Some(launch_id.as_str()), "success")
+        }
+        Operation::WorkspaceCreate { .. } => ("workspace.create", None, "success"),
+        Operation::WorkspaceRename { workspace_id, .. } => {
+            ("workspace.rename", Some(workspace_id.as_str()), "success")
+        }
+        Operation::WorkspaceClose { workspace_id, .. } => {
+            ("workspace.close", Some(workspace_id.as_str()), "success")
+        }
+        Operation::WindowCreate { workspace_id, .. } => {
+            ("window.create", Some(workspace_id.as_str()), "success")
+        }
+        Operation::WindowRename { window_id, .. } => {
+            ("window.rename", Some(window_id.as_str()), "success")
+        }
+        Operation::WindowClose { window_id, .. } => {
+            ("window.close", Some(window_id.as_str()), "success")
+        }
+        Operation::PaneSpawn { window_id, .. } => ("pane.create", window_id.as_deref(), "success"),
+        Operation::PaneReopen { pane_id, .. } => ("pane.reopen", Some(pane_id.as_str()), "success"),
+        Operation::PaneResume { pane_id, .. } => ("pane.resume", Some(pane_id.as_str()), "success"),
+        Operation::PaneTerminate { pane_id } => {
+            ("pane.terminate", Some(pane_id.as_str()), "success")
+        }
+        Operation::PaneForget { pane_id } => ("pane.forget", Some(pane_id.as_str()), "success"),
+        Operation::PaneRename { pane_id, .. } => ("pane.rename", Some(pane_id.as_str()), "success"),
+        Operation::LayoutUpdate { window_id, .. } => {
+            ("layout.update", Some(window_id.as_str()), "success")
+        }
+        Operation::Shutdown => ("daemon.shutdown", None, "success"),
+        // Includes inspect/read, subscription/status and every pane input request.
+        _ => return None,
+    };
+    Some(DiagnosticOperation {
+        name,
+        target: target.and_then(crate::diagnostics::OpaqueId::new),
+        success,
+    })
 }
 #[cfg(test)]
 type DispatchObserver = Arc<dyn Fn(&Operation) + Send + Sync>;
@@ -320,11 +403,13 @@ impl BoundSocket {
                     let mut lifetime = None;
                     let mut pending_response = None;
                     let mut dispatched = false;
+                    let mut diagnostic = None;
                     let result = (|| -> Result<_> {
                         let (request, _request_buffer) = capacity::read_request(
                             &mut stream, &request_buffers, &decode_work,
                         )?;
                         pending_response = Some(PendingResponse::track(&responses));
+                        diagnostic = diagnostic_operation(&request.operation);
                         let requested_subscription = match &request.operation {
                             Operation::Agent {
                                 launch_id,
@@ -408,11 +493,13 @@ impl BoundSocket {
                     // byte reservation, never an encoder or decoder worker slot.
                     let response_stage = response_work.enter();
                     let mut codec = Codec::new();
+                    let mut encoding_unknown = false;
                     let sent = match codec.encode_response(&reply) {
                         Ok(bytes) if bytes.len() <= MAX_RESPONSE => {
                             write_buffered_response(&mut stream, bytes, &response_buffers, response_stage)
                         }
                         _ => {
+                            encoding_unknown = dispatched;
                             let fallback = response(
                                 Err(anyhow::anyhow!("aggregate scene wire limit exceeded after dispatch; outcome unknown, do not replay")),
                                 dispatched,
@@ -422,6 +509,17 @@ impl BoundSocket {
                         }
                     };
                     drop(codec);
+                    if let Some(diagnostic) = diagnostic {
+                        let unknown = dispatched && (sent.is_err() || encoding_unknown)
+                            || matches!(reply.failure.as_ref(), Some(RequestFailure::SessionClosing {
+                                outcome: RequestOutcome::Unknown,
+                            }));
+                        crate::diagnostics::record(
+                            diagnostic.name,
+                            diagnostic.target.as_ref().map(crate::diagnostics::OpaqueId::as_str),
+                            if unknown { "unknown" } else if reply.ok { diagnostic.success } else { "failed" },
+                        );
+                    }
                     if sent.is_err()
                         && let Some((launch_id, receiver_id, notification_id, generation)) = subscription
                     {
@@ -503,15 +601,21 @@ fn response(result: Result<Payload>, dispatched: bool) -> Response {
             version: PROTOCOL_VERSION,
             ok: false,
             result: None,
-            failure: error
-                .is::<SessionClosing>()
-                .then_some(RequestFailure::SessionClosing {
-                    outcome: if dispatched {
-                        RequestOutcome::Unknown
-                    } else {
-                        RequestOutcome::NotDispatched
-                    },
-                }),
+            failure: if let Some(busy) = error.downcast_ref::<RegistryBusy>() {
+                Some(RequestFailure::Busy {
+                    target_id: busy.target_id.clone(),
+                })
+            } else {
+                error
+                    .is::<SessionClosing>()
+                    .then_some(RequestFailure::SessionClosing {
+                        outcome: if dispatched {
+                            RequestOutcome::Unknown
+                        } else {
+                            RequestOutcome::NotDispatched
+                        },
+                    })
+            },
             error: Some(format!("{error:#}")),
         },
     }
