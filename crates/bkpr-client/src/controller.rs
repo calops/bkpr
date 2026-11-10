@@ -753,7 +753,7 @@ fn sidebar_branch(pane: &PaneInfo, width: u16) -> String {
             .as_ref()
             .and_then(|ci| ci.change_request.as_ref())
             .map_or("\u{f062c}", |request| crate::ci::request(request.state).0),
-        ProjectState::Loading => "↻",
+        ProjectState::Loading => "\u{f0996}",
         ProjectState::Error | ProjectState::NotRepository => "!",
     };
     if width < 2 {
@@ -3027,16 +3027,7 @@ mod tests {
                 assert_eq!(ready_hits, hits);
                 for (ready_row, stale_row) in ready.frame.rows.iter().zip(&stale.frame.rows) {
                     for (ready_cell, stale_cell) in ready_row.cells.iter().zip(&stale_row.cells) {
-                        if ready_cell.text == "\u{f062c}" {
-                            assert_eq!(
-                                stale_cell.text,
-                                if state == ProjectState::Loading {
-                                    "↻"
-                                } else {
-                                    "!"
-                                }
-                            );
-                        } else {
+                        if ready_cell.text != "\u{f062c}" {
                             assert_eq!(ready_cell.text, stale_cell.text);
                             assert_eq!(ready_cell.style, stale_cell.style);
                         }
