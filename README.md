@@ -580,7 +580,7 @@ available control and communication tools. No persistent Omp configuration is ch
 
 | Tool | Purpose |
 | --- | --- |
-| `whoami` | Compact launch/binding/ownership/readiness facts; `detail:true` adds context/project |
+| `whoami` | Compact launch/binding/ownership/readiness facts and serving daemon `protocol_version` (native wire family); `detail:true` adds context/project |
 | `set_title` | Discoverable agent label, separate from the pane name |
 | `discover_agents` | Current-workspace launches; exact launch/pane filters and cursor pagination |
 | `send_message` | Compact durable receipt; `delivery:"quiet"` suppresses native wake |
