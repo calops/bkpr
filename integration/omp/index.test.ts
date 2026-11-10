@@ -40,6 +40,11 @@ test('native root prompt facts and batched wake pointers remain body-free and la
     return child;
   };
   mock.module('node:child_process', () => ({ spawn }));
+  mock.module('@oh-my-pi/pi-tui', () => ({
+    ImageProtocol: { Kitty: '\x1b_G' },
+    isImageProtocolForced: () => false,
+    setTerminalImageProtocol() {},
+  }));
   // Import after mocking: this fixture intentionally exercises the module's native subprocess boundary.
   const { default: extension } = await import('./index');
   const previous = Object.fromEntries(Object.entries(process.env)
