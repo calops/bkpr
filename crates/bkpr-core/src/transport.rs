@@ -1,20 +1,19 @@
 use crate::registry::{Registry, SessionClosing};
+mod capacity;
 mod clients;
 use anyhow::{Context, Result, bail};
 #[cfg(test)]
-use bkpr_protocol::MAX_CONTROL_CONNECTIONS;
+use bkpr_protocol::PaneRequest;
 use bkpr_protocol::wire::{self, Codec, Kind};
 use bkpr_protocol::{
-    AgentRequest, MAX_AGENT_SUBSCRIBERS, MAX_CONNECTIONS, MAX_REGISTRY_WATCHERS,
-    MAX_WAITING_PANE_POLLS, Operation, PROTOCOL_VERSION, PaneRequest, PaneSpawnSpec, Payload,
-    Request, RequestFailure, RequestOutcome, Response,
+    AgentRequest, Operation, PROTOCOL_VERSION, PaneSpawnSpec, Payload, Request, RequestFailure,
+    RequestOutcome, Response,
 };
+use capacity::{FrameBuffers, WorkStages};
 pub(crate) use clients::{ClientOwner, lifetime_connected, send_lifetime_event};
 use serde_json::json;
-#[cfg(test)]
-use std::io::Read;
 use std::{
-    io::Write,
+    io::{Read, Write},
     os::unix::{
         fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         io::AsRawFd,
@@ -23,24 +22,15 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread,
     time::Duration,
 };
 const MAX_REQUEST: usize = 8 * 1024 * 1024;
 const MAX_RESPONSE: usize = 96 * 1024 * 1024;
-struct ConnectionSlot(Arc<AtomicUsize>);
-impl ConnectionSlot {
-    fn take(active: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
-        if active.fetch_add(1, Ordering::AcqRel) >= limit {
-            active.fetch_sub(1, Ordering::AcqRel);
-            None
-        } else {
-            Some(Self(active.clone()))
-        }
-    }
-}
+// These budgets cover transient wire work, never connected clients or observers.
+const FRAME_WORKERS: usize = 4;
 
 // Decoded requests, including startup waiters and known closing rejections, hold
 // this guard until their reply is written. Idle sockets and lifetime watches do not.
@@ -62,42 +52,6 @@ impl Drop for PendingResponse {
         let mut pending = self.0.pending.lock().unwrap();
         *pending -= 1;
         self.0.changed.notify_all();
-    }
-}
-fn waiting_slot(
-    operation: &Operation,
-    panes: &Arc<AtomicUsize>,
-    registry: &Arc<AtomicUsize>,
-    agents: &Arc<AtomicUsize>,
-) -> Result<Option<ConnectionSlot>> {
-    if let Operation::Client { request, .. } = operation {
-        return waiting_slot(request, panes, registry, agents);
-    }
-    match operation {
-        Operation::Pane {
-            request: PaneRequest::Poll { wait_ms, .. },
-            ..
-        } if *wait_ms > 0 => Ok(Some(
-            ConnectionSlot::take(panes, MAX_WAITING_PANE_POLLS)
-                .context("pending pane poll limit")?,
-        )),
-        Operation::Wait { wait_ms, .. } if *wait_ms > 0 => Ok(Some(
-            ConnectionSlot::take(registry, MAX_REGISTRY_WATCHERS)
-                .context("registry watcher limit")?,
-        )),
-        Operation::Agent {
-            request: AgentRequest::ReceiverSubscribe { wait_ms, .. },
-            ..
-        } if *wait_ms > 0 => Ok(Some(
-            ConnectionSlot::take(agents, MAX_AGENT_SUBSCRIBERS)
-                .context("agent subscriber limit")?,
-        )),
-        _ => Ok(None),
-    }
-}
-impl Drop for ConnectionSlot {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 #[derive(Default)]
@@ -168,12 +122,17 @@ fn startup_callback(operation: &Operation) -> bool {
         _ => false,
     }
 }
+#[cfg(test)]
+type DispatchObserver = Arc<dyn Fn(&Operation) + Send + Sync>;
+
 /// A bound listener may queue initial-wrapper requests before pane startup commits.
 pub struct BoundSocket {
     listener: UnixListener,
     socket: PathBuf,
     _guard: SocketGuard,
     _lease: SocketLease,
+    #[cfg(test)]
+    dispatch_observer: Option<DispatchObserver>,
 }
 /// Bind ownership and listening independently of starting request dispatch.
 pub fn bind(socket: &Path) -> Result<BoundSocket> {
@@ -230,6 +189,8 @@ pub fn bind(socket: &Path) -> Result<BoundSocket> {
         socket: socket.to_owned(),
         _guard: guard,
         _lease,
+        #[cfg(test)]
+        dispatch_observer: None,
     })
 }
 /// Convenience for existing library consumers which do not bootstrap a first pane.
@@ -248,13 +209,18 @@ impl BoundSocket {
             socket,
             _guard,
             _lease,
+            #[cfg(test)]
+            dispatch_observer,
         } = self;
         let shutdown = Arc::new(AtomicBool::new(false));
-        let active = Arc::new(AtomicUsize::new(0));
+        let request_buffers = Arc::new(FrameBuffers::default());
+        let decode_work = Arc::new(WorkStages::new(FRAME_WORKERS));
+        let response_work = Arc::new(WorkStages::new(FRAME_WORKERS));
+        let response_buffers = Arc::new(FrameBuffers::new(
+            8 * 1024 * 1024,
+            FRAME_WORKERS * MAX_RESPONSE,
+        ));
         let responses = Arc::new(ResponseDrain::default());
-        let waiting_panes = Arc::new(AtomicUsize::new(0));
-        let waiting_registry = Arc::new(AtomicUsize::new(0));
-        let waiting_agents = Arc::new(AtomicUsize::new(0));
         let (wake_read, wake_write) = UnixStream::pair()?;
         wake_write.set_nonblocking(true)?;
         let wake_write = Arc::new(wake_write);
@@ -334,21 +300,20 @@ impl BoundSocket {
                         if shutdown.load(Ordering::Acquire) {
                             break;
                         }
-                        let Some(slot) = ConnectionSlot::take(&active, MAX_CONNECTIONS) else {
-                            continue;
-                        };
                         let registry = registry.clone();
                         let shutdown = shutdown.clone();
-                        let waiting_panes = waiting_panes.clone();
-                        let waiting_registry = waiting_registry.clone();
-                        let waiting_agents = waiting_agents.clone();
+                        let request_buffers = request_buffers.clone();
+                        let decode_work = decode_work.clone();
+                        let response_work = response_work.clone();
                         let wake_write = wake_write.clone();
                         let responses = responses.clone();
                         let startup = startup.clone();
-                        thread::Builder::new()
+                        let response_buffers = response_buffers.clone();
+                        #[cfg(test)]
+                        let dispatch_observer = dispatch_observer.clone();
+                        if let Err(error) = thread::Builder::new()
                     .name("bkpr-control".into())
                     .spawn(move || {
-                    let _slot = slot;
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
                     let mut stop = false;
                     let mut subscription = None;
@@ -356,10 +321,10 @@ impl BoundSocket {
                     let mut pending_response = None;
                     let mut dispatched = false;
                     let result = (|| -> Result<_> {
-                        let bytes = wire::read_frame(&mut stream, Kind::Request, MAX_REQUEST)?;
-                        let request = wire::decode_request(&bytes)?;
+                        let (request, _request_buffer) = capacity::read_request(
+                            &mut stream, &request_buffers, &decode_work,
+                        )?;
                         pending_response = Some(PendingResponse::track(&responses));
-                        let _waiting = waiting_slot(&request.operation, &waiting_panes, &waiting_registry, &waiting_agents)?;
                         let requested_subscription = match &request.operation {
                             Operation::Agent {
                                 launch_id,
@@ -393,6 +358,10 @@ impl BoundSocket {
                             !shutdown.load(Ordering::Acquire),
                             SessionClosing("session is shutting down")
                         );
+                        #[cfg(test)]
+                        if let Some(observer) = &dispatch_observer {
+                            observer(&request.operation);
+                        }
                         dispatched = true;
                         if stop {
                             startup.cancel();
@@ -435,10 +404,13 @@ impl BoundSocket {
                         result => result,
                     };
                     let reply = response(result, dispatched);
+                    // Encoding is short work; a stalled reader retains only its
+                    // byte reservation, never an encoder or decoder worker slot.
+                    let response_stage = response_work.enter();
                     let mut codec = Codec::new();
                     let sent = match codec.encode_response(&reply) {
                         Ok(bytes) if bytes.len() <= MAX_RESPONSE => {
-                            write_response(&mut stream, bytes, Duration::from_secs(3))
+                            write_buffered_response(&mut stream, bytes, &response_buffers, response_stage)
                         }
                         _ => {
                             let fallback = response(
@@ -446,9 +418,10 @@ impl BoundSocket {
                                 dispatched,
                             );
                             codec.encode_response(&fallback)
-                                .and_then(|bytes| write_response(&mut stream, bytes, Duration::from_secs(3)))
+                                .and_then(|bytes| write_buffered_response(&mut stream, bytes, &response_buffers, response_stage))
                         }
                     };
+                    drop(codec);
                     if sent.is_err()
                         && let Some((launch_id, receiver_id, notification_id, generation)) = subscription
                     {
@@ -473,10 +446,26 @@ impl BoundSocket {
                         let _ = (&*wake_write).write_all(b"\0");
                         startup.finish();
                     }
-                })?;
+                }) {
+                    // Dropping the failed spawn's closure closes only this socket.
+                    // No request was dispatched and no drain guard was installed.
+                    let _ = writeln!(std::io::stderr().lock(), "bkprd: starting connection worker: {error}");
+                }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e)
+                        if matches!(
+                            e.raw_os_error(),
+                            Some(libc::EMFILE | libc::ENFILE | libc::ENOMEM | libc::ENOBUFS)
+                        ) =>
+                    {
+                        let _ =
+                            writeln!(std::io::stderr().lock(), "bkprd: accepting connection: {e}");
+                        // Resource pressure is local and may clear when existing
+                        // requests close; do not tear down unrelated live panes.
+                        thread::sleep(Duration::from_millis(100));
+                    }
                     Err(e) => return Err(e.into()),
                 }
             }
@@ -526,6 +515,20 @@ fn response(result: Result<Payload>, dispatched: bool) -> Response {
             error: Some(format!("{error:#}")),
         },
     }
+}
+
+fn write_buffered_response(
+    stream: &mut UnixStream,
+    bytes: &[u8],
+    buffers: &FrameBuffers,
+    stage: capacity::WorkStage<'_>,
+) -> Result<()> {
+    // If encoded buffers cannot be retained safely, fail this connection before
+    // writing any reply. Existing clients then report the truthful transport
+    // unknown outcome after dispatch, rather than a fabricated known failure.
+    let _buffer = buffers.reserve(bytes.len())?;
+    drop(stage);
+    write_response(stream, bytes, Duration::from_secs(3))
 }
 
 fn write_response(stream: &mut UnixStream, bytes: &[u8], timeout: Duration) -> Result<()> {
@@ -893,94 +896,6 @@ mod tests {
     }
 
     #[test]
-    fn waiting_views_leave_bounded_control_capacity_and_release_slots() {
-        let active = Arc::new(AtomicUsize::new(0));
-        let waiting_panes = Arc::new(AtomicUsize::new(0));
-        let waiting_registry = Arc::new(AtomicUsize::new(0));
-        let waiting_agents = Arc::new(AtomicUsize::new(0));
-        let poll = Operation::Pane {
-            pane_id: "pane".into(),
-            request: PaneRequest::Poll {
-                view_id: "view".into(),
-                after: 0,
-                frame_after: 0,
-                resources: Vec::new(),
-                snapshot_after: 0,
-                wait_ms: 1000,
-                row_deltas: false,
-                scene_encoding: None,
-            },
-        };
-        let watch = Operation::Wait {
-            after: 0,
-            wait_ms: 1000,
-        };
-        let polls = (0..MAX_WAITING_PANE_POLLS)
-            .map(|_| {
-                (
-                    ConnectionSlot::take(&active, MAX_CONNECTIONS).unwrap(),
-                    waiting_slot(&poll, &waiting_panes, &waiting_registry, &waiting_agents)
-                        .unwrap(),
-                )
-            })
-            .collect::<Vec<_>>();
-        assert!(waiting_slot(&poll, &waiting_panes, &waiting_registry, &waiting_agents).is_err());
-        let watchers = (0..MAX_REGISTRY_WATCHERS)
-            .map(|_| {
-                (
-                    ConnectionSlot::take(&active, MAX_CONNECTIONS).unwrap(),
-                    waiting_slot(&watch, &waiting_panes, &waiting_registry, &waiting_agents)
-                        .unwrap(),
-                )
-            })
-            .collect::<Vec<_>>();
-        assert!(waiting_slot(&watch, &waiting_panes, &waiting_registry, &waiting_agents).is_err());
-        let subscribe = Operation::Agent {
-            launch_id: "launch".into(),
-            token: "private".into(),
-            request: AgentRequest::ReceiverSubscribe {
-                receiver_id: "receiver".into(),
-                wait_ms: 1000,
-            },
-        };
-        let subscribers = (0..MAX_AGENT_SUBSCRIBERS)
-            .map(|_| {
-                (
-                    ConnectionSlot::take(&active, MAX_CONNECTIONS).unwrap(),
-                    waiting_slot(
-                        &subscribe,
-                        &waiting_panes,
-                        &waiting_registry,
-                        &waiting_agents,
-                    )
-                    .unwrap(),
-                )
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            waiting_slot(
-                &subscribe,
-                &waiting_panes,
-                &waiting_registry,
-                &waiting_agents
-            )
-            .is_err()
-        );
-        let controls = (0..MAX_CONTROL_CONNECTIONS)
-            .map(|_| ConnectionSlot::take(&active, MAX_CONNECTIONS).unwrap())
-            .collect::<Vec<_>>();
-        let clients = (0..bkpr_protocol::MAX_CLIENTS)
-            .map(|_| ConnectionSlot::take(&active, MAX_CONNECTIONS).unwrap())
-            .collect::<Vec<_>>();
-        assert!(ConnectionSlot::take(&active, MAX_CONNECTIONS).is_none());
-        drop((clients, controls, subscribers, watchers, polls));
-        assert_eq!(active.load(Ordering::Acquire), 0);
-        assert_eq!(waiting_panes.load(Ordering::Acquire), 0);
-        assert_eq!(waiting_registry.load(Ordering::Acquire), 0);
-        assert_eq!(waiting_agents.load(Ordering::Acquire), 0);
-    }
-
-    #[test]
     fn listener_poll_handles_readiness_and_shutdown_wake() {
         let directory =
             std::env::temp_dir().join(format!("bkpr-listener-{}", uuid::Uuid::new_v4()));
@@ -1010,3 +925,6 @@ mod tests {
 mod shutdown_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod startup_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+mod capacity_tests;

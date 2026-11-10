@@ -157,22 +157,6 @@ enum Background {
         attached: Box<Attached>,
     },
 }
-#[derive(Clone, Copy, Debug)]
-enum AttachOwnership {
-    NotAdmitted,
-    Detached,
-    Unconfirmed,
-}
-impl std::fmt::Display for AttachOwnership {
-    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        out.write_str(match self {
-            Self::NotAdmitted => "attachment was not admitted",
-            Self::Detached => "admitted attachment was confirmed detached",
-            Self::Unconfirmed => "attachment ownership remains unconfirmed; its slot is reserved",
-        })
-    }
-}
-impl std::error::Error for AttachOwnership {}
 struct ManagementIntent {
     epoch: u64,
     selection: Option<management::Selection>,
@@ -441,10 +425,7 @@ struct App {
     jobs: jobs::Scope<Background>,
     management: HashMap<String, ManagementIntent>,
     selection_epoch: u64,
-    attach_slots: usize,
-    retirement_budget: Option<usize>,
     responses: Vec<DeviceResponse>,
-    unconfirmed_views: usize,
     held: HashMap<String, HeldKey>,
     key_events_report_releases: bool,
     input: InputPump,
@@ -1369,7 +1350,6 @@ impl App {
                 }
                 Ok(Background::Resize(_)) => bail!("resize completion lost its captured intent"),
                 Ok(Background::Attached { pane, attached }) => {
-                    self.attach_slots -= 1;
                     if self.views.contains_key(&pane) || attached.retirement_requested {
                         self.retiring_candidates.push(RetiringCandidate {
                             pane,
@@ -1392,13 +1372,6 @@ impl App {
                         form.error = Some(message.clone());
                     }
                     if let Some(pane) = completion.key.strip_prefix("attach:") {
-                        let held = error
-                            .downcast_ref::<AttachOwnership>()
-                            .map(|ownership| matches!(ownership, AttachOwnership::Unconfirmed))
-                            .unwrap_or_else(|| transport::outcome_unknown(&error));
-                        if !held {
-                            self.attach_slots -= 1;
-                        }
                         self.view_failures.insert(pane.to_owned(), message.clone());
                     }
                     if !form_pending || self.backgrounded {
@@ -1831,20 +1804,14 @@ impl App {
         }
         rects
     }
-    fn owned_views(&self) -> usize {
-        self.views.len()
-            + self.retiring.len()
-            + self.retiring_candidates.len()
-            + self.attach_slots
-            + self.unconfirmed_views
-    }
-    fn retiring_views(&self) -> bool {
-        !self.retiring.is_empty()
-            || !self.retiring_candidates.is_empty()
-            || self.views.values().any(|view| view.retirement_requested)
-    }
-    fn projection_limit(&self) -> usize {
-        self.retirement_budget.unwrap_or(MAX_ADMITTED_VIEWS)
+    fn pane_retiring(&self, pane: &str) -> bool {
+        self.retiring
+            .iter()
+            .any(|retired| retired.attached.metadata.pane_id == pane)
+            || self
+                .retiring_candidates
+                .iter()
+                .any(|candidate| candidate.pane == pane)
     }
     fn placeholder(&self, pane: &str) -> String {
         if let Some(error) = self.view_failures.get(pane) {
@@ -1885,14 +1852,8 @@ impl App {
         {
             return "Previous view retiring; accepted operations are still draining.".into();
         }
-        if self.owned_views() >= self.projection_limit() {
-            return if self.retiring_views() {
-                "Waiting for retiring view capacity; this pane is currently unprojected.".into()
-            } else {
-                format!(
-                    "Shared view capacity ({MAX_ADMITTED_VIEWS}) reached; this pane is unprojected. Remove displayed leaves or detach another client."
-                )
-            };
+        if self.pane_retiring(pane) {
+            return "Previous view retiring; accepted operations are still draining.".into();
         }
         "Attaching pane; waiting for its initial scene or a background worker slot.".into()
     }
@@ -2046,11 +2007,13 @@ impl App {
                 Ok(result) => {
                     let retired = self.retiring.swap_remove(index);
                     if let Err(error) = result {
-                        self.unconfirmed_views += 1;
-                        self.notify(format!(
-                            "pane {} view {} detach failed: {error}; retirement not confirmed",
-                            retired.attached.metadata.pane_id, retired.attached.view
-                        ));
+                        let pane = retired.attached.metadata.pane_id.clone();
+                        let message = format!(
+                            "pane {pane} view {} detach failed: {error}; retirement not confirmed",
+                            retired.attached.view
+                        );
+                        self.view_failures.insert(pane, message.clone());
+                        self.notify(message);
                     }
                     drop(retired);
                 }
@@ -2059,11 +2022,13 @@ impl App {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     let retired = self.retiring.swap_remove(index);
-                    self.unconfirmed_views += 1;
-                    self.notify(format!(
-                        "pane {} view {} retirement completion unknown",
-                        retired.attached.metadata.pane_id, retired.attached.view
-                    ));
+                    let pane = retired.attached.metadata.pane_id.clone();
+                    let message = format!(
+                        "pane {pane} view {} retirement completion unknown",
+                        retired.attached.view
+                    );
+                    self.view_failures.insert(pane, message.clone());
+                    self.notify(message);
                     drop(retired);
                 }
             }
@@ -2092,10 +2057,6 @@ impl App {
             })
             .cloned()
             .collect::<Vec<_>>();
-        if !removed.is_empty() && self.retirement_budget.is_none() {
-            self.retirement_budget =
-                Some(self.owned_views().clamp(MAX_LIVE_PANES, MAX_ADMITTED_VIEWS));
-        }
         if self
             .consent
             .as_ref()
@@ -2137,9 +2098,6 @@ impl App {
                     index += 1;
                 }
             }
-        }
-        if !self.retiring_views() {
-            self.retirement_budget = None;
         }
         let focused = rects
             .iter()
@@ -2210,10 +2168,7 @@ impl App {
                     .any(|p| p.id == *id && p.status != PaneStatus::Stopped)
             {
                 let key = format!("attach:{id}");
-                if !self.jobs.contains(&key)
-                    && !self.jobs.is_full()
-                    && self.owned_views() < self.projection_limit()
-                {
+                if !self.jobs.contains(&key) && !self.jobs.is_full() && !self.pane_retiring(id) {
                     let socket = self.socket.to_owned();
                     let pane = id.clone();
                     if let Err(error) = self.jobs.submit(key, move || {
@@ -2225,8 +2180,6 @@ impl App {
                         let message = format!("pane {id} attach not admitted: {error:#}");
                         self.view_failures.insert(id.clone(), message.clone());
                         self.notify(message);
-                    } else {
-                        self.attach_slots += 1;
                     }
                 }
             }
@@ -4405,22 +4358,12 @@ fn attach(socket: &Endpoint, pane: &str, mut spec: ViewSpec) -> Result<Attached>
     spec.visible = false;
     spec.interactive = false;
     spec.clipboard = false;
-    let payload = socket
-        .checked(Operation::Pane {
-            pane_id: pane.into(),
-            request: PaneRequest::Attach { spec: spec.clone() },
-        })
-        .map_err(|error| {
-            let ownership = if transport::outcome_unknown(&error) {
-                AttachOwnership::Unconfirmed
-            } else {
-                AttachOwnership::NotAdmitted
-            };
-            error.context(ownership)
-        })?;
-    let result: AttachResult = serde_json::from_value(payload).map_err(|error| {
-        transport::mark_outcome_unknown(error.into()).context(AttachOwnership::Unconfirmed)
+    let payload = socket.checked(Operation::Pane {
+        pane_id: pane.into(),
+        request: PaneRequest::Attach { spec: spec.clone() },
     })?;
+    let result: AttachResult = serde_json::from_value(payload)
+        .map_err(|error| transport::mark_outcome_unknown(error.into()))?;
     let view = result.view_id;
     let mut pump = match updates::pane(socket, pane, &view) {
         Ok(pump) => pump,
@@ -4477,14 +4420,10 @@ fn detach_failed_attach(
             view_id: view.into(),
         },
     }) {
-        Ok(_) => error
-            .context(format!(
-                "pane {pane} admitted view {view} was detached after initial snapshot failure"
-            ))
-            .context(AttachOwnership::Detached),
-        Err(cleanup) if transport::shutdown_not_dispatched(&cleanup) => {
-            error.context(AttachOwnership::Unconfirmed)
-        }
+        Ok(_) => error.context(format!(
+            "pane {pane} admitted view {view} was detached after initial snapshot failure"
+        )),
+        Err(cleanup) if transport::shutdown_not_dispatched(&cleanup) => error,
         Err(cleanup) => {
             let unknown =
                 transport::outcome_unknown(&error) || transport::outcome_unknown(&cleanup);
@@ -4492,12 +4431,11 @@ fn detach_failed_attach(
             let combined = anyhow::anyhow!(
                 "pane {pane} admitted view {view} initial snapshot failed: {error:#}; detach failed: {cleanup:#}"
             );
-            let combined = if unknown {
+            if unknown {
                 transport::mark_outcome_unknown(combined)
             } else {
                 combined
-            };
-            combined.context(AttachOwnership::Unconfirmed)
+            }
         }
     }
 }
@@ -4543,10 +4481,7 @@ impl App {
             jobs,
             management: HashMap::new(),
             selection_epoch: 0,
-            attach_slots: 0,
-            retirement_budget: None,
             responses: Vec::new(),
-            unconfirmed_views: 0,
             held: HashMap::new(),
             key_events_report_releases: false,
             input,
@@ -6292,10 +6227,7 @@ pub(super) mod tests {
                 jobs: jobs::Scope::new(8).unwrap(),
                 management: HashMap::new(),
                 selection_epoch: 0,
-                attach_slots: 0,
-                retirement_budget: None,
                 responses: Vec::new(),
-                unconfirmed_views: 0,
                 held: HashMap::new(),
                 key_events_report_releases: true,
                 input,
@@ -7185,7 +7117,6 @@ pub(super) mod tests {
         unavailable_fixture(&mut app);
         let before = serde_json::to_value(&app.registry).unwrap();
         app.sync_views(size(), &app.rects(size())).unwrap();
-        assert_eq!(app.attach_slots, 0);
         assert!(!app.jobs.contains("attach:focused-pane"));
         assert!(app.active().is_none());
         reopen_key(&mut app).unwrap();
@@ -8552,7 +8483,6 @@ pub(super) mod tests {
             } if pane_id == "focused-pane" && view_id == "focused-view"));
             app.reap_retiring().unwrap();
             assert!(app.retiring.is_empty());
-            assert_eq!(app.unconfirmed_views, 0);
             assert!(app.input_failures.is_empty());
             assert!(app.view_failures.is_empty());
             app.state.focused = Some("beta".into());
@@ -8563,6 +8493,54 @@ pub(super) mod tests {
             assert!(matches!(capture.try_recv().unwrap(), Operation::Pane {
                 pane_id, request: PaneRequest::Key { .. },
             } if pane_id == "beta"));
+            assert!(capture.try_recv().is_err());
+        }
+    }
+    #[test]
+    fn pending_and_failed_retirement_never_block_unrelated_pane_input() {
+        for completion in 0..3 {
+            let (mut app, capture) = fixture();
+            attach_fixture(&mut app);
+            attach_named_fixture(&mut app, "beta", "beta-view");
+            let attached = app.views.remove("focused-pane").unwrap();
+            let (done, receipt) = mpsc::channel();
+            app.retiring.push(RetiringView { attached, receipt });
+            let rect = Rect {
+                x: 0,
+                y: 0,
+                width: size().cols,
+                height: size().rows,
+            };
+            let rects = vec![("focused-pane".into(), rect), ("beta".into(), rect)];
+            app.sync_views(size(), &rects).unwrap();
+            assert!(!app.jobs.contains("attach:focused-pane"));
+            while let Ok(operation) = capture.try_recv() {
+                assert!(matches!(operation, Operation::Pane { pane_id, .. } if pane_id == "beta"));
+            }
+            match completion {
+                0 => done.send(Ok(())).unwrap(),
+                1 => done
+                    .send(Err(anyhow::anyhow!("fixture detach rejected")))
+                    .unwrap(),
+                _ => drop(done),
+            }
+            app.reap_retiring().unwrap();
+            app.sync_views(size(), &rects).unwrap();
+            if completion == 0 {
+                assert!(app.jobs.contains("attach:focused-pane"));
+                assert!(!app.view_failures.contains_key("focused-pane"));
+            } else {
+                assert!(!app.jobs.contains("attach:focused-pane"));
+                assert!(app.view_failures.contains_key("focused-pane"));
+            }
+            app.key(key("KeyA"), &mut Vec::new(), size(), &[]).unwrap();
+            assert!(matches!(
+                capture.try_recv().unwrap(),
+                Operation::Pane {
+                    pane_id,
+                    request: PaneRequest::Key { view_id, event },
+                } if pane_id == "beta" && view_id == "beta-view" && event.action == KeyAction::Press
+            ));
             assert!(capture.try_recv().is_err());
         }
     }
@@ -8943,76 +8921,6 @@ pub(super) mod tests {
         )
         .unwrap();
         assert_eq!(app.selection_epoch, 2);
-    }
-    #[test]
-    fn attach_slot_ownership_is_independent_of_nested_poll_unknown_marker() {
-        for detached in [true, false] {
-            let directory = tempfile::tempdir().unwrap();
-            let socket = directory.path().join("cleanup.sock");
-            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-            let server = std::thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
-                let request = transport::test_wire::read_request(&mut stream).unwrap();
-                assert!(matches!(
-                    request.operation,
-                    Operation::Pane {
-                        request: PaneRequest::Detach { .. },
-                        ..
-                    }
-                ));
-                let response = Response {
-                    version: PROTOCOL_VERSION,
-                    ok: detached,
-                    result: detached.then(|| serde_json::json!({"detached":true}).into()),
-                    error: (!detached).then(|| "cleanup rejected".into()),
-                    failure: None,
-                };
-                transport::test_wire::write_response(&mut stream, &response).unwrap();
-            });
-            let initial = if detached {
-                transport::mark_outcome_unknown(anyhow::anyhow!("initial poll EOF"))
-            } else {
-                anyhow::anyhow!("bad initial scene")
-            };
-            let error = detach_failed_attach(
-                &Endpoint::unmanaged(&socket),
-                "new-pane",
-                "admitted-view",
-                initial,
-            );
-            assert_eq!(transport::outcome_unknown(&error), detached);
-            let (mut app, _) = fixture();
-            app.attach_slots = 1;
-            app.jobs
-                .submit("attach:new-pane".into(), move || Err(error))
-                .unwrap();
-            wait_background(&mut app, "attach:new-pane");
-            assert_eq!(app.attach_slots, usize::from(!detached));
-            server.join().unwrap();
-        }
-    }
-    #[test]
-    fn exhausted_view_capacity_does_not_admit_or_charge_another_attachment() {
-        let (mut app, received) = fixture();
-        attach_fixture(&mut app);
-        app.views.clear();
-        app.notified_focus = None;
-        app.attach_slots = MAX_ADMITTED_VIEWS;
-        let rects = vec![(
-            "focused-pane".into(),
-            Rect {
-                x: 0,
-                y: 0,
-                width: size().cols,
-                height: size().rows,
-            },
-        )];
-        app.sync_views(size(), &rects).unwrap();
-        assert_eq!(app.attach_slots, MAX_ADMITTED_VIEWS);
-        assert!(!app.jobs.contains("attach:focused-pane"));
-        assert!(!app.views.contains_key("focused-pane"));
-        assert!(app.active().is_none());
-        assert!(received.try_recv().is_err());
     }
     fn scroll(capture: &updates::Capture, pane: &str, view: &str) -> i64 {
         match capture

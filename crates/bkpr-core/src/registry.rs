@@ -133,7 +133,6 @@ struct Inner {
     state: Mutex<State>,
     // Serialize durable writers, never pane I/O. Lock order: transaction, then state.
     transaction: Mutex<()>,
-    view_budget: Arc<crate::authority::ViewBudget>,
     captures: Mutex<crate::harness::Captures>,
     agents: Arc<agents::Agents>,
     spawn_environment: Mutex<Option<crate::harness::SpawnEnvironment>>,
@@ -340,21 +339,10 @@ impl SpawnTarget {
                 );
                 Ok(())
             }
-            Self::CreateWorkspace {
-                workspace_id, name, ..
-            } => {
+            Self::CreateWorkspace { name, .. } => {
                 ensure!(
                     state.closing_workspaces.is_empty(),
                     "session busy: workspace close in progress"
-                );
-                let pending = state
-                    .spawn_workspaces
-                    .iter()
-                    .filter(|id| *id != workspace_id && !r.workspaces.iter().any(|w| &w.id == *id))
-                    .count();
-                ensure!(
-                    r.workspaces.len() + pending < MAX_WORKSPACES,
-                    "workspace limit"
                 );
                 if let Some(name) = name.as_deref().filter(|name| !name.trim().is_empty()) {
                     valid_name(name)?;
@@ -377,7 +365,6 @@ impl SpawnTarget {
                     "stale workspace revision: current {}",
                     w.revision
                 );
-                ensure!(w.windows.len() < MAX_PANE_RECORDS, "window limit");
                 if let Some(name) = name.as_deref().filter(|name| !name.trim().is_empty()) {
                     valid_name(name)?;
                 }
@@ -558,7 +545,6 @@ impl Registry {
                     durability_error: None,
                 }),
                 transaction: Mutex::new(()),
-                view_budget: Arc::default(),
                 captures: Mutex::new(crate::harness::Captures::default()),
                 agents,
                 spawn_environment: Mutex::new(None),
@@ -831,15 +817,6 @@ impl Registry {
                         state.closing_workspaces.is_empty(),
                         "session busy: workspace close in progress"
                     );
-                    let pending = state
-                        .spawn_workspaces
-                        .iter()
-                        .filter(|id| !r.workspaces.iter().any(|w| &w.id == *id))
-                        .count();
-                    ensure!(
-                        r.workspaces.len() + pending < MAX_WORKSPACES,
-                        "workspace limit"
-                    );
                     let name = available_name(
                         name.as_deref(),
                         "Workspace",
@@ -926,7 +903,8 @@ impl Registry {
             } => {
                 let registry = self.mutate_inner(Some(&workspace_id), control, |r| {
                     if let Some(node) = &layout {
-                        validate_owned_layout(node, &r.panes, &workspace_id, &window_id)?;
+                        let panes = r.panes.iter().map(|pane| (pane.id.as_str(), pane)).collect();
+                        validate_owned_layout(node, &panes, &workspace_id, &window_id)?;
                     }
                     let w = r
                         .workspaces
@@ -1045,9 +1023,6 @@ impl Registry {
                     !matches!(request, PaneRequest::Shutdown),
                     "use pane_terminate for lifecycle control"
                 );
-                if matches!(&request, PaneRequest::Attach { .. }) {
-                    self.expire_retired_views()?;
-                }
                 let pane = {
                     let state = self.inner.state.lock().unwrap();
                     healthy(&state)?;
@@ -1057,6 +1032,30 @@ impl Registry {
                         .cloned()
                         .context("pane is stopped; terminal contents were not recovered")?
                 };
+                if matches!(&request, PaneRequest::Attach { .. })
+                    && pane
+                        .shared
+                        .finished
+                        .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    // Completed workers no longer expire leases on a timer.
+                    // Reclaim this pane's stale authority before attaching a new view.
+                    let expired = pane
+                        .shared
+                        .authority
+                        .lock()
+                        .unwrap()
+                        .expire(std::time::Instant::now());
+                    if !expired.is_empty() {
+                        {
+                            let mut baselines = pane.shared.delta_frames.lock().unwrap();
+                            for id in expired {
+                                baselines.remove(&id);
+                            }
+                        }
+                        pane.shared.changes.notify();
+                    }
+                }
                 let headless = match &request {
                     PaneRequest::Poll { view_id, .. } | PaneRequest::Input { view_id, .. }
                     | PaneRequest::Paste { view_id, .. } | PaneRequest::Key { view_id, .. } => view_id.is_empty(),
@@ -1139,10 +1138,7 @@ impl Registry {
         report_created: bool,
         control: Option<&control::ControlOrigin<'_>>,
     ) -> Result<Value> {
-        ensure!(
-            !entries.is_empty() && entries.len() <= MAX_LIVE_PANES,
-            "invalid pane batch size"
-        );
+        ensure!(!entries.is_empty(), "invalid pane batch size");
         ensure!(
             matches!(target, SpawnTarget::Place { .. }) || entries.len() == 1,
             "internal spawn requires one pane"
@@ -1229,20 +1225,6 @@ impl Registry {
             }) {
                 return Ok(json!({"registry":registry_snapshot(&state)}));
             }
-            let running = state
-                .record
-                .registry
-                .panes
-                .iter()
-                .filter(|p| p.status == PaneStatus::Running)
-                .count();
-            ensure!(
-                (matches!(target, SpawnTarget::Restore { .. })
-                    || state.record.registry.panes.len() + state.spawning + count
-                        <= MAX_PANE_RECORDS)
-                    && running + state.spawning + count <= MAX_LIVE_PANES,
-                "pane limit"
-            );
             target.check(&state)?;
             if let SpawnTarget::Place {
                 layout: Some(layout),
@@ -1386,7 +1368,6 @@ impl Registry {
             let pane = Pane::spawn_with_id(
                 spec,
                 info.id.clone(),
-                self.inner.view_budget.clone(),
                 environment.clone(),
                 Some(self.inner.status_wake.clone()),
                 Some(crate::SpawnContext {
@@ -1514,36 +1495,6 @@ impl Registry {
             self.record_completion(&id)?;
         }
         Ok(pending)
-    }
-    fn expire_retired_views(&self) -> Result<()> {
-        // Live workers expire their own leases. Completed workers no longer run a
-        // timer, so reclaim their expired slots lazily before new admission.
-        let panes = {
-            let state = self.inner.state.lock().unwrap();
-            healthy(&state)?;
-            state
-                .live
-                .values()
-                .filter(|pane| {
-                    pane.shared
-                        .finished
-                        .load(std::sync::atomic::Ordering::Acquire)
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        let now = std::time::Instant::now();
-        for pane in panes {
-            let expired = pane.shared.authority.lock().unwrap().expire(now);
-            if !expired.is_empty() {
-                let mut baselines = pane.shared.delta_frames.lock().unwrap();
-                for id in expired {
-                    baselines.remove(&id);
-                }
-                pane.shared.changes.notify();
-            }
-        }
-        Ok(())
     }
     fn forget(&self, id: &str, control: Option<&control::ControlOrigin<'_>>) -> Result<Value> {
         let pane = {
@@ -2234,7 +2185,8 @@ fn available_name<'a>(
         return Ok(name.to_owned());
     }
     let existing: BTreeSet<_> = existing.collect();
-    for suffix in 1..=MAX_PANE_RECORDS + MAX_WORKSPACES + 1 {
+    // Among n existing names, at least one of n + 1 candidates is unused.
+    for suffix in 1..=existing.len() + 1 {
         let name = if suffix == 1 {
             base.to_owned()
         } else {
@@ -2369,23 +2321,34 @@ fn validate_spawn_existing(node: &SpawnLayoutNode, panes: &[PaneInfo]) -> Result
     }
     Ok(())
 }
-fn validate_layout(node: &LayoutNode, panes: &[PaneInfo]) -> Result<()> {
-    fn walk(
-        node: &LayoutNode,
-        panes: &[PaneInfo],
-        seen: &mut BTreeSet<String>,
+fn validate_owned_layout(
+    node: &LayoutNode,
+    panes: &BTreeMap<&str, &PaneInfo>,
+    workspace_id: &str,
+    window_id: &str,
+) -> Result<()> {
+    fn walk<'a>(
+        node: &'a LayoutNode,
+        panes: &BTreeMap<&str, &PaneInfo>,
+        workspace_id: &str,
+        window_id: &str,
+        seen: &mut BTreeSet<&'a str>,
         depth: usize,
     ) -> Result<()> {
         ensure!(depth <= MAX_LAYOUT_DEPTH, "layout depth limit");
         match node {
             LayoutNode::Leaf { pane_id } => {
+                let pane = panes
+                    .get(pane_id.as_str())
+                    .context("layout refers to unknown pane")?;
                 ensure!(
-                    panes.iter().any(|p| &p.id == pane_id),
-                    "layout refers to unknown pane"
+                    seen.insert(pane_id.as_str()),
+                    "duplicate pane in workspace layout"
                 );
                 ensure!(
-                    seen.insert(pane_id.clone()),
-                    "duplicate pane in workspace layout"
+                    pane.workspace_id.as_deref() == Some(workspace_id)
+                        && pane.window_id.as_deref() == Some(window_id),
+                    "layout pane belongs to another workspace/window"
                 );
             }
             LayoutNode::Split {
@@ -2398,47 +2361,20 @@ fn validate_layout(node: &LayoutNode, panes: &[PaneInfo]) -> Result<()> {
                     (1..1000).contains(ratio),
                     "split ratio must be 1..999 thousandths"
                 );
-                walk(first, panes, seen, depth + 1)?;
-                walk(second, panes, seen, depth + 1)?;
+                walk(first, panes, workspace_id, window_id, seen, depth + 1)?;
+                walk(second, panes, workspace_id, window_id, seen, depth + 1)?;
             }
         }
         Ok(())
     }
-    walk(node, panes, &mut BTreeSet::new(), 0)
-}
-fn validate_owned_layout(
-    node: &LayoutNode,
-    panes: &[PaneInfo],
-    workspace_id: &str,
-    window_id: &str,
-) -> Result<()> {
-    validate_layout(node, panes)?;
-    fn walk(
-        node: &LayoutNode,
-        panes: &[PaneInfo],
-        workspace_id: &str,
-        window_id: &str,
-    ) -> Result<()> {
-        match node {
-            LayoutNode::Leaf { pane_id } => {
-                let pane = panes
-                    .iter()
-                    .find(|p| &p.id == pane_id)
-                    .context("unknown pane")?;
-                ensure!(
-                    pane.workspace_id.as_deref() == Some(workspace_id)
-                        && pane.window_id.as_deref() == Some(window_id),
-                    "layout pane belongs to another workspace/window"
-                );
-            }
-            LayoutNode::Split { first, second, .. } => {
-                walk(first, panes, workspace_id, window_id)?;
-                walk(second, panes, workspace_id, window_id)?;
-            }
-        }
-        Ok(())
-    }
-    walk(node, panes, workspace_id, window_id)
+    walk(
+        node,
+        panes,
+        workspace_id,
+        window_id,
+        &mut BTreeSet::new(),
+        0,
+    )
 }
 fn close_membership(r: &mut RegistrySnapshot, pane_id: &str) -> Result<()> {
     let Some(pane) = r.panes.iter_mut().find(|p| p.id == pane_id) else {
@@ -2486,14 +2422,10 @@ fn validate_record(record: &Record) -> Result<()> {
         "unsupported registry storage version"
     );
     let r = &record.registry;
-    ensure!(
-        r.panes.len() <= MAX_PANE_RECORDS && r.workspaces.len() <= MAX_WORKSPACES,
-        "registry resource limit"
-    );
-    let mut ids = BTreeSet::new();
+    let mut panes = BTreeMap::new();
     for pane in &r.panes {
         ensure!(
-            Uuid::parse_str(&pane.id).is_ok() && ids.insert(&pane.id),
+            Uuid::parse_str(&pane.id).is_ok() && panes.insert(pane.id.as_str(), pane).is_none(),
             "invalid or duplicate pane id"
         );
         valid_name(&pane.title)?;
@@ -2503,7 +2435,10 @@ fn validate_record(record: &Record) -> Result<()> {
         );
     }
     ensure!(
-        record.automatic_titles.iter().all(|id| ids.contains(&id)),
+        record
+            .automatic_titles
+            .iter()
+            .all(|id| panes.contains_key(id.as_str())),
         "automatic title refers to unknown pane"
     );
     ensure!(
@@ -2512,14 +2447,14 @@ fn validate_record(record: &Record) -> Result<()> {
     );
     for (id, descriptor) in &record.recoveries {
         ensure!(
-            r.panes.iter().any(|pane| &pane.id == id),
+            panes.contains_key(id.as_str()),
             "recovery refers to unknown pane"
         );
         recovery::validate(descriptor)?;
     }
     for (id, directory) in &record.directories {
         ensure!(
-            r.panes.iter().any(|pane| &pane.id == id),
+            panes.contains_key(id.as_str()),
             "directory refers to unknown pane"
         );
         directories::validate(&directory.cwd)?;
@@ -2531,10 +2466,12 @@ fn validate_record(record: &Record) -> Result<()> {
         );
         recovery::validate(descriptor)?;
     }
-    let mut ids = BTreeSet::new();
+    let mut workspaces = BTreeMap::new();
     for w in &r.workspaces {
         ensure!(
-            Uuid::parse_str(&w.id).is_ok() && ids.insert(&w.id) && w.revision > 0,
+            Uuid::parse_str(&w.id).is_ok()
+                && !workspaces.contains_key(w.id.as_str())
+                && w.revision > 0,
             "invalid workspace identity/revision"
         );
         valid_name(&w.name)?;
@@ -2542,20 +2479,24 @@ fn validate_record(record: &Record) -> Result<()> {
         for window in &w.windows {
             ensure!(
                 Uuid::parse_str(&window.id).is_ok()
-                    && window_ids.insert(&window.id)
+                    && window_ids.insert(window.id.as_str())
                     && window.revision > 0,
                 "invalid window identity/revision"
             );
             valid_name(&window.name)?;
             if let Some(node) = &window.layout {
-                validate_owned_layout(node, &r.panes, &w.id, &window.id)?;
+                validate_owned_layout(node, &panes, &w.id, &window.id)?;
             }
         }
+        workspaces.insert(w.id.as_str(), window_ids);
     }
     for pane in &r.panes {
         match (&pane.workspace_id, &pane.window_id) {
             (Some(workspace_id), Some(window_id)) => {
-                find_window(r, workspace_id, window_id)?;
+                let windows = workspaces
+                    .get(workspace_id.as_str())
+                    .context("unknown workspace")?;
+                ensure!(windows.contains(window_id.as_str()), "unknown window");
             }
             (None, None) => {}
             _ => bail!("pane requires paired workspace/window membership"),

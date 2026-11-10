@@ -211,9 +211,14 @@ receive immutable canonical session/pane/workspace snapshots described below.
 On Linux, managed clients require kernel `SO_PEERPIDFD` support and fail before
 takeover when that prerequisite is unavailable.
 
-Client admission is bounded to 32 per daemon; views to 128 per daemon and 32 per
-pane. Lifetime connections, pane waits, registry watchers and controls have
-separate capacity, so admitted waiting views do not consume input/control slots.
+There is no fixed pane, workspace, attached-client or view count ceiling.
+Creation, restoration, selection and search preserve their ownership checks.
+Resource limits apply to bytes and work in flight: native messages remain bounded
+to 8 MiB/request and 96 MiB/response, and the durable registry to 4 MiB.
+Local transport reserves small-frame capacity separately from large frames and
+limits decode/encode work without retaining worker slots across pane callbacks,
+long polls or socket writes. Threads, descriptors, PTYs and terminal state still
+consume real OS resources; this is not an unlimited-memory guarantee.
 
 ### Remote sessions
 
@@ -680,10 +685,12 @@ authentication/rate-limit backoff. Completed results stay idle until source,
 push, auth-context or explicit refresh invalidation. Ordinary worktree edits do
 not re-query CI; auth configuration uses filesystem watches, not idle polling.
 
-Rate-limit history is bounded to 320 active/historical provider-CWD contexts.
-If capacity is exhausted, new contexts show CI `Unavailable` until a record can
-be released or authentication is retired. Existing contexts and panes keep
-working; valid hard limits are never evicted or shortened to admit new work.
+Retained authentication/rate-limit history has an independent 1 MiB memory
+allowance, rather than a pane-derived context count. New contexts show CI
+`Unavailable` if that allowance is exhausted, until history expires or
+authentication is retired. Existing embargoes are never evicted or shortened.
+Active source snapshots are retained, and provider request batches have their
+own 1 MiB work allowance without dropping unselected subscribers.
 
 GitHub.com is the supported forge. The focused `Ctrl-b i` inspector remains
 Git-only; sidebar cards and Finder previews consume the enriched metadata.
@@ -968,7 +975,7 @@ for diagnosis. Closing one terminal preserves neighboring terminals.
 
 Attachment and management work runs in bounded background jobs. Input remains
 ordered per pane; a native callback blocked in one pane does not serialize input
-to another. Pending controls and projection-capacity failures are shown explicitly.
+to another. Pending controls and pane-local attachment failures are shown explicitly.
 Pane-local transport/input failures stop the affected lane rather than closing
 healthy panes. Ambiguous operations are reported and never automatically replayed.
 Pointer gestures remain bound to their original pane/view, including clipped
@@ -1294,7 +1301,7 @@ ambiguous foreign-workspace ownership is rejected without replacing the record.
 Retired metadata can be explicitly forgotten with
 `{"version":7,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
 has stopped, every layout reference has been removed and all its views detached.
-This releases record capacity; it is not termination or automatic history pruning.
+This removes its retained metadata and stored bytes; it is not termination or automatic history pruning.
 
 The authoritative request models are in
 [`bkpr-protocol`](crates/bkpr-protocol/src/registry.rs), with

@@ -696,31 +696,50 @@ fn managed_views_cannot_be_borrowed_by_admin_or_other_clients_and_takeover_never
 }
 
 #[test]
-fn client_limit_does_not_consume_control_or_agent_wait_admission() {
-    let server = Server::new("limits");
-    let clients = (0..MAX_CLIENTS)
-        .map(|_| server.register())
-        .collect::<Vec<_>>();
-    let session = server.session();
-    assert_eq!(
+fn many_clients_keep_independent_views_and_takeover_preserves_processes() {
+    let server = Server::new("many-clients");
+    let pane_id = server.spawn();
+    let mut clients = (0..40).map(|_| server.register()).collect::<Vec<_>>();
+    for client in &clients {
+        assert_eq!(server.activate(client, false)["ok"], true);
+        server.attach(client, &pane_id);
+    }
+    let inspect = || {
         wire(
             &server.socket,
-            Operation::ClientRegister {
-                session_id: session.session_id,
-                daemon_id: session.daemon_id
-            }
-        )["ok"],
-        false
-    );
+            Operation::Pane {
+                pane_id: pane_id.clone(),
+                request: PaneRequest::Inspect,
+            },
+        )
+    };
+    let snapshot = inspect();
+    assert_eq!(snapshot["result"]["views"].as_array().unwrap().len(), 40);
+    assert_eq!(server.registry.inner.clients.lock().unwrap().len(), 40);
     assert_eq!(wire(&server.socket, Operation::Inspect)["ok"], true);
+    let detached = clients.pop().unwrap();
     assert_eq!(
-        server.registry.inner.clients.lock().unwrap().len(),
-        MAX_CLIENTS
+        server.managed(&detached, Operation::ClientDetach)["ok"],
+        true
     );
-    drop(clients);
-    eventually(|| server.registry.inner.clients.lock().unwrap().is_empty());
+    assert_eq!(inspect()["result"]["views"].as_array().unwrap().len(), 39);
+    drop(clients.pop());
+    eventually(|| inspect()["result"]["views"].as_array().unwrap().len() == 38);
     let replacement = server.register();
-    assert_eq!(server.activate(&replacement, false)["ok"], true);
+    assert_eq!(server.activate(&replacement, true)["ok"], true);
+    let snapshot = inspect();
+    assert!(snapshot["result"]["views"].as_array().unwrap().is_empty());
+    assert_eq!(snapshot["result"]["lifecycle"], "running");
+    assert_eq!(server.registry.inner.clients.lock().unwrap().len(), 1);
+    for client in &clients {
+        assert_eq!(server.managed(client, Operation::Inspect)["ok"], false);
+    }
+    server.attach(&replacement, &pane_id);
+    drop(clients);
+    drop(replacement);
+    eventually(|| server.registry.inner.clients.lock().unwrap().is_empty());
+    eventually(|| inspect()["result"]["views"].as_array().unwrap().is_empty());
+    assert_eq!(inspect()["result"]["lifecycle"], "running");
 }
 
 #[test]

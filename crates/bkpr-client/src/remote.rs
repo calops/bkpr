@@ -76,20 +76,27 @@ struct RemoteConnector {
     observations: Arc<Semaphore>,
 }
 
-impl Connector for RemoteConnector {
-    fn remote(&self) -> bool {
-        true
-    }
-    fn connect(&self, purpose: ConnectionPurpose) -> Result<UnixStream> {
+impl RemoteConnector {
+    async fn reserve(&self, purpose: ConnectionPurpose) -> Result<OwnedSemaphorePermit> {
         let pool = match purpose {
             ConnectionPurpose::Lifetime => &self.lifetime,
             ConnectionPurpose::Control => &self.control,
             ConnectionPurpose::Observation => &self.observations,
         };
-        let permit = pool
-            .clone()
-            .try_acquire_owned()
-            .context("remote native stream admission capacity exhausted")?;
+        pool.clone()
+            .acquire_owned()
+            .await
+            .context("remote native transport closed")
+    }
+}
+
+impl Connector for RemoteConnector {
+    fn remote(&self) -> bool {
+        true
+    }
+    fn connect(&self, purpose: ConnectionPurpose) -> Result<UnixStream> {
+        // Called on request workers: queue fairly without imposing a view limit.
+        let permit = futures::executor::block_on(self.reserve(purpose))?;
         let (client, relay) = UnixStream::pair().context("creating remote native socket pair")?;
         socket_bounds(&client)?;
         socket_bounds(&relay)?;

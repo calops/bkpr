@@ -1055,6 +1055,83 @@ fn spawn_layout_decode_and_encode_obey_aggregate_and_depth_budgets() {
     );
 }
 
+#[test]
+fn accounted_request_decode_bounds_owned_expansion_without_rejecting_small_controls() {
+    fn decode_with_allowance(bytes: &[u8], allowance: usize) -> Result<(Request, usize)> {
+        let mut charged = 0;
+        let request = decode_request_charged(bytes, &mut |bytes| {
+            ensure!(bytes <= allowance - charged, "caller allocation allowance");
+            charged += bytes;
+            Ok(())
+        })?;
+        Ok((request, charged))
+    }
+    let mut codec = Codec::new();
+    let bytes = codec
+        .encode_request(&Request::new(Operation::SessionInfo))
+        .unwrap();
+    let (decoded, charge) = decode_with_allowance(bytes, 1024).unwrap();
+    assert!(matches!(decoded.operation, Operation::SessionInfo));
+    assert!(charge > 0 && charge < 1024);
+    assert!(decode_with_allowance(bytes, charge - 1).is_err());
+    let (decoded, exact) = decode_with_allowance(bytes, charge).unwrap();
+    assert!(matches!(decoded.operation, Operation::SessionInfo));
+    assert_eq!(exact, charge);
+
+    let mut builder = Builder::new();
+    let reference = builder.create_string("x".repeat(64));
+    let leaf = g::SpawnLayoutNodeNew::create(&mut builder, reference);
+    let mut layout = g::SpawnLayoutNode::create_spawn_layout_node_new(&mut builder, leaf);
+    for _ in 0..10 {
+        let split =
+            g::SpawnLayoutNodeSplit::create(&mut builder, g::Axis::Horizontal, 500, layout, layout);
+        layout = g::SpawnLayoutNode::create_spawn_layout_node_split(&mut builder, split);
+    }
+    let layout = g::OptionalSpawnLayout::create(&mut builder, layout);
+    let entries: Vec<planus::Offset<g::PaneSpawnEntry>> = Vec::new();
+    let panes = builder.create_vector(&entries);
+    let spawn = g::OperationPaneSpawn::create(
+        &mut builder,
+        None::<planus::Offset<str>>,
+        None::<planus::Offset<str>>,
+        None::<planus::Offset<g::OptionalU64>>,
+        panes,
+        Some(layout),
+    );
+    let operation = g::Operation::create_operation_pane_spawn(&mut builder, spawn);
+    let root = g::Request::create(&mut builder, PROTOCOL_VERSION, operation);
+    let bytes = builder.finish(root, None);
+    // The aliased DAG is compact, but its independently owned leaves are not.
+    assert!(bytes.len() < 4096);
+    assert!(decode_with_allowance(bytes, 4096).is_err());
+    let (request, charged) = decode_with_allowance(bytes, usize::MAX).unwrap();
+    let Operation::PaneSpawn { layout, .. } = request.operation else {
+        panic!("wrong operation")
+    };
+    fn leaves(layout: &SpawnLayoutNode) -> usize {
+        match layout {
+            SpawnLayoutNode::New { reference } => {
+                assert_eq!(reference, &"x".repeat(64));
+                1
+            }
+            SpawnLayoutNode::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => {
+                assert_eq!(*axis, Axis::Horizontal);
+                assert_eq!(*ratio, 500);
+                leaves(first) + leaves(second)
+            }
+            _ => panic!("unexpected layout node"),
+        }
+    }
+    assert_eq!(leaves(&layout.unwrap()), 1024);
+    assert!(charged > 4096);
+    assert!(decode_request(bytes).is_ok());
+}
+
 fn spawn_entry(reference: &str) -> PaneSpawnEntry {
     PaneSpawnEntry {
         reference: reference.into(),

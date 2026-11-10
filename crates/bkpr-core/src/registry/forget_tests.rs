@@ -102,10 +102,10 @@ fn active_view_blocks_forget_until_explicit_detach() {
 }
 
 #[test]
-fn explicit_forget_releases_record_capacity_without_automatic_pruning() {
+fn retained_history_is_not_pruned_by_spawn_and_only_explicit_forget_removes_records() {
     let fixture = Fixture::new();
     let registry = &fixture.registry;
-    let ids = (0..MAX_PANE_RECORDS)
+    let ids = (0..384)
         .map(|_| Uuid::new_v4().to_string())
         .collect::<Vec<_>>();
     registry
@@ -130,34 +130,17 @@ fn explicit_forget_releases_record_capacity_without_automatic_pruning() {
             Ok(())
         })
         .unwrap();
-    let home = fixture.home("capacity");
-    assert!(
-        registry
-            .request(Request::new(Operation::PaneSpawn {
-                workspace_id: None,
-                window_id: None,
-                expected_revision: None,
-                panes: vec![PaneSpawnEntry {
-                    reference: "pane".into(),
-                    spec: spec(&home)
-                }],
-                layout: None,
-            }))
-            .unwrap_err()
-            .to_string()
-            .contains("pane limit")
-    );
-    assert!(!home.exists());
-    assert_eq!(registry.snapshot().unwrap().panes.len(), MAX_PANE_RECORDS);
+    let home = fixture.home("retained-history");
+    let new = spawn(registry, &home, None, None);
+    assert_eq!(registry.snapshot().unwrap().panes.len(), ids.len() + 1);
     send(
         registry,
         Operation::PaneForget {
             pane_id: ids[0].clone(),
         },
     );
-    let new = spawn(registry, &home, None, None);
     let r = registry.snapshot().unwrap();
-    assert_eq!(r.panes.len(), MAX_PANE_RECORDS);
+    assert_eq!(r.panes.len(), ids.len());
     assert!(!r.panes.iter().any(|pane| pane.id == ids[0]));
     assert!(
         r.panes
@@ -169,7 +152,7 @@ fn explicit_forget_releases_record_capacity_without_automatic_pruning() {
             .iter()
             .filter(|pane| pane.status == PaneStatus::Stopped)
             .count(),
-        MAX_PANE_RECORDS - 1
+        ids.len() - 1
     );
 }
 

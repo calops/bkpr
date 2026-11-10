@@ -18,6 +18,50 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 #[test]
+fn saturated_remote_observations_queue_fairly_without_starving_control_or_lifetime() {
+    runtime().block_on(async {
+        let (sender, _receiver) = mpsc::channel(1);
+        let connector = RemoteConnector {
+            sender,
+            lifetime: Arc::new(Semaphore::new(1)),
+            control: Arc::new(Semaphore::new(1)),
+            observations: Arc::new(Semaphore::new(1)),
+        };
+        let first = connector
+            .reserve(ConnectionPurpose::Observation)
+            .await
+            .unwrap();
+        let second = connector.reserve(ConnectionPurpose::Observation);
+        let third = connector.reserve(ConnectionPurpose::Observation);
+        tokio::pin!(second, third);
+        assert!(futures::poll!(second.as_mut()).is_pending());
+        assert!(futures::poll!(third.as_mut()).is_pending());
+        let control = timeout(OPEN_TIMEOUT, connector.reserve(ConnectionPurpose::Control))
+            .await
+            .unwrap()
+            .unwrap();
+        let lifetime = timeout(OPEN_TIMEOUT, connector.reserve(ConnectionPurpose::Lifetime))
+            .await
+            .unwrap()
+            .unwrap();
+        drop(first);
+        let second = timeout(OPEN_TIMEOUT, second).await.unwrap().unwrap();
+        assert!(futures::poll!(third.as_mut()).is_pending());
+        drop(second);
+        let third = timeout(OPEN_TIMEOUT, third).await.unwrap().unwrap();
+        drop((control, lifetime, third));
+        connector.observations.close();
+        assert!(
+            connector
+                .reserve(ConnectionPurpose::Observation)
+                .await
+                .is_err()
+        );
+        assert!(connector.reserve(ConnectionPurpose::Control).await.is_ok());
+    });
+}
+
+#[test]
 fn inspection_rejects_attachment_side_effects_before_transport_start() {
     let mut forwarded = target();
     forwarded.forward_agent = true;

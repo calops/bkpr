@@ -1,7 +1,6 @@
 use crate::{Error, Result, Terminal, sdk};
 use bkpr_protocol::{
-    MAX_INPUT_BYTES, MAX_VIEWS_PER_PANE, SelectionAction, SelectionEvent, SelectionSnapshot,
-    SelectionSpan,
+    MAX_INPUT_BYTES, SelectionAction, SelectionEvent, SelectionSnapshot, SelectionSpan,
 };
 use sdk::{
     screen::{Screen, TrackedGridRef},
@@ -174,9 +173,6 @@ impl Selections {
         if !self.views.contains_key(id) {
             if event.action != SelectionAction::Press {
                 return Ok(());
-            }
-            if self.views.len() >= MAX_VIEWS_PER_PANE {
-                return Err(Error("selection view limit".into()));
             }
             self.views.insert(id.to_owned(), View::new()?);
         }

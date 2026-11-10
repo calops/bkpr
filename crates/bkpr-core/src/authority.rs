@@ -1,11 +1,8 @@
 use anyhow::{Result, bail};
-use bkpr_protocol::{MAX_ADMITTED_VIEWS, MAX_VIEWS_PER_PANE, Size, ViewInfo, ViewSpec, valid_size};
+use bkpr_protocol::{Size, ViewInfo, ViewSpec, valid_size};
 use std::{
     collections::BTreeMap,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 use uuid::Uuid;
@@ -19,7 +16,6 @@ pub struct ViewRecord {
     /// sizing activity and independent capability updates do not retire a drag.
     pub(crate) inspection_epoch: u64,
     pub scrollback_offset: u64,
-    _slot: ViewSlot,
     pub last_seen: Instant,
 }
 impl ViewRecord {
@@ -36,53 +32,13 @@ impl ViewRecord {
     }
 }
 #[derive(Default)]
-pub(crate) struct ViewBudget {
-    active: AtomicUsize,
-}
-impl ViewBudget {
-    fn acquire(self: &Arc<Self>) -> Result<ViewSlot> {
-        if self
-            .active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                (active < MAX_ADMITTED_VIEWS).then_some(active + 1)
-            })
-            .is_err()
-        {
-            bail!(
-                "daemon view limit reached ({MAX_ADMITTED_VIEWS} admitted views); detach another view first"
-            );
-        }
-        Ok(ViewSlot(self.clone()))
-    }
-}
-struct ViewSlot(Arc<ViewBudget>);
-impl Drop for ViewSlot {
-    fn drop(&mut self) {
-        self.0.active.fetch_sub(1, Ordering::AcqRel);
-    }
-}
 pub struct Authority {
     pub views: BTreeMap<String, ViewRecord>,
     pub pinned: Option<(String, Size)>,
     clock: u64,
     pub generation: u64,
-    budget: Arc<ViewBudget>,
-}
-impl Default for Authority {
-    fn default() -> Self {
-        Self::with_budget(Arc::default())
-    }
 }
 impl Authority {
-    pub(crate) fn with_budget(budget: Arc<ViewBudget>) -> Self {
-        Self {
-            views: BTreeMap::new(),
-            pinned: None,
-            clock: 0,
-            generation: 0,
-            budget,
-        }
-    }
     pub fn touch(&mut self, id: &str) -> Result<()> {
         let view = self
             .views
@@ -122,10 +78,6 @@ impl Authority {
             client.ensure_active()?;
         }
         valid_size(spec.size)?;
-        if self.views.len() >= MAX_VIEWS_PER_PANE {
-            bail!("view limit reached");
-        }
-        let slot = self.budget.acquire()?;
         let id = Uuid::new_v4().to_string();
         self.clock += 1;
         self.views.insert(
@@ -138,7 +90,6 @@ impl Authority {
                 inspection_epoch: 1,
                 scrollback_offset: 0,
                 last_seen: Instant::now(),
-                _slot: slot,
             },
         );
         self.generation += 1;
@@ -320,48 +271,21 @@ mod tests {
         assert!(a.input(&first).is_err());
     }
     #[test]
-    fn daemon_budget_admits_before_success_and_releases_on_detach_expiry_and_drop() {
-        let budget = Arc::new(ViewBudget::default());
-        let mut authorities = (0..MAX_ADMITTED_VIEWS / MAX_VIEWS_PER_PANE)
-            .map(|_| Authority::with_budget(budget.clone()))
+    fn many_views_preserve_sizing_and_release_authority_on_detach_and_expiry() {
+        let mut authority = Authority::default();
+        let views = (0..160)
+            .map(|_| authority.attach(spec(80)).unwrap())
             .collect::<Vec<_>>();
-        for authority in &mut authorities {
-            for _ in 0..MAX_VIEWS_PER_PANE {
-                authority.attach(spec(80)).unwrap();
-            }
-        }
-        assert_eq!(budget.active.load(Ordering::Acquire), MAX_ADMITTED_VIEWS);
-        let mut blocked = Authority::with_budget(budget.clone());
-        let error = blocked.attach(spec(80)).unwrap_err();
-        assert!(error.to_string().contains("daemon view limit"));
-        assert!(blocked.views.is_empty());
-        assert_eq!(blocked.generation, 0);
-        // A second registry/standalone authority has its own budget, not a global static.
-        let mut independent = Authority::default();
-        independent.attach(spec(80)).unwrap();
-        let snapshots = authorities[0]
-            .views
-            .values()
-            .map(ViewRecord::snapshot)
-            .collect::<Vec<_>>();
-        let id = snapshots[0].id.clone();
-        authorities[0].detach(&id).unwrap();
-        assert_eq!(
-            budget.active.load(Ordering::Acquire),
-            MAX_ADMITTED_VIEWS - 1,
-            "serialized view metadata must not retain admission slots"
-        );
-        blocked.attach(spec(80)).unwrap();
-        assert_eq!(budget.active.load(Ordering::Acquire), MAX_ADMITTED_VIEWS);
-        let expired = authorities[1].expire(Instant::now() + Duration::from_secs(11));
-        assert_eq!(expired.len(), MAX_VIEWS_PER_PANE);
-        assert_eq!(
-            budget.active.load(Ordering::Acquire),
-            MAX_ADMITTED_VIEWS - MAX_VIEWS_PER_PANE
-        );
-        drop(authorities);
-        drop(blocked);
-        assert_eq!(budget.active.load(Ordering::Acquire), 0);
-        assert_eq!(snapshots.len(), MAX_VIEWS_PER_PANE);
+        assert_eq!(authority.views.len(), views.len());
+        assert_eq!(authority.owner().unwrap().0, views.last().unwrap());
+        authority.pin(&views[0], Some(spec(90).size)).unwrap();
+        authority.detach(&views[0]).unwrap();
+        assert_eq!(authority.owner().unwrap().0, views.last().unwrap());
+        assert!(authority.input(&views[0]).is_err());
+        let expired = authority.expire(Instant::now() + Duration::from_secs(11));
+        assert_eq!(expired.len(), views.len() - 1);
+        assert!(authority.views.is_empty());
+        assert!(authority.owner().is_none());
+        assert!(authority.pinned.is_none());
     }
 }

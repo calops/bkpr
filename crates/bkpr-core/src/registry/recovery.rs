@@ -121,36 +121,20 @@ impl Registry {
         let state = self.inner.state.lock().unwrap();
         healthy(&state)?;
         let captures = self.inner.captures.lock().unwrap();
-        let running = state
+        let panes: BTreeMap<_, _> = state
             .record
             .registry
             .panes
             .iter()
-            .filter(|pane| pane.status == PaneStatus::Running)
-            .count();
-        let pending_workspaces = state
-            .spawn_workspaces
-            .iter()
-            .filter(|id| {
-                !state
-                    .record
-                    .registry
-                    .workspaces
-                    .iter()
-                    .any(|workspace| &workspace.id == *id)
-            })
-            .count();
+            .map(|pane| (pane.id.as_str(), pane))
+            .collect();
         Ok(state
             .record
             .recoveries
             .iter()
             .map(|(id, descriptor)| {
-                let pane = state
-                    .record
-                    .registry
-                    .panes
-                    .iter()
-                    .find(|pane| &pane.id == id)
+                let pane = panes
+                    .get(id.as_str())
                     .expect("validated recovery pane");
                 let (status, reason) = if bound(&captures, descriptor)
                     || state
@@ -177,19 +161,12 @@ impl Registry {
                                     .load(std::sync::atomic::Ordering::Acquire)),
                             "recovery pane execution is still running"
                         );
-                        ensure!(
-                            state.record.registry.panes.len() + state.spawning < MAX_PANE_RECORDS,
-                            "pane record limit"
-                        );
-                        ensure!(running + state.spawning < MAX_LIVE_PANES, "live pane limit");
                         if let Some(workspace_id) = &pane.workspace_id {
                             workspace_available(&state, workspace_id)?;
                         } else {
                             ensure!(
-                                state.closing_workspaces.is_empty()
-                                    && state.record.registry.workspaces.len() + pending_workspaces
-                                        < MAX_WORKSPACES,
-                                "workspace limit or close in progress"
+                                state.closing_workspaces.is_empty(),
+                                "workspace close in progress"
                             );
                         }
                         Ok(())
