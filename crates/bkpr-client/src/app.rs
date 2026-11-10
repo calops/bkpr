@@ -453,22 +453,17 @@ impl SidebarTitleAnimation {
                 let Some(first) = row.cells.get(left).filter(|_| left < right) else {
                     continue;
                 };
-                let Some(ColorSource::Rgb(ink)) = theme.effective_ink(&first.style) else {
+                if !matches!(theme.effective_ink(&first.style), Some(ColorSource::Rgb(_))) {
                     continue;
-                };
-                // Keep even selected/inverse ink close to its own contrast,
-                // rather than replacing it with an unrelated bright color.
-                let highlight = std::array::from_fn(|channel| {
-                    ((u16::from(ink[channel]) * 2 + u16::from(accent[channel])) / 3) as u8
-                });
+                }
                 self.spans.push(TitleSweepSpan {
                     rect: Rect {
                         width: (right - left) as u16,
                         ..rect
                     },
                     effect: bkpr_tui_framework::animation::TextSweep {
-                        highlight,
-                        width: 0.28,
+                        highlight: accent,
+                        width: 0.4,
                     },
                 });
                 self.styles
