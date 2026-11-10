@@ -112,6 +112,36 @@ pub(crate) fn activity_role(state: &str) -> Role {
     }
 }
 
+/// Display-only OMP title cleanup, ported from pre-native-rewrite
+/// e9ee40261bf25b929799d231602573818a0af243 native.rs::native_title.
+pub(crate) fn pane_title<'a>(pane: &'a PaneInfo, known: Option<&PaneSnapshot>) -> &'a str {
+    let title = pane.title.as_str();
+    if !crate::controller::recognized_harness(pane, known)
+        .is_some_and(|harness| harness.kind == bkpr_protocol::HarnessKind::Omp)
+    {
+        return title;
+    }
+    if let Some(label) = title.strip_prefix("π: ") {
+        return label;
+    }
+    let Some(rest) = title.strip_prefix("π ") else {
+        return title;
+    };
+    let Some(separator) = rest.chars().next() else {
+        return title;
+    };
+    if matches!(
+        separator,
+        '>' | '!' | ':' | '-' | '\\' | '|' | '/' | '○' | '◔' | '◑' | '◕' | '●'
+    ) || ('\u{2800}'..='\u{28ff}').contains(&separator)
+    {
+        return rest[separator.len_utf8()..]
+            .strip_prefix(' ')
+            .unwrap_or(title);
+    }
+    title
+}
+
 pub(crate) fn content(
     pane: &PaneInfo,
     registry: &RegistrySnapshot,
@@ -121,10 +151,11 @@ pub(crate) fn content(
     let harness = crate::controller::recognized_harness(pane, known);
     let activity = crate::controller::harness_status(pane, known);
     let mut rows = Vec::new();
-    let title = if pane.title.is_empty() {
+    let title = pane_title(pane, known);
+    let title = if title.is_empty() {
         "Untitled terminal"
     } else {
-        &pane.title
+        title
     };
     if let Some(harness) = harness {
         let mut row = Paragraph::new(
@@ -337,10 +368,11 @@ pub(crate) fn pane_summary(
     };
     let mut row = Paragraph::new(
         if include_title {
-            if pane.title.is_empty() {
+            let title = pane_title(pane, known);
+            if title.is_empty() {
                 "Untitled terminal"
             } else {
-                &pane.title
+                title
             }
         } else {
             &lifecycle
