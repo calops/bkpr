@@ -1252,13 +1252,15 @@ impl Registry {
                     AgentRequest::Whoami { detail } => {
                         let state = self.inner.agents.state.lock().unwrap();
                         let own = contexts.get(id).context("live agent context unavailable")?;
-                        Ok(public(
+                        let mut identity = public(
                             own,
                             &state.store.agents[id],
                             state.receivers.get(id),
                             current_subscribers(&state, id),
                             detail,
-                        ))
+                        );
+                        identity["protocol_version"] = json!(bkpr_protocol::PROTOCOL_VERSION);
+                        Ok(identity)
                     }
                     AgentRequest::DiscoverAgents {
                         scope,
