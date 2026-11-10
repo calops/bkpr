@@ -422,7 +422,7 @@ impl SidebarTitleAnimation {
             clock: bkpr_tui_framework::animation::AnimationClock::new(
                 now,
                 Duration::from_millis(80),
-                Duration::from_secs(2),
+                Duration::from_millis(1500),
             ),
             spans: Vec::new(),
             styles: Vec::new(),
@@ -440,7 +440,7 @@ impl SidebarTitleAnimation {
     ) {
         self.spans.clear();
         self.styles.clear();
-        if truecolor && let ColorSource::Rgb(accent) = theme.ink(Role::BrightAccent, false) {
+        if truecolor && let ColorSource::Rgb(accent) = theme.ink(Role::Warning, false) {
             for &rect in titles {
                 if occluded(rect) {
                     continue;
@@ -8155,6 +8155,7 @@ pub(super) mod tests {
                 ..Default::default()
             };
             colors.palette.insert(12, [210, 130, 220]);
+            colors.palette.insert(3, [230, 180, 90]);
             let mut theme = Theme::default();
             crate::appearance::update_theme(&mut theme, &colors);
             surface.apply_theme(&theme, Role::Base, &[]);

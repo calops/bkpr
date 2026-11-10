@@ -8,7 +8,7 @@
 
 * Include the serving daemon's native wire family as `protocol_version` in compact and detailed `whoami` replies.
 * Strip OMP's leading pi/status decoration from recognized harness titles in sidebar, pane captions, popups and finder, preserving raw titles and ordinary program text.
-* Make the working-title gradient more visible with a full-accent highlight and a wider sweep band.
+* Make the working-title gradient more visible with a wider band, a 1.5-second cycle and the working status icon's palette color.
 
 ## [0.6.0](https://github.com/calops/bkpr/compare/v0.5.1...v0.6.0) (2026-11-10)
 
