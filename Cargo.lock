@@ -147,7 +147,7 @@ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
 name = "bkpr"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bkpr-client",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "bkpr-client"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bkpr-protocol",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "bkpr-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bkpr-protocol",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "bkpr-protocol"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "bkpr-server"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bkpr-core",
@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "bkpr-terminal-engine"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "base64",
  "bkpr-protocol",
@@ -260,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "bkpr-tui-framework"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64",
