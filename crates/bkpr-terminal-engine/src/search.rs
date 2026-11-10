@@ -1,7 +1,5 @@
 use crate::{Error, Result, Terminal, sdk};
-use bkpr_protocol::{
-    MAX_SEARCH_BYTES, MAX_VIEWS_PER_PANE, SearchAction, SearchSnapshot, SearchSpan,
-};
+use bkpr_protocol::{MAX_SEARCH_BYTES, SearchAction, SearchSnapshot, SearchSpan};
 use sdk::{
     search::{MatchBuffer, Search, Status},
     terminal::{Point, PointCoordinate, PointSpace, ScrollViewport},
@@ -66,9 +64,6 @@ impl Terminal {
         }
         if let SearchAction::Query { text } = action {
             if !self.searches.views.contains_key(id) {
-                if self.searches.views.len() >= MAX_VIEWS_PER_PANE {
-                    return Err(Error("search view limit".into()));
-                }
                 self.searches.views.insert(
                     id.to_owned(),
                     ViewSearch {

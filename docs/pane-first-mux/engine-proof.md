@@ -14,13 +14,13 @@ Review also found two independent renderer defects: ordering within `BelowBackgr
 
 [`bkpr-core`](../../crates/bkpr-core/src/lib.rs) owns independent `portable-pty` runtimes and a durable workspace/layout registry, assembled by `bkprd`. Normal execution preserves user HOME/profiles; explicit fixture homes scrub inherited credentials. [`bkpr-client`](../../crates/bkpr-client/src/lib.rs) consumes protocol scenes through the [unified composition framework](../../crates/bkpr-tui-framework/src/lib.rs). Views and layouts do not own process lifetime. Queue acceptance is distinct from child processing; ambiguous input is not blindly replayed.
 
-The [authority model](../../crates/bkpr-core/src/authority.rs) separates view identity, visibility, interactivity, input and clipboard permission. Latest eligible visible interactive view controls PTY size unless pinned. Read-only input is independent of sizing eligibility. Clipboard authority and each view's scrollback are separate. View leases expire after ten seconds; clipboard requests time out after five seconds. Stale grants and detached views fail closed.
+The [authority model](../../crates/bkpr-core/src/authority.rs) separates view identity, visibility, interactivity, input and clipboard permission. Latest eligible visible interactive view controls PTY size unless pinned. Read-only input is independent of sizing eligibility. Clipboard authority and each view's scrollback are separate. Unmanaged view leases expire after ten seconds; managed views follow their connected client authority. Clipboard requests time out after five seconds. Stale grants and detached views fail closed.
 
 Linux [process cleanup](../../crates/bkpr-core/src/process_tree.rs) is scoped to a pane's birth-verified PTY session and observed descendants, not every orphan adopted by the shared daemon. It observes the session before reaping its leader. Deliberately detached services are not an OS-container containment promise. The earlier one-pane experiment used process-wide adoption; that mechanism is not appropriate for a shared multi-pane server.
 
 ### IPC and resources
 
-The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses Planus binary wire family 7 for typed workspace/window registry operations, atomic pane creation/placement, one-shot client source publication, CI metadata/refresh and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. A fixed admission header checks family, message kind, required capabilities and the 8 MiB request / 96 MiB response bounds before allocating the payload. Control capacity remains reserved independently of long polls. These remain same-user local boundaries, not authenticated remote enrollment.
+The [private Unix transport](../../crates/bkpr-core/src/transport.rs) uses Planus binary wire family 7 for typed workspace/window registry operations, atomic pane creation/placement, one-shot client source publication, CI metadata/refresh and pane-scoped requests. It requires private current-user-owned directories, creates a mode-0600 socket, and does not replace a live listener. A fixed admission header checks family, message kind, required capabilities and the 8 MiB request / 96 MiB response bounds before allocating the payload. Small and large frames have separate byte accounting; short codec permits are never held across dispatch, long polls or socket writes. These remain same-user local boundaries, not authenticated remote enrollment.
 
 Clients receive compact lossless binary scene runs and whole-row deltas on snapshot workers. Image receipts include ID and generation, avoiding stale pixels or needless retransmission. The received allocation owns borrowed scene slices; complete validation precedes expanded native cells/resources and failure-atomic application. CLI/MCP/provider and persistence JSON are not the native wire format. Workspace/window/pane metadata and revisioned layouts persist; terminal contents and processes do not. Restored records without runtimes are explicitly Stopped. Sustained-animation CPU work remains measured separately below.
 
@@ -30,7 +30,7 @@ Clients receive compact lossless binary scene runs and whole-row deltas on snaps
 | --- | --- |
 | One input, paste or supplied clipboard payload | 1 MiB of data; larger payloads are rejected before dispatch |
 | PTY writer | 2 MiB user budget, 4 MiB total queue |
-| Local IPC | 8 MiB request, 96 MiB response; separate pane-wait, registry-wait and control admission budgets |
+| Local IPC | 8 MiB request, 96 MiB response; separate small/large frame byte pools and bounded codec work |
 | Canonical image resources accepted by the TUI | 8192 pixels per dimension, 64 MiB aggregate |
 | TUI projection working set | 128 MiB preflight budget for canonical images, visible derived tiles and planning metadata |
 
@@ -3004,4 +3004,83 @@ Controller sources are retained in `controllers.zip`.
 Archive CRCs and per-controller SHA-256 values are verified before removing loose
 owned scripts and redundant guarded-build binary copies. The accepted immutable
 pair, screenshots, raw observations and build/test receipts remain available.
+
+## Resource-based pane and attachment capacity
+
+Removed fixed pane-record, live-pane, workspace, window, client, view and managed
+launch ceilings, including terminal search/selection and the TUI's hidden global
+projection limit. Large registry validation and recovery reuse indexed ownership
+lookups; generated names use the actual occupied-name set. No native or recovery
+wire family changes are required.
+
+Local IPC bounds small/large raw and decoded request bytes independently.
+Owned Planus expansion is charged before allocation, including repeated aliased
+offsets. Short FIFO codec stages end before registry dispatch, startup waits,
+pane callbacks, long polls and socket writes. Small response capacity is separate
+from large stalled frames. Post-dispatch response-capacity failure closes only
+that socket and retains unknown-outcome semantics; OS thread/accept failures are
+localized. This does not bound the whole heap: threads, descriptors, live terminal
+state and response objects remain proportional to actual concurrent users.
+Existing message, durable-record, input, image and traversal limits remain.
+
+TUI retirement blocks only a new generation of the same pane. Failed or unknown
+detachment is a pane-local failure, not a global exhausted-view counter. Attaching
+to a completed pane expires its abandoned unmanaged leases and delta baselines,
+so an expired pin cannot survive merely because its worker has exited.
+Remote requests wait fairly for existing bounded Yamux work capacity on request
+workers; they no longer reject additional views merely because observations are
+in flight. This reuses maintained Tokio semaphores and the existing Futures
+executor, without a transport/runtime rewrite.
+
+CI history uses an independent 1 MiB retained-storage allowance, preserving
+valid authentication/rate-limit embargoes under pressure. Active snapshots remain
+retained with explicit unavailability when a context cannot be admitted. A
+separate 1 MiB provider-work allowance selects fair partial shared-target batches
+without dropping the remaining subscribers. The 400-context, mixed-size,
+expiry/retirement, oversized-source and partial-batch cases are exercised by
+deterministic regressions.
+
+### Accepted native evidence
+
+`target/smoke/capacity/accepted/181863457091037/` exercises the immutable
+`pair-4d4f0392-3c47b33c/bin/` through actual CLI/daemon frames:
+
+| Scenario | Accepted result |
+| --- | --- |
+| Saved records | 384 restored identities retained unchanged |
+| Workspace creation | 80 independent workspaces |
+| Atomic process startup | 65 unique request-local references mapped to live panes |
+| Persistent metadata | All 449 old/new pane identities survive shutdown persistence |
+| Connected clients | 40 simultaneously active, independently authenticated attachments |
+| One-pane views | 160 admitted views; exact input and original size ownership preserved |
+| Idle native sockets | 280 coexist with successful identity/control requests |
+| Disconnect | All managed views revoked; pane processes/metadata remain |
+
+The earlier immutable pair reproduces rejection of workspace 65, atomic batch 65
+and view 33; evidence is in `target/smoke/capacity/baseline/native/`.
+Normal coordinated native checks pass: 1,092 top-level tests plus one nested
+subprocess, 15 intentionally ignored, strict all-target Clippy and formatting.
+`build/host-tests.json` records host UID 1000, private HOME/XDG and zero blocked
+provider attempts. `build/protected-181666192898656/result.json` records the debug
+build and preservation of every existing public executable as found. No release
+build or whole-mux latency/CPU improvement is claimed.
+
+`visual-182408167938891/` shows all 129 distinct live pane markers in an actual
+300×100 Kitty 0.49.2 terminal on private Xvfb, with 129 backend-confirmed managed
+views. The immutable complete screenshot was inspected; physical `KEYOK` input
+then renders through the real TUI/backend path. This is functional surface proof,
+not a claim that 129 panes are a useful human layout or a latency benchmark.
+
+The dedicated `socket-observations/` fixture also passes: 140 pane polls and 33
+registry watchers are parked at an instance-local dispatch latch while 84 idle
+sockets coexist. Ordinary identity, registry and pane controls complete; released
+observations retain their expected pane/view identities, and a disconnected
+consumer cannot prevent other replies. The fixture is opt-in to avoid adding
+more than 250 OS threads to ordinary parallel tests. It runs as the host user
+with private HOME/XDG; its assertion cleanup releases the latch and sends actual
+transport shutdown before joining. The final isolated result is one additional
+passing test. The final protected strict-check receipt after this test-only
+cleanup correction is `build/protected-182402979149218/result.json`; executable
+hashes match the same immutable pair. All accepted cleanup receipts have zero
+owned survivors.
 

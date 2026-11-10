@@ -196,3 +196,37 @@ fn selected_match_recovers_after_resize_and_soft_wrap_reflow() {
         assert_eq!(term.view_scrollback_offset("other").unwrap(), 0);
     }
 }
+
+#[test]
+fn many_view_searches_progress_independently_and_retire_with_their_epoch() {
+    let mut term = Terminal::new(size(30, 4)).unwrap();
+    term.feed(b"hello marker\r\nmarker").unwrap();
+    let canonical = term.snapshot().unwrap();
+    let views = (0..40).map(|i| format!("reader-{i}")).collect::<Vec<_>>();
+    for id in &views {
+        query(&mut term, id, "marker");
+    }
+    finish(&mut term, &views[0]);
+    for id in &views {
+        let search = term.view_search(id).unwrap().unwrap();
+        assert_eq!(search.total_matches, 2);
+        assert_eq!(search.selected_index, Some(0));
+    }
+    term.search_view(&views[0], 1, SearchAction::Next).unwrap();
+    assert_eq!(
+        term.view_search(&views[0]).unwrap().unwrap().selected_index,
+        Some(1)
+    );
+    assert_eq!(
+        term.view_search(&views[1]).unwrap().unwrap().selected_index,
+        Some(0)
+    );
+    term.retain_search_views(|id| (id == views[1]).then_some(1));
+    for id in &views {
+        assert_eq!(term.view_search(id).unwrap().is_some(), id == &views[1]);
+    }
+    term.retain_search_views(|_| Some(2));
+    assert!(!term.has_view_searches());
+    assert!(!term.has_search_work().unwrap());
+    assert_eq!(term.snapshot().unwrap(), canonical);
+}

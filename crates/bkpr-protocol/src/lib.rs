@@ -35,24 +35,7 @@ pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
 pub const MAX_SEARCH_BYTES: usize = 4096;
 /// Maximum decoded pixel bytes retained for one canonical image.
 pub const IMAGE_MAX_BYTES: usize = 64 * 1024 * 1024;
-/// Admission bounds shared by registry, view authority and transport.
-pub const MAX_PANE_RECORDS: usize = 256;
-pub const MAX_LIVE_PANES: usize = 64;
-pub const MAX_VIEWS_PER_PANE: usize = 32;
-pub const MAX_ADMITTED_VIEWS: usize = 128;
-pub const MAX_WORKSPACES: usize = 64;
 pub const MAX_LAYOUT_DEPTH: usize = 16;
-pub const MAX_REGISTRY_WATCHERS: usize = 32;
-// Every successful Attach owns one daemon-global view slot, including retired scenes.
-pub const MAX_WAITING_PANE_POLLS: usize = MAX_ADMITTED_VIEWS;
-pub const MAX_CONTROL_CONNECTIONS: usize = 32;
-pub const MAX_AGENT_SUBSCRIBERS: usize = 32;
-pub const MAX_CLIENTS: usize = 32;
-pub const MAX_CONNECTIONS: usize = MAX_WAITING_PANE_POLLS
-    + MAX_REGISTRY_WATCHERS
-    + MAX_CONTROL_CONNECTIONS
-    + MAX_AGENT_SUBSCRIBERS
-    + MAX_CLIENTS;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ViewSpec {
     pub size: Size,

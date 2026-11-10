@@ -255,7 +255,6 @@ impl Registry {
                 SessionClosing("daemon is shutting down")
             );
         }
-        ensure!(clients.len() < MAX_CLIENTS, "client attachment limit");
         clients.insert(client.id.clone(), client.clone());
         let response = json!({"client":ClientAuthority {client_id:client.id.clone(),token:client.token.clone()},"session":self.inner.session});
         Ok((client, response))

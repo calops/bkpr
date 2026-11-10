@@ -8,7 +8,6 @@ use std::{
 };
 use uuid::Uuid;
 
-const MAX_LAUNCHES: usize = MAX_LIVE_PANES * 2;
 #[derive(Clone)]
 pub(crate) struct SpawnEnvironment {
     pub socket: PathBuf,
@@ -89,7 +88,6 @@ impl Captures {
         pane_id: String,
         kind: HarnessKind,
     ) -> Result<CaptureGrant> {
-        ensure!(self.launches.len() < MAX_LAUNCHES, "managed launch limit");
         ensure!(
             !self
                 .launches
@@ -338,6 +336,65 @@ mod tests {
             .insert(process(2), process(1), "pane".into(), HarnessKind::Claude)
             .unwrap();
         (captures, grant)
+    }
+    #[test]
+    fn many_launches_keep_exact_authority_and_retire_only_their_pane() {
+        let mut state = Captures::default();
+        let grants = (2..162)
+            .map(|pid| {
+                state
+                    .insert(
+                        process(pid),
+                        process(1),
+                        format!("pane-{pid}"),
+                        HarnessKind::Claude,
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            state
+                .insert(
+                    process(2),
+                    process(1),
+                    "duplicate".into(),
+                    HarnessKind::Claude
+                )
+                .is_err()
+        );
+        let first = state
+            .lookup(&grants[0].launch_id, &grants[0].token)
+            .unwrap();
+        let second = state
+            .lookup(&grants[1].launch_id, &grants[1].token)
+            .unwrap();
+        state.retire_pane(&grants[0].pane_id);
+        assert!(!first.control.is_valid());
+        assert!(
+            state
+                .lookup(&grants[0].launch_id, &grants[0].token)
+                .is_err()
+        );
+        assert!(second.control.is_valid());
+        state
+            .event(&grants[1].launch_id, &grants[1].token, CaptureEvent::End)
+            .unwrap();
+        assert!(!second.control.is_valid());
+        assert!(
+            state
+                .lookup(&grants[1].launch_id, &grants[1].token)
+                .is_err()
+        );
+        for grant in &grants[2..] {
+            assert!(
+                state
+                    .lookup(&grant.launch_id, &grant.token)
+                    .unwrap()
+                    .control
+                    .is_valid()
+            );
+        }
+        assert_eq!(state.launches.len(), grants.len() - 2);
     }
     #[test]
     fn bind_is_exact_idempotent_and_replaces_generation() {

@@ -83,10 +83,6 @@ fn initial_snapshot_shutdown_and_rollback_failures_keep_separate_provenance() {
         let error = attach(&endpoint, "pane", spec).err().unwrap();
         assert_eq!(transport::expected_shutdown(&error, true), clean);
         assert_eq!(transport::outcome_unknown(&error), !malformed_snapshot);
-        assert!(matches!(
-            error.downcast_ref::<AttachOwnership>(),
-            Some(AttachOwnership::Unconfirmed)
-        ));
         server.join().unwrap();
     }
 }

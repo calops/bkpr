@@ -574,5 +574,5 @@ mod spawn_tests;
 mod storage_tests;
 #[path = "title_tests.rs"]
 mod title_tests;
-#[path = "view_budget_tests.rs"]
-mod view_budget_tests;
+#[path = "view_lifecycle_tests.rs"]
+mod view_lifecycle_tests;

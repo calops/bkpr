@@ -269,9 +269,26 @@ Existing termwiz/Crossterm, protocol styles and the Scene renderer supply infras
 
 Use maintained `clap` for native-argv parsing, `sha2` for stable addressing and `fs2` for the cross-launcher advisory lock; its guard explicitly unlocks before an inherited descriptor can prolong ownership. Core's exclusive root lease and atomic private `session.json` remain the single identity authority. Headless tools never bootstrap. Ordinary TUI/stop targeting defaults to `bkpr`; context/request/keyboard may inherit a pane's socket unless explicitly named.
 
-The version-2 transport adds `SessionInfo`, a dedicated `ClientRegister` lifetime stream and process-bound ephemeral `ClientAuthority`. Managed short requests carry that authority; admin/headless requests never implicitly adopt managed views. Initialization precedes one-shot `ClientActivate`, and only successful activation may revoke other attachments. A repeated activation cannot detach later arrivals. EOF, owner exit or explicit detach retire managed views, queued callbacks and device grants without closing pane processes or rewriting layouts. Admission for 32 clients is separate from view/watch/control capacity.
+The version-2 transport adds `SessionInfo`, a dedicated `ClientRegister` lifetime stream and process-bound ephemeral `ClientAuthority`. Managed short requests carry that authority; admin/headless requests never implicitly adopt managed views. Initialization precedes one-shot `ClientActivate`, and only successful activation may revoke other attachments. A repeated activation cannot detach later arrivals. EOF, owner exit or explicit detach retire managed views, queued callbacks and device grants without closing pane processes or rewriting layouts. Client and view lifetime are not bounded by fixed admission counts.
 
 Keep existing synchronous Unix transport and narrow OS credential/exit observers rather than adding another async runtime. Linux retains a kernel peer pidfd; ordinary managed requests validate cheap kernel identity/liveness instead of scanning process/CWD/argv state on each key. Pane exec receives trusted immutable logical session ID/name, not client credentials. Actual scope/TTY/takeover acceptance and platform limits are recorded in the engine report; remote endpoint aggregation and cross-daemon agent discovery remain future work.
+
+Pane records, running panes, workspaces, windows, clients and views have no fixed
+count ceiling. Keep the existing durable-record, message, image, input and
+traversal bounds. Local transport separately accounts small/large raw and decoded
+request bytes, charges aliased Planus expansion before allocation, and bounds
+short decode/encode stages without holding permits across blocking dispatch or
+I/O. The synchronous socket/thread architecture remains proportional to live
+connections and subject to OS limits; this is not a global heap bound.
+
+TUI retirement dependencies are pane-local: another generation of the same pane
+waits for its old view, but unrelated panes do not share an attachment ceiling.
+Remote requests queue fairly for existing bounded Yamux work capacity instead
+of rejecting additional views. Reuse Tokio's maintained FIFO semaphore and
+[`futures::executor::block_on`](https://docs.rs/futures/latest/futures/executor/fn.block_on.html)
+on existing request workers; no custom executor or second transport is added.
+CI authentication history and request work have independent byte allowances,
+not a limit derived from pane counts. Valid provider embargoes survive pressure.
 
 Protocol 4 carries optional typed `session_closing` failure metadata with a specific
 request disposition: `not_dispatched` or `unknown` after dispatch began. Missing

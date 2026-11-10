@@ -144,7 +144,7 @@ pub(super) use portable::Monitor;
 
 mod portable {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, BinaryHeap};
     use std::fs::File;
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::unix::process::CommandExt;
@@ -156,10 +156,41 @@ mod portable {
         due: Option<Instant>,
         eager: bool,
         admission_waiting: bool,
+        request_limited: bool,
+        request_bytes: Option<usize>,
     }
     const RETRY_DEADLINE_ERROR: &str = "Provider retry deadline exceeds the supported clock range; CI requests for this authentication context are blocked until its authentication context is retired or the daemon restarts";
-    const CONTEXT_BUDGET: usize = bkpr_protocol::MAX_PANE_RECORDS + bkpr_protocol::MAX_LIVE_PANES;
-    const CONTEXT_CAPACITY_ERROR: &str = "CI authentication-context history capacity exhausted; waiting for provider retry deadlines to expire, authentication-context retirement, or daemon restart";
+    // A daemon-wide memory allowance for retained authentication embargoes, not
+    // a subscription limit. Active metadata belongs to current pane membership.
+    const CONTEXT_HISTORY_BYTES: usize = 1024 * 1024;
+    const CONTEXT_CAPACITY_ERROR: &str = "CI authentication-context history memory exhausted; waiting for provider retry deadlines to expire, authentication-context retirement, or daemon restart";
+    // Bound one CLI payload and its cloned source identities independently of
+    // active subscriptions. The provider's response remains separately bounded.
+    const REQUEST_WORK_BYTES: usize = 1024 * 1024;
+    const SOURCE_CAPACITY_ERROR: &str = "CI source metadata exceeds the local request memory allowance; waiting for source metadata to change";
+
+    fn source_work_bytes(source: &CiSource) -> Option<usize> {
+        let remote = source.remote_branch.as_ref();
+        let strings = [
+            source.cwd.as_os_str().len(),
+            source.repository.host.len(),
+            source.repository.path.len(),
+            source.sha.len(),
+            source.branch.as_ref().map_or(0, String::len),
+            remote.map_or(0, |branch| branch.remote.len()),
+            remote.map_or(0, |branch| branch.name.len()),
+            remote
+                .and_then(|branch| branch.tracking_sha.as_ref())
+                .map_or(0, String::len),
+        ];
+        // GitHub's fixed check/PR query fragments use less than 2 KiB/source.
+        // A branch appears at most three times; 48 bytes/input byte covers
+        // JSON's six-byte escapes, the enclosing JSON escaping and source clones.
+        strings.into_iter().try_fold(
+            2048usize.checked_add(std::mem::size_of::<CiSource>())?,
+            |bytes, length| bytes.checked_add(length.checked_mul(48)?),
+        )
+    }
 
     fn block_entry(entry: &mut Entry) {
         entry.due = None;
@@ -224,12 +255,67 @@ mod portable {
         blocked: bool,
     }
     type ContextBackoffs = BTreeMap<PathBuf, BTreeMap<ForgeProvider, BTreeMap<String, Backoff>>>;
+
+    // Charge a whole BTree node per entry, including spare key/value slots and
+    // internal edges. This deliberately overcounts shared/partially full nodes:
+    // std's BTree nodes have at most 11 slots and 12 edges. The extra words cover
+    // the node header and allocation bookkeeping, without a hidden context cap.
+    fn context_node_bytes<K, V>() -> usize {
+        11 * (std::mem::size_of::<K>() + std::mem::size_of::<V>())
+            + 16 * std::mem::size_of::<usize>()
+    }
+
+    fn context_storage_bytes(contexts: &ContextBackoffs) -> Option<usize> {
+        contexts.iter().try_fold(0usize, |bytes, (cwd, providers)| {
+            let bytes = bytes
+                .checked_add(context_node_bytes::<
+                    PathBuf,
+                    BTreeMap<ForgeProvider, BTreeMap<String, Backoff>>,
+                >())?
+                .checked_add(cwd.capacity())?;
+            providers.values().try_fold(bytes, |bytes, hosts| {
+                let bytes = bytes
+                    .checked_add(
+                        context_node_bytes::<ForgeProvider, BTreeMap<String, Backoff>>(),
+                    )?;
+                hosts.iter().try_fold(bytes, |bytes, (host, _)| {
+                    bytes
+                        .checked_add(context_node_bytes::<String, Backoff>())?
+                        .checked_add(host.capacity())
+                })
+            })
+        })
+    }
+
+    fn context_admission_bytes(contexts: &ContextBackoffs, source: &CiSource) -> Option<usize> {
+        let providers = contexts.get(&source.cwd);
+        let hosts = providers.and_then(|providers| providers.get(&source.repository.provider));
+        if hosts.is_some_and(|hosts| hosts.contains_key(&source.repository.host)) {
+            return Some(0);
+        }
+        let mut bytes =
+            context_node_bytes::<String, Backoff>().checked_add(source.repository.host.len())?;
+        if hosts.is_none() {
+            bytes = bytes
+                .checked_add(context_node_bytes::<ForgeProvider, BTreeMap<String, Backoff>>())?;
+        }
+        if providers.is_none() {
+            bytes = bytes
+                .checked_add(context_node_bytes::<
+                    PathBuf,
+                    BTreeMap<ForgeProvider, BTreeMap<String, Backoff>>,
+                >())?
+                .checked_add(source.cwd.as_os_str().len())?;
+        }
+        Some(bytes)
+    }
     pub(crate) struct Monitor {
         entries: BTreeMap<CiSource, Entry>,
         pending: Option<Pending>,
         next_request: Instant,
         contexts: ContextBackoffs,
         context_retry: Option<Instant>,
+        context_budget_bytes: usize,
         version: u64,
         #[cfg(test)]
         requests: u64,
@@ -242,6 +328,7 @@ mod portable {
                 next_request: Instant::now(),
                 contexts: BTreeMap::new(),
                 context_retry: None,
+                context_budget_bytes: CONTEXT_HISTORY_BYTES,
                 version: 0,
                 #[cfg(test)]
                 requests: 0,
@@ -275,27 +362,39 @@ mod portable {
         fn reconcile_contexts(&mut self, now: Instant) {
             let entries = &mut self.entries;
             let contexts = &mut self.contexts;
+            let active: BTreeSet<_> = entries
+                .keys()
+                .map(|source| {
+                    (
+                        source.cwd.as_path(),
+                        source.repository.provider,
+                        source.repository.host.as_str(),
+                    )
+                })
+                .collect();
+            let mut retry = None;
             contexts.retain(|cwd, providers| {
                 providers.retain(|provider, hosts| {
                     hosts.retain(|host, backoff| {
-                        backoff.blocked
-                            || backoff.soft.is_some_and(|due| due > now)
-                            || backoff.hard.is_some_and(|due| due > now)
-                            || entries.keys().any(|source| {
-                                &source.cwd == cwd
-                                    && &source.repository.provider == provider
-                                    && &source.repository.host == host
-                            })
+                        let subscribed =
+                            active.contains(&(cwd.as_path(), *provider, host.as_str()));
+                        let expiry = backoff.soft.into_iter().chain(backoff.hard).max();
+                        let retained =
+                            backoff.blocked || expiry.is_some_and(|due| due > now) || subscribed;
+                        if retained
+                            && !subscribed
+                            && !backoff.blocked
+                            && let Some(expiry) = expiry
+                        {
+                            retry = Some(retry.map_or(expiry, |due: Instant| due.min(expiry)));
+                        }
+                        retained
                     });
                     !hosts.is_empty()
                 });
                 !providers.is_empty()
             });
-            let mut count: usize = contexts
-                .values()
-                .flat_map(|providers| providers.values())
-                .map(BTreeMap::len)
-                .sum();
+            let mut used = context_storage_bytes(contexts);
             for (source, entry) in entries.iter_mut() {
                 let context = contexts
                     .get(&source.cwd)
@@ -311,7 +410,12 @@ mod portable {
                     continue;
                 }
                 if context.is_none() {
-                    if count == CONTEXT_BUDGET {
+                    let admitted = used
+                        .and_then(|used| {
+                            used.checked_add(context_admission_bytes(contexts, source)?)
+                        })
+                        .filter(|bytes| *bytes <= self.context_budget_bytes);
+                    if admitted.is_none() {
                         if !entry.admission_waiting
                             || entry.snapshot.fetch_state != CiFetchState::Unavailable
                         {
@@ -326,41 +430,26 @@ mod portable {
                         continue;
                     }
                     Self::context_mut(contexts, source);
-                    count += 1;
+                    used = admitted;
                 }
                 if entry.admission_waiting {
                     entry.admission_waiting = false;
                     entry.due = Some(now);
                     entry.eager = true;
+                    if entry.snapshot.error.as_deref() == Some(CONTEXT_CAPACITY_ERROR) {
+                        entry.snapshot.error = None;
+                    }
                     if entry.snapshot.fetch_state == CiFetchState::Unavailable {
                         refreshing(&mut entry.snapshot);
                         self.version = self.version.wrapping_add(1);
                     }
                 }
             }
-            self.context_retry = None;
-            if entries.values().any(|entry| entry.admission_waiting) {
-                for (cwd, providers) in contexts.iter() {
-                    for (provider, hosts) in providers {
-                        for (host, backoff) in hosts {
-                            if backoff.blocked
-                                || entries.keys().any(|source| {
-                                    &source.cwd == cwd
-                                        && &source.repository.provider == provider
-                                        && &source.repository.host == host
-                                })
-                            {
-                                continue;
-                            }
-                            if let Some(expiry) = backoff.soft.into_iter().chain(backoff.hard).max()
-                            {
-                                self.context_retry =
-                                    Some(self.context_retry.map_or(expiry, |due| due.min(expiry)));
-                            }
-                        }
-                    }
-                }
-            }
+            self.context_retry = entries
+                .values()
+                .any(|entry| entry.admission_waiting)
+                .then_some(retry)
+                .flatten();
         }
         fn request_deadline(&self, source: &CiSource) -> Instant {
             self.backoff(source)
@@ -443,6 +532,8 @@ mod portable {
                         due: Some(Instant::now()),
                         eager: true,
                         admission_waiting: true,
+                        request_limited: false,
+                        request_bytes: source_work_bytes(source),
                     },
                 );
             }
@@ -461,7 +552,10 @@ mod portable {
             let Some(selected) = selected else {
                 return;
             };
-            if self.blocked(&selected) || self.entries[&selected].admission_waiting {
+            if self.blocked(&selected)
+                || self.entries[&selected].admission_waiting
+                || self.entries[&selected].request_limited
+            {
                 return;
             }
             for (source, entry) in &mut self.entries {
@@ -471,7 +565,7 @@ mod portable {
                         .iter()
                         .any(|queried| same_target(queried, source))
                 });
-                if !same_target(&selected, source) || in_flight {
+                if !same_target(&selected, source) || in_flight || entry.request_limited {
                     continue;
                 }
                 // Explicit refresh bypasses soft backoff, never minimum spacing
@@ -489,7 +583,7 @@ mod portable {
                 || self
                     .entries
                     .get(source)
-                    .is_some_and(|entry| entry.admission_waiting)
+                    .is_some_and(|entry| entry.admission_waiting || entry.request_limited)
             {
                 return;
             }
@@ -510,7 +604,7 @@ mod portable {
                 || self
                     .entries
                     .get(source)
-                    .is_some_and(|entry| entry.admission_waiting)
+                    .is_some_and(|entry| entry.admission_waiting || entry.request_limited)
             {
                 return;
             }
@@ -539,7 +633,7 @@ mod portable {
                 || self
                     .entries
                     .get(source)
-                    .is_some_and(|entry| entry.admission_waiting)
+                    .is_some_and(|entry| entry.admission_waiting || entry.request_limited)
                 || !source.matches_snapshot(&snapshot)
             {
                 return;
@@ -647,6 +741,22 @@ mod portable {
             if self.pending.is_some() || now < self.next_request {
                 return Vec::new();
             }
+            for entry in self.entries.values_mut() {
+                if !entry.admission_waiting
+                    && entry.due.is_some()
+                    && entry
+                        .request_bytes
+                        .is_none_or(|bytes| bytes > REQUEST_WORK_BYTES)
+                {
+                    entry.due = None;
+                    entry.eager = false;
+                    entry.request_limited = true;
+                    entry.snapshot.stale = entry.snapshot.updated_at != 0;
+                    entry.snapshot.fetch_state = CiFetchState::Unavailable;
+                    entry.snapshot.error = Some(SOURCE_CAPACITY_ERROR.to_owned());
+                    self.version = self.version.wrapping_add(1);
+                }
+            }
             let sources = self.due_batch(now);
             if !sources.is_empty() {
                 self.version = self.version.wrapping_add(1);
@@ -665,43 +775,87 @@ mod portable {
             sources
         }
         fn due_batch(&self, now: Instant) -> Vec<CiSource> {
-            let mut due: Vec<_> = self
+            let eligible = |source: &CiSource, entry: &Entry| {
+                !entry.admission_waiting
+                    && !self.blocked(source)
+                    && entry.due.is_some_and(|due| due <= now)
+                    && self
+                        .backoff(source)
+                        .and_then(|backoff| backoff.hard)
+                        .is_none_or(|hard| now >= hard)
+                    && (entry.eager || self.soft_deadline(source).is_none_or(|soft| now >= soft))
+                    && entry
+                        .request_bytes
+                        .is_some_and(|bytes| bytes <= REQUEST_WORK_BYTES)
+            };
+            let Some((first, _)) = self
                 .entries
                 .iter()
-                .filter(|(source, entry)| {
-                    !entry.admission_waiting
-                        && !self.blocked(source)
-                        && entry.due.is_some_and(|due| due <= now)
-                        && self
-                            .backoff(source)
-                            .and_then(|backoff| backoff.hard)
-                            .is_none_or(|hard| now >= hard)
-                        && (entry.eager
-                            || self.soft_deadline(source).is_none_or(|soft| now >= soft))
-                })
-                .collect();
-            due.sort_by_key(|(_, entry)| entry.due);
-            let mut targets: Vec<&CiSource> = Vec::new();
-            for (source, _) in due {
-                if targets.first().is_some_and(|first| {
-                    first.repository.provider != source.repository.provider
-                        || first.repository.host != source.repository.host
-                        || first.cwd != source.cwd
-                }) {
+                .filter(|(source, entry)| eligible(source, entry))
+                .min_by_key(|(_, entry)| entry.due)
+            else {
+                return Vec::new();
+            };
+            // Select only a bounded set of remote targets; don't sort/clone all
+            // active subscriptions just to identify the next unit of work.
+            let mut targets: Vec<(&CiSource, &Entry)> = Vec::with_capacity(BATCH + 1);
+            for (source, entry) in &self.entries {
+                if first.cwd != source.cwd
+                    || first.repository.provider != source.repository.provider
+                    || first.repository.host != source.repository.host
+                    || !eligible(source, entry)
+                {
                     continue;
                 }
-                if !targets.iter().any(|other| same_target(other, source)) {
-                    targets.push(source);
+                if let Some(target) = targets
+                    .iter_mut()
+                    .find(|(other, _)| same_target(other, source))
+                {
+                    if entry.due < target.1.due {
+                        *target = (source, entry);
+                    }
+                } else {
+                    targets.push((source, entry));
                 }
-                if targets.len() == BATCH {
-                    break;
+                targets.sort_unstable_by(|(left, left_entry), (right, right_entry)| {
+                    left_entry
+                        .due
+                        .cmp(&right_entry.due)
+                        .then_with(|| left.cmp(right))
+                });
+                targets.truncate(BATCH);
+            }
+            // Prioritize due subscribers before optional same-target consumers.
+            // Removing the latest candidate keeps storage bounded and ensures a
+            // partial shared-target batch cannot starve its oldest due consumer.
+            let mut subscribers = BinaryHeap::new();
+            let mut bytes = 0;
+            for (source, entry) in &self.entries {
+                if entry.admission_waiting
+                    || !targets
+                        .iter()
+                        .any(|(target, _)| same_target(target, source))
+                {
+                    continue;
+                }
+                let Some(charge) = entry
+                    .request_bytes
+                    .filter(|bytes| *bytes <= REQUEST_WORK_BYTES)
+                else {
+                    continue;
+                };
+                subscribers.push((!eligible(source, entry), entry.due, source, charge));
+                bytes += charge;
+                while bytes > REQUEST_WORK_BYTES {
+                    let (_, _, _, charge) = subscribers.pop().expect("subscriber inserted");
+                    bytes -= charge;
                 }
             }
-            // The budget counts remote refs or detached commits, not local subscribers.
-            self.entries
-                .keys()
-                .filter(|source| targets.iter().any(|commit| same_target(commit, source)))
-                .cloned()
+            let mut subscribers = subscribers.into_vec();
+            subscribers.sort_unstable_by(|left, right| left.2.cmp(right.2));
+            subscribers
+                .into_iter()
+                .map(|(_, _, source, _)| source.clone())
                 .collect()
         }
         fn finish(
@@ -2456,60 +2610,79 @@ mod portable {
             assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
         }
 
+        fn history_bytes(sources: &[CiSource]) -> usize {
+            let mut contexts = ContextBackoffs::new();
+            for source in sources {
+                Monitor::context_mut(&mut contexts, source);
+            }
+            context_storage_bytes(&contexts).unwrap()
+        }
+
         #[test]
-        fn context_history_is_bounded_without_evicting_limits_or_capping_subscriptions() {
-            let count = |monitor: &Monitor| -> usize {
-                monitor
-                    .contexts
-                    .values()
-                    .flat_map(|providers| providers.values())
-                    .map(BTreeMap::len)
-                    .sum()
-            };
+        fn hundreds_of_independent_active_contexts_retain_truthful_metadata() {
+            let sources: Vec<_> = (0..400)
+                .map(|index| {
+                    let mut source = source(&format!("commit-{index}"));
+                    source.cwd = format!("/project-{index}").into();
+                    source
+                })
+                .collect();
+            let mut monitor = Monitor::new();
+            monitor.sync(sources.iter().cloned());
+            assert_eq!(monitor.entries.len(), sources.len());
+            for source in &sources {
+                assert!(!monitor.entries[source].admission_waiting);
+                assert!(monitor.backoff(source).is_some());
+                assert_eq!(monitor.snapshot(source), Some(empty(source, 0)));
+            }
+            // Each distinct authentication context gets a turn, without IO.
+            for _ in &sources {
+                let batch = monitor.reserve_batch(monitor.next_request.max(Instant::now()));
+                assert_eq!(batch.len(), 1);
+                let source = &batch[0];
+                finish_snapshot(
+                    &mut monitor,
+                    source,
+                    complete_snapshot(source, &[CiStatus::Passed]),
+                );
+            }
+            assert_eq!(monitor.timeout(), -1);
+        }
+
+        #[test]
+        fn history_memory_pressure_preserves_limits_until_expiry_or_auth_retirement() {
             for finite_expiry in [false, true] {
-                let mut monitor = Monitor::new();
                 let mut active = source("active");
                 active.cwd = "/active-context".into();
-                monitor.sync([active.clone()].into_iter());
+                let mut retired = source("retired");
+                retired.cwd = format!("/retired/{}", "long-directory-".repeat(128)).into();
+                retired.repository.host = format!("{}.example.invalid", "host".repeat(256));
+                let budget = history_bytes(&[active.clone(), retired.clone()]);
+                let mut monitor = Monitor {
+                    context_budget_bytes: budget,
+                    ..Monitor::new()
+                };
+                monitor.sync([active.clone(), retired.clone()].into_iter());
+                assert_eq!(context_storage_bytes(&monitor.contexts), Some(budget));
                 finish_snapshot(
                     &mut monitor,
                     &active,
                     complete_snapshot(&active, &[CiStatus::Running]),
                 );
-                let mut expiring = None;
-                for index in 0..CONTEXT_BUDGET - 1 {
-                    let mut retired = source(&format!("retired-{index}"));
-                    retired.cwd = format!("/retired-context-{index}").into();
-                    monitor.sync([active.clone(), retired.clone()].into_iter());
-                    let delay = if finite_expiry && index == 0 {
-                        7200
-                    } else {
-                        u64::MAX
-                    };
-                    monitor.finish_fixture(
-                        std::slice::from_ref(&retired),
-                        Ok(json!({
-                            "data":null,"errors":[{"type":"RATE_LIMITED"}],"_retry_after":delay
-                        })),
-                    );
-                    if finite_expiry && index == 0 {
-                        expiring = Some((
-                            retired.clone(),
-                            monitor.backoff(&retired).unwrap().hard.unwrap(),
-                        ));
-                    }
-                    assert!(count(&monitor) <= CONTEXT_BUDGET);
-                }
+                monitor.finish_fixture(
+                    std::slice::from_ref(&retired),
+                    Ok(json!({
+                        "data":null,"errors":[{"type":"RATE_LIMITED"}],
+                        "_retry_after": if finite_expiry { 7200 } else { u64::MAX }
+                    })),
+                );
+                let deadline = monitor.backoff(&retired).unwrap().hard;
                 let mut waiting = source("waiting");
                 waiting.cwd = "/waiting-context".into();
                 monitor.sync([active.clone(), waiting.clone()].into_iter());
                 assert_eq!(monitor.entries.len(), 2);
-                assert_eq!(count(&monitor), CONTEXT_BUDGET);
+                assert_eq!(context_storage_bytes(&monitor.contexts), Some(budget));
                 assert!(monitor.entries[&waiting].admission_waiting);
-                assert_eq!(
-                    monitor.snapshot(&waiting).unwrap().fetch_state,
-                    CiFetchState::Unavailable
-                );
                 assert_eq!(
                     monitor.snapshot(&waiting).unwrap().error.as_deref(),
                     Some(CONTEXT_CAPACITY_ERROR)
@@ -2524,25 +2697,26 @@ mod portable {
                     &active,
                     complete_snapshot(&active, &[CiStatus::Passed]),
                 );
-                if let Some((expired, deadline)) = expiring {
+                if finite_expiry {
+                    let deadline = deadline.unwrap();
                     assert_eq!(monitor.context_retry, Some(deadline));
-                    assert!(monitor.timeout() > 0);
                     monitor.reconcile_contexts(deadline - Duration::from_nanos(1));
                     assert!(monitor.entries[&waiting].admission_waiting);
+                    assert_eq!(monitor.backoff(&retired).unwrap().hard, Some(deadline));
                     assert!(
                         monitor
                             .reserve_batch(deadline - Duration::from_nanos(1))
                             .is_empty()
                     );
                     monitor.reconcile_contexts(deadline);
-                    assert!(monitor.backoff(&expired).is_none());
+                    assert!(monitor.backoff(&retired).is_none());
                     assert!(!monitor.entries[&waiting].admission_waiting);
                     assert_eq!(
                         monitor.snapshot(&waiting).unwrap().fetch_state,
                         CiFetchState::Loading
                     );
+                    assert!(monitor.snapshot(&waiting).unwrap().error.is_none());
                     assert_eq!(monitor.reserve_batch(deadline), vec![waiting.clone()]);
-                    assert_eq!(count(&monitor), CONTEXT_BUDGET);
                     finish_snapshot(
                         &mut monitor,
                         &waiting,
@@ -2550,24 +2724,167 @@ mod portable {
                     );
                     monitor.sync([active.clone()].into_iter());
                     assert!(monitor.backoff(&waiting).is_none());
-                    assert_eq!(count(&monitor), CONTEXT_BUDGET - 1);
+                    assert_eq!(
+                        context_storage_bytes(&monitor.contexts),
+                        Some(history_bytes(&[active]))
+                    );
                 } else {
+                    assert!(monitor.blocked(&retired));
                     assert_eq!(monitor.context_retry, None);
                     assert_eq!(monitor.timeout(), -1);
                     monitor.sync([active, waiting.clone()].into_iter());
-                    assert_eq!(count(&monitor), CONTEXT_BUDGET);
                     assert!(monitor.entries[&waiting].admission_waiting);
                     let spacing = monitor.next_request;
                     monitor.retire_auth();
                     monitor.sync([waiting.clone()].into_iter());
-                    assert_eq!(count(&monitor), 1);
-                    assert_eq!(
-                        monitor.snapshot(&waiting).unwrap().fetch_state,
-                        CiFetchState::Loading
-                    );
+                    assert!(!monitor.entries[&waiting].admission_waiting);
                     assert_eq!(monitor.reserve_batch(spacing), vec![waiting]);
                 }
             }
+        }
+
+        #[test]
+        fn history_accounts_for_dynamic_keys_and_retains_soft_auth_embargoes() {
+            let mut old = source("old");
+            old.cwd = format!("/{}", "directory".repeat(256)).into();
+            old.repository.host = format!("{}.invalid", "host".repeat(128));
+            let exact = history_bytes(std::slice::from_ref(&old));
+            let mut monitor = Monitor {
+                context_budget_bytes: exact - 1,
+                ..Monitor::new()
+            };
+            monitor.sync([old.clone()].into_iter());
+            assert!(monitor.backoff(&old).is_none());
+            assert!(monitor.entries[&old].admission_waiting);
+            assert_eq!(monitor.timeout(), -1);
+            let mut monitor = Monitor {
+                context_budget_bytes: exact,
+                ..Monitor::new()
+            };
+            monitor.sync([old.clone()].into_iter());
+            assert!(!monitor.entries[&old].admission_waiting);
+            monitor.finish(
+                std::slice::from_ref(&old),
+                Err(FetchError {
+                    message: "authentication unavailable".into(),
+                    retry: RetryPolicy::Authentication,
+                }),
+            );
+            let deadline = monitor.backoff(&old).unwrap().soft.unwrap();
+            let mut waiting = source("new");
+            waiting.cwd = "/new-context".into();
+            monitor.sync([waiting.clone()].into_iter());
+            assert!(monitor.entries[&waiting].admission_waiting);
+            monitor.reconcile_contexts(deadline - Duration::from_nanos(1));
+            assert!(monitor.entries[&waiting].admission_waiting);
+            assert_eq!(monitor.backoff(&old).unwrap().soft, Some(deadline));
+            monitor.reconcile_contexts(deadline);
+            assert!(monitor.backoff(&old).is_none());
+            assert!(!monitor.entries[&waiting].admission_waiting);
+            assert_eq!(monitor.reserve_batch(deadline), vec![waiting]);
+        }
+
+        #[test]
+        fn oversized_request_keys_fail_locally_without_polling_and_recover_on_metadata_change() {
+            let mut oversized = source("large");
+            oversized.branch = Some("b".repeat(REQUEST_WORK_BYTES / 48 + 1));
+            let normal = source("normal");
+            let mut monitor = Monitor::new();
+            monitor.sync([oversized.clone(), normal.clone()].into_iter());
+            assert_eq!(monitor.reserve_batch(Instant::now()), vec![normal.clone()]);
+            assert_eq!(
+                monitor.snapshot(&oversized).unwrap().error.as_deref(),
+                Some(SOURCE_CAPACITY_ERROR)
+            );
+            assert!(monitor.entries[&oversized].due.is_none());
+            finish_snapshot(
+                &mut monitor,
+                &normal,
+                complete_snapshot(&normal, &[CiStatus::Passed]),
+            );
+            monitor.refresh(&target(&oversized));
+            monitor.resume(&oversized);
+            monitor.source_unavailable(&oversized, "superseded diagnostic");
+            monitor.restore_published(
+                &oversized,
+                complete_snapshot(&oversized, &[CiStatus::Running]),
+                Some((Some(Instant::now()), true)),
+            );
+            assert_eq!(
+                monitor.snapshot(&oversized).unwrap().error.as_deref(),
+                Some(SOURCE_CAPACITY_ERROR)
+            );
+            assert_eq!(monitor.timeout(), -1);
+            assert!(monitor.reserve_batch(monitor.next_request).is_empty());
+            let mut replacement = oversized;
+            replacement.branch = Some("small".into());
+            monitor.sync([replacement.clone()].into_iter());
+            assert_eq!(
+                monitor.reserve_batch(monitor.next_request.max(Instant::now())),
+                vec![replacement]
+            );
+        }
+
+        #[test]
+        fn partial_shared_target_batches_bound_bytes_without_losing_or_starving_subscribers() {
+            let sources: Vec<_> = (0..400)
+                .map(|index| {
+                    let mut source = source("shared-commit");
+                    source.branch = Some(format!("branch-{index:04}-{}", "b".repeat(512)));
+                    source
+                })
+                .collect();
+            let mut monitor = Monitor::new();
+            monitor.sync(sources.iter().cloned());
+            let mut remaining: BTreeSet<_> = sources.iter().cloned().collect();
+            let mut turns = 0;
+            while !remaining.is_empty() {
+                let batch = monitor.reserve_batch(monitor.next_request.max(Instant::now()));
+                assert!(!batch.is_empty());
+                assert!(batch.len() < sources.len());
+                assert!(
+                    batch
+                        .iter()
+                        .map(|source| source_work_bytes(source).unwrap())
+                        .sum::<usize>()
+                        <= REQUEST_WORK_BYTES
+                );
+                let (_, payload) = github::request(&batch).unwrap();
+                assert!(payload.len() <= REQUEST_WORK_BYTES);
+                let before = remaining.len();
+                for source in &batch {
+                    remaining.remove(source);
+                }
+                assert!(
+                    remaining.len() < before,
+                    "oldest due subscribers must make progress"
+                );
+                let results = batch
+                    .iter()
+                    .map(|source| {
+                        (
+                            source.clone(),
+                            Ok(complete_snapshot(source, &[CiStatus::Passed])),
+                        )
+                    })
+                    .collect();
+                monitor.finish(
+                    &batch,
+                    Ok(BatchResponse {
+                        results,
+                        global_error: None,
+                        retry_after: None,
+                    }),
+                );
+                for source in &remaining {
+                    assert!(monitor.entries[source].due.is_some());
+                    assert_eq!(monitor.snapshot(source).unwrap().updated_at, 0);
+                }
+                turns += 1;
+                assert!(turns <= sources.len());
+            }
+            assert!(turns > 1);
+            assert_eq!(monitor.timeout(), -1);
         }
 
         #[test]

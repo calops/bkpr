@@ -321,7 +321,6 @@ impl Pane {
         Self::spawn_with_id(
             PreparedSpawnSpec::new(spec)?,
             Uuid::new_v4().to_string(),
-            Arc::default(),
             None,
             None,
             None,
@@ -331,7 +330,6 @@ impl Pane {
     fn spawn_with_id(
         spec: PreparedSpawnSpec,
         pane_id: String,
-        view_budget: Arc<authority::ViewBudget>,
         spawn_environment: Option<harness::SpawnEnvironment>,
         status_wake: Option<crossbeam_channel::Sender<()>>,
         context: Option<SpawnContext>,
@@ -348,7 +346,7 @@ impl Pane {
         };
         let (resize_wake, resize_events) = crossbeam_channel::bounded(1);
         let shared = Arc::new(Shared {
-            authority: Mutex::new(Authority::with_budget(view_budget)),
+            authority: Mutex::new(Authority::default()),
             published: Mutex::new(Published::default()),
             clipboard: Mutex::new(None),
             requests: Mutex::new(()),

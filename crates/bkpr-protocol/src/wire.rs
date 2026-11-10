@@ -29,17 +29,19 @@ use planus::{Builder, ReadAsRoot};
 /// at most `max` bytes, but an owned Rust tree can require more than its compact
 /// representation. A separate aggregate allocation/work budget prevents a small
 /// malicious DAG from expanding without bound. Charge before reserving/copying.
-struct Budget {
+struct Budget<'a> {
     remaining: usize,
     nodes: usize,
     max: usize,
+    charge: Option<&'a mut dyn FnMut(usize) -> Result<()>>,
 }
-impl Budget {
+impl<'a> Budget<'a> {
     fn new(max: usize) -> Self {
         Self {
             remaining: max.saturating_mul(4),
             nodes: max / 4,
             max,
+            charge: None,
         }
     }
     fn bytes(&mut self, bytes: usize) -> Result<()> {
@@ -48,6 +50,9 @@ impl Budget {
             .remaining
             .checked_sub(bytes)
             .ok_or_else(|| anyhow::anyhow!("native aggregate allocation limit"))?;
+        if let Some(charge) = &mut self.charge {
+            charge(bytes)?;
+        }
         Ok(())
     }
     fn vector(&mut self, length: usize, element: usize) -> Result<()> {
@@ -204,6 +209,24 @@ impl Codec {
 }
 
 pub fn decode_request(bytes: &[u8]) -> Result<Request> {
+    decode_request_inner(bytes, None)
+}
+
+/// Charge each owned-data allocation before it is reserved or copied. Existing
+/// per-message allocation, traversal and wire bounds remain independently active.
+/// A caller can retain a byte reservation for the request without holding a
+/// shared accounting lock or worker permit across decoding or dispatch.
+pub fn decode_request_charged(
+    bytes: &[u8],
+    charge: &mut dyn FnMut(usize) -> Result<()>,
+) -> Result<Request> {
+    decode_request_inner(bytes, Some(charge))
+}
+
+fn decode_request_inner(
+    bytes: &[u8],
+    charge: Option<&mut dyn FnMut(usize) -> Result<()>>,
+) -> Result<Request> {
     ensure!(bytes.len() <= MAX_REQUEST, "native request size limit");
     let root = g::RequestRef::read_as_root(bytes)?;
     let version = root.version()?;
@@ -211,8 +234,9 @@ pub fn decode_request(bytes: &[u8]) -> Result<Request> {
         version == PROTOCOL_VERSION,
         "unsupported native request version {version}"
     );
-    let operation =
-        operations::read_operation(root.operation()?, &mut Budget::new(MAX_REQUEST), 0)?;
+    let mut budget = Budget::new(MAX_REQUEST);
+    budget.charge = charge;
+    let operation = operations::read_operation(root.operation()?, &mut budget, 0)?;
     Ok(Request { version, operation })
 }
 /// Cold borrowed-buffer convenience. Nested scene bytes must be copied because

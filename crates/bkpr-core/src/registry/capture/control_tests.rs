@@ -451,19 +451,35 @@ fn authenticated_control_read_input_use_private_views_without_changing_human_aut
             .as_ref()
             .map(|owner| (&owner.view_id, owner.size))
     );
-    // View admission failure must not evict a human view or leak partial views.
-    while f.fixture.snapshot(&f.pane).views.len() < MAX_VIEWS_PER_PANE {
+    // Private control views remain transient even with many human views.
+    for _ in 0..40 {
         human_view(&f);
     }
-    assert!(
-        f.call(
-            "input.text",
-            json!({"pane_id":f.pane,"text":"not-admitted"}),
-            AgentScope::Workspace
-        )
-        .is_err()
-    );
-    assert_eq!(f.fixture.snapshot(&f.pane).views.len(), MAX_VIEWS_PER_PANE);
+    let humans = f.fixture.snapshot(&f.pane);
+    for operation in ["pane.read", "input.text"] {
+        let arguments = if operation == "input.text" {
+            json!({"pane_id":f.pane,"text":"many-views"})
+        } else {
+            json!({"pane_id":f.pane})
+        };
+        f.call(operation, arguments, AgentScope::Workspace).unwrap();
+        let after = f.fixture.snapshot(&f.pane);
+        assert_eq!(
+            serde_json::to_value(&after.views).unwrap(),
+            serde_json::to_value(&humans.views).unwrap()
+        );
+        assert_eq!(
+            after
+                .size_owner
+                .as_ref()
+                .map(|owner| (&owner.view_id, owner.size)),
+            humans
+                .size_owner
+                .as_ref()
+                .map(|owner| (&owner.view_id, owner.size))
+        );
+        assert_eq!(after.lifecycle, humans.lifecycle);
+    }
 }
 
 #[test]

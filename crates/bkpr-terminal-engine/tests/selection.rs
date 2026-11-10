@@ -273,3 +273,35 @@ fn oversized_copy_is_rejected_without_returning_truncated_text() {
     assert!(error.to_string().contains("payload limit"));
     assert!(line.len() * 100 > MAX_INPUT_BYTES);
 }
+
+#[test]
+fn many_view_selections_remain_independent_and_release_on_retirement() {
+    let mut term = Terminal::new(size(20, 4)).unwrap();
+    term.feed(b"hello world").unwrap();
+    let canonical = term.snapshot().unwrap();
+    let views = (0..40).map(|i| format!("reader-{i}")).collect::<Vec<_>>();
+    for id in &views {
+        drag(&mut term, id, (0.1, 0.5), (4.9, 0.5), 0);
+    }
+    for id in &views {
+        assert_eq!(copied(&mut term, id), "hello");
+    }
+    send(
+        &mut term,
+        &views[0],
+        SelectionAction::Clear,
+        0.0,
+        0.0,
+        0,
+        2000,
+    );
+    assert!(term.copy_view_selection(&views[0]).unwrap().is_none());
+    assert_eq!(copied(&mut term, &views[1]), "hello");
+    term.retain_selection_views(|id| id == views[1]);
+    for id in &views {
+        assert_eq!(term.view_selection(id).unwrap().is_some(), id == &views[1]);
+    }
+    term.retain_selection_views(|_| false);
+    assert!(!term.has_view_selections());
+    assert_eq!(term.snapshot().unwrap(), canonical);
+}

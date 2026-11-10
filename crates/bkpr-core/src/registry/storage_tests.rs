@@ -1,5 +1,72 @@
 use super::*;
 
+#[test]
+fn large_saved_registry_round_trips_and_automatic_names_follow_existing_documents() {
+    let root = private_tempdir();
+    let registry = Registry::open(root.path()).unwrap();
+    registry
+        .mutate(|snapshot| {
+            for index in 0..384 {
+                let workspace_id = Uuid::new_v4().to_string();
+                let window_id = Uuid::new_v4().to_string();
+                let pane_id = Uuid::new_v4().to_string();
+                snapshot.workspaces.push(Workspace {
+                    id: workspace_id.clone(),
+                    name: if index == 0 {
+                        "Workspace".into()
+                    } else {
+                        format!("Workspace {}", index + 1)
+                    },
+                    revision: 1,
+                    windows: vec![Window {
+                        id: window_id.clone(),
+                        name: "Window".into(),
+                        revision: 1,
+                        layout: Some(LayoutNode::Leaf {
+                            pane_id: pane_id.clone(),
+                        }),
+                    }],
+                });
+                snapshot.panes.push(PaneInfo {
+                    id: pane_id,
+                    workspace_id: Some(workspace_id),
+                    window_id: Some(window_id),
+                    title: "saved".into(),
+                    status: PaneStatus::Stopped,
+                    exit_code: Some(0),
+                    cwd: root.path().into(),
+                    home: root.path().into(),
+                    foreground_cwd: None,
+                    harness: None,
+                    harness_status: None,
+                    project: None,
+                    isolated_environment: false,
+                });
+            }
+            Ok(())
+        })
+        .unwrap();
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: None,
+        },
+    );
+    let before = registry.snapshot().unwrap();
+    assert_eq!(before.workspaces.len(), 385);
+    assert_eq!(before.panes.len(), 384);
+    assert_eq!(before.workspaces.last().unwrap().name, "Workspace 385");
+    drop(registry);
+    let registry = Registry::open(root.path()).unwrap();
+    let after = registry.snapshot().unwrap();
+    assert_eq!(
+        serde_json::to_value(&after).unwrap(),
+        serde_json::to_value(&before).unwrap()
+    );
+    assert!(registry.inner.state.lock().unwrap().live.is_empty());
+}
+
 struct ResumeStorage(Option<std::sync::mpsc::SyncSender<()>>);
 impl Drop for ResumeStorage {
     fn drop(&mut self) {

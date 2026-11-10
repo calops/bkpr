@@ -770,7 +770,7 @@ fn invalid_batch_ownership_references_and_layouts_never_reach_child_setup() {
                 .is_err()
         );
     }
-    for case in 0..7 {
+    for case in 0..6 {
         let mut operation = batch_operation(registry, &workspace, entries.clone(), valid.clone());
         if let Operation::PaneSpawn {
             workspace_id,
@@ -786,8 +786,7 @@ fn invalid_batch_ownership_references_and_layouts_never_reach_child_setup() {
                 2 => *window_id = None,
                 3 => *layout = None,
                 4 => panes.clear(),
-                5 => *panes = vec![entries[0].clone(); MAX_LIVE_PANES + 1],
-                6 => {
+                5 => {
                     *workspace_id = None;
                     *window_id = None;
                     *expected_revision = None;
@@ -1419,45 +1418,46 @@ fn unowned_admin_batch_returns_every_mapping_without_creating_workspace_or_layou
 }
 
 #[test]
-fn entire_batch_record_capacity_is_reserved_before_any_child_setup() {
+fn new_windows_use_existing_names_without_a_document_count_ceiling() {
     let fixture = Fixture::new();
     let registry = &fixture.registry;
+    let workspace_id = create(registry, "many windows");
     registry
         .mutate(|snapshot| {
-            for _ in 0..MAX_PANE_RECORDS - 1 {
-                snapshot.panes.push(PaneInfo {
+            let workspace = snapshot
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == workspace_id)
+                .unwrap();
+            for index in 0..384 {
+                workspace.windows.push(Window {
                     id: Uuid::new_v4().to_string(),
-                    workspace_id: None,
-                    window_id: None,
-                    title: "saved".into(),
-                    status: PaneStatus::Stopped,
-                    exit_code: None,
-                    cwd: fixture._root.path().into(),
-                    home: fixture._root.path().into(),
-                    foreground_cwd: None,
-                    harness: None,
-                    harness_status: None,
-                    project: None,
-                    isolated_environment: false,
+                    name: if index == 0 {
+                        "Window".into()
+                    } else {
+                        format!("Window {}", index + 1)
+                    },
+                    revision: 1,
+                    layout: None,
                 });
             }
             Ok(())
         })
         .unwrap();
-    let one = fixture.home("over-capacity-one");
-    let two = fixture.home("over-capacity-two");
-    let error = registry
-        .request(Request::new(Operation::PaneSpawn {
-            workspace_id: None,
-            window_id: None,
-            expected_revision: None,
-            panes: vec![batch_entry("one", &one), batch_entry("two", &two)],
-            layout: None,
-        }))
-        .unwrap_err();
-    assert!(error.to_string().contains("pane limit"));
-    assert!(!one.exists() && !two.exists());
-    assert_eq!(registry.inner.state.lock().unwrap().spawning, 0);
+    send(
+        registry,
+        Operation::WindowCreate {
+            workspace_id,
+            expected_revision: 1,
+            name: None,
+            spec: spec(&fixture.home("next-window")),
+        },
+    );
+    let snapshot = registry.snapshot().unwrap();
+    let workspace = &snapshot.workspaces[0];
+    assert_eq!(workspace.windows.len(), 385);
+    assert_eq!(workspace.windows.last().unwrap().name, "Window 385");
+    assert_eq!(snapshot.panes.len(), 1);
 }
 
 #[test]
