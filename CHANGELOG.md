@@ -10,12 +10,21 @@
 * Strip OMP's leading pi/status decoration from recognized harness titles in sidebar, pane captions, popups and finder, preserving raw titles and ordinary program text.
 * Make the working-title gradient more visible with a wider band, a 1.5-second cycle and the working status icon's palette color.
 * Enable inline images in managed OMP through its native graphics capability API, preserving explicit protocol overrides without spoofing terminal identity.
-* Use a Nerd Font progress-clock icon for refreshing Git metadata, keeping the branch icon visual footprint and text alignment.
+* Use a Nerd Font progress-clock icon for refreshing Git metadata, keeping the branch icon's visual footprint and text alignment.
 * Give the managed Codex TUI a launch-only Kitty identity override for native image discovery, leaving its app-server and other harnesses unchanged.
+* Reject oversized JSON Unix-byte paths while decoding rather than buffering the complete path value first, preserving exact accepted path bytes and schema shapes.
+* Keep pending terminal device replies separate from paste bytes; preserve queued effects and their resource accounting when encoding plain-text or MIME paste.
+* Keep overlay modal ordering consistent when policies change, and erase complete intersected wide glyphs when framework text or clear operations replace only part of a glyph.
+* Refresh open finder diagnostics on metadata-only changes without losing the query or selected pane. Keep clipped search queries on complete grapheme boundaries and share their paint/highlight geometry.
 
 ### Maintenance
 
+* Publish pane snapshots and PTY writer receipts through shared protocol types, preserving borrowed backend storage and owned client decoding. Reuse protocol transport payload limits instead of duplicating them.
 * Ship Ghostty-derived `bkpr` terminfo and its source, with matching device-reply patterns. Configure pane database lookup in the backend while preserving user search paths and the existing `TERM` value.
+
+### Documentation
+
+* Document protocol, core, terminal-engine, TUI-framework and client public consumer contracts and enforce missing API documentation at compile time. Add crate-local guidance and shared code-quality/context-loading rules.
 
 ## [0.6.0](https://github.com/calops/bkpr/compare/v0.5.1...v0.6.0) (2026-11-10)
 

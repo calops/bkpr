@@ -16,6 +16,16 @@ Before sizeable custom implementation, proactively inspect existing dependencies
 
 The implementation plan and source ledger are in `docs/pane-first-mux/implementation-plan.md`. Historical experiments record evidence, not production acceptance. Distinguish implemented behavior, agreed design and unresolved decisions.
 
+## Code quality and crate guidance
+
+Maintain a short `AGENTS.md` in each first-party crate as it comes into scope: actual responsibility/dependency boundaries, important entry points, ownership/lifecycle invariants, non-obvious pitfalls and relevant verification. Keep shared standards here, not copied into every crate. Before editing a crate from a root-launched session, explicitly read its local guidance if present; descendant files are not automatically injected. Omp task subagents filter `AGENTS.md`, so pass the relevant crate contracts explicitly in their task context.
+
+Every public entity needs a concise Rust doc comment stating its consumer-facing meaning or contract, including relevant constraints, errors, panics or safety requirements. Keep design rationale and rejected alternatives out of API docs; retain useful rationale in crate guidance. Don't hand-edit generated/vendor code; address generator-owned documentation at its source.
+
+Prefer self-explanatory code. Comments are a last resort for unavoidable non-obvious complexity or an optimization that cannot be understood locally; don't narrate the code. DRY is paramount: extract abstractions for real duplication and a stable shared responsibility, with concrete consumers. Don't merge similar-looking code with different semantics or build unused generic frameworks.
+
+Review dependency maintenance, licensing, feature selection, transitive version duplication and compilation costs. A popular substantial crate is not unsuitable merely because its dependency tree is large; don't replace a good library with custom infrastructure to reduce a count. Justify dependency changes with actual capability, architecture and build/performance evidence.
+
 ## Architecture and crate boundaries
 
 The backend owns panes, their processes/PTYs, canonical terminal state and associated authoritative data independently of attached clients. Displaying a pane doesn't own its lifetime or change backend workspace membership. TUI, GUI, browser and mobile clients may project the same state differently; a mobile view may show one pane without sidebar chrome.
