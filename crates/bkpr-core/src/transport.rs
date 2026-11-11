@@ -1,10 +1,15 @@
+//! Private Unix-socket request serving for the daemon registry.
+//!
+//! Binding owns the socket path and exclusive lease; serving adds request dispatch,
+//! bootstrap admission, signal handling and registry shutdown.
+
 use crate::registry::{Registry, RegistryBusy, SessionClosing};
 mod capacity;
 mod clients;
 use anyhow::{Context, Result, bail};
 #[cfg(test)]
 use bkpr_protocol::PaneRequest;
-use bkpr_protocol::wire::{self, Codec, Kind};
+use bkpr_protocol::wire::{self, Codec, Kind, MAX_REQUEST, MAX_RESPONSE};
 use bkpr_protocol::{
     AgentRequest, Operation, PROTOCOL_VERSION, PaneSpawnSpec, Payload, Request, RequestFailure,
     RequestOutcome, Response,
@@ -27,8 +32,6 @@ use std::{
     thread,
     time::Duration,
 };
-const MAX_REQUEST: usize = 8 * 1024 * 1024;
-const MAX_RESPONSE: usize = 96 * 1024 * 1024;
 // These budgets cover transient wire work, never connected clients or observers.
 const FRAME_WORKERS: usize = 4;
 
@@ -208,7 +211,9 @@ fn diagnostic_operation(operation: &Operation) -> Option<DiagnosticOperation> {
 #[cfg(test)]
 type DispatchObserver = Arc<dyn Fn(&Operation) + Send + Sync>;
 
-/// A bound listener may queue initial-wrapper requests before pane startup commits.
+/// Bound private socket and exclusive daemon lease, before request dispatch starts.
+///
+/// Dropping closes the listener, removes the socket path and releases the lease.
 pub struct BoundSocket {
     listener: UnixListener,
     socket: PathBuf,
@@ -217,7 +222,14 @@ pub struct BoundSocket {
     #[cfg(test)]
     dispatch_observer: Option<DispatchObserver>,
 }
-/// Bind ownership and listening independently of starting request dispatch.
+/// Acquire the exclusive socket lease and bind without dispatching requests.
+///
+/// Creates missing parent directories privately and replaces only a current-user
+/// socket whose listener refuses connections.
+///
+/// # Errors
+/// Returns an error for an unsafe parent or lock, an existing owner or live
+/// listener, an unsafe stale socket, or filesystem/listener setup failure.
 pub fn bind(socket: &Path) -> Result<BoundSocket> {
     let parent = socket.parent().context("socket needs parent directory")?;
     if !parent.exists() {
@@ -276,16 +288,42 @@ pub fn bind(socket: &Path) -> Result<BoundSocket> {
         dispatch_observer: None,
     })
 }
-/// Convenience for existing library consumers which do not bootstrap a first pane.
+/// Bind and serve a registry without running an initial pane bootstrap.
+///
+/// Blocks until shutdown or a serving failure. See [`BoundSocket::serve`] for
+/// shutdown behavior.
+///
+/// # Errors
+/// Returns binding, serving or registry shutdown errors.
 pub fn serve(socket: &Path, registry: Registry) -> Result<()> {
     bind(socket)?.serve(registry)
 }
 impl BoundSocket {
+    /// Serve requests without an initial pane bootstrap, announcing readiness immediately.
+    ///
+    /// Blocks until SIGINT, SIGTERM, a shutdown request or registry session end.
+    /// On leaving the request loop, shuts down the registry and waits for decoded
+    /// request replies; idle sockets and client lifetime watches are not drained.
+    ///
+    /// # Errors
+    /// Returns signal/listener setup, readiness output, serving or registry
+    /// shutdown errors.
     pub fn serve(self, registry: Registry) -> Result<()> {
         self.serve_bootstrap(registry, None)
     }
-    /// Serve authenticated native callbacks while restoring; publish ordinary
-    /// control/client readiness only after the complete bootstrap batch commits.
+    /// Serve requests while optionally bootstrapping or restoring panes.
+    ///
+    /// With `initial`, native callbacks are admitted during bootstrap, but ordinary
+    /// control waits until the batch finishes. Readiness is emitted after successful
+    /// bootstrap; cancellation releases waiting requests. Without `initial`, this
+    /// has the same lifecycle as [`Self::serve`].
+    ///
+    /// On leaving the request loop, shuts down the registry, joins bootstrap and
+    /// waits for decoded request replies, excluding idle sockets and lifetime watches.
+    ///
+    /// # Errors
+    /// Returns setup, readiness output, bootstrap, serving or registry shutdown
+    /// errors. Individual request failures are returned to their callers.
     pub fn serve_bootstrap(self, registry: Registry, initial: Option<PaneSpawnSpec>) -> Result<()> {
         let Self {
             listener,

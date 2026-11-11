@@ -1,5 +1,5 @@
-//! Backend-owned workspace intent. Persisted metadata is not PTY recovery.
-//! Atomic tempfile/fsync/rename follows main's recovery.rs, without its session/KDL assumptions.
+//! Backend-owned workspace intent, pane membership, and live execution state.
+//! Reopening restores persisted metadata, not PTYs or running processes.
 use crate::{Pane, SpawnSpec};
 mod agents;
 mod automatic;
@@ -38,8 +38,13 @@ impl std::fmt::Display for SessionClosing {
 }
 impl std::error::Error for SessionClosing {}
 
+/// A mutation conflicts with an in-progress workspace or window close.
+///
+/// Returned through [`anyhow::Error`] when the target is reserved for closing;
+/// other busy conditions, such as an in-progress spawn, use separate errors.
 #[derive(Debug)]
 pub struct RegistryBusy {
+    /// Workspace or window ID whose close reservation blocks the mutation.
     pub target_id: String,
 }
 impl std::fmt::Display for RegistryBusy {
@@ -433,6 +438,12 @@ impl Drop for SpawnChildren {
         }
     }
 }
+/// Cloneable handle to one exclusively owned state root and its live panes.
+///
+/// Clones share registry state, pane executions, and the state-root ownership
+/// lease. Opening restores workspace and recovery metadata, not running
+/// processes or terminal contents. Use [`Self::shutdown`] for coordinated
+/// teardown before releasing the handles.
 pub struct Registry {
     inner: Arc<Inner>,
     fresh: bool,
@@ -470,12 +481,27 @@ impl Drop for Registry {
 }
 
 impl Registry {
+    /// Returns the current session ID for correlating backend diagnostics.
     pub fn diagnostic_session_id(&self) -> &str {
         &self.inner.session.session_id
     }
+    /// Opens the state root using [`DEFAULT_SESSION_NAME`].
+    ///
+    /// Has the same ownership, recovery, and error contracts as [`Self::open_named`].
     pub fn open(root: &Path) -> Result<Self> {
         Self::open_named(root, DEFAULT_SESSION_NAME)
     }
+    /// Exclusively opens a private state root and starts its background services.
+    ///
+    /// Creates a missing root and initial registry. Existing pane records reopen
+    /// as stopped, with transient process and harness observations cleared.
+    /// `name` identifies the session associated with this root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid session name, a nonabsolute or nonprivate
+    /// root, an existing owner, invalid stored metadata, or a storage or
+    /// background-service startup failure.
     pub fn open_named(root: &Path, name: &str) -> Result<Self> {
         valid_session_name(name)?;
         ensure!(root.is_absolute(), "state root must be absolute");
@@ -614,6 +640,10 @@ impl Registry {
         registry.start_ci(ci_events)?;
         Ok(registry)
     }
+    /// Whether no persisted registry record existed when this handle was opened.
+    ///
+    /// This opening-time flag does not change after mutations and does not
+    /// indicate whether the registry currently contains workspaces or panes.
     pub fn is_fresh(&self) -> bool {
         self.fresh
     }
@@ -654,11 +684,19 @@ impl Registry {
             .unwrap();
         state.closing
     }
+    /// Whether removing the last workspace has requested session termination.
+    ///
+    /// Once set, the flag remains set. It is distinct from explicit daemon
+    /// shutdown and does not itself perform teardown.
     pub fn session_end_requested(&self) -> bool {
         self.inner
             .session_end
             .load(std::sync::atomic::Ordering::Acquire)
     }
+    /// Replaces the callback used to wake the owner when the session ends.
+    ///
+    /// Invokes the callback synchronously if termination was already requested.
+    /// Notifications may repeat; the callback must tolerate repeated calls.
     pub fn set_session_end_waker(&self, waker: Arc<dyn Fn() + Send + Sync>) {
         *self.inner.session_end_waker.lock().unwrap() = Some(waker.clone());
         if self.session_end_requested() {
@@ -685,6 +723,14 @@ impl Registry {
     pub(crate) fn request_health(&self) -> Result<()> {
         healthy(&self.inner.state.lock().unwrap())
     }
+    /// Returns registry metadata with effective titles from live panes.
+    ///
+    /// Does not refresh process observations or include terminal contents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a persistence failure has made this registry require
+    /// a restart.
     pub fn snapshot(&self) -> Result<RegistrySnapshot> {
         let state = self.inner.state.lock().unwrap();
         healthy(&state)?;
@@ -762,7 +808,13 @@ impl Registry {
             |state| response_snapshot(state, control),
         )
     }
-    /// Publish validated startup defaults once, without touching environment or disk.
+    /// Publishes validated startup spawn defaults once, without changing the
+    /// process environment or writing the defaults to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid or excessive arguments, nonabsolute or
+    /// NUL-containing paths, or defaults that have already been configured.
     pub fn configure_spawn_defaults(&self, defaults: SpawnDefaults) -> Result<()> {
         validate_spawn_arguments(&defaults.argv, &defaults.cwd, &defaults.home)?;
         self.inner
@@ -770,6 +822,21 @@ impl Registry {
             .set(defaults)
             .map_err(|_| anyhow::anyhow!("spawn defaults already configured"))
     }
+    /// Dispatches a native protocol request without an authenticated client or
+    /// harness origin.
+    ///
+    /// This is a trusted backend entry point, not a transport authentication
+    /// boundary. Attachment registration, automatic pane context, and harness
+    /// capture or agent operations require their authenticated transport paths.
+    /// Pane operations still enforce the requested view's authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported protocol version, an operation that
+    /// requires authenticated transport, or an operation-specific validation,
+    /// revision, authority, lifecycle, process, or persistence failure.
+    /// Close conflicts may carry [`RegistryBusy`]. A failed lifecycle operation
+    /// may already have changed executions; an error does not imply rollback.
     pub fn request(&self, request: Request) -> Result<Payload> {
         self.request_for_client(request, None)
     }
@@ -2044,6 +2111,19 @@ impl Registry {
             "closed_pane_ids":closing_documents,
         }))
     }
+    /// Shuts down live executions and backend services while retaining durable
+    /// workspace and recovery intent.
+    ///
+    /// Flushes directory observations before teardown, closes mutation admission,
+    /// revokes harness control and client attachments, and waits for accepted
+    /// spawns to finish or abort. The state-root lease remains held by the
+    /// registry handles.
+    ///
+    /// # Errors
+    ///
+    /// Continues teardown after individual failures and returns the first
+    /// recorded directory, service, pane-shutdown, or completion-persistence
+    /// error. An error does not mean teardown was rolled back.
     pub fn shutdown(&self) -> Result<()> {
         // Observe while the process tree still exists; never derive intent from teardown.
         self.observe_processes();

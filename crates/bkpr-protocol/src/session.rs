@@ -1,9 +1,13 @@
+//! Logical session identity, daemon startup defaults and attached-client authority.
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
+/// Session name selected when the caller supplies no explicit name.
 pub const DEFAULT_SESSION_NAME: &str = "bkpr";
 
-/// Names are exact UTF-8 user data, never filesystem path components.
+/// Validate an exact UTF-8 session name without interpreting it as a path.
+///
+/// Returns an error for an empty name or any control character.
 pub fn valid_session_name(name: &str) -> Result<()> {
     ensure!(
         !name.is_empty() && !name.chars().any(char::is_control),
@@ -12,8 +16,10 @@ pub fn valid_session_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Persistent session identity qualified by the daemon incarnation serving it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
+    /// Exact user-visible session name, not a filesystem path component.
     pub name: String,
     /// Persistent logical identity; independent of any daemon process.
     pub session_id: String,
@@ -24,17 +30,24 @@ pub struct SessionInfo {
 /// Immutable daemon startup policy for new panes; never client environment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnDefaults {
+    /// Default program and arguments used when a new pane supplies no command.
     pub argv: Vec<String>,
+    /// Default absolute launch directory, preserving native path bytes.
     #[serde(with = "crate::path_wire")]
     pub cwd: std::path::PathBuf,
+    /// Absolute HOME directory used for newly spawned pane processes.
     #[serde(with = "crate::path_wire")]
     pub home: std::path::PathBuf,
+    /// Clear inherited environment and use the isolated launch environment.
     pub isolated_environment: bool,
 }
 
+/// Secret authority for one attached client; debug output redacts the token.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ClientAuthority {
+    /// Opaque identity assigned to the attached client.
     pub client_id: String,
+    /// Secret used to authenticate client-scoped operations.
     pub token: String,
 }
 impl std::fmt::Debug for ClientAuthority {
@@ -46,9 +59,12 @@ impl std::fmt::Debug for ClientAuthority {
     }
 }
 
+/// Daemon lifecycle notification on an attached client's event stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientEvent {
+    /// Event discriminator, currently `client_detached` for forced detachment.
     pub event: String,
+    /// Human-facing explanation of the lifecycle transition.
     pub reason: String,
 }
 

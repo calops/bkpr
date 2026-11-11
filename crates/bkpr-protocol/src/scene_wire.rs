@@ -1,6 +1,6 @@
-//! Planus scenes with response-local style/link tables and complete row deltas.
-//! Explicit UTF-8 byte lengths preserve engine cell boundaries and widths; no
-//! Unicode re-segmentation is performed. JSON is only a cold diagnostic bridge.
+//! Binary full scenes and complete-row deltas with response-local style and hyperlink tables.
+//! Cell text boundaries and widths are preserved without Unicode re-segmentation.
+//! Consumers retain image generations separately; JSON conversion is diagnostic only.
 use crate::{Cell, Frame, Image, ImageKey, Row, Size};
 use anyhow::{Context, Result, ensure};
 use planus::{Builder, ReadAsRoot};
@@ -61,8 +61,9 @@ impl Run {
     }
 }
 
-/// Encode directly from the canonical frame, borrowing image pixels and styles.
-/// Only changed rows are gathered; neither the frame nor its images are cloned.
+/// Encode an owned full scene, or a row delta when `baseline` matches `frame_after` and geometry.
+/// Omit image generations listed in `resources`; the consumer must retain them separately.
+/// Reject invalid frame bounds or a matching baseline whose revision does not precede `revision`.
 pub fn encode(
     frame: &Frame,
     revision: u64,
@@ -251,19 +252,22 @@ pub fn encode(
     Ok(builder.finish(root, None).to_vec())
 }
 
-/// Validated row replacements and newly supplied generation-keyed resources.
+/// Validated owned scene update containing row replacements and newly supplied image generations.
 pub struct DecodedScene {
+    /// Target frame revision installed by [`Self::apply`].
     pub revision: u64,
+    /// Required baseline revision for a delta, or `None` for a full replacement.
     pub base_revision: Option<u64>,
     frame: Frame,
     rows: Vec<(usize, Row)>,
 }
 impl DecodedScene {
-    /// Resources supplied by this update, before any consumer state is changed.
+    /// Iterate image generations supplied by this update, excluding previously known resources.
     pub fn image_keys(&self) -> impl Iterator<Item = ImageKey> + '_ {
         self.frame.images.iter().map(|image| image.key())
     }
-    /// Check every fallible prerequisite before moving the baseline's rows.
+    /// Replace metadata and changed rows, requiring a delta's baseline revision and geometry.
+    /// Errors leave both arguments unchanged. Known image generations are not merged into the frame.
     pub fn apply(self, revision: &mut u64, frame: &mut Option<Frame>) -> Result<()> {
         if let Some(base) = self.base_revision {
             ensure!(*revision == base, "scene baseline revision mismatch");
@@ -518,8 +522,8 @@ fn read_metadata(frame: g::FrameRef<'_>) -> Result<Frame> {
     })
 }
 
-/// Fully validate borrowed input before allocating expanded canonical cells or
-/// copying image pixels. No partially decoded scene can reach the consumer.
+/// Validate the complete scene before allocating owned cells, strings or image pixels.
+/// Reject unsupported versions, malformed tables/layouts and exceeded scene limits.
 pub fn decode(bytes: &[u8]) -> Result<DecodedScene> {
     decode_validated(validate(bytes)?)
 }
@@ -579,9 +583,8 @@ fn decode_validated(scene: g::SceneRef<'_>) -> Result<DecodedScene> {
     })
 }
 
-/// Cold CLI/library diagnostic bridge. Full scenes become ordinary human Frame
-/// JSON; deltas retain structured compact replacements and their base revision.
-/// Neither representation is accepted as a native scene encoding.
+/// Convert a validated full scene to frame JSON, or a delta to compact rows with its base revision.
+/// Neither diagnostic representation is a native scene encoding.
 pub fn to_json(bytes: &[u8]) -> Result<Value> {
     let scene = validate(bytes)?;
     if base_revision(scene)?.is_none() {

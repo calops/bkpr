@@ -1,5 +1,6 @@
+//! Bounded FIFO PTY writes and retained progress, separate from application consumption.
 use anyhow::{Result, bail};
-use serde::Serialize;
+use bkpr_protocol::{WriteReceipt, WriterSnapshot};
 use std::{
     collections::VecDeque,
     io::Write,
@@ -8,46 +9,35 @@ use std::{
     time::Duration,
 };
 
+/// Byte budget for unfinished user-input packets, including the active packet.
 pub const USER_BYTES: usize = 2 * 1024 * 1024;
 const TOTAL_BYTES: usize = 4 * 1024 * 1024;
-#[derive(Clone, Serialize)]
-pub struct Receipt {
-    pub id: u64,
-    pub state: &'static str,
-    pub total: usize,
-    pub written: usize,
-}
 struct Packet {
     id: u64,
     bytes: Vec<u8>,
 }
 struct State {
     queue: VecDeque<Packet>,
-    receipts: VecDeque<Receipt>,
+    receipts: VecDeque<WriteReceipt<&'static str>>,
     next: u64,
     bytes: usize,
     active: usize,
     stopping: bool,
     error: Option<String>,
 }
-#[derive(Serialize)]
-pub struct Snapshot {
-    pub queued_bytes: usize,
-    pub active: usize,
-    pub receipts: Vec<Receipt>,
-    pub stopped: bool,
-    pub error: Option<String>,
-}
+/// Pane-local input queue; one worker preserves byte order.
 pub struct Queue {
     state: Mutex<State>,
     wake: Condvar,
     changed: Box<dyn Fn() + Send + Sync>,
 }
+/// Owning writer-thread lifetime; drop requests stop and joins the thread.
 pub struct Worker {
     queue: Arc<Queue>,
     thread: Option<thread::JoinHandle<()>>,
 }
 impl Worker {
+    /// Stop admission and wait for the writer to finish or cancel queued packets.
     pub fn join(mut self) -> thread::Result<()> {
         self.queue.stop();
         self.thread.take().unwrap().join()
@@ -62,6 +52,7 @@ impl Drop for Worker {
     }
 }
 impl Queue {
+    /// Start a writer for an already-open output handle; fails if thread creation fails.
     pub fn start(
         mut output: Box<dyn Write + Send>,
         changed: Box<dyn Fn() + Send + Sync>,
@@ -179,6 +170,7 @@ impl Queue {
         (self.changed)();
         self.wake.notify_all();
     }
+    /// Admit bytes once or reject without enqueueing; internal replies have a reserved budget.
     pub fn enqueue(&self, bytes: Vec<u8>, internal: bool) -> Result<u64> {
         let mut state = self.state.lock().unwrap();
         if state.stopping {
@@ -209,7 +201,7 @@ impl Queue {
         let total = bytes.len();
         state.bytes += total;
         state.active += 1;
-        state.receipts.push_back(Receipt {
+        state.receipts.push_back(WriteReceipt {
             id,
             state: "queued",
             total,
@@ -221,9 +213,11 @@ impl Queue {
         (self.changed)();
         Ok(id)
     }
+    /// Whether unfinished bytes have reached the user-input budget.
     pub fn congested(&self) -> bool {
         self.state.lock().unwrap().bytes >= USER_BYTES
     }
+    /// Stop new admission and wake the worker to cancel unfinished packets.
     pub fn stop(&self) {
         let mut state = self.state.lock().unwrap();
         if state.stopping {
@@ -234,9 +228,10 @@ impl Queue {
         (self.changed)();
         self.wake.notify_all();
     }
-    pub fn snapshot(&self) -> Snapshot {
+    /// Copy bounded progress metadata without allocating state-label strings.
+    pub fn snapshot(&self) -> WriterSnapshot<&'static str> {
         let state = self.state.lock().unwrap();
-        Snapshot {
+        WriterSnapshot {
             queued_bytes: state.bytes,
             active: state.active,
             receipts: state.receipts.iter().cloned().collect(),

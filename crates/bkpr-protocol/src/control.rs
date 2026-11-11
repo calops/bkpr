@@ -9,31 +9,46 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+/// Resolved control request: a local discovery response or a typed backend operation.
 pub enum ControlAction {
+    /// Help/schema response that needs no backend dispatch.
     Local(Value),
+    /// Operation requiring backend authorization and dispatch.
     Native(Operation),
 }
 
+/// Amount of successful mutation detail returned by shared control.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlReply {
+    /// Compact identities, revisions and operation-specific acceptance facts.
     #[default]
     Receipt,
+    /// Full scoped native result.
     Full,
 }
 
+/// Filters and pagination for the flat control registry projection.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct InspectQuery {
+    /// Restrict results to one owning workspace.
     pub workspace_id: Option<String>,
+    /// Restrict results to one window.
     pub window_id: Option<String>,
+    /// Restrict results to one pane.
     pub pane_id: Option<String>,
+    /// Include names, layouts and expanded metadata.
     pub detail: bool,
+    /// Include retained panes without a live execution.
     pub include_retired: bool,
+    /// Last returned identity cursor, not a registry revision.
     pub after: Option<String>,
+    /// Page size in `1..=50`; `None` selects the backend default.
     pub limit: Option<usize>,
 }
 impl InspectQuery {
+    /// Reject an out-of-range page size or malformed identity cursor.
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.limit.is_none_or(|n| (1..=50).contains(&n)),
@@ -51,13 +66,19 @@ impl InspectQuery {
     }
 }
 
+/// Viewport-only export options; continuation is bound to a terminal revision.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct TerminalReadQuery {
+    /// Include canonical text rather than metadata alone.
     pub text: bool,
+    /// Select this many bottom viewport rows; `None` selects all visible rows.
     pub tail_rows: Option<usize>,
+    /// UTF-8 byte offset in the selected, right-trimmed text.
     pub offset: Option<usize>,
+    /// Page byte limit in `4..=16384`, or the backend default.
     pub max_bytes: Option<usize>,
+    /// Required terminal revision; mandatory for nonzero continuation offsets.
     pub expected_revision: Option<u64>,
 }
 impl Default for TerminalReadQuery {
@@ -72,6 +93,7 @@ impl Default for TerminalReadQuery {
     }
 }
 impl TerminalReadQuery {
+    /// Reject invalid page bounds or an unversioned continuation.
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.max_bytes.is_none_or(|n| (4..=16_384).contains(&n)),
@@ -121,87 +143,149 @@ impl From<ControlKeyEvent> for KeyEvent {
 /// Plain viewport export, never scrollback recovery or image pixel transport.
 #[derive(Serialize, JsonSchema)]
 pub struct TerminalReadResult {
+    /// Pane whose viewport was read.
     pub pane_id: String,
+    /// Pane root PID, when available.
     pub pid: Option<u32>,
     /// Canonical viewport revision, stable across unchanged view/publication wakes.
     pub revision: u64,
+    /// Backend execution lifecycle label.
     pub lifecycle: String,
+    /// Known execution exit code.
     pub exit_code: Option<u32>,
+    /// Terminal inspection failure diagnostic, if any.
     pub error: Option<String>,
+    /// Current grid and cell-pixel dimensions, when available.
     pub size: Option<crate::Size>,
+    /// Whether the terminal is displaying its alternate screen.
     pub alternate_screen: Option<bool>,
+    /// Current pane-relative cursor, when available.
     pub cursor: Option<TerminalCursor>,
     /// None for pane.inspect; pane.read exports native canonical cell text.
     pub text: Option<String>,
+    /// Whether meaningful image content was excluded from the text export.
     pub images_omitted: bool,
     /// UTF-8 byte offsets in the right-trimmed selected viewport rows.
     pub offset: usize,
+    /// Continuation byte offset, or `None` at the end.
     pub next_offset: Option<usize>,
+    /// Total UTF-8 bytes in the selected text.
     pub total_bytes: usize,
+    /// First selected viewport row, zero-based.
     pub start_row: usize,
+    /// Total rows in the current viewport.
     pub total_rows: usize,
+    /// Whether this page reaches the end of the selected text.
     pub complete: bool,
 }
+/// Cursor position in the exported viewport.
 #[derive(Serialize, JsonSchema)]
 pub struct TerminalCursor {
+    /// Zero-based column.
     pub x: u16,
+    /// Zero-based row.
     pub y: u16,
+    /// Whether the application cursor is visible.
     pub visible: bool,
 }
 
+/// One scoped page of registry identities and revisions.
 #[derive(JsonSchema)]
 pub struct InspectResult {
+    /// Registry revision observed for this page.
     pub registry_revision: u64,
+    /// Entries after applying scope and filters.
     pub items: Vec<InspectItem>,
+    /// Cursor for the next page, if any.
     pub next_cursor: Option<String>,
+    /// Whether additional matching entries remain.
     pub has_more: bool,
 }
+/// Registry object category in a flat inspection page.
 #[derive(JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum InspectKind {
+    /// Session-owned workspace.
     Workspace,
+    /// Workspace-owned window.
     Window,
+    /// Execution pane.
     Pane,
 }
+/// Identity and revision summary with optional expanded inspection details.
 #[derive(JsonSchema)]
 pub struct InspectItem {
+    /// Category of the returned object.
     pub kind: InspectKind,
+    /// Identity of the object indicated by `kind`.
     pub id: String,
+    /// Object's owning workspace, when applicable.
     pub workspace_id: Option<String>,
+    /// Current owning-workspace revision.
     pub workspace_revision: Option<u64>,
+    /// Object's owning window, when applicable.
     pub window_id: Option<String>,
+    /// Current owning-window revision.
     pub window_revision: Option<u64>,
+    /// Pane identity for pane entries.
     pub pane_id: Option<String>,
+    /// Pane terminal revision, when available.
     pub terminal_revision: Option<u64>,
+    /// Execution lifecycle label for pane entries.
     pub status: Option<String>,
+    /// Recognized foreground harness facts, separate from semantic status.
     pub harness: Option<Value>,
+    /// Backend-selected OSC 7501 semantic status.
     pub harness_status: Option<Value>,
+    /// Observation time of the semantic transition in Unix milliseconds.
     pub harness_status_changed_at_ms: Option<u64>,
     /// Explicit detail only.
     pub name: Option<String>,
+    /// Authoritative window layout, included only with detail.
     pub layout: Option<LayoutNode>,
+    /// Expanded object metadata, included only with detail.
     pub detail: Option<Value>,
 }
+/// Compact successful mutation facts; acceptance does not imply terminal presentation.
 #[derive(JsonSchema)]
 pub struct MutationReceipt {
+    /// Discoverable control operation name.
     pub operation: String,
+    /// Whether backend dispatch accepted the operation.
     pub accepted: bool,
+    /// Registry revision published by the operation, if applicable.
     pub registry_revision: Option<u64>,
+    /// Affected or created workspace.
     pub workspace_id: Option<String>,
+    /// Resulting workspace revision, if available.
     pub workspace_revision: Option<u64>,
+    /// Affected or created window.
     pub window_id: Option<String>,
+    /// Resulting window revision, if available.
     pub window_revision: Option<u64>,
+    /// Affected or created pane.
     pub pane_id: Option<String>,
+    /// Unavailable pane replaced by `pane.reopen`.
     pub replaced_pane_id: Option<String>,
+    /// Batch-local references mapped to created pane IDs.
     pub created_panes: Option<std::collections::BTreeMap<String, String>>,
+    /// Pane IDs closed by the operation.
     pub closed_pane_ids: Option<Vec<String>>,
+    /// Whether the operation closed the workspace.
     pub workspace_closed: Option<bool>,
+    /// Whether the operation closed the window.
     pub window_closed: Option<bool>,
+    /// Whether the operation closed the pane.
     pub pane_closed: Option<bool>,
+    /// Whether a retired pane record was forgotten.
     pub forgotten: Option<bool>,
+    /// Source pane used to restore a conversation.
     pub source_pane_id: Option<String>,
+    /// Backend-selected operation policy.
     pub policy: Option<String>,
+    /// Whether a new execution was started.
     pub started: Option<bool>,
+    /// Resulting conversation-binding state, when supplied.
     pub binding: Option<String>,
 }
 
@@ -227,6 +311,7 @@ macro_rules! catalog {
             #[serde(deny_unknown_fields)]
             struct $ty { $( $(#[$attr])* $field: $kind, )* }
         )*
+        /// Whether a known control operation submits application input.
         pub fn is_input(operation: &str) -> bool {
             match operation { $( $name => $input, )* _ => false }
         }
@@ -251,6 +336,7 @@ macro_rules! catalog {
                 "result":result_schema(operation)
             }))
         }
+        /// Decode and validate control arguments, rejecting unknown operations or fields.
         pub fn resolve(operation: &str, arguments: Value) -> Result<ControlAction> {
             ensure!(arguments.is_object(), "control arguments must be an object");
             let native = match operation {
@@ -314,8 +400,8 @@ catalog! {
     "input.key" => KeyArguments { pane_id:String, event:ControlKeyEvent }, true, "Named key, e.g. event:{key:\"Escape\"}; printable text uses input.text", |a| pane(a.pane_id, PaneRequest::Key { view_id:String::new(), event:a.event.into() });
 }
 
-/// Defense in depth for authenticated wire callers, not only JSON adapters.
-/// No nested/raw/client/harness/shutdown escape and no borrowed view IDs.
+/// Reject operations outside shared control, borrowed view IDs and invalid argument bounds.
+/// Backend scope, ownership and lifecycle checks still apply.
 pub fn validate_native(operation: &Operation) -> Result<()> {
     match operation {
         Operation::ControlInspect { query } => query.validate(),
@@ -515,8 +601,7 @@ pub fn mutation_receipt(operation: &Operation, result: Value) -> Result<Value> {
     }
 }
 
-/// Retain only elementary target IDs while a consuming transport owns the
-/// request. In particular, CLI receipt projection never clones spawn argv.
+/// Mutation target identities retained independently of a transport-owned request.
 pub struct MutationProjection {
     workspace: Option<String>,
     window: Option<String>,
@@ -524,6 +609,7 @@ pub struct MutationProjection {
     operation: &'static str,
 }
 impl MutationProjection {
+    /// Capture projection identities, or `None` for an already-compact result.
     pub fn for_operation(operation: &Operation) -> Option<Self> {
         receipt_target(operation).map(|(workspace, window, pane, operation)| Self {
             workspace: workspace.cloned(),
@@ -532,6 +618,7 @@ impl MutationProjection {
             operation,
         })
     }
+    /// Project a successful native result into the compact mutation receipt.
     pub fn apply(self, result: Value) -> Result<Value> {
         project_receipt(
             (
