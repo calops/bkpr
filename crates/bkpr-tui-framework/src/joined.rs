@@ -81,18 +81,6 @@ pub(crate) struct PreparedJoined {
     pub spans: Vec<OpaqueSpan>,
 }
 impl PreparedJoined {
-    /// Borrow exactly the chrome pixel resources this layout may place.
-    pub(crate) fn images(&self) -> impl Iterator<Item = &Arc<Image>> {
-        self.patches.iter().flat_map(|patch| {
-            [
-                patch.body_visible.then_some(&patch.body),
-                patch.shadow_visible.then_some(&patch.shadow),
-            ]
-            .into_iter()
-            .flatten()
-        })
-    }
-
     fn bytes(&self) -> usize {
         self.patches.iter().map(Patch::bytes).sum::<usize>()
             + self.parts.len() * std::mem::size_of::<Part>()
