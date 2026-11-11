@@ -1,6 +1,8 @@
 //! Bkpr scene normalization and device authority policy over the upstream SDK.
 //! Native objects, input encoders, callbacks and borrowed views belong to
 //! libghostty-vt. A terminal is created and used on its pane worker only.
+#![deny(missing_docs)]
+
 mod callbacks;
 mod input;
 mod offers;
@@ -13,16 +15,26 @@ use libghostty_vt as sdk;
 pub use offers::{PASTE_OFFER_MAX_BYTES, PASTE_OFFER_MAX_COUNT, PASTE_OFFER_TIMEOUT};
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, sync::Arc};
 
+/// Native Ghostty source revision required by this adapter.
 pub const ENGINE_REVISION: &str = "93967b7f9478e94dcbb42125c8a90f34feb40d75";
+/// Safe/sys SDK source revision used with the pinned native ABI.
 pub const SDK_REVISION: &str = "575ed6b8ceb79ffaf247ecf7e34333876b0d5be4";
+/// SHA-256 of the native clipboard-offer patch.
 pub const ENGINE_PATCH_SHA256: &str =
     "196b39997c6552d9158f763555a72784aae2dbf4fa61aa500554bfd07e28d32c";
+/// Whether canonical extraction supports Sixel graphics.
 pub const SIXEL_SUPPORTED: bool = false;
+/// Maximum aggregate MIME payload bytes in a clipboard transfer.
 pub const CLIPBOARD_MAX_BYTES: usize = 8 * 1024 * 1024;
 const EFFECT_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Fallible adapter operation, defaulting to [`Error`].
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+/// Native adapter failure; a failed mutation need not leave terminal state unchanged.
 #[derive(Debug)]
-pub struct Error(pub String);
+pub struct Error(
+    /// Human-readable failure diagnostic.
+    pub String,
+);
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -37,6 +49,7 @@ impl From<sdk::Error> for Error {
 fn valid_size(size: Size) -> Result<()> {
     bkpr_protocol::valid_size(size).map_err(|error| Error(error.to_string()))
 }
+/// Synchronous clipboard policy invoked on the pane worker with exact MIME contents.
 pub type ClipboardHandler = Box<dyn FnMut(ClipboardRequest) -> ClipboardResponse + Send>;
 struct CallbackState {
     effects: Vec<Effect>,
@@ -78,6 +91,8 @@ pub struct Terminal {
     searches: search::Searches,
 }
 impl Terminal {
+    /// Create a thread-affine terminal with bounded history, images and callbacks.
+    /// Rejects invalid geometry and reports native initialization failures.
     pub fn new(size: Size) -> Result<Self> {
         valid_size(size)?;
         callbacks::initialize_sys()?;
@@ -127,6 +142,7 @@ impl Terminal {
     pub fn set_clipboard_handler(&mut self, handler: ClipboardHandler) {
         self.callbacks.borrow_mut().clipboard = Some(handler);
     }
+    /// Set default RGB colors; `None` clears the explicit cursor-color override.
     pub fn set_default_colors(
         &mut self,
         foreground: [u8; 3],
@@ -141,6 +157,7 @@ impl Terminal {
             .set_default_cursor_color(cursor.map(render::native_rgb))?;
         Ok(())
     }
+    /// Replace the complete indexed default palette.
     pub fn set_palette(&mut self, palette: &[[u8; 3]; 256]) -> Result<()> {
         self.native
             .set_default_color_palette(Some(sdk::style::Palette(
@@ -148,6 +165,7 @@ impl Terminal {
             )))?;
         Ok(())
     }
+    /// Resize and reconcile inspection state; rejects invalid geometry or native failures.
     pub fn resize(&mut self, size: Size) -> Result<()> {
         valid_size(size)?;
         self.callbacks.borrow_mut().size = size;
@@ -163,6 +181,8 @@ impl Terminal {
         self.searches.invalidate();
         Ok(())
     }
+    /// Process at most 1 MiB of PTY output and return queued effects in order.
+    /// Native/callback errors may follow partial processing; do not replay the chunk.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Effect>> {
         if bytes.len() > 1024 * 1024 {
             return Err(Error("feed chunk exceeds 1 MiB".into()));
@@ -187,18 +207,22 @@ impl Terminal {
         state.effect_bytes = 0;
         std::mem::take(&mut state.effects)
     }
+    /// Take pending effects without feeding output; reject a faulted callback queue.
     pub fn drain_effects(&mut self) -> Result<Vec<Effect>> {
         if self.callbacks.borrow().failed {
             return Err(Error("terminal callback resource limit failed".into()));
         }
         Ok(self.take_effects())
     }
+    /// Move the canonical viewport by signed rows; negative values select older history.
     pub fn scroll(&mut self, delta: i64) -> Result<()> {
         let delta = isize::try_from(delta).map_err(|_| Error("scroll delta overflow".into()))?;
         self.native
             .scroll_viewport(sdk::terminal::ScrollViewport::Delta(delta));
         Ok(())
     }
+    /// Extract an owned canonical scene, sharing immutable image generations.
+    /// A synchronized-output hold may return held content until its bounded deadline.
     pub fn snapshot(&mut self) -> Result<Frame> {
         if self
             .callbacks
@@ -309,12 +333,15 @@ impl Terminal {
         }
         result
     }
+    /// Remaining synchronized-output hold duration, or `None` when no hold is active.
     pub fn sync_output_remaining(&self) -> Option<std::time::Duration> {
         self.callbacks
             .borrow()
             .hold_since
             .map(|since| std::time::Duration::from_secs(1).saturating_sub(since.elapsed()))
     }
+    /// Advance native animation using one monotonic millisecond clock for this terminal's lifetime.
+    /// Returns the next absolute deadline on that clock, or `None` when no animation is playing.
     pub fn tick_images(&mut self, now_ms: u64) -> Result<Option<u64>> {
         Ok(self.native.kitty_graphics_animation_tick(now_ms)?)
     }

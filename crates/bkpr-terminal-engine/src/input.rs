@@ -162,6 +162,10 @@ fn native_location(location: ClipboardLocation) -> sdk::terminal::ClipboardLocat
     }
 }
 impl Terminal {
+    /// Encode a physical key and optional layout text using the current terminal modes.
+    ///
+    /// Rejects unsupported key names and invalid text lengths, modifiers, or codepoints.
+    /// Returns PTY input bytes without writing them; control/private-use text is omitted.
     pub fn encode_key(&mut self, event: &KeyEvent) -> Result<Vec<u8>> {
         if event.text.len() > 65536
             || event.key.len() > 128
@@ -211,6 +215,10 @@ impl Terminal {
         self.key_event.set_utf8(None::<String>);
         result
     }
+    /// Encode a mouse event in terminal-local pixels using the current reporting modes.
+    ///
+    /// Rejects positions outside the terminal and invalid modifiers. Tracks held buttons
+    /// across calls; the returned PTY input bytes may be empty when reporting is disabled.
     pub fn encode_mouse(&mut self, event: &MouseEvent) -> Result<Vec<u8>> {
         if !event.x.is_finite()
             || !event.y.is_finite()
@@ -273,6 +281,7 @@ impl Terminal {
             .set_any_button_pressed(self.mouse_buttons != 0);
         encoded(|buffer| self.mouse_encoder.encode(&self.mouse_event, buffer))
     }
+    /// Encode a focus change, returning no bytes when focus reporting is disabled.
     pub fn encode_focus(&mut self, focused: bool) -> Result<Vec<u8>> {
         if !self.native.mode(sdk::terminal::Mode::FOCUS_EVENT)? {
             return Ok(Vec::new());
@@ -284,18 +293,30 @@ impl Terminal {
         };
         encoded(|buffer| event.encode(buffer))
     }
+    /// Encode plain-text paste bytes through the native paste policy and current modes.
+    ///
+    /// Rejects payloads over [`CLIPBOARD_MAX_BYTES`]. Returns only this paste's PTY input
+    /// without UTF-8 conversion; unrelated effects remain available via [`Self::drain_effects`].
     pub fn encode_paste(&mut self, text: &[u8]) -> Result<Vec<u8>> {
         if text.len() > CLIPBOARD_MAX_BYTES {
             return Err(Error("paste exceeds clipboard limit".into()));
         }
         let options = sdk::paste::Options::new().with_source(sdk::paste::Source::Text);
+        let first_effect = self.callbacks.borrow().effects.len();
         self.native.paste(
             options,
             &[sdk::terminal::ClipboardMime::new("text/plain")],
             |_, out| out.write_all(text),
         )?;
-        self.paste_output()
+        self.paste_output(first_effect)
     }
+    /// Encode an owned MIME offer through the native paste policy.
+    ///
+    /// Successful offer IDs must be nonzero and strictly increasing. Payload and pending
+    /// offer quotas are enforced. `allow_unsafe` is passed to the native safety policy.
+    /// Paste-event mode retains emitted offers for later application requests; otherwise
+    /// contents are released after encoding. Returns only this paste's PTY input;
+    /// unrelated effects remain available via [`Self::drain_effects`].
     pub fn paste_contents(
         &mut self,
         offer_id: u64,
@@ -337,6 +358,7 @@ impl Terminal {
             .with_location(native_location(location))
             .with_allow_unsafe(allow_unsafe)
             .with_offer_id(offer_id);
+        let first_effect = self.callbacks.borrow().effects.len();
         self.native.paste(options, &mimes, |mime, out| {
             let content = contents
                 .iter()
@@ -344,7 +366,7 @@ impl Terminal {
                 .ok_or_else(|| std::io::Error::other("unoffered MIME type"))?;
             out.write_all(&content.data)
         })?;
-        let output = self.paste_output()?;
+        let output = self.paste_output(first_effect)?;
         self.last_offer_id = offer_id;
         if paste_events && !output.is_empty() {
             self.callbacks.borrow_mut().paste_offers.insert(
@@ -358,12 +380,15 @@ impl Terminal {
         }
         Ok(output)
     }
-    fn paste_output(&mut self) -> Result<Vec<u8>> {
-        if self.callbacks.borrow().failed {
+    fn paste_output(&mut self, first_effect: usize) -> Result<Vec<u8>> {
+        let mut state = self.callbacks.borrow_mut();
+        if state.failed {
             return Err(Error("paste callback output limit exceeded".into()));
         }
         let mut output = Vec::new();
-        for effect in self.take_effects() {
+        for effect in state.effects.extract_if(first_effect.., |effect| {
+            matches!(effect, Effect::PtyWrite(_))
+        }) {
             if let Effect::PtyWrite(bytes) = effect {
                 if output.is_empty() {
                     output = bytes;
@@ -372,6 +397,7 @@ impl Terminal {
                 }
             }
         }
+        state.effect_bytes -= output.len();
         Ok(output)
     }
 }

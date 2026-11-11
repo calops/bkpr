@@ -264,7 +264,10 @@ impl Selections {
     }
 }
 impl Terminal {
-    /// Apply a native gesture to one view. Returns whether its history viewport moved.
+    /// Apply a view-local selection gesture in fractional viewport-cell coordinates.
+    ///
+    /// Returns whether this view's history viewport moved. Selection gestures do not
+    /// encode application mouse input or install a terminal-global selection.
     pub fn select_view(&mut self, view_id: &str, event: SelectionEvent) -> Result<bool> {
         if !event.x.is_finite() || !event.y.is_finite() || event.modifiers & !15 != 0 {
             return Err(Error("invalid selection coordinates or modifiers".into()));
@@ -329,8 +332,10 @@ impl Terminal {
         }
         Ok(before != self.view_scrollback_offset(view_id)?)
     }
-    /// Project native endpoints into bounded row spans without installing a
-    /// terminal-global selection or touching canonical render resources.
+    /// Return this view's selection projected into visible, end-exclusive row spans.
+    ///
+    /// Returns `None` for absent or invalidated state; an existing gesture may be inactive.
+    /// Does not install a terminal-global selection or change canonical render resources.
     pub fn view_selection(&mut self, view_id: &str) -> Result<Option<SelectionSnapshot>> {
         if !self.selections.views.contains_key(view_id) {
             return Ok(None);
@@ -409,8 +414,10 @@ impl Terminal {
             autoscroll: self.selections.direction(&self.native, view_id)?,
         }))
     }
-    /// Format the explicit native selection. Query the required length before
-    /// allocating any terminal text, so oversized copies are errors, not truncation.
+    /// Copy this view's selection as trimmed plain bytes with wrapped lines joined.
+    ///
+    /// Returns `None` for absent or empty selections. Payloads over
+    /// [`bkpr_protocol::MAX_INPUT_BYTES`] fail without allocating the oversized text.
     pub fn copy_view_selection(&mut self, view_id: &str) -> Result<Option<Vec<u8>>> {
         self.selections.reconcile(&self.native)?;
         let Some(ends) = self
@@ -450,10 +457,11 @@ impl Terminal {
         bytes.truncate(written);
         Ok((!bytes.is_empty()).then_some(bytes))
     }
-    /// Whether any view owns native gesture/endpoints; no native query or allocation.
+    /// Return whether any view retains gesture state, including an inactive selection.
     pub fn has_view_selections(&self) -> bool {
         !self.selections.views.is_empty()
     }
+    /// Release selection gestures and tracked endpoints for views the predicate rejects.
     pub fn retain_selection_views(&mut self, attached_visible: impl FnMut(&str) -> bool) {
         self.selections.retain(&self.native, attached_visible);
     }

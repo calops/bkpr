@@ -40,8 +40,11 @@ fn restore(native: &mut sdk::Terminal<'_, '_>, bar: sdk::terminal::Scrollbar) {
 }
 
 impl Terminal {
-    /// Create or navigate one inspection-local native search. Native matches are
-    /// never installed as the terminal selection. No terminal text is copied.
+    /// Set, clear, or navigate a view-local native search for the supplied attachment epoch.
+    ///
+    /// Empty queries clear the search; a changed epoch discards prior state. Returns
+    /// whether navigation moved this view's history viewport. Queries are advanced by
+    /// [`Self::advance_search`] and never installed as the terminal selection.
     pub fn search_view(&mut self, id: &str, epoch: u64, action: SearchAction) -> Result<bool> {
         if let SearchAction::Query { text } = &action
             && text.len() > MAX_SEARCH_BYTES
@@ -133,15 +136,19 @@ impl Terminal {
         }
         Ok(())
     }
+    /// Release searches whose stored attachment epoch no longer matches the callback.
     pub fn retain_search_views(&mut self, epoch: impl FnMut(&str) -> Option<u64>) {
         self.searches.retain(epoch);
     }
+    /// Return whether any view retains a search, including completed searches.
     pub fn has_view_searches(&self) -> bool {
         !self.searches.views.is_empty()
     }
+    /// Return the query generation for a retained view search, or `None` if absent.
     pub fn view_search_generation(&self, id: &str) -> Option<u64> {
         self.searches.views.get(id).map(|view| view.generation)
     }
+    /// Return whether any search needs a native feed or has unfinished work.
     pub fn has_search_work(&self) -> Result<bool> {
         for view in self.searches.views.values() {
             if view.dirty || view.native.status()? != Status::Complete {
@@ -150,8 +157,10 @@ impl Terminal {
         }
         Ok(false)
     }
-    /// One view, one bounded SDK feed/tick per worker turn. Round-robin fairness
-    /// keeps unrelated views and PTY controls responsive under large histories.
+    /// Advance one pending view search with at most one native feed and tick.
+    ///
+    /// Returns the view ID, attachment epoch, and whether its history viewport moved;
+    /// returns `None` when no work remains. Views are visited round-robin.
     pub fn advance_search(&mut self) -> Result<Option<(String, u64, bool)>> {
         let len = self.searches.views.len();
         if len == 0 {
@@ -189,8 +198,10 @@ impl Terminal {
         let moved = before != self.view_scrollback_offset(&id)?;
         Ok(Some((id, epoch, moved)))
     }
-    /// Borrow native matches only within this call, project the bounded viewport
-    /// list, and discard all grid references before allowing another VT write.
+    /// Return native search status and matches projected into this view's viewport.
+    ///
+    /// Returns `None` when the view has no search. Match grid references remain local
+    /// to this call, and the canonical terminal viewport is restored before returning.
     pub fn view_search(&mut self, id: &str) -> Result<Option<SearchSnapshot>> {
         let offset = self.view_scrollback_offset(id)?;
         let Some(view) = self.searches.views.get_mut(id) else {
