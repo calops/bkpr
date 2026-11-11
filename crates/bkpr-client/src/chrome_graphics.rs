@@ -122,9 +122,6 @@ impl ChromeGraphics {
         SvgGraphics::new(ASSETS, 2, 1)
             .map(|graphics| Self(graphics, None, None, PaneGeometry::default()))
     }
-    pub(crate) fn chrome_transfers(&self) -> bkpr_tui_framework::transfer::ChromeTransfers {
-        self.0.chrome_transfers()
-    }
     pub(crate) fn wake_fd(&self) -> RawFd {
         self.0.wake_fd()
     }
@@ -518,9 +515,8 @@ mod tests {
                 events: libc::POLLIN,
                 revents: 0,
             };
-            while !chrome.drain().unwrap() {
-                assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
-            }
+            assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
+            assert!(chrome.drain().unwrap());
             let mut frame = bkpr_tui_framework::blank(size);
             bkpr_tui_framework::text(&mut frame, 0, 1, "│● Workspace !", false);
             bkpr_tui_framework::text(&mut frame, 0, 2, "│● Selected !", true);
@@ -667,9 +663,8 @@ mod tests {
                 events: libc::POLLIN,
                 revents: 0,
             };
-            while !chrome.drain().unwrap() {
-                assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
-            }
+            assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
+            assert!(chrome.drain().unwrap());
         };
         chrome.prepare(&host, size, &[]);
         chrome.prepare_panes(size, &[("pane".into(), rect)]);

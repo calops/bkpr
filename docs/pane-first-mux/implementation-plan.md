@@ -241,31 +241,11 @@ Fork `joined.rs`/`contour.rs` joins rectangles of one semantic raised surface; i
 
 Constant-axis joined textures use three physical guard texels and sample the middle logical texel. This preserves dimension-independent straight-edge sharing while avoiding observed Kitty/llvmpipe foreground leakage from stretched one-texel images. It is not a full-length raster fallback: the logical raster is computed once, then guarded. Native-engine regressions and direct physical texture probes cover both orientations.
 
-Frontend chrome now has a per-physical-TUI `ChromeTransfers` owner shared by
-`SvgGraphics` and the existing terminal writer. The
-[Kitty resource-query contract](https://sw.kovidgoyal.net/kitty/graphics-protocol/#querying-support-and-available-transmission-mediums)
-requires actual access evidence, not merely protocol grammar support. Tagged
-shared-memory/temporary-file/file probes establish that evidence independently
-of backend capabilities. Only exact worker-registered chrome image allocations
-are eligible; renderer aliases borrow their source identity, and native pane or
-derived/unprepared images remain inline. Preparation and cleanup use the existing
-worker with no filesystem operations under its transfer metadata lock. The
-additional resource budget is 16 MiB plus nine probe bytes, 67 resources and 32
-in-flight uploads; two-second leases bound missing replies. A rejection or expiry
-retires the physical upload and rebuilds still-required placements inline under a
-fresh ID. Partial writes remain ambiguous failures, not automatic replays.
-
-Dependency decision: use existing `libc` POSIX shared-memory operations and the
-already-locked maintained MIT/Apache-2.0 `tempfile` 3.27 for private file creation;
-no separate shared-memory abstraction or worker pool is needed. This does not
-enable file/shared-memory input in the terminal engine. Debug acceptance at
-`target/smoke/chrome-transports/actual4/` uses real Kitty with shared resources and
-a private inaccessible resource namespace: prepared chrome uses shared memory
-locally and inline fallback when all local-medium probes fail. Complete rich
-1201x841 captures are pixel-identical; pane imagery stays inline, both clients
-exit normally, owned resources/processes are gone and the deliberate two-second
-idle interval emits no graphics commands. Deterministic tests separately exercise
-upload rejection, expiry, late replies, bounds, partial writes and teardown.
+Decision: retain inline Kitty graphics uploads for frontend chrome and remove
+the resource-backed transport experiment from `c500e72`. Existing image caches
+avoid steady-state uploads; no demonstrated benefit warrants shared-memory/file
+probes, resource preparation, leases or reply-routing machinery. Keep the image
+caches, merged edges and asynchronous SVG rendering unchanged.
 
 The existing renderer retains source-valid inactive native projections by last visible use, bounded to 512 entries and 8 MiB of RGBA charge beyond the current visible requirements. Source disappearance retires data immediately; placement removal alone does not retransmit pixels. Current supported image quotas are unchanged, including visible projections exceeding that inactive-cache budget. The ordered container is maintained [`hashlink` 0.12.2](https://crates.io/api/v1/crates/hashlink/0.12.2) (MIT/Apache-2.0, Rust 1.85, September 2026 release), not a custom linked list: its [`retain`, `to_back` and `pop_front` APIs](https://docs.rs/hashlink/0.12.2/hashlink/linked_hash_map/struct.LinkedHashMap.html) fit source retirement, batched visible promotion and byte/count eviction together. Bkpr owns only admission/lifetime policy. GPU/driver overhead is not the RGBA charge, and newly required arbitrary projections can still rasterize/encode synchronously; this is not a claim that all native-image preparation is off-path.
 
