@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 const PERIOD: Duration = Duration::from_millis(120);
 
+/// Retained, 120-ms frame sequence with caller-scheduled deadlines.
 pub struct Spinner {
     epoch: Instant,
     next: Option<Instant>,
@@ -14,6 +15,8 @@ pub struct Spinner {
 impl Spinner {
     /// Frames are presentation policy supplied by the caller, with no per-tick allocation.
     /// Each frame must occupy one display cell.
+    ///
+    /// Panics if `frames` is empty.
     pub fn new(now: Instant, frames: &'static [char]) -> Self {
         assert!(!frames.is_empty(), "a spinner requires at least one frame");
         Self {
@@ -25,6 +28,7 @@ impl Spinner {
         }
     }
 
+    /// Changes activity, restarting at frame zero; returns whether activity changed.
     pub fn set_active(&mut self, active: bool, now: Instant) -> bool {
         if self.active == active {
             return false;
@@ -36,7 +40,8 @@ impl Spinner {
         true
     }
 
-    /// Coalesce missed ticks without replaying frames or drifting the phase.
+    /// Coalesces missed ticks without replaying frames or drifting the phase.
+    /// Returns whether the frame index changed; the deadline may change even if false.
     pub fn advance(&mut self, now: Instant) -> bool {
         if self.next.is_none_or(|next| now < next) {
             return false;
@@ -50,6 +55,7 @@ impl Spinner {
         changed
     }
 
+    /// Returns the current frame, or a space while inactive.
     pub fn glyph(&self) -> char {
         if self.active {
             self.frames[self.frame]
@@ -58,6 +64,7 @@ impl Spinner {
         }
     }
 
+    /// Returns the next scheduled tick, or `None` when inactive or unschedulable.
     pub fn next_deadline(&self) -> Option<Instant> {
         self.next
     }

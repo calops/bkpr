@@ -22,27 +22,37 @@
 //! SOFTWARE.
 use std::collections::BTreeMap;
 
+/// Integer physical-pixel coordinate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(super) struct Point {
+    /// Horizontal coordinate, increasing rightward.
     pub x: i32,
+    /// Vertical coordinate, increasing downward.
     pub y: i32,
 }
 
+/// Axis-aligned pixel bounds; geometric predicates include the boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Rect {
+    /// Left edge.
     pub x: i32,
+    /// Top edge.
     pub y: i32,
+    /// Right edge.
     pub right: i32,
+    /// Bottom edge.
     pub bottom: i32,
 }
 
 impl Rect {
+    /// Return whether the point lies inside or on the boundary.
     pub fn contains(self, x: f64, y: f64) -> bool {
         x >= f64::from(self.x)
             && x <= f64::from(self.right)
             && y >= f64::from(self.y)
             && y <= f64::from(self.bottom)
     }
+    /// Return whether the bounds overlap or touch.
     pub fn intersects(self, other: Self) -> bool {
         self.x <= other.right
             && other.x <= self.right
@@ -51,24 +61,37 @@ impl Rect {
     }
 }
 
+/// Straight edge or quarter-circle arc with inward-facing normals.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(super) enum Feature {
+    /// Axis-aligned contour segment.
     Edge {
+        /// First endpoint in contour traversal order.
         from: Point,
+        /// Last endpoint in contour traversal order.
         to: Point,
+        /// Horizontal component of the inward unit normal.
         nx: i32,
+        /// Vertical component of the inward unit normal.
         ny: i32,
     },
+    /// Rounded contour corner.
     Arc {
+        /// Circle center.
         center: Point,
+        /// Radius in pixels.
         radius: i32,
+        /// Horizontal quadrant sign, either -1 or 1.
         sx: i32,
+        /// Vertical quadrant sign, either -1 or 1.
         sy: i32,
+        /// Whether the corner projects outward from the union.
         convex: bool,
     },
 }
 
 impl Feature {
+    /// Return the feature's axis-aligned geometric bounds.
     pub fn bounds(&self) -> Rect {
         match *self {
             Self::Edge { from, to, .. } => Rect {
@@ -92,6 +115,7 @@ impl Feature {
         }
     }
 
+    /// Translate to `origin`, clipping straight endpoints to `clip` first.
     pub fn local(&self, origin: Point, clip: Rect) -> Self {
         let shift = |point: Point| Point {
             x: point.x - origin.x,
@@ -134,8 +158,7 @@ impl Feature {
         }
     }
 
-    // Closest point and inward normal. Arc endpoint normals agree with the
-    // adjacent straight segment, including at inward (concave) fillets.
+    /// Return the nearest point and inward normal as `(x, y, nx, ny)`.
     pub fn nearest(&self, x: f64, y: f64) -> (f64, f64, f64, f64) {
         match *self {
             Self::Edge { from, to, nx, ny } => {
@@ -178,6 +201,8 @@ impl Feature {
     }
 }
 
+/// Return signed distance and inward normal `(distance, nx, ny)`.
+/// Distance is positive inside; empty input returns `(-∞, 0, 0)`.
 pub(super) fn distance(features: &[Feature], x: f64, y: f64) -> (f64, f64, f64) {
     let mut result = (f64::NEG_INFINITY, 0.0, 0.0);
     let mut nearest = f64::INFINITY;
@@ -195,13 +220,19 @@ pub(super) fn distance(features: &[Feature], x: f64, y: f64) -> (f64, f64, f64) 
     result
 }
 
+/// Rounded outline and original bounds of a two-rectangle union.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Contour {
+    /// Boundary segments and rounded corners.
     pub features: Vec<Feature>,
+    /// Bounds of the unrounded rectangle union.
     pub bounds: Rect,
 }
 
 impl Contour {
+    /// Build a rounded union, rejecting rectangles without positive-area overlap.
+    /// Requires valid bounds and a nonnegative radius; each corner radius is
+    /// limited to half its adjacent edge lengths.
     pub fn new(rects: [Rect; 2], radius: i32) -> Option<Self> {
         let [a, b] = rects;
         if a.x.max(b.x) >= a.right.min(b.right) || a.y.max(b.y) >= a.bottom.min(b.bottom) {
@@ -353,10 +384,12 @@ impl Contour {
         })
     }
 
+    /// Return whether the entire cell rectangle lies inside the rounded union.
     pub fn full_cell(&self, rect: Rect) -> bool {
         Self::features_full_cell(&self.features, rect)
     }
 
+    /// Return whether the entire rectangle is covered by the supplied contour.
     pub fn features_full_cell(features: &[Feature], rect: Rect) -> bool {
         if [rect.x, rect.right].into_iter().any(|x| {
             [rect.y, rect.bottom]
@@ -370,7 +403,7 @@ impl Contour {
         !Self::arc_cuts_rect(features, rect, false)
     }
 
-    /// Certify uniform coverage; uncertain boundary pixels retain subpixel sampling.
+    /// Return uniform pixel coverage, or `None` when subpixel sampling is needed.
     pub fn pixel_coverage(features: &[Feature], rect: Rect) -> Option<bool> {
         let mut inside = true;
         let mut outside = true;

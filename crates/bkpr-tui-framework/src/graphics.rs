@@ -1,7 +1,5 @@
-//! Bounded off-thread SVG icon preparation for ordinary Scene image resources.
-//! No terminal output, uploads, protocol parser, or application artwork lives here.
-//! Presentation can be disabled independently of host capability evidence;
-//! bounded worker caches survive so re-enabling reuses prepared resources.
+//! Off-thread SVG and material preparation for scene image resources.
+//! Placement appends frame resources; terminal output remains renderer-owned.
 use crate::ColorProbe;
 use crate::decoration::{self, DecorationGeometry, DecorationStyle, PreparedDecoration};
 use crate::joined::{JoinedCache, JoinedSurface, OpaqueSpan, PreparedJoined};
@@ -31,9 +29,11 @@ const MAX_DECORATION_CACHE: usize = 16;
 const MAX_DECORATION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RETAINED_DECORATION_BYTES: usize = 1024 * 1024;
 
-/// Trusted embedded path artwork. IDs must be unique within this preparer.
+/// Trusted embedded SVG used as an alpha mask for caller-selected colors.
 pub struct SvgAsset {
+    /// Asset identifier, unique within one preparer.
     pub id: u32,
+    /// SVG source, limited to 64 KiB.
     pub svg: &'static str,
 }
 
@@ -117,9 +117,10 @@ struct Shared {
     generation: AtomicU64,
 }
 
-/// One coalescing worker, one pending configuration, one bounded publication.
-/// The caller registers wake_fd with its existing poll loop, invokes drain on
-/// readability, and repaints when drain returns true. No terminal I/O occurs.
+/// Coalescing image preparer with bounded caches and generation-scoped resources.
+///
+/// Poll [`Self::wake_fd`], call [`Self::drain`] on readability, and repaint when
+/// it returns `true`. Disabling presentation retains worker caches.
 pub struct SvgGraphics {
     enabled: bool,
     span: [u16; 2],
@@ -138,6 +139,9 @@ pub struct SvgGraphics {
     color_revision: Option<u64>,
 }
 impl SvgGraphics {
+    /// Start a worker for one to eight uniquely identified assets and a nonzero
+    /// cell span. Reject sources over 64 KiB; SVG parse failures leave that asset
+    /// unavailable. Socket or worker creation failures return I/O errors.
     pub fn new(assets: &'static [SvgAsset], columns: u16, rows: u16) -> io::Result<Self> {
         if assets.is_empty()
             || assets.len() > MAX_ASSETS
@@ -188,14 +192,14 @@ impl SvgGraphics {
             color_revision: None,
         })
     }
+    /// Borrow the nonblocking publication-notification descriptor for polling.
     pub fn wake_fd(&self) -> RawFd {
         self.wake.as_raw_fd()
     }
 
-    /// Enable or disable this preparer's presentation without changing terminal
-    /// capability evidence. Disabling revokes placements and pending work while
-    /// retaining the worker's bounded caches. Re-enable before the next prepare.
-    /// Returns whether the requested presentation state changed.
+    /// Set presentation eligibility without changing terminal capability evidence.
+    /// Disabling revokes prepared placements and pending work but retains caches.
+    /// Returns whether eligibility changed; enabling requires another prepare call.
     pub fn set_enabled(&mut self, enabled: bool) -> bool {
         if self.enabled == enabled {
             return false;
@@ -207,20 +211,22 @@ impl SvgGraphics {
         true
     }
 
+    /// Return whether presentation is enabled, independently of host support.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
-    /// Cheap bounded comparison; parsing, masks, tinting and cache eviction are
-    /// worker-only. Pass the actual marker foreground sources, never a theme.
+    /// Request icons for the measured cell size and actual foreground sources.
+    /// Unresolved colors or unsupported graphics leave those icons unavailable.
     pub fn prepare(&mut self, host: &ColorProbe, size: Size, sources: &[ColorSource]) {
         self.prepare_with_decorations(host, size, sources, &[]);
     }
 
-    /// Prepare caller-owned materials on the same coalescing SVG worker.
-    /// No colors, depth, border width or terminal capability is inferred.
-    /// Exact published icons and materials remain usable while missing variants
-    /// prepare; changed colors, styles and cell geometry never reuse stale pixels.
+    /// Request icons and the first eleven distinct caller-supplied materials.
+    ///
+    /// Exact published resources remain usable while missing variants prepare.
+    /// Unresolved colors, unsupported geometry, or exhausted preparation budgets
+    /// leave the corresponding resources unavailable.
     pub fn prepare_with_decorations(
         &mut self,
         host: &ColorProbe,
@@ -338,6 +344,8 @@ impl SvgGraphics {
             ColorSource::Rgb(rgb) => Some(rgb),
         }
     }
+    /// Drain notifications and adopt the latest matching publication.
+    /// Returns whether a publication was adopted, or an error if the wake socket failed.
     pub fn drain(&mut self) -> io::Result<bool> {
         let mut bytes = [0; 128];
         loop {
@@ -380,8 +388,9 @@ impl SvgGraphics {
         self.joined = publication.joined;
     }
 
-    /// Keep current material sources owned by a stable Scene graphics surface,
-    /// including inactive variants. Upload remains lazy on first placement.
+    /// Retain matching-cell material sources without adding placements.
+    /// Inactive variants are admitted while total frame image bytes stay within
+    /// 1 MiB; the renderer uploads them only when placed.
     pub fn retain_decoration_sources(&self, frame: &mut Frame, styles: &[DecorationStyle]) {
         let Some(config) = &self.config else {
             return;
@@ -405,7 +414,8 @@ impl SvgGraphics {
         }
     }
 
-    /// Place a prepared contour only in a reserved window perimeter.
+    /// Append a prepared perimeter, reserving 64 placement IDs from `base`.
+    /// Returns `false` without changing the frame when unavailable or unsupported.
     pub fn decorate_window(
         &self,
         frame: &mut Frame,
@@ -419,8 +429,8 @@ impl SvgGraphics {
             .is_some_and(|entry| entry.place(frame, rect, base))
     }
 
-    /// Cut caller-owned semantic regions out of material pixels. Reserve 64
-    /// placement IDs at `base`; overflow/fragmentation retains the text fallback.
+    /// Append a perimeter excluding caller-supplied cell rectangles.
+    /// Reserve 64 placement IDs from `base`; failure leaves the frame unchanged.
     pub fn decorate_window_clipped(
         &self,
         frame: &mut Frame,
@@ -435,8 +445,9 @@ impl SvgGraphics {
             .is_some_and(|entry| entry.place_clipped(frame, rect, base, exclusions))
     }
 
-    /// Place a prepared contour in physical pixels with caller-owned clipping.
-    /// This changes neither raster/cache identity nor the native cell rectangle.
+    /// Append a perimeter using absolute pixel bounds and an ownership clip.
+    /// Exclusions use frame cell coordinates. Reserve 64 placement IDs from
+    /// `base`; failure leaves the frame and native cell geometry unchanged.
     pub fn decorate_window_with_geometry(
         &self,
         frame: &mut Frame,
@@ -452,8 +463,9 @@ impl SvgGraphics {
             .is_some_and(|entry| entry.place_with_geometry(frame, rect, base, exclusions, geometry))
     }
 
-    /// Queue one rounded two-rectangle union on the existing coalescing worker.
-    /// Normal SVG/material readiness is preserved when only this request changes.
+    /// Set the requested rounded union; `None` withdraws its placements.
+    /// Preparation starts once a supported icon/material configuration exists.
+    /// Changing only this request preserves matching icon/material readiness.
     pub fn prepare_joined(&mut self, request: Option<JoinedSurface>) {
         self.joined_request = request;
         if !self.enabled {
@@ -466,18 +478,22 @@ impl SvgGraphics {
         self.configure(Some(config));
     }
 
+    /// Return whether the requested rounded union has a prepared layout.
     pub fn joined_ready(&self) -> bool {
         self.joined.is_some()
     }
 
+    /// Return full-cell coverage for the prepared union, or an empty slice.
+    /// Spans use request coordinates and are not clipped to the destination frame.
     pub fn joined_opaque_spans(&self) -> &[OpaqueSpan] {
         self.joined
             .as_ref()
             .map_or(&[], |joined| joined.spans.as_slice())
     }
 
-    /// Append shared pixels only; caller retains complete glyph/cursor authority.
-    /// Reserve 8192 placement IDs. False leaves the frame untouched.
+    /// Append union images and placements without changing glyphs or the cursor.
+    /// Exclusions suppress only the above-text body, not its shadow or underlay.
+    /// Reserve 8192 placement IDs from `base`; failure leaves the frame unchanged.
     pub fn decorate_joined(
         &self,
         frame: &mut Frame,
@@ -489,9 +505,11 @@ impl SvgGraphics {
             .is_some_and(|joined| joined.place(frame, base, exclusions))
     }
 
-    /// Append a shared image and placement in local surface coordinates. The
-    /// caller owns text/cursor policy. Use a stable Scene surface.id to namespace
-    /// resources and let the existing renderer clip, delete and deduplicate them.
+    /// Append an icon above text without changing cells or the cursor.
+    ///
+    /// `position` is in local surface cells; `offset` is a physical-pixel offset
+    /// within that cell. Use a stable scene surface ID and a unique placement ID.
+    /// Unavailable resources or mismatched cell geometry leave the frame unchanged.
     pub fn place(
         &self,
         frame: &mut Frame,
@@ -860,6 +878,7 @@ mod tests {
         assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
         assert!(graphics.drain().unwrap());
     }
+
     fn placed(graphics: &SvgGraphics, width: u32) -> Frame {
         let mut frame = crate::blank(size(width));
         crate::text(&mut frame, 1, 0, "● label", false);

@@ -1,17 +1,24 @@
+/// A half-open rectangle in terminal cell coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rect {
+    /// Leftmost column.
     pub x: u16,
+    /// Topmost row.
     pub y: u16,
+    /// Number of columns; zero makes the rectangle empty.
     pub width: u16,
+    /// Number of rows; zero makes the rectangle empty.
     pub height: u16,
 }
 impl Rect {
+    /// Whether the point lies within the rectangle's saturating half-open bounds.
     pub fn contains(self, x: u16, y: u16) -> bool {
         x >= self.x
             && y >= self.y
             && x < self.x.saturating_add(self.width)
             && y < self.y.saturating_add(self.height)
     }
+    /// Return this extent with at least one cell per axis and `screen`'s pixel metrics.
     pub fn size(self, screen: Size) -> Size {
         Size {
             cols: self.width.max(1),
@@ -20,44 +27,59 @@ impl Rect {
         }
     }
 }
-/// A surface can project opaque cells, transparent graphics, or both.
-/// Resource names combine caller-selected ownership with stable surface IDs,
-/// never native image IDs alone; hit-test identities remain unchanged.
+/// Cell opacity and image participation for a surface.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SurfaceContent {
+    /// Opaque cells and image placements from the frame.
     #[default]
     All,
+    /// Opaque cells only, covering the entire surface rectangle.
     Cells,
     /// Opaque cells inside a source-local, half-open clip. The surface origin
     /// is unchanged; cells outside its frame or viewport are never projected.
     /// Partial wide glyphs become blank cells rather than split glyphs.
-    CellsClipped(Rect),
+    CellsClipped(
+        /// Source-local cell bounds to project.
+        Rect,
+    ),
     /// Source-local cells with the same bounds as `CellsClipped`, retaining
     /// earlier intersecting graphics below text instead of removing them.
     /// Later opaque surfaces still occlude both these cells and their underlay.
-    CellsWithUnderlay(Rect),
+    CellsWithUnderlay(
+        /// Source-local cell bounds whose earlier images remain below text.
+        Rect,
+    ),
+    /// Image placements only; cells, cursor ownership and hit testing are ignored.
     Graphics,
 }
-/// Borrowed, view-local terminal colors; canonical frames remain unchanged.
-/// Entries outside this palette retain their canonical frame colors.
+/// View-local default and indexed colors, leaving explicit RGB colors unchanged.
+/// Missing palette entries fall back to the canonical frame palette.
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteOverride<'a> {
+    /// RGB value used for the frame's default foreground.
     pub foreground: [u8; 3],
+    /// RGB value used for the frame's default background.
     pub background: [u8; 3],
+    /// Indexed colors, starting at palette entry zero.
     pub palette: &'a [[u8; 3]],
 }
+/// A borrowed frame projected at a scene-local origin without modifying canonical data.
 pub struct Surface<'a> {
+    /// Stable hit-test identity and image-resource scope within the renderer.
     pub id: &'a str,
+    /// Destination cell bounds, which must fit entirely within the scene.
     pub rect: Rect,
+    /// Canonical cells, cursor, colors and generation-qualified image resources.
     pub frame: &'a Frame,
     /// Presentation colors for defaults and indexed colors, never explicit RGB.
     pub palette: Option<PaletteOverride<'a>>,
+    /// Which cells and images participate in composition.
     pub content: SurfaceContent,
-    /// Sorted, one-span-per-row view-local highlighting, outside the canonical delta baseline.
+    /// Source-local selection spans, sorted by row with at most one span per row.
     pub selection: &'a [SelectionSpan],
-    /// Sorted by row/start. Selection wins over selected search, then ordinary
-    /// search. Annotations borrow canonical glyphs/styles/resources unchanged.
+    /// Source-local search spans sorted by row/start; selection takes precedence.
     pub search: &'a [SearchSpan],
+    /// Whether this surface owns the logical cursor; choose at most one per scene.
     pub focused: bool,
     /// Client-selected presentation only; canonical styles and image resources stay unchanged.
     pub faint: bool,
@@ -84,11 +106,15 @@ impl Surface<'_> {
         }
     }
 }
+/// Back-to-front layers composed into one physical terminal update.
 pub struct Scene<'a> {
+    /// Physical viewport dimensions and cell pixel metrics.
     pub size: Size,
+    /// Layers in paint order; later opaque cells cover earlier cells and images.
     pub surfaces: Vec<Surface<'a>>,
 }
 impl Scene<'_> {
+    /// Return the topmost cell-bearing surface at the point; graphics are transparent to hits.
     pub fn hit_test(&self, x: u16, y: u16) -> Option<&str> {
         self.surfaces
             .iter()
@@ -96,6 +122,7 @@ impl Scene<'_> {
             .find(|s| s.cell_rect().is_some_and(|rect| rect.contains(x, y)))
             .map(|s| s.id)
     }
+    /// Capture owned hit geometry that remains valid after the borrowed scene is dropped.
     pub fn hit_map(&self) -> HitMap {
         HitMap {
             regions: self
@@ -111,6 +138,7 @@ pub struct HitMap {
     regions: Vec<(String, Rect)>,
 }
 impl HitMap {
+    /// Return the topmost captured cell-bearing surface at the point.
     pub fn hit_test(&self, x: u16, y: u16) -> Option<&str> {
         self.regions
             .iter()
@@ -119,6 +147,7 @@ impl HitMap {
             .map(|(id, _)| id.as_str())
     }
 }
+/// An unadorned terminal-default style with fallback RGB values.
 pub fn default_style() -> Style {
     Style {
         foreground: [220, 220, 220],
@@ -138,6 +167,7 @@ pub fn default_style() -> Style {
         underline: 0,
     }
 }
+/// Allocate a space-filled cell frame with a hidden cursor and no image resources.
 pub fn blank(size: Size) -> Frame {
     let mut frame = graphics_frame(size);
     let style = default_style();
@@ -156,7 +186,7 @@ pub fn blank(size: Size) -> Frame {
     frame
 }
 
-/// Resource-only layers borrow this metadata without allocating a cell canvas.
+/// Create frame metadata with no rows or image resources and a hidden cursor.
 pub fn graphics_frame(size: Size) -> Frame {
     let style = default_style();
     Frame {
@@ -198,7 +228,10 @@ pub fn graphics_frame(size: Size) -> Frame {
         scrollback_offset: 0,
     }
 }
-/// Trusted UI text still passes the same scene validation and damage renderer.
+/// Write one row using per-character display widths, omitting protocol characters.
+/// Combining characters attach only to a glyph written by this call; `selected` inverts style.
+/// Stops before a character would cross the row's right edge.
+/// Any existing glyph intersected by the write is replaced in full.
 pub fn text(frame: &mut Frame, x: u16, y: u16, value: &str, selected: bool) {
     let foreground = frame.foreground;
     let background = frame.background;
@@ -224,6 +257,7 @@ pub fn text(frame: &mut Frame, x: u16, y: u16, value: &str, selected: bool) {
         let mut style = default_style();
         style.foreground = foreground;
         style.background = background;
+        erase_glyph_boundaries(&mut row.cells, column, column + width, &style);
         style.inverse = selected;
         let cell = &mut row.cells[column];
         cell.text.clear();
@@ -243,6 +277,9 @@ pub fn text(frame: &mut Frame, x: u16, y: u16, value: &str, selected: bool) {
 }
 
 impl TerminalGuard {
+    /// Enter raw alternate-screen mode and request input, color and capability reports.
+    ///
+    /// Dropping the guard restores terminal modes. Returns an error if setup or output fails.
     pub fn enter() -> Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
         let mut guard = Self {
@@ -425,7 +462,30 @@ fn blank_cell() -> &'static Cell {
     });
     &BLANK
 }
-/// Clear trusted UI geometry in place, retaining each cell's text allocation.
+fn erase_glyph_boundaries(cells: &mut [Cell], start: usize, end: usize, style: &Style) {
+    if start >= end || start >= cells.len() {
+        return;
+    }
+    let end = end.min(cells.len());
+    let mut left = start;
+    while left > 0 && cells[left].width == 0 {
+        left -= 1;
+    }
+    let mut right = end;
+    while right < cells.len() && cells[right].width == 0 {
+        right += 1;
+    }
+    let (before, after) = cells.split_at_mut(end);
+    for cell in before[left..start].iter_mut().chain(after[..right - end].iter_mut()) {
+        cell.text.clear();
+        cell.text.push(' ');
+        cell.width = 1;
+        cell.style.clone_from(style);
+        cell.hyperlink = None;
+    }
+}
+/// Replace cells inside the frame-clipped rectangle with unadorned default-colored spaces.
+/// Any existing glyph intersected by the rectangle is erased in full; images and cursor are unchanged.
 pub fn clear(frame: &mut Frame, rect: Rect) {
     let mut style = default_style();
     style.foreground = frame.foreground;
@@ -436,6 +496,9 @@ pub fn clear(frame: &mut Frame, rect: Rect) {
         .skip(rect.y as usize)
         .take(rect.height as usize)
     {
+        let start = usize::from(rect.x);
+        let end = start.saturating_add(usize::from(rect.width));
+        erase_glyph_boundaries(&mut row.cells, start, end, &style);
         for cell in row
             .cells
             .iter_mut()
@@ -675,8 +738,7 @@ fn annotate(
     }
 }
 
-/// A client owns one renderer and physical resource allocator. Borrowed immutable
-/// pixels are never cloned when a pane-local generation is given a physical name.
+/// Retained scene compositor for one physical terminal and its generation-scoped image resources.
 #[derive(Default)]
 pub struct Renderer {
     aliases: HashMap<((u64, u64), String, ImageKey), ImageKey>,
@@ -688,8 +750,9 @@ pub struct Renderer {
     visible: Vec<Vec<Rect>>,
 }
 impl Renderer {
-    /// Qualify explicitly selected surface resources without changing hit IDs.
-    /// Other surfaces retain the terminal-global resource namespace.
+    /// Scope the named surfaces' images by attachment and generation, preserving hit identities.
+    /// Unlisted surfaces use the terminal-global namespace; keep the selected scope stable
+    /// while its resources remain valid.
     pub fn set_resource_namespace<'a>(
         &mut self,
         attachment: u64,
@@ -702,6 +765,11 @@ impl Renderer {
             .extend(surfaces.into_iter().map(str::to_owned));
     }
 
+    /// Compose layers and emit text damage, image changes and cursor state through `out`.
+    ///
+    /// Reuse this renderer and guard for the same physical terminal. Image keys must change
+    /// when their pixels change. Rejects out-of-scene surfaces, invalid scene data, resource
+    /// limits and output failures; an error may leave partial output and retained state.
     pub fn render(
         &mut self,
         out: &mut impl Write,
@@ -1261,6 +1329,35 @@ mod scene_tests {
         assert_eq!(f.rows[0].cells[0].width, 2);
         assert_eq!(f.rows[0].cells[1].width, 0);
         assert_eq!(f.rows[0].cells[2].text, "x");
+    }
+    #[test]
+    fn partial_wide_glyph_mutations_preserve_a_valid_grid() {
+        let original = || {
+            let mut frame = blank(Size { cols: 6, rows: 1, cell_width: 8, cell_height: 16 });
+            text(&mut frame, 0, 0, "界ab界", false);
+            frame
+        };
+        for column in [0, 1] {
+            let mut frame = original();
+            text(&mut frame, column, 0, "x", false);
+            assert_eq!(frame.rows[0].cells[usize::from(column)].text, "x");
+            assert_eq!(frame.rows[0].cells[usize::from(1 - column)].text, " ");
+            assert_eq!(frame.rows[0].cells[usize::from(1 - column)].width, 1);
+            assert_eq!(frame.rows[0].cells[2].text, "a");
+            assert_eq!(frame.rows[0].cells[4].text, "界");
+            assert_eq!(frame.rows[0].cells[5].width, 0);
+        }
+        let mut frame = original();
+        clear(&mut frame, Rect { x: 1, y: 0, width: 1, height: 1 });
+        assert_eq!(frame.rows[0].cells[0].text, " ");
+        assert_eq!(frame.rows[0].cells[0].width, 1);
+        assert_eq!(frame.rows[0].cells[1].width, 1);
+        assert_eq!(frame.rows[0].cells[2].text, "a");
+        let unchanged = frame.clone();
+        clear(&mut frame, Rect { x: 5, y: 0, width: 0, height: 1 });
+        text(&mut frame, 5, 0, "界", false);
+        text(&mut frame, 5, 0, "\u{301}", false);
+        assert_eq!(frame, unchanged);
     }
     fn terminal() -> std::mem::ManuallyDrop<TerminalGuard> {
         std::mem::ManuallyDrop::new(TerminalGuard {

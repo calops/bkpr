@@ -4,7 +4,9 @@ use super::{Cow, Result, Write, parse_rgb};
 /// `original` is the logical host/pane default, never the derived matte.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerminalBackground {
+    /// Logical host default RGB before applying the derived canvas.
     pub original: [u8; 3],
+    /// Derived canvas RGB to display while its material is ready.
     pub matte: [u8; 3],
 }
 

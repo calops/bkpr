@@ -5,7 +5,9 @@ use bkpr_protocol::{ColorSource, Cursor, Frame, Size};
 /// Ordered surface-local semantic regions. Later spans take precedence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RoleSpan {
+    /// Cell bounds clipped to the surface; align edges with complete glyphs.
     pub rect: Rect,
+    /// Semantic role assigned within `rect`.
     pub role: Role,
 }
 
@@ -13,7 +15,9 @@ pub struct RoleSpan {
 /// Later spans win; native inverse styles keep their inverse background.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ForegroundSpan {
+    /// Cell bounds clipped to the surface; align edges with complete glyphs.
     pub rect: Rect,
+    /// Visible-ink source, applied to the background channel for inverse text.
     pub foreground: ColorSource,
 }
 
@@ -21,7 +25,9 @@ pub struct ForegroundSpan {
 /// semantic backgrounds; later spans win for ordinary cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BackgroundSpan {
+    /// Cell bounds clipped to the surface; align edges with complete glyphs.
     pub rect: Rect,
+    /// Background source for cells without selection or hover styling.
     pub background: ColorSource,
 }
 
@@ -60,14 +66,17 @@ struct ThemeCache {
     roles: Vec<Role>,
 }
 
-/// Text changes clear old bounds and repaint widget lines, not a fresh screen.
-/// Decorations contain geometry only, never application layout or pane identities.
+/// Retained trusted UI text, cursor and semantic styling for scene composition.
+/// Painting updates retained line bounds; physical damage and output remain with the renderer.
 pub struct UiSurface {
+    /// Scene data for composition; preserve its dimensions and rectangular cell grid.
+    /// Direct cell edits do not invalidate retained line or theme inputs.
     pub frame: Frame,
     lines: Vec<window::TextLine>,
     theme: Option<ThemeCache>,
 }
 impl UiSurface {
+    /// Create a blank surface with no cursor or retained text lines.
     pub fn new(size: Size) -> Self {
         Self {
             frame: blank(size),
@@ -75,6 +84,8 @@ impl UiSurface {
             theme: None,
         }
     }
+    /// Replace ordered text lines on each rectangle's first row, clipped to its width.
+    /// Clear previous and new line bounds when text changes; `None` hides the cursor.
     pub fn paint(&mut self, size: Size, lines: Vec<window::TextLine>, cursor: Option<Cursor>) {
         let resized = self.frame.size != size;
         let repaint = resized || self.lines != lines;
@@ -106,16 +117,15 @@ impl UiSurface {
             self.frame.cursor = cursor;
         }
     }
-    /// Apply a terminal-derived style only to this trusted UI surface. Original
-    /// selection/faint intent survives RGB styling and subsequent theme changes.
-    /// Work is retained across identical paint/theme/role inputs; no scene copy
-    /// or per-cell color derivation occurs on an unchanged frame.
+    /// Apply semantic styles while preserving original selection and faint intent.
+    /// Themes colors, inverse, faint, bold and underline; other attributes are preserved.
+    /// Return `false` when retained theme, role and paint inputs already match.
     pub fn apply_theme(&mut self, theme: &Theme, base: Role, spans: &[RoleSpan]) -> bool {
         self.apply_theme_with_colors(theme, base, spans, &[], &[])
     }
 
-    /// Resolve semantic roles, then apply background materials and visible inks.
-    /// Identical theme, role and color spans reuse the retained cell styling.
+    /// Apply roles, then ordered background and visible-ink overrides.
+    /// Return `false` when retained theme, span and paint inputs already match.
     pub fn apply_theme_with_colors(
         &mut self,
         theme: &Theme,

@@ -4,19 +4,29 @@
 use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
+/// Grapheme editing or caret movement within a single-line value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditAction {
+    /// Moves to the preceding grapheme boundary.
     Left,
+    /// Moves to the following grapheme boundary.
     Right,
+    /// Moves to the start of the value.
     Home,
+    /// Moves to the end of the value.
     End,
+    /// Removes the preceding grapheme.
     Backspace,
+    /// Removes the following grapheme.
     Delete,
+    /// Removes all content and clears any insertion error.
     Clear,
 }
 
+/// Single-line editor with a UTF-8 byte bound and grapheme-aligned caret.
 #[derive(Clone, Debug)]
 pub struct TextInput {
+    /// Edited content; direct writes bypass sanitization and the byte bound.
     pub value: String,
     /// UTF-8 byte offset at a grapheme boundary, not a display column.
     pub cursor: usize,
@@ -24,7 +34,8 @@ pub struct TextInput {
     error: Option<String>,
 }
 impl TextInput {
-    /// Invalid oversized initial content produces an empty editor with an error.
+    /// Creates an editor with the caret at the end, replacing controls with spaces.
+    /// If sanitized content exceeds `limit` bytes, starts empty with an error.
     pub fn new(value: String, limit: usize) -> Self {
         if value.len() <= limit && !value.chars().any(char::is_control) {
             let cursor = value.len();
@@ -44,6 +55,7 @@ impl TextInput {
         input.insert(&value);
         input
     }
+    /// Returns the last rejected-insertion error, cleared by successful edits.
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }

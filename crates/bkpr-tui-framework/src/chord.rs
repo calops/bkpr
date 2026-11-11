@@ -13,7 +13,9 @@ use unicode_width::UnicodeWidthStr;
 /// Labels are presentation metadata, never parsed to infer modifier semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Chord<'a> {
+    /// Base key's display label; terminal controls and directional formatting are removed.
     pub key: &'a str,
+    /// Ordered modifier labels, joined with hyphens and sanitized like `key`.
     pub modifiers: &'a [&'a str],
 }
 
@@ -41,8 +43,11 @@ pub struct ChordGroup {
 /// Separators and scope parentheses are deliberately outside the keycap spans.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChordLine {
+    /// Sanitized row text, including separators and any repeated modifier scope.
     pub text: String,
+    /// Display width of `text` in terminal cells.
     pub width: usize,
+    /// Half-open terminal-cell ranges for modifier and key labels, excluding punctuation.
     pub keycaps: Vec<Range<usize>>,
 }
 

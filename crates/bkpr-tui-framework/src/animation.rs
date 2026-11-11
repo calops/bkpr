@@ -17,6 +17,10 @@ pub struct AnimationClock {
 }
 
 impl AnimationClock {
+    /// Create an inactive clock with the given tick interval and phase cycle.
+    ///
+    /// # Panics
+    /// Panics if `interval` or `cycle` is zero.
     pub fn new(now: Instant, interval: Duration, cycle: Duration) -> Self {
         assert!(!interval.is_zero(), "animation interval must be positive");
         assert!(!cycle.is_zero(), "animation cycle must be positive");
@@ -61,6 +65,7 @@ impl AnimationClock {
         changed
     }
 
+    /// Next sampling deadline, or `None` when inactive or beyond `Instant`'s range.
     pub fn next_deadline(&self) -> Option<Instant> {
         self.next
     }
@@ -75,8 +80,9 @@ impl AnimationClock {
 /// This effect is stateless: restore stable styling before each application.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextSweep {
+    /// RGB ink color at the center of the band.
     pub highlight: [u8; 3],
-    /// Band half-width as a fraction of the rectangle's width. Must be positive.
+    /// Band half-width as a fraction of the rectangle's width; finite and positive.
     pub width: f64,
 }
 
@@ -86,6 +92,8 @@ impl TextSweep {
     /// background and all attributes. Default/indexed ink is intentionally skipped.
     /// Whole wide graphemes share one weight; clipped graphemes are left untouched.
     /// Cursor, graphics resources, text and hyperlinks are never modified.
+    /// Finite phases are clamped to `[0, 1]`; invalid phase or width leaves the frame unchanged.
+    /// Weights use smoothstep falloff; RGB channels are interpolated and rounded.
     pub fn apply(&self, frame: &mut Frame, rect: Rect, phase: f64) -> bool {
         if rect.width == 0
             || rect.height == 0

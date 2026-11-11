@@ -7,23 +7,39 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // A retained surface can switch between independently updated theme instances.
 static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
 
+/// Semantic style-table index; colors and attributes are supplied by application policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Role {
+    /// Ordinary text and unaccented surface content.
     Base,
+    /// Panel surface content.
     Panel,
+    /// Structural borders and separators.
     Border,
+    /// Deemphasized text.
     Muted,
+    /// Headings and titles.
     Title,
+    /// Explicitly selected content.
     Selected,
+    /// Pointer-hovered content.
     Hover,
+    /// Primary accent.
     Accent,
+    /// Successful state.
     Success,
+    /// Warning state.
     Warning,
+    /// Error state.
     Error,
+    /// Informational state.
     Info,
+    /// Secondary accent.
     Secondary,
+    /// Emphasized primary accent.
     BrightAccent,
+    /// Emphasized informational accent.
     BrightInfo,
 }
 
@@ -37,13 +53,16 @@ struct Evidence {
 
 /// Complete resolved style tables, supplied by the application policy.
 pub struct ThemeStyles {
+    /// Ordinary-surface styles, indexed by `Role as usize`.
     pub base: [Style; 15],
+    /// Selection styles, indexed by `Role as usize`.
     pub selected: [Style; 15],
+    /// Panel-surface styles, indexed by `Role as usize`.
     pub panel: [Style; 15],
 }
 
-/// Cached semantic styles. No environment variable or terminal-name heuristics.
-/// Updating cursor/graphics metadata does not invalidate UI colors.
+/// Retained application-supplied styles keyed by observed color evidence and policy.
+/// Defaults to terminal-default styles until updated; graphics and cursor evidence are separate.
 pub struct Theme {
     evidence: Evidence,
     policy_key: u64,
@@ -65,7 +84,9 @@ impl Default for Theme {
     }
 }
 impl Theme {
-    /// Rebuild when observed colors or the caller's styling key changes.
+    /// Rebuild styles and return `true` when color evidence or `policy_key` changes.
+    /// The key must distinguish policy inputs other than truecolor, default colors
+    /// and ANSI entries 0–15; unchanged inputs do not invoke `policy`.
     pub fn update(
         &mut self,
         probe: &ColorProbe,
@@ -90,18 +111,24 @@ impl Theme {
         self.revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
         true
     }
+    /// Process-local styling cache token; zero until the first update.
     pub fn revision(&self) -> u64 {
         self.revision
     }
+    /// Ordinary-surface style for `role`.
     pub fn style(&self, role: Role) -> &Style {
         &self.styles[role as usize]
     }
+    /// Selection style for `role`.
     pub fn selected_style(&self, role: Role) -> &Style {
         &self.selected[role as usize]
     }
+    /// Panel-surface style for `role`.
     pub fn panel_style(&self, role: Role) -> &Style {
         &self.panels[role as usize]
     }
+    /// Visible ink from the ordinary or selected style, accounting for inverse.
+    /// Inverse terminal-default ink resolves to observed background RGB when known.
     pub fn ink(&self, role: Role, selected: bool) -> ColorSource {
         let style = self.resolved(role, selected);
         if style.inverse {
@@ -116,6 +143,8 @@ impl Theme {
             style.foreground_source
         }
     }
+    /// Displayed background from the ordinary or selected style, accounting for inverse.
+    /// Inverse terminal-default background resolves to observed foreground RGB when known.
     pub fn background(&self, role: Role, selected: bool) -> ColorSource {
         let style = self.resolved(role, selected);
         if style.inverse {
@@ -130,8 +159,7 @@ impl Theme {
             style.background_source
         }
     }
-    /// Resolve the actual rendered marker ink, including native inverse colors.
-    /// Unknown native background ink is intentionally unavailable to SVG callers.
+    /// Visible ink for a style; unknown inverse terminal-default ink returns `None`.
     pub fn effective_ink(&self, style: &Style) -> Option<ColorSource> {
         let source = if style.inverse {
             style.background_source
@@ -144,6 +172,7 @@ impl Theme {
             Some(source)
         }
     }
+    /// Ordinary or selected style for the requested role.
     pub(crate) fn resolved(&self, role: Role, selected: bool) -> &Style {
         if selected {
             &self.selected[role as usize]
@@ -151,6 +180,7 @@ impl Theme {
             self.style(role)
         }
     }
+    /// Select selection styles first, otherwise panel styles only for a panel base.
     pub(crate) fn on_surface(&self, role: Role, selected: bool, base: Role) -> &Style {
         if selected {
             &self.selected[role as usize]
@@ -160,9 +190,11 @@ impl Theme {
             self.style(role)
         }
     }
+    /// Resolve a foreground source using observed defaults and ANSI entries.
     pub(crate) fn resolve_foreground(&self, source: ColorSource) -> [u8; 3] {
         self.resolve_color(source, self.defaults().0)
     }
+    /// Resolve a background source using observed defaults and ANSI entries.
     pub(crate) fn resolve_background(&self, source: ColorSource) -> [u8; 3] {
         self.resolve_color(source, self.defaults().1)
     }
@@ -179,6 +211,7 @@ impl Theme {
             ColorSource::Rgb(color) => color,
         }
     }
+    /// Observed default RGB colors, or scene fallback RGB for unresolved channels.
     pub(crate) fn defaults(&self) -> ([u8; 3], [u8; 3]) {
         let fallback = default_style();
         (
