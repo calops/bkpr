@@ -203,10 +203,14 @@ impl PressedPointer {
     }
 }
 
+/// Physical-client input, takeover and clipboard-consent preferences.
 #[derive(Clone)]
 pub struct Options {
+    /// Disable pane input and management mutations without changing sizing eligibility.
     pub read_only: bool,
+    /// Request takeover when each session attachment activates.
     pub detach_others: bool,
+    /// Clipboard consent mode: `"ask"`, `"allow"` or `"deny"`.
     pub clipboard_policy: String,
 }
 impl Default for Options {
@@ -4620,6 +4624,9 @@ impl App {
     }
 }
 
+/// Run the physical terminal until detach, terminal closure or a fatal client error.
+///
+/// Rejects unsupported clipboard policies before entering terminal mode.
 pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Result<()> {
     anyhow::ensure!(
         matches!(options.clipboard_policy.as_str(), "ask" | "allow" | "deny"),

@@ -1,4 +1,5 @@
 use super::*;
+use unicode_segmentation::UnicodeSegmentation;
 
 const MAX_NAVIGATION: usize = 64;
 
@@ -28,6 +29,23 @@ pub(super) struct State {
     editor: Option<Editor>,
     flights: HashMap<String, Flight>,
     clears: VecDeque<(String, String)>,
+}
+
+fn query_suffix(query: &str, columns: u16) -> (&str, usize) {
+    let mut width = 0;
+    let mut start = query.len();
+    for (index, grapheme) in query.grapheme_indices(true).rev() {
+        let cells: usize = grapheme
+            .chars()
+            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+            .sum();
+        if width + cells > usize::from(columns / 3) {
+            break;
+        }
+        start = index;
+        width += cells;
+    }
+    (&query[start..], width)
 }
 
 impl App {
@@ -361,20 +379,11 @@ impl App {
         } else {
             "searching".into()
         };
-        let mut width = 0;
-        let mut start = editor.query.len();
-        for (index, ch) in editor.query.char_indices().rev() {
-            let columns = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if width + columns > usize::from(size.cols / 3) {
-                break;
-            }
-            start = index;
-            width += columns;
-        }
+        let (query, width) = query_suffix(&editor.query, size.cols);
         let prefix = format!("Search {status} | /");
         let value = format!(
             "{prefix}{} | Enter next  Shift-Enter previous  Esc clear",
-            &editor.query[start..]
+            query
         );
         let local = Size { rows: 1, ..size };
         let cursor = Cursor {
@@ -423,14 +432,7 @@ impl App {
         }];
         let cursor = &surface.frame.cursor;
         if cursor.visible {
-            let mut width = 0;
-            for ch in editor.query.chars().rev() {
-                let columns = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                if width + columns > usize::from(size.cols / 3) {
-                    break;
-                }
-                width += columns;
-            }
+            let (_, width) = query_suffix(&editor.query, size.cols);
             spans.push(RoleSpan {
                 rect: Rect {
                     x: cursor.x.saturating_sub(width as u16),

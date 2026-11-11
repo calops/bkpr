@@ -116,6 +116,7 @@ struct Document {
     values: Vec<Value>,
     harness_visible: bool,
     status_visible: bool,
+    terminal_error: Option<String>,
     project_stale: bool,
     project_slot: Option<u32>,
     preview: Vec<Paragraph>,
@@ -434,6 +435,10 @@ impl Finder {
                         == crate::controller::recognized_harness(pane, known).is_some()
                         && document.status_visible
                             == crate::controller::harness_status(pane, known).is_some()
+                        && document.terminal_error.as_deref()
+                            == known
+                                .filter(|snapshot| snapshot.pane_id == pane.id)
+                                .and_then(|snapshot| snapshot.error.as_deref())
                 })
         {
             return;
@@ -454,6 +459,9 @@ impl Finder {
                 values: Vec::new(),
                 harness_visible: harness.is_some(),
                 status_visible: status.is_some(),
+                terminal_error: known
+                    .filter(|snapshot| snapshot.pane_id == pane.id)
+                    .and_then(|snapshot| snapshot.error.clone()),
                 project_stale: pane
                     .project
                     .as_ref()
@@ -1398,6 +1406,57 @@ mod tests {
             finder.apply_theme(&mut surface, &theme, &host, &Default::default());
             assert!(surface.frame.rows[0].cells[0].style.bold);
             assert!(surface.frame.rows[y].cells[x].style.bold);
+        }
+    }
+    #[test]
+    fn open_preview_updates_terminal_diagnostics_without_losing_query_or_selection() {
+        let registry = registry();
+        let mut snapshot: PaneSnapshot = serde_json::from_value(serde_json::json!({
+            "pane_id":"b", "pid":null, "revision":1, "snapshot_revision":1,
+            "frame":null, "image_refs":[], "resource_protocol":1, "writer":null,
+            "lifecycle":"running", "exit_code":null, "error":"first terminal diagnostic",
+            "program_status":[], "events":[], "event_sequence":0, "size_owner":null,
+            "lease_generation":0, "views":[], "clipboard":null, "clipboard_pending":false,
+            "capabilities":{"sixel":false,"normalized_frames":true,"native_mouse_reporting":false,
+                "clipboard_timeout_ms":0,"view_timeout_ms":0,"poll_wait_max_ms":0,
+                "row_deltas":false,"scene_encodings":[]}
+        }))
+        .unwrap();
+        let mut finder = Finder::new(&registry, Some("b"), |id| (id == "b").then_some(&snapshot));
+        finder.set_query("build");
+        finder.navigate(1, size());
+        let selected = finder.selected_target().cloned();
+        assert_eq!(selected.as_ref().unwrap().pane_id, "b");
+        let size = Size {
+            cols: 120,
+            rows: 40,
+            ..size()
+        };
+        let mut surface = UiSurface::new(size);
+        let visible = |surface: &UiSurface| {
+            surface
+                .frame
+                .rows
+                .iter()
+                .flat_map(|row| row.cells.iter())
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+        };
+        finder.paint(&mut surface, size);
+        assert!(visible(&surface).contains("first terminal diagnostic"));
+        for diagnostic in [Some("replacement terminal diagnostic"), None] {
+            snapshot.snapshot_revision += 1;
+            snapshot.error = diagnostic.map(str::to_owned);
+            finder.update_registry(&registry, |id| (id == "b").then_some(&snapshot));
+            finder.paint(&mut surface, size);
+            let shown = visible(&surface);
+            assert!(!shown.contains("first terminal diagnostic"));
+            assert_eq!(
+                shown.contains("replacement terminal diagnostic"),
+                diagnostic.is_some()
+            );
+            assert_eq!(finder.selected_target(), selected.as_ref());
+            assert_eq!(finder.input.value, "build");
         }
     }
     #[test]

@@ -1,7 +1,9 @@
 //! TUI application and typed local/remote daemon transport. No backend
 //! implementation dependency is linked into a frontend.
+#![deny(missing_docs)]
 mod app;
 mod appearance;
+/// Attachment destinations and deferred local bootstrap.
 pub mod attachments;
 mod chrome_graphics;
 mod ci;
@@ -13,9 +15,11 @@ mod metadata;
 mod popover;
 mod project_colors;
 const TEXT_INPUT_LIMIT: usize = 4096;
+/// Owned OpenSSH attachment and discovery.
 pub mod remote;
 mod themes;
 mod tiling;
+/// Typed daemon requests, client authority and lifetime tracking.
 pub mod transport;
 mod tree;
 mod updates;

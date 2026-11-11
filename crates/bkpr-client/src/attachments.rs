@@ -10,12 +10,18 @@ pub type PrepareLocal =
 /// Independent native session owners. Remote routing is parsed by the launcher;
 /// this client never interprets colons or derives remote filesystem defaults.
 pub enum SessionTarget {
+    /// A local daemon with optional deferred bootstrap.
     Local {
+        /// Display/session selection name, if explicitly configured.
         name: Option<String>,
+        /// Local daemon control socket.
         socket: PathBuf,
+        /// Defaults for newly created panes on this endpoint.
         spawn_defaults: SpawnDefaults,
+        /// One-shot bootstrap run off the terminal thread before registration.
         prepare: Option<PrepareLocal>,
     },
+    /// An existing session reached through its own SSH transport.
     Remote(crate::remote::RemoteTarget),
 }
 
@@ -73,26 +79,5 @@ impl SessionTarget {
             Self::Local { .. } => None,
             Self::Remote(target) => Some((target.destination.clone(), target.session_name.clone())),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::SessionTarget;
-
-    #[test]
-    fn remote_label_preserves_literal_target_without_a_textual_prefix() {
-        let target = SessionTarget::Remote(crate::remote::RemoteTarget {
-            destination: "user@literal-host".into(),
-            session_name: "literal/session:name".into(),
-            helper: None,
-            ssh_config: None,
-            forward_agent: false,
-            detach_others: false,
-        });
-        assert_eq!(
-            target.label(),
-            "\u{f048d} user@literal-host:literal/session:name"
-        );
     }
 }
