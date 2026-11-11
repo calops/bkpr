@@ -46,20 +46,30 @@ const STDERR_LIMIT: usize = 16 * 1024;
 const HEARTBEAT_MS: u32 = 1000;
 const LEASE_MS: u32 = 5000;
 
+/// Literal SSH destination, remote session and connection preferences.
 #[derive(Clone, Debug)]
 pub struct RemoteTarget {
+    /// OpenSSH destination, passed as one argument rather than shell syntax.
     pub destination: String,
+    /// Existing session name resolved by the remote helper.
     pub session_name: String,
+    /// Optional remote helper path; defaults to the remote `bkpr` command.
     pub helper: Option<PathBuf>,
+    /// Optional local OpenSSH configuration file.
     pub ssh_config: Option<PathBuf>,
+    /// Forward the caller's SSH agent into this attachment.
     pub forward_agent: bool,
+    /// Request takeover after native client registration.
     pub detach_others: bool,
 }
 
 /// Only the remote helper resolves paths. These paths never become caller identity.
 pub struct ResolvedSession {
+    /// Remote daemon socket, interpreted only on the remote host.
     pub socket: PathBuf,
+    /// Authoritative identity returned by the remote helper.
     pub info: SessionInfo,
+    /// Remote agent socket offered by the established SSH transport.
     pub agent_socket: Option<PathBuf>,
 }
 
@@ -165,6 +175,7 @@ pub struct RemoteSession {
     supervisor: Supervisor,
 }
 impl RemoteSession {
+    /// Establish, register and activate one attachment; failures are never replayed.
     pub fn connect(target: RemoteTarget) -> Result<Self> {
         let detach_others = target.detach_others;
         let mut session = Self::register(target)?;
@@ -341,6 +352,7 @@ impl RemoteSession {
         };
         Ok((welcome, connector, supervisor))
     }
+    /// Authoritative session identity captured during registration.
     pub fn info(&self) -> &SessionInfo {
         self.client.session()
     }
@@ -348,6 +360,7 @@ impl RemoteSession {
     pub fn client_id(&self) -> &str {
         self.client.client_id()
     }
+    /// Clone request access sharing this attachment's revocable authority.
     pub fn endpoint(&self) -> Endpoint {
         self.client.endpoint().clone()
     }
@@ -381,11 +394,13 @@ impl RemoteSession {
         self.client.cancel();
         self.supervisor.retire();
     }
+    /// Detach the native client and join SSH teardown; call outside the input loop.
     pub fn disconnect(&mut self) -> Result<()> {
         let result = self.client.detach();
         self.supervisor.stop();
         result
     }
+    /// Pollable lifetime descriptor, or `-1` after local retirement.
     pub fn lifetime_fd(&self) -> std::os::fd::RawFd {
         self.client.lifetime_fd()
     }

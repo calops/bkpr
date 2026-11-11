@@ -96,6 +96,7 @@ impl std::fmt::Display for OutcomeUnknown {
 }
 impl std::error::Error for OutcomeUnknown {}
 
+/// Whether the error leaves a dispatched request's outcome unresolved; never replay it.
 pub fn outcome_unknown(error: &anyhow::Error) -> bool {
     error.is::<OutcomeUnknown>()
 }
@@ -103,6 +104,7 @@ pub fn outcome_unknown(error: &anyhow::Error) -> bool {
 /// A proven pre-dispatch reservation conflict, not authorization to replay.
 #[derive(Debug)]
 pub struct RequestBusy {
+    /// Backend identity whose request reservation could not be acquired.
     pub target_id: String,
 }
 impl std::fmt::Display for RequestBusy {
@@ -218,6 +220,7 @@ fn request_encoded_stream(stream: &mut UnixStream, payload: &[u8]) -> Result<Res
     })();
     response.context(OutcomeUnknown)
 }
+/// Dispatch once, returning diagnostic JSON or the daemon's rejection.
 pub fn checked(socket: &Path, operation: Operation) -> Result<Value> {
     checked_payload(socket, operation)?.into_json()
 }

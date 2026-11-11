@@ -264,3 +264,27 @@ fn search_local_rejections_preserve_results_and_accept_a_later_valid_edit() {
     app.flush_search().unwrap();
     assert_search_query(capture.respond(serde_json::json!({"generation": 2})), "needlex");
 }
+
+#[test]
+fn search_query_suffix_never_attaches_a_clipped_grapheme_to_the_prefix() {
+    let (mut app, _capture) = fixture();
+    attach_fixture(&mut app);
+    app.begin_search().unwrap();
+    app.search_text("界\u{301}123456789");
+    let size = Size { cols: 30, rows: 1, ..size() };
+    let mut surface = UiSurface::new(size);
+    assert!(app.search_overlay(&mut surface, size));
+    assert!(!surface.frame.rows[0].cells.iter().any(|cell| cell.text.contains('\u{301}')));
+    let slash = surface.frame.rows[0].cells.iter().position(|cell| cell.text == "/").unwrap();
+    assert_eq!(surface.frame.rows[0].cells[slash + 1].text, "1");
+    assert_eq!(surface.frame.cursor.x as usize, slash + 10);
+    let mut theme = Theme::default();
+    crate::appearance::update_theme(&mut theme, &ColorProbe {
+        truecolor: true, foreground: Some([220,220,220]), background: Some([10,10,10]),
+        ..ColorProbe::default()
+    });
+    app.theme_search(&mut surface, &theme);
+    let cells = &surface.frame.rows[0].cells;
+    assert_ne!(cells[slash].style.background_source, cells[slash + 1].style.background_source);
+    assert_eq!(cells[slash + 1].style.background_source, cells[slash + 9].style.background_source);
+}

@@ -218,6 +218,7 @@ impl Endpoint {
         self.connector.remote()
     }
 
+    /// Reject locally revoked authority before dispatching a request.
     pub fn ensure_live(&self) -> Result<()> {
         if self.is_revoked() {
             return Err(DetachedBeforeDispatch.into());
@@ -412,12 +413,15 @@ fn capture_agent_socket(value: Option<OsString>) -> Result<Option<PathBuf>> {
 /// lifetime transport cleanup. Only the coordinator owns reconnect policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Lifecycle {
+    /// No retirement or transport closure has been observed.
     Active,
     /// Explicit retirement, including unrecognized reasons. Preserve the fact
     /// without inferring user intent; policy must not automatically retry it.
     Detached {
+        /// Exact backend retirement reason.
         reason: String,
     },
+    /// The lifetime stream ended without explicit user/session retirement.
     TransportClosed,
 }
 
@@ -434,6 +438,9 @@ pub struct RegisteredClient {
 }
 
 impl RegisteredClient {
+    /// Register a local attachment without activating takeover or attaching views.
+    ///
+    /// Captures the current SSH agent socket for this registration only.
     pub fn register(socket: &Path) -> Result<Self> {
         let agent_socket = capture_agent_socket(std::env::var_os("SSH_AUTH_SOCK"))?;
         Self::register_with_agent_socket(socket, agent_socket)
@@ -562,12 +569,15 @@ impl RegisteredClient {
         })
     }
 
+    /// Shared request authority, revoked when this registration retires.
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
+    /// Authoritative session identity returned by registration.
     pub fn session(&self) -> &SessionInfo {
         &self.session
     }
+    /// Authoritative session identity returned by registration.
     pub fn info(&self) -> &SessionInfo {
         &self.session
     }
@@ -580,6 +590,7 @@ impl RegisteredClient {
             .expect("registered client retains its native authority")
             .client_id
     }
+    /// Pollable lifetime descriptor, or `-1` after local retirement.
     pub fn lifetime_fd(&self) -> RawFd {
         self.lifetime.as_ref().map_or(-1, AsRawFd::as_raw_fd)
     }
@@ -689,6 +700,7 @@ impl RegisteredClient {
         self.close();
     }
 
+    /// Consume bounded nonblocking lifecycle input and revoke retired authority.
     pub fn poll_lifecycle(&mut self) -> Result<Lifecycle> {
         if self.lifetime.is_none() {
             return Ok(self.lifecycle.clone());
@@ -760,6 +772,7 @@ impl RegisteredClient {
         }
     }
 
+    /// Request native detach, then revoke authority even if its receipt is lost.
     pub fn detach(&mut self) -> Result<()> {
         if self.lifetime.is_none() {
             return Ok(());
