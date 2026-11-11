@@ -3576,4 +3576,197 @@ mod scene_tests {
         assert_eq!(renderer.canvas.as_ref().unwrap().rows, original);
         assert_eq!(source.rows, canonical);
     }
+    #[test]
+    fn chrome_transfer_identity_survives_scene_aliases_and_host_rejection_replaces_inline() {
+        struct Cleanup(crate::transfer::ChromeTransfers);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { self.0.shutdown_worker(); }
+        }
+        let transfers = crate::transfer::proven_file_for_test();
+        let _cleanup = Cleanup(transfers.clone());
+        let local = Size { cols: 1, rows: 1, cell_width: 1, cell_height: 1 };
+        let chrome = effect_frame(local);
+        let mut pane = chrome.clone();
+        // Identical native resource keys and pixels are not chrome provenance.
+        pane.images[0] = Arc::new(chrome.images[0].as_ref().clone());
+        transfers.prepare(&chrome.images[0]);
+        let scene = Scene {
+            size: Size { cols: 2, ..local },
+            surfaces: vec![
+                Surface {
+                    id: "chrome",
+                    rect: Rect { x: 0, y: 0, width: 1, height: 1 },
+                    frame: &chrome,
+                    palette: None,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                    content: SurfaceContent::All,
+                },
+                Surface {
+                    id: "pane",
+                    rect: Rect { x: 1, y: 0, width: 1, height: 1 },
+                    frame: &pane,
+                    palette: None,
+                    selection: &[],
+                    search: &[],
+                    focused: false,
+                    faint: false,
+                    content: SurfaceContent::All,
+                },
+            ],
+        };
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        terminal.set_chrome_transfers(transfers.clone());
+        let mut first = Vec::new();
+        renderer.render(&mut first, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        let first = std::str::from_utf8(&first).unwrap();
+        assert_eq!(first.matches("\x1b_Ga=t,t=f,").count(), 1);
+        assert_eq!(first.matches("\x1b_Ga=t,f=32,").count(), 1, "pane image must remain immediate q=1 inline");
+        assert!(first.contains(",q=1,m=0;"));
+        let external = first.split("\x1b_Ga=t,t=f,").nth(1).unwrap();
+        let id = external.split(",i=").nth(1).unwrap().split(',').next().unwrap();
+        assert!(transfers.consume_tagged(format!("graphics;Gi={id};EBADF:Failed to read image file").as_bytes(), Instant::now()));
+        transfers.service();
+        let mut fallback = Vec::new();
+        renderer.render(&mut fallback, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        let fallback = std::str::from_utf8(&fallback).unwrap();
+        assert_eq!(fallback.matches("\x1b_Ga=t,f=32,").count(), 1, "only rejected chrome must retransmit inline");
+        assert!(!fallback.contains("\x1b_Ga=t,t="));
+        assert_eq!(fallback.matches("\x1b_Ga=p,").count(), 2, "replacement must restore placements through the same scene draw");
+        let mut idle = Vec::new();
+        renderer.render(&mut idle, &scene, &ColorProbe::default(), &mut terminal).unwrap();
+        assert!(idle.is_empty(), "transport fallback must not change unchanged-frame semantics");
+        assert_eq!(chrome.images[0].pixels, pane.images[0].pixels);
+    }
+
+    #[test]
+    fn confirmed_local_upload_is_not_retransmitted_for_capability_or_preference_changes() {
+        struct Cleanup(crate::transfer::ChromeTransfers);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { self.0.shutdown_worker(); }
+        }
+        let transfers = crate::transfer::proven_file_for_test();
+        let _cleanup = Cleanup(transfers.clone());
+        let size = Size { cols: 1, rows: 1, cell_width: 1, cell_height: 1 };
+        let frame = effect_frame(size);
+        transfers.prepare(&frame.images[0]);
+        let mut graphics = GraphicsState::new(1000);
+        graphics.transfers = Some(transfers.clone());
+        let mut first = Vec::new();
+        draw(&mut first, &frame, size, "", &ColorProbe::default(), &mut graphics).unwrap();
+        assert!(std::str::from_utf8(&first).unwrap().contains("\x1b_Ga=t,t=f,"));
+        let id = graphics.image_ids.values().next().unwrap();
+        assert!(transfers.consume_tagged(format!("graphics;Gi={id};OK").as_bytes(), Instant::now()));
+        transfers.service();
+        // Losing capability evidence affects future resources, not resident IDs.
+        transfers.disconnect();
+        let mut idle = Vec::new();
+        draw(&mut idle, &frame, size, "", &ColorProbe::default(), &mut graphics).unwrap();
+        assert!(idle.is_empty());
+    }
+    #[test]
+    fn dropped_local_upload_ack_recovers_inline_with_new_id_and_ignores_late_ack() {
+        struct Cleanup(crate::transfer::ChromeTransfers);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { self.0.shutdown_worker(); }
+        }
+        let transfers = crate::transfer::proven_file_for_test();
+        let _cleanup = Cleanup(transfers.clone());
+        let size = Size { cols: 1, rows: 1, cell_width: 1, cell_height: 1 };
+        let frame = effect_frame(size);
+        transfers.prepare(&frame.images[0]);
+        let mut graphics = GraphicsState::new(1000);
+        graphics.transfers = Some(transfers.clone());
+        let mut first = Vec::new();
+        draw(&mut first, &frame, size, "", &ColorProbe::default(), &mut graphics).unwrap();
+        let old = *graphics.image_ids.values().next().unwrap();
+        let expiry = transfers.deadline().unwrap();
+        transfers.expire(expiry);
+        let mut fallback = Vec::new();
+        draw(&mut fallback, &frame, size, "", &ColorProbe::default(), &mut graphics).unwrap();
+        let new = *graphics.image_ids.values().next().unwrap();
+        assert_ne!(old, new, "timeout recovery must never replay the ambiguous local upload ID");
+        let fallback = std::str::from_utf8(&fallback).unwrap();
+        let delete = fallback.find(&format!("\x1b_Ga=d,d=I,i={old},")).unwrap();
+        let inline = fallback.find("\x1b_Ga=t,f=32,").unwrap();
+        let placement = fallback.find(&format!("\x1b_Ga=p,i={new},")).unwrap();
+        assert!(delete < inline && inline < placement);
+        assert!(!fallback.contains("\x1b_Ga=t,t="));
+        assert!(!transfers.consume_tagged(format!("graphics;Gi={old};OK").as_bytes(), expiry));
+        transfers.service();
+        let mut idle = Vec::new();
+        draw(&mut idle, &frame, size, "", &ColorProbe::default(), &mut graphics).unwrap();
+        assert!(idle.is_empty());
+        assert_eq!(transfers.deadline(), None, "inline recovery cannot start another local timeout loop");
+    }
+
+    #[test]
+    fn timed_out_retired_generation_is_not_resurrected_by_recovery() {
+        struct Cleanup(crate::transfer::ChromeTransfers);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { self.0.shutdown_worker(); }
+        }
+        let transfers = crate::transfer::proven_file_for_test();
+        let _cleanup = Cleanup(transfers.clone());
+        let size = Size { cols: 1, rows: 1, cell_width: 1, cell_height: 1 };
+        let mut frame = effect_frame(size);
+        transfers.prepare(&frame.images[0]);
+        let mut graphics = GraphicsState::new(1000);
+        graphics.transfers = Some(transfers.clone());
+        draw(&mut Vec::new(), &frame, size, "", &ColorProbe::default(), &mut graphics).unwrap();
+        frame.images.clear();
+        frame.placements.clear();
+        transfers.expire(transfers.deadline().unwrap());
+        let mut retired = Vec::new();
+        draw(&mut retired, &frame, size, "", &ColorProbe::default(), &mut graphics).unwrap();
+        let retired = std::str::from_utf8(&retired).unwrap();
+        assert!(!retired.contains("\x1b_Ga=t,"));
+        assert!(!retired.contains("\x1b_Ga=p,"));
+        assert!(graphics.image_ids.is_empty());
+    }
+
+    #[test]
+    fn partial_local_terminal_write_disconnects_without_inline_replay() {
+        struct Cleanup(crate::transfer::ChromeTransfers);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { self.0.shutdown_worker(); }
+        }
+        struct PartialWriter { bytes: Vec<u8>, failed: bool }
+        impl std::io::Write for PartialWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.failed { return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "terminal disconnected mid-command")); }
+                if bytes.starts_with(b"\x1b_Ga=t,t=") {
+                    self.bytes.extend_from_slice(&bytes[..10]);
+                    self.failed = true;
+                    Ok(10)
+                } else {
+                    self.bytes.extend_from_slice(bytes);
+                    Ok(bytes.len())
+                }
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let transfers = crate::transfer::proven_file_for_test();
+        let _cleanup = Cleanup(transfers.clone());
+        let size = Size { cols: 1, rows: 1, cell_width: 1, cell_height: 1 };
+        let frame = effect_frame(size);
+        transfers.prepare(&frame.images[0]);
+        let mut graphics = GraphicsState::new(1000);
+        graphics.transfers = Some(transfers.clone());
+        let mut writer = PartialWriter { bytes: Vec::new(), failed: false };
+        assert!(draw(&mut writer, &frame, size, "", &ColorProbe::default(), &mut graphics).is_err());
+        assert!(!std::str::from_utf8(&writer.bytes).unwrap().contains("\x1b_Ga=t,f="));
+        assert_eq!(transfers.deadline(), None);
+        assert!(transfers.upload(&frame.images[0], 1002, Instant::now()).is_none());
+    }
+
+    #[test]
+    fn physical_allocator_cannot_enter_the_shared_query_response_namespace() {
+        assert!(GraphicsState::new(0x3fff_ffff).allocate().is_err());
+        assert!(GraphicsState::new(0x6fff_ffff).allocate().is_err());
+        assert_eq!(GraphicsState::new(0x8000_0000).allocate().unwrap(), 0x8000_0001);
+    }
 }

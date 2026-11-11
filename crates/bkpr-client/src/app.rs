@@ -4654,6 +4654,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
     }
     let result = (|| -> Result<()> {
         let mut terminal = terminal;
+        let chrome_transfers = graphics.chrome_transfers();
+        terminal.set_chrome_transfers(chrome_transfers.clone());
         let mut renderer = Renderer::default();
         let stdout = std::io::stdout();
         let mut out = std::io::BufWriter::with_capacity(256 * 1024, stdout.lock());
@@ -4729,6 +4731,18 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             let active_owner = sessions.current_owner();
             let app = sessions.app_mut();
             graphics.drain()?;
+            chrome_transfers.expire(Instant::now());
+            if app.colors.graphics.supported() {
+                let queries = chrome_transfers.take_query_commands(Instant::now());
+                if !queries.is_empty() {
+                    for command in queries {
+                        out.write_all(&command)?;
+                    }
+                    // A write failure is an unknown terminal outcome. Propagate
+                    // it rather than replaying queries or switching transports.
+                    out.flush()?;
+                }
+            }
             for frame in [
                 &mut window_effects,
                 &mut popover_effects,
@@ -5648,6 +5662,11 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             // non-animation deadline fixed so clipboard/input/session timers cannot
             // be postponed by an animation, and return on every ready descriptor.
             let presentation_deadline = Instant::now() + Duration::from_millis(timeout as u64);
+            let presentation_deadline = chrome_transfers
+                .deadline()
+                .map_or(presentation_deadline, |next| {
+                    next.min(presentation_deadline)
+                });
             let hits = loop {
                 title_animation.apply(&mut chrome_surface.frame);
                 let mut surfaces = vec![Surface {
@@ -5960,7 +5979,14 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     libc::poll(
                         fds.as_mut_ptr(),
                         fds.len() as _,
-                        title_animation.timeout(presentation_deadline, Instant::now()),
+                        title_animation.timeout(
+                            chrome_transfers
+                                .deadline()
+                                .map_or(presentation_deadline, |next| {
+                                    next.min(presentation_deadline)
+                                }),
+                            Instant::now(),
+                        ),
                     )
                 };
                 if ready < 0
@@ -5969,6 +5995,12 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     return Err(std::io::Error::last_os_error().into());
                 }
                 let now = Instant::now();
+                if chrome_transfers
+                    .deadline()
+                    .is_some_and(|deadline| now >= deadline)
+                {
+                    break scene.hit_map();
+                }
                 if ready == 0 && now < presentation_deadline && title_animation.clock.advance(now) {
                     continue;
                 }
@@ -6008,6 +6040,11 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             };
             incoming.extend(decode_input(&mut parser, parts, available));
             while let Some(event) = incoming.pop_front() {
+                if let ClientEvent::Reply(response) = &event
+                    && chrome_transfers.consume_tagged(response, Instant::now())
+                {
+                    continue;
+                }
                 if sessions.route_release(&event, input_size)? {
                     continue;
                 }

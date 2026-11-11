@@ -273,6 +273,7 @@ dependencies = [
  "nucleo-matcher",
  "png",
  "resvg",
+ "tempfile",
  "termwiz",
  "unicode-segmentation",
  "unicode-width",

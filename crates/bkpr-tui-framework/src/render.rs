@@ -55,6 +55,7 @@ struct GraphicsState {
     derived_bytes: usize,
     text: TextState,
     projections: Vec<geometry::Projection>,
+    transfers: Option<crate::transfer::ChromeTransfers>,
 }
 impl GraphicsState {
     fn new(start_id: u32) -> Self {
@@ -65,6 +66,7 @@ impl GraphicsState {
             derived_bytes: 0,
             text: TextState::default(),
             projections: Vec::new(),
+            transfers: None,
         }
     }
     fn allocate(&mut self) -> Result<u32> {
@@ -72,6 +74,9 @@ impl GraphicsState {
             .next_image
             .checked_add(1)
             .context("physical image ID capacity exhausted")?;
+        if crate::transfer::reserved_id(self.next_image) {
+            bail!("physical image ID reached reserved graphics query namespace");
+        }
         Ok(self.next_image)
     }
     fn all_ids(&self) -> impl Iterator<Item = &u32> {
@@ -142,6 +147,17 @@ pub struct TerminalGuard {
     background: background::Background,
 }
 impl TerminalGuard {
+    /// Attach the existing chrome worker's transfer owner to this physical TUI.
+    /// Pane resources are never registered and retain immediate inline uploads.
+    /// Replacing an owner disconnects its outstanding resource leases.
+    pub fn set_chrome_transfers(&mut self, transfers: crate::transfer::ChromeTransfers) {
+        if let Some(previous) = self.graphics.transfers.take()
+            && !previous.same_owner(&transfers)
+        {
+            previous.disconnect();
+        }
+        self.graphics.transfers = Some(transfers);
+    }
     /// Snapshot ownership immediately before sending ColorProbe::query().
     pub fn prepare_background_query(&mut self) {
         self.background.prepare_query();
@@ -198,6 +214,9 @@ impl TerminalGuard {
 }
 impl TerminalGuard {
     fn restore_output(&mut self, out: &mut impl Write) {
+        if let Some(transfers) = &self.graphics.transfers {
+            transfers.disconnect();
+        }
         // OSC restoration must precede alternate-screen reset, including when
         // unwinding after a partial write or render error.
         let _ = self.background.restore(out);
@@ -481,6 +500,16 @@ fn draw_prepared(
             }
         }
     }
+    let failed_uploads = graphics
+        .transfers
+        .as_ref()
+        .map(crate::transfer::ChromeTransfers::take_failures)
+        .unwrap_or_default();
+    if !failed_uploads.is_empty() {
+        graphics
+            .image_ids
+            .retain(|_, id| !failed_uploads.contains(id));
+    }
     let colors = ColorState {
         foreground: frame.foreground,
         background: frame.background,
@@ -494,7 +523,8 @@ fn draw_prepared(
     let text_changed =
         full || (0..viewport.rows as usize).any(|y| frame.rows.get(y) != graphics.text.rows.get(y));
     let chrome_changed = full || graphics.text.chrome != chrome;
-    let placements_changed = graphics.projections != prepared.placements;
+    let placements_changed =
+        !failed_uploads.is_empty() || graphics.projections != prepared.placements;
     let resources_changed = graphics
         .image_ids
         .keys()
@@ -524,6 +554,9 @@ fn draw_prepared(
     // replacement. Deleting before this boundary exposes an empty-image frame
     // when the write spans flushes, even if every raster remains GPU-resident.
     write!(out, "\x1b[?2026h\x1b[?25l\x1b[0m")?;
+    for id in failed_uploads {
+        write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+    }
     for (_, id) in graphics
         .image_ids
         .extract_if(|key, _| !prepared.images.contains_key(key))
@@ -614,14 +647,32 @@ fn draw_prepared(
         }
         let id = graphics.allocate()?;
         graphics.image_ids.insert(*key, id);
-        transmit_image(
-            out,
-            id,
-            image.width,
-            image.height,
-            image.format,
-            &image.pixels,
-        )?;
+        if let Some(command) = graphics
+            .transfers
+            .as_ref()
+            .and_then(|transfers| transfers.upload(image, id, Instant::now()))
+        {
+            if let Err(error) = out.write_all(&command) {
+                // An incomplete escape may already have reached the host. Never
+                // replay it or claim an inline fallback after ambiguous dispatch.
+                if let Some(transfers) = &graphics.transfers {
+                    transfers.disconnect();
+                }
+                return Err(error.into());
+            }
+        } else {
+            if let Some(transfers) = &graphics.transfers {
+                transfers.note_inline(image);
+            }
+            transmit_image(
+                out,
+                id,
+                image.width,
+                image.height,
+                image.format,
+                &image.pixels,
+            )?;
+        }
     }
     for p in prepared.placements.iter().filter(|_| placements_changed) {
         let id = if let Some(key) = p.derived {
@@ -630,6 +681,9 @@ fn draw_prepared(
                 resource.id
             } else {
                 let image = prepared.images[&key.image];
+                if let Some(transfers) = &graphics.transfers {
+                    transfers.note_inline(image);
+                }
                 let pixels = geometry::raster(image, key)?;
                 let id = graphics.allocate()?;
                 let rgba_bytes = usize::try_from(key.visible.width)?
@@ -1084,17 +1138,27 @@ impl ReplyDemux {
         }
     }
 }
+/// One pending host clipboard transfer and its caller-owned consent state.
 pub struct Consent {
+    /// Exact request correlation placed in enhanced clipboard messages.
     pub id: String,
+    /// Requested MIME operation, selection and native grant context.
     pub request: ClipboardRequest,
+    /// Transfer start time for caller-enforced expiry.
     pub started: Instant,
+    /// Whether the host operation has been submitted.
     pub sent: bool,
+    /// Whether presentation policy approved the operation.
     pub allowed: bool,
+    /// Accumulated exact MIME response contents.
     pub contents: Vec<ClipboardContent>,
+    /// Accumulated advertised MIME names.
     pub available: Vec<String>,
-    // None means the startup DECRQM response has not arrived, not unsupported.
+    /// Observed enhanced clipboard support; `None` means the startup response is pending.
     pub enhanced_supported: Option<bool>,
+    /// Whether this transfer services a native paste offer.
     pub paste: bool,
+    /// Original host-issued paste password, if this is an offer-bound read.
     pub password: Option<String>,
 }
 fn success(contents: Vec<ClipboardContent>) -> ClipboardResponse {
@@ -1699,18 +1763,44 @@ pub struct GraphicsProbe {
     issued_id: Option<u32>,
     supported: bool,
 }
+// Shared interpretation of the existing ReplyDemux APC route. A query and an
+// upload ACK have the same wire shape; ownership, not a guessed action, decides
+// dispatch. Keep placement headers distinguishable from plain image replies.
+pub(crate) fn parse_graphics_reply(bytes: &[u8]) -> Option<(u32, &str, bool)> {
+    let text = std::str::from_utf8(bytes.strip_prefix(b"graphics;")?).ok()?;
+    let (header, status) = text.split_once(';').unwrap_or((text, ""));
+    let value = header.strip_prefix("Gi=")?;
+    let image_id = value.split(',').next()?;
+    if image_id.is_empty()
+        || image_id.starts_with('0')
+        || !image_id.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((image_id.parse().ok()?, status, value == image_id))
+}
 impl GraphicsProbe {
     /// Send these bytes through the existing terminal-output owner, then feed
     /// ReplyDemux's APC payloads through ColorProbe::feed.
     pub fn begin(&mut self) -> Vec<u8> {
         static NEXT_ID: std::sync::atomic::AtomicU32 =
             std::sync::atomic::AtomicU32::new(0x7000_0000);
-        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Ok(id) = NEXT_ID.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |id| (id < 0x8000_0000).then(|| id + 1),
+        ) else {
+            self.pending = None;
+            self.issued_id = None;
+            self.supported = false;
+            return Vec::new();
+        };
         self.pending = Some((id, Instant::now()));
         self.issued_id = Some(id);
         self.supported = false;
         format!("\x1b_Gi={id},s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\").into_bytes()
     }
+    /// Whether the current query completed with positive graphics evidence.
     pub fn supported(&self) -> bool {
         self.supported
     }
@@ -1719,22 +1809,10 @@ impl GraphicsProbe {
     /// Late, duplicate and invalid responses for our query id are consumed but
     /// cannot turn an expired/completed query into positive evidence.
     pub fn consume_tagged(&mut self, bytes: &[u8]) -> bool {
-        let Some(bytes) = bytes.strip_prefix(b"graphics;") else {
+        let Some((image_id, status, plain)) = parse_graphics_reply(bytes) else {
             return false;
         };
-        let Ok(text) = std::str::from_utf8(bytes) else {
-            return false;
-        };
-        let (header, status) = text.split_once(';').unwrap_or((text, ""));
-        let Some(value) = header.strip_prefix("Gi=") else {
-            return false;
-        };
-        let image_id = value.split(',').next().unwrap_or("");
-        if image_id.as_bytes().first() == Some(&b'0')
-            || !image_id.bytes().all(|b| b.is_ascii_digit())
-            || image_id.parse::<u32>().ok() != self.issued_id
-            || self.issued_id.is_none()
-        {
+        if Some(image_id) != self.issued_id {
             return false;
         }
         let Some((_, started)) = self.pending else {
@@ -1746,7 +1824,7 @@ impl GraphicsProbe {
         }
         // Ownership is not capability evidence. Reject extra query fields,
         // malformed statuses and placement acknowledgements for our id.
-        if value != image_id || status.len() > 256 {
+        if !plain || status.len() > 256 {
             return true;
         }
         if status == "OK" {
@@ -2505,8 +2583,9 @@ mod material_cache_tests {
             events: libc::POLLIN,
             revents: 0,
         };
-        assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
-        assert!(graphics.drain().unwrap());
+        while !graphics.drain().unwrap() {
+            assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
+        }
         let first = material(&graphics, size);
         let mut renderer = Renderer::default();
         let mut terminal = std::mem::ManuallyDrop::new(TerminalGuard {

@@ -5,6 +5,7 @@
 use crate::ColorProbe;
 use crate::decoration::{self, DecorationGeometry, DecorationStyle, PreparedDecoration};
 use crate::joined::{JoinedCache, JoinedSurface, OpaqueSpan, PreparedJoined};
+use crate::transfer::ChromeTransfers;
 use bkpr_protocol::{ColorSource, Frame, Image, ImageLayer, PixelFormat, Placement, Size};
 use resvg::{tiny_skia, usvg};
 use std::{
@@ -107,6 +108,7 @@ struct Publication {
 struct State {
     desired: Option<(u64, Config)>,
     published: Option<Publication>,
+    transfer_work: bool,
     stop: bool,
     #[cfg(test)]
     work: PreparationWork,
@@ -117,14 +119,18 @@ struct Shared {
     generation: AtomicU64,
 }
 
-/// One coalescing worker, one pending configuration, one bounded publication.
-/// The caller registers wake_fd with its existing poll loop, invokes drain on
-/// readability, and repaints when drain returns true. No terminal I/O occurs.
+/// Coalescing image preparer with bounded caches and generation-scoped resources.
+///
+/// Poll [`Self::wake_fd`], call [`Self::drain`] on readability, and repaint when
+/// it returns `true`. A wake may instead announce prepared transfer commands;
+/// drain those through [`Self::chrome_transfers`] using the same terminal writer.
+/// Disabling presentation retains worker caches.
 pub struct SvgGraphics {
     enabled: bool,
     span: [u16; 2],
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
+    transfers: ChromeTransfers,
     wake: UnixStream,
     config: Option<Config>,
     core_ready: bool,
@@ -163,17 +169,36 @@ impl SvgGraphics {
             generation: AtomicU64::new(0),
         });
         let target = Arc::clone(&shared);
+        let transfers = ChromeTransfers::new();
+        let worker_shared = Arc::downgrade(&shared);
+        transfers.set_worker_wake(Arc::new(move || {
+            if let Some(shared) = worker_shared.upgrade() {
+                let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.transfer_work = true;
+                shared.changed.notify_one();
+            }
+        }));
+        let worker_transfers = transfers.clone();
         // Distinguish resources from other preparers or a replacement instance
         // mounted under the same stable Scene surface id.
         static RESOURCE_GENERATION: AtomicU64 = AtomicU64::new(1);
         let resource_generation = RESOURCE_GENERATION.fetch_add(1, Ordering::Relaxed);
         let worker = thread::Builder::new()
             .name("bkpr-svg".into())
-            .spawn(move || run(target, notify, assets, resource_generation))?;
+            .spawn(move || {
+                run(
+                    target,
+                    notify,
+                    assets,
+                    resource_generation,
+                    worker_transfers,
+                )
+            })?;
         Ok(Self {
             enabled: true,
             span: [columns, rows],
             shared,
+            transfers,
             worker: Some(worker),
             wake,
             config: None,
@@ -190,6 +215,12 @@ impl SvgGraphics {
     }
     pub fn wake_fd(&self) -> RawFd {
         self.wake.as_raw_fd()
+    }
+
+    /// Share this worker's chrome-only transfer owner with the physical terminal.
+    /// Pane images are never registered with this owner.
+    pub fn chrome_transfers(&self) -> ChromeTransfers {
+        self.transfers.clone()
     }
 
     /// Enable or disable this preparer's presentation without changing terminal
@@ -553,6 +584,7 @@ impl SvgGraphics {
 impl Drop for SvgGraphics {
     fn drop(&mut self) {
         self.shared.generation.fetch_add(1, Ordering::AcqRel);
+        self.transfers.disconnect();
         {
             let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             state.stop = true;
@@ -601,7 +633,15 @@ fn run(
     mut notify: UnixStream,
     assets: &'static [SvgAsset],
     resource_generation: u64,
+    transfers: ChromeTransfers,
 ) {
+    struct TransferCleanup(ChromeTransfers);
+    impl Drop for TransferCleanup {
+        fn drop(&mut self) {
+            self.0.shutdown_worker();
+        }
+    }
+    let _cleanup = TransferCleanup(transfers.clone());
     let trees: Vec<_> = assets
         .iter()
         .map(|asset| usvg::Tree::from_str(asset.svg, &usvg::Options::default()).ok())
@@ -614,9 +654,9 @@ fn run(
     let mut decoration_bytes = 0;
     let mut joined_cache = JoinedCache::default();
     loop {
-        let (generation, config) = {
+        let desired = {
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
-            while !state.stop && state.desired.is_none() {
+            while !state.stop && state.desired.is_none() && !state.transfer_work {
                 state = shared
                     .changed
                     .wait(state)
@@ -625,10 +665,20 @@ fn run(
             if state.stop {
                 return;
             }
-            state.desired.take().unwrap()
+            state.transfer_work = false;
+            state.desired.take()
+        };
+        if transfers.service() && notify_worker(&mut notify).is_err() {
+            return;
+        }
+        let Some((generation, config)) = desired else {
+            continue;
         };
         if !current(&shared, generation) {
             continue;
+        }
+        if transfers.prepare_probes() && notify_worker(&mut notify).is_err() {
+            return;
         }
         let mut entries = Vec::with_capacity((config.len * assets.len()).min(MAX_IMAGES));
         let mut bytes = 0;
@@ -796,6 +846,17 @@ fn run(
             }
             joined_cache.prepare(request, config.cell, resource_generation, &mut next_id)
         });
+        for entry in &entries {
+            transfers.prepare(&entry.image);
+        }
+        for entry in &decorations {
+            transfers.prepare(&entry.image);
+        }
+        if let Some(joined) = &joined {
+            for image in joined.images() {
+                transfers.prepare(image);
+            }
+        }
         #[cfg(test)]
         {
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -816,13 +877,19 @@ fn run(
             joined,
         });
         drop(state);
-        loop {
-            match notify.write(&[1]) {
-                Ok(_) => break,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(_) => return,
-            }
+        if notify_worker(&mut notify).is_err() {
+            return;
+        }
+    }
+}
+
+fn notify_worker(notify: &mut UnixStream) -> io::Result<()> {
+    loop {
+        match notify.write(&[1]) {
+            Ok(_) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+            Err(e) => return Err(e),
         }
     }
 }
@@ -851,15 +918,79 @@ mod tests {
         host.feed(b"10;rgb:ffff/0000/0000");
         host
     }
+    fn publication_waiting(graphics: &mut SvgGraphics) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while graphics.shared.state.lock().unwrap().published.is_none() {
+            let mut poll = libc::pollfd {
+                fd: graphics.wake_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(!remaining.is_zero(), "chrome publication did not arrive");
+            assert_eq!(
+                unsafe { libc::poll(&mut poll, 1, remaining.as_millis().max(1) as i32) },
+                1
+            );
+            // Transfer readiness can precede publication. Drain only notification
+            // bytes so tests of an undrained publication retain that publication.
+            let mut bytes = [0u8; 64];
+            while matches!(graphics.wake.read(&mut bytes), Ok(n) if n > 0) {}
+        }
+    }
     fn prepared(graphics: &mut SvgGraphics) {
+        publication_waiting(graphics);
+        assert!(graphics.drain().unwrap());
+    }
+    #[test]
+    fn transfers_are_demand_driven_and_evidence_wakes_the_existing_idle_worker() {
+        let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
+        let transfers = graphics.chrome_transfers();
+        let now = std::time::Instant::now();
+        assert!(transfers.take_query_commands(now).is_empty());
+        assert!(transfers.deadline().is_none());
+        graphics.prepare(&ColorProbe::default(), size(10), &[]);
+        assert!(graphics.shared.state.lock().unwrap().desired.is_none());
+        assert!(transfers.take_query_commands(now).is_empty());
+
+        graphics.prepare(&host(), size(10), &[]);
+        prepared(&mut graphics);
+        let image = Arc::clone(&graphics.ready[0].image);
+        let queries = transfers.take_query_commands(std::time::Instant::now());
+        assert!(
+            !queries.is_empty(),
+            "worker did not prepare local-medium probes"
+        );
+        graphics.drain().unwrap();
+        for query in queries {
+            let query = std::str::from_utf8(&query).unwrap();
+            let id = query
+                .split("i=")
+                .nth(1)
+                .unwrap()
+                .split([',', ';'])
+                .next()
+                .unwrap();
+            assert!(transfers.consume_tagged(
+                format!("graphics;Gi={id};OK").as_bytes(),
+                std::time::Instant::now(),
+            ));
+        }
         let mut poll = libc::pollfd {
             fd: graphics.wake_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
         assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
-        assert!(graphics.drain().unwrap());
+        assert!(
+            !graphics.drain().unwrap(),
+            "transport evidence republished pixels"
+        );
+        assert!(Arc::ptr_eq(&image, &graphics.ready[0].image));
+        assert!(graphics.shared.state.lock().unwrap().desired.is_none());
+        assert!(transfers.deadline().is_none());
     }
+
     fn placed(graphics: &SvgGraphics, width: u32) -> Frame {
         let mut frame = crate::blank(size(width));
         crate::text(&mut frame, 1, 0, "● label", false);
@@ -1050,12 +1181,7 @@ mod tests {
         };
         let style = material();
         graphics.prepare_with_decorations(&host, size, &[], &[style]);
-        let mut poll = libc::pollfd {
-            fd: graphics.wake_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
+        publication_waiting(&mut graphics);
         graphics.prepare_joined(Some(JoinedSurface {
             rects_px: [[60, 16, 180, 112], [20, 48, 66, 64]],
             style: DecorationStyle {
@@ -1240,12 +1366,7 @@ mod tests {
         let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
         let host = host();
         graphics.prepare_with_decorations(&host, size(10), &[], &[material()]);
-        let mut poll = libc::pollfd {
-            fd: graphics.wake_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
+        publication_waiting(&mut graphics);
         assert!(graphics.shared.state.lock().unwrap().published.is_some());
         graphics.set_enabled(false);
         assert!(!graphics.drain().unwrap());
