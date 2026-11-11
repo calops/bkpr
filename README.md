@@ -581,6 +581,11 @@ through Omp's native TUI capability API, without spoofing terminal identity.
 Explicit `PI_FORCE_IMAGE_PROTOCOL` preferences, including `off`, remain authoritative.
 No persistent Omp configuration is changed.
 
+Managed Codex's local TUI receives a launch-only `TERM_PROGRAM=kitty` compatibility
+override so its terminal-name-based detector can select Bkpr's inline graphics.
+The override does not change the app-server environment or other harnesses;
+explicit passthrough invocations remain unchanged.
+
 | Tool | Purpose |
 | --- | --- |
 | `whoami` | Compact launch/binding/ownership/readiness facts and serving daemon `protocol_version` (native wire family); `detail:true` adds context/project |

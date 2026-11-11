@@ -11,6 +11,7 @@
 * Make the working-title gradient more visible with a wider band, a 1.5-second cycle and the working status icon's palette color.
 * Enable inline images in managed OMP through its native graphics capability API, preserving explicit protocol overrides without spoofing terminal identity.
 * Use a Nerd Font progress-clock icon for refreshing Git metadata, keeping the branch icon visual footprint and text alignment.
+* Give the managed Codex TUI a launch-only Kitty identity override for native image discovery, leaving its app-server and other harnesses unchanged.
 
 ## [0.6.0](https://github.com/calops/bkpr/compare/v0.5.1...v0.6.0) (2026-11-10)
 

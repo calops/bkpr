@@ -396,6 +396,8 @@ fn managed(
     );
     let mut tui = Command::new(executable);
     scrub(&mut tui);
+    // TODO: Replace identity spoofing with native graphics capability discovery.
+    tui.env("TERM_PROGRAM", "kitty");
     // The proxy alone holds capture authority; native children do not need its token.
     unsafe {
         tui.pre_exec(|| {
