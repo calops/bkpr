@@ -1,17 +1,30 @@
+//! Reply payloads with separate binary scene storage and diagnostic-only JSON conversion.
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-/// Domain replies distinguish high-volume pane scenes from extensible metadata.
+/// Reply metadata or pane data with an optional binary scene.
+/// Serde emits diagnostic JSON; deserialization always produces [`Self::Control`].
 #[derive(Clone, Debug)]
 pub enum Payload {
-    Control(Value),
-    Pane(PanePayload),
+    /// Extensible control-reply metadata.
+    Control(
+        /// Reply value preserved without scene interpretation.
+        Value,
+    ),
+    /// Pane metadata and its separately encoded scene.
+    Pane(
+        /// Pane reply with optional binary scene bytes.
+        PanePayload,
+    ),
 }
+/// Pane reply whose binary scene is kept outside its metadata object.
 #[derive(Clone, Debug)]
 pub struct PanePayload {
+    /// Pane metadata; diagnostic conversion requires an object without a `scene` key.
     pub metadata: Value,
-    /// A slice of the owning response buffer; native decoding doesn't copy scenes.
+    /// Optional binary scene; owned native decoding shares its response allocation.
+    /// Borrowed native decoding copies these bytes, and scene decoding validates their contents.
     pub scene: Option<bytes::Bytes>,
 }
 impl From<Value> for Payload {
@@ -25,7 +38,8 @@ impl From<PanePayload> for Payload {
     }
 }
 impl Payload {
-    /// Human-facing conversion only; native scene consumers keep binary storage.
+    /// Convert to diagnostic JSON, expanding any binary scene into `frame` or delta `scene`.
+    /// Reject invalid pane metadata or malformed scene bytes; control values pass through.
     pub fn into_json(self) -> Result<Value> {
         match self {
             Self::Control(value) => Ok(value),

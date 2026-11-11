@@ -1,4 +1,6 @@
 //! Native pane ownership, terminal state and independent client projections for Bkpr.
+#![deny(missing_docs)]
+
 pub mod authority;
 pub mod diagnostics;
 #[cfg(target_os = "linux")]
@@ -22,8 +24,8 @@ use authority::Authority;
 use bkpr_protocol::ViewSpec;
 use bkpr_protocol::{
     ClipboardContent, ClipboardLocation, ClipboardPending, ClipboardResponse, Effect, Event, Frame,
-    KeyEvent, MouseEvent, PanePayload, Payload, ProgramStatus, SelectionEvent, SelectionSnapshot,
-    Size,
+    KeyEvent, MouseEvent, PaneCapabilities, PanePayload, PaneSnapshot, Payload, ProgramStatus,
+    SelectionEvent, SelectionSnapshot, Size, SizeOwner,
 };
 use bkpr_protocol::{MAX_INPUT_BYTES, PaneRequest as Request, valid_size};
 use bkpr_protocol::{MAX_SEARCH_BYTES, SearchAction, SearchSnapshot};
@@ -354,17 +356,25 @@ impl Shared {
         }
     }
 }
+/// Cloneable handle to one backend-owned PTY execution and its independent views.
 #[derive(Clone)]
 pub struct Pane {
     shared: Arc<Shared>,
     commands: crossbeam_channel::Sender<Command>,
 }
+/// Explicit process launch configuration for a pane.
 pub struct SpawnSpec {
+    /// Executable followed by arguments; no shell is inserted.
     pub argv: Vec<String>,
+    /// Absolute HOME, created for an isolated environment or otherwise required to exist.
     pub home: PathBuf,
+    /// Initial terminal grid and cell-pixel dimensions.
     pub size: Size,
+    /// Whether a dedicated owner may manage all adopted children; false in shared-process tests.
     pub isolated_process: bool,
+    /// Existing absolute working directory.
     pub cwd: PathBuf,
+    /// Whether to construct a private environment instead of inheriting ambient values.
     pub isolated_environment: bool,
 }
 struct PreparedSpawnSpec(SpawnSpec);
@@ -390,6 +400,8 @@ struct SpawnContext {
     workspace: Option<(String, String)>,
 }
 impl Pane {
+    /// Start a PTY execution and wait for worker readiness.
+    /// Rejects invalid argv, geometry or directories, and reports PTY/worker startup failures.
     pub fn spawn(spec: SpawnSpec) -> Result<Self> {
         Self::spawn_with_id(
             PreparedSpawnSpec::new(spec)?,
@@ -684,6 +696,8 @@ impl Pane {
         self.shared.changes.notify();
         let _ = self.shared.resize_wake.try_send(());
     }
+    /// Dispatch a trusted in-process request, enforcing its view policy.
+    /// Admission and PTY write receipts do not prove application consumption; never replay ambiguous failures.
     pub fn request(&self, request: Request) -> Result<Payload> {
         self.request_for_client(request, None)
     }
@@ -1228,40 +1242,40 @@ impl Pane {
             })
             .transpose()?
             .map(Into::into);
-        let metadata = json!({
-            "pane_id": self.shared.pane_id,
-            "pid": pid,
-            "revision": revision,
-            "snapshot_revision": snapshot_revision,
-            "frame": Value::Null,
-            "image_refs": image_refs,
-            "resource_protocol": 1,
-            "writer": writer,
-            "lifecycle": lifecycle,
-            "exit_code": exit_code,
-            "error": error,
-            "program_status": status,
-            "program_identity": program_identity,
-            "events": events,
-            "event_sequence": event_sequence,
-            "size_owner": size_owner.map(|(id, size)| json!({"view_id": id, "size": size})),
-            "lease_generation": lease_generation,
-            "views": views,
-            "clipboard": clipboard,
-            "clipboard_pending": clipboard_pending,
-            "selection": selection,
-            "search": search,
-            "capabilities": {
-                "sixel": false,
-                "normalized_frames": true,
-                "native_mouse_reporting": true,
-                "clipboard_timeout_ms": CLIPBOARD_TIMEOUT.as_millis(),
-                "view_timeout_ms": 10000,
-                "poll_wait_max_ms": 1000,
-                "row_deltas": true,
-                "scene_encodings": ["planus_v1"],
+        let metadata = serde_json::to_value(PaneSnapshot {
+            pane_id: self.shared.pane_id.as_str(),
+            pid,
+            revision,
+            snapshot_revision,
+            frame: None,
+            image_refs,
+            resource_protocol: 1,
+            writer,
+            lifecycle,
+            exit_code,
+            error,
+            program_status: status,
+            program_identity,
+            events,
+            event_sequence,
+            size_owner: size_owner.map(|(view_id, size)| SizeOwner { view_id, size }),
+            lease_generation,
+            views,
+            clipboard,
+            clipboard_pending,
+            selection,
+            search,
+            capabilities: PaneCapabilities {
+                sixel: false,
+                normalized_frames: true,
+                native_mouse_reporting: true,
+                clipboard_timeout_ms: CLIPBOARD_TIMEOUT.as_millis().try_into()?,
+                view_timeout_ms: 10000,
+                poll_wait_max_ms: 1000,
+                row_deltas: true,
+                scene_encodings: ["planus_v1"],
             },
-        });
+        })?;
         Ok(Payload::Pane(PanePayload { metadata, scene }))
     }
 }

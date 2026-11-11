@@ -1,15 +1,8 @@
-//! Best-effort, body-free daemon diagnostics; never part of a durable receipt.
+//! Best-effort daemon event diagnostics, separate from durable request receipts.
 //!
-//! Dependency decision: crossbeam-channel (already used, MIT/Apache-2.0) supplies
-//! bounded nonblocking admission and an indefinitely sleeping receiver. Evaluated
-//! tracing-appender 0.2.5 (MIT, released 2026-04-17): its worker is idle-quiet, but
-//! its time-based rolling appender does not enforce a retained byte bound or
-//! no-follow opens. file-rotate 0.8.0 (MIT, released 2025-02-27) supplies byte/count
-//! rotation, but opens paths itself and documents discarding filesystem errors.
-//! Neither supplies our private descriptor-relative file checks. Keep that small
-//! policy here, reusing libc, serde_json and crossbeam rather than a global logger.
-//! Sources: docs.rs/tracing-appender/0.2.5/src/tracing_appender/worker.rs.html;
-//! docs.rs/file-rotate/0.8.0/file_rotate/; crates.io API version metadata.
+//! Recording is disabled until [`install`] succeeds. Events contain static labels
+//! and optional opaque IDs, not request bodies; admission and shutdown may lose
+//! events, and successful writes do not promise filesystem durability.
 use anyhow::{Context, Result, ensure};
 use crossbeam_channel::{Receiver, Sender, bounded, select_biased};
 use serde::Serialize;
@@ -43,9 +36,13 @@ const FILES: [&CStr; 4] = [
 const SHUTDOWN_WAIT: Duration = Duration::from_millis(100);
 static ACTIVE: OnceLock<Recorder> = OnceLock::new();
 
+/// Validated UUID-shaped identifier admitted to diagnostic events.
 #[derive(Clone, Copy)]
 pub(crate) struct OpaqueId([u8; 36]);
 impl OpaqueId {
+    /// Accept 36 ASCII hexadecimal bytes with hyphens at UUID separator positions.
+    ///
+    /// Returns `None` for any other shape; UUID version and variant are not checked.
     pub(crate) fn new(value: &str) -> Option<Self> {
         // IDs are UUIDs, not titles, paths, capabilities or arbitrary caller text.
         if value.len() != 36
@@ -63,6 +60,7 @@ impl OpaqueId {
         bytes.copy_from_slice(value.as_bytes());
         Some(Self(bytes))
     }
+    /// Borrow the validated ASCII identifier without changing its spelling.
     pub(crate) fn as_str(&self) -> &str {
         // Construction accepts only ASCII.
         std::str::from_utf8(&self.0).expect("validated opaque ID")
@@ -92,13 +90,20 @@ struct Counts {
     pending: AtomicU64,
     stopped: AtomicBool,
 }
-/// Counters describe diagnostic loss only, never request or message outcomes.
+/// Best-effort counter snapshot describing diagnostics, not request or message outcomes.
+///
+/// Fields are sampled independently and may change while the worker is running.
 #[derive(Clone, Copy, Debug)]
 pub struct Report {
+    /// Admitted events written successfully, excluding the final summary.
     pub written: u64,
+    /// Events rejected at admission or lost after admission.
     pub dropped: u64,
+    /// Event or final-summary write failures, including rotation failures.
     pub io_failures: u64,
+    /// Admitted events still queued or being written.
     pub pending: u64,
+    /// Whether the writer thread has finished, regardless of write success.
     pub stopped: bool,
 }
 impl Counts {
@@ -149,14 +154,21 @@ impl Recorder {
         }
     }
 }
-/// Nonblocking, allocation-free admission; no filesystem or registry access.
-/// Disabled in library consumers unless their binary explicitly calls `install`.
+/// Attempt nonblocking, allocation-free event admission without filesystem access.
+///
+/// Does nothing before [`install`]. Labels must be nonempty, at most 48 bytes,
+/// and contain only ASCII letters, digits, `.`, `_` or `-`; `target_id`, if present,
+/// must have UUID shape. Invalid events, queue pressure and stopped recording
+/// increment the dropped count instead of returning an error.
 pub fn record(operation: &'static str, target_id: Option<&str>, outcome: &'static str) {
     if let Some(recorder) = ACTIVE.get() {
         recorder.record(operation, target_id, outcome);
     }
 }
-/// Daemon-owned lifetime. Dropping never joins a possibly blocked filesystem worker.
+/// Daemon-owned recorder lifetime; drop stops admission and requests worker shutdown.
+///
+/// Drop does not wait for the filesystem worker. Use [`Self::finish`] for a bounded
+/// drain attempt and counter snapshot.
 #[must_use]
 pub struct Guard {
     recorder: Recorder,
@@ -164,8 +176,10 @@ pub struct Guard {
     done: Receiver<()>,
 }
 impl Guard {
-    /// Give the worker at most 100ms to drain its fixed queue. No fsync/durability
-    /// promise: a stalled filesystem or process exit may lose pending diagnostics.
+    /// Stop admission, wait at most 100ms for the worker to drain, and sample counters.
+    ///
+    /// A false [`Report::stopped`] means the worker may still be running. No fsync
+    /// or durability is promised; stalled storage or process exit may lose events.
     pub fn finish(self) -> Report {
         self.signal_stop();
         let _ = self.done.recv_timeout(SHUTDOWN_WAIT);
@@ -184,8 +198,17 @@ impl Drop for Guard {
         self.signal_stop();
     }
 }
-/// Initialize once in bkprd, after state-root ownership is acquired, before panes
-/// start. Failure disables diagnostics only; callers must not fail committed work.
+/// Install the process-wide recorder after acquiring state-root ownership, before panes start.
+///
+/// `root` must be an existing private, current-user-owned directory; `session_id`
+/// must have UUID shape. Creates bounded diagnostic files under `root/diagnostics`.
+/// Successful installation is permanent for the process, even after the guard drops.
+/// Callers must treat failure as diagnostic loss, not failure of committed work.
+///
+/// # Errors
+/// Returns an error if already installed, identity or storage checks fail, storage
+/// cannot be opened or prepared, or the writer thread cannot be started. Storage
+/// checks reject symlinks, nonprivate or foreign-owned paths, and hard-linked files.
 pub fn install(root: &Path, session_id: &str) -> Result<Guard> {
     ensure!(
         ACTIVE.get().is_none(),

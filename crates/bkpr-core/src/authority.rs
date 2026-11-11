@@ -1,3 +1,4 @@
+//! Pane-local view capabilities, inspection lifetimes and independent size arbitration.
 use anyhow::{Result, bail};
 use bkpr_protocol::{Size, ViewInfo, ViewSpec, valid_size};
 use std::{
@@ -7,15 +8,21 @@ use std::{
 };
 use uuid::Uuid;
 
+/// Retained attachment policy and local activity/inspection state.
 pub struct ViewRecord {
+    /// Opaque attachment identity.
     pub id: String,
     pub(crate) client: Option<Arc<crate::registry::sessions::ClientLease>>,
+    /// Accepted visibility, sizing eligibility, input and clipboard policy.
     pub spec: ViewSpec,
+    /// Monotonic activity order used for owner selection.
     pub activity: u64,
     /// Inspection lifetime changes only when visibility is revoked/restored;
     /// sizing activity and independent capability updates do not retire a drag.
     pub(crate) inspection_epoch: u64,
+    /// Distance above live output in retained rows.
     pub scrollback_offset: u64,
+    /// Last liveness refresh; unauthenticated local views expire when idle.
     pub last_seen: Instant,
 }
 impl ViewRecord {
@@ -31,14 +38,19 @@ impl ViewRecord {
         }
     }
 }
+/// View registry and desired size lease for one pane.
 #[derive(Default)]
 pub struct Authority {
+    /// Retained attachments keyed by their identities.
     pub views: BTreeMap<String, ViewRecord>,
+    /// Explicit size lease, or `None` for latest-eligible arbitration.
     pub pinned: Option<(String, Size)>,
     clock: u64,
+    /// Revision of accepted attachment and lease changes.
     pub generation: u64,
 }
 impl Authority {
+    /// Refresh liveness; reject unknown views or a revoked client attachment.
     pub fn touch(&mut self, id: &str) -> Result<()> {
         let view = self
             .views
@@ -50,6 +62,7 @@ impl Authority {
         view.last_seen = Instant::now();
         Ok(())
     }
+    /// Revoke dead-client and expired unowned views, returning their identities.
     pub fn expire(&mut self, now: Instant) -> Vec<String> {
         let stale = self
             .views
@@ -66,6 +79,7 @@ impl Authority {
         }
         stale
     }
+    /// Add an unowned local view; reject invalid terminal dimensions.
     pub fn attach(&mut self, spec: ViewSpec) -> Result<String> {
         self.attach_owned(spec, None)
     }
@@ -95,6 +109,7 @@ impl Authority {
         self.generation += 1;
         Ok(id)
     }
+    /// Replace policy and refresh activity; reject invalid size, unknown views or revoked clients.
     pub fn update(&mut self, id: &str, spec: ViewSpec) -> Result<()> {
         valid_size(spec.size)?;
         let view = self
@@ -120,6 +135,7 @@ impl Authority {
         self.generation += 1;
         Ok(())
     }
+    /// Remove a view and release its pin; reject unknown identities.
     pub fn detach(&mut self, id: &str) -> Result<()> {
         if self.views.remove(id).is_none() {
             bail!("stale view");
@@ -130,6 +146,7 @@ impl Authority {
         self.generation += 1;
         Ok(())
     }
+    /// Return the explicit pin or latest live, visible, interactive view's desired size.
     pub fn owner(&self) -> Option<(&str, Size)> {
         if let Some((id, size)) = &self.pinned {
             return Some((id, *size));
@@ -140,6 +157,7 @@ impl Authority {
             .max_by_key(|v| v.activity)
             .map(|v| (v.id.as_str(), v.spec.size))
     }
+    /// Acquire or release a size pin; reject ineligible views, foreign pins or invalid sizes.
     pub fn pin(&mut self, id: &str, size: Option<Size>) -> Result<()> {
         let view = self
             .views
@@ -160,6 +178,7 @@ impl Authority {
         self.generation += 1;
         Ok(())
     }
+    /// Require a live input-authorized view; sizing eligibility is not an input grant.
     pub fn input(&self, id: &str) -> Result<()> {
         let view = self
             .views
@@ -173,6 +192,7 @@ impl Authority {
         }
         Ok(())
     }
+    /// Select the latest live, visible, interactive view with clipboard permission.
     pub fn clipboard_owner(&self) -> Option<String> {
         self.views
             .values()
