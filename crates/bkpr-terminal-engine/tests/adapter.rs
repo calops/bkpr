@@ -229,6 +229,59 @@ fn exact_native_mouse_mode_and_alternate_screen_bound_history_policy() {
 }
 
 #[test]
+fn paste_encoding_does_not_consume_pending_resize_reports() {
+    for mime_offer in [false, true] {
+        let mut term = terminal();
+        term.feed(b"\x1b[?2048h\x1b[?2004h").unwrap();
+        term.resize(Size {
+            cols: 30,
+            rows: 6,
+            ..size()
+        })
+        .unwrap();
+        let pasted = if mime_offer {
+            term.paste_contents(
+                1,
+                vec![ClipboardContent {
+                    mime: "text/plain".into(),
+                    data: b"provided".to_vec(),
+                }],
+                ClipboardLocation::Standard,
+                false,
+            )
+            .unwrap()
+        } else {
+            term.encode_paste(b"provided").unwrap()
+        };
+        assert_eq!(pasted, b"\x1b[200~provided\x1b[201~");
+        assert_eq!(
+            replies(term.drain_effects().unwrap()),
+            b"\x1b[48;6;30;96;240t"
+        );
+    }
+}
+
+#[test]
+fn consumed_paste_output_does_not_accumulate_against_pending_effect_limits() {
+    let mut term = terminal();
+    term.feed(b"\x1b[?2048h").unwrap();
+    term.resize(Size {
+        cols: 30,
+        rows: 6,
+        ..size()
+    })
+    .unwrap();
+    let payload = vec![b'x'; CLIPBOARD_MAX_BYTES];
+    for _ in 0..3 {
+        assert_eq!(term.encode_paste(&payload).unwrap(), payload);
+    }
+    assert_eq!(
+        replies(term.drain_effects().unwrap()),
+        b"\x1b[48;6;30;96;240t"
+    );
+}
+
+#[test]
 fn native_modes_drive_key_mouse_focus_and_safe_paste() {
     let mut term = terminal();
     let up = KeyEvent {

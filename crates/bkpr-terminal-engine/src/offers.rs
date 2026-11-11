@@ -4,8 +4,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Lifetime of a retained mode-5522 paste offer, measured from its creation.
 pub const PASTE_OFFER_TIMEOUT: Duration = Duration::from_secs(30);
+/// Maximum combined MIME-name and data bytes retained across pending paste offers.
 pub const PASTE_OFFER_MAX_BYTES: usize = 32 * 1024 * 1024;
+/// Maximum number of pending mode-5522 paste offers.
 pub const PASTE_OFFER_MAX_COUNT: usize = 8;
 
 pub(super) struct PasteOffer {
@@ -37,9 +40,9 @@ impl CallbackState {
     }
 }
 impl Terminal {
-    /// Revoke bytes for a stale/disconnected originating view. A subsequent
-    /// valid native password still correlates to the missing ID and is denied;
-    /// it can never fall through to the current physical clipboard.
+    /// Remove a retained paste offer, returning whether its ID was present.
+    ///
+    /// Later reads correlated with this ID are denied, not served from the current clipboard.
     pub fn cancel_paste_offer(&mut self, id: u64) -> bool {
         self.callbacks
             .borrow_mut()
@@ -50,7 +53,9 @@ impl Terminal {
 }
 
 impl Terminal {
-    /// Whether mode 5522 retained this offer and it is still within its lifetime.
+    /// Return whether this ID names a retained, unexpired mode-5522 paste offer.
+    ///
+    /// An existing offer does not itself authorize a clipboard read.
     pub fn has_paste_offer(&self, id: u64) -> bool {
         self.callbacks
             .borrow()
