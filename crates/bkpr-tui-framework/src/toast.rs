@@ -12,16 +12,22 @@ const MAX_BYTES: usize = 4096;
 const MAX_LINES: u16 = 8;
 const MAX_WIDTH: u16 = 120;
 
+/// Stack-issued notification identity, distinct from its reusable decoration slot.
 pub type ToastId = u64;
 
 /// Caller-selected top-center placement. Margins shrink on tiny viewports so a
 /// dismiss affordance remains available whenever at least one cell exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ToastLayout {
+    /// Desired card width, clamped to 1–120 cells and available screen width.
     pub max_width: u16,
+    /// Desired number of rows above the first card.
     pub top_margin: u16,
+    /// Desired minimum horizontal margin on either side.
     pub side_margin: u16,
+    /// Number of rows between cards.
     pub gap: u16,
+    /// Maximum message rows per card, clamped to 1–8 and available height.
     pub max_lines: u16,
 }
 
@@ -30,12 +36,19 @@ pub struct ToastLayout {
 /// `slot` is stable for this card and lies in `0..3`, suitable for bounded
 /// decoration resource namespaces. It may be reused after the card disappears.
 pub struct ToastCard {
+    /// Stack-issued notification identity.
     pub id: ToastId,
+    /// Reusable decoration namespace in `0..3`.
     pub slot: usize,
+    /// Full card bounds in screen cells.
     pub outer: Rect,
+    /// Content bounds in screen cells.
     pub body: Rect,
+    /// Dismiss-button hitbox in screen cells.
     pub dismiss: Rect,
+    /// Retained card-local text and styling.
     pub surface: UiSurface,
+    /// Whether the current paint uses caller-provided graphical decoration.
     pub graphical: bool,
     message: String,
     deadline: Instant,
@@ -44,10 +57,14 @@ pub struct ToastCard {
     painted: Option<(Size, bool)>,
 }
 
+/// Result of routing a pointer event through notification cards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerRoute {
+    /// Deliver to the underlying application.
     Pass,
+    /// Consume the event without changing the queue.
     Block,
+    /// Consume the event after removing the identified card.
     Dismissed(ToastId),
 }
 
@@ -132,14 +149,17 @@ impl ToastStack {
         changed
     }
 
+    /// Returns the earliest retained expiry for event-loop scheduling.
     pub fn next_deadline(&self) -> Option<Instant> {
         self.cards.iter().map(|card| card.deadline).min()
     }
 
+    /// Returns whether no notices remain, including unpositioned notices.
     pub fn is_empty(&self) -> bool {
         self.cards.is_empty()
     }
 
+    /// Returns whether this stack owns an unfinished pointer gesture.
     pub fn pointer_captured(&self) -> bool {
         self.capture.is_some()
     }

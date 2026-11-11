@@ -4,12 +4,16 @@ use crate::{Rect, Role, RoleSpan, text};
 use bkpr_protocol::{Frame, Size, Style};
 use unicode_width::UnicodeWidthChar;
 
+/// Local text rectangle, content, and selection flag for surface painting.
 pub type TextLine = (Rect, String, bool);
 
+/// Single-cell corner style for a window frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Border {
     #[default]
+    /// Square box-drawing corners.
     Plain,
+    /// Rounded box-drawing corners.
     Rounded,
 }
 
@@ -22,7 +26,8 @@ fn printable(c: char) -> bool {
         && !matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
-/// Fit whole terminal glyphs; trailing combining marks stay with their base.
+/// Fits sanitized text using scalar cell widths; trailing combining marks stay
+/// with their base. Multi-scalar grapheme clusters may be split at the bound.
 pub fn fit(value: &str, width: u16) -> String {
     let mut result = String::new();
     let mut columns = 0;
@@ -39,6 +44,7 @@ pub fn fit(value: &str, width: u16) -> String {
     result
 }
 
+/// Centers a rectangle after constraining its dimensions to the screen.
 pub fn centered(screen: Size, width: u16, height: u16) -> Rect {
     let width = width.min(screen.cols);
     let height = height.min(screen.rows);

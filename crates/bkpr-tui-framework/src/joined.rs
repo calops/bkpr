@@ -3,7 +3,7 @@
 //! Adapted from bkpr-zellij 18890b231bc3dd29039dd6ca141ec0af49cf332e,
 //! zellij-server/src/output/recessed_frames/{joined,contour,patches,depth,strips}.rs.
 //! The Zellij contributors' MIT license is reproduced in decoration.rs and
-//! joined_contour.rs. All style values and semantic exclusions are caller-owned.
+//! joined_contour.rs.
 use crate::Rect;
 use crate::decoration::{DecorationKind, DecorationStyle};
 use crate::joined_contour::{Contour, Feature, Point, Rect as PixelRect, distance};
@@ -15,22 +15,26 @@ const MAX_LAYOUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LAYOUTS: usize = 16;
 const MAX_PARTS: usize = 2048;
 
-/// Physical half-open bounds [left, top, right, bottom]. Positive-area overlap
-/// is required; disconnected, excessively large or unsupported requests fall
-/// back atomically rather than publishing an incomplete outline.
+/// Rounded union of two positive-area, overlapping physical rectangles.
+/// Unsupported geometry or preparation budgets leave the union unavailable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JoinedSurface {
+    /// Half-open `[left, top, right, bottom]` pixel bounds for both rectangles.
     pub rects_px: [[i32; 4]; 2],
+    /// Raised-surface material with zero inset and outset.
+    /// Corner radii are limited to half the adjacent contour edge lengths.
     pub style: DecorationStyle,
 }
 
-/// A half-open row of cells wholly inside the rounded union. Prepared once on
-/// the worker; useful for compositing opaque text backgrounds without changing
-/// native glyphs, images, cursor positions or terminal geometry.
+/// Half-open row span of cells wholly inside the prepared rounded union.
+/// Coordinates follow the request and are not clipped to the destination frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpaqueSpan {
+    /// Row in the destination frame.
     pub row: u16,
+    /// Inclusive starting column.
     pub start: u16,
+    /// Exclusive ending column.
     pub end: u16,
 }
 
@@ -73,11 +77,15 @@ struct Part {
     source_y: u32,
 }
 
+/// Immutable union layout with shared raster patches and full-cell coverage.
 pub(crate) struct PreparedJoined {
+    /// Geometry and material represented by this layout.
     pub request: JoinedSurface,
+    /// Physical-pixel cell dimensions `[width, height]`.
     pub cell: [u32; 2],
     patches: Vec<Patch>,
     parts: Vec<Part>,
+    /// Full-cell coverage in destination frame coordinates.
     pub spans: Vec<OpaqueSpan>,
 }
 impl PreparedJoined {
@@ -87,6 +95,8 @@ impl PreparedJoined {
             + self.spans.len() * std::mem::size_of::<OpaqueSpan>()
     }
 
+    /// Append shared images and placements using at most 8192 IDs from `base`.
+    /// Exclusions cut only the above-text body; failure leaves the frame unchanged.
     pub fn place(&self, frame: &mut Frame, base: u32, exclusions: &[Rect]) -> bool {
         if [frame.size.cell_width, frame.size.cell_height] != self.cell
             || base.checked_add(8191).is_none()
@@ -230,9 +240,9 @@ impl PreparedJoined {
     }
 }
 
-/// Worker-only bounded LRU. Local contour keys exclude global position and
-/// straight-edge length; translated/reopened/resized surfaces share immutable
-/// pixels and image identities. Layouts retain at most 4 MiB, pixels 8 MiB.
+/// Bounded LRU of shared patches and complete union layouts.
+/// Cached patch pixels are limited to 8 MiB; layouts to sixteen entries with
+/// 4 MiB of referenced pixels, parts, and spans.
 #[derive(Default)]
 pub(crate) struct JoinedCache {
     patches: VecDeque<Patch>,
@@ -259,6 +269,7 @@ impl JoinedCache {
         self.patches.back()
     }
 
+    /// Return an exact geometry/cell-size hit and mark it most recently used.
     pub(crate) fn get(
         &mut self,
         request: JoinedSurface,
@@ -273,6 +284,8 @@ impl JoinedCache {
         Some(layout)
     }
 
+    /// Retain a completed layout, evicting older layouts to fit the cache budget.
+    /// Returns `false` if the layout alone exceeds 4 MiB.
     pub(crate) fn remember(&mut self, prepared: &Arc<PreparedJoined>) -> bool {
         let bytes = prepared.bytes();
         if bytes > MAX_LAYOUT_BYTES {
@@ -293,6 +306,9 @@ impl JoinedCache {
         true
     }
 
+    /// Prepare or reuse a union layout on the graphics worker.
+    /// New images use `generation` and consume IDs from `next_id`; unsupported
+    /// geometry or exhausted preparation budgets return `None`.
     pub fn prepare(
         &mut self,
         request: JoinedSurface,

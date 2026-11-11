@@ -13,10 +13,14 @@ use unicode_width::UnicodeWidthChar;
 /// Queries are bounded in UTF-8 bytes; oversized insertions are rejected atomically.
 const QUERY_LIMIT: usize = 4096;
 
+/// Action requested from the owner of a focused search list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchListIntent {
+    /// No owner action is requested.
     None,
+    /// Cancel the list; the owner restores any prior selection.
     Cancel,
+    /// Commit the currently selected value.
     Accept,
 }
 
@@ -51,6 +55,8 @@ pub struct SearchList<T> {
 }
 
 impl<T: Clone + Eq> SearchList<T> {
+    /// Builds choices in input order, selecting `initial` or the first choice.
+    /// Labels are sanitized for terminal display.
     pub fn new(items: impl IntoIterator<Item = (T, String)>, initial: &T) -> Self {
         let items: Vec<_> = items
             .into_iter()
@@ -94,12 +100,14 @@ impl<T: Clone + Eq> SearchList<T> {
         }
     }
 
+    /// Returns the selected matching value, or `None` when no result exists.
     pub fn selected(&self) -> Option<&T> {
         self.results
             .get(self.selected)
             .map(|result| &self.items[result.item].value)
     }
 
+    /// Inserts bounded query text, reranking only when its content changes.
     pub fn paste(&mut self, text: &str) {
         if self.input.insert(text) {
             self.changed();
@@ -197,6 +205,8 @@ impl<T: Clone + Eq> SearchList<T> {
         SearchListIntent::None
     }
 
+    /// Paints content and the query caret into a dedicated local surface.
+    /// Call `apply_theme` afterward to apply semantic colors.
     pub fn paint(&mut self, surface: &mut UiSurface, size: Size) {
         self.reveal(self.capacity(size));
         // UiSurface retains text and styling. Remove only this widget's previous
@@ -322,6 +332,7 @@ impl<T: Clone + Eq> SearchList<T> {
         }
     }
 
+    /// Applies semantic styling from the most recent paint to the same surface.
     pub fn apply_theme(&self, surface: &mut UiSurface, theme: &Theme) {
         surface.apply_theme(theme, Role::Panel, &self.roles);
     }

@@ -6,38 +6,65 @@ const MAX_RASTER_WORKING_BYTES: usize = 128 * 1024 * 1024;
 // visible projections are represented by bounded, phase-preserving tiles.
 const MAX_TILE_DIMENSION: u32 = 10000;
 
+/// A half-open image rectangle in pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Rect {
+    /// Left edge in pixels.
     pub x: u32,
+    /// Top edge in pixels.
     pub y: u32,
+    /// Horizontal pixel extent.
     pub width: u32,
+    /// Vertical pixel extent.
     pub height: u32,
 }
+/// Cache identity for a visible raster sampled from an immutable image generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct DerivedKey {
+    /// Canonical image generation providing the pixels.
     pub image: ImageKey,
+    /// Source crop within the canonical image.
     pub source: Rect,
+    /// Full destination width before clipping.
     pub width: u32,
+    /// Full destination height before clipping.
     pub height: u32,
+    /// Visible region in full-destination coordinates, preserving sampling phase.
     pub visible: Rect,
 }
+/// A viewport-clipped image placement ready for physical terminal encoding.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Projection {
+    /// Canonical or compositor-aliased image generation.
     pub image: ImageKey,
+    /// Visible raster identity when native source cropping/scaling is insufficient.
     pub derived: Option<DerivedKey>,
+    /// Source crop in the original image, or in the derived raster when present.
     pub source: Rect,
+    /// Destination cell column.
     pub col: u32,
+    /// Destination cell row.
     pub row: u32,
+    /// Pixel offset within the destination column.
     pub offset_x: u32,
+    /// Pixel offset within the destination row.
     pub offset_y: u32,
+    /// Explicit cell extent for native scaling; absent for natural-sized pixels.
     pub cells: Option<(u32, u32)>,
+    /// Ordered depth within the below-background, below-text or above-text band.
     pub z: i32,
+    /// Nonzero physical placement identity within the prepared frame.
     pub placement_id: usize,
 }
+/// Borrowed image resources and visible placement requirements for one output update.
 pub(super) struct Prepared<'a> {
+    /// Source images indexed by the keys used by placements and derived rasters.
     pub images: HashMap<ImageKey, &'a Image>,
+    /// Original image resources required by visible native placements.
     pub original: HashSet<ImageKey>,
+    /// Phase-preserving rasters required by visible derived placements.
     pub derived: HashSet<DerivedKey>,
+    /// Viewport-clipped placements in composition order.
     pub placements: Vec<Projection>,
 }
 fn bytes(width: u32, height: u32, channels: usize) -> Result<usize> {
@@ -51,10 +78,9 @@ fn scale(value: u32, destination_cell: u32, canonical_cell: u32) -> Result<i64> 
         .context("projected image dimension overflow")
 }
 
-/// A one-pixel source axis is constant, so clipping it cannot change its
-/// sampling phase. Keep straight material strips on the uploaded atlas rather
-/// than expanding them into newly rasterized resources after occlusion.
-/// Other resampling retains the existing phase-preserving derived path.
+/// Replace derived sampling with native cropping/scaling when both axes are exact
+/// or constant, preserving the visible extent and sampling phase.
+/// Requires nonzero viewport cell dimensions and a valid projection.
 pub(super) fn reuse_constant_axes(projection: &mut Projection, viewport: Size) {
     let Some(key) = projection.derived else {
         return;
@@ -233,6 +259,9 @@ fn project(
     reuse_constant_axes(&mut projection, viewport);
     Ok(Some(projection))
 }
+/// Validate image resources and project placements into the viewport, borrowing pixels.
+/// Rejects zero cell metrics, invalid or duplicate resources, missing references,
+/// invalid source crops, arithmetic overflow and excessive raster/metadata working sets.
 pub(super) fn prepare(frame: &Frame, viewport: Size) -> Result<Prepared<'_>> {
     if frame.size.cell_width == 0
         || frame.size.cell_height == 0
@@ -407,6 +436,9 @@ fn sample_visible<P: image::Pixel<Subpixel = u8>>(
     }
     Ok(output)
 }
+/// Allocate only the visible raster, retaining the full placement's sampling phase.
+/// The key must name an in-bounds source crop and nonzero full destination dimensions.
+/// Returns an error for invalid source buffers, overflowing dimensions or failed sampling.
 pub(super) fn raster(image: &Image, key: DerivedKey) -> Result<Vec<u8>> {
     match image.format {
         PixelFormat::Rgb => sample_visible::<image::Rgb<u8>>(image, key),

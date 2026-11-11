@@ -5,16 +5,25 @@ use std::time::{Duration, Instant};
 
 /// Stable selection identity supplied by an application-owned row.
 pub trait NavigationRow<T> {
+    /// Returns the selectable identity, or `None` for a non-selectable row.
     fn target(&self) -> Option<&T>;
 }
+/// Selection and viewport state over caller-supplied rows.
+/// Consecutive selectable rows with equal identities form one navigation stop.
 pub struct Navigation<T, R> {
     /// Caller-requested viewport width retained across temporary constraints.
     pub preferred_columns: Option<u16>,
+    /// Whether the application has activated this navigation region.
     pub active: bool,
+    /// Selected identity, which may temporarily be absent from `rows`.
     pub cursor: Option<T>,
+    /// Index of the first visible row.
     pub scroll: usize,
+    /// Current display rows, including non-selectable rows.
     pub rows: Vec<R>,
+    /// Identity currently highlighted by pointer hover.
     pub hover: Option<T>,
+    /// Caller-maintained pointer row, cleared by keyboard navigation.
     pub pointer_row: Option<u16>,
     last_click: Option<(T, Instant)>,
     height: usize,
@@ -37,9 +46,11 @@ impl<T, R> Default for Navigation<T, R> {
     }
 }
 impl<T: Clone + Eq, R: NavigationRow<T>> Navigation<T, R> {
+    /// Requests selection reveal on the next viewport update.
     pub fn request_reveal(&mut self) {
         self.reveal = true;
     }
+    /// Sets visible row capacity, clamps scrolling, and applies pending reveal.
     pub fn viewport(&mut self, height: usize) {
         self.reveal |= height != self.height;
         self.height = height;
@@ -64,20 +75,26 @@ impl<T: Clone + Eq, R: NavigationRow<T>> Navigation<T, R> {
             self.reveal = false;
         }
     }
+    /// Returns the last supplied visible row capacity.
     pub fn viewport_rows(&self) -> usize {
         self.height
     }
+    /// Reapplies clamping and pending reveal at the current capacity.
     pub fn refresh_viewport(&mut self) {
         self.viewport(self.height);
     }
+    /// Activates the region and requests selection reveal.
     pub fn enter(&mut self) {
         self.active = true;
         self.reveal = true;
     }
+    /// Sets selection and requests reveal without activating the region.
     pub fn select(&mut self, target: T) {
         self.cursor = Some(target);
         self.reveal = true;
     }
+    /// Selects an identity and returns whether it completes a same-target
+    /// double click within 350 ms. A completed pair resets click tracking.
     pub fn click(&mut self, target: T, now: Instant) -> bool {
         let double = self.last_click.as_ref().is_some_and(|(previous, at)| {
             previous == &target && now.saturating_duration_since(*at) < Duration::from_millis(350)
@@ -86,11 +103,14 @@ impl<T: Clone + Eq, R: NavigationRow<T>> Navigation<T, R> {
         self.last_click = if double { None } else { Some((target, now)) };
         double
     }
+    /// Updates hover without changing selection.
     pub fn hover(&mut self, target: Option<&T>) {
         if self.hover.as_ref() != target {
             self.hover = target.cloned();
         }
     }
+    /// Moves by distinct selectable stops, clamping at either end.
+    /// Clears pointer and click state; absent selection starts at stop zero.
     pub fn navigate(&mut self, delta: isize) {
         self.hover = None;
         self.pointer_row = None;
@@ -133,6 +153,7 @@ impl<T: Clone + Eq, R: NavigationRow<T>> Navigation<T, R> {
         }
         self.viewport(self.height);
     }
+    /// Scrolls by display rows and cancels pending selection reveal.
     pub fn scroll_by(&mut self, delta: isize) {
         self.scroll = self
             .scroll

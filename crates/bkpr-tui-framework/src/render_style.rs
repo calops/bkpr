@@ -1,5 +1,8 @@
 use super::*;
 
+/// Emit SGR changes from the tracked style, resetting first when no style is known.
+/// Both styles must share `frame`, host capabilities and physical-background context.
+/// Underline colors require confirmed truecolor; output failures are returned.
 pub(super) fn transition(
     out: &mut impl Write,
     previous: Option<&Style>,

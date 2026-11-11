@@ -133,8 +133,10 @@ impl GraphicsState {
         Ok(())
     }
 }
+/// Owning host-terminal mode, background and image-resource restoration guard.
 pub struct TerminalGuard {
     graphics: GraphicsState,
+    /// Whether the owned Kitty keyboard mode must be popped on exit.
     pub kitty_keyboard: bool,
     clipboard_mode: Option<bool>,
     requested_clipboard_mode: Option<bool>,
@@ -163,6 +165,7 @@ impl TerminalGuard {
     ) -> Result<()> {
         self.background.apply(background, out)
     }
+    /// Retain the first observed enhanced-paste mode for exact exit restoration.
     pub fn observe_enhanced_paste(&mut self, enabled: bool) {
         self.clipboard_mode.get_or_insert(enabled);
         self.requested_clipboard_mode.get_or_insert(enabled);
@@ -231,6 +234,7 @@ fn is_scene_protocol_char(c: char) -> bool {
     // as an image reference. Only typed, remapped placements may reference IDs.
     c.is_control() || c == '\u{10eeee}'
 }
+/// Remove control characters and host-interpreted Kitty placeholder glyphs from UI text.
 pub fn safe_text(text: &str) -> String {
     text.chars()
         .filter(|c| !is_scene_protocol_char(*c))
@@ -242,6 +246,7 @@ fn validate_text(text: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Read host grid/pixel geometry, using positive fallback cell dimensions when unavailable.
 pub fn dimensions() -> Result<Size> {
     let (cols, rows) = crossterm::terminal::size()?;
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
@@ -728,22 +733,33 @@ fn draw_prepared(
 /// parser. A clipboard payload can never become a keystroke, including after
 /// timeout. This is input framing, not a second application terminal parser.
 pub enum InputPart {
+    /// Bytes for the maintained keyboard/paste parser.
     Keys(Vec<u8>),
+    /// Device-reply payload, never keyboard input.
     Reply(Vec<u8>),
     /// Complete SGR packet with only its otherwise-lossy button identity saved.
     Mouse {
+        /// Complete original SGR mouse packet.
         bytes: Vec<u8>,
+        /// Physical button identity preserved beyond the maintained parser.
         button: MouseButton,
+        /// Pointer transition or wheel action.
         action: MouseAction,
     },
 }
+/// Decoded user input or separately routed host-device response.
 pub enum ClientEvent {
+    /// Maintained-parser key, paste, focus or legacy pointer event.
     Legacy(InputEvent),
+    /// Host-device response payload, not application input.
     Reply(Vec<u8>),
     /// Maintained-parser coordinates/modifiers plus physical SGR identity.
     Mouse {
+        /// Parsed zero-based host cell position and modifiers.
         event: termwiz::input::MouseEvent,
+        /// Physical button identity from the original SGR packet.
         button: MouseButton,
+        /// Pointer transition from the original SGR packet.
         action: MouseAction,
     },
 }
@@ -773,6 +789,8 @@ fn client_input(event: InputEvent) -> Option<ClientEvent> {
     };
     Some(ClientEvent::Legacy(event))
 }
+/// Decode framed input without passing device responses to the user-input parser.
+/// `more` indicates whether ordinary input may continue in another chunk.
 pub fn decode_input(
     parser: &mut InputParser,
     parts: Vec<InputPart>,
@@ -876,6 +894,7 @@ fn sgr_mouse_identity(final_byte: u8, params: &[u8]) -> Option<(MouseButton, Mou
     };
     Some((button, action))
 }
+/// Incremental host input/reply framing, preserving paste bytes as literal input.
 #[derive(Default)]
 pub struct ReplyDemux {
     buffer: Vec<u8>,
@@ -883,6 +902,7 @@ pub struct ReplyDemux {
     paste_bytes: usize,
 }
 impl ReplyDemux {
+    /// Frame a new byte chunk; incomplete control packets remain pending.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<InputPart> {
         self.buffer.extend_from_slice(bytes);
         let mut keys = Vec::new();
@@ -1076,6 +1096,7 @@ impl ReplyDemux {
         }
         parts
     }
+    /// Release a lone pending Escape; never flush a partial reply or bracketed paste.
     pub fn flush_escape(&mut self) -> Vec<u8> {
         if !self.in_paste && self.buffer == [0x1b] {
             std::mem::take(&mut self.buffer)
@@ -1084,17 +1105,27 @@ impl ReplyDemux {
         }
     }
 }
+/// One pending host clipboard transfer and its caller-owned consent state.
 pub struct Consent {
+    /// Exact request correlation placed in enhanced clipboard messages.
     pub id: String,
+    /// Requested MIME operation, selection and native grant context.
     pub request: ClipboardRequest,
+    /// Transfer start time for caller-enforced expiry.
     pub started: Instant,
+    /// Whether the host operation has been submitted.
     pub sent: bool,
+    /// Whether presentation policy approved the operation.
     pub allowed: bool,
+    /// Accumulated exact MIME response contents.
     pub contents: Vec<ClipboardContent>,
+    /// Accumulated advertised MIME names.
     pub available: Vec<String>,
-    // None means the startup DECRQM response has not arrived, not unsupported.
+    /// Observed enhanced clipboard support; `None` means the startup response is pending.
     pub enhanced_supported: Option<bool>,
+    /// Whether this transfer services a native paste offer.
     pub paste: bool,
+    /// Original host-issued paste password, if this is an offer-bound read.
     pub password: Option<String>,
 }
 fn success(contents: Vec<ClipboardContent>) -> ClipboardResponse {
@@ -1112,20 +1143,28 @@ fn selection(location: ClipboardLocation) -> &'static str {
         ClipboardLocation::Primary => "p",
     }
 }
+/// In-progress host paste offer, correlated by its original password.
 pub struct PasteOffer {
+    /// Exact encoded host-issued password.
     pub password: String,
+    /// Validated MIME targets collected before completion.
     pub mimes: Vec<String>,
+    /// Whether the offer refers to the primary selection.
     pub primary: bool,
+    /// Offer start time for caller-enforced expiry.
     pub started: Instant,
 }
 
 /// Routing identity only; payload validation and transfer state remain in
 /// `clipboard_packet` / `paste_offer_packet`. Borrowing avoids copying MIME data.
 pub enum ClipboardReplyOrigin<'a> {
+    /// Explicit transfer request ID.
     Request(&'a str),
+    /// Paste-offer password for a read without an explicit request ID.
     Offer(&'a str),
 }
 
+/// Read routing correlation only; does not validate payloads, grant consent or complete transfers.
 pub fn clipboard_reply_origin(packet: &[u8]) -> Option<ClipboardReplyOrigin<'_>> {
     let packet = packet.strip_prefix(b"5522;")?;
     let metadata = std::str::from_utf8(packet.split(|byte| *byte == b';').next()?).ok()?;
@@ -1152,6 +1191,8 @@ pub fn clipboard_reply_origin(packet: &[u8]) -> Option<ClipboardReplyOrigin<'_>>
     }
 }
 
+/// Advance a correlated enhanced paste offer and return a pending consent on completion.
+/// Rejects malformed encoding, overlapping offers and excessive MIME data.
 pub fn paste_offer_packet(
     offer: &mut Option<PasteOffer>,
     packet: &[u8],
@@ -1243,6 +1284,8 @@ pub fn paste_offer_packet(
     }
     Ok(None)
 }
+/// Submit an approved host clipboard operation or wait for capability evidence.
+/// Returns an immediate response for completed plain-text writes or unsupported operations.
 pub fn begin_clipboard(
     out: &mut impl Write,
     consent: &mut Consent,
@@ -1337,6 +1380,8 @@ pub fn begin_clipboard(
         }
     }
 }
+/// Accumulate a matching enhanced clipboard response; unrelated packets leave state unchanged.
+/// Rejects invalid UTF-8/base64 and excessive response data or MIME counts.
 pub fn clipboard_packet(consent: &mut Consent, packet: &[u8]) -> Result<Option<ClipboardResponse>> {
     let Some(packet) = packet.strip_prefix(b"5522;") else {
         return Ok(None);
@@ -1402,6 +1447,7 @@ pub fn clipboard_packet(consent: &mut Consent, packet: &[u8]) -> Result<Option<C
         _ => Ok(Some(ClipboardResponse::denied())),
     }
 }
+/// Map a maintained-parser key event into canonical key/modifier/text fields.
 pub fn key_event(key: termwiz::input::KeyEvent) -> KeyEvent {
     let mut modifiers = 0;
     for (flag, bit) in [
@@ -1538,6 +1584,7 @@ fn kitty_functional(final_byte: u8, body: &[u8]) -> Option<String> {
     }
     Some(format!("{code};{modifiers}"))
 }
+/// Decode one Kitty keyboard payload, rejecting malformed or unsupported key/modifier fields.
 pub fn kitty_key(payload: &[u8]) -> Result<KeyEvent> {
     if payload.len() > 256 {
         bail!("oversized Kitty key event");
@@ -1681,14 +1728,22 @@ pub fn kitty_key(payload: &[u8]) -> Result<KeyEvent> {
     }
     Ok(event)
 }
+/// Observed per-client colors and independent positive terminal-capability evidence.
 #[derive(Default)]
 pub struct ColorProbe {
+    /// Positive XTGETTCAP truecolor evidence, not inferred from palette replies.
     pub truecolor: bool,
+    /// Observed terminal-default foreground RGB.
     pub foreground: Option<[u8; 3]>,
+    /// Observed logical terminal-default background RGB.
     pub background: Option<[u8; 3]>,
+    /// Observed default cursor RGB.
     pub cursor: Option<[u8; 3]>,
+    /// Observed indexed palette entries.
     pub palette: HashMap<usize, [u8; 3]>,
+    /// Change token for accepted color/capability observations.
     pub revision: u64,
+    /// Independently correlated Kitty graphics query state.
     pub graphics: GraphicsProbe,
 }
 
@@ -1699,18 +1754,44 @@ pub struct GraphicsProbe {
     issued_id: Option<u32>,
     supported: bool,
 }
+// Shared interpretation of the existing ReplyDemux APC route. A query and an
+// upload ACK have the same wire shape; ownership, not a guessed action, decides
+// dispatch. Keep placement headers distinguishable from plain image replies.
+pub(crate) fn parse_graphics_reply(bytes: &[u8]) -> Option<(u32, &str, bool)> {
+    let text = std::str::from_utf8(bytes.strip_prefix(b"graphics;")?).ok()?;
+    let (header, status) = text.split_once(';').unwrap_or((text, ""));
+    let value = header.strip_prefix("Gi=")?;
+    let image_id = value.split(',').next()?;
+    if image_id.is_empty()
+        || image_id.starts_with('0')
+        || !image_id.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((image_id.parse().ok()?, status, value == image_id))
+}
 impl GraphicsProbe {
     /// Send these bytes through the existing terminal-output owner, then feed
     /// ReplyDemux's APC payloads through ColorProbe::feed.
     pub fn begin(&mut self) -> Vec<u8> {
         static NEXT_ID: std::sync::atomic::AtomicU32 =
             std::sync::atomic::AtomicU32::new(0x7000_0000);
-        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Ok(id) = NEXT_ID.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |id| (id < 0x8000_0000).then(|| id + 1),
+        ) else {
+            self.pending = None;
+            self.issued_id = None;
+            self.supported = false;
+            return Vec::new();
+        };
         self.pending = Some((id, Instant::now()));
         self.issued_id = Some(id);
         self.supported = false;
         format!("\x1b_Gi={id},s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\").into_bytes()
     }
+    /// Whether the current query completed with positive graphics evidence.
     pub fn supported(&self) -> bool {
         self.supported
     }
@@ -1719,22 +1800,10 @@ impl GraphicsProbe {
     /// Late, duplicate and invalid responses for our query id are consumed but
     /// cannot turn an expired/completed query into positive evidence.
     pub fn consume_tagged(&mut self, bytes: &[u8]) -> bool {
-        let Some(bytes) = bytes.strip_prefix(b"graphics;") else {
+        let Some((image_id, status, plain)) = parse_graphics_reply(bytes) else {
             return false;
         };
-        let Ok(text) = std::str::from_utf8(bytes) else {
-            return false;
-        };
-        let (header, status) = text.split_once(';').unwrap_or((text, ""));
-        let Some(value) = header.strip_prefix("Gi=") else {
-            return false;
-        };
-        let image_id = value.split(',').next().unwrap_or("");
-        if image_id.as_bytes().first() == Some(&b'0')
-            || !image_id.bytes().all(|b| b.is_ascii_digit())
-            || image_id.parse::<u32>().ok() != self.issued_id
-            || self.issued_id.is_none()
-        {
+        if Some(image_id) != self.issued_id {
             return false;
         }
         let Some((_, started)) = self.pending else {
@@ -1746,7 +1815,7 @@ impl GraphicsProbe {
         }
         // Ownership is not capability evidence. Reject extra query fields,
         // malformed statuses and placement acknowledgements for our id.
-        if value != image_id || status.len() > 256 {
+        if !plain || status.len() > 256 {
             return true;
         }
         if status == "OK" {
@@ -1814,6 +1883,7 @@ impl ColorProbe {
         }
         true
     }
+    /// Accept demultiplexed device evidence; malformed or unrelated replies are ignored.
     pub fn feed(&mut self, bytes: &[u8]) {
         if self.graphics.consume_tagged(bytes) {
             return;
@@ -1869,6 +1939,7 @@ impl ColorProbe {
         }
     }
 }
+/// Map an in-bounds zero-based host cell into canonical pane pixels.
 pub fn mouse_position(col: u16, row: u16, viewport: Size, canonical: Size) -> Option<(f32, f32)> {
     (col < viewport.cols && row < viewport.rows && col < canonical.cols && row < canonical.rows)
         .then_some((
@@ -2505,8 +2576,9 @@ mod material_cache_tests {
             events: libc::POLLIN,
             revents: 0,
         };
-        assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
-        assert!(graphics.drain().unwrap());
+        while !graphics.drain().unwrap() {
+            assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
+        }
         let first = material(&graphics, size);
         let mut renderer = Renderer::default();
         let mut terminal = std::mem::ManuallyDrop::new(TerminalGuard {

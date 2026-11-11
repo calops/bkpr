@@ -1,9 +1,8 @@
-//! Sparse rounded materials. Geometry and every material choice belong to the caller.
+//! Sparse rounded materials with caller-supplied geometry and colors.
 //!
 //! The continuous rounded-mask convolution and supersampling are adapted from
 //! bkpr-zellij d7b40a37a63d4934054516f6f445488348075a62, files
 //! zellij-server/src/output/recessed_frames/{depth,raster,raised}.rs.
-//! This engine runs on the existing graphics worker, not a second compositor.
 //!
 //! MIT License
 //! Copyright (c) 2020 Zellij contributors
@@ -29,62 +28,79 @@ use crate::Rect;
 use bkpr_protocol::{Frame, Image, ImageLayer, Placement};
 use std::sync::Arc;
 
+/// Rounded perimeter material and interior coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecorationKind {
+    /// Inward shadow with an opaque exterior and cell gutter.
     Recessed,
-    /// A recessed frame whose left straight gutter is transparent. The caller
-    /// owns the matching cell surface and can therefore keep adjacent text ink.
+    /// Recessed material with a transparent left straight gutter.
     RecessedTransparentLeftGutter,
+    /// Exterior shadow with a transparent interior.
     Raised,
-    /// Opaque rounded surface plus the same outer shadow as `Raised`.
+    /// Exterior shadow with an opaque interior in the sparse perimeter tiles.
     RaisedSurface,
 }
 
-/// Physical-pixel material, with millipixels for fractional blur/lighting values.
-/// No radius, blur or offset is silently reduced to fit a cell. Unsupported
-/// geometry/budgets return the caller to its text fallback instead.
+/// Physical-pixel material; fractional values use thousandths of a pixel or unit.
+/// Unsupported geometry or preparation budgets leave the material unavailable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecorationStyle {
+    /// Perimeter shading and coverage mode.
     pub kind: DecorationKind,
+    /// RGB base for recessed gutters and raised surfaces.
     pub background: [u8; 3],
+    /// RGB base for the recessed exterior and a raised highlight reference.
     pub surface: [u8; 3],
+    /// RGB highlight reference.
     pub foreground: [u8; 3],
+    /// Inward distance from each atlas tile's outer edge to the contour, in pixels.
     pub inset_px: [u32; 2],
     /// Output padding around the supplied logical rectangle, in physical pixels.
     pub outset_px: [u32; 2],
+    /// Rounded-corner radius in physical pixels.
     pub radius_px: u32,
+    /// Gaussian shadow standard deviation in thousandths of a pixel; must be nonzero.
     pub sigma_milli: u32,
+    /// Shadow translation `[x, y]` in thousandths of a pixel.
     pub offset_milli: [i32; 2],
+    /// Shadow opacity in thousandths, where 1000 is fully opaque.
     pub shadow_opacity_milli: u16,
+    /// Bevel width in thousandths of a pixel.
     pub lip_width_milli: u32,
+    /// Bevel highlight strength in thousandths.
     pub lip_highlight_milli: u16,
+    /// Bevel shade strength in thousandths.
     pub lip_shade_milli: u16,
 }
 
 /// Absolute physical-pixel bounds and a half-open ownership clip.
-/// `bounds_px` is `[left, top, right, bottom]` before material outset; signed
-/// edges allow translating a cached contour beyond its logical cell rectangle.
-/// `clip_px` uses the same edge order and is intersected with the screen.
-/// Callers may place disjoint clips with different bounds for partial neighbors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecorationGeometry {
+    /// Signed `[left, top, right, bottom]` edges before material outset.
     pub bounds_px: [i64; 4],
+    /// Half-open `[left, top, right, bottom]` clip, intersected with the frame.
     pub clip_px: [u32; 4],
 }
 
-/// One 3x3 atlas supplies eight sparse fragments; its center is never placed.
-/// Tiles cover the complete requested curve and five-sigma shadow support.
+/// Prepared 3×3 atlas whose eight perimeter tiles are placed without its center.
 #[derive(Clone)]
 pub(crate) struct PreparedDecoration {
+    /// Material used to rasterize the atlas.
     pub style: DecorationStyle,
+    /// Physical-pixel cell dimensions `[width, height]`.
     pub cell: [u32; 2],
+    /// Shared RGBA atlas with a generation-scoped image identity.
     pub image: Arc<Image>,
 }
 impl PreparedDecoration {
+    /// Append the perimeter in cell coordinates, reserving 64 IDs from `base`.
+    /// Failure leaves the frame unchanged.
     pub fn place(&self, frame: &mut Frame, rect: Rect, base: u32) -> bool {
         self.place_clipped(frame, rect, base, &[])
     }
 
+    /// Append the perimeter minus cell-coordinate exclusions.
+    /// Reserve 64 IDs from `base`; failure leaves the frame unchanged.
     pub fn place_clipped(
         &self,
         frame: &mut Frame,
@@ -110,6 +126,8 @@ impl PreparedDecoration {
         self.place_with_geometry(frame, rect, base, exclusions, geometry)
     }
 
+    /// Append the perimeter at explicit pixel bounds, minus cell exclusions.
+    /// Reserve 64 IDs from `base`; failure leaves the frame unchanged.
     pub fn place_with_geometry(
         &self,
         frame: &mut Frame,
@@ -306,6 +324,7 @@ impl PreparedDecoration {
     }
 }
 
+/// Return cell-aligned 3×3 atlas dimensions, or reject unsupported geometry.
 pub(crate) fn atlas_size(style: DecorationStyle, cell: [u32; 2]) -> Option<[u32; 2]> {
     if cell.contains(&0) || cell.iter().any(|&side| side > 512) || style.sigma_milli == 0 {
         return None;
@@ -504,8 +523,8 @@ fn normal_cdf(value: f64) -> f64 {
     if value >= 0.0 { 1.0 - tail } else { tail }
 }
 
-/// Worker-only rasterization with 4x4 premultiplied supersampling. Straight
-/// strips reuse their constant axis; no full-window transparent buffer exists.
+/// Rasterize a straight-alpha RGBA atlas on the graphics worker.
+/// Returns `None` for unsupported geometry or output exceeding 8 MiB.
 pub(crate) fn rasterize(style: DecorationStyle, cell: [u32; 2]) -> Option<Vec<u8>> {
     let [width, height] = atlas_size(style, cell)?;
     let bytes = usize::try_from(width)
