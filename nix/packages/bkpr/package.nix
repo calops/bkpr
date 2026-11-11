@@ -5,6 +5,7 @@
   fetchFromGitHub,
   makeWrapper,
   installShellFiles,
+  ncurses,
   git,
   gh,
   openssh,
@@ -21,6 +22,55 @@ stdenvNoCC.mkDerivation (
       rustPlatform.rust.cargo
       libghostty-vt.zig
     ];
+    terminfoGenerator = builtins.toFile "bkpr-terminfo.zig" ''
+      const std = @import("std");
+      const terminfo = @import("terminfo/main.zig");
+      pub fn main(init: std.process.Init) !void {
+          var entry = terminfo.ghostty;
+          entry.names = &.{ "bkpr", "Bkpr terminal multiplexer" };
+          var capabilities: [terminfo.ghostty.capabilities.len]terminfo.Source.Capability = undefined;
+          @memcpy(&capabilities, terminfo.ghostty.capabilities);
+          // Reply regexes must match DA2/XTVERSION after tic unescapes them.
+          for (&capabilities) |*capability| {
+              if (std.mem.eql(u8, capability.name, "rv"))
+                  capability.value = .{ .string = "\\E\\\\[>[0-9]+;[0-9]+;[0-9]+c" };
+              if (std.mem.eql(u8, capability.name, "xr"))
+                  capability.value = .{ .string = "\\EP>\\\\|[ -~]+\\E\\\\\\\\" };
+          }
+          entry.capabilities = &capabilities;
+          var buffer: [16384]u8 = undefined;
+          var stdout = std.Io.File.stdout().writer(init.io, &buffer);
+          try entry.encode(&stdout.interface);
+          try stdout.interface.flush();
+      }
+    '';
+    terminfo = stdenvNoCC.mkDerivation {
+      pname = "bkpr-terminfo";
+      version = libghostty-vt.revision;
+      inherit (libghostty-vt) src;
+      nativeBuildInputs = [
+        ncurses
+        libghostty-vt.zig
+      ];
+      dontConfigure = true;
+      buildPhase = ''
+        runHook preBuild
+        export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+        cp ${terminfoGenerator} src/bkpr-terminfo.zig
+        printf '%s\n' '# Ghostty ${libghostty-vt.revision}, src/terminfo/ghostty.zig; Bkpr identity and reply patterns.' > bkpr.terminfo
+        zig run -j8 src/bkpr-terminfo.zig >> bkpr.terminfo
+        runHook postBuild
+      '';
+      installPhase = ''
+        runHook preInstall
+        mkdir -p "$out/share/terminfo"
+        tic -x -o "$out/share/terminfo" bkpr.terminfo
+        install -Dm444 bkpr.terminfo "$out/share/bkpr/terminfo/bkpr.terminfo"
+        install -Dm444 LICENSE "$out/share/licenses/bkpr-terminfo/LICENSE"
+        infocmp -x -A "$out/share/terminfo" bkpr > /dev/null
+        runHook postInstall
+      '';
+    };
     binaries = rustPlatform.buildRustPackage {
       pname = "bkpr-binaries";
       inherit (finalAttrs)
@@ -106,12 +156,16 @@ stdenvNoCC.mkDerivation (
               gh
               openssh
             ]
-          }
+          } \
+          --set BKPR_TERMINFO_DIR "${terminfo}/share/terminfo"
       done
-      ln -s ${binaries}/share "$out/share"
+      mkdir -p "$out/share"
+      cp -rs ${binaries}/share/. "$out/share/"
+      chmod u+w "$out/share/licenses"
+      cp -rs ${terminfo}/share/. "$out/share/"
       runHook postInstall
     '';
-    passthru = { inherit binaries; };
+    passthru = { inherit binaries terminfo; };
     meta = {
       description = "Pane-first native terminal multiplexer with persistent named workspaces";
       homepage = "https://github.com/calops/bkpr";

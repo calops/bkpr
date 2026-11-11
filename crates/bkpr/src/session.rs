@@ -552,6 +552,9 @@ pub fn ensure_server(
             command.env_remove(key);
         }
     }
+    if let Some(directory) = std::env::var_os("BKPR_TERMINFO_DIR") {
+        command.env("BKPR_TERMINFO_DIR", directory);
+    }
     if defaults.isolated_environment {
         command.arg("--home").arg(&defaults.home);
     }
