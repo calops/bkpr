@@ -1546,6 +1546,7 @@ fn run_pane(
         cmd.env("HOME", &spec.home);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        environment::configure_terminfo(&mut cmd, spec.isolated_environment);
         // SHELL describes the user's shell, not arbitrary argv[0] (eg. an editor).
         cmd.cwd(&spec.cwd);
         let terminal = Terminal::new(spec.size)?;

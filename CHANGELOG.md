@@ -14,6 +14,10 @@
 * Use a Nerd Font progress-clock icon for refreshing Git metadata, keeping the branch icon visual footprint and text alignment.
 * Give the managed Codex TUI a launch-only Kitty identity override for native image discovery, leaving its app-server and other harnesses unchanged.
 
+### Maintenance
+
+* Ship Ghostty-derived `bkpr` terminfo and its source, with matching device-reply patterns. Configure pane database lookup in the backend while preserving user search paths and the existing `TERM` value.
+
 ## [0.6.0](https://github.com/calops/bkpr/compare/v0.5.1...v0.6.0) (2026-11-10)
 
 ### ⚠ BREAKING CHANGES

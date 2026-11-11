@@ -116,6 +116,22 @@ option values still complete.
 For Fish value completion at the root, use `--clipboard=...`; the spaced form
 also works under `bkpr tui --clipboard ...`.
 
+The Nix package ships a compiled `bkpr` terminfo entry in `share/terminfo`,
+generated from the pinned engine's `src/terminfo/ghostty.zig`. It retains Ghostty's
+capabilities, including truecolor, styled underlines and synchronized output,
+with Bkpr names and corrected DA2/XTVERSION response patterns. The generated
+source records the upstream revision and is available at
+`share/bkpr/terminfo/bkpr.terminfo`; install it on another host with
+`tic -x -o ~/.terminfo bkpr.terminfo`.
+
+The daemon extends `TERMINFO_DIRS` for pane processes, preserving existing search
+order and empty components that select the system defaults. An unset variable
+retains default lookup. Packages supply the database location through
+`BKPR_TERMINFO_DIR`; ordinary installations can use `<prefix>/share/terminfo`
+beside `<prefix>/bin/bkprd`. The resource hint itself is not passed to panes.
+Pane processes still receive `TERM=xterm-256color`; installing this entry does
+not switch terminal identity or enable additional graphics transports.
+
 Normal launches preserve your HOME, shell profiles and environment, using the
 invocation directory. Closing the client leaves the daemon and panes running.
 `-s` / `--session` selects an exact name; Unicode, spaces and slashes are
