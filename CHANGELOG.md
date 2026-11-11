@@ -3,6 +3,7 @@
 ### Features
 
 * Animate visible working sidebar titles with a palette-derived gradient sweep, backed by reusable framework timing/text effects and dormant idle scheduling.
+* Negotiate resource-backed Kitty transports for prepared frontend chrome, with bounded worker-owned shared memory/files, inline fallback and unchanged pane-image delivery.
 
 ### Fixes
 

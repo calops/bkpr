@@ -19,6 +19,7 @@ uuid = { version = "1", features = ["v4"] }
 unicode-width = "0.2"
 resvg = { version = "=0.49.0", default-features = false }
 unicode-segmentation = "1"
+tempfile = "3.27"
 
 [dev-dependencies]
 bkpr-terminal-engine = { path = "../bkpr-terminal-engine" }

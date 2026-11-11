@@ -940,6 +940,17 @@ frame rather than exposing an empty-image interval. Sidebar artwork sits above
 passive joined borders, including the hive's half-cell gutter extension, but
 below true modal content.
 
+Chrome uploads negotiate their host transport independently of pane capabilities.
+After confirming Kitty graphics, the framework probes actual shared-memory,
+temporary-file and regular-file access, preferring them in that order for prepared
+chrome resources. Payload preparation and cleanup run on the existing graphics
+worker; interaction never waits for a file or shared-memory operation. Unprepared
+images and inaccessible transports use inline uploads. Failed or expired local
+uploads are replaced inline without changing the displayed content. Transfer
+resources are bounded to 16 MiB plus three tiny probes, with two-second leases.
+This optimization is chrome-only: native pane images retain inline delivery, and
+the backend's accepted media and capabilities are unchanged.
+
 Normal-sized panes share a one-cell separator in both orientations and presentation
 modes, rather than reserving two borders plus another divider. PTY size, pointer
 coordinates and resize minima use that same content geometry. Unrepresentable
