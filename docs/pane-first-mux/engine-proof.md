@@ -3205,3 +3205,81 @@ experiment also records Pi's actual `process.title` argv rewrite in
 boundary tests cover that npm recognition shape, not an additional npm-native
 end-to-end acceptance claim.
 
+## Harness-testing shell and OpenCode 2 ownership evaluation
+
+`nix develop .#harnesses` adds all eleven recognized native CLIs while the
+default devshell retains only development tools. The maintained
+`numtide/llm-agents.nix` input is pinned at
+`90011236663d4116738fc2d63de6ab64523387b6`, preserving its dependency locks and
+signed-cache reuse; Aider comes from the existing pinned nixpkgs. OpenCode 2.2.7
+is selected under canonical `opencode`, without the host credential wrapper.
+Shell derivations evaluated on x86-64 Linux, ARM64 Linux and ARM64 macOS.
+Actual runtime evidence is Linux x86-64 only.
+
+The real shell's eleven `--version` probes all exited successfully in an
+offline actual-UID1000 namespace with private HOME/XDG and no host home:
+`target/smoke/harness-shell/run-198526784339770/result.json`.
+The command paths/hashes and exact stdout are retained, including Codex's
+temporary-HOME helper warning; this is executable availability/version proof,
+not managed-integration acceptance for every pinned version.
+
+Native OpenCode 2.2.7 default shared-service startup passed in actual Kitty/Xvfb,
+with complete 1440×1000 framebuffer content: logo, empty native composer,
+directory, command hints and version footer. The service retained the same
+PID/birth and healthy native API after its TUI exited. Evidence:
+`target/smoke/harness-shell/opencode-ui/result.json` and
+`run-198575001972540/`. An initial documented HTTP 503 waiting state was handled
+as bounded readiness, not treated as usable UI. No standalone flag, prompt,
+provider request or approval was used.
+
+OpenCode 1's launcher, plugins, tests and sole JSONC dependency are retired.
+OpenCode now passes through natively, with `opencode2` recognized as the same
+executable family. Saved V1 descriptors still load but cannot launch a managed
+replacement; the restart/refusal regression verifies no process, capture grant
+or durable mutation is created. The native wire family remains 9.
+
+Protected debug candidate:
+`target/smoke/harness-integrations/build/compiled-198809824770443/executables/`.
+CLI SHA-256 `15e98daac8fa32a01bbaceae4a131ec709d844190bf1fbb1d370b59ea24e3fb9`;
+daemon SHA-256 `8dc404248b96b5fbd5bab0c8923cb72f4f4e17277a54a367332f4f79f7c248b6`.
+Pinned engine 93967b7, local incremental artifacts, at most 8 Cargo jobs;
+public executable contents and inodes were preserved. Formatting, strict
+all-target Clippy and doctests passed. Host execution at
+`build/checks-198891104194834/` passed **1174 top-level and 2 subprocess tests**,
+with 18 ignored fixtures.
+
+The actual Kitty → Bkpr TUI → private backend PTY → `bkpr run opencode` path
+passed both native startup cases in
+`target/smoke/harness-shell/opencode-ui/bkpr-ownership-result.json`:
+
+- Registry observed `kind: opencode`, `managed: null`; native client/service had
+  no capture/relay credentials or injected OpenCode configuration. Native config
+  remained unchanged and no standalone mode was added.
+- A service first created inside the pane was healthy and shared by two
+  independent TUIs. It died when the originating pane's root TUI exited.
+  The other TUI then displayed “Restarting service…” and
+  “Data migration failed / Transport: ECONNREFUSED”. The original service birth
+  remained absent after the two-second observation window.
+- A service created outside Bkpr before daemon startup remained healthy with
+  identical PID/birth after native pane exit and workspace closure.
+
+Complete Bkpr/native home and companion-failure screenshots are retained under
+`bkpr-run-199889349556101/`. The tested initial pane command was the native TUI
+wrapper itself; TUI exit therefore ended that pane. This is not a nested
+shell-session exit test. All final native, version-probe, Bkpr-case and namespace
+cleanup ledgers report zero surviving owned processes. Fixtures used only
+loopback, owner-private state and deny-provider/integration policies. The
+repository bind was read/write; no claim of read-only repository isolation is
+made. Controllers are archived alongside the evidence.
+
+This confirms an unresolved process-ownership boundary, **not full shared-service
+or managed OpenCode 2 support**. No descendant-cleanup exception or authority
+weakening was introduced. The source-backed routing/identity options and
+remaining native API gaps are in the
+[shared-service assessment](implementation-plan.md#opencode-2-shared-service-integration-assessment).
+
+The package source fileset now includes all native integration assets, not only
+Omp. Evaluation confirmed Omp, Pi and shared callbacks are present and retired
+OpenCode plugin assets are absent. No product release build was needed for this
+development-shell change.
+

@@ -39,6 +39,16 @@ pub(super) fn validate(descriptor: &HarnessRecovery) -> Result<()> {
     );
     Ok(())
 }
+fn resume_flag(kind: HarnessKind) -> Result<&'static str> {
+    Ok(match kind {
+        HarnessKind::Claude | HarnessKind::Omp => "--resume",
+        HarnessKind::Codex => "resume",
+        HarnessKind::Agy => "--conversation",
+        HarnessKind::Pi => "--session",
+        HarnessKind::Opencode => bail!("OpenCode managed recovery is unavailable"),
+        _ => bail!("harness does not support managed recovery"),
+    })
+}
 fn same_conversation(a: &HarnessRecovery, b: &HarnessRecovery) -> bool {
     a.kind == b.kind && a.conversation_id == b.conversation_id
 }
@@ -153,6 +163,7 @@ impl Registry {
                             SessionClosing("session is closing")
                         );
                         ensure!(configured, "managed harnesses are not configured");
+                        resume_flag(descriptor.kind)?;
                         ensure!(
                             pane.status != PaneStatus::Running
                                 && state.live.get(id).is_none_or(|pane| pane
@@ -327,13 +338,7 @@ impl Registry {
             .unwrap()
             .clone()
             .context("managed harnesses are not configured")?;
-        let flag = match expected.kind {
-            HarnessKind::Claude | HarnessKind::Omp => "--resume",
-            HarnessKind::Codex => "resume",
-            HarnessKind::Agy => "--conversation",
-            HarnessKind::Opencode | HarnessKind::Pi => "--session",
-            _ => bail!("harness does not support managed recovery"),
-        };
+        let flag = resume_flag(expected.kind)?;
         Ok(PaneSpawnSpec {
             argv: vec![
                 environment

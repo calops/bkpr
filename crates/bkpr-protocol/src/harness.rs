@@ -74,7 +74,7 @@ impl HarnessKind {
             "codex" => Some(Self::Codex),
             "omp" => Some(Self::Omp),
             "agy" | "antigravity" => Some(Self::Agy),
-            "opencode" => Some(Self::Opencode),
+            "opencode" | "opencode2" => Some(Self::Opencode),
             "cursor" | "cursor-agent" => Some(Self::Cursor),
             "copilot" | "copilot-cli" | "github-copilot" => Some(Self::Copilot),
             "aider" => Some(Self::Aider),
@@ -84,7 +84,7 @@ impl HarnessKind {
             _ => None,
         }
     }
-    /// Whether this family supports Bkpr-managed launch and capture integration.
+    /// Whether this family is admitted by the managed capture protocol.
     pub fn is_managed(self) -> bool {
         matches!(
             self,

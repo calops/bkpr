@@ -721,6 +721,11 @@ Acceptance is tied to implemented capability: process/view independence, permiss
 
 ### OpenCode
 
+**Retired V1 adapter:** the following records the implementation and evidence at
+[`7e71a0b`](https://github.com/calops/bkpr/tree/7e71a0b/integration/opencode),
+not current OpenCode support. Its launcher/plugins/tests and JSONC dependency
+have been removed; the V2 shared-service assessment below is the current target.
+
 The native integration uses OpenCode's own TUI and server plugin APIs, not a
 replacement interface or ACP. Native API source was checked at
 [`v1.19.5`, `810c0eba`](https://github.com/anomalyco/opencode/tree/810c0eba1a7348036f8bdf61e6632d0c36c6876c):
@@ -750,13 +755,13 @@ and `packages/opencode/src/config/{tui,variable}.ts`.
   with a diagnostic, rather than guessing wrapper-provided environment values.
   Existing Omp callback plumbing is shared, not duplicated.
 
-The only new Rust dependency is
+The V1 adapter introduced
 [`jsonc-parser` 0.34.0](https://crates.io/crates/jsonc-parser/0.34.0), maintained by
-dprint, MIT, published 2026-09-27; its serde integration handles native JSONC
-without a custom comment stripper or optional CST machinery. Plugin runtime
-imports are Node builtins and shared Bkpr glue. OpenCode still applies its own
-SDK dependency-installation policy when loading server plugins; fixtures bound
-offline npm retries without changing production flags or seeding approvals/caches.
+dprint, MIT, published 2026-09-27, for native JSONC instead of a custom stripper.
+That dependency was removed with the adapter. Plugin runtime imports were Node
+builtins and shared Bkpr glue. OpenCode applied its own SDK dependency-installation
+policy; fixtures bounded offline npm retries without changing production flags
+or seeding approvals/caches.
 
 User-approved semantic-status outlet: OpenCode alone currently uses a generic,
 typed, retained backend connection instead of bypassing its private renderer.
@@ -813,4 +818,133 @@ The native integration targets
 Pi needs no new Rust or JavaScript dependency. Its maintained native extension,
 MCP, codemode and terminal APIs cover the integration; shared Bkpr callback and
 private-asset helpers provide the launch-specific glue.
+
+### OpenCode 2 shared-service integration assessment
+
+**Decision:** target current OpenCode 2 rather than maintain a V1 compatibility
+track. Do not implicitly add `--standalone`. The harness-testing devshell supplies
+2.2.7; managed V2 integration is not implemented. The V1 adapter and its JSONC
+dependency are removed; saved native descriptors remain readable but unavailable
+for managed recovery. V1 runtime evidence is historical, not V2 acceptance.
+V2 implementation is deferred pending the shared-service architecture decision.
+
+Sources checked at [`v2.2.7`](https://github.com/anomalyco/opencode/tree/v2.2.7),
+with acquisition hashes and detailed references in
+`target/smoke/opencode2-shell/shared-service-research.json`. Native version/help
+and physical default-service startup were exercised. The actual Bkpr-path
+ownership experiment is linked below; client-MCP routing and authorization
+conclusions remain source-backed, not managed-integration runtime acceptance.
+
+#### What upstream already supplies
+
+- Native V2 TUI/server plugin packages, selected-session data, typed status/events,
+  prompt hooks, durable queued prompt admission and plugin RPC. Reuse these APIs
+  rather than replace the native interface or maintain another generic SDK.
+- Experimental client-hosted MCP over WebSocket
+  (`packages/client/src/mcp.ts`). The service supplies
+  `ai.opencode/sessionID` on tool calls. A TUI-local relay could retain the
+  existing Bkpr MCP child and its verified pane ancestry; a detached service
+  does not inherently need a Bkpr capture token.
+- Read-only native service discovery and native API authentication. These
+  authenticate access to OpenCode, not authority to Bkpr. Native passwords or
+  caller-claimed PIDs cannot replace Bkpr's process identity checks.
+
+The main cost is therefore identity, routing and lifetime—not binary transport
+or inventing MCP support.
+
+#### Why a mechanical adapter port is insufficient
+
+Native client-MCP attachments are location-scoped. Connections with the same
+name stack, and the newest wins (`packages/core/src/mcp/index.ts`). Giving each
+TUI its own `bkpr` connection can route one session's tools through another
+launch. Unique names duplicate tools and do not establish authority.
+
+For two TUIs displaying the **same native session**, both exact-session guards
+pass, but there is one native model turn and potentially two Bkpr launches,
+panes and workspace contexts. A session ID alone cannot select their authority.
+When a TUI exits, its pane-launch grants must revoke even if the detached native
+service continues executing queued work. A later attachment cannot adopt that
+launch's inbox or capabilities.
+
+#### Two bounded designs
+
+| Design | Required work | Explicit limitation |
+| --- | --- | --- |
+| TUI-bound integration | V2 TUI adapter, maintained client-MCP relay, explicit exclusive native-session-to-launch lease/handoff, scoped routing and cancellation | One managed owner per native session; authority ends with that TUI. Shared service execution can continue, but not with its retired Bkpr grant. |
+| Canonical service-session agent | Generic service enrollment, native-session agent identity, many pane attachments, contextual placement and service-owned lifecycle, plus V2 adapters | Requires a new backend authority/lifecycle boundary and explicit workspace ownership; not just a TypeScript plugin rewrite. |
+
+The first design preserves the existing pane-launch security model but must not
+be presented as transparent concurrent multi-client agent support. The second
+fits a genuinely service-owned agent. Neither requires standalone mode.
+
+For canonical service-session agents:
+
+1. Authenticate the actual service and explicitly enrolled relays by OS
+   identity/birth, with revocable generation-bound authority. Keep existing
+   pane-ancestry checks unchanged for pane-bound launches; do not broaden them
+   to accept arbitrary same-user service processes.
+2. Identify the live agent by authenticated service instance plus exact native
+   session and enrollment generation. Multiple panes reference that agent
+   instead of creating competing tool authorities for one model turn.
+3. Define one owning Bkpr workspace/context and how other attachments reference
+   it. Displaying a native session cannot silently change its contextual owner.
+4. Adapt discovery, inbox/wake receipts, status and recovery to that lifecycle.
+   Service/session retirement and process-birth replacement revoke authority;
+   TUI detach alone is not service retirement. Never kill an external service
+   merely because a Bkpr pane closes.
+5. Use a stable, explicitly installed server plugin if server-side hooks are
+   needed. Store code, not grants. Preserve unrelated settings and make any
+   shared-service restart an explicit operation, never a launch-time workaround.
+
+#### Process ownership is a separate integration boundary
+
+OpenCode's native default service is spawned detached before TUI/plugin setup
+(`packages/client/src/service-contender.ts`, CLI `handlers/default.ts`). Detaching
+does not transfer it outside Bkpr's process ownership. Current production pane
+spawns use `isolated_process: false`, but `process_tree.rs` still records
+parent/birth-linked descendants across session IDs and retains known births
+after reparenting. `OwnedChild::terminate` targets those processes on forced
+closure, observed root exit and drop.
+
+The real client/backend experiment confirmed this distinction:
+`target/smoke/harness-shell/opencode-ui/bkpr-ownership-result.json`.
+A new service created inside a pane was healthy and shared by two independent
+native TUIs, then died when the originating pane's root TUI exited. The companion
+displayed “Restarting service…” and connection refusal. A service created outside
+Bkpr before daemon startup survived native pane exit and workspace closure with
+the same PID/birth and healthy native API. No ownership exception was introduced.
+The tested pane's initial program was `bkpr run opencode`; exiting its TUI ended
+the pane. This does not establish that quitting a nested TUI kills a still-live
+shell pane's descendants immediately.
+
+A proper integration must define verified external-service ownership or an
+explicit ownership-transfer contract. Do not exempt processes by executable name,
+ignore all detached children, weaken normal pane cleanup, or silently stop a
+shared service used by other clients. Verify service creation inside a pane
+against external pre-start, natural TUI exit against forced pane closure, and
+exact service PID/birth plus another client's continued operation.
+
+#### Native API gaps and acceptance gates
+
+V2 server prompt hooks run before admission, but neither those hooks nor inbox
+events identify an authenticated submitting TUI. The public TUI client has no
+runtime request middleware or awaited body-free prompt lifecycle hook; creating
+a second client with custom `fetch` does not intercept the native UI's client.
+Preserving per-launch first-prompt attribution requires a narrow upstream
+hook/origin contract. Observing canonical native-session admission instead is
+a different metric and needs an explicit decision.
+
+There is no runtime server-plugin installation endpoint. This blocks transparent
+zero-install injection into an already-running service, not an explicitly
+installed stable plugin. Context/session-scoped client-MCP routing and public
+readiness/cancellation/generation hooks would reduce relay complexity; the
+current helper's reconnect is not renewed Bkpr authority.
+
+Before choosing implementation scope, validate with a loopback-only native
+prototype: two different sessions in one location, two TUIs sharing one session,
+tool context selection, first-prompt ordering, queued work after TUI exit,
+reconnect/restart, stale relay origins and in-flight revocation. Use the existing
+shared MCP catalog and truthful durable/wake/read/processed receipts. Do not
+substitute monkeypatched HTTP clients, duplicated SDKs, simulated PTY input or
+suppressed errors for missing native contracts.
 
