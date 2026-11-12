@@ -151,9 +151,21 @@ fn recognize_js(script: &str) -> Option<HarnessKind> {
                 }))
     {
         Some(HarnessKind::Cursor)
+    } else if script.ends_with("/@earendil-works/pi-coding-agent/dist/bundle/cli.js")
+        || script.ends_with("/@earendil-works/pi-coding-agent/dist/cli.js")
+        || HarnessKind::from_command(script) == Some(HarnessKind::Pi)
+    {
+        Some(HarnessKind::Pi)
     } else {
         None
     }
+}
+fn recognize_js_process(args: &[OsString]) -> Result<Option<HarnessKind>> {
+    // Pi's Node entrypoint replaces its argv with process.title before loading extensions.
+    if matches!(args, [name] if name == "pi") {
+        return Ok(Some(HarnessKind::Pi));
+    }
+    Ok(js_entrypoint(args)?.and_then(recognize_js))
 }
 fn recognize_python(args: &[OsString]) -> Result<Option<HarnessKind>> {
     let mut args = args.iter().skip(1);
@@ -217,7 +229,7 @@ fn recognize(executable: &Path, args: &[OsString]) -> Option<HarnessKind> {
     }
     let name = executable_name(executable)?;
     match name {
-        "node" | "nodejs" | "bun" => recognize_js(js_entrypoint(args).ok().flatten()?),
+        "node" | "nodejs" | "bun" => recognize_js_process(args).ok().flatten(),
         name if python(name) => recognize_python(args).ok().flatten(),
         "cursor" => None,
         _ => HarnessKind::from_command(name),
@@ -241,7 +253,7 @@ fn live_kind(pid: i32) -> Result<Option<HarnessKind>> {
         return if python(name) {
             recognize_python(&args)
         } else {
-            Ok(js_entrypoint(&args)?.and_then(recognize_js))
+            recognize_js_process(&args)
         };
     }
     Ok(recognize(&executable, &[]))
@@ -675,6 +687,7 @@ mod tests {
             "aider",
             "cline",
             "goose",
+            "pi",
         ] {
             assert!(recognize(Path::new(command), &[]).is_some(), "{command}");
         }
@@ -684,9 +697,27 @@ mod tests {
             Some(HarnessKind::Claude)
         );
         for args in [
+            vec!["pi"],
+            vec![
+                "node",
+                "/npm/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+            ],
+            vec!["node", "/launch/.pi-wrapped"],
+        ] {
+            assert_eq!(
+                recognize(
+                    Path::new("node"),
+                    &args.into_iter().map(OsString::from).collect::<Vec<_>>()
+                ),
+                Some(HarnessKind::Pi)
+            );
+        }
+        for args in [
             vec!["node", "--eval", entry],
             vec!["node", "--print=1", entry],
             vec!["node", "/tmp/program.js", entry],
+            vec!["pi", "--eval", entry],
+            vec!["node", "/tmp/program.js", "pi"],
         ] {
             assert_eq!(
                 recognize(

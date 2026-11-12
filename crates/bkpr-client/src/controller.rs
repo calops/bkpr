@@ -661,7 +661,7 @@ pub(crate) fn harness_status<'a>(
 
 pub(crate) fn harness_icon(kind: HarnessKind) -> &'static str {
     match kind {
-        HarnessKind::Omp => "\u{f03ff}",
+        HarnessKind::Omp | HarnessKind::Pi => "\u{f03ff}",
         HarnessKind::Claude => "\u{ec82}",
         HarnessKind::Codex => "\u{ec81}",
         HarnessKind::Opencode => "\u{f0174}",
@@ -676,7 +676,7 @@ pub(crate) fn harness_icon(kind: HarnessKind) -> &'static str {
 
 pub(crate) fn harness_role(kind: HarnessKind) -> Role {
     match kind {
-        HarnessKind::Omp => Role::Secondary,
+        HarnessKind::Omp | HarnessKind::Pi => Role::Secondary,
         HarnessKind::Codex | HarnessKind::Aider => Role::Success,
         HarnessKind::Claude | HarnessKind::Goose => Role::Warning,
         HarnessKind::Agy => Role::Info,

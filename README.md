@@ -11,7 +11,7 @@ describes the seven-crate boundaries.
 
 Bkpr remains pre-1.0. Workspace layouts and pane metadata survive daemon
 restarts; running processes and terminal contents do not.
-Foreground harness recognition, managed native conversation capture and OSC 7501
+Foreground harness recognition, managed native conversation capture and semantic
 status are available in the TUI, together with launch-scoped context, discovery
 and durable peer communication. Local Git/project snapshots, GitHub PR/check
 metadata and explicit native harness recovery are available.
@@ -447,7 +447,7 @@ bkpr run omp -- --help
 ```
 
 `bkpr run HARNESS [--] ARGS...` preserves native arguments and exit behavior.
-Claude, Codex, Omp and Antigravity have managed conversation adapters:
+Claude, Codex, Omp, OpenCode, Pi and Antigravity have managed conversation adapters:
 
 | Harness | Native binding mechanism |
 | --- | --- |
@@ -455,6 +455,8 @@ Claude, Codex, Omp and Antigravity have managed conversation adapters:
 | Codex | A private app-server transport binds the response to the TUI's own start, resume, fork or picker selection, before the first prompt. |
 | Omp | A launch-local extension captures the native session manager ID and session transitions. |
 | Antigravity | Its MCP request metadata supplies the root conversation ID. Registration alone is not binding or readiness. |
+| OpenCode | Launch-local native plugins bind the selected root session; child sessions never replace it. |
+| Pi | A launch-local extension awaits the native session-manager ID before input and follows native session replacement. |
 
 Antigravity requires explicit installation on the account where it runs:
 
@@ -469,7 +471,7 @@ The MCP adapter exposes authenticated context and peer communication. Native
 receiver bootstrap requires Antigravity's own command approval; Bkpr never
 approves it automatically.
 
-OpenCode, Cursor Agent, Copilot, Aider, Cline and Goose are recognition-only.
+Cursor Agent, Copilot, Aider, Cline and Goose are recognition-only.
 `bkpr run cursor` selects `cursor-agent`, never the Cursor GUI. Native help,
 version and noninteractive modes run without capture credentials. Modes that
 cannot safely use an adapter retain native behavior rather than silently changing
@@ -477,20 +479,44 @@ their configuration: examples include Codex custom remote/profile/local-only
 startup options and Claude file-based settings. Such launches can remain
 recognition-only.
 
+OpenCode uses its native TUI plugin API and the same shared MCP, without replacing
+global/project configuration or its native interface. Headless/server, external
+attach and disabled-plugin modes remain native, unmanaged launches. Explicit TUI
+configuration retains literal relative plugin, sound and file-reference origins;
+runtime-dependent resource origins that cannot safely be relocated leave the
+launch unchanged, with a diagnostic. OpenCode retains its own plugin dependency
+installation policy, including any cold-start SDK installation.
+
+Pi uses its native extension API and built-in MCP with default codemode exposure
+(integration targets Pi 1.5.2). Native configuration and same-name MCP server
+precedence remain unchanged. Its own terminal API supplies OSC 7501 status and
+titles; `PI_PROGRAM_STATUS` retains native behavior. Headless/protocol, utility,
+ephemeral-session and disabled-MCP/extension modes remain unmanaged. Inbox wakes
+use native custom-message steering, without replacing the user's unsent draft.
+
 The sidebar distinguishes recognized, managed-unbound, bound and capture-error
 states without replacing user pane names. Semantic status is a separate OSC 7501
-fact: `.` idle, `~` working, `+` done, `?` blocked, `!` error. Ordinary programs
-never acquire harness badges merely by setting a title. Backgrounding a job hides
+or authenticated native fact: `.` idle, `~` working, `+` done, `?` blocked, `!` error.
+Ordinary programs never acquire harness badges merely by setting a title. Backgrounding a job hides
 its foreground identity; resuming it can
 restore the same live binding. Returning to the shell or replacing/exiting a
 launch clears stale facts.
 
-Capture grants are private, launch-scoped and not persisted. Only authenticated
-native conversation IDs and their working directories become recovery metadata.
+OpenCode reports native typed session/permission/question facts through a
+process-authenticated backend outlet rather than writing behind its renderer.
+The observation is volatile and scoped to the exact binding generation;
+disconnect, replacement or revocation withdraws it without changing pane titles.
+
+Capture grants are private and launch-scoped; recovery never stores them. Only
+authenticated native conversation IDs and their working directories become
+recovery metadata. OpenCode and Pi's temporary plugin/MCP packages have owner-only
+roots (0700) and files (0600); capture bearer credentials are not placed in the
+native process's environment.
+
 Process recognition and foreground directories are sampled off the input/render
-path; OSC summaries are pushed even for panes with no active view. Linux managed
-capture requires kernel peer-PIDFD support and fails closed when unavailable.
-macOS capture is not runtime-verified.
+path; semantic summaries are pushed even for panes with no active view. Linux
+managed capture requires kernel peer-PIDFD support and fails closed when
+unavailable. macOS capture is not runtime-verified.
 
 Wrappers depend on their PATH entry surviving shell/direnv changes; they do not
 rewrite those environments to force interception. Explicit `bkpr run` remains
@@ -518,8 +544,8 @@ configuration**. It does not save or replay old commands, model/provider/profile
 flags, approvals or sandbox settings. The harness may restore its own session
 state; incompatible or missing native state remains a native refusal. Bkpr
 never switches provider, forks, retries or starts a fresh conversation as a
-fallback. Claude/Omp use native `--resume`, Codex uses `resume`, and Antigravity
-uses `--conversation`; their normal native approval requirements still apply.
+fallback. Claude/Omp use native `--resume`, Codex uses `resume`, OpenCode/Pi use
+`--session`, and Antigravity uses `--conversation`; normal native approvals apply.
 
 The result reports `pending_native_binding`, not proof that the conversation has
 loaded. A successful authenticated native bind transfers the saved descriptor
@@ -651,16 +677,22 @@ outcome separately. Compatible text and structured MCP representations remain.
 
 Claude marks only send/read/ack tools `anthropic/alwaysLoad`; other tools remain
 searchable through the native client's tool mechanism. No persistent settings
-change. Body-free first-prompt facts come from supported Claude, Omp and Codex
-events; AGY is unknown. Submission is not model acceptance. Semantic status and
-its change timestamp still come only from the selected OSC 7501 record.
+change. Body-free first-prompt facts come from supported Claude, Omp, Codex and
+OpenCode hooks; AGY is unknown. The first observation belongs to the live launch,
+not each conversation selection; absence means unknown. OpenCode observes native
+submission before persistence. Submission is neither durable queue acceptance nor
+model acceptance. Semantic status and its change timestamp remain independent.
 
 Omp offers native step-boundary asides, Claude uses tool-boundary context and idle
-`asyncRewake`, Codex queues for a future turn on its exact selected thread, and
-Antigravity uses native `SendAgentMessage`. None types peer messages into a PTY.
+`asyncRewake`, Codex queues for a future turn on its exact selected thread,
+OpenCode submits through its TUI's native session API, and Antigravity uses native
+`SendAgentMessage`. None types peer messages into a PTY.
 Registration and native binding do not establish receiver readiness: an actual
 subscription is required. An API that cannot confirm acceptance produces an
 `unknown` receipt rather than a synthetic success; it is not blindly replayed.
+OpenCode's asynchronous HTTP 204 response does not establish durable admission:
+its native wake receipt is `unknown`, even when a later inbox read and processed
+acknowledgement independently demonstrate processing.
 
 Agent receipts and unacknowledged bodies are stored privately below the daemon's
 state root. Unacknowledged bodies are retained for seven days after the first

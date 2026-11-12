@@ -26,6 +26,8 @@ pub enum HarnessKind {
     Cline,
     /// Goose coding agent.
     Goose,
+    /// Pi coding agent.
+    Pi,
 }
 impl HarnessKind {
     /// Stable lowercase identifier used in configuration and launch arguments.
@@ -41,6 +43,7 @@ impl HarnessKind {
             Self::Aider => "aider",
             Self::Cline => "cline",
             Self::Goose => "goose",
+            Self::Pi => "pi",
         }
     }
     /// Human-facing harness label.
@@ -56,6 +59,7 @@ impl HarnessKind {
             Self::Aider => "Aider",
             Self::Cline => "Cline",
             Self::Goose => "Goose",
+            Self::Pi => "Pi",
         }
     }
     /// Recognize an executable basename, including supported aliases and Nix wrappers.
@@ -76,12 +80,16 @@ impl HarnessKind {
             "aider" => Some(Self::Aider),
             "cline" | ".cline" => Some(Self::Cline),
             "goose" => Some(Self::Goose),
+            "pi" => Some(Self::Pi),
             _ => None,
         }
     }
     /// Whether this family supports Bkpr-managed launch and capture integration.
     pub fn is_managed(self) -> bool {
-        matches!(self, Self::Claude | Self::Codex | Self::Omp | Self::Agy)
+        matches!(
+            self,
+            Self::Claude | Self::Codex | Self::Omp | Self::Agy | Self::Opencode | Self::Pi
+        )
     }
 }
 /// Native integration that authenticated a conversation binding.
@@ -100,6 +108,10 @@ pub enum ConversationSource {
     CodexFork,
     /// Antigravity's MCP conversation handshake.
     AgyMcp,
+    /// OpenCode's launch-local native plugin.
+    OpencodePlugin,
+    /// Pi's launch-local native extension.
+    PiExtension,
 }
 impl ConversationSource {
     /// Harness family permitted to report this source.
@@ -109,6 +121,8 @@ impl ConversationSource {
             Self::OmpExtension => HarnessKind::Omp,
             Self::CodexStart | Self::CodexResume | Self::CodexFork => HarnessKind::Codex,
             Self::AgyMcp => HarnessKind::Agy,
+            Self::OpencodePlugin => HarnessKind::Opencode,
+            Self::PiExtension => HarnessKind::Pi,
         }
     }
 }
@@ -182,7 +196,7 @@ impl std::fmt::Debug for CaptureGrant {
             .finish()
     }
 }
-/// Authenticated native capture updates; these do not report semantic harness status.
+/// Authenticated launch facts and volatile native semantic-status updates.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CaptureEvent {
@@ -200,6 +214,26 @@ pub enum CaptureEvent {
         /// Integration matching the current conversation binding.
         source: ConversationSource,
     },
+    /// Enroll the authenticated originating process for the current native binding.
+    /// Returns its frozen generation; enrollment alone publishes no status.
+    StatusEnroll {
+        /// Exact current native conversation ID.
+        conversation_id: String,
+        /// Integration matching the current binding and harness.
+        source: ConversationSource,
+    },
+    /// Publish a volatile status using the originating process's enrolled authority.
+    /// Acceptance is not durable storage, receiver readiness or a terminal write.
+    StatusReport {
+        /// Exact native conversation ID captured at enrollment.
+        conversation_id: String,
+        /// Integration captured at enrollment.
+        source: ConversationSource,
+        /// Frozen binding generation returned by enrollment.
+        generation: u64,
+        /// Minimal semantic state; application and record identity are backend-owned.
+        status: NativeStatus,
+    },
     /// Publish a capture diagnostic without establishing a conversation binding.
     Error {
         /// Nonblank safe diagnostic, at most 2048 UTF-8 bytes without controls.
@@ -207,4 +241,78 @@ pub enum CaptureEvent {
     },
     /// Revoke this launch's capture and control authority without terminating its pane.
     End,
+}
+
+/// Minimal semantic state accepted from an authenticated native integration.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeStatusState {
+    /// Waiting without active work.
+    Idle,
+    /// Performing work.
+    Working,
+    /// Completed the current work.
+    Done,
+    /// Waiting for user action.
+    Blocked,
+    /// Failed the current work.
+    Error,
+    /// Remove the native observation and restore independent OSC status precedence.
+    Clear,
+}
+impl NativeStatusState {
+    /// Stable public semantic state identifier.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Done => "done",
+            Self::Blocked => "blocked",
+            Self::Error => "error",
+            Self::Clear => "clear",
+        }
+    }
+}
+
+/// User action needed by a blocked native integration.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeStatusKind {
+    /// A permission decision is required.
+    Permission,
+    /// An answer is required.
+    Question,
+    /// Authentication is required.
+    Auth,
+}
+impl NativeStatusKind {
+    /// Stable public blocked-kind identifier.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Permission => "permission",
+            Self::Question => "question",
+            Self::Auth => "auth",
+        }
+    }
+}
+
+/// Bounded native status payload, without caller-supplied application or record IDs.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NativeStatus {
+    /// Semantic activity or an explicit removal of this native observation.
+    pub state: NativeStatusState,
+    /// Optional action classification, valid only for a blocked state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<NativeStatusKind>,
+}
+impl NativeStatus {
+    /// Reject action classifications on nonblocked states.
+    pub fn validate(self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.kind.is_none() || self.state == NativeStatusState::Blocked,
+            "native status kind requires blocked state"
+        );
+        Ok(())
+    }
 }

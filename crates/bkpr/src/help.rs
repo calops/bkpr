@@ -124,7 +124,7 @@ fn scoped(command: Command, scope: &str) -> Command {
         ("context", _) => command.after_help("Inside a pane, uses verified execution membership, not UI focus.\nOutside a pane, select --session and --pane. Does not start a daemon."),
         ("api", "call") => command.after_help("Managed agents default to their live workspace. Otherwise select a session.\nText input never adds Enter. Acceptance does not prove application consumption.\nIf a mutation's outcome is unknown, inspect state before acting again.\n\nDiscover arguments: bkpr api schema OPERATION"),
         ("remote", "remote") => command.after_help("Headless access only; for the terminal UI use bkpr -r HOST -s NAME.\nNever installs, starts or restarts a remote session.\n\nExample: bkpr remote -r devbox -s work inspect"),
-        ("run", _) => command.after_help("Harnesses: claude, codex, omp, agy, opencode, cursor, copilot,\n           aider, cline, goose\n\nArguments after HARNESS belong to the harness, including --help.\nExample: bkpr run omp -- --help"),
+        ("run", _) => command.after_help("Harnesses: claude, codex, omp, agy, opencode, cursor, copilot,\n           aider, cline, goose, pi\n\nArguments after HARNESS belong to the harness, including --help.\nExample: bkpr run omp -- --help"),
         ("install", _) => command.after_help("Explicit installation only; normal launches do not change user settings."),
         _ => command,
     }

@@ -94,7 +94,7 @@ Use terminal-default colors and confirmed per-client capabilities, not a fixed t
 
 ## Product facts and authority
 
-- Harness semantic status comes from OSC 7501, not titles, output, progress or process presence. Title/CWD/process observations and notification readiness are separate facts.
+- Harness semantic status comes from OSC 7501 or the authenticated native status outlet; OpenCode is currently the only integration using the outlet. Native status is volatile and bound to the launch, exact conversation/binding generation, originating OS process and retained connection. Revocation, replacement and EOF withdraw only that enrollment's observation. Never infer semantic status from titles, output, progress or process presence. Title/CWD/process observations and notification readiness remain separate facts.
 - Input, sizing, clipboard and control permissions are distinct. Latest eligible visible attachment owns size unless pinned; input-read-only isn't itself a sizing policy. Unknown ownership/context fails closed.
 - Clipboard transport belongs to the native backend/client boundary. Preserve exact MIME bytes and framing. Replies never become keyboard input. Grants bind to their original pane, client, selection and offer; expiry, malformed transfers or disconnect never fabricate contents.
 - Agent identities are authenticated and launch-scoped. Discovery, registration, conversation binding, subscriber readiness, durable acceptance, wake, read and processed acknowledgement are distinct. Prefer native steering where supported; never type peer delivery into PTYs or blindly replay ambiguous input/wakes.

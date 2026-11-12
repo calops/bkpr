@@ -2,8 +2,8 @@
 // Root tables are selected by the authenticated fixed frame kind.
 namespace native_wire;
 
-enum HarnessKind : ubyte { Claude, Codex, Omp, Agy, Opencode, Cursor, Copilot, Aider, Cline, Goose }
-enum ConversationSource : ubyte { ClaudeHook, OmpExtension, CodexStart, CodexResume, CodexFork, AgyMcp }
+enum HarnessKind : ubyte { Claude, Codex, Omp, Agy, Opencode, Cursor, Copilot, Aider, Cline, Goose, Pi }
+enum ConversationSource : ubyte { ClaudeHook, OmpExtension, CodexStart, CodexResume, CodexFork, AgyMcp, OpencodePlugin, PiExtension }
 enum AgentScope : ubyte { Workspace, Session, Repository, All }
 enum AgentReceiverMode : ubyte { ActiveTurn, FutureTurn }
 enum AgentDelivery : ubyte { Notify, Quiet }
@@ -17,6 +17,8 @@ enum MouseAction : ubyte { Press, Release, Motion }
 enum SelectionAction : ubyte { Press, Drag, Release, Clear, Tick }
 enum RequestOutcome : ubyte { NotDispatched, Unknown }
 enum ForgeProvider : ubyte { Github }
+enum NativeStatusState : ubyte { Idle, Working, Done, Blocked, Error, Clear }
+enum NativeStatusKind : ubyte { None, Permission, Question, Auth }
 struct Rgb { r:ubyte; g:ubyte; b:ubyte; }
 table Size {
   cols:ushort;
@@ -386,7 +388,18 @@ table CaptureEventPromptSubmitted {
   conversation_id:string (required);
   source:ConversationSource;
 }
-union CaptureEvent { CaptureEventBind, CaptureEventError, CaptureEventEnd, CaptureEventPromptSubmitted }
+table CaptureEventStatusEnroll {
+  conversation_id:string (required);
+  source:ConversationSource;
+}
+table CaptureEventStatusReport {
+  conversation_id:string (required);
+  source:ConversationSource;
+  generation:ulong;
+  state:NativeStatusState;
+  kind:NativeStatusKind;
+}
+union CaptureEvent { CaptureEventBind, CaptureEventError, CaptureEventEnd, CaptureEventPromptSubmitted, CaptureEventStatusEnroll, CaptureEventStatusReport }
 table AgentRequestWhoami {
   detail:bool;
 }

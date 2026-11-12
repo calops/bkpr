@@ -307,11 +307,16 @@ pub(super) fn cli(arguments: Vec<std::ffi::OsString>) -> Result<i32> {
     Ok(0)
 }
 
-/// A persistent native receiver helper avoids a process spawn per idle poll.
+/// Stream metadata-only notifications for one registered native conversation.
 pub(super) fn subscribe(arguments: Vec<std::ffi::OsString>) -> Result<i32> {
-    if arguments.len() != 1 {
-        bail!("usage: bkpr capture agent-subscribe SESSION_ID");
-    }
+    let mode = match arguments.as_slice() {
+        [_] => "active_turn",
+        [_, flag, mode] if flag == "--mode" && mode == "future_turn" => "future_turn",
+        [_, flag, mode] if flag == "--mode" && mode == "active_turn" => "active_turn",
+        _ => {
+            bail!("usage: bkpr capture agent-subscribe SESSION_ID [--mode active_turn|future_turn]")
+        }
+    };
     let session = arguments[0]
         .to_str()
         .context("native session ID must be UTF-8")?;
@@ -319,7 +324,7 @@ pub(super) fn subscribe(arguments: Vec<std::ffi::OsString>) -> Result<i32> {
     let capture = Capture::from_environment()?;
     let receiver = call_request(
         &capture,
-        json!({"method":"receiver_register","session_id":session,"mode":"active_turn","pid":0}),
+        json!({"method":"receiver_register","session_id":session,"mode":mode,"pid":0}),
     )?;
     let id = receiver["receiver_id"]
         .as_str()

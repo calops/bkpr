@@ -46,7 +46,7 @@ impl FrameBuffers {
     }
 }
 impl BufferReservation<'_> {
-    fn decode(&mut self, bytes: &[u8]) -> Result<Request> {
+    pub(super) fn decode(&mut self, bytes: &[u8]) -> Result<Request> {
         wire::decode_request_charged(bytes, &mut |owned| {
             // Charge before each decoder reserve/copy. The lock covers only an
             // integer update, never parsing, allocation, network I/O or dispatch.

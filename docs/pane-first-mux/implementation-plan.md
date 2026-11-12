@@ -716,3 +716,101 @@ Run coordinated checks after related slices land: native workspace tests, all-ta
 Use private HOME/XDG and sockets, owned process birth identities, fake clocks where useful, and actual maintained harness TUIs against isolated fake local providers. Never call real providers, change user profiles, auto-grant harness approvals or operate on live sessions for fixtures. Keep Linux process helpers/tests platform-gated. Retain useful versions, frames, protocol bytes, physical screenshots and receipts under this worktree's local `target/smoke/`, with exact cleanup.
 
 Acceptance is tied to implemented capability: process/view independence, permission and generation boundaries, terminal/device fidelity, resource limits, authoritative metadata, genuine agent binding/delivery, recovery and remote trust. `main` and the fork supply evidence and starting code; they do not dictate the new design or an unchanged regression suite.
+
+## Native harness adapter extensions
+
+### OpenCode
+
+The native integration uses OpenCode's own TUI and server plugin APIs, not a
+replacement interface or ACP. Native API source was checked at
+[`v1.19.5`, `810c0eba`](https://github.com/anomalyco/opencode/tree/810c0eba1a7348036f8bdf61e6632d0c36c6876c):
+`packages/plugin/src/index.ts`, `packages/tui/src/component/prompt/index.tsx`,
+`packages/opencode/src/session/prompt.ts`, `packages/opencode/src/effect/runner.ts`
+and `packages/opencode/src/config/{tui,variable}.ts`.
+
+- Passive TUI slots observe only the selected, typed root session. Child/home
+  routes withdraw status and receiver eligibility without erasing the last
+  authenticated root/recovery identity. Binding changes remain single-flight:
+  the old bind's outcome is known before another is dispatched.
+- The server's genuine `chat.message` hook reports the first body-free native
+  submission in a **launch**, before native persistence. A→B→A retains that
+  launch-wide observation; a fresh launch starts unknown despite saved history.
+- Native peer pointers use the same `client.session` engine as the actual TUI.
+  Its separate `client.v2.session` engine omitted the TUI's MCP and instruction
+  context in genuine native requests and is not a substitute. Busy insertion
+  preserves the existing native runner and the user's unsubmitted draft.
+  `promptAsync` HTTP 204 is not durable admission: report `unknown`, never replay.
+- One shared MCP serves the same catalog. Native plugins and MCP bootstrap read
+  a launch-local credential file rather than placing bearer credentials in
+  OpenCode's environment. Shared asset helpers create directories (0700) and
+  files (0600) from the outset; no persistent integration installation is performed.
+- Global/project settings remain native. Explicit TUI JSONC overlays retain
+  nested/top-level precedence and literal relative resource origins. Unsafe
+  runtime-dependent relocation leaves the native launch unchanged and unmanaged
+  with a diagnostic, rather than guessing wrapper-provided environment values.
+  Existing Omp callback plumbing is shared, not duplicated.
+
+The only new Rust dependency is
+[`jsonc-parser` 0.34.0](https://crates.io/crates/jsonc-parser/0.34.0), maintained by
+dprint, MIT, published 2026-09-27; its serde integration handles native JSONC
+without a custom comment stripper or optional CST machinery. Plugin runtime
+imports are Node builtins and shared Bkpr glue. OpenCode still applies its own
+SDK dependency-installation policy when loading server plugins; fixtures bound
+offline npm retries without changing production flags or seeding approvals/caches.
+
+User-approved semantic-status outlet: OpenCode alone currently uses a generic,
+typed, retained backend connection instead of bypassing its private renderer.
+Enrollment authenticates OS identity/birth and pane ancestry once; reports bind
+the exact launch, native conversation, binding generation and revocable process
+leases. Reports perform no process scans, filesystem/storage I/O or full-scene
+clones. ACK means volatile publication, not durable storage or input admission.
+EOF/replacement/revocation clears only that enrollment. Existing integrations
+keep OSC 7501. The native protocol family is 9 and requires matching executables.
+
+Actual 1.19.5 and installed 1.19.0 TUI/MCP/delivery/recovery evidence is in the
+[runtime report](engine-proof.md#opencode-native-integration).
+
+### Pi
+
+The native integration targets
+[`v1.5.2`, `b4afdddf`](https://github.com/earendil-works/pi/tree/b4afdddf44e059c67ccf5097e5317d913521b470):
+`packages/coding-agent/src/core/extensions/types.ts`,
+`packages/coding-agent/src/core/agent-session.ts`,
+`packages/coding-agent/src/core/session-manager.ts`,
+`packages/coding-agent/src/cli/setup.ts`,
+`packages/coding-agent/src/modes/interactive/program-status-reporter.ts` and
+`packages/tui/src/{terminal,program-status}.ts`.
+
+- A private native extension awaits exact session-manager binding in
+  `session_start`, before Pi accepts input. New/resume/fork/reload retire the old
+  receiver and bind the replacement runtime. Tree navigation retains its native
+  session identity. A launch-wide ordering barrier prevents replaying an
+  ambiguous bind or first-prompt observation across extension reloads.
+- Pi's own `registerMcpServer` supplies the shared Bkpr MCP through native default
+  codemode. Native file configuration keeps its same-name precedence. No custom
+  MCP client, SDK implementation or persistent configuration is introduced.
+- `before_agent_start` records only actual user submissions, without prompt
+  bodies. Extension-authored inbox messages do not create that observation.
+  Native `sendMessage` steering preserves the editor draft, including while busy.
+  Its void return cannot prove admission: wake outcomes remain `unknown`, without
+  replay, independently of later inbox reads and processed acknowledgements.
+- Native `ProgramStatusReporter` already owns OSC 7501 lifecycle reporting.
+  Bkpr neither writes behind Pi's renderer nor uses the OpenCode status outlet;
+  native status negotiation and `PI_PROGRAM_STATUS` remain authoritative.
+- Capture credentials stay in owner-private launch files, not Pi's environment.
+  Native extension and appended guidance flags precede the original arguments,
+  preserving the user's terminator and malformed-option behavior. Noninteractive,
+  protocol, utility, disabled-MCP/extension and ephemeral-session modes remain
+  unmanaged native launches.
+- Native recognition supports the maintained npm package entrypoints and its
+  `process.title` rewrite to a sole `pi` argv value, only on a verified JS runtime.
+  This is process observation, not terminal-title or semantic-status inference;
+  process birth, foreground and ancestry authority checks remain unchanged.
+- Recovery uses the exact authenticated native ID with current native
+  `--session` configuration, never stored credentials, old command arguments,
+  implicit forks or a fresh-conversation fallback.
+
+Pi needs no new Rust or JavaScript dependency. Its maintained native extension,
+MCP, codemode and terminal APIs cover the integration; shared Bkpr callback and
+private-asset helpers provide the launch-specific glue.
+

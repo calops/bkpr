@@ -61,6 +61,9 @@ impl ControlLease {
     pub(crate) fn revoke(&self) {
         self.0.active.store(false, Ordering::Release);
     }
+    pub(crate) fn same_authority(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
     /// Like the native client-owner check, this polls retained kernel lifetime
     /// descriptors without walking procfs, ancestry, or any registry state.
     pub(crate) fn ensure_active(&self) -> Result<()> {

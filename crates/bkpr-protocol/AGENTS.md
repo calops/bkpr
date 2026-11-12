@@ -14,7 +14,7 @@ Shared domain types, pure validation, control schemas and bounded codecs. Every 
 
 ## Contracts and pitfalls
 
-- `PROTOCOL_VERSION` is the native family (currently 8); `remote_wire::VERSION` is independent (currently 1). Package versions do not establish compatibility. Preserve schema ordinals, enum tags, required-capability rejection, presence checks and aggregate expansion budgets: aliased offsets can expand beyond wire size.
+- `PROTOCOL_VERSION` is the native family (currently 9); `remote_wire::VERSION` is independent (currently 1). Package versions do not establish compatibility. Preserve schema ordinals, enum tags, required-capability rejection, presence checks and aggregate expansion budgets: aliased offsets can expand beyond wire size.
 - The three `.fbs` files own generated bindings. Use `planus-cli =1.3.0`: `planus rust --format false -o OUTPUT SCHEMA`. Normal builds need only the runtime. Never hand-edit/format generated Rust; fix generator-owned docs at the schema/generator boundary.
 - Codec output borrows reusable builder storage. Queued writes need owned framing. Owned response decoding retains scene byte ranges through `bytes::Bytes`; converting scenes to JSON or cloning canonical frames is not the hot receive path.
 - Scene revisions, matching baselines and image `(id, generation)` receipts are distinct prerequisites. Do not advance consumer cursors/resources on a rejected update. Cell widths and UTF-8 boundaries are engine facts, not an invitation to re-segment Unicode.

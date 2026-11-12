@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "control_tests.rs"]
 mod control_tests;
+#[path = "native_status_tests.rs"]
+mod native_status_tests;
 fn seed_launch(fixture: &Fixture) -> (String, CaptureGrant, Peer) {
     seed_launch_command(
         fixture,

@@ -331,6 +331,7 @@ impl Registry {
             HarnessKind::Claude | HarnessKind::Omp => "--resume",
             HarnessKind::Codex => "resume",
             HarnessKind::Agy => "--conversation",
+            HarnessKind::Opencode | HarnessKind::Pi => "--session",
             _ => bail!("harness does not support managed recovery"),
         };
         Ok(PaneSpawnSpec {
