@@ -42,8 +42,9 @@ just build
 "$CARGO_TARGET_DIR/debug/bkpr" --help
 ```
 
-There is only the default devshell. No separate sibling-runtime shell or build
-is needed. `just build` validates and reuses the prepared engine, preparing it
+The default devshell stays lean; the optional harness-testing shell below adds
+native coding-agent CLIs. No separate sibling-runtime shell or build is needed.
+`just build` validates and reuses the prepared engine, preparing it
 only when missing or invalid, then builds both executables with
 `cargo build --locked --workspace`. `just run --help` builds and runs `bkpr`;
 `just test` uses the same validated engine reuse.
@@ -84,6 +85,58 @@ local clipboard-offer patch and builds the pinned static engine. Initial
 preparation can require network access, including Zig build dependencies. The
 Cargo build checks engine provenance and prepared-file hashes; an arbitrary
 system Ghostty installation is not a substitute.
+
+### Harness-testing shell
+
+Use the opt-in shell to add **all eleven recognized harness CLIs** to the
+default development tools, including OpenCode 2 under its native `opencode`
+command:
+
+```sh
+nix develop .#harnesses
+```
+
+This shell is available on x86-64 Linux, ARM64 Linux and ARM64 macOS, not
+Intel macOS or Windows. It provides terminal CLIs, not IDE substitutes.
+Entering a shell installs no login credentials, changes no persistent harness
+settings and starts no agent or model request. Native authentication and
+provider requirements still apply when a CLI is launched. Claude, Antigravity,
+Cursor Agent and Copilot are proprietary; their vendor licenses still apply.
+The distribution labels those licenses unfree but marks them evaluable without
+Nix's `allowUnfree`; entering this shell does not change their license terms.
+There is no global `allowUnfree` change to Bkpr's package set.
+
+| Harness | Command | Pinned version |
+| --- | --- | --- |
+| Claude Code | `claude` | 2.1.322 |
+| Codex | `codex` | 0.167.2 |
+| Omp | `omp` | 18.19.0 |
+| OpenCode | `opencode` | 2.2.7 |
+| Pi | `pi` | 1.5.2 |
+| Antigravity | `agy` | 1.5.6 |
+| Cursor Agent | `cursor-agent` | 2026.11.11-b912975 |
+| GitHub Copilot | `copilot` | 1.0.109 |
+| Aider | `aider` | 0.86.1 |
+| Cline | `cline` | 3.0.74 |
+| Goose | `goose` | 1.55.0 |
+
+Aider comes from this flake's pinned nixpkgs. The other CLIs come from
+[`numtide/llm-agents.nix` at `90011236663d4116738fc2d63de6ab64523387b6`](https://github.com/numtide/llm-agents.nix/tree/90011236663d4116738fc2d63de6ab64523387b6),
+with its own locked dependencies preserved rather than following Bkpr's nixpkgs.
+The flake offers that distribution's signed `https://cache.numtide.com` binary
+cache alongside Bkpr's cache; Nix may ask whether to trust these flake settings.
+This uses maintained CLI packages and their pinned upstream artifacts; it does
+not download moving `latest` releases on shell entry. The shell adds only a
+canonical-name symlink to that distribution's `opencode2` executable; it does not
+include OpenCode 1.
+
+Inside a Bkpr pane, use explicit managed launches such as `bkpr run claude`
+or `bkpr run pi` when testing the supported adapters. `nix develop` can place
+native executables ahead of Bkpr's private PATH wrappers, so a bare command is
+not proof of managed capture. OpenCode 2 currently runs natively, including
+through `bkpr run opencode`, without injected Bkpr MCP/capture configuration.
+Its shared-service integration is being designed; standalone mode is not forced.
+See [Harness capture](#harness-capture) for the supported native behavior.
 
 ## Native CLI
 
@@ -447,7 +500,7 @@ bkpr run omp -- --help
 ```
 
 `bkpr run HARNESS [--] ARGS...` preserves native arguments and exit behavior.
-Claude, Codex, Omp, OpenCode, Pi and Antigravity have managed conversation adapters:
+Claude, Codex, Omp, Pi and Antigravity have managed conversation adapters:
 
 | Harness | Native binding mechanism |
 | --- | --- |
@@ -455,7 +508,6 @@ Claude, Codex, Omp, OpenCode, Pi and Antigravity have managed conversation adapt
 | Codex | A private app-server transport binds the response to the TUI's own start, resume, fork or picker selection, before the first prompt. |
 | Omp | A launch-local extension captures the native session manager ID and session transitions. |
 | Antigravity | Its MCP request metadata supplies the root conversation ID. Registration alone is not binding or readiness. |
-| OpenCode | Launch-local native plugins bind the selected root session; child sessions never replace it. |
 | Pi | A launch-local extension awaits the native session-manager ID before input and follows native session replacement. |
 
 Antigravity requires explicit installation on the account where it runs:
@@ -471,7 +523,7 @@ The MCP adapter exposes authenticated context and peer communication. Native
 receiver bootstrap requires Antigravity's own command approval; Bkpr never
 approves it automatically.
 
-Cursor Agent, Copilot, Aider, Cline and Goose are recognition-only.
+OpenCode, Cursor Agent, Copilot, Aider, Cline and Goose are recognition-only.
 `bkpr run cursor` selects `cursor-agent`, never the Cursor GUI. Native help,
 version and noninteractive modes run without capture credentials. Modes that
 cannot safely use an adapter retain native behavior rather than silently changing
@@ -479,13 +531,14 @@ their configuration: examples include Codex custom remote/profile/local-only
 startup options and Claude file-based settings. Such launches can remain
 recognition-only.
 
-OpenCode uses its native TUI plugin API and the same shared MCP, without replacing
-global/project configuration or its native interface. Headless/server, external
-attach and disabled-plugin modes remain native, unmanaged launches. Explicit TUI
-configuration retains literal relative plugin, sound and file-reference origins;
-runtime-dependent resource origins that cannot safely be relocated leave the
-launch unchanged, with a diagnostic. OpenCode retains its own plugin dependency
-installation policy, including any cold-start SDK installation.
+OpenCode 1's adapter has been retired. OpenCode 2 launches keep native
+configuration and default connection mode without Bkpr-managed MCP/capture.
+Existing pane process ownership still applies: a shared service first started
+inside a pane may be terminated with that pane, unlike a preexisting external
+service. Saved OpenCode recovery descriptors remain readable but unavailable for
+managed resume; Bkpr never substitutes a fresh conversation. The
+[shared-service assessment](docs/pane-first-mux/implementation-plan.md#opencode-2-shared-service-integration-assessment)
+records the remaining identity, routing and process-lifecycle decisions.
 
 Pi uses its native extension API and built-in MCP with default codemode exposure
 (integration targets Pi 1.5.2). Native configuration and same-name MCP server
@@ -502,16 +555,11 @@ its foreground identity; resuming it can
 restore the same live binding. Returning to the shell or replacing/exiting a
 launch clears stale facts.
 
-OpenCode reports native typed session/permission/question facts through a
-process-authenticated backend outlet rather than writing behind its renderer.
-The observation is volatile and scoped to the exact binding generation;
-disconnect, replacement or revocation withdraws it without changing pane titles.
-
 Capture grants are private and launch-scoped; recovery never stores them. Only
 authenticated native conversation IDs and their working directories become
-recovery metadata. OpenCode and Pi's temporary plugin/MCP packages have owner-only
-roots (0700) and files (0600); capture bearer credentials are not placed in the
-native process's environment.
+recovery metadata. Pi's temporary extension/MCP package has an owner-only root
+(0700) and files (0600); capture bearer credentials are not placed in the native
+process's environment.
 
 Process recognition and foreground directories are sampled off the input/render
 path; semantic summaries are pushed even for panes with no active view. Linux
@@ -544,7 +592,7 @@ configuration**. It does not save or replay old commands, model/provider/profile
 flags, approvals or sandbox settings. The harness may restore its own session
 state; incompatible or missing native state remains a native refusal. Bkpr
 never switches provider, forks, retries or starts a fresh conversation as a
-fallback. Claude/Omp use native `--resume`, Codex uses `resume`, OpenCode/Pi use
+fallback. Claude/Omp use native `--resume`, Codex uses `resume`, Pi uses
 `--session`, and Antigravity uses `--conversation`; normal native approvals apply.
 
 The result reports `pending_native_binding`, not proof that the conversation has
@@ -678,20 +726,20 @@ outcome separately. Compatible text and structured MCP representations remain.
 Claude marks only send/read/ack tools `anthropic/alwaysLoad`; other tools remain
 searchable through the native client's tool mechanism. No persistent settings
 change. Body-free first-prompt facts come from supported Claude, Omp, Codex and
-OpenCode hooks; AGY is unknown. The first observation belongs to the live launch,
-not each conversation selection; absence means unknown. OpenCode observes native
-submission before persistence. Submission is neither durable queue acceptance nor
-model acceptance. Semantic status and its change timestamp remain independent.
+Pi hooks; AGY is unknown. The first observation belongs to the live launch,
+not each conversation selection; absence means unknown. Submission is neither
+durable queue acceptance nor model acceptance. Semantic status and its change
+timestamp remain independent.
 
 Omp offers native step-boundary asides, Claude uses tool-boundary context and idle
 `asyncRewake`, Codex queues for a future turn on its exact selected thread,
-OpenCode submits through its TUI's native session API, and Antigravity uses native
+Pi inserts native custom-message steering, and Antigravity uses native
 `SendAgentMessage`. None types peer messages into a PTY.
 Registration and native binding do not establish receiver readiness: an actual
 subscription is required. An API that cannot confirm acceptance produces an
 `unknown` receipt rather than a synthetic success; it is not blindly replayed.
-OpenCode's asynchronous HTTP 204 response does not establish durable admission:
-its native wake receipt is `unknown`, even when a later inbox read and processed
+Pi's void steering API does not establish durable admission: its native wake
+receipt remains `unknown`, even when a later inbox read and processed
 acknowledgement independently demonstrate processing.
 
 Agent receipts and unacknowledged bodies are stored privately below the daemon's

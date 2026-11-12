@@ -2,8 +2,14 @@
   description = "bkpr — pane-first native terminal multiplexer";
 
   nixConfig = {
-    extra-substituters = [ "https://bkpr.cachix.org" ];
-    extra-trusted-public-keys = [ "bkpr.cachix.org-1:uAJ+wudjeXgYbimGGreY8LgWfk0j9JaxNBjDxQ0h18w=" ];
+    extra-substituters = [
+      "https://bkpr.cachix.org"
+      "https://cache.numtide.com"
+    ];
+    extra-trusted-public-keys = [
+      "bkpr.cachix.org-1:uAJ+wudjeXgYbimGGreY8LgWfk0j9JaxNBjDxQ0h18w="
+      "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
+    ];
   };
 
   inputs = {
@@ -12,6 +18,8 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Keep the distribution's own dependency pins for binary-cache reuse.
+    llm-agents.url = "github:numtide/llm-agents.nix/90011236663d4116738fc2d63de6ab64523387b6";
   };
 
   outputs =
@@ -19,6 +27,7 @@
       self,
       nixpkgs,
       rust-overlay,
+      llm-agents,
       ...
     }:
     let
@@ -44,7 +53,7 @@
           ./LICENSE
           ./crates
           ./vendor/libghostty-rs
-          ./integration/omp
+          ./integration
         ];
       };
     in
@@ -86,6 +95,25 @@
         system:
         let
           pkgs = pkgsFor system;
+          agents = llm-agents.packages.${system};
+          harnessPackages = [
+            agents.claude-code
+            agents.codex
+            agents.omp
+            agents.pi
+            agents.antigravity-cli
+            agents.cursor-agent
+            agents.copilot-cli
+            pkgs.aider-chat
+            agents.cline
+            agents.goose-cli
+          ];
+          # The distribution names v2's executable opencode2 for coexistence.
+          # Bkpr resolves the native canonical name selected by this shell.
+          opencode2 = pkgs.runCommand "opencode2-canonical-${agents.opencode2.version}" { } ''
+            mkdir -p "$out/bin"
+            ln -s ${agents.opencode2}/bin/opencode2 "$out/bin/opencode"
+          '';
         in
         {
           default = pkgs.mkShell {
@@ -107,6 +135,11 @@
               (pkgs.python3.withPackages (ps: [ ps.pyte ]))
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.xdotool ];
+          };
+          harnesses = pkgs.mkShell {
+            name = "bkpr-harnesses";
+            inputsFrom = [ self.devShells.${system}.default ];
+            packages = harnessPackages ++ [ opencode2 ];
           };
         }
       );

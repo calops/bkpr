@@ -6,7 +6,6 @@ mod claude;
 mod claude_inbox;
 mod codex;
 mod omp;
-mod opencode;
 mod pi;
 mod status;
 
@@ -174,7 +173,6 @@ fn launch(kind: HarnessKind, name: &str, arguments: Vec<OsString>) -> Result<i32
         HarnessKind::Codex => codex::launch(executable, arguments),
         HarnessKind::Omp => omp::launch(executable, arguments),
         HarnessKind::Agy => agy::launch(executable, arguments),
-        HarnessKind::Opencode => opencode::launch(executable, arguments),
         HarnessKind::Pi => pi::launch(executable, arguments),
         _ => passthrough(&executable, arguments),
     }
