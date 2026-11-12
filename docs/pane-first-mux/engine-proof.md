@@ -3094,3 +3094,114 @@ retention/environment boundaries. Accepted raw evidence is retained under
 `target/smoke/agent-costs/`; earlier communication sections above are historical
 checkpoints, not the current default output contract.
 
+
+## OpenCode native integration
+
+Accepted debug pair:
+`target/smoke/harness-integrations/build/compiled-186610832009272/executables/`.
+CLI SHA-256 `f410522f5aab7017a9579a19c2ff108d33b61c1ead44426631bbf503c51cf804`;
+daemon SHA-256 `7de53efcc94d643367154abd7179b3af33e101b1a10864e82ecf24a45beb0236`.
+Native family 9, pinned Ghostty 93967b7, local Cargo artifacts, at most 8 build jobs.
+Public debug/release executable contents and inodes were preserved.
+
+Evidence under `target/smoke/harness-integrations/acceptance/`:
+
+- `run-186797748331067/`: genuine official OpenCode 1.19.5, 25 cases passed.
+- `run-186843447133872/`: genuine installed 1.19.0 ELF, 25 cases passed.
+- `verification-summary.json`, `controllers.tar.gz`: exact versions/hashes and
+  exercised controller sources. Both actual native UIs ran in private
+  HOME/XDG/state/sockets and an offline UID 1000 namespace with only a fake local
+  model. The shared Bkpr MCP and both native plugin surfaces were real.
+
+Both runs cover selected-root binding before prompt, private 0700/0600 authority
+without capture credentials in the native environment, preservation of global
+and project instructions and explicit nested TUI/plugin/sound/file origins,
+actual MCP whoami/discovery/control, native working/done status and OSC title,
+root-versus-child selection, withdrawal and a new receiver process on return.
+Idle and busy peer delivery reaches the same native TUI conversation/tool context
+without changing the unsent draft. Durable send, native wake, inbox read and
+processed acknowledgement remain independent; HTTP 204 stays `unknown` after
+subsequent read/ack. Native help/version and an actual noninteractive run receive
+no managed authority.
+
+Actual restart resumes the saved native ID with a fresh launch/MCP identity and
+no adopted old inbox. Native A→B→A selections retain the launch's first-prompt
+timestamp; the restarted launch starts unknown despite native history, then
+observes a genuine new submission. Restart uses an explicit current shell
+startup command: an intentionally headless daemon executes nothing.
+Complete native screenshots and bounded text include the unchanged draft,
+busy delivery and restored root. All four final owned-process cleanup ledgers
+report zero survivors; no real provider or automatic approval was used.
+
+Native verification rejected a misleading API choice: OpenCode's public v2
+prompt endpoint returned durable receipts but used a different engine with no
+connected Bkpr MCP or user instruction context. The actual TUI uses
+`client.session`; its asynchronous 204 supplies no durable admission receipt.
+First-prompt facts come from the exact native submission hook, never arbitrary
+message upserts, replayed history or compaction. See the
+[source/dependency decisions](implementation-plan.md#opencode).
+
+Protected format, all-target strict Clippy, doctests and workspace compilation
+passed. Host-UID workspace execution at
+`build/checks-184891071050823/` passed 1175 top-level and 2 subprocess tests,
+with 18 ignored fixtures. Bun 1.4.2 checks passed Omp 36 and OpenCode 69 assertions.
+`acceptance/omp-package-184891168074473/` also exercises the actual Omp 18.13.2
+TUI importing the shared launch-local package and binding before first prompt,
+without a model request; it is not a new Omp peer-delivery acceptance claim.
+
+## Pi native integration
+
+Accepted debug pair:
+`target/smoke/harness-integrations/build/compiled-189680095542451/executables/`.
+CLI SHA-256 `303cf64548f0d0fde05f32a553aef6fd02d2f8bf71e78ec4a8a08fda96793159`;
+daemon SHA-256 `9f519f1d688b1a9203790fe14c6588e73f8b90ca6807514ea57c5b8032556042`.
+Native family 9, pinned Ghostty 93967b7, local debug artifacts and at most 8 build
+jobs. Public debug/release executable contents and inodes remained untouched.
+
+Genuine official Pi 1.5.2, source `b4afdddf44e059c67ccf5097e5317d913521b470`,
+passed **30 native cases**. Evidence is under
+`target/smoke/harness-integrations/pi-acceptance/`:
+`run-190326796993343/{result,manifest}.json`, `verification-summary.json` and
+`frozen-artifacts.json`. The complete native bundle retained its adjacent assets.
+Actual Kitty 0.49.2/Xvfb surfaces ran as UID 1000 with private HOME/XDG/state,
+no host home and loopback-only networking. Only the model endpoint was fake;
+Pi's default codemode, shared Bkpr MCP, UI and public extension APIs were real.
+
+Coverage includes exact session binding before prompt, actual MCP
+whoami/discovery/control, global/project context preservation, native OSC title
+and negotiated OSC 7501 status, and the actual sidebar/Finder Pi name and icon.
+A custom peer wake completed genuine inbox read and processed acknowledgement
+**before any recipient human prompt**, without fabricating a first-prompt fact.
+Both idle and busy wakes preserved the actual unsubmitted editor draft.
+Durable send, wake, read and processed acknowledgement were observed separately;
+Pi's void steering API remains `unknown` after successful read/ack and is never
+replayed.
+
+Native fresh/explicit/continue/picker/new/fork/tree paths retain the correct
+identity and launch-wide first-prompt semantics. Help/version, actual print/JSON/
+RPC, ephemeral and disabled-MCP/extension modes remain native and unmanaged;
+explicit user extensions still load under native `--no-extensions`.
+`PI_PROGRAM_STATUS=0` disables semantic status without breaking managed binding.
+Restart loads the exact saved native ID/history with a fresh launch and MCP,
+an empty new inbox and an initially unknown first-prompt fact. A genuine new
+human submission then supplies that fact. Native settings remained byte-preserved.
+
+`native-sidebar-pi.png`, `native-finder-pi.png` and
+`native-restored-exact-root.png` retain physical presentation evidence.
+Both final owned-process ledgers report zero survivors (20 native and 134
+namespace-owned births), using pidfd signals after birth revalidation.
+No real provider, approval bypass, live session or persistent user configuration
+was used. Fixture-only readiness/input corrections are recorded in the summary.
+
+Protected formatting, all-target strict Clippy, doctests and compilation passed
+on the combined OpenCode/Pi source. Host-UID execution at
+`build/checks-189831831779063/` passed **1177 top-level and 2 subprocess tests**,
+with 18 ignored fixtures and zero owned survivors. Pi's isolated Bun 1.4.2 suite
+passed 5 behavior cases/36 assertions (`ts-checks/pi-final.log`).
+The source/dependency decisions are recorded in the
+[implementation plan](implementation-plan.md#pi). An isolated Node 24.20.0
+experiment also records Pi's actual `process.title` argv rewrite in
+`pi-acceptance/node-process-title.json`; kernel observation plus classifier
+boundary tests cover that npm recognition shape, not an additional npm-native
+end-to-end acceptance claim.
+

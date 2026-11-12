@@ -1,39 +1,20 @@
 import type { ExtensionAPI, ExtensionContext } from '@oh-my-pi/pi-coding-agent';
 import { ImageProtocol, isImageProtocolForced, setTerminalImageProtocol } from '@oh-my-pi/pi-tui';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createNativeCallbacks, parseInboxPointer, type InboxPointer, type Json } from '../shared/native.ts';
 
 const MAX_FRAME = 1024 * 1024;
-const MAX_RESPONSE = 8 * 1024 * 1024;
-type Json = Record<string, unknown>;
-type Pointer = { notification_id: string; generation: number; session_id: string; message_count: number; unread_count: number };
 function object(value: unknown): Json {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('expected JSON object');
   return value as Json;
 }
-function pointer(value: unknown): Pointer {
-  const item = object(value);
-  if (typeof item.notification_id !== 'string' || !item.notification_id || item.notification_id.length > 512 ||
-      /[\u0000-\u001f\u007f]/u.test(item.notification_id) ||
-      typeof item.generation !== 'number' || !Number.isSafeInteger(item.generation) || item.generation < 1 ||
-      typeof item.session_id !== 'string' ||
-      typeof item.message_count !== 'number' || !Number.isSafeInteger(item.message_count) || item.message_count < 1 ||
-      typeof item.unread_count !== 'number' || !Number.isSafeInteger(item.unread_count) || item.unread_count < item.message_count) throw new Error('invalid native inbox pointer');
-  return { notification_id: item.notification_id, generation: item.generation, session_id: item.session_id,
-    message_count: item.message_count, unread_count: item.unread_count };
-}
 
 /** Native binding and step-boundary asides; shared tools live in MCP. */
 export default function bkpr(pi: ExtensionAPI): void {
-  const program = process.env.BKPR_CAPTURE_PROGRAM;
-  const managed = process.env.BKPR_CAPTURE_HARNESS === 'omp';
-  if (!managed || !program) return;
+  const native = createNativeCallbacks('omp');
+  if (!native) return;
+  const { program, environment: launchEnvironment, request, fact } = native;
   if (!isImageProtocolForced()) setTerminalImageProtocol(ImageProtocol.Kitty);
-  // Omp re-instantiates extension factories in child sessions. Keep this launch's
-  // capability in this root factory only, not in inherited shell/child env.
-  const launchEnvironment = { ...process.env };
-  for (const key of Object.keys(process.env)) {
-    if (key.startsWith('BKPR_CAPTURE_') || key.startsWith('BKPR_AGENT_')) delete process.env[key];
-  }
   let boundSessionId: string | undefined;
   let warnedSessionId: string | undefined;
   let epoch = 0;
@@ -44,61 +25,6 @@ export default function bkpr(pi: ExtensionAPI): void {
   let promptObserved = false;
   const delivered = new Set<string>(); // bounded below; generations, not bodies.
 
-  const callback = (args: string[], input: string, signal?: AbortSignal): Promise<Json> => {
-    const { promise, resolve, reject } = Promise.withResolvers<Json>();
-    if (signal?.aborted) { reject(new Error('cancelled before dispatch')); return promise; }
-    const child = spawn(program, args, { env: launchEnvironment, stdio: ['pipe', 'pipe', 'pipe'] });
-    const chunks: Buffer[] = [];
-    const errors: Buffer[] = [];
-    let bytes = 0;
-    let errorBytes = 0;
-    let settled = false;
-    const finish = (error?: Error, result?: Json) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', abort);
-      if (error) reject(error); else resolve(result!);
-    };
-    const abort = () => {
-      child.kill('SIGKILL');
-      finish(new Error('native callback cancelled after dispatch; mutation outcome unknown, do not replay'));
-    };
-    const timer = setTimeout(abort, 15000);
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) abort();
-    child.stdin!.on('error', () => {
-      child.kill('SIGKILL');
-      finish(new Error('native callback input interrupted; mutation outcome unknown'));
-    });
-    child.stdin!.end(input);
-    child.stdout!.on('data', (chunk: Buffer) => {
-      bytes += chunk.length;
-      if (bytes > MAX_RESPONSE) { child.kill('SIGKILL'); finish(new Error('native callback response exceeds limit; outcome unknown')); }
-      else chunks.push(chunk);
-    });
-    child.stderr!.on('data', (chunk: Buffer) => {
-      errorBytes += chunk.length;
-      if (errorBytes <= 8192) errors.push(chunk);
-    });
-    child.on('error', error => finish(error));
-    child.on('close', code => {
-      if (settled) return;
-      if (code !== 0) { finish(new Error(Buffer.concat(errors).toString('utf8').trim() || 'native callback failed; outcome unknown')); return; }
-      try {
-        const text = Buffer.concat(chunks).toString('utf8');
-        if (!text.endsWith('\n') || text.trim().includes('\n')) throw new Error('invalid native callback framing');
-        finish(undefined, object(JSON.parse(text)));
-      } catch { finish(new Error('invalid native callback response; mutation outcome unknown, do not replay')); }
-    });
-    return promise;
-  };
-  const request = (request: Json, signal?: AbortSignal): Promise<Json> => {
-    const encoded = JSON.stringify(request);
-    if (Buffer.byteLength(encoded) > MAX_FRAME) return Promise.reject(new Error('native callback request exceeds limit'));
-    return callback(['capture', 'agent', '--stdin'], encoded, signal);
-  };
-
   const stopReceiver = (): void => {
     epoch += 1;
     receiver?.kill('SIGTERM');
@@ -106,7 +32,7 @@ export default function bkpr(pi: ExtensionAPI): void {
     receiverId = undefined;
     delivered.clear();
   };
-  const notice = async (pointer: Pointer, generation: number, id: string, ctx: ExtensionContext): Promise<void> => {
+  const notice = async (pointer: InboxPointer, generation: number, id: string, ctx: ExtensionContext): Promise<void> => {
     if (disposed || generation !== epoch || pointer.session_id !== boundSessionId) return;
     if (ctx.sessionManager.getSessionId() !== boundSessionId) { await bind(ctx); return; }
     const key = `${pointer.notification_id}:${pointer.generation}`;
@@ -153,7 +79,7 @@ export default function bkpr(pi: ExtensionAPI): void {
           if (typeof event.receiver_id === 'string') { receiverId = event.receiver_id; continue; }
           if (!receiverId || !event.notification) throw new Error('notification without receiver handshake');
           const id = receiverId;
-          const message = pointer(event.notification);
+          const message = parseInboxPointer(event.notification);
           delivery = delivery.then(() => notice(message, generation, id, ctx)).catch(error => {
             if (generation === epoch && !disposed) ctx.ui.notify(`Bkpr native notification: ${String(error).slice(0, 512)}`, 'warning');
           });
@@ -169,17 +95,6 @@ export default function bkpr(pi: ExtensionAPI): void {
       ctx.ui.notify(`Bkpr receiver stopped${diagnostic ? `: ${diagnostic.trim()}` : ''}; native wake outcome may be unknown`, 'warning');
     });
   };
-  const nativeFact = (command: 'bind' | 'prompt-submitted', session: string): Promise<void> => {
-    const { promise, resolve, reject } = Promise.withResolvers<void>();
-    const child = spawn(program, ['capture', command, '--source', 'omp_extension', '--session-id', session],
-      { env: launchEnvironment, stdio: ['ignore', 'ignore', 'pipe'] });
-    let error = '';
-    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('native fact callback timed out; outcome unknown')); }, 5000);
-    child.stderr!.on('data', (chunk: Buffer) => { if (error.length < 2048) error += chunk.toString('utf8').slice(0, 2048 - error.length); });
-    child.on('error', failure => { clearTimeout(timer); reject(failure); });
-    child.on('close', code => { clearTimeout(timer); if (code === 0) resolve(); else reject(new Error(error.trim() || 'native fact callback failed')); });
-    return promise;
-  };
   const bindActual = async (ctx: ExtensionContext): Promise<void> => {
     if (ctx.agent.kind !== 'main' || disposed) return;
     const session = ctx.sessionManager.getSessionId();
@@ -188,7 +103,7 @@ export default function bkpr(pi: ExtensionAPI): void {
     boundSessionId = undefined;
     try {
       if (!session || Buffer.byteLength(session) > 256 || /[\u0000-\u001f\u007f]/u.test(session)) throw new Error('invalid native conversation ID');
-      await nativeFact('bind', session);
+      await fact('bind', 'omp_extension', session);
       if (disposed || ctx.sessionManager.getSessionId() !== session) return;
       boundSessionId = session;
       warnedSessionId = undefined;
@@ -215,7 +130,7 @@ export default function bkpr(pi: ExtensionAPI): void {
     const session = ctx.sessionManager.getSessionId();
     if (!session || session !== boundSessionId) return;
     try {
-      await nativeFact('prompt-submitted', session);
+      await fact('prompt-submitted', 'omp_extension', session);
       promptObserved = true;
     } catch (error) {
       ctx.ui.notify(`Bkpr prompt observation: ${String(error).slice(0, 512)}`, 'warning');

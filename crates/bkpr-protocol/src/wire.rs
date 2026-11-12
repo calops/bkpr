@@ -1,4 +1,4 @@
-//! Native wire-family 8 payload codecs and framing, separate from CLI/MCP/persistence JSON.
+//! Native wire-family 9 payload codecs and framing, separate from CLI/MCP/persistence JSON.
 //!
 //! Encoders borrow reusable storage; decoders enforce bounded traversal and owned-data budgets.
 //! Framing validates admission headers, not dispatch, effect completion or replay safety.

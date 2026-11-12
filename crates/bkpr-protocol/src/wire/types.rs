@@ -74,6 +74,7 @@ pub(super) fn write_harness_kind(value: HarnessKind) -> g::HarnessKind {
         HarnessKind::Aider => g::HarnessKind::Aider,
         HarnessKind::Cline => g::HarnessKind::Cline,
         HarnessKind::Goose => g::HarnessKind::Goose,
+        HarnessKind::Pi => g::HarnessKind::Pi,
     }
 }
 pub(super) fn read_harness_kind(value: g::HarnessKind) -> HarnessKind {
@@ -88,6 +89,7 @@ pub(super) fn read_harness_kind(value: g::HarnessKind) -> HarnessKind {
         g::HarnessKind::Aider => HarnessKind::Aider,
         g::HarnessKind::Cline => HarnessKind::Cline,
         g::HarnessKind::Goose => HarnessKind::Goose,
+        g::HarnessKind::Pi => HarnessKind::Pi,
     }
 }
 
@@ -99,6 +101,8 @@ pub(super) fn write_conversation_source(value: ConversationSource) -> g::Convers
         ConversationSource::CodexResume => g::ConversationSource::CodexResume,
         ConversationSource::CodexFork => g::ConversationSource::CodexFork,
         ConversationSource::AgyMcp => g::ConversationSource::AgyMcp,
+        ConversationSource::OpencodePlugin => g::ConversationSource::OpencodePlugin,
+        ConversationSource::PiExtension => g::ConversationSource::PiExtension,
     }
 }
 pub(super) fn read_conversation_source(value: g::ConversationSource) -> ConversationSource {
@@ -109,6 +113,8 @@ pub(super) fn read_conversation_source(value: g::ConversationSource) -> Conversa
         g::ConversationSource::CodexResume => ConversationSource::CodexResume,
         g::ConversationSource::CodexFork => ConversationSource::CodexFork,
         g::ConversationSource::AgyMcp => ConversationSource::AgyMcp,
+        g::ConversationSource::OpencodePlugin => ConversationSource::OpencodePlugin,
+        g::ConversationSource::PiExtension => ConversationSource::PiExtension,
     }
 }
 

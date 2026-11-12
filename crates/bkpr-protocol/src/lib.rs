@@ -31,7 +31,7 @@ pub use payload::*;
 pub mod remote_wire;
 pub mod wire;
 /// Native wire family; peers with a different family are rejected.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 /// Maximum aggregate input, paste or clipboard-response payload accepted per request.
 pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
 /// Maximum UTF-8 query bytes; rejected rather than truncated.

@@ -4,6 +4,7 @@ use crate::{
     harness_process::{self as proc, Process},
 };
 use std::{collections::HashMap, sync::atomic::Ordering, thread};
+mod native_status;
 
 impl Registry {
     /// Configure public shell context and private symlink wrappers before any pane starts.
@@ -68,6 +69,10 @@ impl Registry {
                 token,
                 event,
             } => {
+                ensure!(
+                    !matches!(event, CaptureEvent::StatusReport { .. } | CaptureEvent::StatusEnroll { .. }),
+                    "native status requires an enrolled stream"
+                );
                 let launch = self
                     .inner
                     .captures
@@ -448,6 +453,12 @@ impl Registry {
             });
             pane.shared.status_reset.store(true, Ordering::Release);
             pane.shared.changes.notify();
+        } else {
+            let published = pane.shared.published.lock().unwrap();
+            let (summary, changed_at_ms) =
+                visible_status(info.harness.as_ref(), &published, &captures);
+            info.harness_status = summary.cloned();
+            info.harness_status_changed_at_ms = changed_at_ms;
         }
         state.record.registry.revision = next_revision(state.record.registry.revision)?;
         self.inner.changed.notify_all();
@@ -566,9 +577,8 @@ impl Registry {
                 published.program_identity = identity;
                 pane.shared.changes.notify();
             }
-            let summary = harness_summary(harness.as_ref(), &published);
-            info.harness_status_changed_at_ms =
-                summary.and_then(|status| published.status_changed_at_ms.get(&status.id).copied());
+            let (summary, changed_at_ms) = visible_status(harness.as_ref(), &published, &captures);
+            info.harness_status_changed_at_ms = changed_at_ms;
             if info.harness_status.as_ref() != summary {
                 info.harness_status = summary.cloned();
             }
@@ -703,6 +713,7 @@ impl Registry {
                 continue;
             }
             let automatic_title = state.record.automatic_titles.contains(&id);
+            let captures = self.inner.captures.lock().unwrap();
             let registry = &mut state.record.registry;
             let Some(info) = registry
                 .panes
@@ -713,9 +724,8 @@ impl Registry {
             };
             let mut published = pane.shared.published.lock().unwrap();
             let title_changed = std::mem::take(&mut published.title_changed);
-            let summary = harness_summary(info.harness.as_ref(), &published);
-            let changed_at_ms =
-                summary.and_then(|status| published.status_changed_at_ms.get(&status.id).copied());
+            let (summary, changed_at_ms) =
+                visible_status(info.harness.as_ref(), &published, &captures);
             if info.harness_status.as_ref() != summary
                 || info.harness_status_changed_at_ms != changed_at_ms
                 || (automatic_title && title_changed)
@@ -781,6 +791,7 @@ impl Registry {
                 return;
             }
             for id in stale {
+                captures.clear_native_status(&id);
                 if let Some(launch) = captures.launches.remove(&id) {
                     launch.control.revoke();
                 }
@@ -1081,4 +1092,32 @@ fn harness_summary<'a>(
             "working" => 1,
             _ => 0,
         })
+}
+
+fn visible_status<'a>(
+    harness: Option<&HarnessInfo>,
+    published: &'a crate::Published,
+    captures: &'a harness::Captures,
+) -> (Option<&'a ProgramStatus>, Option<u64>) {
+    if let Some(harness) = harness
+        && published.lifecycle == "running"
+        && published
+            .program_identity
+            .as_ref()
+            .is_some_and(|identity| identity.pid == harness.pid && identity.birth == harness.birth)
+        && let Some(managed) = &harness.managed
+        && let Some(binding) = &managed.conversation
+        && let Some(launch) = captures.launches.get(&managed.launch_id)
+        && launch.grant.kind == harness.kind
+        && launch.managed.conversation.as_ref() == Some(binding)
+        && let Some(channel) = captures.native_status.get(&managed.launch_id)
+        && &channel.binding == binding
+        && let Some(observation) = &channel.observation
+    {
+        return (Some(&observation.status), Some(observation.changed_at_ms));
+    }
+    let status = harness_summary(harness, published);
+    let changed_at_ms =
+        status.and_then(|status| published.status_changed_at_ms.get(&status.id).copied());
+    (status, changed_at_ms)
 }

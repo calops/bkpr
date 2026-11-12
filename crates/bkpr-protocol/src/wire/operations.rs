@@ -1048,6 +1048,48 @@ pub(super) fn write_capture_event(
             let offset = g::CaptureEventPromptSubmitted::create(builder, conversation_id, source);
             g::CaptureEvent::create_capture_event_prompt_submitted(builder, offset)
         }
+        CaptureEvent::StatusEnroll {
+            conversation_id,
+            source,
+        } => {
+            let conversation_id = write_text(builder, conversation_id, budget)?;
+            let source = write_conversation_source(*source);
+            let offset = g::CaptureEventStatusEnroll::create(builder, conversation_id, source);
+            g::CaptureEvent::create_capture_event_status_enroll(builder, offset)
+        }
+        CaptureEvent::StatusReport {
+            conversation_id,
+            source,
+            generation,
+            status,
+        } => {
+            status.validate()?;
+            let conversation_id = write_text(builder, conversation_id, budget)?;
+            let source = write_conversation_source(*source);
+            let state = match status.state {
+                NativeStatusState::Idle => g::NativeStatusState::Idle,
+                NativeStatusState::Working => g::NativeStatusState::Working,
+                NativeStatusState::Done => g::NativeStatusState::Done,
+                NativeStatusState::Blocked => g::NativeStatusState::Blocked,
+                NativeStatusState::Error => g::NativeStatusState::Error,
+                NativeStatusState::Clear => g::NativeStatusState::Clear,
+            };
+            let kind = match status.kind {
+                None => g::NativeStatusKind::None,
+                Some(NativeStatusKind::Permission) => g::NativeStatusKind::Permission,
+                Some(NativeStatusKind::Question) => g::NativeStatusKind::Question,
+                Some(NativeStatusKind::Auth) => g::NativeStatusKind::Auth,
+            };
+            let offset = g::CaptureEventStatusReport::create(
+                builder,
+                conversation_id,
+                source,
+                *generation,
+                state,
+                kind,
+            );
+            g::CaptureEvent::create_capture_event_status_report(builder, offset)
+        }
         CaptureEvent::Error { message } => {
             let message = {
                 budget.bytes(message.len())?;
@@ -1082,6 +1124,35 @@ pub(super) fn read_capture_event(
             conversation_id: read_text(value.conversation_id()?, budget)?,
             source: read_conversation_source(value.source()?),
         },
+        g::CaptureEventRef::CaptureEventStatusEnroll(value) => CaptureEvent::StatusEnroll {
+            conversation_id: read_text(value.conversation_id()?, budget)?,
+            source: read_conversation_source(value.source()?),
+        },
+        g::CaptureEventRef::CaptureEventStatusReport(value) => {
+            let status = NativeStatus {
+                state: match value.state()? {
+                    g::NativeStatusState::Idle => NativeStatusState::Idle,
+                    g::NativeStatusState::Working => NativeStatusState::Working,
+                    g::NativeStatusState::Done => NativeStatusState::Done,
+                    g::NativeStatusState::Blocked => NativeStatusState::Blocked,
+                    g::NativeStatusState::Error => NativeStatusState::Error,
+                    g::NativeStatusState::Clear => NativeStatusState::Clear,
+                },
+                kind: match value.kind()? {
+                    g::NativeStatusKind::None => None,
+                    g::NativeStatusKind::Permission => Some(NativeStatusKind::Permission),
+                    g::NativeStatusKind::Question => Some(NativeStatusKind::Question),
+                    g::NativeStatusKind::Auth => Some(NativeStatusKind::Auth),
+                },
+            };
+            status.validate()?;
+            CaptureEvent::StatusReport {
+                conversation_id: read_text(value.conversation_id()?, budget)?,
+                source: read_conversation_source(value.source()?),
+                generation: value.generation()?,
+                status,
+            }
+        }
         g::CaptureEventRef::CaptureEventError(value) => CaptureEvent::Error {
             message: {
                 let text = value.message()?;

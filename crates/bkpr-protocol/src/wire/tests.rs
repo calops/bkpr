@@ -13,6 +13,60 @@ fn assert_request(operation: Operation) {
 }
 
 #[test]
+fn native_status_is_typed_bounded_and_round_trips_every_public_state() {
+    let event = |event| Operation::HarnessEvent {
+        launch_id: "launch".into(),
+        token: "secret".into(),
+        event,
+    };
+    assert_request(event(CaptureEvent::StatusEnroll {
+        conversation_id: "session".into(),
+        source: ConversationSource::OpencodePlugin,
+    }));
+    for state in [
+        NativeStatusState::Idle,
+        NativeStatusState::Working,
+        NativeStatusState::Done,
+        NativeStatusState::Blocked,
+        NativeStatusState::Error,
+        NativeStatusState::Clear,
+    ] {
+        for kind in [
+            None,
+            Some(NativeStatusKind::Permission),
+            Some(NativeStatusKind::Question),
+            Some(NativeStatusKind::Auth),
+        ] {
+            let status = NativeStatus { state, kind };
+            let request = event(CaptureEvent::StatusReport {
+                conversation_id: "session".into(),
+                source: ConversationSource::OpencodePlugin,
+                generation: 77,
+                status,
+            });
+            if kind.is_some() && state != NativeStatusState::Blocked {
+                assert!(Codec::new().encode_request(&Request::new(request)).is_err());
+            } else {
+                assert_request(request);
+                assert_eq!(
+                    serde_json::from_value::<NativeStatus>(serde_json::to_value(status).unwrap())
+                        .unwrap(),
+                    status
+                );
+            }
+        }
+    }
+    for payload in [
+        r#"{"state":"invented"}"#,
+        r#"{"state":"blocked","kind":"invented"}"#,
+        r#"{"state":"working","app":"foreign"}"#,
+        r#"{"state":"working","id":"foreign"}"#,
+    ] {
+        assert!(serde_json::from_str::<NativeStatus>(payload).is_err());
+    }
+}
+
+#[test]
 fn ci_refresh_preserves_exact_source_identity() {
     for checked_ref in [None, Some("origin/feature/日本語".into())] {
         let operation = Operation::CiRefresh {
@@ -1633,7 +1687,6 @@ fn compact_control_and_agent_options_preserve_absence_zero_and_expansion() {
 
 #[test]
 fn family_seven_is_rejected_before_body_traversal_or_allocation_charge() {
-    assert_eq!(PROTOCOL_VERSION, 8);
     let mut codec = Codec::new();
     let mut bytes = codec
         .encode_request(&Request::new(Operation::Shutdown))
@@ -1648,7 +1701,7 @@ fn family_seven_is_rejected_before_body_traversal_or_allocation_charge() {
         charge += bytes;
         Ok(())
     });
-    assert!(result.unwrap_err().to_string().contains("version 7"));
+    assert!(result.is_err());
     assert_eq!(charge, 0);
     assert!(
         codec

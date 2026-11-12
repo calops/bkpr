@@ -1,16 +1,19 @@
 //! Launch-local Omp MCP, guidance and native binding/notification extension.
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
-use std::io::{IsTerminal, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::io::IsTerminal;
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result};
 use bkpr_protocol::HarnessKind;
 use tempfile::TempDir;
 
-use super::{Capture, passthrough, run_managed, scrub};
+use super::{
+    Capture,
+    assets::{private_directory, write_private},
+    passthrough, run_managed, scrub,
+};
 
 const EXTENSION: &str = include_str!("../../../../integration/omp/index.ts");
 
@@ -183,26 +186,18 @@ fn interactive_arguments(arguments: &[OsString]) -> bool {
     true
 }
 
-fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .context("create Omp capture package asset")?
-        .write_all(contents)
-        .context("write Omp capture package asset")
-}
-
 fn extension_package(capture: &Capture) -> Result<TempDir> {
-    let directory = tempfile::Builder::new()
-        .prefix("bkpr-omp-")
-        .tempdir()
-        .context("create launch-local Omp capture package")?;
-    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
+    let directory =
+        private_directory("bkpr-omp-").context("create launch-local Omp capture package")?;
     write_private(&directory.path().join("package.json"),
-        br#"{"name":"bkpr-native-capture","private":true,"type":"module","omp":{"extensions":["index.ts"]}}"#)?;
-    write_private(&directory.path().join("index.ts"), EXTENSION.as_bytes())?;
+        br#"{"name":"bkpr-native-capture","private":true,"type":"module","omp":{"extensions":["omp/index.ts"]}}"#)?;
+    fs::create_dir(directory.path().join("omp"))?;
+    fs::create_dir(directory.path().join("shared"))?;
+    write_private(&directory.path().join("omp/index.ts"), EXTENSION.as_bytes())?;
+    write_private(
+        &directory.path().join("shared/native.ts"),
+        include_bytes!("../../../../integration/shared/native.ts"),
+    )?;
     let config = serde_json::json!({"mcpServers":{"bkpr":{
         "type":"stdio",
         "command":capture.program,

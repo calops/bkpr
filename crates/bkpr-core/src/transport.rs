@@ -6,6 +6,7 @@
 use crate::registry::{Registry, RegistryBusy, SessionClosing};
 mod capacity;
 mod clients;
+mod status;
 use anyhow::{Context, Result, bail};
 #[cfg(test)]
 use bkpr_protocol::PaneRequest;
@@ -439,6 +440,7 @@ impl BoundSocket {
                     let mut stop = false;
                     let mut subscription = None;
                     let mut lifetime = None;
+                    let mut status_stream = None;
                     let mut pending_response = None;
                     let mut dispatched = false;
                     let mut diagnostic = None;
@@ -497,6 +499,16 @@ impl BoundSocket {
                             }
                             Operation::Client { authority, request: operation } => {
                                 registry.client_request(authority, *operation, &stream)?
+                            }
+                            operation @ Operation::HarnessEvent {
+                                event: bkpr_protocol::CaptureEvent::StatusEnroll { .. }, ..
+                            } => {
+                                let peer = authenticated_peer(&stream)?;
+                                let (enrollment, response) = registry.register_native_status(
+                                    &Request::new(operation), &peer, &|| peer_connected(&stream),
+                                )?;
+                                status_stream = Some((enrollment, peer));
+                                Payload::Control(response)
                             }
                             operation @ (Operation::Context { .. } | Operation::HarnessBegin { .. } | Operation::HarnessEvent { .. }
                             | Operation::HarnessContext { .. } | Operation::Agent { .. }) => {
@@ -564,6 +576,19 @@ impl BoundSocket {
                         let _ = registry.agent_subscription_disconnected(
                             &launch_id, &receiver_id, &notification_id, generation,
                         );
+                    }
+                    if let Some((enrollment, peer)) = status_stream {
+                        drop(pending_response.take());
+                        if sent.is_ok() {
+                            let _ = status::serve(
+                                &mut stream, &registry, &enrollment, &peer, &shutdown,
+                                status::Resources {
+                                    request_buffers: &request_buffers, decode_work: &decode_work,
+                                    response_work: &response_work, response_buffers: &response_buffers,
+                                },
+                            );
+                        }
+                        let _ = registry.end_native_status(&enrollment);
                     }
                     if let Some(client) = lifetime {
                         if sent.is_ok() {

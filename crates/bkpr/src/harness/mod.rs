@@ -1,10 +1,14 @@
 //! Launch-local capture and recursion-safe native harness execution.
 pub(super) mod agent;
 mod agy;
+mod assets;
 mod claude;
 mod claude_inbox;
 mod codex;
 mod omp;
+mod opencode;
+mod pi;
+mod status;
 
 use anyhow::{Context, Result, bail};
 use bkpr_protocol::{CaptureEvent, CaptureGrant, ConversationSource, HarnessKind, Operation};
@@ -26,7 +30,7 @@ use std::{
     },
 };
 
-const HARNESS_HELP: &str = "Usage: bkpr run HARNESS [--] ARGS...\nHarnesses: claude, codex, omp, agy, opencode, cursor, copilot, aider, cline, goose";
+const HARNESS_HELP: &str = "Usage: bkpr run HARNESS [--] ARGS...\nHarnesses: claude, codex, omp, agy, opencode, cursor, copilot, aider, cline, goose, pi";
 
 /// Shared CLI entrypoint retains launch-local authentication and Codex relay isolation.
 pub(crate) fn control_request(request: serde_json::Value) -> Result<serde_json::Value> {
@@ -88,6 +92,7 @@ const MANAGED_NAMES: &[&str] = &[
     "cline",
     ".cline",
     "goose",
+    "pi",
 ];
 
 /// Utilities run before the TUI's UTF-8 parser, preserving native argv bytes.
@@ -169,6 +174,8 @@ fn launch(kind: HarnessKind, name: &str, arguments: Vec<OsString>) -> Result<i32
         HarnessKind::Codex => codex::launch(executable, arguments),
         HarnessKind::Omp => omp::launch(executable, arguments),
         HarnessKind::Agy => agy::launch(executable, arguments),
+        HarnessKind::Opencode => opencode::launch(executable, arguments),
+        HarnessKind::Pi => pi::launch(executable, arguments),
         _ => passthrough(&executable, arguments),
     }
 }
@@ -201,6 +208,7 @@ fn capture_command(arguments: Vec<OsString>) -> Result<i32> {
             }
             claude::wait()
         }
+        Some(command) if command == "status" => status::cli(arguments.collect()),
         Some(command) if command == "agy-receiver" => agy::receiver(arguments.collect()),
         Some(command) if command == "mcp" => {
             if arguments.next().as_deref() != Some(OsStr::new("--harness")) {
@@ -212,8 +220,20 @@ fn capture_command(arguments: Vec<OsString>) -> Result<i32> {
                 .and_then(|value| HarnessKind::from_command(&value))
                 .filter(|kind| kind.is_managed())
                 .context("invalid MCP harness")?;
+            let capture_file = match arguments.next() {
+                None => None,
+                Some(flag) if flag == "--capture-file" => Some(
+                    arguments
+                        .next()
+                        .context("--capture-file needs a private credential file")?,
+                ),
+                Some(_) => bail!("unexpected MCP argument"),
+            };
             if arguments.next().is_some() {
                 bail!("unexpected MCP argument");
+            }
+            if let Some(path) = capture_file {
+                return assets::exec_mcp(&PathBuf::from(path), kind);
             }
             if kind == HarnessKind::Agy {
                 agy::mcp()
@@ -242,6 +262,8 @@ fn bind_arguments(arguments: Vec<OsString>) -> Result<(ConversationSource, Strin
                     b"codex_resume" => ConversationSource::CodexResume,
                     b"codex_fork" => ConversationSource::CodexFork,
                     b"agy_mcp" => ConversationSource::AgyMcp,
+                    b"opencode_plugin" => ConversationSource::OpencodePlugin,
+                    b"pi_extension" => ConversationSource::PiExtension,
                     _ => bail!("invalid capture source"),
                 });
             }

@@ -32,6 +32,7 @@ impl Launch {
 pub(crate) struct Captures {
     pub launches: BTreeMap<String, Launch>,
     pub version: u64,
+    pub native_status: BTreeMap<String, NativeStatusChannel>,
 }
 /// Constructed exclusively from Unix socket credentials by the transport.
 pub(crate) struct Peer {
@@ -45,6 +46,52 @@ impl Peer {
         let p = proc::process(self.pid)?.context("capture peer exited")?;
         ensure!(p.identity == self.birth, "capture peer birth changed");
         Ok(p)
+    }
+}
+
+pub(crate) struct NativeStatusChannel {
+    pub binding: NativeConversation,
+    pub peer: ProcessIdentity,
+    pub origin: crate::ControlLease,
+    pub launch: crate::ControlLease,
+    pub observation: Option<NativeStatusObservation>,
+}
+pub(crate) struct NativeStatusObservation {
+    pub status: ProgramStatus,
+    pub changed_at_ms: u64,
+}
+impl NativeStatusChannel {
+    pub fn ensure_reporter(&self, peer: &Peer, binding: &NativeConversation) -> Result<()> {
+        ensure!(
+            peer.uid == unsafe { libc::geteuid() }
+                && peer.pid as u32 == self.peer.pid
+                && peer.birth == self.peer.birth,
+            "native status originating process does not match enrollment"
+        );
+        ensure!(
+            binding == &self.binding,
+            "native status binding generation changed"
+        );
+        self.origin.ensure_active()?;
+        self.launch.ensure_active()
+    }
+}
+
+pub(crate) struct NativeStatusStream {
+    pub grant: CaptureGrant,
+    pub binding: NativeConversation,
+    pub origin: crate::ControlLease,
+    pub launch: crate::ControlLease,
+}
+impl NativeStatusStream {
+    pub fn ensure_active(&self) -> Result<()> {
+        self.origin.ensure_active()?;
+        self.launch.ensure_active()
+    }
+}
+impl Drop for NativeStatusStream {
+    fn drop(&mut self) {
+        self.origin.revoke();
     }
 }
 /// Read a bounded live ancestry on the control worker, never on input/UI/global locks.
@@ -180,6 +227,9 @@ impl Captures {
                     .as_ref()
                     .map_or(Some(1), |c| c.generation.checked_add(1))
                     .context("conversation generation exhausted")?;
+                if let Some(channel) = self.native_status.remove(launch_id) {
+                    channel.origin.revoke();
+                }
                 launch.managed.conversation = Some(NativeConversation {
                     id: conversation_id,
                     source,
@@ -230,9 +280,13 @@ impl Captures {
                 );
                 self.launches.get_mut(launch_id).unwrap().managed.error = Some(message);
             }
+            CaptureEvent::StatusEnroll { .. } | CaptureEvent::StatusReport { .. } => {
+                anyhow::bail!("native status requires authenticated enrollment")
+            }
             CaptureEvent::End => {
                 launch.control.revoke();
                 self.launches.remove(launch_id);
+                self.clear_native_status(launch_id);
             }
         }
         self.version = self.version.wrapping_add(1);
@@ -247,7 +301,20 @@ impl Captures {
                 true
             }
         });
+        self.native_status.retain(|id, channel| {
+            if self.launches.contains_key(id) {
+                true
+            } else {
+                channel.origin.revoke();
+                false
+            }
+        });
         self.version = self.version.wrapping_add(1);
+    }
+    pub fn clear_native_status(&mut self, launch_id: &str) {
+        if let Some(channel) = self.native_status.remove(launch_id) {
+            channel.origin.revoke();
+        }
     }
 }
 pub(crate) fn constant_equal(a: &[u8], b: &[u8]) -> bool {
