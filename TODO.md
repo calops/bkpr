@@ -60,6 +60,8 @@ The current CPU-efficiency level is accepted for now; further optimization is de
 
 - [x] Route transient TUI notices through reusable framework toasts, not sidebar status text. Show a bounded top-center stack with five-second expiry and clickable dismissal; reuse popup shadows/bevels and rounded normal-rendering fallbacks. Preserve keyboard focus and complete mouse gestures, including expiry and chorded releases. Pending operations and decision prompts remain contextual state.
 
+- [ ] Add desktop notifications.
+
 - [ ] Run a comprehensive keybinding cleanup phase for consistency and ergonomics across application, sidebar, prefix, history/search/selection, resize and popup/form contexts. Audit naming, aliases, modifier patterns, collisions, keyboard-layout behavior and terminal compatibility; keep dispatch, contextual hints and documentation synchronized. The [binding policy and historical inventory](docs/keybinding-cleanup.md) separates the implemented sidebar/prefix split from remaining proposals.
 
 - [x] Rework CLI help for humans: a concise overview with common options/examples, scoped command help with unrelated flags hidden, grouped TUI options, and a separate `bkpr keys` reference. Keep native harness argument forwarding intact; help must not start sessions or write user state.
