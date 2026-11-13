@@ -111,3 +111,11 @@ jobs:
           body_path: release-notes.md
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           tag_name: ${{ github.ref_name }}
+  showcase:
+    name: Capture published release showcase
+    needs: release
+    permissions:
+      contents: write
+    uses: ./.github/workflows/showcase.yml
+    with:
+      release_tag: ${{ github.ref_name }}
