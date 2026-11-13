@@ -49,6 +49,9 @@ jobs:
           BKPR_PACKAGE: ${{ steps.package.outputs.path }}
           BKPR_TERMINFO_DIR: ${{ steps.package.outputs.terminfo }}
         run: |
+          previous=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)
+          trap 'sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$previous"' EXIT
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           nix develop .#showcase --command python3 scripts/showcase/capture.py \
             --bkpr "$BKPR_PACKAGE/bin/bkpr" --bkprd "$BKPR_PACKAGE/bin/bkprd" \
             --dummy-key-consent allow --security-notice-consent allow \
