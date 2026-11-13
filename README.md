@@ -10,8 +10,8 @@ project context, native conversation recovery and authenticated peer messaging.
 
 ![Bkpr with native agent panes, split terminals and local and SSH sessions](docs/assets/showcase.png)
 
-*Scripted demo: native harness UIs exchanging real Bkpr messages, plus an isolated
-SSH session. Generated automatically; outer framing is decorative.
+*Scripted demo: Pi and Claude Code exchanging real Bkpr messages, Codex in another
+window, and an isolated SSH session. Generated automatically; outer framing is decorative.
 [Reproduce the screenshot](docs/reference.md#screenshot-maintenance).*
 
 ## Install and start
@@ -97,12 +97,23 @@ stay native: for example, `bkpr run codex -- resume`.
 Managed harnesses are Claude Code, Codex, Omp, OpenCode 2, Pi and Antigravity.
 The optional `nix develop .#harnesses` shell supplies pinned native CLIs.
 
-Antigravity needs explicit `bkpr install agy` on the account where it runs; use
-`--dry-run` to inspect first. Native approval is still required. Cursor Agent,
-Copilot, Aider, Cline and Goose are recognized but don't have managed conversation
-adapters. The [harness reference](docs/reference.md#harness-capture) covers native
-modes and the [testing shell](docs/reference.md#harness-testing-shell) lists all
-pinned versions.
+For durable native hooks/plugins, inspect the changes before installing:
+
+```sh
+bkpr install claude --dry-run
+bkpr install claude
+```
+
+Replace `claude` with `codex`, `omp`, `pi`, `opencode` or `agy` as needed.
+Run installation on the machine/account where the harness runs. Antigravity
+requires this step; the other managed harnesses can use launch-local integration.
+Existing approvals and unrelated settings are preserved; installation grants no
+tool permissions. `--inspect`, `--update` and `--uninstall` manage the installation.
+
+Cursor Agent, Copilot, Aider, Cline and Goose are recognized but don't have managed
+conversation adapters. The [harness reference](docs/reference.md#harness-capture)
+covers native modes and the [testing shell](docs/reference.md#harness-testing-shell)
+lists pinned versions.
 
 OpenCode 2 uses its private native `--standalone` service. Explicit external-server
 and utility/headless modes remain unmanaged; OpenCode 1 is retired. Pi's headless,

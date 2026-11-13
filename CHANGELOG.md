@@ -3,6 +3,7 @@
 ### Breaking changes
 
 * Native wire family 10 requires matching `bkpr` and `bkprd` binaries for conversation-fenced agent requests and revision-checked native binding changes. Existing incompatible sessions are not restarted automatically.
+* Remove `ProjectSnapshot.color_slot` from Rust/JSON metadata; clients assign presentation colors from repository identity. This optional metadata removal retains native wire family 10 compatibility.
 
 ### Features
 
@@ -37,7 +38,7 @@
 
 ### Documentation
 
-* Add a user-focused README and an automated native showcase with real harness communication, isolated SSH, and transparent beveled-window artwork; retain the detailed technical reference.
+* Add a user-focused README and automated real Pi–Claude communication showcase, with Codex in another window and an isolated SSH session. Preserve the raw capture inside a thin sidebar-colored rounded frame, smooth bevel and transparent soft shadow; retain the technical reference and explicit native fixture consent.
 * Document protocol, core, terminal-engine, TUI-framework and client public consumer contracts and enforce missing API documentation at compile time. Add crate-local guidance and shared code-quality/context-loading rules.
 * Document daemon startup, headless defaults, owned shutdown and initial geometry units; add server crate guidance.
 

@@ -37,5 +37,11 @@ test:
     cargo test --locked --workspace
 
 # Capture the isolated README demo using an existing matching native pair.
-screenshot bkpr_bin="target/debug/bkpr" bkprd_bin="target/debug/bkprd" output="docs/assets/showcase.png":
-    nix develop .#showcase --command python3 scripts/showcase/capture.py --bkpr "$1" --bkprd "$2" --output "$3"
+screenshot bkpr_bin="target/debug/bkpr" bkprd_bin="target/debug/bkprd" output="docs/assets/showcase.png" frontend_bin="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=(--bkpr "$1" --bkprd "$2" --output "$3"
+          --dummy-key-consent allow --security-notice-consent allow
+          --fixture-project-trust allow --fixture-broker-tools allow)
+    if [[ -n "$4" ]]; then args+=(--frontend "$4"); fi
+    exec nix develop .#showcase --command python3 scripts/showcase/capture.py "${args[@]}"
