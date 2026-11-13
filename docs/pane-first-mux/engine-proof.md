@@ -3403,3 +3403,58 @@ queued metadata may retain newly observed facts while truthfully remaining
 This frame establishes frontend colors and native transport compatibility, not
 completed Claude onboarding or Pi–Claude delivery. That separate showcase
 acceptance must retain genuine native consent and broker receipts.
+
+## Durable native integration installation
+
+`bkpr install` now supports Claude, Codex, Omp, Pi, OpenCode 2 and Antigravity.
+One ownership/transaction layer provides inspect, dry-run, install, update and
+uninstall. Native definitions describe their settings and discovery files.
+Installed code has no launch authority; authenticated wrappers still create
+private grants, and missing context leaves hooks/extensions inactive and MCP
+without tools. Native preferences, approvals and unrelated settings survive
+updates. The install wizard remains roadmap work.
+
+Dependency choices: `jsonc-parser` 0.34 CST and `toml_edit` 0.25 preserve native
+syntax; Saphyr 0.3.4 reads Omp's YAML opt-outs without introducing a YAML writer;
+`url` handles native file URIs. `pathdiff` 0.2.3 supplies relative Omp discovery
+imports instead of another path algorithm (MIT/Apache-2.0, maintained by
+Manishearth; [crate metadata](https://crates.io/api/v1/crates/pathdiff/0.2.3)).
+Omp 18.19's compiled compatibility loader only traverses relative source imports:
+[native source](https://github.com/can1357/oh-my-pi/blob/v18.19.0/packages/coding-agent/src/extensibility/plugins/legacy-pi-compat.ts).
+A genuine startup caught the initial `file:` re-export failure. The corrected
+relative loader passed with spaces, apostrophes, `#` and `%` in native paths;
+the main-agent authority guard was not relaxed.
+
+Verification lives under `target/smoke/durable-install/`:
+
+* `cli-271611178610506/result.json`: all six actual CLI lifecycles, read-only
+  inspect/dry-run, idempotent install, update/uninstall, unrelated values and
+  modes, quoted paths, credential nonpersistence, inactive MCP and malformed/FIFO
+  context rejection.
+* `faults-271296817991884/result.json`: injected directory-fsync failure after
+  native-file rename and final ownership-record rename. Both return failure
+  without success output, restore original native bytes, and permit retry.
+  Permanent regressions also cover concurrent writers, interrupted mixed
+  generations, preserved native Codex approvals and live bundle leases.
+* `native-config-271499843612680/result.json`: genuine Claude 2.1.322 and Codex
+  0.167.2 `mcp get`, and Antigravity 1.5.6 `mcp list`, consume installed settings.
+  These are configuration-consumer proofs, not managed-conversation acceptance.
+* `native-omp-pi/summary.json`: genuine Omp 18.19 and Pi 1.5.2 autodiscovery,
+  exact native binding and actual MCP `whoami` with receiver readiness. No
+  installed extension is forced through launch arguments; unmanaged/disabled
+  launches stay inactive.
+* `native-opencode/summary.json`: 15 genuine OpenCode 2.2.7 installed-mode cases,
+  including server/TUI plugin loading, native MCP and binding, idle/busy delivery,
+  read/processed acknowledgment, standalone cleanup and exact-ID recovery.
+* `unit-270670674703578/result.json`: eight isolated Bun consumer suites pass.
+  Full host-user workspace tests pass in
+  `target/smoke/harness-integrations/build/checks-271499842954284/`;
+  strict all-target Clippy, formatting and doctests pass in
+  `compiled-271308191739003/` beside that checks directory.
+
+Runtime fixtures use private HOME/XDG and verified native executables, no real
+providers or approval seeding, and report no surviving owned processes.
+Claude/Codex/Antigravity managed first-turn and consent flows were not exercised
+by this installation slice. Configuration success never claims loaded state or
+grants native trust. Public debug/release executables were preserved; no runtime,
+release or tag was promoted.

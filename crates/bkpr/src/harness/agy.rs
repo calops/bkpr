@@ -1,11 +1,9 @@
 //! Antigravity capture uses only root-conversation MCP metadata. Launch never installs settings.
 use std::env;
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, IsTerminal, Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::io::{self, BufRead, IsTerminal, Write};
+use std::path::PathBuf;
+use std::process::Command;
 
 use anyhow::{Context, Result, ensure};
 use bkpr_protocol::{ConversationSource, HarnessKind};
@@ -14,13 +12,12 @@ use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde_json::{Value, json};
 
 use super::agent;
-use super::{Capture, passthrough, resolve, run_managed, scrub};
+use super::{Capture, passthrough, run_managed};
 #[path = "agy_receiver.rs"]
 mod native_receiver;
 
 const MAX_FRAME: usize = 1024 * 1024;
 const MAX_RESPONSE: usize = 16 * 1024 * 1024;
-const MAX_CONFIG: u64 = 16 * 1024 * 1024;
 const ROOT_METADATA: &str = "antigravity.google/root_conversation_id";
 
 // Option values are not commands; everything after -- is interactive prompt text.
@@ -104,10 +101,7 @@ fn interactive_arguments(arguments: &[OsString]) -> bool {
     true
 }
 
-fn executable() -> Result<PathBuf> {
-    resolve("agy").or_else(|_| resolve("antigravity"))
-}
-
+/// Run supported interactive native launches with scoped capture; preserve native utility modes and exit status.
 pub(super) fn launch(executable: PathBuf, arguments: Vec<OsString>) -> Result<i32> {
     if !io::stdin().is_terminal()
         || !io::stdout().is_terminal()
@@ -115,202 +109,21 @@ pub(super) fn launch(executable: PathBuf, arguments: Vec<OsString>) -> Result<i3
     {
         return passthrough(&executable, arguments);
     }
+    let installed = super::install::runtime(HarnessKind::Agy, Default::default())?;
     let capture = Capture::begin(HarnessKind::Agy)?;
-    let integration = config_path().and_then(|path| {
-        let config = read_config(&path)?;
-        integration_matches(&config, &capture.program)
-    });
-    if let Err(error) = integration {
-        let diagnostic = format!(
-            "Awaiting AGY integration: {error}. Run bkpr install agy explicitly; launch does not change AGY settings"
-        );
-        capture.error(&diagnostic)?;
+    if installed.is_none() {
+        let diagnostic = "Awaiting AGY integration: run bkpr install agy explicitly; launch does not change native settings";
+        capture.error(diagnostic)?;
         eprintln!("bkpr: {diagnostic}");
     }
+    let credentials = super::assets::private_directory("bkpr-agy-")?;
+    let credential_file = credentials.path().join("capture.json");
+    super::assets::write_credentials(&capture, &credential_file)?;
     let mut command = Command::new(executable);
-    scrub(&mut command);
     capture.apply(&mut command);
+    command.env("BKPR_INTEGRATION_FILE", credential_file);
     command.args(arguments);
     run_managed(&mut command, &capture)
-}
-
-fn config_path() -> Result<PathBuf> {
-    let home = env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .context("AGY integration requires an absolute HOME")?;
-    ensure!(
-        !home.components().any(|part| part == Component::ParentDir),
-        "HOME contains parent traversal"
-    );
-    Ok(home.join(".gemini/config/mcp_config.json"))
-}
-
-fn safe_path(path: &Path) -> Result<()> {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component);
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) => {
-                ensure!(
-                    !metadata.file_type().is_symlink(),
-                    "refusing symlink integration path {}",
-                    current.display()
-                );
-                if current != path {
-                    ensure!(metadata.is_dir(), "integration ancestor is not a directory");
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
-}
-
-fn read_config(path: &Path) -> Result<Value> {
-    safe_path(path)?;
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(json!({})),
-        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
-    };
-    let metadata = file.metadata()?;
-    ensure!(
-        metadata.is_file()
-            && metadata.uid() == unsafe { libc::geteuid() }
-            && metadata.len() <= MAX_CONFIG,
-        "refusing unsafe or oversized AGY integration config"
-    );
-    let mut bytes = Vec::new();
-    file.take(MAX_CONFIG + 1).read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() as u64 <= MAX_CONFIG,
-        "AGY integration config exceeds limit"
-    );
-    let config = strict_json(&bytes).context("malformed AGY MCP configuration")?;
-    ensure!(
-        config.is_object(),
-        "AGY MCP configuration must be an object"
-    );
-    if let Some(servers) = config.get("mcpServers") {
-        ensure!(servers.is_object(), "mcpServers must be an object");
-    }
-    Ok(config)
-}
-
-fn desired_entry(program: &Path) -> Value {
-    json!({"command":program,"args":["capture","mcp","--harness","agy"],"disabled":false})
-}
-
-fn check_disabled(config: &Value) -> Result<()> {
-    if let Some(disabled) = config.get("disabledServers") {
-        let disabled = disabled
-            .as_array()
-            .context("disabledServers must be an array")?;
-        ensure!(
-            disabled.iter().all(Value::is_string),
-            "disabledServers must contain names"
-        );
-        ensure!(
-            !disabled.iter().any(|name| name == "bkpr"),
-            "bkpr is explicitly disabled in AGY settings"
-        );
-    }
-    Ok(())
-}
-
-fn integration_matches(config: &Value, program: &Path) -> Result<()> {
-    check_disabled(config)?;
-    let entry = config
-        .get("mcpServers")
-        .and_then(|servers| servers.get("bkpr"))
-        .context("Bkpr MCP entry is missing")?;
-    ensure!(
-        entry == &desired_entry(program),
-        "Bkpr MCP entry conflicts with this capture integration"
-    );
-    Ok(())
-}
-
-fn unrelated_config(mut config: Value) -> Value {
-    if let Some(servers) = config.get_mut("mcpServers").and_then(Value::as_object_mut) {
-        servers.remove("bkpr");
-        if servers.is_empty() {
-            config
-                .as_object_mut()
-                .expect("validated config")
-                .remove("mcpServers");
-        }
-    }
-    config
-}
-
-/// Only the native AGY CLI writes its MCP registration. Existing conflicts fail before invoking it.
-pub(super) fn install(arguments: Vec<OsString>) -> Result<i32> {
-    let dry_run = arguments == [OsString::from("--dry-run")];
-    ensure!(
-        arguments.is_empty() || dry_run,
-        "usage: bkpr install agy [--dry-run]"
-    );
-    let executable = executable()?;
-    let program = env::current_exe().context("locate public Bkpr executable")?;
-    program
-        .to_str()
-        .context("AGY MCP command path must be UTF-8")?;
-    let path = config_path()?;
-    let before = read_config(&path)?;
-    check_disabled(&before)?;
-    if before
-        .get("mcpServers")
-        .and_then(|servers| servers.get("bkpr"))
-        .is_some()
-    {
-        integration_matches(&before, &program)?;
-        println!(
-            "Bkpr AGY MCP integration already configured in {}",
-            path.display()
-        );
-        return Ok(0);
-    }
-    if dry_run {
-        println!(
-            "Would register only Bkpr MCP through AGY CLI in {}",
-            path.display()
-        );
-        return Ok(0);
-    }
-    let mut command = Command::new(executable);
-    scrub(&mut command);
-    command
-        .args(["mcp", "add", "bkpr", "--"])
-        .arg(&program)
-        .args(["capture", "mcp", "--harness", "agy"])
-        .stdin(Stdio::null());
-    let status = command
-        .status()
-        .context("register Bkpr MCP through AGY CLI")?;
-    ensure!(
-        status.success(),
-        "AGY MCP registration failed with {status}"
-    );
-    let after = read_config(&path)?;
-    integration_matches(&after, &program)
-        .context("AGY CLI did not register the expected Bkpr entry")?;
-    ensure!(
-        unrelated_config(before) == unrelated_config(after),
-        "AGY CLI unexpectedly changed unrelated MCP configuration; inspect {}",
-        path.display()
-    );
-    println!(
-        "Registered Bkpr AGY MCP integration in {}. Conversation capture awaits an authenticated root-metadata tool call; this is not OSC status or readiness.",
-        path.display()
-    );
-    Ok(0)
 }
 
 fn root_metadata(message: &Value) -> Result<&str> {
@@ -691,23 +504,6 @@ mod tests {
         assert!(strict_json(br#"{"params":{"x":1,"x":2}}"#).is_err());
         assert!(strict_json(br#"{"x":1}{}"#).is_err());
         assert!(read_frame(&mut &b""[..]).unwrap().is_none());
-    }
-
-    #[test]
-    fn installer_refuses_conflicts_and_preserves_unrelated_values() {
-        let program = Path::new("/fixture/bkpr");
-        let before = json!({"mcpServers":{"other":{"command":"other","env":{"KEEP":"value"}}},"future":{"preserve":true}});
-        let mut after = before.clone();
-        after["mcpServers"]["bkpr"] = desired_entry(program);
-        integration_matches(&after, program).unwrap();
-        assert_eq!(unrelated_config(before), unrelated_config(after));
-        for bad in [
-            json!({"mcpServers":{"bkpr":{"command":"user-choice"}}}),
-            json!({"mcpServers":{"bkpr":desired_entry(program)},"disabledServers":["bkpr"]}),
-            json!({"mcpServers":{"bkpr":desired_entry(program)},"disabledServers":"malformed"}),
-        ] {
-            assert!(integration_matches(&bad, program).is_err());
-        }
     }
 
     #[test]

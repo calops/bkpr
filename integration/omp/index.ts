@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from '@oh-my-pi/pi-coding-agent';
 import { ImageProtocol, isImageProtocolForced, setTerminalImageProtocol } from '@oh-my-pi/pi-tui';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createNativeCallbacks, parseInboxPointer, type InboxPointer, type Json } from '../shared/native.ts';
+import { optionalNativeCallbacks, parseInboxPointer, type InboxPointer, type Json } from '../shared/native.ts';
 
 const MAX_FRAME = 1024 * 1024;
 function object(value: unknown): Json {
@@ -10,10 +10,10 @@ function object(value: unknown): Json {
 }
 
 /** Native binding and step-boundary asides; shared tools live in MCP. */
-export default function bkpr(pi: ExtensionAPI): void {
-  const native = createNativeCallbacks('omp');
-  if (!native) return;
-  const { program, environment: launchEnvironment, request, fact } = native;
+export default async function bkpr(pi: ExtensionAPI): Promise<void> {
+  const activation = await optionalNativeCallbacks('omp');
+  if (!activation) return;
+  const { program, environment: launchEnvironment, request, fact } = activation.native;
   if (!isImageProtocolForced()) setTerminalImageProtocol(ImageProtocol.Kitty);
   let boundSessionId: string | undefined;
   let warnedSessionId: string | undefined;

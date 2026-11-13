@@ -1,10 +1,10 @@
 //! Private, launch-lifetime assets and shared MCP credential bootstrap.
 use super::{Capture, validate_text};
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use bkpr_protocol::{CaptureGrant, HarnessKind};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{OpenOptions, Permissions},
+    fs::{self, OpenOptions, Permissions},
     io::{Read, Write},
     os::unix::{
         fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -56,10 +56,24 @@ pub(super) fn write_credentials(capture: &Capture, path: &Path) -> Result<()> {
     write_private(path, &serde_json::to_vec(&credentials)?)
 }
 
-fn read_credentials(path: &Path, kind: HarnessKind) -> Result<Capture> {
+pub(super) fn read_credentials(path: &Path, kind: HarnessKind) -> Result<Capture> {
+    ensure!(
+        path.is_absolute(),
+        "capture credential path must be absolute"
+    );
+    let parent = fs::symlink_metadata(
+        path.parent()
+            .context("capture credentials have no parent")?,
+    )?;
+    ensure!(
+        parent.is_dir()
+            && parent.uid() == unsafe { libc::geteuid() }
+            && parent.permissions().mode() & 0o777 == 0o700,
+        "capture credential directory must be private and owned (0700)"
+    );
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(path)
         .context("open launch-local capture credentials")?;
     let metadata = file.metadata()?;
@@ -103,12 +117,20 @@ fn read_credentials(path: &Path, kind: HarnessKind) -> Result<Capture> {
 /// Replace this process with the shared MCP using private launch credentials.
 pub(super) fn exec_mcp(path: &Path, kind: HarnessKind) -> Result<i32> {
     let capture = read_credentials(path, kind)?;
-    if kind == HarnessKind::Agy {
-        bail!("Antigravity uses its native installed MCP authentication");
-    }
     let mut command =
         Command::new(std::env::current_exe().context("locate shared MCP executable")?);
     capture.apply(&mut command);
+    if kind == HarnessKind::Agy {
+        for name in [
+            "ANTIGRAVITY_LS_ADDRESS",
+            "ANTIGRAVITY_CSRF_TOKEN",
+            "ANTIGRAVITY_CONVERSATION_ID",
+        ] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+    }
     command.args(["capture", "mcp", "--harness", kind.as_str()]);
     Err(command.exec()).context("execute launch-authenticated shared MCP")
 }

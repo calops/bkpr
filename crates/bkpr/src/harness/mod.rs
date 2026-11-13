@@ -5,6 +5,7 @@ mod assets;
 mod claude;
 mod claude_inbox;
 mod codex;
+pub(crate) mod install;
 mod omp;
 mod opencode;
 mod pi;
@@ -130,28 +131,7 @@ pub(crate) fn dispatch(program: &OsStr, arguments: Vec<OsString>) -> Result<Opti
             launch(kind, executable_name, arguments.collect()).map(Some)
         }
         Some(command) if command == "capture" => capture_command(arguments.collect()).map(Some),
-        Some(command) if command == "install" => {
-            let integration = arguments.next();
-            if integration
-                .as_deref()
-                .is_some_and(|argument| argument == "--help" || argument == "-h")
-            {
-                crate::help::print_command("install")?;
-                return Ok(Some(0));
-            }
-            if integration.as_deref() != Some(OsStr::new("agy")) {
-                bail!("usage: bkpr install agy");
-            }
-            let arguments: Vec<_> = arguments.collect();
-            if arguments
-                .iter()
-                .any(|argument| argument == "--help" || argument == "-h")
-            {
-                crate::help::print_command("install agy")?;
-                return Ok(Some(0));
-            }
-            agy::install(arguments).map(Some)
-        }
+        Some(command) if command == "install" => install::run(arguments.collect()).map(Some),
         _ => Ok(None),
     }
 }
@@ -231,6 +211,8 @@ fn capture_command(arguments: Vec<OsString>) -> Result<i32> {
         }
         Some(command) if command == "status" => status::cli(arguments.collect()),
         Some(command) if command == "agy-receiver" => agy::receiver(arguments.collect()),
+        Some(command) if command == "installed-mcp" => install::bridge(arguments.collect(), false),
+        Some(command) if command == "installed-hook" => install::bridge(arguments.collect(), true),
         Some(command) if command == "mcp" => {
             if arguments.next().as_deref() != Some(OsStr::new("--harness")) {
                 bail!("usage: bkpr capture mcp --harness HARNESS");
@@ -396,7 +378,10 @@ fn private_environment(name: &OsStr) -> bool {
     let name = name.as_bytes();
     matches!(
         name,
-        b"ANTIGRAVITY_LS_ADDRESS" | b"ANTIGRAVITY_CSRF_TOKEN" | b"ANTIGRAVITY_CONVERSATION_ID"
+        b"ANTIGRAVITY_LS_ADDRESS"
+            | b"ANTIGRAVITY_CSRF_TOKEN"
+            | b"ANTIGRAVITY_CONVERSATION_ID"
+            | b"BKPR_INTEGRATION_FILE"
     ) || [
         b"BKPR_CAPTURE_".as_slice(),
         b"BKPR_AGENT_",

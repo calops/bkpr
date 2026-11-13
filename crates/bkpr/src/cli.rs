@@ -249,16 +249,7 @@ pub fn command() -> Command {
                 .arg(Arg::new("harness").required(true).value_name("HARNESS").help("Harness to launch"))
                 .arg(Arg::new("args").value_name("ARGS").help("Arguments passed unchanged to the harness").trailing_var_arg(true).num_args(0..).allow_hyphen_values(true)),
         )
-        .subcommand(
-            Command::new("install")
-                .about("Install an explicit harness integration")
-                .subcommand_required(true)
-                .subcommand(
-                    Command::new("agy")
-                        .about("Register the Antigravity context/capture MCP server")
-                        .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue).help("Show changes without applying them")),
-                ),
-        )
+        .subcommand(crate::harness::install::command())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

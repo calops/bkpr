@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { createNativeCallbacksFromFile, parseInboxPointer, type InboxPointer, type Json, type NativeCallbacks } from '../shared/native.ts';
+import { optionalNativeCallbacks, parseInboxPointer, type InboxPointer, type Json, type NativeCallbacks } from '../shared/native.ts';
 
 const SOURCE = 'pi_extension';
 const MAX_FRAME = 1024 * 1024;
@@ -139,9 +138,13 @@ export function registerPiCapture(pi: ExtensionAPI, native: NativeCallbacks, cap
 
   // Use the built-in MCP implementation and its native default codemode exposure. File-configured
   // same-name servers and native MCP opt-outs retain Pi's own precedence and diagnostics.
-  pi.registerMcpServer('bkpr', {
+  pi.registerMcpServer('bkpr', captureFile ? {
     command: native.program,
     args: ['capture', 'mcp', '--harness', 'pi', '--capture-file', captureFile],
+  } : {
+    command: native.program,
+    args: ['capture', 'mcp', '--harness', 'pi'],
+    env: Object.fromEntries(Object.entries(native.environment).filter((entry): entry is [string, string] => entry[1] !== undefined)),
   });
   pi.on('session_start', async (_event, ctx) => {
     if (disposed || ctx.mode !== 'tui') return;
@@ -195,17 +198,9 @@ export function registerPiCapture(pi: ExtensionAPI, native: NativeCallbacks, cap
   // Do not duplicate reports, replace native UI components, or bypass its coordinated terminal API.
 }
 
-/** Load only the private launch package; bearer credentials never enter Pi's global environment. */
+/** Remain inert outside a managed launch; native discovery and explicit loading share one entry. */
 export default async function bkpr(pi: ExtensionAPI): Promise<void> {
-  const captureFile = fileURLToPath(new URL('../capture.json', import.meta.url));
-  let native: NativeCallbacks;
-  try {
-    native = await createNativeCallbacksFromFile('pi', captureFile);
-  } catch {
-    pi.on('session_start', (_event, ctx) => {
-      ctx.ui.notify('Private Bkpr managed capture setup is invalid or unavailable; capture is disabled.', 'warning');
-    });
-    return;
-  }
-  registerPiCapture(pi, native, captureFile);
+  const activation = await optionalNativeCallbacks('pi');
+  if (!activation) return;
+  registerPiCapture(pi, activation.native, activation.captureFile ?? '');
 }

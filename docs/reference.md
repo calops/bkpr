@@ -506,18 +506,57 @@ Claude, Codex, Omp, OpenCode 2, Pi and Antigravity have managed conversation ada
 | Pi | A launch-local extension awaits the native session-manager ID before input and follows native session replacement. |
 | OpenCode 2 | Native server/TUI plugins bind the selected root before prompt admission and fence MCP calls to that conversation generation. |
 
-Antigravity requires explicit installation on the account where it runs:
+#### Durable native integrations
+
+`bkpr install HARNESS` supports `claude`, `codex`, `omp`, `pi`, `opencode`
+(OpenCode 2) and `agy`. Run it on the host/account where that harness runs:
 
 ```sh
-bkpr install agy --dry-run
-bkpr install agy
+bkpr install claude --dry-run
+bkpr install claude
 ```
 
-Installation uses Antigravity's own CLI, preserves unrelated settings and refuses
-conflicting registrations. Normal launches never install it automatically.
-The MCP adapter exposes authenticated context and peer communication. Native
-receiver bootstrap requires Antigravity's own command approval; Bkpr never
-approves it automatically.
+| Option | Behavior |
+| --- | --- |
+| `--inspect` | Report configured ownership and known native restrictions; loaded state stays unknown. |
+| `--dry-run` | Validate and show installation changes without writing or starting a harness. |
+| `--update` | Update owned code/settings, preserving native preferences and unrelated configuration. |
+| `--uninstall` | Remove this profile's owned integration; unrelated servers, hooks and settings remain. |
+| `--json` | Return a structured report instead of human-readable output. |
+
+Claude uses native user MCP settings and command hooks; Codex uses its native
+TOML MCP entry. Omp and Pi use native extension discovery; Omp also configures its
+native MCP entry, while Pi registers MCP through its extension API. OpenCode 2
+uses the same native plugin package in its server and CLI configuration plus
+its native MCP entry. Antigravity uses its native MCP configuration and
+root-conversation metadata. Supported native profile/directory environment
+overrides are honored; for example, `OMP_PROFILE=work bkpr install omp`.
+
+Installation stores code references and ownership records, never launch IDs,
+tokens, sockets, live bindings or approvals. Managed launches supply private
+credentials separately. Outside a valid managed launch, installed extensions
+and hooks stay inactive and the installed MCP exposes no tools. Durable
+installation does not adopt an unwrapped process: ordinary Bkpr wrappers or
+`bkpr run HARNESS` still establish launch authority.
+
+Normal launches do not install or update profiles. Missing installations retain
+the private launch-local path where supported; stale, edited or conflicting
+installations require explicit repair rather than duplicate injection.
+Restart/reload the native harness after changes. Native trust, authentication,
+disabled settings and tool approvals remain authoritative; Antigravity receiver
+bootstrap still requires its native command approval.
+
+JSONC/TOML edits preserve unrelated settings and formatting. New directories are
+0700 and files 0600; existing configuration modes are preserved. Documents are
+bounded to 16 MiB. Symlinks, hardlinks, unsafe ownership and conflicting entries
+are refused rather than overwritten.
+
+Each changed file is atomically replaced and synced, under a Bkpr installation
+lock. This is not a globally atomic transaction with native applications:
+uncooperative writers can still race it. Detected changes abort; rollback only
+restores bytes still matching Bkpr's write. Errors never claim a durable commit.
+An interrupted operation retains a credential-free ownership journal for
+`--update` or `--uninstall`; uncertain restoration is reported explicitly.
 
 Cursor Agent, Copilot, Aider, Cline and Goose are recognition-only.
 `bkpr run cursor` selects `cursor-agent`, never the Cursor GUI. Native help,
@@ -667,14 +706,14 @@ not terminal input, to communicate with another agent.
 ### Agent communication
 
 Managed Claude, Codex, Omp, OpenCode 2, Pi and Antigravity launches expose the
-shared Bkpr MCP tools. All except Antigravity register it launch-locally as
-`bkpr`, without changing persistent MCP configuration. Antigravity requires the
-explicit installation described under [Harness capture](#harness-capture). Omp's extension handles native conversation
-binding and wake notifications; its launch-local `bkpr-control` skill describes the
-available control and communication tools. It also enables inline Kitty images
-through Omp's native TUI capability API, without spoofing terminal identity.
-Explicit `PI_FORCE_IMAGE_PROTOCOL` preferences, including `off`, remain authoritative.
-No persistent Omp configuration is changed.
+shared Bkpr MCP tools as `bkpr`. They reuse an explicitly installed native
+integration when present; otherwise supported adapters use launch-local
+configuration. Antigravity requires [explicit installation](#durable-native-integrations).
+Omp's extension handles native binding and wake notifications; its launch-local
+`bkpr-control` skill describes the shared tools. It also enables inline Kitty
+images through Omp's native TUI capability API, without spoofing terminal
+identity. Explicit `PI_FORCE_IMAGE_PROTOCOL` preferences, including `off`,
+remain authoritative. Only explicit installation commands change native profiles.
 
 Managed Codex's local TUI receives a launch-only `TERM_PROGRAM=kitty` compatibility
 override so its terminal-name-based detector can select Bkpr's inline graphics.

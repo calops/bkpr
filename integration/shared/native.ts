@@ -71,7 +71,7 @@ export function parseInboxPointer(value: unknown): InboxPointer {
 /** Read an owned 0600 launch context, rejecting symlinks, invalid grants, and files larger than 64 KiB. */
 export async function createNativeCallbacksFromFile(kind: string, path: string): Promise<NativeCallbacks> {
   if (!isAbsolute(path)) throw new Error('invalid native capture file');
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   let config: Json;
   try {
     const stat = await file.stat();
@@ -95,13 +95,45 @@ export async function createNativeCallbacksFromFile(kind: string, path: string):
       typeof config.socket !== 'string' || !isAbsolute(config.socket)) throw new Error('invalid private native capture setup');
   const environment = { ...process.env };
   for (const key of Object.keys(environment)) {
-    if (key.startsWith('BKPR_CAPTURE_') || key.startsWith('BKPR_AGENT_')) delete environment[key];
+    if (key.startsWith('BKPR_CAPTURE_') || key.startsWith('BKPR_AGENT_')) {
+      delete environment[key];
+      delete process.env[key];
+    }
   }
   const callbacks = createNativeCallbacks(kind, { ...environment,
     BKPR_CAPTURE_LAUNCH_ID: grant.launch_id, BKPR_CAPTURE_TOKEN: grant.token, BKPR_CAPTURE_HARNESS: kind,
     BKPR_CAPTURE_PROGRAM: config.program, BKPR_SOCKET: config.socket, BKPR_PANE_ID: grant.pane_id });
   if (!callbacks) throw new Error('native capture setup unavailable');
   return callbacks;
+}
+
+/** Detect launch-local activation proof before asynchronous plugin admission work. */
+export function nativeActivationPresent(explicitCaptureFile?: unknown): boolean {
+  return explicitCaptureFile !== undefined || process.env.BKPR_INTEGRATION_FILE !== undefined ||
+    Object.keys(process.env).some(key => key.startsWith('BKPR_CAPTURE_'));
+}
+
+/** Select explicit native options, the managed-launch hint, then legacy ephemeral capture. */
+export async function optionalNativeCallbacks(kind: string, explicitCaptureFile?: unknown):
+Promise<{ native: NativeCallbacks; captureFile?: string } | undefined> {
+  const captureFile = explicitCaptureFile !== undefined ? explicitCaptureFile : process.env.BKPR_INTEGRATION_FILE;
+  if (captureFile !== undefined) {
+    if (typeof captureFile !== 'string' || !isAbsolute(captureFile)) throw new Error('invalid private native capture setup');
+    try {
+      return { native: await createNativeCallbacksFromFile(kind, captureFile), captureFile };
+    } catch {
+      throw new Error('invalid private native capture setup');
+    }
+  }
+  const present = Object.keys(process.env).some(key => key.startsWith('BKPR_CAPTURE_'));
+  const valid = (value: unknown, maximum = 256): value is string =>
+    typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= maximum && !/[\u0000-\u001f\u007f]/u.test(value);
+  if (present && (process.env.BKPR_CAPTURE_HARNESS !== kind ||
+      !valid(process.env.BKPR_CAPTURE_TOKEN, 4096) || !valid(process.env.BKPR_CAPTURE_LAUNCH_ID) ||
+      !valid(process.env.BKPR_PANE_ID) || !process.env.BKPR_CAPTURE_PROGRAM || !isAbsolute(process.env.BKPR_CAPTURE_PROGRAM) ||
+      !process.env.BKPR_SOCKET || !isAbsolute(process.env.BKPR_SOCKET))) throw new Error('invalid private native capture setup');
+  const native = createNativeCallbacks(kind);
+  return native ? { native } : undefined;
 }
 
 /** Claim this managed launch's callbacks and remove its capabilities from inherited environments. */

@@ -1,7 +1,7 @@
 import { Plugin } from '@opencode/plugin';
 import { randomUUID } from 'node:crypto';
 import { Contract } from './rpc.ts';
-import { createNativeCallbacksFromFile } from '../shared/native.ts';
+import { nativeActivationPresent, optionalNativeCallbacks } from '../shared/native.ts';
 import { conversation, object, recoveryIdentity, requiredRequest, sessionID, validateRecovery,
   type Conversation, type RequiredSession, type RequiredSessionRequest } from './session.ts';
 
@@ -51,11 +51,12 @@ function acquireLifecycle(captureFile: unknown): Lifecycle {
 export default Plugin.define({
   id: 'bkpr-native',
   async setup(ctx) {
+    if (!nativeActivationPresent(ctx.options.captureFile)) return;
     type Answer = { selected: string | null; restored: boolean; binding: Conversation | null; inactive?: true; owner?: string };
     type Pending = { sessionID: string; purpose: 'prompt' | 'tool' | 'wake'; resolve(answer: Answer): void; reject(error: Error): void; timer: NodeJS.Timeout };
     // This is a pre-admission identity/selection fence, not evidence that the
     // native route finished loading or that a prompt was durably admitted.
-    const captureFile = ctx.options.captureFile;
+    const captureFile = ctx.options.captureFile ?? process.env.BKPR_INTEGRATION_FILE ?? process.env.BKPR_CAPTURE_LAUNCH_ID;
     let lifecycle: Lifecycle;
     try { lifecycle = acquireLifecycle(captureFile); } catch (error) {
       process.stderr.write('bkpr: private native lifecycle enrollment is unavailable\n');
@@ -199,8 +200,9 @@ export default Plugin.define({
     });
     try {
       requested = requiredRequest(ctx.options.requiredSession);
-      if (typeof ctx.options.captureFile !== 'string') throw new Error('missing private native capture file');
-      const native = await createNativeCallbacksFromFile('opencode', ctx.options.captureFile);
+      const activation = await optionalNativeCallbacks('opencode', ctx.options.captureFile);
+      if (!activation) throw new Error('private native capture setup unavailable');
+      const { native } = activation;
       toolContext = await ctx.tool.hook('execute.before', async event => {
         // Native MCP effectiveName prefixes the normalized server namespace
         // with "_". Public ToolDomain has no get(id), so avoid constructing

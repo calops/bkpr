@@ -52,10 +52,14 @@ test('native root prompt facts and batched wake pointers remain body-free and la
   // Import after mocking: this fixture intentionally exercises the module's native subprocess boundary.
   const { default: extension } = await import('./index');
   const previous = Object.fromEntries(Object.entries(process.env)
-    .filter(([key]) => key.startsWith('BKPR_CAPTURE_') || key.startsWith('BKPR_AGENT_')));
+    .filter(([key]) => key.startsWith('BKPR_CAPTURE_') || key.startsWith('BKPR_AGENT_') || key === 'BKPR_SOCKET' || key === 'BKPR_PANE_ID' || key === 'BKPR_INTEGRATION_FILE'));
+  delete process.env.BKPR_INTEGRATION_FILE;
   process.env.BKPR_CAPTURE_HARNESS = 'omp';
   process.env.BKPR_CAPTURE_PROGRAM = '/private/fixture/bkpr';
   process.env.BKPR_CAPTURE_TOKEN = 'private-fixture-capability';
+  process.env.BKPR_CAPTURE_LAUNCH_ID = 'private-fixture-launch';
+  process.env.BKPR_PANE_ID = 'private-fixture-pane';
+  process.env.BKPR_SOCKET = '/private/fixture/socket';
   const handlers = new Map<string, Handler>();
   let session = 'native-one';
   const context = {
@@ -69,7 +73,7 @@ test('native root prompt facts and batched wake pointers remain body-free and la
   try {
     // Deliberately partial fake host: only the native surfaces this integration consumes.
     const host = api as unknown as Parameters<typeof extension>[0];
-    extension(host);
+    await extension(host);
     await handlers.get('session_start')!({}, context);
     await handlers.get('before_agent_start')!({ reason: 'revive', prompt: 'PRIVATE_PROMPT' }, context);
     expect(commands.filter(args => args[1] === 'prompt-submitted')).toHaveLength(0);
@@ -142,7 +146,7 @@ test('native root prompt facts and batched wake pointers remain body-free and la
   } finally {
     await handlers.get('session_shutdown')?.({}, context);
     for (const key of Object.keys(process.env)) {
-      if (key.startsWith('BKPR_CAPTURE_') || key.startsWith('BKPR_AGENT_')) delete process.env[key];
+      if (key.startsWith('BKPR_CAPTURE_') || key.startsWith('BKPR_AGENT_') || key === 'BKPR_SOCKET' || key === 'BKPR_PANE_ID' || key === 'BKPR_INTEGRATION_FILE') delete process.env[key];
     }
     Object.assign(process.env, previous);
     mock.restore();

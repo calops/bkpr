@@ -100,6 +100,7 @@ fn interactive_arguments(arguments: &[OsString]) -> bool {
 }
 
 /// Launch an interactive Pi TUI with a private native extension and shared MCP.
+/// Run supported interactive native launches with scoped capture; preserve native utility modes and exit status.
 pub(super) fn launch(executable: PathBuf, arguments: Vec<OsString>) -> Result<i32> {
     if !std::io::stdin().is_terminal()
         || !std::io::stdout().is_terminal()
@@ -107,28 +108,36 @@ pub(super) fn launch(executable: PathBuf, arguments: Vec<OsString>) -> Result<i3
     {
         return passthrough(&executable, arguments);
     }
+    let installed = super::install::runtime(HarnessKind::Pi, Default::default())?;
     let capture = Capture::begin(HarnessKind::Pi)?;
     let package = assets::private_directory("bkpr-pi-")?;
     let directory = package.path();
-    fs::create_dir(directory.join("pi"))?;
-    fs::create_dir(directory.join("shared"))?;
-    let extension = directory.join("pi/index.ts");
-    assets::write_private(
-        &extension,
-        include_bytes!("../../../../integration/pi/index.ts"),
-    )?;
-    assets::write_private(
-        &directory.join("shared/native.ts"),
-        include_bytes!("../../../../integration/shared/native.ts"),
-    )?;
+    let extension = if installed.is_some() {
+        None
+    } else {
+        fs::create_dir(directory.join("pi"))?;
+        fs::create_dir(directory.join("shared"))?;
+        let extension = directory.join("pi/index.ts");
+        assets::write_private(
+            &extension,
+            include_bytes!("../../../../integration/pi/index.ts"),
+        )?;
+        assets::write_private(
+            &directory.join("shared/native.ts"),
+            include_bytes!("../../../../integration/shared/native.ts"),
+        )?;
+        Some(extension)
+    };
     assets::write_credentials(&capture, &directory.join("capture.json"))?;
     let guide = directory.join("bkpr-instructions.md");
     assets::write_private(&guide, agent::INSTRUCTIONS.as_bytes())?;
     let mut command = Command::new(executable);
     scrub(&mut command);
+    command.env("BKPR_INTEGRATION_FILE", directory.join("capture.json"));
+    if let Some(extension) = extension {
+        command.arg("--extension").arg(extension);
+    }
     command
-        .arg("--extension")
-        .arg(extension)
         .arg("--append-system-prompt")
         .arg(guide)
         .args(arguments);
