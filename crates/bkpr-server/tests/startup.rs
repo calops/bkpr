@@ -1105,9 +1105,13 @@ fn owned_native_fixture() {
     assert!(begin.ok, "{:?}", begin.error);
     let grant: CaptureGrant =
         serde_json::from_value(begin.result.unwrap().into_json().unwrap()).unwrap();
-    let _native = NativeFixtureChild(Command::new(home.join("native/codex"))
-        .args(["-c", "printf ready > \"$HOME/native-ready\"; while test ! -f \"$HOME/release-native\"; do sleep 0.02; done"])
-        .spawn().unwrap());
+    let _native = NativeFixtureChild(
+        Command::new(home.join("native/codex"))
+            .args(["-c", "printf ready > \"$HOME/native-ready\"; read gate"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     wait_for(&home.join("native-ready"), b"ready");
     let bind = request(
         &socket,
@@ -1117,6 +1121,7 @@ fn owned_native_fixture() {
             event: CaptureEvent::Bind {
                 conversation_id: "owned-native-conversation".into(),
                 source: ConversationSource::CodexResume,
+                expected_revision: None,
             },
         },
     )

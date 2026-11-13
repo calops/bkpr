@@ -82,6 +82,7 @@ fn startup_control_peer_fixture() {
                 event: CaptureEvent::Bind {
                     conversation_id: "startup-attacker".into(),
                     source: ConversationSource::CodexResume,
+                    expected_revision: None,
                 },
             },
         )
@@ -95,6 +96,7 @@ fn startup_control_peer_fixture() {
         let request = Request::new(Operation::Agent {
             launch_id: grant.launch_id,
             token: grant.token,
+            guard: None,
             request: AgentRequest::Control {
                 scope: AgentScope::Session,
                 reply: bkpr_protocol::control::ControlReply::Full,

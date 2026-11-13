@@ -5,6 +5,9 @@ fn launch(id: &str) -> Launch {
     let process = proc::process(std::process::id() as i32).unwrap().unwrap();
     Launch {
         control: Default::default(),
+        binding_generation: 1,
+        binding_guard: None,
+        binding_context_admitted: false,
         root: process.clone(),
         pane_root: process,
         grant: CaptureGrant {
@@ -51,6 +54,7 @@ fn context(id: &str, workspace: Option<&str>) -> ContextFact {
             source: ConversationSource::OmpExtension,
             generation: 1,
         }),
+        binding_revision: 1,
         cwd: Some(PathBuf::from("/")),
         repository: Some(PathBuf::from("/repository.git")),
         registry_revision: 7,
@@ -931,6 +935,7 @@ fn conversation_rebind_wins_over_receiver_registration_waiting_on_writer() {
             CaptureEvent::Bind {
                 conversation_id: "replacement-native".into(),
                 source: ConversationSource::OmpExtension,
+                expected_revision: None,
             },
         )
         .unwrap();
@@ -1043,6 +1048,7 @@ fn native_rebind_does_not_replay_old_ambiguity_but_new_messages_get_new_generati
             CaptureEvent::Bind {
                 conversation_id: "replacement-native".into(),
                 source: ConversationSource::OmpExtension,
+                expected_revision: None,
             },
         )
         .unwrap();

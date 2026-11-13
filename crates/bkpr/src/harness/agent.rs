@@ -2,7 +2,7 @@
 use super::Capture;
 use anyhow::{Context, Result, bail};
 use bkpr_protocol::{
-    AgentRequest, AgentScope, HarnessKind, Operation,
+    AgentBindingGuard, AgentRequest, AgentScope, HarnessKind, NativeConversation, Operation,
     control::{self, ControlAction},
 };
 use serde_json::{Value, json};
@@ -176,6 +176,14 @@ pub(super) fn resolve_request(request: Value) -> Result<RequestAction> {
 }
 
 pub(super) fn call_request(capture: &Capture, request: Value) -> Result<Value> {
+    call_request_guarded(capture, request, None)
+}
+
+fn call_request_guarded(
+    capture: &Capture,
+    request: Value,
+    guard: Option<AgentBindingGuard>,
+) -> Result<Value> {
     let request = match resolve_request(request)? {
         RequestAction::Local(value) => return Ok(value),
         RequestAction::Native(request) => request,
@@ -186,6 +194,7 @@ pub(super) fn call_request(capture: &Capture, request: Value) -> Result<Value> {
     capture.request(Operation::Agent {
         launch_id: capture.grant.launch_id.clone(),
         token: capture.grant.token.clone(),
+        guard,
         request,
     })
 }
@@ -197,6 +206,7 @@ fn subscription(capture: &Capture, request: AgentRequest) -> Result<Value> {
     let operation = Operation::Agent {
         launch_id: capture.grant.launch_id.clone(),
         token: capture.grant.token.clone(),
+        guard: None,
         request,
     };
     bkpr_client::transport::checked_stream(&mut stream, operation)
@@ -387,6 +397,37 @@ pub(super) fn tool_result(
     pages.present(result, origin, authenticate)
 }
 
+fn native_mcp_guard(
+    kind: HarnessKind,
+    message: &Value,
+    identity: &Value,
+) -> Result<Option<AgentBindingGuard>> {
+    if kind != HarnessKind::Opencode {
+        return Ok(None);
+    }
+    let context_id = message["params"]["_meta"]["ai.opencode/sessionID"]
+        .as_str()
+        .context("native OpenCode session metadata is required")?;
+    super::validate_text(context_id, 256, "native tool context")?;
+    let conversation: NativeConversation = serde_json::from_value(identity["conversation"].clone())
+        .context("native OpenCode selected-root binding is unavailable")?;
+    Ok(Some(AgentBindingGuard {
+        conversation,
+        context_id: context_id.to_owned(),
+    }))
+}
+
+fn mcp_request(request_value: Value, guard: Option<&AgentBindingGuard>) -> Result<Value> {
+    match guard {
+        Some(guard) => call_request_guarded(
+            &Capture::from_environment()?,
+            request_value,
+            Some(guard.clone()),
+        ),
+        None => request(request_value),
+    }
+}
+
 pub(super) fn mcp(kind: HarnessKind) -> Result<i32> {
     // Reauthentication precedes advertising tools; no identity is minted here.
     if std::env::var_os("BKPR_AGENT_RELAY_SOCKET").is_none() {
@@ -462,6 +503,7 @@ pub(super) fn mcp(kind: HarnessKind) -> Result<i32> {
             std::thread::spawn(move || {
                 let mut origin = None;
                 let mut dispatched = false;
+                let mut guard = None;
                 let result = (|| -> Result<Value> {
                     if cancelled.load(Ordering::Acquire) {
                         bail!("cancelled before dispatch");
@@ -476,9 +518,14 @@ pub(super) fn mcp(kind: HarnessKind) -> Result<i32> {
                         .get("arguments")
                         .cloned()
                         .unwrap_or_else(|| json!({}));
-                    origin = Some(output::Owner::from_identity(&request(
-                        json!({"method":"whoami"}),
-                    )?)?);
+                    let identity = request(json!({"method":"whoami"}))?;
+                    guard = native_mcp_guard(kind, &message, &identity)?;
+                    let identity = if guard.is_some() {
+                        mcp_request(json!({"method":"whoami"}), guard.as_ref())?
+                    } else {
+                        identity
+                    };
+                    origin = Some(output::Owner::from_identity(&identity)?);
                     if name == "read_result" {
                         return pages
                             .read(origin.as_ref().expect("authenticated tool origin"), args);
@@ -490,7 +537,7 @@ pub(super) fn mcp(kind: HarnessKind) -> Result<i32> {
                         bail!("arguments cannot override method");
                     }
                     dispatched = true;
-                    let result = request(args);
+                    let result = mcp_request(args, guard.as_ref());
                     if cancelled.load(Ordering::Acquire) {
                         return Err(super::request_error(
                             "request cancelled after dispatch; outcome unknown, do not replay mutations",
@@ -505,7 +552,10 @@ pub(super) fn mcp(kind: HarnessKind) -> Result<i32> {
                     result.map_err(before_dispatch_error)
                 };
                 let presented = tool_result(&pages, result, origin.as_ref(), || {
-                    output::Owner::from_identity(&request(json!({"method":"whoami"}))?)
+                    output::Owner::from_identity(&mcp_request(
+                        json!({"method":"whoami"}),
+                        guard.as_ref(),
+                    )?)
                 });
                 let response = json!({"jsonrpc":"2.0","id":id,"result":presented});
                 let _ = write_frame(&mut *output.lock().unwrap(), &response);
@@ -552,6 +602,38 @@ pub(super) fn mcp(kind: HarnessKind) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_tools_require_native_context_metadata_not_model_arguments() {
+        let identity = json!({"conversation":{"id":"selected-root","source":"opencode_plugin","generation":7}});
+        for message in [
+            json!({"params":{}}),
+            json!({"params":{"arguments":{"sessionID":"selected-root","context_id":"selected-root"}}}),
+            json!({"params":{"_meta":{"ai.opencode/sessionID":""}}}),
+        ] {
+            assert!(native_mcp_guard(HarnessKind::Opencode, &message, &identity).is_err());
+        }
+        let message = json!({"params":{"_meta":{"ai.opencode/sessionID":"native-child"},"arguments":{"context_id":"forged-root"}}});
+        let guard = native_mcp_guard(HarnessKind::Opencode, &message, &identity)
+            .unwrap()
+            .unwrap();
+        assert_eq!(guard.context_id, "native-child");
+        assert_eq!(guard.conversation.id, "selected-root");
+        assert_eq!(guard.conversation.generation, 7);
+        assert!(
+            native_mcp_guard(
+                HarnessKind::Opencode,
+                &message,
+                &json!({"conversation":null})
+            )
+            .is_err()
+        );
+        assert!(
+            native_mcp_guard(HarnessKind::Pi, &json!({}), &json!({}))
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn control_rejects_wrong_input_tools_and_unknown_parameters() {

@@ -6,6 +6,7 @@ mod claude;
 mod claude_inbox;
 mod codex;
 mod omp;
+mod opencode;
 mod pi;
 mod status;
 
@@ -82,6 +83,7 @@ const MANAGED_NAMES: &[&str] = &[
     "agy",
     "antigravity",
     "opencode",
+    "opencode2",
     "cursor",
     "cursor-agent",
     "copilot",
@@ -174,6 +176,7 @@ fn launch(kind: HarnessKind, name: &str, arguments: Vec<OsString>) -> Result<i32
         HarnessKind::Omp => omp::launch(executable, arguments),
         HarnessKind::Agy => agy::launch(executable, arguments),
         HarnessKind::Pi => pi::launch(executable, arguments),
+        HarnessKind::Opencode => opencode::launch(executable, arguments),
         _ => passthrough(&executable, arguments),
     }
 }
@@ -196,6 +199,26 @@ fn capture_command(arguments: Vec<OsString>) -> Result<i32> {
         Some(command) if command == "prompt-submitted" => {
             let (source, id) = bind_arguments(arguments.collect())?;
             Capture::from_environment()?.prompt_submitted(source, &id)?;
+            Ok(0)
+        }
+        Some(command) if command == "event" => {
+            if arguments.next().as_deref() != Some(OsStr::new("--stdin"))
+                || arguments.next().is_some()
+            {
+                bail!("usage: bkpr capture event --stdin");
+            }
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .lock()
+                .take((agent::MAX_FRAME + 1) as u64)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > agent::MAX_FRAME {
+                bail!("capture event exceeds frame limit");
+            }
+            let event: CaptureEvent = serde_json::from_value(agy::strict_json(&bytes)?)
+                .map_err(|_| anyhow::anyhow!("invalid typed capture event"))?;
+            let value = Capture::from_environment()?.event(event)?;
+            agent::write_frame(&mut std::io::stdout().lock(), &value)?;
             Ok(0)
         }
         Some(command) if command == "agent" => agent::cli(arguments.collect()),
@@ -493,6 +516,13 @@ impl Capture {
         bkpr_client::transport::checked(&self.socket, operation)
             .map_err(|error| sanitize_request_error(error, &self.grant.token))
     }
+    pub(super) fn event(&self, event: CaptureEvent) -> Result<serde_json::Value> {
+        self.request(Operation::HarnessEvent {
+            launch_id: self.grant.launch_id.clone(),
+            token: self.grant.token.clone(),
+            event,
+        })
+    }
 
     pub(super) fn bind(&self, source: ConversationSource, id: &str) -> Result<()> {
         if source.harness() != self.grant.kind {
@@ -505,6 +535,7 @@ impl Capture {
             event: CaptureEvent::Bind {
                 conversation_id: id.to_owned(),
                 source,
+                expected_revision: None,
             },
         })?;
         Ok(())
@@ -779,6 +810,8 @@ mod tests {
             ("antigravity", 43),
             ("copilot", 44),
             ("copilot-cli", 45),
+            ("opencode", 46),
+            ("opencode2", 47),
         ] {
             executable(
                 &root.path().join(name),
@@ -789,6 +822,7 @@ mod tests {
             ("claude-code", 41),
             ("antigravity", 43),
             ("copilot-cli", 45),
+            ("opencode2", 47),
         ] {
             for invocation in [
                 vec![name, "--version"],

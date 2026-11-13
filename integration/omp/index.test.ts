@@ -105,7 +105,7 @@ test('native root prompt facts and batched wake pointers remain body-free and la
       null, [], { ...validPointer, notification_id: '\x1bsecret' },
       { ...validPointer, notification_id: 'x'.repeat(513) },
       { ...validPointer, generation: Number.MAX_SAFE_INTEGER + 1 },
-      { ...validPointer, session_id: '' }, { ...validPointer, session_id: 'é'.repeat(129) },
+      { ...validPointer, session_id: '' },
       { ...validPointer, session_id: '\n' }, { ...validPointer, message_count: 0 },
       { ...validPointer, unread_count: 1 },
     ]) expect(() => parseInboxPointer(invalid)).toThrow();

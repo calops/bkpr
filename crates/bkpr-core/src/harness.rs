@@ -21,11 +21,43 @@ pub(crate) struct Launch {
     pub grant: CaptureGrant,
     pub managed: ManagedHarness,
     pub(crate) control: crate::ControlLease,
+    pub(crate) binding_generation: u64,
+    /// Request-local only; never retained in the capture registry or durable store.
+    pub(crate) binding_guard: Option<AgentBindingGuard>,
+    /// Private, in-process admission witness. Never decoded from the wire.
+    pub(crate) binding_context_admitted: bool,
 }
 impl Launch {
     pub(crate) fn control_lease(&self) -> Result<crate::ControlLease> {
         self.control.bind(&self.root, &self.pane_root)?;
         Ok(self.control.clone())
+    }
+    pub(crate) fn binding_snapshot(&self) -> NativeBindingSnapshot {
+        NativeBindingSnapshot {
+            revision: self.binding_generation,
+            conversation: self.managed.conversation.clone(),
+        }
+    }
+    pub(crate) fn accepts_binding_event(&self, event: &CaptureEvent) -> Result<bool> {
+        Ok(match event {
+            CaptureEvent::Bind {
+                expected_revision, ..
+            } => {
+                ensure!(
+                    self.grant.kind != HarnessKind::Opencode || expected_revision.is_some(),
+                    "OpenCode conversation bind requires a binding revision"
+                );
+                expected_revision.is_none_or(|revision| revision == self.binding_generation)
+            }
+            CaptureEvent::Unbind {
+                conversation,
+                expected_revision,
+            } => {
+                *expected_revision == self.binding_generation
+                    && *conversation == self.managed.conversation
+            }
+            _ => true,
+        })
     }
 }
 #[derive(Default)]
@@ -33,6 +65,50 @@ pub(crate) struct Captures {
     pub launches: BTreeMap<String, Launch>,
     pub version: u64,
     pub native_status: BTreeMap<String, NativeStatusChannel>,
+    native_contexts: BTreeMap<String, NativeContexts>,
+}
+
+const NATIVE_CONTEXT_CACHE_BYTES: usize = 64 * 1024;
+const NATIVE_CONTEXT_CACHE_ENTRIES: usize = 256;
+
+#[derive(Default)]
+struct NativeContexts {
+    entries: BTreeMap<String, u64>,
+    bytes: usize,
+    clock: u64,
+}
+impl NativeContexts {
+    fn contains(&self, context_id: &str) -> bool {
+        self.entries.contains_key(context_id)
+    }
+    fn attest(&mut self, context_id: String) {
+        self.clock = self.clock.checked_add(1).unwrap_or_else(|| {
+            // Cache turnover cannot revoke an admitted request's epoch witness.
+            self.entries.clear();
+            self.bytes = 0;
+            1
+        });
+        if let Some(refreshed) = self.entries.get_mut(&context_id) {
+            *refreshed = self.clock;
+            return;
+        }
+        while self.entries.len() >= NATIVE_CONTEXT_CACHE_ENTRIES
+            || self.bytes + context_id.len() > NATIVE_CONTEXT_CACHE_BYTES
+        {
+            let oldest = *self.entries.values().min().expect("nonempty context cache");
+            let bytes = &mut self.bytes;
+            self.entries.retain(|id, age| {
+                if *age == oldest {
+                    *bytes -= id.len();
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        self.bytes += context_id.len();
+        self.entries.insert(context_id, self.clock);
+    }
 }
 /// Constructed exclusively from Unix socket credentials by the transport.
 pub(crate) struct Peer {
@@ -115,8 +191,16 @@ pub(crate) fn ancestry(peer: &Process, root: &Process) -> Result<Vec<Process>> {
 }
 pub(crate) fn reject_nested(chain: &[Process], kind: HarnessKind, begin: bool) -> Result<()> {
     let mut count = 0;
-    for p in chain {
+    for (index, p) in chain.iter().enumerate() {
         if let Some(found) = proc::kind(p.pid)? {
+            if found == HarnessKind::Opencode
+                && let Some(owner) = chain.get(index + 1)
+                && proc::owned_opencode_worker(p, owner)?
+            {
+                // The direct native standalone worker is one TUI's role, not
+                // a second harness. Its verified owner remains a boundary.
+                continue;
+            }
             ensure!(
                 !begin && found == kind,
                 "nested or unmanaged harness context"
@@ -161,12 +245,18 @@ impl Captures {
                 },
                 grant: grant.clone(),
                 control: crate::ControlLease::default(),
+                binding_generation: 0,
+                binding_guard: None,
+                binding_context_admitted: false,
             },
         );
         self.version = self.version.wrapping_add(1);
         Ok(grant)
     }
     pub fn lookup(&self, launch_id: &str, token: &str) -> Result<Launch> {
+        Ok(self.lookup_ref(launch_id, token)?.clone())
+    }
+    fn lookup_ref(&self, launch_id: &str, token: &str) -> Result<&Launch> {
         let launch = self
             .launches
             .get(launch_id)
@@ -176,32 +266,107 @@ impl Captures {
             token.len() == 64 && constant_equal(token.as_bytes(), launch.grant.token.as_bytes()),
             "invalid capture capability"
         );
-        Ok(launch.clone())
+        Ok(launch)
+    }
+    pub(crate) fn authorize(&self, request: &Launch) -> Result<()> {
+        let current = self
+            .launches
+            .get(&request.grant.launch_id)
+            .context("unknown or ended launch")?;
+        ensure!(
+            constant_equal(
+                request.grant.token.as_bytes(),
+                current.grant.token.as_bytes()
+            ),
+            "invalid capture capability"
+        );
+        if let Some(guard) = &request.binding_guard {
+            ensure!(
+                guard.conversation.generation != 0
+                    && current.managed.conversation.as_ref() == Some(&guard.conversation),
+                "native conversation binding guard changed"
+            );
+            ensure!(
+                request.control.same_authority(&current.control) && request.control.is_valid(),
+                "native conversation control binding changed"
+            );
+            ensure!(
+                request.binding_context_admitted
+                    || guard.context_id == guard.conversation.id
+                    || self
+                        .native_contexts
+                        .get(&request.grant.launch_id)
+                        .is_some_and(|contexts| contexts.contains(&guard.context_id)),
+                "native context is not authorized for this binding generation"
+            );
+        }
+        Ok(())
+    }
+    pub(crate) fn admit(&self, request: &mut Launch) -> Result<()> {
+        request.binding_context_admitted = false;
+        self.authorize(request)?;
+        // Membership is needed only at facade admission. Every later boundary
+        // still checks the immutable native root and the revocable control epoch.
+        request.binding_context_admitted = request.binding_guard.is_some();
+        Ok(())
+    }
+    fn validate_native_id(&self, id: &str) -> Result<()> {
+        ensure!(
+            !id.trim().is_empty() && id.len() <= 1024 && !id.chars().any(char::is_control),
+            "invalid native conversation ID"
+        );
+        ensure!(
+            !self
+                .launches
+                .values()
+                .any(|launch| id.contains(&launch.grant.token)),
+            "native conversation ID contains private capability"
+        );
+        Ok(())
     }
     pub fn event(&mut self, launch_id: &str, token: &str, event: CaptureEvent) -> Result<()> {
+        let event = match event {
+            CaptureEvent::NativeContext {
+                conversation,
+                context_id,
+            } => {
+                let launch = self.lookup_ref(launch_id, token)?;
+                ensure!(
+                    launch.managed.conversation.as_ref() == Some(&conversation),
+                    "native context binding generation changed"
+                );
+                self.validate_native_id(&context_id)?;
+                if context_id == conversation.id {
+                    return Ok(());
+                }
+                if let Some(contexts) = self.native_contexts.get_mut(launch_id) {
+                    contexts.attest(context_id);
+                } else {
+                    let mut contexts = NativeContexts::default();
+                    contexts.attest(context_id);
+                    self.native_contexts.insert(launch_id.to_owned(), contexts);
+                }
+                // No launch/store clone or pane/status publication per attestation.
+                return Ok(());
+            }
+            event => event,
+        };
         let launch = self.lookup(launch_id, token)?;
+        ensure!(
+            launch.accepts_binding_event(&event)?,
+            "native conversation binding revision changed"
+        );
         match event {
             CaptureEvent::Bind {
                 conversation_id,
                 source,
+                expected_revision,
             } => {
                 ensure!(
                     source.harness() == launch.grant.kind,
                     "conversation source does not match harness"
                 );
-                ensure!(
-                    !conversation_id.trim().is_empty()
-                        && conversation_id.len() <= 1024
-                        && !conversation_id.chars().any(char::is_control),
-                    "invalid native conversation ID"
-                );
-                ensure!(
-                    !self
-                        .launches
-                        .values()
-                        .any(|l| conversation_id.contains(&l.grant.token)),
-                    "conversation ID contains private capability"
-                );
+                self.validate_native_id(&conversation_id)?;
                 if launch.grant.kind == HarnessKind::Agy {
                     let id = Uuid::parse_str(&conversation_id)
                         .context("AGY conversation must be a canonical UUID")?;
@@ -211,22 +376,25 @@ impl Captures {
                     );
                 }
                 let launch = self.launches.get_mut(launch_id).unwrap();
-                if launch
-                    .managed
-                    .conversation
-                    .as_ref()
-                    .is_some_and(|c| c.id == conversation_id && c.source == source)
+                if expected_revision.is_none()
+                    && launch
+                        .managed
+                        .conversation
+                        .as_ref()
+                        .is_some_and(|c| c.id == conversation_id && c.source == source)
                 {
                     launch.managed.error = None;
                     self.version = self.version.wrapping_add(1);
                     return Ok(());
                 }
                 let generation = launch
-                    .managed
-                    .conversation
-                    .as_ref()
-                    .map_or(Some(1), |c| c.generation.checked_add(1))
+                    .binding_generation
+                    .checked_add(1)
                     .context("conversation generation exhausted")?;
+                launch.binding_generation = generation;
+                launch.control.revoke();
+                launch.control = crate::ControlLease::default();
+                self.native_contexts.remove(launch_id);
                 if let Some(channel) = self.native_status.remove(launch_id) {
                     channel.origin.revoke();
                 }
@@ -237,6 +405,21 @@ impl Captures {
                 });
                 launch.managed.error = None;
             }
+            CaptureEvent::Unbind { .. } => {
+                let generation = launch
+                    .binding_generation
+                    .checked_add(1)
+                    .context("conversation generation exhausted")?;
+                let launch = self.launches.get_mut(launch_id).unwrap();
+                launch.binding_generation = generation;
+                launch.managed.conversation = None;
+                launch.managed.error = None;
+                launch.control.revoke();
+                launch.control = crate::ControlLease::default();
+                self.native_contexts.remove(launch_id);
+                self.clear_native_status(launch_id);
+            }
+            CaptureEvent::NativeContext { .. } => unreachable!("attestation handled above"),
             CaptureEvent::PromptSubmitted {
                 conversation_id,
                 source,
@@ -284,13 +467,24 @@ impl Captures {
                 anyhow::bail!("native status requires authenticated enrollment")
             }
             CaptureEvent::End => {
-                launch.control.revoke();
-                self.launches.remove(launch_id);
-                self.clear_native_status(launch_id);
+                self.retire_launch(launch_id);
             }
         }
         self.version = self.version.wrapping_add(1);
         Ok(())
+    }
+    /// Revoke a launch and release its volatile capture resources.
+    pub fn retire_launch(&mut self, launch_id: &str) {
+        if let Some(launch) = self.launches.remove(launch_id) {
+            launch.control.revoke();
+        }
+        self.native_contexts.remove(launch_id);
+        self.clear_native_status(launch_id);
+    }
+    #[cfg(test)]
+    /// Return the number of retained per-launch native context caches.
+    pub(crate) fn native_context_cache_count(&self) -> usize {
+        self.native_contexts.len()
     }
     pub fn retire_pane(&mut self, pane_id: &str) {
         self.launches.retain(|_, launch| {
@@ -301,6 +495,8 @@ impl Captures {
                 true
             }
         });
+        self.native_contexts
+            .retain(|id, _| self.launches.contains_key(id));
         self.native_status.retain(|id, channel| {
             if self.launches.contains_key(id) {
                 true
@@ -375,6 +571,7 @@ pub(crate) fn provision(root: &Path, socket: &Path, executable: &Path) -> Result
         "agy",
         "antigravity",
         "opencode",
+        "opencode2",
         "cursor-agent",
         "copilot",
         "copilot-cli",
@@ -463,6 +660,7 @@ mod tests {
                 CaptureEvent::Bind {
                     conversation_id: "native".into(),
                     source: ConversationSource::ClaudeHook,
+                    expected_revision: None,
                 },
             )
             .unwrap();
@@ -592,6 +790,7 @@ mod tests {
         let bind = |id: &str| CaptureEvent::Bind {
             conversation_id: id.into(),
             source: ConversationSource::ClaudeHook,
+            expected_revision: None,
         };
         state
             .event(&grant.launch_id, &grant.token, bind("one"))
@@ -629,6 +828,99 @@ mod tests {
         );
     }
     #[test]
+    fn opencode_binding_requires_cas_and_unbound_enrollment_fences_old_producers() {
+        let mut state = Captures::default();
+        let grant = state
+            .insert(process(2), process(1), "pane".into(), HarnessKind::Opencode)
+            .unwrap();
+        let bind = |expected_revision| CaptureEvent::Bind {
+            conversation_id: "root-A".into(),
+            source: ConversationSource::OpencodePlugin,
+            expected_revision,
+        };
+        let initial = state.lookup(&grant.launch_id, &grant.token).unwrap();
+        let version = state.version;
+        assert!(
+            state
+                .event(&grant.launch_id, &grant.token, bind(None))
+                .is_err()
+        );
+        assert_eq!(state.version, version);
+        assert_eq!(
+            state
+                .lookup(&grant.launch_id, &grant.token)
+                .unwrap()
+                .binding_snapshot(),
+            NativeBindingSnapshot {
+                revision: 0,
+                conversation: None
+            },
+        );
+        assert!(initial.control.is_valid());
+        state
+            .event(
+                &grant.launch_id,
+                &grant.token,
+                CaptureEvent::Unbind {
+                    conversation: None,
+                    expected_revision: 0,
+                },
+            )
+            .unwrap();
+        assert!(!initial.control.is_valid());
+        let reserved = state.lookup(&grant.launch_id, &grant.token).unwrap();
+        assert_eq!(
+            reserved.binding_snapshot(),
+            NativeBindingSnapshot {
+                revision: 1,
+                conversation: None
+            }
+        );
+        let version = state.version;
+        assert!(
+            state
+                .event(&grant.launch_id, &grant.token, bind(Some(0)))
+                .is_err()
+        );
+        assert_eq!(state.version, version);
+        assert!(reserved.control.is_valid());
+        state
+            .event(&grant.launch_id, &grant.token, bind(Some(1)))
+            .unwrap();
+        let first = state.lookup(&grant.launch_id, &grant.token).unwrap();
+        assert_eq!(first.managed.conversation.as_ref().unwrap().generation, 2);
+        state
+            .event(&grant.launch_id, &grant.token, bind(Some(2)))
+            .unwrap();
+        assert!(!first.control.is_valid());
+        let replacement = state.lookup(&grant.launch_id, &grant.token).unwrap();
+        assert_eq!(replacement.binding_generation, 3);
+        assert_eq!(
+            replacement
+                .managed
+                .conversation
+                .as_ref()
+                .unwrap()
+                .generation,
+            3
+        );
+        let version = state.version;
+        assert!(
+            state
+                .event(
+                    &grant.launch_id,
+                    &grant.token,
+                    CaptureEvent::Unbind {
+                        conversation: first.managed.conversation,
+                        expected_revision: first.binding_generation,
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(state.version, version);
+        assert!(replacement.control.is_valid());
+    }
+    #[test]
     fn capabilities_sources_and_bounds_fail_closed() {
         let (mut state, grant) = captures();
         assert!(state.lookup(&grant.launch_id, &"0".repeat(64)).is_err());
@@ -639,7 +931,8 @@ mod tests {
                     &grant.token,
                     CaptureEvent::Bind {
                         conversation_id: "native".into(),
-                        source: ConversationSource::OmpExtension
+                        source: ConversationSource::OmpExtension,
+                        expected_revision: None,
                     }
                 )
                 .is_err()
@@ -662,7 +955,8 @@ mod tests {
                     &grant.token,
                     CaptureEvent::Bind {
                         conversation_id: " ".into(),
-                        source: ConversationSource::ClaudeHook
+                        source: ConversationSource::ClaudeHook,
+                        expected_revision: None,
                     }
                 )
                 .is_err()
@@ -689,7 +983,8 @@ mod tests {
                         &grant.token,
                         CaptureEvent::Bind {
                             conversation_id: id.into(),
-                            source: ConversationSource::AgyMcp
+                            source: ConversationSource::AgyMcp,
+                            expected_revision: None,
                         }
                     )
                     .is_err()
@@ -702,8 +997,40 @@ mod tests {
                 CaptureEvent::Bind {
                     conversation_id: "12345678-1234-1234-1234-123456789012".into(),
                     source: ConversationSource::AgyMcp,
+                    expected_revision: None,
                 },
             )
             .unwrap();
+    }
+    #[test]
+    fn native_context_cache_refreshes_and_turns_over_with_bounded_storage() {
+        let mut contexts = NativeContexts::default();
+        for index in 0..NATIVE_CONTEXT_CACHE_ENTRIES {
+            contexts.attest(format!("child-{index}"));
+        }
+        contexts.attest("child-0".into());
+        contexts.attest("newest-child".into());
+        assert!(contexts.contains("child-0"));
+        assert!(!contexts.contains("child-1"));
+        assert!(contexts.contains("newest-child"));
+        assert_eq!(contexts.entries.len(), NATIVE_CONTEXT_CACHE_ENTRIES);
+        let padding = "x".repeat(900);
+        for index in 0..1024 {
+            let id = format!("long-child-{index}-{padding}");
+            contexts.attest(id.clone());
+            assert!(contexts.contains(&id));
+            assert!(contexts.bytes <= NATIVE_CONTEXT_CACHE_BYTES);
+            assert!(contexts.entries.len() <= NATIVE_CONTEXT_CACHE_ENTRIES);
+            assert_eq!(
+                contexts.bytes,
+                contexts.entries.keys().map(String::len).sum::<usize>()
+            );
+        }
+        assert!(!contexts.contains("child-0"));
+        contexts.clock = u64::MAX;
+        contexts.attest("clock-rollover".into());
+        assert_eq!(contexts.clock, 1);
+        assert_eq!(contexts.entries.len(), 1);
+        assert!(contexts.contains("clock-rollover"));
     }
 }

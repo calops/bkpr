@@ -133,8 +133,24 @@ pub struct NativeConversation {
     pub id: String,
     /// Authenticated integration that supplied this binding.
     pub source: ConversationSource,
-    /// Launch-local binding generation, advanced when the ID or source changes.
+    /// Launch-local binding generation, advanced for each replacement or rebind.
     pub generation: u64,
+}
+/// Exact launch binding state used by conditional capture mutations.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeBindingSnapshot {
+    /// Monotonic launch-local revision, including unbound enrollment epochs.
+    pub revision: u64,
+    /// Current root binding, absent when the launch is unbound.
+    pub conversation: Option<NativeConversation>,
+}
+/// Exact native root and attested caller context required for one agent request.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentBindingGuard {
+    /// Current native root binding, including its launch-local generation.
+    pub conversation: NativeConversation,
+    /// Actual native MCP caller session, either the root or an attested child.
+    pub context_id: String,
 }
 /// Live managed-launch facts, excluding private capture capabilities.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -206,6 +222,25 @@ pub enum CaptureEvent {
         conversation_id: String,
         /// Integration matching the launch's harness family.
         source: ConversationSource,
+        /// Expected launch binding revision; managed OpenCode producers must supply it.
+        /// A successful conditional bind advances the revision even for the same root.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<u64>,
+    },
+    /// Withdraw this exact binding snapshot while retaining launch and saved recovery.
+    /// An unbound snapshot reserves a new enrollment epoch by advancing its revision.
+    Unbind {
+        /// Exact current root, or none when reserving an unbound enrollment epoch.
+        conversation: Option<NativeConversation>,
+        /// Required launch binding revision; zero is a valid initial revision.
+        expected_revision: u64,
+    },
+    /// Attest a native child context for the exact current root generation.
+    NativeContext {
+        /// Current root binding authorizing this context.
+        conversation: NativeConversation,
+        /// Actual native caller session ID, subject to native ID bounds.
+        context_id: String,
     },
     /// A body-free native event for the currently bound conversation.
     PromptSubmitted {

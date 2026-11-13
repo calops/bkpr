@@ -41,6 +41,7 @@ impl StatusFixture {
                     CaptureEvent::Bind {
                         conversation_id: id.into(),
                         source: ConversationSource::OpencodePlugin,
+                        expected_revision: Some(original.binding_generation),
                     },
                 )
                 .unwrap();
@@ -256,11 +257,20 @@ fn binding_switch_back_and_stream_replacement_never_restore_old_authority() {
     let old = fixture.enroll();
     fixture.report(&old, NativeStatusState::Working).unwrap();
     fixture.bind("session-one");
-    fixture.report(&old, NativeStatusState::Done).unwrap();
+    assert!(fixture.report(&old, NativeStatusState::Done).is_err());
+    assert!(fixture.info().harness_status.is_none());
+    let same_root = fixture.enroll();
+    assert!(same_root.binding.generation > old.binding.generation);
+    fixture.report(&same_root, NativeStatusState::Done).unwrap();
     fixture.bind("session-two");
     assert!(fixture.info().harness_status.is_none());
     fixture.bind("session-one");
     assert!(fixture.report(&old, NativeStatusState::Working).is_err());
+    assert!(
+        fixture
+            .report(&same_root, NativeStatusState::Working)
+            .is_err()
+    );
     let replacement = fixture.enroll();
     assert!(replacement.binding.generation > old.binding.generation);
     fixture

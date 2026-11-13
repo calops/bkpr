@@ -133,9 +133,9 @@ include OpenCode 1.
 Inside a Bkpr pane, use explicit managed launches such as `bkpr run claude`
 or `bkpr run pi` when testing the supported adapters. `nix develop` can place
 native executables ahead of Bkpr's private PATH wrappers, so a bare command is
-not proof of managed capture. OpenCode 2 currently runs natively, including
-through `bkpr run opencode`, without injected Bkpr MCP/capture configuration.
-Its shared-service integration is being designed; standalone mode is not forced.
+not proof of managed capture. `bkpr run opencode` uses OpenCode 2's private
+native standalone service with launch-local Bkpr MCP/capture configuration.
+Explicit external-service and utility modes remain native and unmanaged.
 See [Harness capture](#harness-capture) for the supported native behavior.
 
 ## Native CLI
@@ -500,7 +500,7 @@ bkpr run omp -- --help
 ```
 
 `bkpr run HARNESS [--] ARGS...` preserves native arguments and exit behavior.
-Claude, Codex, Omp, Pi and Antigravity have managed conversation adapters:
+Claude, Codex, Omp, OpenCode 2, Pi and Antigravity have managed conversation adapters:
 
 | Harness | Native binding mechanism |
 | --- | --- |
@@ -509,6 +509,7 @@ Claude, Codex, Omp, Pi and Antigravity have managed conversation adapters:
 | Omp | A launch-local extension captures the native session manager ID and session transitions. |
 | Antigravity | Its MCP request metadata supplies the root conversation ID. Registration alone is not binding or readiness. |
 | Pi | A launch-local extension awaits the native session-manager ID before input and follows native session replacement. |
+| OpenCode 2 | Native server/TUI plugins bind the selected root before prompt admission and fence MCP calls to that conversation generation. |
 
 Antigravity requires explicit installation on the account where it runs:
 
@@ -523,7 +524,7 @@ The MCP adapter exposes authenticated context and peer communication. Native
 receiver bootstrap requires Antigravity's own command approval; Bkpr never
 approves it automatically.
 
-OpenCode, Cursor Agent, Copilot, Aider, Cline and Goose are recognition-only.
+Cursor Agent, Copilot, Aider, Cline and Goose are recognition-only.
 `bkpr run cursor` selects `cursor-agent`, never the Cursor GUI. Native help,
 version and noninteractive modes run without capture credentials. Modes that
 cannot safely use an adapter retain native behavior rather than silently changing
@@ -531,14 +532,21 @@ their configuration: examples include Codex custom remote/profile/local-only
 startup options and Claude file-based settings. Such launches can remain
 recognition-only.
 
-OpenCode 1's adapter has been retired. OpenCode 2 launches keep native
-configuration and default connection mode without Bkpr-managed MCP/capture.
-Existing pane process ownership still applies: a shared service first started
-inside a pane may be terminated with that pane, unlike a preexisting external
-service. Saved OpenCode recovery descriptors remain readable but unavailable for
-managed resume; Bkpr never substitutes a fresh conversation. The
-[shared-service assessment](docs/pane-first-mux/implementation-plan.md#opencode-2-shared-service-integration-assessment)
-records the remaining identity, routing and process-lifecycle decisions.
+OpenCode's managed integration targets 2.2.7 and uses native `--standalone`.
+Its private service and MCP children belong to the captured TUI; native rendering,
+OSC 7501 status, titles and composer remain unchanged. Explicit `--server` and
+utility/headless modes keep native behavior without capture or injected MCP.
+Native configuration, instructions and plugins are preserved. Inbox wakes use
+the native future-turn queue, not simulated typing or active-turn interruption.
+`bkpr run opencode2` and the in-pane `opencode2` wrapper select that executable,
+not a different `opencode` found on `PATH`.
+
+Backend recovery opens the exact saved, existing native conversation through
+OpenCode's public routing API, with no fresh-session fallback or old inbox
+adoption. Ordinary user-supplied `--session` keeps its native behavior.
+OpenCode 1 is retired. Shared-service ownership and multi-client authority remain
+[separate research](docs/pane-first-mux/implementation-plan.md#opencode-2-shared-service-integration-assessment);
+standalone support does not establish those contracts.
 
 Pi uses its native extension API and built-in MCP with default codemode exposure
 (integration targets Pi 1.5.2). Native configuration and same-name MCP server

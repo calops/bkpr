@@ -3283,3 +3283,86 @@ Omp. Evaluation confirmed Omp, Pi and shared callbacks are present and retired
 OpenCode plugin assets are absent. No product release build was needed for this
 development-shell change.
 
+## OpenCode 2 managed standalone and conversation-fenced authority
+
+The interim adapter now uses native OpenCode **2.2.7** standalone services.
+This supersedes the earlier native-only integration state, not the unresolved
+shared-service ownership assessment above.
+
+### Actual native acceptance
+
+`target/smoke/opencode2-standalone/run-240886091141275/result.json` records
+**30/30 passing cases**, no provider errors and no unexercised matrix cases.
+The actual path was Kitty 0.49.2/Xvfb → Bkpr TUI → private backend PTY →
+managed native OpenCode TUI/private service → the shared Bkpr MCP. The native
+model transport used only a loopback fake provider. Fixtures ran as UID 1000
+with private HOME/XDG and only the loopback network interface; native approval
+state was not seeded, and native APIs were not replaced with mocks.
+
+The immutable debug pair is under
+`target/smoke/harness-integrations/build/compiled-240598743014009/executables/`:
+
+- `bkpr`: `fb1306922b4e11cb672fc75efa3f62e7e330c69255b9eb55fdf280d835497988`
+- `bkprd`: `1c47a2f0f49ee6e0408fd79683a3114eaf644f703df20e4afe70a3edc63405ff`
+- Native OpenCode ELF: `2206b87f2333ca1232728b69429f1c6cd591a80534c442510f23f685e8a6e51e`
+- Native wire family: **10**, requiring matching client/daemon binaries.
+
+Observed behavior:
+
+- Exact root binding before the first real composer prompt and cold `--prompt`;
+  all eleven shared MCP tools advertised, with actual `whoami`,
+  `discover_agents` and control execution.
+- Native OSC 7501 idle/working/question-blocked status and OSC 2 titles, without
+  a replacement renderer, editor, title or status writer.
+- Idle and busy future-turn wakes with accepted native queue receipts, preserved
+  unsent drafts, and independent durable send/wake/read/processed acknowledgment.
+  A wake before the first ordinary prompt did not fabricate that prompt fact.
+- Real child-session ancestry accepted; unrelated background-root MCP rejected.
+  Native new/resume/fork/child/home transitions revoked older generations.
+- Genuine `/plugins` TUI deactivation withdrew Core binding while ordinary
+  native prompts continued and Bkpr MCP was denied. Explicit reactivation
+  established a new generation, and subsequent location changes remained usable.
+  Native configuration wins over manual dialog toggles on reconciliation;
+  no sticky Bkpr preference overrides that native policy.
+- Ten native utility opt-outs, authenticated explicit external-server attachment
+  and actual headless execution retained native behavior without managed capture.
+- A real backend restart restored the exact existing native ID under a new
+  launch, without inventing a historical first prompt or adopting the old inbox.
+- Normal TUI exit removed its private service/MCP descendants. Initially missing
+  saved IDs, late deletion after recovery binding through both a new-root and
+  home route, and loss of the verified private service all ended the attempted
+  restore without another provider request or a fresh-session fallback.
+
+Eight actual terminal screenshots, per-case receipts, provider requests and
+negative-case chronologies are retained in the run directory. The native TUI
+and private service environments, configuration, database and cache contained
+no capture bearer. Only authenticated Bkpr MCP/subscription helpers carried their
+required bearer environment; `credential-environment-presence.json` records
+presence and exact process role, not credential values. Fixture and namespace
+cleanup ledgers contain no surviving owned births.
+
+### Corrected boundaries and regression evidence
+
+Genuine cold startup exposed independent server/TUI plugin loading. The adapter
+now uses native `plugin.updated` plus location inventory readiness, not provider
+catalog work, polling or replay of an unknown `activate` mutation. Genuine late
+recovery failure exposed premature server termination losing its volatile
+failure event. Cleanup now belongs to the owning TUI, awaits Core withdrawal and
+handles lifecycle-stream loss independently. Initial activation failure also
+distinguishes a current inactive owner from a genuinely superseding owner.
+
+Host workspace verification is in
+`target/smoke/harness-integrations/build/checks-240838087815945/`: 1,217
+top-level tests passed, plus owned subprocess fixtures. Protected formatting,
+all-target strict Clippy, compilation and doctests passed. Six separately
+isolated Bun consumer suites passed in
+`target/smoke/opencode2-standalone/unit-240837889208180/`. Malformed native queue
+receipts and precise async races are covered there rather than fabricated as
+genuine native fault injection. Public debug/release executable bytes, inodes,
+links and modification times were preserved; no live runtime was promoted.
+
+Recovery proves an identity/selection pre-admission fence, not an awaitable
+native route-completion acknowledgment or physical presentation receipt.
+The native Promise server getter's cancellation limit and shared-service work
+remain documented in the implementation plan.
+

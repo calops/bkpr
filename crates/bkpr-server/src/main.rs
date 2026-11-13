@@ -1,3 +1,5 @@
+//! Daemon startup, service wiring and owned shutdown over `bkpr-core`.
+
 use anyhow::{Context, Result, ensure};
 use bkpr_core::{diagnostics, registry::Registry, transport};
 use bkpr_protocol::{PaneSpawnSpec, Size, SpawnDefaults};
@@ -27,12 +29,16 @@ struct Cli {
     /// Initial pane working directory (defaults to invocation cwd).
     #[arg(long)]
     cwd: Option<PathBuf>,
+    /// Initial terminal width in character cells.
     #[arg(long, default_value_t = 100)]
     cols: u16,
+    /// Initial terminal height in character cells.
     #[arg(long, default_value_t = 30)]
     rows: u16,
+    /// Initial character-cell width in pixels.
     #[arg(long, default_value_t = 8)]
     cell_width: u32,
+    /// Initial character-cell height in pixels.
     #[arg(long, default_value_t = 16)]
     cell_height: u32,
     /// Restore saved owned panes/layout using this current shell command.

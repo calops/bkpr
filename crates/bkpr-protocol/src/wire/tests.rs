@@ -151,6 +151,7 @@ fn every_operation_and_optional_presence_roundtrips() {
         event: CaptureEvent::Bind {
             conversation_id: "日本語\0🦀".into(),
             source: ConversationSource::AgyMcp,
+            expected_revision: None,
         },
     });
     assert_request(Operation::HarnessContext {
@@ -160,6 +161,7 @@ fn every_operation_and_optional_presence_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "日本語\0🦀".into(),
         token: "日本語\0🦀".into(),
+        guard: None,
         request: AgentRequest::Whoami { detail: false },
     });
     assert_request(Operation::WorkspaceCreate {
@@ -309,6 +311,7 @@ fn every_operation_and_optional_presence_roundtrips() {
         event: CaptureEvent::Bind {
             conversation_id: "日本語\0🦀".into(),
             source: ConversationSource::AgyMcp,
+            expected_revision: None,
         },
     });
     assert_request(Operation::HarnessContext {
@@ -318,6 +321,7 @@ fn every_operation_and_optional_presence_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "日本語\0🦀".into(),
         token: "日本語\0🦀".into(),
+        guard: None,
         request: AgentRequest::Whoami { detail: false },
     });
     assert_request(Operation::WorkspaceCreate {
@@ -654,11 +658,13 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
+        guard: None,
         request: AgentRequest::Whoami { detail: true },
     });
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
+        guard: None,
         request: AgentRequest::Control {
             request: Box::new(Operation::SessionInfo),
             scope: AgentScope::All,
@@ -668,6 +674,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
+        guard: None,
         request: AgentRequest::SetTitle {
             title: "日本語\0🦀".into(),
         },
@@ -675,6 +682,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
+        guard: None,
         request: AgentRequest::DiscoverAgents {
             scope: AgentScope::All,
             detail: true,
@@ -687,6 +695,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
+        guard: None,
         request: AgentRequest::SendMessage {
             to: "日本語\0🦀".into(),
             text: "日本語\0🦀".into(),
@@ -698,6 +707,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
+        guard: None,
         request: AgentRequest::ReadInbox {
             after: Some("日本語\0🦀".into()),
             limit: Some(usize::MAX),
@@ -708,6 +718,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
+        guard: None,
         request: AgentRequest::AckMessage {
             ids: vec!["日本語\0🦀".into()],
         },
@@ -715,6 +726,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
+        guard: None,
         request: AgentRequest::InspectOutbox {
             message_id: Some("日本語\0🦀".into()),
             after: Some("日本語\0🦀".into()),
@@ -724,6 +736,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
+        guard: None,
         request: AgentRequest::ReceiverRegister {
             session_id: "日本語\0🦀".into(),
             mode: AgentReceiverMode::FutureTurn,
@@ -733,6 +746,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
+        guard: None,
         request: AgentRequest::ReceiverSubscribe {
             receiver_id: "日本語\0🦀".into(),
             wait_ms: u64::MAX,
@@ -741,6 +755,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
+        guard: None,
         request: AgentRequest::WakeValidate {
             receiver_id: "日本語\0🦀".into(),
             notification_id: "日本語\0🦀".into(),
@@ -750,6 +765,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
+        guard: None,
         request: AgentRequest::WakeOutcome {
             receiver_id: "日本語\0🦀".into(),
             notification_id: "日本語\0🦀".into(),
@@ -763,6 +779,7 @@ fn every_nested_request_variant_roundtrips() {
         event: CaptureEvent::Bind {
             conversation_id: "日本語\0🦀".into(),
             source: ConversationSource::AgyMcp,
+            expected_revision: None,
         },
     });
     assert_request(Operation::HarnessEvent {
@@ -810,6 +827,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "token".into(),
+        guard: None,
         request: AgentRequest::WakeOutcome {
             receiver_id: "receiver".into(),
             notification_id: "notification".into(),
@@ -820,6 +838,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "token".into(),
+        guard: None,
         request: AgentRequest::WakeOutcome {
             receiver_id: "receiver".into(),
             notification_id: "notification".into(),
@@ -832,6 +851,7 @@ fn every_nested_request_variant_roundtrips() {
     assert_request(Operation::Agent {
         launch_id: "launch".into(),
         token: "token".into(),
+        guard: None,
         request: AgentRequest::WakeOutcome {
             receiver_id: "receiver".into(),
             notification_id: "notification".into(),
@@ -1618,6 +1638,7 @@ fn compact_control_and_agent_options_preserve_absence_zero_and_expansion() {
         assert_request(Operation::Agent {
             launch_id: "launch".into(),
             token: "secret".into(),
+            guard: None,
             request: AgentRequest::ReadMessage {
                 message_id: "message\0日本語".into(),
                 offset: Some(value),
@@ -1663,6 +1684,7 @@ fn compact_control_and_agent_options_preserve_absence_zero_and_expansion() {
         assert_request(Operation::Agent {
             launch_id: "launch".into(),
             token: "secret".into(),
+            guard: None,
             request,
         });
     }
@@ -1686,14 +1708,15 @@ fn compact_control_and_agent_options_preserve_absence_zero_and_expansion() {
 }
 
 #[test]
-fn family_seven_is_rejected_before_body_traversal_or_allocation_charge() {
+fn previous_family_is_rejected_before_body_traversal_or_allocation_charge() {
     let mut codec = Codec::new();
+    let previous_family = PROTOCOL_VERSION - 1;
     let mut bytes = codec
         .encode_request(&Request::new(Operation::Shutdown))
         .unwrap()
         .to_vec();
     let (_, version) = root_field(&bytes, 0);
-    bytes[version..version + 4].copy_from_slice(&7_u32.to_le_bytes());
+    bytes[version..version + 4].copy_from_slice(&previous_family.to_le_bytes());
     let (_, tag) = root_field(&bytes, 1);
     bytes[tag] = 255;
     let mut charge = 0;
@@ -1706,7 +1729,7 @@ fn family_seven_is_rejected_before_body_traversal_or_allocation_charge() {
     assert!(
         codec
             .encode_request(&Request {
-                version: 7,
+                version: previous_family,
                 operation: Operation::Shutdown
             })
             .is_err()
@@ -1720,7 +1743,7 @@ fn family_seven_is_rejected_before_body_traversal_or_allocation_charge() {
     };
     let mut bytes = codec.encode_response(&response).unwrap().to_vec();
     let (_, version) = root_field(&bytes, 0);
-    bytes[version..version + 4].copy_from_slice(&7_u32.to_le_bytes());
+    bytes[version..version + 4].copy_from_slice(&previous_family.to_le_bytes());
     assert!(decode_response(&bytes).is_err());
 }
 
@@ -1756,6 +1779,7 @@ fn compact_query_and_ack_required_fields_cannot_disappear() {
         .encode_request(&Request::new(Operation::Agent {
             launch_id: "launch".into(),
             token: "secret".into(),
+            guard: None,
             request: AgentRequest::ReadInbox {
                 after: None,
                 limit: None,
@@ -1801,6 +1825,7 @@ fn compact_reply_and_delivery_unknown_values_fail_closed() {
             .encode_request(&Request::new(Operation::Agent {
                 launch_id: "launch".into(),
                 token: "secret".into(),
+                guard: None,
                 request,
             }))
             .unwrap()
@@ -1830,4 +1855,211 @@ fn typed_busy_failure_roundtrips_exact_target_without_registry() {
     let decoded = decode_response(codec.encode_response(&original).unwrap()).unwrap();
     assert_eq!(decoded.failure, original.failure);
     assert!(decoded.result.is_none());
+}
+
+#[test]
+fn native_binding_fences_roundtrip_exact_root_generation_and_context() {
+    for source in [
+        ConversationSource::ClaudeHook,
+        ConversationSource::OmpExtension,
+        ConversationSource::CodexStart,
+        ConversationSource::CodexResume,
+        ConversationSource::CodexFork,
+        ConversationSource::AgyMcp,
+        ConversationSource::OpencodePlugin,
+        ConversationSource::PiExtension,
+    ] {
+        for generation in [0, 1, u64::MAX] {
+            let conversation = NativeConversation {
+                id: "native-root\0日本語".into(),
+                source,
+                generation,
+            };
+            for context_id in [conversation.id.as_str(), "native-child\0🦀"] {
+                assert_request(Operation::Agent {
+                    launch_id: "launch".into(),
+                    token: "secret".into(),
+                    guard: Some(AgentBindingGuard {
+                        conversation: conversation.clone(),
+                        context_id: context_id.into(),
+                    }),
+                    request: AgentRequest::Whoami { detail: true },
+                });
+                assert_request(Operation::HarnessEvent {
+                    launch_id: "launch".into(),
+                    token: "secret".into(),
+                    event: CaptureEvent::NativeContext {
+                        conversation: conversation.clone(),
+                        context_id: context_id.into(),
+                    },
+                });
+            }
+            assert_request(Operation::HarnessEvent {
+                launch_id: "launch".into(),
+                token: "secret".into(),
+                event: CaptureEvent::Unbind {
+                    conversation: Some(conversation),
+                    expected_revision: generation,
+                },
+            });
+        }
+    }
+}
+
+#[test]
+fn native_binding_guard_presence_and_required_identity_fail_closed() {
+    let unguarded = serde_json::json!({
+        "version": PROTOCOL_VERSION,
+        "op": "agent",
+        "launch_id": "launch",
+        "token": "secret",
+        "request": { "method": "whoami", "detail": false },
+    });
+    let request: Request = serde_json::from_value(unguarded.clone()).unwrap();
+    assert!(matches!(
+        &request.operation,
+        Operation::Agent { guard: None, .. }
+    ));
+    assert_eq!(serde_json::to_value(request).unwrap(), unguarded);
+
+    let operation = Operation::Agent {
+        launch_id: "launch".into(),
+        token: "secret".into(),
+        guard: Some(AgentBindingGuard {
+            conversation: NativeConversation {
+                id: "native-root".into(),
+                source: ConversationSource::OpencodePlugin,
+                generation: 17,
+            },
+            context_id: "native-child".into(),
+        }),
+        request: AgentRequest::Whoami { detail: false },
+    };
+    let mut codec = Codec::new();
+    let bytes = codec.encode_request(&Request::new(operation)).unwrap();
+    let (_, field) = root_field(bytes, 2);
+    let operation = indirect(bytes, field);
+    let (_, field) = table_field(bytes, operation, 4);
+    let guard = indirect(bytes, field);
+    for slot in [0, 1] {
+        let mut missing = bytes.to_vec();
+        let (entry, _) = table_field(&missing, guard, slot);
+        missing[entry..entry + 2].fill(0);
+        assert!(decode_request(&missing).is_err());
+    }
+    let (_, field) = table_field(bytes, guard, 0);
+    let conversation = indirect(bytes, field);
+    let mut missing = bytes.to_vec();
+    let (entry, _) = table_field(&missing, conversation, 0);
+    missing[entry..entry + 2].fill(0);
+    assert!(decode_request(&missing).is_err());
+}
+
+#[test]
+fn conditional_capture_revisions_preserve_zero_and_unbound_snapshots() {
+    let event = |event| Operation::HarnessEvent {
+        launch_id: "launch".into(),
+        token: "secret".into(),
+        event,
+    };
+    for expected_revision in [None, Some(0), Some(1), Some(u64::MAX)] {
+        let bind = CaptureEvent::Bind {
+            conversation_id: "native-root".into(),
+            source: ConversationSource::OpencodePlugin,
+            expected_revision,
+        };
+        let json = serde_json::to_value(&bind).unwrap();
+        assert_eq!(
+            json.get("expected_revision"),
+            expected_revision.map(serde_json::Value::from).as_ref()
+        );
+        assert_request(event(bind));
+    }
+    for expected_revision in [0, 1, u64::MAX] {
+        for conversation in [
+            None,
+            Some(NativeConversation {
+                id: "native-root".into(),
+                source: ConversationSource::OpencodePlugin,
+                generation: expected_revision,
+            }),
+        ] {
+            assert_request(event(CaptureEvent::Unbind {
+                conversation,
+                expected_revision,
+            }));
+        }
+    }
+    let legacy_bind: CaptureEvent = serde_json::from_value(serde_json::json!({
+        "kind": "bind",
+        "conversation_id": "native-root",
+        "source": "claude_hook",
+    }))
+    .unwrap();
+    assert!(matches!(
+        legacy_bind,
+        CaptureEvent::Bind {
+            expected_revision: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn unbind_requires_explicit_revision_in_json_and_native_wire() {
+    assert!(
+        serde_json::from_value::<CaptureEvent>(serde_json::json!({
+            "kind": "unbind",
+            "conversation": null,
+        }))
+        .is_err()
+    );
+    for expected_revision in [0, 1, u64::MAX] {
+        let request = Request::new(Operation::HarnessEvent {
+            launch_id: "launch".into(),
+            token: "secret".into(),
+            event: CaptureEvent::Unbind {
+                conversation: None,
+                expected_revision,
+            },
+        });
+        let mut codec = Codec::new();
+        let bytes = codec.encode_request(&request).unwrap();
+        let (_, field) = root_field(bytes, 2);
+        let operation = indirect(bytes, field);
+        let (_, field) = table_field(bytes, operation, 3);
+        let unbind = indirect(bytes, field);
+        let (entry, field) = table_field(bytes, unbind, 1);
+        let mut missing = bytes.to_vec();
+        missing[entry..entry + 2].fill(0);
+        assert!(decode_request(&missing).is_err());
+        let mut absent = bytes.to_vec();
+        absent[field] = 0;
+        assert!(decode_request(&absent).is_err());
+    }
+}
+
+#[test]
+fn native_binding_snapshot_reports_unbound_revision_explicitly() {
+    let snapshot = NativeBindingSnapshot {
+        revision: 0,
+        conversation: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&snapshot).unwrap(),
+        serde_json::json!({"revision": 0, "conversation": null})
+    );
+    let unbind: CaptureEvent = serde_json::from_value(serde_json::json!({
+        "kind": "unbind",
+        "conversation": null,
+        "expected_revision": snapshot.revision,
+    }))
+    .unwrap();
+    assert_eq!(
+        unbind,
+        CaptureEvent::Unbind {
+            conversation: snapshot.conversation,
+            expected_revision: snapshot.revision,
+        }
+    );
 }

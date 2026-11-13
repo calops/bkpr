@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use bkpr_protocol::HarnessKind;
 use std::{
     collections::HashMap,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
 const MAX_PROCESSES: usize = 32768;
@@ -258,8 +258,7 @@ fn live_kind(pid: i32) -> Result<Option<HarnessKind>> {
     }
     Ok(recognize(&executable, &[]))
 }
-/// The managed Codex supervisor owns both an app-server and the interactive TUI.
-/// Classify the verified executable's argv role, not foreground/status output.
+/// Classify interactive harness roles separately from their native server utilities.
 pub(crate) fn binding_kind(pid: i32) -> Result<Option<HarnessKind>> {
     match live_binding_kind(pid) {
         Err(_) if process(pid)?.is_none() => Ok(None),
@@ -268,31 +267,62 @@ pub(crate) fn binding_kind(pid: i32) -> Result<Option<HarnessKind>> {
 }
 fn live_binding_kind(pid: i32) -> Result<Option<HarnessKind>> {
     let kind = kind(pid)?;
-    if kind != Some(HarnessKind::Codex) {
+    if !matches!(kind, Some(HarnessKind::Codex | HarnessKind::Opencode)) {
         return Ok(kind);
     }
     let executable = platform::executable(pid)?;
     let args = platform::arguments(pid)?;
-    let command = if matches!(
-        executable_name(&executable),
-        Some("node" | "nodejs" | "bun")
-    ) {
+    let command = command_arguments(&executable, &args)?.first();
+    Ok(
+        match (kind, command.and_then(|argument| argument.to_str())) {
+            (Some(HarnessKind::Codex), Some("app-server"))
+            | (Some(HarnessKind::Opencode), Some("serve")) => None,
+            _ => kind,
+        },
+    )
+}
+
+fn command_arguments<'a>(executable: &Path, args: &'a [OsString]) -> Result<&'a [OsString]> {
+    if matches!(executable_name(executable), Some("node" | "nodejs" | "bun")) {
         let entry =
-            js_entrypoint(&args)?.ok_or_else(|| anyhow::anyhow!("Codex entrypoint unavailable"))?;
+            js_entrypoint(args)?.ok_or_else(|| anyhow::anyhow!("native entrypoint unavailable"))?;
         let index = args
             .iter()
             .position(|argument| argument == entry)
-            .ok_or_else(|| anyhow::anyhow!("Codex entrypoint argv changed"))?;
-        args.get(index + 1)
+            .ok_or_else(|| anyhow::anyhow!("native entrypoint argv changed"))?;
+        Ok(&args[index + 1..])
     } else {
-        anyhow::ensure!(!args.is_empty(), "Codex argv unavailable");
-        args.get(1)
-    };
-    if command.is_some_and(|command| command == "app-server") {
-        Ok(None)
-    } else {
-        Ok(kind)
+        anyhow::ensure!(!args.is_empty(), "native argv unavailable");
+        Ok(&args[1..])
     }
+}
+
+/// Recognize a private OpenCode stdio server paired with its direct native owner.
+pub(crate) fn owned_opencode_worker(child: &Process, owner: &Process) -> Result<bool> {
+    if child.parent != owner.pid {
+        return Ok(false);
+    }
+    let executable = platform::executable(child.pid)?;
+    if executable != platform::executable(owner.pid)? {
+        return Ok(false);
+    }
+    let child_args = platform::arguments(child.pid)?;
+    let owner_args = platform::arguments(owner.pid)?;
+    if recognize(&executable, &child_args) != Some(HarnessKind::Opencode)
+        || recognize(&executable, &owner_args) != Some(HarnessKind::Opencode)
+    {
+        return Ok(false);
+    }
+    let command = command_arguments(&executable, &child_args)?;
+    let owner = command_arguments(&executable, &owner_args)?;
+    Ok(command
+        .iter()
+        .map(OsString::as_os_str)
+        .eq(["serve", "--stdio", "--port", "0"].map(OsStr::new))
+        && owner
+            .iter()
+            .take_while(|argument| argument.as_os_str() != OsStr::new("--"))
+            .any(|argument| argument == "--standalone" || argument == "--standalone=true"))
 }
 pub(crate) fn is_launcher(pid: i32, executable: &Path, kind: HarnessKind) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
@@ -366,13 +396,24 @@ mod platform {
         if !fs::metadata(&directory).is_ok_and(|m| m.uid() == unsafe { libc::geteuid() }) {
             return Ok(None);
         }
-        match fs::read_to_string(directory.join("stat")) {
+        process_stat(
+            pid,
+            fs::read_to_string(directory.join("stat")),
+            include_exited,
+        )
+    }
+    fn process_stat(
+        pid: i32,
+        contents: std::io::Result<String>,
+        include_exited: bool,
+    ) -> Result<Option<Process>> {
+        match contents {
             Ok(stat) => Ok(parse_stat(pid, &stat, boot()?, include_exited)),
             Err(e)
                 if matches!(
                     e.kind(),
                     std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-                ) =>
+                ) || e.raw_os_error() == Some(libc::ESRCH) =>
             {
                 Ok(None)
             }
@@ -436,6 +477,35 @@ mod platform {
                 Ok(None)
             }
             Err(e) => Err(e.into()),
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn exited_process_stat_is_absent_but_storage_errors_remain_failures() {
+            for include_exited in [false, true] {
+                for errno in [libc::ESRCH, libc::ENOENT, libc::EACCES] {
+                    assert!(
+                        super::process_stat(
+                            1,
+                            Err(std::io::Error::from_raw_os_error(errno)),
+                            include_exited,
+                        )
+                        .unwrap()
+                        .is_none()
+                    );
+                }
+                for errno in [libc::EIO, libc::EINVAL] {
+                    assert!(
+                        super::process_stat(
+                            1,
+                            Err(std::io::Error::from_raw_os_error(errno)),
+                            include_exited,
+                        )
+                        .is_err()
+                    );
+                }
+            }
         }
     }
 }
@@ -674,6 +744,159 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn private_opencode_worker_keeps_its_native_owner_as_the_harness_boundary() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        std::fs::write(
+            home.path().join("opencode-worker-fixture"),
+            b"owned fixture",
+        )
+        .unwrap();
+        // Concurrent PTY forks must not inherit a writable copied-executable FD.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "harness_process::tests::private_opencode_worker_kernel_fixture",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env_clear()
+            .env("HOME", home.path())
+            .env("BKPR_OPENCODE_WORKER_FIXTURE", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated native worker fixture failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "owned copied-executable fixture; run through isolated subprocess wrapper"]
+    fn private_opencode_worker_kernel_fixture() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::{
+            fs,
+            io::{Read, Write},
+            process::{Child, Command, Stdio},
+        };
+        assert_eq!(
+            std::env::var("BKPR_OPENCODE_WORKER_FIXTURE").as_deref(),
+            Ok("1")
+        );
+        let home = PathBuf::from(std::env::var_os("HOME").expect("private fixture HOME"));
+        assert_eq!(
+            fs::read(home.join("opencode-worker-fixture")).unwrap(),
+            b"owned fixture"
+        );
+        struct NativeFixture(Child);
+        impl Drop for NativeFixture {
+            fn drop(&mut self) {
+                self.0.stdin.take();
+                let _ = self.0.wait();
+            }
+        }
+        let root = tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir_in(home)
+            .unwrap();
+        let executable = root.path().join("opencode");
+        fs::copy("/bin/sh", &executable).unwrap();
+        fs::write(
+            root.path().join("serve"),
+            "printf '%s\\n' \"$$\"; IFS= read -r hold\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("parent"),
+            "./opencode serve --stdio --port \"$1\" <&0 & wait \"$!\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("grand"),
+            "./opencode parent 0 --standalone <&0 & wait \"$!\"\n",
+        )
+        .unwrap();
+        for (script, flags, nested, private) in [
+            ("parent", &["0", "--standalone"][..], false, true),
+            ("parent", &["0"][..], false, false),
+            ("parent", &["42", "--standalone"][..], false, false),
+            ("grand", &["--standalone"][..], true, true),
+        ] {
+            let mut owned = NativeFixture(
+                Command::new(&executable)
+                    .arg(script)
+                    .args(flags)
+                    .current_dir(root.path())
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            );
+            let child = &mut owned.0;
+            let mut output = child.stdout.take().unwrap();
+            let mut next_pid = || {
+                let mut bytes = Vec::new();
+                loop {
+                    let mut byte = [0];
+                    output.read_exact(&mut byte).unwrap();
+                    if byte[0] == b'\n' {
+                        break;
+                    }
+                    bytes.push(byte[0]);
+                }
+                String::from_utf8(bytes).unwrap().parse::<i32>().unwrap()
+            };
+            let worker_pid = next_pid();
+            let owner_pid = if nested {
+                process(worker_pid).unwrap().unwrap().parent
+            } else {
+                child.id() as i32
+            };
+            let observed = (|| -> Result<()> {
+                let owner = process(owner_pid)?.unwrap();
+                let worker = process(worker_pid)?.unwrap();
+                anyhow::ensure!(owned_opencode_worker(&worker, &owner)? == private);
+                anyhow::ensure!(kind(worker_pid)? == Some(HarnessKind::Opencode));
+                anyhow::ensure!(binding_kind(worker_pid)?.is_none());
+                let mut chain = vec![worker, owner];
+                anyhow::ensure!(
+                    crate::harness::reject_nested(&chain, HarnessKind::Opencode, false).is_ok()
+                        == private
+                );
+                anyhow::ensure!(
+                    crate::harness::reject_nested(&chain, HarnessKind::Opencode, true).is_err()
+                );
+                anyhow::ensure!(
+                    crate::harness::reject_nested(&chain, HarnessKind::Pi, false).is_err()
+                );
+                anyhow::ensure!(
+                    crate::harness::reject_nested(&chain[..1], HarnessKind::Opencode, true)
+                        .is_err()
+                );
+                if nested {
+                    chain.push(process(child.id() as i32)?.unwrap());
+                    anyhow::ensure!(
+                        crate::harness::reject_nested(&chain, HarnessKind::Opencode, false)
+                            .is_err()
+                    );
+                }
+                Ok(())
+            })();
+            child.stdin.take().unwrap().write_all(b"done\n").unwrap();
+            let status = child.wait().unwrap();
+            observed.unwrap();
+            assert!(status.success());
+        }
+    }
     #[test]
     fn recognizes_entrypoints_not_prompt_arguments() {
         for command in [

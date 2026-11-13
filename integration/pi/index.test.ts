@@ -38,6 +38,7 @@ function fixture(name: string, launchId = name) {
       facts.push({ command, source, session });
       if (command === 'bind') await bind?.();
     },
+    async event(value) { throw new Error(`Pi must not dispatch capture events: ${JSON.stringify(value)}`); },
     async request(value, signal) {
       requests.push(value);
       if (signal?.aborted) throw new Error('cancelled');

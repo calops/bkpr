@@ -1100,6 +1100,7 @@ mod tests {
             Operation::Agent {
                 launch_id: "copied".into(),
                 token: "copied".into(),
+                guard: None,
                 request: bkpr_protocol::AgentRequest::Whoami { detail: false },
             },
         ] {

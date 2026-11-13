@@ -110,6 +110,9 @@ pub enum Operation {
         launch_id: String,
         /// Capability issued to this launch.
         token: String,
+        /// Exact native root and caller context required by guarded integrations.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guard: Option<crate::AgentBindingGuard>,
         /// Agent operation; scope and authority are checked by the backend.
         request: crate::AgentRequest,
     },

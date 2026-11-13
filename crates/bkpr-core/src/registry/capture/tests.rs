@@ -84,6 +84,7 @@ fn nested_peer_fixture() {
             event: CaptureEvent::Bind {
                 conversation_id: "nested-must-not-bind".into(),
                 source: ConversationSource::ClaudeHook,
+                expected_revision: None,
             },
         },
     );
@@ -145,7 +146,8 @@ fn managed_peer_fixture() {
             &socket,
             event(CaptureEvent::Bind {
                 conversation_id: "wrong-source".into(),
-                source: ConversationSource::OmpExtension
+                source: ConversationSource::OmpExtension,
+                expected_revision: None,
             })
         )["ok"],
         false
@@ -176,7 +178,8 @@ fn managed_peer_fixture() {
                 &socket,
                 event(CaptureEvent::Bind {
                     conversation_id: id.into(),
-                    source: ConversationSource::ClaudeHook
+                    source: ConversationSource::ClaudeHook,
+                    expected_revision: None,
                 })
             )["ok"],
             true
@@ -198,6 +201,7 @@ fn managed_peer_fixture() {
             event(CaptureEvent::Bind {
                 conversation_id: "native-two".into(),
                 source: ConversationSource::ClaudeHook,
+                expected_revision: None,
             })
         )["ok"],
         true
@@ -223,6 +227,7 @@ fn managed_peer_fixture() {
                 event(CaptureEvent::Bind {
                     conversation_id: "native-three".into(),
                     source: ConversationSource::ClaudeHook,
+                    expected_revision: None,
                 })
             )["ok"],
             true
@@ -257,7 +262,8 @@ fn managed_peer_fixture() {
             &socket,
             event(CaptureEvent::Bind {
                 conversation_id: "late".into(),
-                source: ConversationSource::ClaudeHook
+                source: ConversationSource::ClaudeHook,
+                expected_revision: None,
             })
         )["ok"],
         false
