@@ -228,52 +228,96 @@ pub fn graphics_frame(size: Size) -> Frame {
         scrollback_offset: 0,
     }
 }
-/// Write one row using per-character display widths, omitting protocol characters.
-/// Combining characters attach only to a glyph written by this call; `selected` inverts style.
-/// Stops before a character would cross the row's right edge.
-/// Any existing glyph intersected by the write is replaced in full.
+/// Write sanitized UI text using whole extended-grapheme cell geometry.
+///
+/// Leading zero-width graphemes are omitted; later zero-width text attaches only
+/// to a glyph written by this call. Stops before a whole grapheme would cross the
+/// row's right edge. Any existing glyph intersected by the write is erased in
+/// full; `selected` inverts the written cells, not the erased boundary cells.
+///
+/// Canonical cells support glyph widths up to two. Wider graphemes use scalar
+/// cells only when their widths sum to the same extent and each scalar fits
+/// that contract; otherwise a replacement glyph and spaces preserve the
+/// measured extent. The source string and canonical native pane frames are
+/// never modified.
 pub fn text(frame: &mut Frame, x: u16, y: u16, value: &str, selected: bool) {
-    let foreground = frame.foreground;
-    let background = frame.background;
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthChar;
+
     let Some(row) = frame.rows.get_mut(y as usize) else {
         return;
     };
-    let mut column = x as usize;
-    for ch in value.chars().filter(|c| !is_scene_protocol_char(*c)) {
-        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width == 0 {
-            if column > x as usize {
-                let mut lead = column - 1;
-                while lead > x as usize && row.cells[lead].width == 0 {
-                    lead -= 1;
-                }
-                row.cells[lead].text.push(ch);
-            }
-            continue;
-        }
+    let value = if value.chars().any(is_scene_protocol_char) {
+        std::borrow::Cow::Owned(safe_text(value))
+    } else {
+        std::borrow::Cow::Borrowed(value)
+    };
+    let mut style = default_style();
+    style.foreground = frame.foreground;
+    style.background = frame.background;
+    let mut column = usize::from(x);
+    let mut lead = None;
+    for grapheme in value.graphemes(true) {
+        let width = unicode_width::UnicodeWidthStr::width(grapheme);
         if column + width > row.cells.len() {
             break;
         }
-        let mut style = default_style();
-        style.foreground = foreground;
-        style.background = background;
-        erase_glyph_boundaries(&mut row.cells, column, column + width, &style);
-        style.inverse = selected;
-        let cell = &mut row.cells[column];
-        cell.text.clear();
-        cell.text.push(ch);
-        cell.width = width as u8;
-        cell.style.clone_from(&style);
-        cell.hyperlink = None;
-        for offset in 1..width {
-            let cell = &mut row.cells[column + offset];
-            cell.text.clear();
-            cell.width = 0;
-            cell.style.clone_from(&style);
-            cell.hyperlink = None;
+        if let Ok(width @ 0..=2) = u8::try_from(width) {
+            write_ui_glyph(&mut row.cells, &mut column, &mut lead, grapheme, width, &style, selected);
+        } else if grapheme
+            .chars()
+            .all(|ch| UnicodeWidthChar::width(ch).unwrap_or(0) <= 2)
+            && grapheme
+                .chars()
+                .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
+                .sum::<usize>()
+                == width
+        {
+            for ch in grapheme.chars() {
+                let width = u8::try_from(UnicodeWidthChar::width(ch).unwrap_or(0))
+                    .expect("scalar width is at most two");
+                let mut encoded = [0; 4];
+                write_ui_glyph(&mut row.cells, &mut column, &mut lead, ch.encode_utf8(&mut encoded), width, &style, selected);
+            }
+        } else {
+            write_ui_glyph(&mut row.cells, &mut column, &mut lead, "\u{fffd}", 1, &style, selected);
+            for _ in 1..width {
+                write_ui_glyph(&mut row.cells, &mut column, &mut lead, " ", 1, &style, selected);
+            }
         }
-        column += width;
     }
+}
+
+fn write_ui_glyph(
+    cells: &mut [Cell],
+    column: &mut usize,
+    lead: &mut Option<usize>,
+    value: &str,
+    width: u8,
+    style: &Style,
+    selected: bool,
+) {
+    if width == 0 {
+        if let Some(lead) = *lead {
+            cells[lead].text.push_str(value);
+        }
+        return;
+    }
+    let start = *column;
+    let end = start + usize::from(width);
+    erase_glyph_boundaries(cells, start, end, style);
+    for (offset, cell) in cells[start..end].iter_mut().enumerate() {
+        cell.text.clear();
+        if offset == 0 {
+            cell.text.push_str(value);
+        }
+        cell.width = if offset == 0 { width } else { 0 };
+        cell.style.clone_from(style);
+        cell.style.inverse = selected;
+        cell.hyperlink = None;
+    }
+    *lead = Some(start);
+    *column = end;
 }
 
 impl TerminalGuard {
@@ -1329,6 +1373,208 @@ mod scene_tests {
         assert_eq!(f.rows[0].cells[0].width, 2);
         assert_eq!(f.rows[0].cells[1].width, 0);
         assert_eq!(f.rows[0].cells[2].text, "x");
+    }
+    #[test]
+    fn ui_text_uses_whole_graphemes_and_repairs_intersected_glyphs() {
+        for (glyph, width) in [
+            ("👩‍💻", 2),
+            ("✈\u{fe0f}", 2),
+            ("🇫🇷", 2),
+            ("e\u{301}", 1),
+            ("界", 2),
+        ] {
+            assert_eq!(crate::text_width(glyph), width);
+            let mut frame = blank(Size {
+                cols: 5,
+                rows: 1,
+                cell_width: 8,
+                cell_height: 16,
+            });
+            text(&mut frame, 1, 0, glyph, true);
+            let cells = &frame.rows[0].cells;
+            assert_eq!(cells[1].text, glyph);
+            assert_eq!(usize::from(cells[1].width), width);
+            assert!(cells[1..1 + width].iter().all(|cell| cell.style.inverse));
+            if width == 2 {
+                assert_eq!(cells[2].width, 0);
+                assert!(cells[2].text.is_empty());
+                text(&mut frame, 2, 0, "x", false);
+                assert_eq!(frame.rows[0].cells[1].text, " ");
+                assert_eq!(frame.rows[0].cells[1].width, 1);
+                assert!(!frame.rows[0].cells[1].style.inverse);
+            }
+            let before = frame.clone();
+            text(&mut frame, 4, 0, glyph, false);
+            if width == 2 {
+                assert_eq!(frame, before);
+            } else {
+                assert_eq!(frame.rows[0].cells[4].text, glyph);
+            }
+        }
+        let mut frame = blank(Size {
+            cols: 3,
+            rows: 1,
+            cell_width: 8,
+            cell_height: 16,
+        });
+        text(&mut frame, 0, 0, "\u{301}👩\x1b\u{200d}\u{10eeee}💻!", false);
+        assert_eq!(frame.rows[0].cells[0].text, "👩‍💻");
+        assert_eq!(frame.rows[0].cells[0].width, 2);
+        assert_eq!(frame.rows[0].cells[2].text, "!");
+    }
+
+    #[test]
+    fn unsupported_ui_glyph_keeps_its_extent_without_invalid_cells_or_source_mutation() {
+        // unicode-width assigns this scalar three columns; canonical cells
+        // cannot represent a single glyph wider than two.
+        let value = String::from("\u{17d8}");
+        assert_eq!(crate::text_width(&value), 3);
+        let mut frame = blank(Size {
+            cols: 5,
+            rows: 1,
+            cell_width: 8,
+            cell_height: 16,
+        });
+        text(&mut frame, 3, 0, "!N", false);
+        text(&mut frame, 0, 0, &value, true);
+        assert_eq!(value, "\u{17d8}");
+        assert_eq!(frame.rows[0].cells[0].text, "\u{fffd}");
+        assert!(frame.rows[0].cells[..3].iter().all(|cell| cell.width == 1 && cell.style.inverse));
+        assert_eq!(frame.rows[0].cells[1].text, " ");
+        assert_eq!(frame.rows[0].cells[2].text, " ");
+        assert_eq!(frame.rows[0].cells[3].text, "!");
+        assert_eq!(frame.rows[0].cells[4].text, "N");
+        let before = frame.clone();
+        text(&mut frame, 3, 0, &value, false);
+        assert_eq!(frame, before);
+        let mut graphics = GraphicsState::new(1000);
+        let mut bytes = Vec::new();
+        draw(&mut bytes, &frame, frame.size, "", &ColorProbe::default(), &mut graphics).unwrap();
+        let mut physical = bkpr_terminal_engine::Terminal::new(frame.size).unwrap();
+        physical.feed(&bytes).unwrap();
+        let observed = physical.snapshot().unwrap();
+        assert_eq!(observed.rows[0].cells[0].text, "\u{fffd}");
+        assert_eq!(observed.rows[0].cells[3].text, "!");
+        assert_eq!(observed.rows[0].cells[4].text, "N");
+    }
+
+    #[test]
+    fn oversized_grapheme_retains_equal_extent_representable_scalars() {
+        let value = String::from("क\u{94d}क\u{94d}क");
+        assert_eq!(crate::text_width(&value), 3);
+        let mut frame = blank(Size {
+            cols: 5,
+            rows: 1,
+            cell_width: 8,
+            cell_height: 16,
+        });
+        text(&mut frame, 3, 0, "!N", false);
+        text(&mut frame, 0, 0, &value, true);
+        assert_eq!(frame.rows[0].cells[..3].iter().map(|cell| cell.text.as_str()).collect::<String>(), value);
+        assert!(frame.rows[0].cells[..3].iter().all(|cell| cell.width == 1 && cell.style.inverse));
+        assert_eq!(frame.rows[0].cells[3].text, "!");
+        assert_eq!(frame.rows[0].cells[4].text, "N");
+    }
+
+    #[test]
+    fn retained_grapheme_exactfit_transitions_preserve_status_and_canonical_native_cells() {
+        let size = Size {
+            cols: 18,
+            rows: 2,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let local = Size { cols: 8, ..size };
+        let mut native_terminal = bkpr_terminal_engine::Terminal::new(Size { cols: 10, ..size }).unwrap();
+        native_terminal.feed(b"\x1b[1;32mNATIVE\x1b[0m\r\ncontent").unwrap();
+        let native = native_terminal.snapshot().unwrap();
+        let canonical = native.clone();
+        let mut ui = crate::UiSurface::new(local);
+        let mut renderer = Renderer::default();
+        let mut guard = terminal();
+        let mut physical = bkpr_terminal_engine::Terminal::new(size).unwrap();
+        // The raw Ghostty SDK defaults to legacy scalar geometry. Select its
+        // supported grapheme mode to replay a grapheme-aware host such as Kitty.
+        physical.feed(b"\x1b[?2027h").unwrap();
+        for title in [
+            "👩‍💻AB",
+            "abcdef",
+            "👩‍💻AB",
+            "✈\u{fe0f}AB",
+            "abcdef",
+            "✈\u{fe0f}AB",
+            "🇫🇷AB",
+            "abcdef",
+            "🇫🇷AB",
+            "e\u{301}界ABC",
+            "abcdef",
+            "e\u{301}界ABC",
+        ] {
+            ui.paint(
+                local,
+                vec![
+                    (Rect { x: 0, y: 0, width: 6, height: 1 }, title.into(), false),
+                    (Rect { x: 6, y: 0, width: 1, height: 1 }, "!".into(), true),
+                    (Rect { x: 7, y: 0, width: 1, height: 1 }, "│".into(), false),
+                ],
+                None,
+            );
+            let scene = Scene {
+                size,
+                surfaces: vec![
+                    Surface {
+                        id: "sidebar",
+                        rect: Rect { x: 0, y: 0, width: 8, height: 2 },
+                        frame: &ui.frame,
+                        palette: None,
+                        selection: &[],
+                        search: &[],
+                        focused: false,
+                        faint: false,
+                        content: SurfaceContent::Cells,
+                    },
+                    Surface {
+                        id: "native",
+                        rect: Rect { x: 8, y: 0, width: 10, height: 2 },
+                        frame: &native,
+                        palette: None,
+                        selection: &[],
+                        search: &[],
+                        focused: false,
+                        faint: false,
+                        content: SurfaceContent::Cells,
+                    },
+                ],
+            };
+            let mut bytes = Vec::new();
+            renderer.render(&mut bytes, &scene, &ColorProbe::default(), &mut guard).unwrap();
+            physical.feed(&bytes).unwrap();
+            let observed = physical.snapshot().unwrap();
+            for (actual, expected) in observed.rows[0].cells[..8].iter().zip(&ui.frame.rows[0].cells) {
+                assert_eq!(
+                    (actual.text.trim_end(), actual.width, actual.style.inverse),
+                    (expected.text.trim_end(), expected.width, expected.style.inverse),
+                    "title {title:?}",
+                );
+            }
+            for (actual, expected) in observed.rows.iter().zip(&native.rows) {
+                for (actual, expected) in actual.cells[8..].iter().zip(&expected.cells) {
+                    assert_eq!((actual.text.trim_end(), actual.width, actual.style.bold), (expected.text.trim_end(), expected.width, expected.style.bold), "title {title:?}");
+                }
+            }
+            let mut full_renderer = Renderer::default();
+            let mut full_guard = terminal();
+            let mut full_bytes = Vec::new();
+            full_renderer.render(&mut full_bytes, &scene, &ColorProbe::default(), &mut full_guard).unwrap();
+            let mut full_physical = bkpr_terminal_engine::Terminal::new(size).unwrap();
+            full_physical.feed(b"\x1b[?2027h").unwrap();
+            full_physical.feed(&full_bytes).unwrap();
+            assert_eq!(observed.rows, full_physical.snapshot().unwrap().rows, "title {title:?}");
+            let mut idle = Vec::new();
+            renderer.render(&mut idle, &scene, &ColorProbe::default(), &mut guard).unwrap();
+            assert!(idle.is_empty(), "unchanged title {title:?}");
+            assert_eq!(native, canonical);
+        }
     }
     #[test]
     fn partial_wide_glyph_mutations_preserve_a_valid_grid() {

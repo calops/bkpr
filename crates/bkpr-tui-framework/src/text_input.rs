@@ -3,7 +3,6 @@
 
 use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthChar;
 /// Grapheme editing or caret movement within a single-line value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditAction {
@@ -166,7 +165,7 @@ impl TextInput {
         let mut start = cursor;
         let mut caret = 0;
         for (offset, grapheme) in self.value[..cursor].grapheme_indices(true).rev() {
-            let width = display_width(grapheme);
+            let width = unicode_width::UnicodeWidthStr::width(grapheme);
             if caret + width >= columns {
                 break;
             }
@@ -176,7 +175,7 @@ impl TextInput {
         let mut text = String::new();
         let mut used = 0;
         for grapheme in self.value[start..].graphemes(true) {
-            let width = display_width(grapheme);
+            let width = unicode_width::UnicodeWidthStr::width(grapheme);
             if used + width > columns {
                 break;
             }
@@ -204,12 +203,6 @@ fn printable(text: &str, limit: usize) -> Option<Cow<'_, str>> {
     } else {
         (text.len() <= limit).then_some(Cow::Borrowed(text))
     }
-}
-fn display_width(text: &str) -> usize {
-    // UiSurface uses this scalar width model, not a competing terminal parser.
-    text.chars()
-        .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
-        .sum()
 }
 
 #[cfg(test)]
@@ -247,7 +240,7 @@ mod tests {
         let input = TextInput::new("start/界e\u{301}👩‍💻end".into(), LIMIT);
         for columns in 0..12 {
             let (text, caret) = input.visible(columns);
-            assert!(display_width(&text) <= columns);
+            assert!(crate::text_width(&text) <= columns);
             if columns > 0 {
                 assert!(caret < columns);
             }
@@ -255,6 +248,29 @@ mod tests {
         let mut input = TextInput::new("abcd".into(), LIMIT);
         input.edit(EditAction::Left);
         assert_eq!(input.visible(3), ("bcd".into(), 2));
+    }
+    #[test]
+    fn caret_and_scroll_reserve_whole_grapheme_cell_widths() {
+        for (glyph, width) in [
+            ("👩‍💻", 2),
+            ("✈\u{fe0f}", 2),
+            ("🇫🇷", 2),
+            ("e\u{301}", 1),
+            ("界", 2),
+            ("\u{17d8}", 3),
+        ] {
+            let mut input = TextInput::new(glyph.into(), LIMIT);
+            assert_eq!(input.visible(width + 1), (glyph.into(), width));
+            assert_eq!(input.visible(width), (String::new(), 0));
+            assert!(input.insert("x"));
+            assert_eq!(input.visible(width + 2), (format!("{glyph}x"), width + 1));
+            input.edit(EditAction::Left);
+            assert_eq!(input.visible(width + 1), (format!("{glyph}x"), width));
+            assert_eq!(input.visible(width), ("x".into(), 0));
+            input.edit(EditAction::Backspace);
+            assert_eq!(input.value, "x");
+            assert_eq!(input.cursor, 0);
+        }
     }
     #[test]
     fn controls_never_escape_and_exact_limit_is_accepted() {

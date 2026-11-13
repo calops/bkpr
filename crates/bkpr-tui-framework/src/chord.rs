@@ -7,8 +7,6 @@
 
 use std::ops::Range;
 
-use unicode_width::UnicodeWidthStr;
-
 /// One actual chord, with modifiers separate from its base key's display label.
 /// Labels are presentation metadata, never parsed to infer modifier semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +81,7 @@ impl ChordGroup {
         } else {
             String::new()
         };
-        let prefix_width = prefix.width();
+        let prefix_width = crate::text_width(&prefix);
         let scope_width = prefix_width + usize::from(factored);
         let parts: Vec<_> = chords
             .into_iter()
@@ -95,7 +93,7 @@ impl ChordGroup {
                 };
                 text.push_str(&crate::window::clean(chord.key));
                 Part {
-                    width: text.width(),
+                    width: crate::text_width(&text),
                     text,
                     separator,
                 }
@@ -294,8 +292,23 @@ mod tests {
         assert_eq!(lines[1].keycaps, [2..6, 7..8]);
         assert!(group.wrap(8).is_none());
         for line in lines {
-            assert_eq!(line.width, line.text.width());
+            assert_eq!(line.width, crate::text_width(&line.text));
             assert!(line.keycaps.iter().all(|span| span.end <= line.width));
+        }
+    }
+
+    #[test]
+    fn joined_emoji_keycaps_fit_their_whole_grapheme_extent() {
+        for glyph in ["👩‍💻", "✈\u{fe0f}", "🇫🇷"] {
+            let group = ChordGroup::new([[chord(glyph, &[])]]);
+            assert_eq!(group.width(), 2);
+            assert_eq!(group.min_width(), 2);
+            assert!(group.wrap(1).is_none());
+            let lines = group.wrap(2).unwrap();
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0].text, glyph);
+            assert_eq!(lines[0].width, 2);
+            assert!(matches!(lines[0].keycaps.as_slice(), [range] if *range == (0..2)));
         }
     }
 
@@ -321,7 +334,11 @@ mod tests {
             assert_eq!(lines.is_some(), columns >= group.min_width());
             if let Some(lines) = lines {
                 assert!(lines.iter().all(|line| line.width <= columns));
-                assert!(lines.iter().all(|line| line.width == line.text.width()));
+                assert!(
+                    lines
+                        .iter()
+                        .all(|line| line.width == crate::text_width(&line.text))
+                );
                 // One repeated modifier span per row plus all three real keys.
                 let spans: usize = lines.iter().map(|line| line.keycaps.len() - 1).sum();
                 assert_eq!(spans, 3);

@@ -31,15 +31,12 @@ pub(super) struct State {
     clears: VecDeque<(String, String)>,
 }
 
-fn query_suffix(query: &str, columns: u16) -> (&str, usize) {
+fn query_suffix(query: &str, columns: usize) -> (&str, usize) {
     let mut width = 0;
     let mut start = query.len();
     for (index, grapheme) in query.grapheme_indices(true).rev() {
-        let cells: usize = grapheme
-            .chars()
-            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
-            .sum();
-        if width + cells > usize::from(columns / 3) {
+        let cells = unicode_width::UnicodeWidthStr::width(grapheme);
+        if width + cells > columns {
             break;
         }
         start = index;
@@ -194,7 +191,8 @@ impl App {
             }
             Some(Action::Edit(EditAction::Backspace)) => {
                 let editor = self.search.editor.as_mut().unwrap();
-                if editor.query.pop().is_some() {
+                if let Some((start, _)) = editor.query.grapheme_indices(true).next_back() {
+                    editor.query.truncate(start);
                     editor.dirty = true;
                     editor.revision = editor.revision.wrapping_add(1);
                     editor.generation = None;
@@ -357,10 +355,8 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn search_overlay(&self, surface: &mut UiSurface, size: Size) -> bool {
-        let Some(editor) = self.search.editor.as_ref() else {
-            return false;
-        };
+    pub(super) fn search_overlay(&self, surface: &mut UiSurface, size: Size) -> Option<Rect> {
+        let editor = self.search.editor.as_ref()?;
         let status = if let Some(error) = &editor.error {
             error.clone()
         } else if editor.query.is_empty() {
@@ -379,18 +375,19 @@ impl App {
         } else {
             "searching".into()
         };
-        let (query, width) = query_suffix(&editor.query, size.cols);
         let prefix = format!("Search {status} | /");
+        let start = bkpr_tui_framework::text_width(&prefix);
+        let available = usize::from(size.cols).saturating_sub(start + 1);
+        let (query, width) = query_suffix(&editor.query, usize::from(size.cols / 3).min(available));
         let value = format!(
             "{prefix}{} | Enter next  Shift-Enter previous  Esc clear",
             query
         );
         let local = Size { rows: 1, ..size };
         let cursor = Cursor {
-            x: (unicode_width::UnicodeWidthStr::width(prefix.as_str()) + width)
-                .min(usize::from(size.cols.saturating_sub(1))) as u16,
+            x: (start + width).min(usize::from(size.cols.saturating_sub(1))) as u16,
             y: 0,
-            visible: true,
+            visible: start < usize::from(size.cols),
             blinking: false,
             shape: CursorShape::Bar,
             color: None,
@@ -409,10 +406,19 @@ impl App {
             )],
             Some(cursor),
         );
-        true
+        Some(Rect {
+            x: start.min(usize::from(size.cols)) as u16,
+            y: 0,
+            width: if start < usize::from(size.cols) {
+                width as u16 + 1
+            } else {
+                0
+            },
+            height: 1,
+        })
     }
 
-    pub(super) fn theme_search(&self, surface: &mut UiSurface, theme: &Theme) {
+    pub(super) fn theme_search(&self, surface: &mut UiSurface, theme: &Theme, query: Option<Rect>) {
         let Some(editor) = &self.search.editor else {
             return;
         };
@@ -430,16 +436,9 @@ impl App {
                 Role::Muted
             },
         }];
-        let cursor = &surface.frame.cursor;
-        if cursor.visible {
-            let (_, width) = query_suffix(&editor.query, size.cols);
+        if let Some(rect) = query.filter(|rect| rect.width > 0) {
             spans.push(RoleSpan {
-                rect: Rect {
-                    x: cursor.x.saturating_sub(width as u16),
-                    y: 0,
-                    width: (width as u16).saturating_add(1),
-                    height: 1,
-                },
+                rect,
                 role: Role::Selected,
             });
         }

@@ -2,7 +2,7 @@
 //! No terminal output or graphics capabilities are assumed here.
 use crate::{Rect, Role, RoleSpan, text};
 use bkpr_protocol::{Frame, Size, Style};
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Local text rectangle, content, and selection flag for surface painting.
 pub type TextLine = (Rect, String, bool);
@@ -17,27 +17,32 @@ pub enum Border {
     Rounded,
 }
 
-/// Strip terminal controls and directional formatting from metadata, not Unicode text.
+/// Strip terminal controls, host image placeholders and directional formatting from metadata.
 pub fn clean(value: &str) -> String {
     value.chars().filter(|c| printable(*c)).collect()
 }
 fn printable(c: char) -> bool {
     !c.is_control()
-        && !matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        && !matches!(c, '\u{10eeee}' | '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
-/// Fits sanitized text using scalar cell widths; trailing combining marks stay
-/// with their base. Multi-scalar grapheme clusters may be split at the bound.
+/// Fit sanitized text into `width` cells without splitting extended graphemes.
+/// Leading zero-width graphemes are omitted; trailing marks remain with their base.
 pub fn fit(value: &str, width: u16) -> String {
+    let value = if value.chars().all(printable) {
+        std::borrow::Cow::Borrowed(value)
+    } else {
+        std::borrow::Cow::Owned(clean(value))
+    };
     let mut result = String::new();
     let mut columns = 0;
-    for ch in value.chars().filter(|c| printable(*c)) {
-        let advance = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for grapheme in value.graphemes(true) {
+        let advance = unicode_width::UnicodeWidthStr::width(grapheme);
         if columns + advance > usize::from(width) {
             break;
         }
         if advance != 0 || !result.is_empty() {
-            result.push(ch);
+            result.push_str(grapheme);
         }
         columns += advance;
     }
@@ -523,6 +528,15 @@ mod tests {
         assert_eq!(fit("界", 1), "");
         assert_eq!(fit("a\u{1b}[31m", 1), "a");
         assert_eq!(fit("\u{301}a", 1), "a");
+        for glyph in ["👩‍💻", "✈\u{fe0f}", "🇫🇷"] {
+            assert_eq!(fit(glyph, 0), "");
+            assert_eq!(fit(glyph, 1), "");
+            assert_eq!(fit(&format!("{glyph}x"), 2), glyph);
+            assert_eq!(fit(&format!("{glyph}x"), 3), format!("{glyph}x"));
+        }
+        assert_eq!(fit("👩\x1b\u{200d}💻x", 2), "👩‍💻");
+        assert_eq!(fit("👩\u{202e}\u{200d}💻x", 2), "👩‍💻");
+        assert_eq!(fit("👩\u{10eeee}\u{200d}💻x", 2), "👩‍💻");
     }
     #[test]
     fn placement_does_not_occlude_sidebar_or_source_row_when_possible() {
