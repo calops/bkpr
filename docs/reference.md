@@ -1667,11 +1667,11 @@ workflow previews or publishes the next version. Policy checks use Node.js and
 the locked npm dependencies:
 
 ```sh
-npm ci
+npm --prefix .github ci
 node --test .github/scripts/*.test.cjs .github/scripts/*.test.mjs
 ```
 
-`npm run release -- --dry-run` previews the version on `main` without tagging.
+`npm --prefix .github run release -- --dry-run` previews the version on `main` without tagging.
 Publishing atomically updates `main` and its immutable version tag, then
 dispatches **Build, cache and publish**. That single workflow shows the
 three-platform Nix/Cachix matrix, packaged executable loader checks and release

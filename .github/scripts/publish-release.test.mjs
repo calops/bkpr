@@ -40,8 +40,7 @@ function fixture(t) {
   const repositoryUrl = 'https://release-fixture.invalid/fixture/bkpr';
   git('config', `url.file://${remote}.insteadOf`, repositoryUrl);
   writeFileSync(join(cwd, 'release.config.cjs'), `
-const config = require(${JSON.stringify(join(root, 'release.config.cjs'))});
-config.plugins[0][0] = ${JSON.stringify(join(root, '.github/scripts/release-analyzer.cjs'))};
+const config = require(${JSON.stringify(join(root, '.github/release.config.cjs'))});
 config.repositoryUrl = ${JSON.stringify(repositoryUrl)};
 module.exports = config;
 `);
