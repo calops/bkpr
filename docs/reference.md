@@ -1604,16 +1604,21 @@ are not presented as real AI reasoning. Evidence records native versions, layout
 readiness, send/read/processed-ack receipts, raw and composed images, and owned
 process cleanup.
 
-The manual [showcase workflow](../.github/workflows/showcase.yml) builds the Nix
-package and uploads capture/evidence artifacts. It does not commit assets, publish
-a release or move tags. Review the image and evidence before replacing the
-tracked `docs/assets/showcase.png`.
+The [showcase workflow](../.github/workflows/showcase.yml) also runs after release
+publication, checks out that release's tag, and attaches `showcase.png` to the
+release. The existing publication graph calls it directly because releases made
+with `GITHUB_TOKEN` do not trigger another workflow's `release` event. Releases
+published separately use the `release: published` trigger.
+
+Manual dispatch still uploads capture/evidence artifacts without publishing.
+Existing release assets are never overwritten. No branch commits, release
+creation or tag changes are made by screenshot generation.
 
 ## Packaging and releases
 
 ### Nix
 
-Distribution is Nix-only. Release publication generates notes, not tarballs,
+Distribution is Nix-only. Release publication generates notes and a showcase image, not tarballs,
 Debian packages or other downloadable installers. Previously published assets
 are left unchanged.
 

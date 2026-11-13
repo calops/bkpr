@@ -2,13 +2,21 @@ name: Refresh README showcase
 
 on:
   workflow_dispatch:
+  release:
+    types: [published]
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Published release tag to capture and attach the image to
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: readme-showcase-${{ github.ref }}
-  cancel-in-progress: true
+  group: readme-showcase-${{ inputs.release_tag || github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   capture:
@@ -16,6 +24,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag || github.event.release.tag_name || github.ref }}
       - uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ github.token }}
@@ -44,9 +54,30 @@ jobs:
       - name: Upload the image and public provenance
         uses: actions/upload-artifact@v4
         with:
-          name: readme-showcase-${{ github.sha }}
+          name: readme-showcase-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           path: |
             docs/assets/showcase.png
             target/showcase/**/manifest.json
             target/showcase/**/raw.png
+  publish:
+    if: github.event_name == 'release' || inputs.release_tag != ''
+    needs: capture
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: readme-showcase-${{ github.run_id }}-${{ github.run_attempt }}
+          path: showcase
+      - name: Attach screenshot without replacing existing release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
+        run: |
+          exists=$(gh release view "$RELEASE_TAG" --json assets --jq 'any(.assets[]; .name == "showcase.png")')
+          if [[ "$exists" != true ]]; then
+            gh release upload "$RELEASE_TAG" showcase/docs/assets/showcase.png
+          fi
