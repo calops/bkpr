@@ -115,7 +115,9 @@ jobs:
     name: Capture published release showcase
     needs: release
     permissions:
-      contents: write
+      contents: read
+      pages: write
+      id-token: write
     uses: ./.github/workflows/showcase.yml
     with:
       release_tag: ${{ github.ref_name }}

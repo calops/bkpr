@@ -40,7 +40,7 @@
 ### Documentation
 
 * Add a user-focused README and automated real Pi–Claude communication showcase, with Codex in another window and an isolated SSH session. Preserve the raw capture inside a thin sidebar-colored rounded frame, smooth bevel and transparent soft shadow; retain the technical reference and explicit native fixture consent.
-* Generate a fresh screenshot from each published release tag and attach it to the release without replacing existing assets.
+* Generate a fresh screenshot for each published release and replace the image hosted through artifact-based GitHub Pages; keep screenshots out of Git and expire CI artifacts after one day.
 * Document protocol, core, terminal-engine, TUI-framework and client public consumer contracts and enforce missing API documentation at compile time. Add crate-local guidance and shared code-quality/context-loading rules.
 * Document daemon startup, headless defaults, owned shutdown and initial geometry units; add server crate guidance.
 

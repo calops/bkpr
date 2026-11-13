@@ -8,7 +8,7 @@ A separate `bkprd` daemon owns the programs. Detaching leaves them running;
 reattaching brings you back. Agents keep their own interfaces, with Bkpr adding
 project context, native conversation recovery and authenticated peer messaging.
 
-![Bkpr with native agent panes, split terminals and local and SSH sessions](docs/assets/showcase.png)
+![Bkpr with native agent panes, split terminals and local and SSH sessions](https://calops.github.io/bkpr/showcase.png)
 
 *Scripted demo: Pi and Claude Code exchanging real Bkpr messages, Codex in another
 window, and an isolated SSH session. Generated automatically; outer framing is decorative.

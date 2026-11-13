@@ -37,7 +37,7 @@ test:
     cargo test --locked --workspace
 
 # Capture the isolated README demo using an existing matching native pair.
-screenshot bkpr_bin="target/debug/bkpr" bkprd_bin="target/debug/bkprd" output="docs/assets/showcase.png" frontend_bin="":
+screenshot bkpr_bin="target/debug/bkpr" bkprd_bin="target/debug/bkprd" output="target/showcase/site/showcase.png" frontend_bin="":
     #!/usr/bin/env bash
     set -euo pipefail
     args=(--bkpr "$1" --bkprd "$2" --output "$3"
