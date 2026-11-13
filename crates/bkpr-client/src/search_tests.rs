@@ -120,7 +120,7 @@ fn search_overlay_reports_incomplete_counts_no_match_and_current_without_coverin
         (false, 0, "no matches"), (false, 3, "1/3 newest"),
     ] {
         app.views.get_mut("focused-pane").unwrap().metadata.search = Some(search_result("needle", 9, running, total));
-        assert!(app.search_overlay(&mut overlay, size()));
+        assert!(app.search_overlay(&mut overlay, size()).is_some());
         assert_eq!(overlay.frame.size.rows, 1);
         let label = overlay.frame.rows[0].cells.iter().map(|cell| cell.text.as_str()).collect::<String>();
         assert!(label.contains(expected), "{label}");
@@ -128,7 +128,7 @@ fn search_overlay_reports_incomplete_counts_no_match_and_current_without_coverin
     }
     app.views.get_mut("focused-pane").unwrap().retirement_requested = true;
     app.validate_search();
-    assert!(!app.search_overlay(&mut overlay, size()));
+    assert!(app.search_overlay(&mut overlay, size()).is_none());
 }
 
 #[test]
@@ -184,16 +184,18 @@ fn search_slow_retired_view_does_not_block_another_panes_query_or_input() {
 
 #[test]
 fn search_query_limits_and_backspace_preserve_complete_unicode_without_native_input() {
-    let (mut app, capture) = fixture();
-    attach_fixture(&mut app);
-    app.begin_search().unwrap();
-    app.search_text("a界");
-    app.key(key("Backspace"), &mut Vec::new(), size(), &[]).unwrap();
-    app.search_text(&"x".repeat(MAX_SEARCH_BYTES));
-    app.flush_search().unwrap();
-    assert_search_query(capture.respond(serde_json::json!({"generation": 1})), "a");
-    app.flush_search().unwrap();
-    assert!(capture.try_recv().is_err());
+    for grapheme in ["界", "e\u{301}", "👩‍💻", "✈\u{fe0f}", "🇫🇷"] {
+        let (mut app, capture) = fixture();
+        attach_fixture(&mut app);
+        app.begin_search().unwrap();
+        app.search_text(&format!("a{grapheme}"));
+        app.key(key("Backspace"), &mut Vec::new(), size(), &[]).unwrap();
+        app.search_text(&"x".repeat(MAX_SEARCH_BYTES));
+        app.flush_search().unwrap();
+        assert_search_query(capture.respond(serde_json::json!({"generation": 1})), "a");
+        app.flush_search().unwrap();
+        assert!(capture.try_recv().is_err());
+    }
 }
 
 #[test]
@@ -273,7 +275,7 @@ fn search_query_suffix_never_attaches_a_clipped_grapheme_to_the_prefix() {
     app.search_text("界\u{301}123456789");
     let size = Size { cols: 30, rows: 1, ..size() };
     let mut surface = UiSurface::new(size);
-    assert!(app.search_overlay(&mut surface, size));
+    let query = app.search_overlay(&mut surface, size).unwrap();
     assert!(!surface.frame.rows[0].cells.iter().any(|cell| cell.text.contains('\u{301}')));
     let slash = surface.frame.rows[0].cells.iter().position(|cell| cell.text == "/").unwrap();
     assert_eq!(surface.frame.rows[0].cells[slash + 1].text, "1");
@@ -283,8 +285,87 @@ fn search_query_suffix_never_attaches_a_clipped_grapheme_to_the_prefix() {
         truecolor: true, foreground: Some([220,220,220]), background: Some([10,10,10]),
         ..ColorProbe::default()
     });
-    app.theme_search(&mut surface, &theme);
+    app.theme_search(&mut surface, &theme, Some(query));
     let cells = &surface.frame.rows[0].cells;
     assert_ne!(cells[slash].style.background_source, cells[slash + 1].style.background_source);
     assert_eq!(cells[slash + 1].style.background_source, cells[slash + 9].style.background_source);
+}
+
+#[test]
+fn search_joined_emoji_suffix_shares_paint_caret_and_selection_geometry() {
+    let (mut app, _capture) = fixture();
+    attach_fixture(&mut app);
+    app.begin_search().unwrap();
+    app.search_text("e\u{301}👩‍💻123456789012345678");
+    let size = Size { cols: 60, rows: 1, ..size() };
+    let mut surface = UiSurface::new(size);
+    let query = app.search_overlay(&mut surface, size).unwrap();
+    let cells = &surface.frame.rows[0].cells;
+    let slash = cells.iter().position(|cell| cell.text == "/").unwrap();
+    assert_eq!(cells[slash + 1].text, "👩‍💻");
+    assert!(cells[slash + 2].text.is_empty());
+    assert_eq!(cells[slash + 3].text, "1");
+    assert!(!cells.iter().any(|cell| cell.text.contains('\u{301}')));
+    let caret = slash + 21;
+    assert_eq!(surface.frame.cursor.x as usize, caret);
+    let mut theme = Theme::default();
+    crate::appearance::update_theme(&mut theme, &ColorProbe {
+        truecolor: true, foreground: Some([220,220,220]), background: Some([10,10,10]),
+        ..ColorProbe::default()
+    });
+    app.theme_search(&mut surface, &theme, Some(query));
+    let cells = &surface.frame.rows[0].cells;
+    let selected = cells[slash + 1].style.background_source;
+    assert_ne!(cells[slash].style.background_source, selected);
+    assert!(cells[slash + 1..=caret].iter().all(|cell| cell.style.background_source == selected));
+    assert_ne!(cells[caret + 1].style.background_source, selected);
+}
+
+#[test]
+fn narrow_search_keeps_query_and_caret_after_prefix_without_splitting_emoji() {
+    let (mut app, _capture) = fixture();
+    attach_fixture(&mut app);
+    app.begin_search().unwrap();
+    app.search_text("👩‍💻12345678");
+    let mut theme = Theme::default();
+    crate::appearance::update_theme(&mut theme, &ColorProbe {
+        truecolor: true, foreground: Some([220,220,220]), background: Some([10,10,10]),
+        ..ColorProbe::default()
+    });
+    for (cols, expected, caret, visible) in [
+        (30, "12345678", 28, true),
+        (31, "👩‍💻12345678", 30, true),
+        (21, "", 20, true),
+        (20, "", 19, false),
+        (19, "", 18, false),
+        (0, "", 0, false),
+    ] {
+        let size = Size { cols, rows: 1, ..size() };
+        let mut surface = UiSurface::new(size);
+        let query = app.search_overlay(&mut surface, size).unwrap();
+        assert_eq!(surface.frame.cursor.x, caret);
+        assert_eq!(surface.frame.cursor.visible, visible);
+        let cells = &surface.frame.rows[0].cells;
+        if visible {
+            let slash = cells.iter().position(|cell| cell.text == "/").unwrap();
+            let text: String = cells[slash + 1..usize::from(caret)]
+                .iter().map(|cell| cell.text.as_str()).collect();
+            assert_eq!(text, expected, "{cols}");
+            assert_eq!(query.x as usize, slash + 1);
+            assert_eq!(query.x + query.width, caret + 1);
+        } else {
+            assert_eq!(query.width, 0);
+        }
+        app.theme_search(&mut surface, &theme, Some(query));
+        let cells = &surface.frame.rows[0].cells;
+        if visible {
+            let slash = query.x as usize - 1;
+            let selected = cells[query.x as usize].style.background_source;
+            assert_ne!(cells[slash].style.background_source, selected, "{cols}");
+            assert!(cells[query.x as usize..=caret as usize]
+                .iter().all(|cell| cell.style.background_source == selected));
+        } else if let Some(first) = cells.first() {
+            assert!(cells.iter().all(|cell| cell.style.background_source == first.style.background_source));
+        }
+    }
 }

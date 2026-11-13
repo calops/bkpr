@@ -14,7 +14,6 @@ use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
 use nucleo_matcher::{Matcher, Utf32Str};
 use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthChar;
 
 // Presentation follows main 9ad93bd's finder.rs/finder_entry.rs and pane tooltip
 // grouping (Copyright (c) 2026 Rémi Labeyrie, MIT); no legacy transport is reused.
@@ -1222,10 +1221,7 @@ fn annotate(value: &Value, terms: &[Term], matcher: &mut Matcher, positions: &mu
     }
 }
 fn display_width(text: &str) -> usize {
-    // Match UiSurface's scalar-width renderer, including wide-glyph continuation.
-    text.chars()
-        .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
-        .sum()
+    bkpr_tui_framework::text_width(text)
 }
 fn excerpt(value: &Value, positions: &[u32], width: usize) -> (String, Vec<usize>) {
     if width == 0 {
@@ -1542,6 +1538,35 @@ mod tests {
         assert!(text.contains('界'));
         assert!(!columns.is_empty());
         assert!(columns.iter().all(|column| *column < 6));
+    }
+
+    #[test]
+    fn joined_emoji_excerpt_highlights_its_two_cells_without_clipping_the_cluster() {
+        let value = Value::new(Field::Text, "a👩‍💻bc");
+        assert_eq!(excerpt(&value, &[1], 3), ("a👩‍💻".into(), vec![1, 2]));
+        assert_eq!(excerpt(&value, &[1], 2), ("👩‍💻".into(), vec![0, 1]));
+        assert_eq!(excerpt(&value, &[1], 1), ("…".into(), vec![]));
+    }
+
+    #[test]
+    fn finder_caret_tracks_joined_emoji_and_moves_by_whole_graphemes() {
+        let mut finder = Finder::new(&registry(), None, |_| None);
+        finder.paste("e\u{301}👩‍💻界");
+        let mut surface = UiSurface::new(size());
+        let input = finder.layout(size()).input;
+        for (key_name, offset) in [(None, 7), (Some("ArrowLeft"), 5), (Some("ArrowLeft"), 3)] {
+            if let Some(key_name) = key_name {
+                finder.handle_key(&key(key_name), size());
+            }
+            finder.paint(&mut surface, size());
+            assert!(surface.frame.cursor.visible);
+            assert_eq!(surface.frame.cursor.x, input.x + offset);
+        }
+        let cells = &surface.frame.rows[usize::from(input.y)].cells;
+        assert_eq!(cells[usize::from(input.x) + 2].text, "e\u{301}");
+        assert_eq!(cells[usize::from(input.x) + 3].text, "👩‍💻");
+        assert!(cells[usize::from(input.x) + 4].text.is_empty());
+        assert_eq!(cells[usize::from(input.x) + 5].text, "界");
     }
     fn mouse(x: f32, y: f32, button: MouseButton, action: MouseAction) -> MouseEvent {
         MouseEvent {

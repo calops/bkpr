@@ -151,11 +151,7 @@ impl<'a> SidebarCaptionPart<'a> {
         let mut ellipsis_end = 0;
         let mut ellipsis_columns = 0;
         for (offset, glyph) in text.grapheme_indices(true) {
-            // Preserve clusters, but budget the scalar cells the surface paints.
-            let advance: usize = glyph
-                .chars()
-                .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
-                .sum();
+            let advance = unicode_width::UnicodeWidthStr::width(glyph);
             if columns + advance > usize::from(width) {
                 return Self {
                     text: &text[..ellipsis_end],
@@ -885,20 +881,21 @@ pub(crate) fn project_details(project: Option<&ProjectSnapshot>) -> Vec<String> 
 }
 
 fn wrapped(value: &str, width: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation as _;
     if width == 0 {
         return Vec::new();
     }
     let mut lines = Vec::new();
     let mut line = String::new();
     let mut used = 0;
-    for character in value.chars() {
-        let columns = unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
+    for glyph in value.graphemes(true) {
+        let columns = unicode_width::UnicodeWidthStr::width(glyph);
         if used + columns > width && !line.is_empty() {
             lines.push(std::mem::take(&mut line));
             used = 0;
         }
         if columns <= width {
-            line.push(character);
+            line.push_str(glyph);
             used += columns;
         }
     }
@@ -2620,7 +2617,7 @@ mod tests {
     #[test]
     fn narrow_and_cjk_captions_keep_whole_glyphs_root_and_exact_tail_geometry() {
         use unicode_width::UnicodeWidthStr as _;
-        for host in [None, Some("遠隔e\u{301}計算機")] {
+        for host in [None, Some("遠隔e\u{301}計算機"), Some("👩‍💻開発")] {
             for status in [
                 SessionStatus::Queued,
                 SessionStatus::Connecting,
@@ -2628,7 +2625,7 @@ mod tests {
                 SessionStatus::Offline,
                 SessionStatus::Rejected,
             ] {
-                let group = caption_group("開発e\u{301}作業", host, status);
+                let group = caption_group("開発e\u{301}👩‍💻作業", host, status);
                 for width in 0..40 {
                     let caption = super::session_caption(&group, '\u{f0aa1}', width);
                     assert_eq!(caption.width(), usize::from(width), "{caption:?}");
@@ -2672,12 +2669,17 @@ mod tests {
             ("日本", 4, "日本"),
             ("abc", 3, "abc"),
             ("abcd", 3, "ab…"),
+            ("👩‍💻", 2, "👩‍💻"),
+            ("👨‍👩‍👧‍👦", 2, "👨‍👩‍👧‍👦"),
+            ("🇫🇷", 2, "🇫🇷"),
+            ("1\u{fe0f}\u{20e3}", 2, "1\u{fe0f}\u{20e3}"),
+            ("♥\u{fe0f}", 2, "♥\u{fe0f}"),
             ("👩‍💻x", 1, "…"),
             ("👩‍💻x", 2, "…"),
-            ("👩‍💻x", 3, "…"),
-            ("👩‍💻x", 4, "…"),
+            ("👩‍💻x", 3, "👩‍💻x"),
+            ("👩‍💻x", 4, "👩‍💻x"),
             ("👩‍💻x", 5, "👩‍💻x"),
-            ("👩‍💻xy", 5, "👩‍💻…"),
+            ("👩‍💻xyz", 4, "👩‍💻x…"),
         ] {
             let (mut pane, _) = capture_fixture();
             pane.harness = None;
@@ -2753,6 +2755,61 @@ mod tests {
             let group = caption_group(name, None, SessionStatus::Online);
             let caption = super::session_caption(&group, ' ', budget + 2);
             assert_eq!(caption["\u{f14e2} ".len()..].trim_end(), expected);
+        }
+    }
+
+    #[test]
+    fn wrapped_details_keep_joined_emoji_and_combining_clusters_whole() {
+        assert_eq!(super::wrapped("a👩‍💻e\u{301}界", 3), ["a👩‍💻", "e\u{301}界"]);
+        assert_eq!(super::wrapped("👩‍💻x", 2), ["👩‍💻", "x"]);
+        assert_eq!(super::wrapped("a👩‍💻e\u{301}", 1), ["a", "e\u{301}"]);
+        assert!(super::wrapped("👩‍💻", 0).is_empty());
+    }
+
+    #[test]
+    fn joined_emoji_title_span_ends_before_right_aligned_activity() {
+        let (mut pane, snapshot) = capture_fixture();
+        pane.title = "👩‍💻xy".into();
+        pane.harness_status = Some(working_record(Some("claude")));
+        let prefix_width = 2;
+        let status_width = bkpr_tui_framework::text_width(pane_activity(&pane, Some(&snapshot)));
+        for (budget, expected) in [(1, "…"), (2, "…"), (3, "👩‍💻…"), (4, "👩‍💻xy")]
+        {
+            let width = prefix_width + budget + status_width;
+            let (label, title) = sidebar_pane_label(&pane, Some(&snapshot), width);
+            let mut surface = capture_surface();
+            let size = Size {
+                cols: width as u16,
+                rows: 1,
+                ..surface.frame.size
+            };
+            surface.paint(
+                size,
+                vec![(
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: width as u16,
+                        height: 1,
+                    },
+                    label,
+                    false,
+                )],
+                None,
+            );
+            let cells = &surface.frame.rows[0].cells;
+            let text: String = cells[usize::from(title.start)..usize::from(title.end)]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            assert_eq!(text, expected);
+            assert_eq!(usize::from(title.start), prefix_width);
+            assert!(usize::from(title.end) <= width - status_width);
+            let status: String = cells[width - status_width..]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            assert_eq!(status, pane_activity(&pane, Some(&snapshot)));
         }
     }
 

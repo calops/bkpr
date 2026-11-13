@@ -5,7 +5,6 @@ use crate::{Rect, Role, RoleSpan, Theme, UiSurface, overlay::PointerPhase, windo
 use bkpr_protocol::{MouseButton, Size};
 use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthChar;
 
 const MAX_CARDS: usize = 3;
 const MAX_BYTES: usize = 4096;
@@ -374,13 +373,9 @@ fn bounded_text(message: &str) -> String {
     text
 }
 
-// Match the existing cell painter's character widths while keeping graphemes
-// whole. An individual glyph wider than the row is represented by an ellipsis.
+// An individual glyph wider than the row is represented by an ellipsis.
 fn columns(value: &str) -> usize {
-    value
-        .chars()
-        .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
-        .sum()
+    crate::text_width(value)
 }
 
 fn wrap(message: &str, width: u16, max_rows: u16) -> Vec<String> {
@@ -393,7 +388,7 @@ fn wrap(message: &str, width: u16, max_rows: u16) -> Vec<String> {
     let mut used = 0;
     let mut graphemes = message.graphemes(true).peekable();
     while let Some(grapheme) = graphemes.next() {
-        let advance = columns(grapheme);
+        let advance = unicode_width::UnicodeWidthStr::width(grapheme);
         if used + advance > width && !row.is_empty() {
             rows.push(std::mem::take(&mut row));
             used = 0;
@@ -703,6 +698,8 @@ mod tests {
         assert_eq!(wrap("e\u{301}界z", 3, 3), vec!["e\u{301}界", "z"]);
         assert_eq!(wrap("abcdef", 3, 1), vec!["ab…"]);
         assert_eq!(wrap("界", 1, 1), vec!["…"]);
+        assert_eq!(wrap("👩‍💻✈\u{fe0f}🇫🇷", 2, 3), vec!["👩‍💻", "✈\u{fe0f}", "🇫🇷"]);
+        assert_eq!(wrap("👩‍💻x", 2, 1), vec!["…"]);
         let bounded = bounded_text(&"e\u{301}".repeat(MAX_BYTES));
         assert!(bounded.len() <= MAX_BYTES);
         assert!(bounded.ends_with('…'));

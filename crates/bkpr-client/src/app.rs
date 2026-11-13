@@ -5438,10 +5438,15 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         height: u16::from(rect.height > 1),
                     }
                 });
-            let searching = search_rect.is_some_and(|rect| {
-                rect.height > 0 && app.search_overlay(&mut search_surface, rect.size(size))
+            let search_query = search_rect.and_then(|rect| {
+                if rect.height > 0 {
+                    app.search_overlay(&mut search_surface, rect.size(size))
+                } else {
+                    None
+                }
             });
-            app.theme_search(&mut search_surface, &theme);
+            let searching = search_query.is_some();
+            app.theme_search(&mut search_surface, &theme, search_query);
             let feedback_regions = if app.sidebar_resize_blocked() {
                 Vec::new()
             } else if app.sidebar_resize_hover

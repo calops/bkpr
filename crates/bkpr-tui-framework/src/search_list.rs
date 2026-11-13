@@ -8,7 +8,6 @@ use bkpr_protocol::{
 use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
 use nucleo_matcher::{Matcher, Utf32Str};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthChar;
 
 /// Queries are bounded in UTF-8 bytes; oversized insertions are rejected atomically.
 const QUERY_LIMIT: usize = 4096;
@@ -312,7 +311,7 @@ impl<T: Clone + Eq> SearchList<T> {
                 ));
                 let mut x = 0;
                 for (index, grapheme) in item.label.graphemes(true).enumerate() {
-                    let width = display_width(grapheme);
+                    let width = unicode_width::UnicodeWidthStr::width(grapheme);
                     if x + width > usize::from(size.cols) {
                         break;
                     }
@@ -421,10 +420,7 @@ impl<T: Clone + Eq> SearchList<T> {
 }
 
 fn display_width(text: &str) -> usize {
-    // Match the scalar-width UiSurface renderer, including wide continuation cells.
-    text.chars()
-        .map(|character| UnicodeWidthChar::width(character).unwrap_or(0))
-        .sum()
+    crate::text_width(text)
 }
 
 #[cfg(test)]
@@ -522,6 +518,23 @@ mod tests {
             list.handle_key(&key("Enter", 0, ""), size(20, 5)),
             SearchListIntent::Accept
         );
+    }
+    #[test]
+    fn joined_grapheme_labels_keep_match_underlines_and_selection_padding_aligned() {
+        let mut list = SearchList::new([(0, "👩‍💻x".to_owned())], &0);
+        list.paste("x");
+        let mut surface = UiSurface::new(size(4, 2));
+        list.paint(&mut surface, size(4, 2));
+        let cells = &surface.frame.rows[1].cells;
+        assert_eq!(cells[0].text, "👩‍💻");
+        assert_eq!(cells[0].width, 2);
+        assert_eq!(cells[1].width, 0);
+        assert_eq!(cells[2].text, "x");
+        assert_eq!(cells[2].style.underline, 1);
+        assert_eq!(cells[0].style.underline, 0);
+        assert_eq!(cells[3].text, " ");
+        assert!(cells.iter().all(|cell| cell.style.inverse));
+        assert_eq!(surface.frame.cursor.x, 3);
     }
 
     #[test]

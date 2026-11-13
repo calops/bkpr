@@ -25,3 +25,16 @@ pub use theme::{Role, Theme, ThemeStyles};
 mod text_input;
 pub use search_list::{SearchList, SearchListIntent};
 pub use text_input::{EditAction, TextInput};
+
+/// Measure sanitized UI text in terminal cells without allocating.
+///
+/// Each extended grapheme cluster is measured as a whole using `unicode-width`,
+/// so joined emoji, presentation selectors and combining marks share the cell
+/// geometry used by [`text`], [`window::fit`] and [`TextInput::visible`].
+/// This does not sanitize text or reinterpret canonical native pane cells.
+pub fn text_width(value: &str) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
+    value.graphemes(true).map(UnicodeWidthStr::width).sum()
+}
