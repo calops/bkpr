@@ -52,6 +52,7 @@ class PhysicalizeTests(unittest.TestCase):
             alpha = composed.getchannel("A")
             self.assertEqual(alpha.getextrema(), (0, 255))
             width, height = composed.size
+            self.assertEqual(alpha.getbbox(), (0, 0, width, height))
             for point in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
                 self.assertEqual(alpha.getpixel(point), 0)
             frame = metadata["frame_rect"]

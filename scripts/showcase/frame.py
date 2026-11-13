@@ -131,6 +131,13 @@ def physicalize(raw: Path, output: Path) -> dict:
     app_x, app_y = MARGIN + RIM, MARGIN + RIM
     # No mask, filtering, or resampling may touch the captured application pixels.
     composed.paste(app, (app_x, app_y))
+    bounds = composed.getchannel("A").getbbox()
+    composed = composed.crop(bounds)
+    left -= bounds[0]
+    top -= bounds[1]
+    app_x -= bounds[0]
+    app_y -= bounds[1]
+    size = composed.size
     output.parent.mkdir(parents=True, exist_ok=True)
     composed.save(output, format="PNG")
     return {
@@ -140,7 +147,7 @@ def physicalize(raw: Path, output: Path) -> dict:
         "frame_rect": {"x": left, "y": top, "width": frame_width, "height": frame_height},
         "palette": palette,
         "bevel": {"rim_px": RIM, "outer_radius_px": radius, "facet_px": BEVEL, "raised_lift": 0, "highlight_strength": 0.24, "shade_strength": 0.24, "mask_supersampling": MASK_SCALE},
-        "shadow": {"sigma_px": SHADOW_SIGMA, "offset_px": list(SHADOW_OFFSET), "opacity": SHADOW_OPACITY / 255, "margin_px": MARGIN},
+        "shadow": {"sigma_px": SHADOW_SIGMA, "offset_px": list(SHADOW_OFFSET), "opacity": SHADOW_OPACITY / 255},
         "presentation": "Decorative raised rim; not a native operating-system window",
         "app_pixels_unchanged": True,
     }
