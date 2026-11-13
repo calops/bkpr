@@ -32,6 +32,7 @@ jobs:
           extra_nix_config: |
             max-jobs = 1
             cores = 8
+            accept-flake-config = true
       - uses: cachix/cachix-action@v17
         with:
           name: bkpr
