@@ -7,7 +7,7 @@ on:
   workflow_call:
     inputs:
       release_tag:
-        description: Published release tag to capture and attach the image to
+        description: Published release tag to capture for the hosted image
         required: true
         type: string
 
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: readme-showcase-${{ inputs.release_tag || github.event.release.tag_name || github.ref }}
+  group: readme-showcase
   cancel-in-progress: false
 
 jobs:
@@ -50,34 +50,32 @@ jobs:
             --dummy-key-consent allow --security-notice-consent allow \
             --fixture-project-trust allow \
             --fixture-broker-tools allow \
-            --output docs/assets/showcase.png
+            --output target/showcase/site/showcase.png
       - name: Upload the image and public provenance
         uses: actions/upload-artifact@v4
         with:
           name: readme-showcase-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
+          retention-days: 1
           path: |
-            docs/assets/showcase.png
+            target/showcase/site/showcase.png
             target/showcase/**/manifest.json
             target/showcase/**/raw.png
+      - name: Upload the current screenshot for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/showcase/site
+          retention-days: 1
   publish:
-    if: github.event_name == 'release' || inputs.release_tag != ''
     needs: capture
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: readme-showcase-${{ github.run_id }}-${{ github.run_attempt }}
-          path: showcase
-      - name: Attach screenshot without replacing existing release assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
-        run: |
-          exists=$(gh release view "$RELEASE_TAG" --json assets --jq 'any(.assets[]; .name == "showcase.png")')
-          if [[ "$exists" != true ]]; then
-            gh release upload "$RELEASE_TAG" showcase/docs/assets/showcase.png
-          fi
+      - name: Deploy the current screenshot
+        id: deployment
+        uses: actions/deploy-pages@v4

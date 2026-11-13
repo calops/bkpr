@@ -1558,7 +1558,7 @@ From this checkout, supply a matching `bkpr`/`bkprd` pair that already exists:
 ```sh
 just screenshot
 # Or supply a prebuilt matching pair.
-just screenshot /path/to/bin/bkpr /path/to/bin/bkprd docs/assets/showcase.png
+just screenshot /path/to/bin/bkpr /path/to/bin/bkprd target/showcase/site/showcase.png
 ```
 
 The recipe enters the Linux-only `nix develop .#showcase` shell. It provides the
@@ -1575,7 +1575,7 @@ nix develop .#showcase --command python3 scripts/showcase/capture.py \
   --dummy-key-consent allow --security-notice-consent allow \
   --fixture-project-trust allow \
   --fixture-broker-tools allow \
-  --output docs/assets/showcase.png
+  --output target/showcase/site/showcase.png
 ```
 
 Use `--evidence PATH` to select a new, nonexistent run directory.
@@ -1604,15 +1604,19 @@ are not presented as real AI reasoning. Evidence records native versions, layout
 readiness, send/read/processed-ack receipts, raw and composed images, and owned
 process cleanup.
 
-The [showcase workflow](../.github/workflows/showcase.yml) also runs after release
-publication, checks out that release's tag, and attaches `showcase.png` to the
-release. The existing publication graph calls it directly because releases made
-with `GITHUB_TOKEN` do not trigger another workflow's `release` event. Releases
+The [showcase workflow](../.github/workflows/showcase.yml) runs after release
+publication, checks out that release's tag, and deploys the image to
+`https://calops.github.io/bkpr/showcase.png`. The README embeds this stable URL;
+the latest deployment replaces the hosted image. Manual dispatch also deploys.
+The existing publication graph calls it directly because releases made with
+`GITHUB_TOKEN` do not trigger another workflow's `release` event. Releases
 published separately use the `release: published` trigger.
 
-Manual dispatch still uploads capture/evidence artifacts without publishing.
-Existing release assets are never overwritten. No branch commits, release
-creation or tag changes are made by screenshot generation.
+Pages deploys from a CI artifact, not a Git branch. Screenshots are generated
+under ignored `target/showcase/` paths and are not committed or attached to
+individual releases. Image/provenance and Pages artifacts expire after one day.
+Existing release assets and Git history are not rewritten or deleted.
+No branch commits, release creation or tag changes are made by this workflow.
 
 ## Packaging and releases
 

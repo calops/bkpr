@@ -923,7 +923,7 @@ def main() -> None:
                         help="Explicitly authorize native trust only for the canonical owned private generated showcase repository")
     parser.add_argument("--fixture-broker-tools", choices=("deny", "allow"), default="deny",
                         help="Authorize normal one-call Yes only for the six known Bkpr tools in this isolated fixture conversation")
-    parser.add_argument("--output", type=Path, default=Path("docs/assets/showcase.png"))
+    parser.add_argument("--output", type=Path, default=Path("target/showcase/site/showcase.png"))
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--namespace-root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)

@@ -4,3 +4,4 @@
 /.direnv/
 /.github/node_modules/
 __pycache__/
+/docs/assets/showcase.png
