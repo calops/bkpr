@@ -11,6 +11,7 @@
 
 ### Fixes
 
+* Shorten the rendering-mode hint to “toggle fancy chrome”.
 * Ellipsize long sidebar session, workspace, window and pane names at complete Unicode grapheme boundaries, preserving status indicators and working-title animation geometry.
 * Use whole-grapheme UI cell geometry for joined emoji, variation selectors and flags, keeping sparse repaints, sidebar status, text-input carets and search highlights aligned without changing canonical pane scenes.
 * Include the serving daemon's native wire family as `protocol_version` in compact and detailed `whoami` replies.

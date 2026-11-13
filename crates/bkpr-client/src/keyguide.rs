@@ -235,7 +235,7 @@ impl Action {
             Self::Edit(EditAction::Delete) => "erase next",
             Self::Edit(EditAction::Clear) => "clear field",
             Self::Detach => "detach",
-            Self::ToggleChrome => "toggle fancy / normal chrome",
+            Self::ToggleChrome => "toggle fancy chrome",
             Self::StartSearch => "search history",
             Self::StartHistory => "history",
             Self::StartResize => "resize pane",
