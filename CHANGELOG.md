@@ -6,6 +6,7 @@
 
 ### Fixes
 
+* Ellipsize long sidebar session, workspace, window and pane names at complete Unicode grapheme boundaries, preserving status indicators and working-title animation geometry.
 * Include the serving daemon's native wire family as `protocol_version` in compact and detailed `whoami` replies.
 * Strip OMP's leading pi/status decoration from recognized harness titles in sidebar, pane captions, popups and finder, preserving raw titles and ordinary program text.
 * Make the working-title gradient more visible with a wider band, a 1.5-second cycle and the working status icon's palette color.

@@ -136,15 +136,14 @@ impl SessionGroup {
 }
 
 #[derive(Default)]
-struct SessionCaptionPart<'a> {
+struct SidebarCaptionPart<'a> {
     text: &'a str,
     width: u16,
     ellipsis: bool,
 }
-impl<'a> SessionCaptionPart<'a> {
+impl<'a> SidebarCaptionPart<'a> {
     fn fit(text: &'a str, width: u16) -> Self {
         use unicode_segmentation::UnicodeSegmentation as _;
-        use unicode_width::UnicodeWidthStr as _;
         if width == 0 {
             return Self::default();
         }
@@ -152,7 +151,11 @@ impl<'a> SessionCaptionPart<'a> {
         let mut ellipsis_end = 0;
         let mut ellipsis_columns = 0;
         for (offset, glyph) in text.grapheme_indices(true) {
-            let advance = glyph.width();
+            // Preserve clusters, but budget the scalar cells the surface paints.
+            let advance: usize = glyph
+                .chars()
+                .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+                .sum();
             if columns + advance > usize::from(width) {
                 return Self {
                     text: &text[..ellipsis_end],
@@ -182,15 +185,15 @@ impl<'a> SessionCaptionPart<'a> {
 }
 
 struct SessionCaptionLayout<'a> {
-    name: SessionCaptionPart<'a>,
-    host: SessionCaptionPart<'a>,
+    name: SidebarCaptionPart<'a>,
+    host: SidebarCaptionPart<'a>,
     tail_width: u16,
 }
 fn session_caption_layout(group: &SessionGroup, width: u16) -> SessionCaptionLayout<'_> {
     let body = width.saturating_sub(2);
     let mut layout = SessionCaptionLayout {
-        name: SessionCaptionPart::default(),
-        host: SessionCaptionPart::default(),
+        name: SidebarCaptionPart::default(),
+        host: SidebarCaptionPart::default(),
         tail_width: 0,
     };
     if body >= 3 && group.tail_icon(' ').is_some() {
@@ -200,13 +203,13 @@ fn session_caption_layout(group: &SessionGroup, width: u16) -> SessionCaptionLay
         {
             // Keep at least half the usable text space for the name, but let a
             // short name release its unused share to the right-aligned host.
-            let name_share = SessionCaptionPart::fit(&group.name, (body - 3).div_ceil(2));
-            layout.host = SessionCaptionPart::fit(host, body - 3 - name_share.width);
+            let name_share = SidebarCaptionPart::fit(&group.name, (body - 3).div_ceil(2));
+            layout.host = SidebarCaptionPart::fit(host, body - 3 - name_share.width);
             layout.tail_width += 1 + layout.host.width;
         }
     }
     let name_width = body.saturating_sub(layout.tail_width + u16::from(layout.tail_width > 0));
-    layout.name = SessionCaptionPart::fit(&group.name, name_width);
+    layout.name = SidebarCaptionPart::fit(&group.name, name_width);
     layout
 }
 
@@ -721,17 +724,18 @@ fn sidebar_pane_label(
         .map(|icon| format!("{icon} "))
         .unwrap_or_default();
     let reserved = unicode_width::UnicodeWidthStr::width(prefix.as_str()) + suffix_width;
-    let name = bkpr_tui_framework::window::fit(
+    let name = SidebarCaptionPart::fit(
         crate::metadata::pane_title(pane, snapshot),
         width.saturating_sub(reserved) as u16,
     );
     let title_start = unicode_width::UnicodeWidthStr::width(prefix.as_str());
-    let title_width = unicode_width::UnicodeWidthStr::width(name.as_str());
-    let padding = width.saturating_sub(reserved + title_width);
-    (
-        format!("{prefix}{name}{}{status}", " ".repeat(padding)),
-        title_start as u16..(title_start + title_width) as u16,
-    )
+    let padding = width.saturating_sub(reserved + usize::from(name.width));
+    let mut label = String::with_capacity(width * 4);
+    label.push_str(&prefix);
+    name.push_to(&mut label);
+    label.extend(std::iter::repeat_n(' ', padding));
+    label.push_str(&status);
+    (label, title_start as u16..title_start as u16 + name.width)
 }
 
 fn sidebar_branch(pane: &PaneInfo, width: u16) -> String {
@@ -1017,20 +1021,21 @@ fn native_row_label(
             let badge = collapsed
                 && sources.count() > 0
                 && width.saturating_sub(entry.content_column()) >= 6;
-            if badge {
-                let name = bkpr_tui_framework::window::fit(
-                    &workspace.name,
-                    width.saturating_sub(entry.content_column() + 3),
-                );
-                write!(label, "● {name} {} ", crate::ci::WORKFLOW).unwrap();
+            let available = width.saturating_sub(entry.content_column());
+            let suffix = if badge {
+                3
+            } else if collapsed && available >= 5 {
+                4
             } else {
-                write!(
-                    label,
-                    "● {}{}",
-                    workspace.name,
-                    if collapsed { " ···" } else { "" }
-                )
-                .unwrap();
+                0
+            };
+            label.push_str("● ");
+            SidebarCaptionPart::fit(&workspace.name, available.saturating_sub(suffix))
+                .push_to(&mut label);
+            if badge {
+                write!(label, " {} ", crate::ci::WORKFLOW).unwrap();
+            } else if suffix > 0 {
+                label.push_str(" ···");
             }
         }
         SidebarRowKind::Projects { index } => {
@@ -1082,13 +1087,14 @@ fn native_row_label(
         } => {
             let window = &registry.workspaces[workspace].windows[index];
             if width.saturating_sub(marker_x) >= 2 {
-                write!(
-                    label,
-                    "\u{e0cc} {}{}",
-                    window.name,
-                    if collapsed { " ···" } else { "" }
-                )
-                .unwrap();
+                label.push_str("\u{e0cc} ");
+                let available = width.saturating_sub(entry.content_column());
+                let suffix = if collapsed && available >= 5 { 4 } else { 0 };
+                SidebarCaptionPart::fit(&window.name, available.saturating_sub(suffix))
+                    .push_to(&mut label);
+                if suffix > 0 {
+                    label.push_str(" ···");
+                }
             }
         }
         SidebarRowKind::Pane { index, projected } => {
@@ -1255,7 +1261,7 @@ fn render_chrome<'a>(
             && let Some(host) = session.group.host.as_deref()
             && sidebar.width >= 3
         {
-            let host = SessionCaptionPart::fit(host, sidebar.width - 3);
+            let host = SidebarCaptionPart::fit(host, sidebar.width - 3);
             let width = host.width + 2;
             let mut label = String::with_capacity(usize::from(width) * 4);
             label.push_str("\u{f048d} ");
@@ -2653,6 +2659,104 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_item_names_ellipsis_at_unicode_boundaries_without_marking_exact_fits() {
+        for (name, budget, expected) in [
+            ("e\u{301}日x", 0, ""),
+            ("e\u{301}日x", 1, "…"),
+            ("e\u{301}日x", 2, "e\u{301}…"),
+            ("e\u{301}日x", 3, "e\u{301}…"),
+            ("e\u{301}日x", 4, "e\u{301}日x"),
+            ("日本", 1, "…"),
+            ("日本", 2, "…"),
+            ("日本", 3, "日…"),
+            ("日本", 4, "日本"),
+            ("abc", 3, "abc"),
+            ("abcd", 3, "ab…"),
+            ("👩‍💻x", 1, "…"),
+            ("👩‍💻x", 2, "…"),
+            ("👩‍💻x", 3, "…"),
+            ("👩‍💻x", 4, "…"),
+            ("👩‍💻x", 5, "👩‍💻x"),
+            ("👩‍💻xy", 5, "👩‍💻…"),
+        ] {
+            let (mut pane, _) = capture_fixture();
+            pane.harness = None;
+            pane.title = name.into();
+            let mut registry = capture_registry(&pane);
+            registry.workspaces[0].name = name.into();
+            registry.workspaces[0].windows[0].name = name.into();
+            registry.workspaces[0].windows.push(window("other", None));
+            for target in [
+                SidebarTarget::Workspace("work".into()),
+                SidebarTarget::Window {
+                    workspace: "work".into(),
+                    window: "work-window".into(),
+                },
+                SidebarTarget::Pane {
+                    workspace: "work".into(),
+                    pane: pane.id.clone(),
+                },
+            ] {
+                let mut state = Controller::new(&registry);
+                let mut surface = capture_surface();
+                let context = FixtureChrome {
+                    size: surface.frame.size,
+                    state: &state,
+                    registry: &registry,
+                    rects: &[],
+                    pane_graphics: &[],
+                    guide_rows: 0,
+                    sidebar_popup: None,
+                };
+                let tree = fixture_tree(&context, |_| None, |_| None, |_| None);
+                let entry = tree
+                    .rows
+                    .iter()
+                    .find(|entry| {
+                        entry.target.as_ref().is_some_and(|candidate| {
+                            candidate.node == crate::tree::Node::Native(target.clone())
+                        })
+                    })
+                    .unwrap();
+                let start = entry.content_column();
+                let width = start + budget;
+                state.sidebar.preferred_columns = Some(width);
+                let size = surface.frame.size;
+                let hits = paint_fixture(
+                    &mut surface,
+                    FixtureChrome {
+                        size,
+                        state: &state,
+                        registry: &registry,
+                        rects: &[],
+                        pane_graphics: &[],
+                        guide_rows: 0,
+                        sidebar_popup: None,
+                    },
+                    |_| None,
+                    |_| None,
+                    |_| None,
+                    &mut Vec::new(),
+                );
+                let row = hits.iter().find(|(hit, _)| hit == &target).unwrap().1;
+                let visible = surface.frame.rows[usize::from(row)].cells
+                    [usize::from(start)..usize::from(width)]
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>();
+                assert_eq!(
+                    visible.trim_end(),
+                    expected,
+                    "{target:?}, {name:?}, {budget}"
+                );
+            }
+            let group = caption_group(name, None, SessionStatus::Online);
+            let caption = super::session_caption(&group, ' ', budget + 2);
+            assert_eq!(caption["\u{f14e2} ".len()..].trim_end(), expected);
+        }
+    }
+
+    #[test]
     fn sidebar_hidden_cursor_tracks_navigation_icons_and_item_not_details() {
         let (mut pane, snapshot) = capture_fixture();
         pane.project = Some(project_fixture());
@@ -2836,10 +2940,7 @@ mod tests {
             .map(|cell| cell.text.as_str())
             .collect::<String>();
         assert!(text.starts_with("日本語"));
-        assert_eq!(
-            text,
-            bkpr_tui_framework::window::fit(&pane.title, title.width)
-        );
+        assert!(text.ends_with('…'), "Truncated title is visibly marked");
         assert!(
             text.len() < pane.title.len(),
             "Clipped title excludes padding/status"
