@@ -1,0 +1,49 @@
+name: Refresh README showcase
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readme-showcase-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+          extra_nix_config: |
+            max-jobs = 1
+            cores = 8
+      - uses: cachix/cachix-action@v17
+        with:
+          name: bkpr
+          skipPush: true
+      - name: Resolve matching packaged executables
+        id: package
+        run: |
+          package=$(nix build --no-link --print-out-paths .#bkpr)
+          echo "path=$package" >> "$GITHUB_OUTPUT"
+      - name: Capture the isolated scripted demo
+        env:
+          BKPR_PACKAGE: ${{ steps.package.outputs.path }}
+        run: |
+          nix develop .#showcase --command python3 scripts/showcase/capture.py \
+            --bkpr "$BKPR_PACKAGE/bin/bkpr" --bkprd "$BKPR_PACKAGE/bin/bkprd" \
+            --output docs/assets/showcase.png
+      - name: Upload the image and public provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: readme-showcase-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            docs/assets/showcase.png
+            target/showcase/**/manifest.json
+            target/showcase/**/raw.png

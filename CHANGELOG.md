@@ -34,6 +34,7 @@
 
 ### Documentation
 
+* Add a user-focused README and an automated native showcase with real harness communication, isolated SSH, and transparent beveled-window artwork; retain the detailed technical reference.
 * Document protocol, core, terminal-engine, TUI-framework and client public consumer contracts and enforce missing API documentation at compile time. Add crate-local guidance and shared code-quality/context-loading rules.
 * Document daemon startup, headless defaults, owned shutdown and initial geometry units; add server crate guidance.
 
