@@ -39,11 +39,14 @@ jobs:
       - name: Resolve matching packaged executables
         id: package
         run: |
-          package=$(nix build --no-link --print-out-paths .#bkpr)
-          echo "path=$package" >> "$GITHUB_OUTPUT"
+          binaries=$(nix build --no-link --print-out-paths .#bkpr.binaries)
+          terminfo=$(nix build --no-link --print-out-paths .#bkpr.terminfo)
+          echo "path=$binaries" >> "$GITHUB_OUTPUT"
+          echo "terminfo=$terminfo/share/terminfo" >> "$GITHUB_OUTPUT"
       - name: Capture the isolated scripted demo
         env:
           BKPR_PACKAGE: ${{ steps.package.outputs.path }}
+          BKPR_TERMINFO_DIR: ${{ steps.package.outputs.terminfo }}
         run: |
           nix develop .#showcase --command python3 scripts/showcase/capture.py \
             --bkpr "$BKPR_PACKAGE/bin/bkpr" --bkprd "$BKPR_PACKAGE/bin/bkprd" \
