@@ -3458,3 +3458,56 @@ Claude/Codex/Antigravity managed first-turn and consent flows were not exercised
 by this installation slice. Configuration success never claims loaded state or
 grants native trust. Public debug/release executables were preserved; no runtime,
 release or tag was promoted.
+
+## Automated README showcase with Claude, Pi and Codex
+
+The final actual `just screenshot` run is
+`target/showcase/run-20261113T133102Z-273719855538377/`.
+It uses the matching debug product pair from
+`target/smoke/harness-integrations/build/compiled-271308191739003/`, without a
+frontend override or public executable relinks:
+
+* `bkpr`: `aad8db594ab97b8deae279a32763f1cef2e3bc468473771f604e2fb95162f220`.
+* `bkprd`: `2bdfc2ca25529dd65022f4361779c828ccfa0450848cae0e4a890ebc039e7fd1`.
+
+Real Claude Code 2.1.322 and Pi 1.5.2 exchange two durable Bkpr messages through
+their native MCP interfaces. Both exact message IDs have non-null `read_at` and
+`acknowledged_at` receipts in the final manifest. Delivery is explicitly quiet;
+this is not a wake/steering acceptance claim. Real Codex 0.167.2 runs in its own
+window with verified native process birth, exact conversation binding and a
+complete physical native UI/response capture. Codex makes no MCP call in this
+scenario. The second session is reached through real isolated loopback SSH.
+
+Each run uses fresh private HOME/XDG, fixture repositories, loopback-only
+networking, real Kitty/Xvfb rendering, pinned fonts and scripted local model
+providers. Native Claude's fixed HTTPS connectivity probes are served only for
+their two exact host/path pairs through a fixture-only private CA. Other hosts,
+authentication paths and authorization headers are rejected; no global trust
+store or real model service is used. The CA includes critical certificate-signing
+key usage and passes Python 3.14's strict TLS verification.
+
+The user explicitly authorized the dummy-key choice, informational security
+notice, trust of only the generated fixture repository, and normal per-call
+approval of the six required Bkpr tools. The CLI defaults to denying these steps;
+the recipe passes each scoped consent flag explicitly. Claude remains in native
+default/manual permission mode. Six individual approval dialogs are recorded,
+each tied to the expected pending call and live managed Claude identity, with
+following real results observed. No blanket grant or approval cache is seeded.
+One actual advertised `WaitForMcpServers` call observes asynchronous registration
+before the native inventory offers Bkpr tools.
+
+The 156×49 real terminal capture is preserved unchanged inside a 1667×1185 RGBA
+image. Its 5px rim uses the sampled sidebar color; the 15px radius and 1.2px
+directional bevel match the showcase chrome geometry, with antialiased contours
+and transparent soft shadow. The final asset SHA-256 is
+`2b9e268b0219af018ba75d3d4a4178661de7f5b139d24847a9b1f66262f7d060`.
+Local and remote project names/bees have distinct blue/pink accents. Pi, Claude
+and Codex retain their separate harness roles. Native clocks and IDs vary between
+captures; pixel identity across runs is not claimed.
+
+All 47 showcase unit tests pass, including strict TLS, consent rejection,
+native result framing, role isolation and unchanged source-pixel invariants.
+Nix formatting, workflow lint and offline local link/anchor checks pass.
+Both daemons, Kitty, Xvfb and sshd exit normally; inner and namespace cleanup
+report no surviving owned processes. The manual CI workflow was linted, not
+remotely dispatched.

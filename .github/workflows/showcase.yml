@@ -37,6 +37,9 @@ jobs:
         run: |
           nix develop .#showcase --command python3 scripts/showcase/capture.py \
             --bkpr "$BKPR_PACKAGE/bin/bkpr" --bkprd "$BKPR_PACKAGE/bin/bkprd" \
+            --dummy-key-consent allow --security-notice-consent allow \
+            --fixture-project-trust allow \
+            --fixture-broker-tools allow \
             --output docs/assets/showcase.png
       - name: Upload the image and public provenance
         uses: actions/upload-artifact@v4

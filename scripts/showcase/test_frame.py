@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from math import cos, hypot, pi, sin
 from pathlib import Path
 import tempfile
 import unittest
@@ -68,10 +69,14 @@ class PhysicalizeTests(unittest.TestCase):
                 metadata = physicalize(self.raw, self.output)
                 app, frame = metadata["app_rect"], metadata["frame_rect"]
                 radius = metadata["bevel"]["outer_radius_px"]
-                self.assertGreaterEqual(app["x"] - frame["x"], radius)
-                self.assertGreaterEqual(app["y"] - frame["y"], radius)
-                self.assertGreaterEqual(frame["x"] + frame["width"] - app["x"] - app["width"], radius)
-                self.assertGreaterEqual(frame["y"] + frame["height"] - app["y"] - app["height"], radius)
+                insets = (
+                    app["x"] - frame["x"], app["y"] - frame["y"],
+                    frame["x"] + frame["width"] - app["x"] - app["width"],
+                    frame["y"] + frame["height"] - app["y"] - app["height"],
+                )
+                self.assertEqual(len(set(insets)), 1)
+                self.assertLess(max(insets), 12)
+                self.assertLess(hypot(max(0, radius - insets[0]), max(0, radius - insets[1])), radius)
                 self.assertEqual((app["width"], app["height"]), size)
                 self.assertEqual((metadata["raw"]["width"], metadata["raw"]["height"]), size)
                 with Image.open(self.output) as composed:
@@ -79,6 +84,62 @@ class PhysicalizeTests(unittest.TestCase):
                     self.assertGreater(composed.width, frame["x"] + frame["width"])
                     self.assertGreater(composed.height, frame["y"] + frame["height"])
                     self.assertEqual(composed.crop((app["x"], app["y"], app["x"] + size[0], app["y"] + size[1])).tobytes(), expected.tobytes())
+
+    def test_rim_matches_sidebar_instead_of_foreground_or_other_panes(self):
+        sidebar = (37, 42, 55, 255)
+        image = Image.new("RGBA", (160, 100), (245, 220, 200, 255))
+        image.paste(sidebar, (0, 0, 40, 100))
+        for y in range(25, 75, 10):
+            image.paste((224, 224, 224, 255), (2, y, 18, y + 2))
+        image.save(self.raw)
+        metadata = physicalize(self.raw, self.output)
+        self.assertEqual(metadata["palette"]["background"], list(sidebar[:3]))
+        self.assertEqual(metadata["palette"]["surface"], list(sidebar[:3]))
+        app = metadata["app_rect"]
+        with Image.open(self.output) as composed:
+            for point in (
+                (app["x"] + 80, app["y"] - 1),
+                (app["x"] + 80, app["y"] + 100),
+                (app["x"] - 1, app["y"] + 50),
+                (app["x"] + 160, app["y"] + 50),
+            ):
+                self.assertEqual(composed.getpixel(point), sidebar)
+
+    def test_directional_bevel_changes_gradually_around_rounded_corner(self):
+        surface = (40, 48, 64, 255)
+        Image.new("RGBA", (160, 100), surface).save(self.raw)
+        metadata = physicalize(self.raw, self.output)
+        frame = metadata["frame_rect"]
+        right, top = frame["x"] + frame["width"], frame["y"]
+        radius = metadata["bevel"]["outer_radius_px"]
+        center_x, center_y = right - radius, top + radius
+        offsets = tuple(
+            (round((radius - 0.5) * sin(step * pi / 64)),
+             -round((radius - 0.5) * cos(step * pi / 64)))
+            for step in range(33)
+        )
+        with Image.open(self.output) as composed:
+            colors = [composed.getpixel((center_x + x, center_y + y))[:3] for x, y in offsets]
+            self.assertGreater(sum(colors[0]), sum(colors[-1]))
+            self.assertGreaterEqual(len(set(colors)), 4)
+            top_strip = [composed.getpixel((x, top))[:3] for x in range(frame["x"] + radius, right - radius)]
+            for channel in zip(*top_strip, strict=True):
+                self.assertLessEqual(max(channel) - min(channel), 1)
+            right_strip = [composed.getpixel((right - 1, y))[:3] for y in range(top + radius, top + frame["height"] - radius)]
+            for channel in zip(*right_strip, strict=True):
+                self.assertLessEqual(max(channel) - min(channel), 1)
+
+    def test_rounded_edge_has_partial_coverage_not_stair_steps(self):
+        Image.new("RGBA", (160, 100), (40, 48, 64, 255)).save(self.raw)
+        metadata = physicalize(self.raw, self.output)
+        frame = metadata["frame_rect"]
+        with Image.open(self.output) as composed:
+            radius = metadata["bevel"]["outer_radius_px"]
+            corner = composed.crop((frame["x"], frame["y"], frame["x"] + radius, frame["y"] + radius))
+            edge_alphas = {alpha for red, green, blue, alpha in corner.get_flattened_data()
+                           if red + green + blue > 0 and 115 < alpha < 255}
+            self.assertGreaterEqual(len(edge_alphas), 3)
+            self.assertLess(composed.getpixel((frame["x"], frame["y"]))[3], 115)
 
     def test_missing_raw_reports_its_path_without_creating_output(self):
         with self.assertRaises(FileNotFoundError) as caught:

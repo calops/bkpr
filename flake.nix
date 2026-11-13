@@ -154,12 +154,14 @@
               pkgs.xorg-server
               pkgs.xdotool
               pkgs.openssh
+              pkgs.openssl
               pkgs.util-linux
               pkgs.iproute2
               pkgs.coreutils
               pkgs.imagemagick
               pkgs.fontconfig
-              agents.omp
+              agents.claude-code
+              agents.codex
               agents.pi
               (pkgs.python3.withPackages (ps: [
                 ps.pillow

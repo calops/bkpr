@@ -43,6 +43,32 @@ def native(command: str | Path) -> Path:
     return candidate
 
 
+def preflight_certificates(owned, openssl: Path, root: Path) -> tuple[Path, Path, Path]:
+    """Create fixture-only CA and server identity; callers must remove the private root."""
+    directory = root / "preflight-tls"
+    directory.mkdir(mode=0o700)
+    ca, ca_key = directory / "ca.pem", directory / "ca.key"
+    certificate, key = directory / "server.pem", directory / "server.key"
+    request = directory / "server.csr"
+    extensions = directory / "extensions.cnf"
+    extensions.write_text("""basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:api.anthropic.com,DNS:platform.claude.com
+""")
+    owned.command([openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                   "-subj", "/CN=Bkpr isolated preflight fixture CA", "-addext", "basicConstraints=critical,CA:TRUE",
+                   "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+                   "-keyout", ca_key, "-out", ca])
+    owned.command([openssl, "req", "-new", "-newkey", "rsa:2048", "-nodes",
+                   "-subj", "/CN=api.anthropic.com", "-keyout", key, "-out", request])
+    owned.command([openssl, "x509", "-req", "-days", "1", "-in", request, "-CA", ca, "-CAkey", ca_key,
+                   "-CAcreateserial", "-extfile", extensions, "-out", certificate])
+    for path in directory.iterdir():
+        path.chmod(0o600)
+    return ca, certificate, key
+
+
 def private_environment(root: Path, inherited: dict[str, str]) -> dict[str, str]:
     env = {key: inherited[key] for key in ENVIRONMENT if key in inherited}
     for key, leaf in (

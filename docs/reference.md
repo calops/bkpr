@@ -1562,8 +1562,8 @@ just screenshot /path/to/bin/bkpr /path/to/bin/bkprd docs/assets/showcase.png
 ```
 
 The recipe enters the Linux-only `nix develop .#showcase` shell. It provides the
-native Omp/Pi executables, Kitty, Xvfb, a pinned Nerd Font, OpenSSH and image
-composition tools. The recipe does not build or replace product binaries. Build
+native Pi, Claude Code and Codex executables, Kitty, Xvfb, a pinned Nerd Font,
+OpenSSH, OpenSSL and image composition tools. The recipe does not build or replace product binaries. Build
 with [the source instructions](#build) first, or override both executable paths
 with a matching prebuilt pair. Do not build over programs in use by live sessions.
 
@@ -1572,10 +1572,28 @@ The underlying command creates a fresh run under `target/showcase/` by default:
 ```sh
 nix develop .#showcase --command python3 scripts/showcase/capture.py \
   --bkpr target/debug/bkpr --bkprd target/debug/bkprd \
+  --dummy-key-consent allow --security-notice-consent allow \
+  --fixture-project-trust allow \
+  --fixture-broker-tools allow \
   --output docs/assets/showcase.png
 ```
 
 Use `--evidence PATH` to select a new, nonexistent run directory.
+
+For frontend-only verification, a fourth recipe argument selects an already
+compiled `bkpr-client::run_sessions` consumer (`--frontend PATH` on the CLI).
+Only the TUI entrypoint changes; daemon utilities and managed harness launchers
+still use the matching frozen pair. This does not establish a fresh product build.
+
+The recipe explicitly permits Claude's normal UI to accept only the known
+fixture dummy API key, acknowledge its informational security notice, trust
+the generated private fixture repository, and approve individual calls to six
+fixture broker tools: `whoami`, `discover_agents`, `send_message`, `read_inbox`,
+`ack_message`, and `inspect_outbox`. The underlying CLI denies these steps unless
+the corresponding flags are passed. There are no blanket permission modes or
+seeded approval caches; other tools, projects and legal agreements are excluded.
+Claude's fixed connectivity probes are served by a host/path-allowlisted
+loopback TLS fixture with its own private CA; no host trust store is changed.
 
 Paths resolve from the caller's working directory. The capture freezes and hashes
 the supplied pair before launching it. It uses disposable HOME/XDG directories,
