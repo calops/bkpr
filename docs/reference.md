@@ -1551,6 +1551,7 @@ uses real native harness UIs, authenticated broker communication and an isolated
 loopback SSH endpoint. A palette-matched beveled frame and soft shadow are added
 around the real framebuffer capture on a transparent background. That outer
 frame is presentation artwork, not an operating-system window or Bkpr chrome.
+Fully transparent outer padding is trimmed without removing any shadow pixels.
 The raw, unframed capture stays in the evidence directory.
 
 From this checkout, supply a matching `bkpr`/`bkprd` pair that already exists:
