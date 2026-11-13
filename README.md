@@ -10,8 +10,9 @@ project context, native conversation recovery and authenticated peer messaging.
 
 ![Bkpr with native agent panes, split terminals and local and SSH sessions](https://calops.github.io/bkpr/showcase.png)
 
-This is an actual terminal UI with fancy rendering enabled via the Kitty graphics
-protocol—not a GUI or web frontend.
+<p align="center">
+  <sub><em>An actual terminal UI with fancy rendering enabled via the Kitty graphics protocol—not a GUI or web frontend.</em></sub>
+</p>
 
 *Scripted demo: Pi and Claude Code exchanging real Bkpr messages, Codex in another
 window, and an isolated SSH session. Generated automatically; outer framing is decorative.
