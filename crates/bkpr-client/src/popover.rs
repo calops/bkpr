@@ -3,7 +3,7 @@
 //! uses only pane-first protocol facts, without the old Zellij overlay transport.
 use crate::controller::SidebarTarget;
 use crate::metadata::{self, Paragraph, ProjectSpan};
-use crate::project_colors::ProjectPalette;
+use crate::project_colors::{ProjectPalette, ProjectSlots};
 use bkpr_protocol::{PaneSnapshot, RegistrySnapshot, Size};
 use bkpr_tui_framework::overlay::Placement;
 use bkpr_tui_framework::{
@@ -78,6 +78,7 @@ fn same_project_context(
 pub fn build_content<'a>(
     registry: &RegistrySnapshot,
     target: &SidebarTarget,
+    projects: &ProjectSlots,
     snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
 ) -> Option<Content> {
     if !belongs(registry, target) {
@@ -93,7 +94,15 @@ pub fn build_content<'a>(
             .iter()
             .find(|candidate| candidate.id == *pane)?;
         return Some(Content {
-            rows: metadata::content(pane, registry, snapshot(&pane.id), true),
+            rows: metadata::content(
+                pane,
+                registry,
+                snapshot(&pane.id),
+                true,
+                pane.project
+                    .as_ref()
+                    .and_then(|project| projects.slot(project)),
+            ),
         });
     }
     let window = target
@@ -144,10 +153,10 @@ pub fn build_content<'a>(
     // Canonical Git common-dir groups linked worktrees into one project. Keep
     // distinct supplied contexts (branch, changes, freshness) within that group;
     // a stale pane must never make a ready sibling's facts appear current.
-    let mut projects: Vec<Vec<&bkpr_protocol::ProjectSnapshot>> = Vec::new();
+    let mut project_groups: Vec<Vec<&bkpr_protocol::ProjectSnapshot>> = Vec::new();
     for project in panes.iter().filter_map(|pane| pane.project.as_ref()) {
         let identity = project_identity(project);
-        if let Some(group) = projects
+        if let Some(group) = project_groups
             .iter_mut()
             .find(|group| project_identity(group[0]) == identity)
         {
@@ -158,17 +167,20 @@ pub fn build_content<'a>(
                 group.push(project);
             }
         } else {
-            projects.push(vec![project]);
+            project_groups.push(vec![project]);
         }
     }
-    if projects.is_empty() {
+    if project_groups.is_empty() {
         rows.push(Paragraph::new("", Role::Panel));
         rows.push(Paragraph::new("Context", Role::Title));
         rows.push(Paragraph::new("No project metadata available", Role::Muted));
     }
-    for group in projects {
+    for group in project_groups {
         rows.push(Paragraph::new("", Role::Panel));
-        rows.push(crate::ci::repository_heading(group[0]));
+        rows.push(crate::ci::repository_heading(
+            group[0],
+            projects.slot(group[0]),
+        ));
         let mut requests = std::collections::BTreeSet::new();
         for project in &group {
             if let Some(ci) = &project.ci
@@ -176,7 +188,10 @@ pub fn build_content<'a>(
                 && requests.insert((&ci.repository, request.number))
             {
                 if requests.len() > 1 {
-                    rows.push(crate::ci::repository_heading(project));
+                    rows.push(crate::ci::repository_heading(
+                        project,
+                        projects.slot(project),
+                    ));
                 }
                 crate::ci::request_content(ci, &mut rows);
             }
@@ -186,7 +201,7 @@ pub fn build_content<'a>(
             if index > 0 {
                 rows.push(Paragraph::new("", Role::Panel));
             }
-            metadata::project_content(Some(project), false, &mut rows);
+            metadata::project_content(Some(project), false, projects.slot(project), &mut rows);
             let Some(ci) = &project.ci else {
                 continue;
             };
@@ -233,6 +248,7 @@ pub fn build_content<'a>(
 struct Source<'a> {
     owner: crate::tree::Owner,
     registry: &'a RegistrySnapshot,
+    projects: &'a ProjectSlots,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -384,6 +400,7 @@ impl Popover {
                 Source {
                     owner: target.owner,
                     registry: &session.registry,
+                    projects: tree.project_slots(target.owner),
                 },
                 Some(native),
                 anchor_row,
@@ -442,7 +459,11 @@ impl Popover {
         screen: Size,
         snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
     ) -> Option<Rect> {
-        let Source { owner, registry } = source;
+        let Source {
+            owner,
+            registry,
+            projects,
+        } = source;
         let Some(target) = target.filter(|target| belongs(registry, target)) else {
             self.hide();
             return None;
@@ -479,7 +500,7 @@ impl Popover {
             {
                 self.scroll = 0;
             }
-            self.content = build_content(registry, target, &snapshot);
+            self.content = build_content(registry, target, projects, &snapshot);
             let workspace = registry
                 .workspaces
                 .iter()
@@ -873,6 +894,87 @@ mod tests {
     }
 
     #[test]
+    fn pane_and_group_popovers_resolve_the_exact_host_project_mapping() {
+        use crate::controller::{Controller, SessionGroup, SessionStatus};
+        use crate::project_colors::ProjectHost;
+        use crate::tree::{Node, Owner, Session, Target, Tree};
+        use std::sync::Arc;
+        let mut registry = registry();
+        registry.panes[0].project = Some(crate::ci::tests::project());
+        let state = Controller::new(&registry);
+        let registry = Arc::new(registry);
+        let local = Owner {
+            slot: 0,
+            generation: 1,
+        };
+        let remote = Owner {
+            slot: 1,
+            generation: 7,
+        };
+        let session = |owner, project_host| {
+            Arc::new(Session {
+                owner,
+                project_host,
+                group: SessionGroup {
+                    name: "Session".into(),
+                    host: None,
+                    status: SessionStatus::Online,
+                    detail: String::new(),
+                },
+                registry: Arc::clone(&registry),
+                rows: state.sidebar.rows.clone().into(),
+                workspace: state.workspace.clone(),
+                window: state.window.clone(),
+                focused: state.focused.clone(),
+                snapshots: Default::default(),
+                statuses: Default::default(),
+                history: Default::default(),
+            })
+        };
+        let mut tree = Tree::new();
+        tree.reconcile(
+            vec![
+                session(local, ProjectHost::Local),
+                session(
+                    remote,
+                    ProjectHost::Remote {
+                        destination: "builder".into(),
+                        ssh_config: None,
+                    },
+                ),
+            ],
+            local,
+        );
+        let screen = Size {
+            cols: 120,
+            rows: 40,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut popup = Popover::new(screen);
+        for native in [
+            SidebarTarget::Pane {
+                workspace: "work".into(),
+                pane: "terminal".into(),
+            },
+            SidebarTarget::Workspace("work".into()),
+            SidebarTarget::Window {
+                workspace: "work".into(),
+                window: "one".into(),
+            },
+        ] {
+            let target = Target {
+                owner: remote,
+                node: Node::Native(native),
+            };
+            popup
+                .paint_tree(&tree, Some(&target), 3, 28, screen)
+                .unwrap();
+            assert!(!popup.projects.is_empty());
+            assert!(popup.projects.iter().all(|span| span.slot == Some(1)));
+        }
+    }
+    #[test]
     fn unified_popup_uses_owner_generation_and_session_authority() {
         use crate::controller::{Controller, SessionGroup, SessionStatus};
         use crate::tree::{Node, Owner, Session, Target, Tree};
@@ -902,6 +1004,7 @@ mod tests {
             };
             let session = Arc::new(Session {
                 owner,
+                project_host: Default::default(),
                 group,
                 registry: Arc::new(registry),
                 rows: state.sidebar.rows.clone().into(),
@@ -1020,7 +1123,13 @@ mod tests {
             }],
         };
         assert!(
-            build_content(&registry, &SidebarTarget::Workspace("one".into()), |_| None).is_some()
+            build_content(
+                &registry,
+                &SidebarTarget::Workspace("one".into()),
+                &ProjectSlots::default(),
+                |_| None,
+            )
+            .is_some()
         );
         assert!(
             build_content(
@@ -1029,14 +1138,18 @@ mod tests {
                     workspace: "one".into(),
                     pane: "gone".into()
                 },
+                &ProjectSlots::default(),
                 |_| None
             )
             .is_none()
         );
         assert!(
-            build_content(&registry, &SidebarTarget::Workspace("gone".into()), |_| {
-                None
-            })
+            build_content(
+                &registry,
+                &SidebarTarget::Workspace("gone".into()),
+                &ProjectSlots::default(),
+                |_| None,
+            )
             .is_none()
         );
     }
@@ -1066,7 +1179,7 @@ mod tests {
             workspace: "work".into(),
             window: "two".into(),
         };
-        let content = build_content(&registry, &target, |pane| {
+        let content = build_content(&registry, &target, &ProjectSlots::default(), |pane| {
             observed.borrow_mut().push(pane.to_owned());
             None
         })
@@ -1082,6 +1195,7 @@ mod tests {
                     workspace: "work".into(),
                     window: "gone".into(),
                 },
+                &ProjectSlots::default(),
                 |_| None
             )
             .is_none()
@@ -1104,8 +1218,11 @@ mod tests {
         };
         let mut snapshot = snapshot();
         snapshot.error = Some("Current engine error".into());
-        let popup = build_content(&registry, &target, |_| Some(&snapshot)).unwrap();
-        let finder = metadata::content(&registry.panes[0], &registry, Some(&snapshot), false);
+        let popup = build_content(&registry, &target, &ProjectSlots::default(), |_| {
+            Some(&snapshot)
+        })
+        .unwrap();
+        let finder = metadata::content(&registry.panes[0], &registry, Some(&snapshot), false, None);
         assert_eq!(
             popup
                 .rows
@@ -1125,7 +1242,10 @@ mod tests {
                 .any(|row| row.role == Role::Error && row.text.contains("engine error"))
         );
         snapshot.pane_id = "foreign".into();
-        let popup = build_content(&registry, &target, |_| Some(&snapshot)).unwrap();
+        let popup = build_content(&registry, &target, &ProjectSlots::default(), |_| {
+            Some(&snapshot)
+        })
+        .unwrap();
         assert!(
             !popup
                 .rows
@@ -1134,7 +1254,10 @@ mod tests {
         );
         snapshot.pane_id = "terminal".into();
         snapshot.program_identity.as_mut().unwrap().birth = "previous".into();
-        let popup = build_content(&registry, &target, |_| Some(&snapshot)).unwrap();
+        let popup = build_content(&registry, &target, &ProjectSlots::default(), |_| {
+            Some(&snapshot)
+        })
+        .unwrap();
         assert!(!popup.rows.iter().any(|row| row.text.contains("Codex")));
     }
 
@@ -1161,6 +1284,7 @@ mod tests {
                         generation: 1,
                     },
                     registry: &registry,
+                    projects: &ProjectSlots::default(),
                 },
                 Some(&target),
                 2,
@@ -1178,6 +1302,7 @@ mod tests {
                         generation: 1,
                     },
                     registry: &registry,
+                    projects: &ProjectSlots::default(),
                 },
                 Some(&target),
                 2,
@@ -1214,6 +1339,7 @@ mod tests {
                             generation: 1,
                         },
                         registry: &registry,
+                        projects: &ProjectSlots::default(),
                     },
                     Some(&target),
                     anchor,
@@ -1238,7 +1364,6 @@ mod tests {
     fn canonical_project_groups_deduplicate_subdirectories_but_keep_worktree_freshness() {
         use bkpr_protocol::{ChangeSummary, ProjectSnapshot, ProjectState, RepositoryInfo};
         let project = |cwd: &str, root: &str, state| ProjectSnapshot {
-            color_slot: None,
             ci: None,
             cwd: cwd.into(),
             state,
@@ -1265,9 +1390,12 @@ mod tests {
         let mut other = pane("other", "one");
         other.project = Some(project("/tree/b", "/tree/b", ProjectState::Loading));
         registry.panes.extend([duplicate, other]);
-        let content = build_content(&registry, &SidebarTarget::Workspace("work".into()), |_| {
-            None
-        })
+        let content = build_content(
+            &registry,
+            &SidebarTarget::Workspace("work".into()),
+            &ProjectSlots::default(),
+            |_| None,
+        )
         .unwrap();
         assert_eq!(
             content
@@ -1293,9 +1421,12 @@ mod tests {
             .as_mut()
             .unwrap()
             .state = ProjectState::Ready;
-        let refreshed = build_content(&registry, &SidebarTarget::Workspace("work".into()), |_| {
-            None
-        })
+        let refreshed = build_content(
+            &registry,
+            &SidebarTarget::Workspace("work".into()),
+            &ProjectSlots::default(),
+            |_| None,
+        )
         .unwrap();
         assert_eq!(content.rows.len(), refreshed.rows.len());
         assert_eq!(
@@ -1332,6 +1463,7 @@ mod tests {
                             generation: 1,
                         },
                         registry: &registry,
+                        projects: &ProjectSlots::default(),
                     },
                     Some(&target),
                     anchor,
@@ -1356,6 +1488,7 @@ mod tests {
                         generation: 1,
                     },
                     registry: &registry,
+                    projects: &ProjectSlots::default(),
                 },
                 Some(&target),
                 3,
@@ -1391,6 +1524,7 @@ mod tests {
                             generation: 1,
                         },
                         registry: &registry,
+                        projects: &ProjectSlots::default(),
                     },
                     Some(&target),
                     4,
@@ -1453,6 +1587,7 @@ mod tests {
             let state = Controller::new(&registry);
             Arc::new(Session {
                 owner,
+                project_host: Default::default(),
                 group: SessionGroup {
                     name: "Exact owner".into(),
                     host: None,
@@ -1588,9 +1723,12 @@ mod tests {
             .unwrap()
             .root = "/fixture/linked".into();
         registry.panes.push(duplicate);
-        let content = build_content(&registry, &SidebarTarget::Workspace("work".into()), |_| {
-            None
-        })
+        let content = build_content(
+            &registry,
+            &SidebarTarget::Workspace("work".into()),
+            &ProjectSlots::default(),
+            |_| None,
+        )
         .unwrap();
         let text = content
             .rows
@@ -1621,9 +1759,12 @@ mod tests {
         let request = ci.change_request.as_mut().unwrap();
         request.number = 43;
         request.url = "https://github.com/owner/repo/pull/43".into();
-        let content = build_content(&registry, &SidebarTarget::Workspace("work".into()), |_| {
-            None
-        })
+        let content = build_content(
+            &registry,
+            &SidebarTarget::Workspace("work".into()),
+            &ProjectSlots::default(),
+            |_| None,
+        )
         .unwrap();
         let text = content
             .rows

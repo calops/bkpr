@@ -179,7 +179,6 @@ fn live_project_metadata_is_neither_durable_nor_restored_as_a_live_fact() {
     record["registry"]["panes"][0]["project"] = serde_json::to_value(ProjectSnapshot {
         cwd: fixture.repo.path().to_owned(),
         state: ProjectState::Ready,
-        color_slot: Some(37),
         repository: None,
         error: Some("not a live fact".into()),
         ci: None,
@@ -276,8 +275,6 @@ impl Publication {
             bindings: BTreeMap::new(),
             canonical_cwds: BTreeMap::new(),
             cache: BTreeMap::new(),
-            owners: BTreeMap::new(),
-            color_slots: BTreeMap::new(),
             rebind: BTreeSet::new(),
             inputs_pending: false,
             watch_retry: None,
@@ -363,7 +360,7 @@ impl Publication {
                 foreground_cwd: None,
                 harness: None,
                 harness_status: None,
-                project: Some(loading(cwd, None)),
+                project: Some(loading(cwd)),
                 isolated_environment: true,
                 harness_status_changed_at_ms: None,
             });
@@ -377,22 +374,8 @@ impl Publication {
             .iter_mut()
             .find(|pane| pane.id == id)
             .unwrap();
-        let color_slot = pane.project.as_ref().and_then(|project| project.color_slot);
-        pane.project = Some(loading(cwd, color_slot));
+        pane.project = Some(loading(cwd));
         pane.foreground_cwd = Some(cwd.to_owned());
-    }
-    fn exit(&self, id: &str) {
-        let mut state = self.registry.inner.state.lock().unwrap();
-        let pane = state
-            .record
-            .registry
-            .panes
-            .iter_mut()
-            .find(|pane| pane.id == id)
-            .unwrap();
-        pane.status = PaneStatus::Exited;
-        pane.project = None;
-        state.project_retired.insert(id.to_owned());
     }
     fn ingest(&mut self) {
         loop {
@@ -578,70 +561,7 @@ impl Drop for Publication {
 }
 
 #[test]
-fn project_ordinals_follow_sorted_new_pane_ids_and_reuse_only_released_slots() {
-    let mut fixture = Publication::new();
-    let first = fixture.repository("z-first");
-    let second = fixture.repository("m-second");
-    let third = fixture.repository("a-third");
-    fixture.pane("pane-30", &third);
-    fixture.pane("pane-20", &second);
-    fixture.pane("pane-10", &first);
-    fixture.ingest();
-    assert_eq!(fixture.project("pane-10").color_slot, Some(0));
-    assert_eq!(fixture.project("pane-20").color_slot, Some(1));
-    assert_eq!(fixture.project("pane-30").color_slot, Some(2));
-
-    fixture.exit("pane-10");
-    fixture.worker.publish();
-    assert_eq!(fixture.project("pane-20").color_slot, Some(1));
-    assert_eq!(fixture.project("pane-30").color_slot, Some(2));
-    let fourth = fixture.repository("new-low-slot");
-    fixture.pane("pane-40", &fourth);
-    fixture.ingest();
-    assert_eq!(fixture.project("pane-40").color_slot, Some(0));
-    assert_eq!(fixture.project("pane-20").color_slot, Some(1));
-    assert_eq!(fixture.project("pane-30").color_slot, Some(2));
-}
-
-#[test]
-fn linked_worktrees_share_the_canonical_slot_until_the_last_owner_exits() {
-    let mut fixture = Publication::new();
-    let repository = fixture.repository("repository");
-    let linked = fixture.linked(&repository);
-    let other = fixture.repository("other");
-    fixture.pane("pane-10", &repository);
-    fixture.pane("pane-20", &linked);
-    fixture.pane("pane-30", &other);
-    fixture.ingest();
-    let root_project = fixture.project("pane-10");
-    let linked_project = fixture.project("pane-20");
-    assert_eq!(root_project.color_slot, Some(0));
-    assert_eq!(linked_project.color_slot, Some(0));
-    assert_eq!(
-        root_project.repository.unwrap().common_dir,
-        linked_project.repository.unwrap().common_dir
-    );
-    assert_eq!(fixture.project("pane-30").color_slot, Some(1));
-
-    fixture.exit("pane-10");
-    fixture.ingest();
-    assert_eq!(fixture.project("pane-20").color_slot, Some(0));
-    let newcomer = fixture.repository("newcomer");
-    fixture.pane("pane-40", &newcomer);
-    fixture.ingest();
-    assert_eq!(fixture.project("pane-40").color_slot, Some(2));
-    fixture.exit("pane-20");
-    fixture.ingest();
-    let replacement = fixture.repository("replacement");
-    fixture.pane("pane-50", &replacement);
-    fixture.ingest();
-    assert_eq!(fixture.project("pane-50").color_slot, Some(0));
-    assert_eq!(fixture.project("pane-30").color_slot, Some(1));
-    assert_eq!(fixture.project("pane-40").color_slot, Some(2));
-}
-
-#[test]
-fn unknown_cwd_retains_its_reservation_until_verified_repository_reassociation() {
+fn unknown_cwd_reports_loading_and_error_before_repository_reassociation() {
     let mut fixture = Publication::new();
     let first = fixture.repository("first");
     let second = fixture.repository("second");
@@ -653,38 +573,25 @@ fn unknown_cwd_retains_its_reservation_until_verified_repository_reassociation()
     fixture.worker.publish();
     let loading = fixture.project("pane-10");
     assert_eq!(loading.state, ProjectState::Loading);
-    assert_eq!(loading.color_slot, Some(0));
     assert!(loading.repository.is_none());
     fixture.ingest();
     let failed = fixture.project("pane-10");
     assert_eq!(failed.state, ProjectState::Error);
-    assert_eq!(failed.color_slot, Some(0));
     assert!(failed.error.is_some());
     assert!(failed.repository.is_none());
 
-    let third = fixture.repository("third");
-    fixture.pane("pane-30", &third);
-    fixture.ingest();
-    assert_eq!(fixture.project("pane-30").color_slot, Some(2));
     fixture.cwd("pane-10", &second);
     fixture.ingest();
     let reassociated = fixture.project("pane-10");
     assert_eq!(reassociated.state, ProjectState::Ready);
-    assert_eq!(reassociated.color_slot, Some(1));
     assert_eq!(
         reassociated.repository.unwrap().common_dir,
         fixture.project("pane-20").repository.unwrap().common_dir
     );
-    let fourth = fixture.repository("fourth");
-    fixture.pane("pane-40", &fourth);
-    fixture.ingest();
-    assert_eq!(fixture.project("pane-40").color_slot, Some(0));
-    assert_eq!(fixture.project("pane-20").color_slot, Some(1));
-    assert_eq!(fixture.project("pane-30").color_slot, Some(2));
 }
 
 #[test]
-fn broken_linked_metadata_keeps_error_truth_and_known_nonrepo_releases_the_slot() {
+fn broken_linked_metadata_reports_errors_then_recognized_nonrepository_clears_facts() {
     let mut fixture = Publication::new();
     let repository = fixture.repository("repository");
     let linked = fixture.linked(&repository);
@@ -710,13 +617,10 @@ fn broken_linked_metadata_keeps_error_truth_and_known_nonrepo_releases_the_slot(
     fixture.worker.publish();
     let loading = fixture.project("pane-10");
     assert_eq!(loading.state, ProjectState::Loading);
-    assert_eq!(loading.color_slot, Some(0));
     fixture.refresh_dirty();
     let failed = fixture.project("pane-10");
     assert_eq!(failed.state, ProjectState::Error);
     assert!(failed.error.is_some());
-    assert_eq!(failed.color_slot, Some(0));
-    assert_eq!(fixture.project("pane-20").color_slot, Some(1));
     fs::write(&replacement, original).unwrap();
     fs::rename(&replacement, &marker).unwrap();
     fixture.event(
@@ -736,7 +640,6 @@ fn broken_linked_metadata_keeps_error_truth_and_known_nonrepo_releases_the_slot(
     let repaired = fixture.project("pane-10");
     assert_eq!(repaired.state, ProjectState::Ready);
     assert!(repaired.error.is_none());
-    assert_eq!(repaired.color_slot, Some(0));
 
     let plain = fixture.root.path().join("plain");
     fs::create_dir(&plain).unwrap();
@@ -744,63 +647,15 @@ fn broken_linked_metadata_keeps_error_truth_and_known_nonrepo_releases_the_slot(
     fixture.ingest();
     let nonrepo = fixture.project("pane-10");
     assert_eq!(nonrepo.state, ProjectState::NotRepository);
-    assert!(nonrepo.color_slot.is_none());
     assert!(nonrepo.repository.is_none());
     assert!(nonrepo.error.is_none());
-    let newcomer = fixture.repository("newcomer");
-    fixture.pane("pane-30", &newcomer);
-    fixture.ingest();
-    assert_eq!(fixture.project("pane-30").color_slot, Some(0));
-    assert_eq!(fixture.project("pane-20").color_slot, Some(1));
-}
-
-#[test]
-fn restoration_cannot_inherit_a_retired_executions_unresolved_reservation() {
-    let mut fixture = Publication::new();
-    let first = fixture.repository("first");
-    let second = fixture.repository("second");
-    fixture.pane("pane-10", &first);
-    fixture.pane("pane-20", &second);
-    fixture.ingest();
-    assert_eq!(fixture.project("pane-10").color_slot, Some(0));
-    assert_eq!(fixture.project("pane-20").color_slot, Some(1));
-
-    // Coalesce completion and restoration before the worker's next turn.
-    fixture.exit("pane-10");
-    let unavailable = fixture.root.path().join("restored-unavailable-cwd");
-    {
-        let mut state = fixture.registry.inner.state.lock().unwrap();
-        let restored = state
-            .record
-            .registry
-            .panes
-            .iter_mut()
-            .find(|pane| pane.id == "pane-10")
-            .unwrap();
-        restored.status = PaneStatus::Running;
-        restored.foreground_cwd = Some(unavailable.clone());
-        restored.project = Some(loading(&unavailable, None));
-    }
-    fixture.ingest();
-    let restored = fixture.project("pane-10");
-    assert_eq!(restored.state, ProjectState::Error);
-    assert!(restored.color_slot.is_none());
-    let third = fixture.repository("third");
-    fixture.pane("pane-30", &third);
-    fixture.ingest();
-    assert_eq!(fixture.project("pane-30").color_slot, Some(0));
-    fixture.cwd("pane-10", &first);
-    fixture.ingest();
-    assert_eq!(fixture.project("pane-10").color_slot, Some(2));
-    assert_eq!(fixture.project("pane-20").color_slot, Some(1));
-    assert_eq!(fixture.project("pane-30").color_slot, Some(0));
 }
 
 #[test]
 fn native_completion_retires_project_metadata() {
     let fixture = Fixture::new();
     fixture.git(&["init", "-b", "main"]);
-    fixture.wait(|project| project.state == ProjectState::Ready && project.color_slot.is_some());
+    fixture.wait(|project| project.state == ProjectState::Ready);
     let pane = fixture
         .registry
         .inner
@@ -849,7 +704,6 @@ fn worktree_and_local_index_events_do_not_recheck_linked_or_unrelated_repositori
     let loading = fixture.project("main");
     assert_eq!(loading.state, ProjectState::Loading);
     assert_eq!(loading.repository, before.repository);
-    assert_eq!(loading.color_slot, before.color_slot);
     assert!(fixture.worker.cache[&repository].identity_known);
     assert!(!fixture.worker.cache[&repository].metadata_dirty);
     assert!(fixture.worker.rebind.is_empty());
@@ -989,7 +843,6 @@ fn pending_events_cannot_publish_a_completed_observation_as_fresh() {
     fixture.pane("pane", &repository);
     fixture.ingest();
     fixture.coverage();
-    let before = fixture.project("pane");
     fs::write(repository.join("new"), "new\n").unwrap();
     fixture
         .worker
@@ -1010,7 +863,6 @@ fn pending_events_cannot_publish_a_completed_observation_as_fresh() {
     fixture.worker.refresh(&repository);
     let pending = fixture.project("pane");
     assert_eq!(pending.state, ProjectState::Loading);
-    assert_eq!(pending.color_slot, before.color_slot);
     assert!(pending.repository.is_some());
     assert!(fixture.worker.cache[&repository].due.is_some());
     fixture.refresh_dirty();

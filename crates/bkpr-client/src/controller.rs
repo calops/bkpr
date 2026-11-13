@@ -675,7 +675,8 @@ pub(crate) fn harness_icon(kind: HarnessKind) -> &'static str {
 
 pub(crate) fn harness_role(kind: HarnessKind) -> Role {
     match kind {
-        HarnessKind::Omp | HarnessKind::Pi => Role::Secondary,
+        HarnessKind::Omp => Role::Secondary,
+        HarnessKind::Pi => Role::Accent,
         HarnessKind::Codex | HarnessKind::Aider => Role::Success,
         HarnessKind::Claude | HarnessKind::Goose => Role::Warning,
         HarnessKind::Agy => Role::Info,
@@ -974,6 +975,7 @@ fn focused_tree_pane(
 struct NativeRowContext<'a> {
     registry: &'a RegistrySnapshot,
     entry: &'a crate::tree::TreeRow,
+    projects: &'a crate::project_colors::ProjectSlots,
     known: Option<&'a PaneSnapshot>,
     width: u16,
     row: u16,
@@ -998,6 +1000,7 @@ fn native_row_label(
     let NativeRowContext {
         registry,
         entry,
+        projects,
         known,
         width,
         row,
@@ -1051,7 +1054,7 @@ fn native_row_label(
                     repositories.push((
                         &repository.common_dir,
                         repository.name.as_str(),
-                        project.color_slot,
+                        projects.slot(project),
                     ));
                 }
             }
@@ -1103,7 +1106,10 @@ fn native_row_label(
                     width: 2.min(width.saturating_sub(marker_x)),
                     height: 1,
                 },
-                slot: pane.project.as_ref().and_then(|project| project.color_slot),
+                slot: pane
+                    .project
+                    .as_ref()
+                    .and_then(|project| projects.slot(project)),
             });
             let (text, title) = sidebar_pane_label(
                 pane,
@@ -1302,6 +1308,7 @@ fn render_chrome<'a>(
                     kind,
                     NativeRowContext {
                         registry: &session.registry,
+                        projects: tree.project_slots(entry.owner),
                         entry,
                         known,
                         width: sidebar.width,
@@ -2199,6 +2206,7 @@ mod tests {
         tree.reconcile(
             vec![Arc::new(crate::tree::Session {
                 owner: FIXTURE_OWNER,
+                project_host: Default::default(),
                 group: SessionGroup {
                     name: "fixture".into(),
                     host: None,
@@ -2346,6 +2354,7 @@ mod tests {
         let state = Controller::new(&registry);
         std::sync::Arc::new(crate::tree::Session {
             owner,
+            project_host: Default::default(),
             group: super::SessionGroup {
                 name: label.into(),
                 host: None,
@@ -2361,6 +2370,62 @@ mod tests {
             statuses: Default::default(),
             history: Default::default(),
         })
+    }
+
+    #[test]
+    fn sidebar_project_names_and_pane_icons_share_global_host_qualified_slots() {
+        use crate::project_colors::ProjectHost;
+        use crate::tree::{Owner, Tree};
+        let active = Owner {
+            slot: 0,
+            generation: 1,
+        };
+        let other = Owner {
+            slot: 1,
+            generation: 1,
+        };
+        let first = session_fixture(active, "local");
+        let mut second = session_fixture(other, "remote");
+        std::sync::Arc::get_mut(&mut second).unwrap().project_host = ProjectHost::Remote {
+            destination: "builder".into(),
+            ssh_config: None,
+        };
+        let state = Controller::new(&first.registry);
+        let mut tree = Tree::new();
+        tree.reconcile(vec![first.clone(), second], active);
+        let mut surface = capture_surface();
+        let size = surface.frame.size;
+        let mut projects = Vec::new();
+        super::tree_chrome(
+            &mut surface,
+            super::TreeChromeContext {
+                native: ChromeContext {
+                    size,
+                    state: &state,
+                    registry: &first.registry,
+                    rects: &[],
+                    pane_graphics: &[],
+                    guide_rows: 0,
+                },
+                tree: &tree,
+                active,
+                popup: None,
+            },
+            |_| None,
+            |_| None,
+            |_| None,
+            &mut projects,
+            &mut Vec::new(),
+        );
+        // Each owner contributes a repository caption and its pane marker.
+        assert_eq!(
+            projects.iter().filter(|span| span.slot == Some(0)).count(),
+            2
+        );
+        assert_eq!(
+            projects.iter().filter(|span| span.slot == Some(1)).count(),
+            2
+        );
     }
 
     #[test]
@@ -3047,8 +3112,7 @@ mod tests {
     #[test]
     fn native_project_markers_keep_full_ink_while_branch_metadata_stays_muted() {
         let (mut pane, snapshot) = capture_fixture();
-        let mut project = project_fixture();
-        project.color_slot = Some(1);
+        let project = project_fixture();
         pane.project = Some(project);
         let registry = capture_registry(&pane);
         let state = Controller::new(&registry);
@@ -3104,7 +3168,7 @@ mod tests {
             } else {
                 marker.style.foreground_source
             },
-            bkpr_protocol::ColorSource::Palette(5)
+            bkpr_protocol::ColorSource::Palette(4)
         );
         assert!(!marker.style.faint);
         let detail_y = state
@@ -3127,7 +3191,6 @@ mod tests {
     fn refreshing_sidebar_preserves_cached_labels_counts_colors_and_hit_geometry() {
         let (mut pane, snapshot) = capture_fixture();
         let mut project = project_fixture();
-        project.color_slot = Some(1);
         project.repository.as_mut().unwrap().committed = Some(ChangeSummary {
             files: 2,
             insertions: 13,
@@ -3646,7 +3709,6 @@ mod tests {
     }
     fn project_fixture() -> ProjectSnapshot {
         ProjectSnapshot {
-            color_slot: None,
             ci: None,
             cwd: "/repo/linked/日本語".into(),
             state: ProjectState::Ready,
@@ -4604,17 +4666,19 @@ mod tests {
         let (mut pane, mut snapshot) = capture_fixture();
         pane.harness_status = Some(working_record(Some("claude")));
         let registry = capture_registry(&pane);
-        let mut finder = crate::finder::Finder::new(&registry, None, |_| Some(&snapshot));
+        let projects = crate::project_colors::ProjectSlots::default();
+        let mut finder =
+            crate::finder::Finder::new(&registry, None, &projects, |_| Some(&snapshot));
         finder.paste("harness:claude status:working");
         assert_eq!(finder.selected_target().unwrap().pane_id, pane.id);
         snapshot.program_identity = None;
-        finder.update_registry(&registry, |_| Some(&snapshot));
+        finder.update_registry(&registry, &projects, |_| Some(&snapshot));
         assert!(finder.selected_target().is_none());
         snapshot.program_identity = Some(ProcessIdentity {
             pid: 41,
             birth: "100".into(),
         });
-        finder.update_registry(&registry, |_| Some(&snapshot));
+        finder.update_registry(&registry, &projects, |_| Some(&snapshot));
         assert_eq!(finder.selected_target().unwrap().pane_id, pane.id);
     }
 

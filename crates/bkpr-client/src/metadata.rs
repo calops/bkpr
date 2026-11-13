@@ -147,6 +147,7 @@ pub(crate) fn content(
     registry: &RegistrySnapshot,
     known: Option<&PaneSnapshot>,
     refresh_controls: bool,
+    project_slot: Option<u32>,
 ) -> Vec<Paragraph> {
     let harness = crate::controller::recognized_harness(pane, known);
     let activity = crate::controller::harness_status(pane, known);
@@ -233,12 +234,12 @@ pub(crate) fn content(
     }
     heading(&mut rows, "Repository");
     if let Some(project) = &pane.project {
-        rows.push(crate::ci::repository_heading(project));
+        rows.push(crate::ci::repository_heading(project, project_slot));
         if let Some(ci) = &project.ci {
             crate::ci::request_content(ci, &mut rows);
         }
     }
-    project_content(pane.project.as_ref(), false, &mut rows);
+    project_content(pane.project.as_ref(), false, project_slot, &mut rows);
     crate::ci::content(
         pane.project.as_ref(),
         refresh_controls.then_some(pane.id.as_str()),
@@ -251,6 +252,7 @@ pub(crate) fn content(
 pub(crate) fn project_content(
     project: Option<&ProjectSnapshot>,
     include_name: bool,
+    project_slot: Option<u32>,
     rows: &mut Vec<Paragraph>,
 ) {
     let Some(project) = project else {
@@ -283,7 +285,7 @@ pub(crate) fn project_content(
         return;
     };
     if include_name {
-        rows.push(crate::ci::repository_heading(project));
+        rows.push(crate::ci::repository_heading(project, project_slot));
     }
     push(
         rows,
@@ -599,7 +601,6 @@ mod tests {
 
     fn project(state: ProjectState) -> ProjectSnapshot {
         ProjectSnapshot {
-            color_slot: None,
             cwd: "/project".into(),
             state,
             error: None,
@@ -715,14 +716,13 @@ mod tests {
 
     #[test]
     fn refresh_keeps_cached_fact_text_geometry_and_semantic_inks() {
-        let mut ready = project(ProjectState::Ready);
-        ready.color_slot = Some(3);
+        let ready = project(ProjectState::Ready);
         let mut refreshing = ready.clone();
         refreshing.state = ProjectState::Loading;
         for columns in [1, 3, 8, 24, 40, 80] {
             let render = |project: &ProjectSnapshot| {
                 let mut rows = Vec::new();
-                project_content(Some(project), true, &mut rows);
+                project_content(Some(project), true, Some(3), &mut rows);
                 let mut lines = Vec::new();
                 wrap(&rows, columns, &mut lines);
                 lines
@@ -762,7 +762,7 @@ mod tests {
             let mut project = project(state);
             project.error = Some("Git refresh failed\u{1b}\nretry later".into());
             let mut rows = Vec::new();
-            project_content(Some(&project), true, &mut rows);
+            project_content(Some(&project), true, None, &mut rows);
             assert!(rows.iter().any(|row| row.text.contains("stale")));
             assert!(
                 rows.iter()
@@ -786,7 +786,7 @@ mod tests {
         repository.branch = None;
         repository.head_sha = None;
         let mut rows = Vec::new();
-        project_content(Some(&project), true, &mut rows);
+        project_content(Some(&project), true, None, &mut rows);
         assert!(rows.iter().any(|row| row.text.contains("no HEAD commit")));
         assert!(
             rows.iter()

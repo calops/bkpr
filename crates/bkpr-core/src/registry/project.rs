@@ -21,11 +21,11 @@ const DEBOUNCE: Duration = Duration::from_millis(100);
 const MAX_COALESCE: Duration = Duration::from_secs(1);
 const MAX_NATIVE_WATCHES: usize = 65_536;
 
-pub(super) fn loading(cwd: &Path, color_slot: Option<u32>) -> ProjectSnapshot {
+/// Pending project observation for the foreground directory.
+pub(super) fn loading(cwd: &Path) -> ProjectSnapshot {
     ProjectSnapshot {
         cwd: cwd.to_owned(),
         state: ProjectState::Loading,
-        color_slot,
         repository: None,
         error: None,
         ci: None,
@@ -66,7 +66,7 @@ struct Entry {
 impl Entry {
     fn new(source: PathBuf, identity: Option<git::Identity>, identity_known: bool) -> Self {
         Self {
-            snapshot: loading(&source, None),
+            snapshot: loading(&source),
             source,
             identity,
             identity_known,
@@ -106,10 +106,6 @@ struct Worker {
     bindings: BTreeMap<PathBuf, PathBuf>,
     canonical_cwds: BTreeMap<PathBuf, PathBuf>,
     cache: BTreeMap<PathBuf, Entry>,
-    // Adapted from main 9ad93bd native.rs::sync_project_colors. Unlike main's
-    // recovered model, these reservations exist only for this live worker.
-    owners: BTreeMap<String, PathBuf>,
-    color_slots: BTreeMap<PathBuf, u32>,
     rebind: BTreeSet<PathBuf>,
     inputs_pending: bool,
     watch_retry: Option<Instant>,
@@ -139,8 +135,6 @@ impl Registry {
                     bindings: BTreeMap::new(),
                     canonical_cwds: BTreeMap::new(),
                     cache: BTreeMap::new(),
-                    owners: BTreeMap::new(),
-                    color_slots: BTreeMap::new(),
                     rebind: BTreeSet::new(),
                     inputs_pending: false,
                     watch_retry: None,
@@ -715,60 +709,6 @@ impl Worker {
         if state.closing {
             return;
         }
-        let retired = std::mem::take(&mut state.project_retired);
-        if !retired.is_empty() {
-            self.owners.retain(|id, _| !retired.contains(id));
-            let live: BTreeSet<_> = self.owners.values().collect();
-            self.color_slots.retain(|common, _| live.contains(common));
-        }
-        let panes: BTreeMap<_, _> = state
-            .record
-            .registry
-            .panes
-            .iter()
-            .filter(|pane| pane.status == PaneStatus::Running)
-            .map(|pane| (&pane.id, pane))
-            .collect();
-        self.owners.retain(|id, _| panes.contains_key(id));
-        let mut unbound = false;
-        for pane in panes.values() {
-            let Some(entry) = self
-                .bindings
-                .get(effective_cwd(pane))
-                .and_then(|key| self.cache.get(key))
-            else {
-                unbound = true;
-                continue;
-            };
-            if !entry.identity_known {
-                // A metadata error or asynchronous CWD gap is not evidence that
-                // the pane left its previous canonical repository.
-                continue;
-            }
-            if let Some(identity) = &entry.identity {
-                if self.owners.get(&pane.id) != Some(&identity.common) {
-                    self.owners.insert(pane.id.clone(), identity.common.clone());
-                }
-            } else {
-                self.owners.remove(&pane.id);
-            }
-        }
-        let live: BTreeSet<_> = self.owners.values().collect();
-        self.color_slots.retain(|common, _| live.contains(common));
-        if !unbound {
-            // Cold CWDs are discovered incrementally. Allocate only once this
-            // input batch is bound, so CWD/cache ordering cannot choose hues.
-            let occupied: BTreeSet<_> = self.color_slots.values().copied().collect();
-            let mut available = (0..=u32::MAX).filter(|slot| !occupied.contains(slot));
-            for common in self.owners.values() {
-                if !self.color_slots.contains_key(common)
-                    && let Some(slot) = available.next()
-                {
-                    self.color_slots.insert(common.clone(), slot);
-                }
-            }
-        }
-        drop(panes);
         let mut changed = false;
         for pane in &mut state.record.registry.panes {
             if pane.status != PaneStatus::Running {
@@ -778,14 +718,8 @@ impl Worker {
             let Some(entry) = self.bindings.get(cwd).and_then(|key| self.cache.get(key)) else {
                 continue;
             };
-            let color_slot = self
-                .owners
-                .get(&pane.id)
-                .and_then(|common| self.color_slots.get(common))
-                .copied();
             let mut snapshot = entry.snapshot.clone();
             snapshot.cwd = cwd.to_owned();
-            snapshot.color_slot = color_slot;
             if let Some(current) = &pane.project {
                 merge_ci(&mut snapshot, current);
             }

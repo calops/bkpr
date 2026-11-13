@@ -64,14 +64,14 @@ pub(crate) fn safe_link(url: &str) -> Option<&str> {
     }
     Some(url)
 }
-pub(crate) fn repository_heading(project: &ProjectSnapshot) -> Paragraph {
+pub(crate) fn repository_heading(project: &ProjectSnapshot, slot: Option<u32>) -> Paragraph {
     match &project.ci {
         Some(ci) => {
             let mut identity = format!("\u{f09b} {}", ci.repository.path);
             if let Some(request) = &ci.change_request {
                 identity.push_str(&format!(" #{}", request.number));
             }
-            Paragraph::project(identity, Role::Title, project.color_slot).linked(
+            Paragraph::project(identity, Role::Title, slot).linked(
                 ci.change_request
                     .as_ref()
                     .map_or(ci.repository.web_url.as_str(), |request| {
@@ -85,7 +85,7 @@ pub(crate) fn repository_heading(project: &ProjectSnapshot) -> Paragraph {
                 |repository| repository.name.clone(),
             ),
             Role::Title,
-            project.color_slot,
+            slot,
         ),
     }
 }
@@ -323,7 +323,6 @@ pub(crate) mod tests {
         ProjectSnapshot {
             cwd: "/fixture/repo".into(),
             state: ProjectState::Ready,
-            color_slot: Some(3),
             error: None,
             repository: Some(RepositoryInfo {
                 name: "repo".into(),
@@ -414,9 +413,9 @@ pub(crate) mod tests {
     #[test]
     fn popup_retains_remote_local_pr_issue_base_and_check_context_at_all_widths() {
         let project = project();
-        let mut rows = vec![repository_heading(&project)];
+        let mut rows = vec![repository_heading(&project, Some(3))];
         request_content(project.ci.as_ref().unwrap(), &mut rows);
-        crate::metadata::project_content(Some(&project), false, &mut rows);
+        crate::metadata::project_content(Some(&project), false, Some(3), &mut rows);
         content(Some(&project), Some("exact-pane"), true, &mut rows);
         let text = rows
             .iter()

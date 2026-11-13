@@ -10,10 +10,6 @@ pub struct ProjectSnapshot {
     pub cwd: PathBuf,
     /// Availability of the local Git observation, not the CI fetch.
     pub state: ProjectState,
-    /// Live session ordinal for the canonical common Git repository, not an RGB
-    /// colour or persisted identity. Retained while an existing owner's identity
-    /// is temporarily unknown; absent for unrecognized/nonrepository projects.
-    pub color_slot: Option<u32>,
     /// Local worktree facts, absent when no repository was identified.
     pub repository: Option<RepositoryInfo>,
     /// Cached provider facts, fetched independently of local Git observation.

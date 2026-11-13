@@ -3,9 +3,11 @@
 //! crates/bkpr-zellij/src/palette.rs (project palette and terminal-native fallback).
 
 use crate::appearance::{blend, surface};
-use bkpr_protocol::ColorSource;
+use bkpr_protocol::{ColorSource, ProjectSnapshot, RegistrySnapshot};
 use bkpr_tui_framework::{ColorProbe, Role};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 // Black, gray and white can disappear against terminal-native surfaces.
 const ACCENTS: [u8; 12] = [4, 5, 6, 3, 13, 12, 2, 1, 9, 10, 11, 14];
@@ -13,6 +15,151 @@ const SHADE_PASSES: usize = 3 + (100 - 35 + 1);
 const SHADE_CANDIDATES: usize = ACCENTS.len() * SHADE_PASSES;
 // Includes the initial 75% accents, even though their RGBs recur in the shade passes.
 const MAX_CANDIDATES: u32 = (ACCENTS.len() + SHADE_CANDIDATES) as u32;
+
+/// Filesystem identity is local to a host/SSH route, never a session or admission
+/// generation. Separate local daemons can observe the same repository.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum ProjectHost {
+    /// Shared filesystem namespace of local daemon attachments.
+    #[default]
+    Local,
+    /// A remote filesystem reached through the selected SSH route.
+    Remote {
+        destination: String,
+        ssh_config: Option<PathBuf>,
+    },
+}
+
+struct Assignment {
+    slot: u32,
+    seen: u64,
+}
+
+/// One host's client-assigned canonical repository ordinals.
+#[derive(Default)]
+pub(crate) struct ProjectSlots {
+    repositories: HashMap<PathBuf, Assignment>,
+}
+impl ProjectSlots {
+    /// Resolve an observed repository; unknown identity has no accent.
+    pub(crate) fn slot(&self, project: &ProjectSnapshot) -> Option<u32> {
+        self.repositories
+            .get(&project.repository.as_ref()?.common_dir)
+            .map(|assignment| assignment.slot)
+    }
+}
+
+// Keep recent disconnected/retired identities without allowing session churn to
+// retain an unbounded registry. Live identities are never evicted or renumbered.
+const RETIRED_PROJECTS: usize = 256;
+
+/// Client-wide stable assignments with bounded retention of retired identities.
+#[derive(Default)]
+pub(crate) struct ProjectColors {
+    hosts: HashMap<ProjectHost, ProjectSlots>,
+    empty: ProjectSlots,
+    free: BTreeSet<u32>,
+    next: u32,
+    revision: u64,
+}
+impl ProjectColors {
+    /// Project-color projection for an attachment's filesystem namespace.
+    pub(crate) fn slots(&self, host: &ProjectHost) -> &ProjectSlots {
+        self.hosts.get(host).unwrap_or(&self.empty)
+    }
+    /// Empty projection for an unknown attachment owner.
+    pub(crate) fn empty(&self) -> &ProjectSlots {
+        &self.empty
+    }
+
+    /// Ordinal capacity needed by the finite terminal-derived palette.
+    pub(crate) fn capacity(&self) -> u32 {
+        self.next
+    }
+
+    /// Called only when immutable registry publications or host membership change.
+    /// Canonical snapshots stay untouched; palette/theme changes do not enter here.
+    pub(crate) fn reconcile<'a>(
+        &mut self,
+        sessions: impl IntoIterator<Item = (&'a ProjectHost, &'a Arc<RegistrySnapshot>)>,
+    ) {
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("project revision exhausted");
+        for (host, registry) in sessions {
+            let mut repositories = registry
+                .panes
+                .iter()
+                .filter_map(|pane| pane.project.as_ref()?.repository.as_ref())
+                .peekable();
+            if repositories.peek().is_none() {
+                continue;
+            }
+            if !self.hosts.contains_key(host) {
+                self.hosts.insert(host.clone(), ProjectSlots::default());
+            }
+            let slots = self.hosts.get_mut(host).unwrap();
+            for repository in repositories {
+                if let Some(assignment) = slots.repositories.get_mut(&repository.common_dir) {
+                    assignment.seen = self.revision;
+                    continue;
+                }
+                let slot = self.free.pop_first().unwrap_or_else(|| {
+                    let slot = self.next;
+                    self.next = self.next.checked_add(1).expect("project slots exhausted");
+                    slot
+                });
+                slots.repositories.insert(
+                    repository.common_dir.clone(),
+                    Assignment {
+                        slot,
+                        seen: self.revision,
+                    },
+                );
+            }
+        }
+        let revision = self.revision;
+        let mut retired: Vec<_> = self
+            .hosts
+            .iter()
+            .flat_map(|(host, slots)| {
+                slots
+                    .repositories
+                    .iter()
+                    .filter_map(move |(identity, assignment)| {
+                        (assignment.seen != revision).then_some((
+                            assignment.seen,
+                            assignment.slot,
+                            host,
+                            identity,
+                        ))
+                    })
+            })
+            .collect();
+        let surplus = retired.len().saturating_sub(RETIRED_PROJECTS);
+        if surplus == 0 {
+            drop(retired);
+            self.hosts.retain(|_, slots| !slots.repositories.is_empty());
+            return;
+        }
+        retired.sort_unstable_by_key(|(seen, slot, _, _)| (*seen, *slot));
+        let evicted: Vec<_> = retired
+            .into_iter()
+            .take(surplus)
+            .map(|(_, slot, host, identity)| (slot, host.clone(), identity.clone()))
+            .collect();
+        for (slot, host, identity) in evicted {
+            self.hosts
+                .get_mut(&host)
+                .unwrap()
+                .repositories
+                .remove(&identity);
+            self.free.insert(slot);
+        }
+        self.hosts.retain(|_, slots| !slots.repositories.is_empty());
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Evidence {
@@ -154,6 +301,127 @@ impl ProjectPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn registry(projects: impl IntoIterator<Item = ProjectSnapshot>) -> Arc<RegistrySnapshot> {
+        Arc::new(RegistrySnapshot {
+            revision: 1,
+            workspaces: Vec::new(),
+            panes: projects
+                .into_iter()
+                .enumerate()
+                .map(|(index, project)| bkpr_protocol::PaneInfo {
+                    id: index.to_string(),
+                    workspace_id: None,
+                    window_id: None,
+                    title: String::new(),
+                    status: bkpr_protocol::PaneStatus::Running,
+                    exit_code: None,
+                    cwd: project.cwd.clone(),
+                    foreground_cwd: None,
+                    harness: None,
+                    harness_status: None,
+                    project: Some(project),
+                    home: "/fixture".into(),
+                    isolated_environment: true,
+                    harness_status_changed_at_ms: None,
+                })
+                .collect(),
+        })
+    }
+
+    #[test]
+    fn one_client_allocates_across_independent_sessions_and_host_filesystems() {
+        let local = ProjectHost::Local;
+        let remote = ProjectHost::Remote {
+            destination: "user@builder".into(),
+            ssh_config: None,
+        };
+        let other_route = ProjectHost::Remote {
+            destination: "user@builder".into(),
+            ssh_config: Some("/fixture/other-ssh-config".into()),
+        };
+        let project = crate::ci::tests::project();
+        let mut worktree = project.clone();
+        let repository = worktree.repository.as_mut().unwrap();
+        repository.root = "/fixture/worktree".into();
+        repository.git_dir = "/fixture/repo/.git/worktrees/linked".into();
+        let mut distinct = project.clone();
+        distinct.repository.as_mut().unwrap().common_dir = "/fixture/other/.git".into();
+        let first = registry([project.clone(), worktree.clone()]);
+        let second = registry([project.clone(), distinct.clone()]);
+        let remote_registry = registry([project.clone()]);
+        let mut colors = ProjectColors::default();
+        // Each independent backend formerly called its first repository slot 0.
+        // No backend presentation ordinal participates in this client allocation.
+        colors.reconcile([
+            (&local, &first),
+            (&local, &second),
+            (&remote, &remote_registry),
+            (&other_route, &remote_registry),
+        ]);
+        let slot = colors.slots(&local).slot(&project);
+        assert!(slot.is_some());
+        assert_eq!(colors.slots(&local).slot(&worktree), slot);
+        let slots = [
+            slot,
+            colors.slots(&local).slot(&distinct),
+            colors.slots(&remote).slot(&project),
+            colors.slots(&other_route).slot(&project),
+        ];
+        for (index, slot) in slots.iter().enumerate() {
+            assert!(slot.is_some());
+            assert!(!slots[..index].contains(slot));
+        }
+        let mut unknown = project.clone();
+        unknown.repository = None;
+        assert_eq!(colors.slots(&local).slot(&unknown), None);
+
+        let mut palette = ProjectPalette::default();
+        let mut probe = host();
+        palette.update(&probe, colors.capacity());
+        let before = assigned(&palette, 4);
+        for (index, color) in before.iter().enumerate() {
+            assert!(!before[..index].contains(color));
+        }
+        probe.background = Some([240, 235, 230]);
+        palette.update(&probe, colors.capacity());
+        assert_ne!(assigned(&palette, 4), before);
+        assert_eq!(colors.slots(&local).slot(&project), slot);
+    }
+
+    #[test]
+    fn reconnect_restores_recent_identity_and_retirement_is_bounded() {
+        let local = ProjectHost::Local;
+        let project = crate::ci::tests::project();
+        let live = registry([project.clone()]);
+        let mut colors = ProjectColors::default();
+        colors.reconcile([(&local, &live)]);
+        let original = colors.slots(&local).slot(&project);
+        colors.reconcile([]);
+        colors.reconcile([(&local, &live)]);
+        assert_eq!(colors.slots(&local).slot(&project), original);
+        let mut recent = project.clone();
+        for index in 0..RETIRED_PROJECTS * 2 {
+            recent.repository.as_mut().unwrap().common_dir =
+                format!("/fixture/retired-{index}/.git").into();
+            let transient = registry([recent.clone()]);
+            colors.reconcile([(&local, &live), (&local, &transient)]);
+            assert_eq!(colors.slots(&local).slot(&project), original);
+            assert!(colors.slots(&local).repositories.len() <= RETIRED_PROJECTS + 2);
+        }
+        let recent_slot = colors.slots(&local).slot(&recent);
+        assert!(recent_slot.is_some());
+        colors.reconcile([(&local, &live)]);
+        let returning = registry([recent.clone()]);
+        colors.reconcile([(&local, &live), (&local, &returning)]);
+        assert_eq!(colors.slots(&local).slot(&recent), recent_slot);
+        assert!(colors.capacity() <= RETIRED_PROJECTS as u32 + 3);
+        let mut oldest = project.clone();
+        oldest.repository.as_mut().unwrap().common_dir = "/fixture/retired-0/.git".into();
+        assert_eq!(colors.slots(&local).slot(&oldest), None);
+        colors.reconcile([]);
+        assert!(colors.slots(&local).repositories.len() <= RETIRED_PROJECTS);
+    }
 
     const MUTED: ColorSource = ColorSource::Default;
 

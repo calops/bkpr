@@ -468,6 +468,13 @@ fn refresh_presentation(index: usize, session: &mut Session, empty: &EmptyMetada
     }
     session.presentation = Some(Arc::new(crate::tree::Session {
         owner,
+        project_host: match &session.target {
+            SessionTarget::Local { .. } => crate::project_colors::ProjectHost::Local,
+            SessionTarget::Remote(target) => crate::project_colors::ProjectHost::Remote {
+                destination: target.destination.clone(),
+                ssh_config: target.ssh_config.clone(),
+            },
+        },
         group: SessionGroup {
             name: name.into_owned(),
             host: host.map(str::to_owned),
