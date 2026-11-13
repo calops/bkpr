@@ -53,14 +53,16 @@ impl Registry {
             Operation::Agent {
                 launch_id,
                 token,
+                guard,
                 request,
             } => {
-                let launch = self
+                let mut launch = self
                     .inner
                     .captures
                     .lock()
                     .unwrap()
                     .lookup(&launch_id, &token)?;
+                launch.binding_guard = guard;
                 self.agent_request(launch, peer, request, is_connected)
             }
             Operation::HarnessBegin { kind } => self.begin_capture(peer, kind, is_connected),
@@ -101,11 +103,40 @@ impl Registry {
                 let automatic_binding = descriptor.is_some()
                     && foreground_context(&launch).is_ok_and(|(active, _)| active);
                 let _transaction = self.inner.transaction.lock().unwrap();
-                self.inner
-                    .captures
-                    .lock()
-                    .unwrap()
-                    .lookup(&launch_id, &token)?;
+                {
+                    let captures = self.inner.captures.lock().unwrap();
+                    captures.authorize(&launch)?;
+                    if matches!(
+                        &event,
+                        CaptureEvent::Bind { .. } | CaptureEvent::Unbind { .. }
+                    ) {
+                        let current = &captures.launches[&launch_id];
+                        if !current.accepts_binding_event(&event)? {
+                            // A known CAS miss must not acquire the durable writer,
+                            // revoke authority, or publish a new pane/store revision.
+                            return Ok(Payload::Control(json!({
+                                "accepted":false,
+                                "binding":current.binding_snapshot(),
+                            })));
+                        }
+                    }
+                }
+                if matches!(&event, CaptureEvent::NativeContext { .. }) {
+                    // Trusted native attestation is volatile. Do not clone/fsync
+                    // the agent store or publish pane/status revisions per tool.
+                    let _writer = self.inner.agents.callback_guard()?;
+                    self.capture_pane(&launch.grant.pane_id)?;
+                    self.inner
+                        .captures
+                        .lock()
+                        .unwrap()
+                        .event(&launch_id, &token, event)?;
+                    return Ok(Payload::Control(json!({"accepted":true})));
+                }
+                let changes_binding = matches!(
+                    &event,
+                    CaptureEvent::Bind { .. } | CaptureEvent::Unbind { .. }
+                );
                 if matches!(event, CaptureEvent::End) {
                     // Retire volatile authority even if the agent writer is poisoned.
                     launch.control.revoke();
@@ -174,7 +205,15 @@ impl Registry {
                         return Err(error);
                     }
                 }
-                Ok(json!({"accepted":true}))
+                if changes_binding {
+                    let captures = self.inner.captures.lock().unwrap();
+                    Ok(json!({
+                        "accepted":true,
+                        "binding":captures.launches[&launch_id].binding_snapshot(),
+                    }))
+                } else {
+                    Ok(json!({"accepted":true}))
+                }
             }
             Operation::HarnessContext { launch_id, token } => {
                 let launch = self
@@ -791,10 +830,7 @@ impl Registry {
                 return;
             }
             for id in stale {
-                captures.clear_native_status(&id);
-                if let Some(launch) = captures.launches.remove(&id) {
-                    launch.control.revoke();
-                }
+                captures.retire_launch(&id);
             }
             captures.version = captures.version.wrapping_add(1);
             version = captures.version;

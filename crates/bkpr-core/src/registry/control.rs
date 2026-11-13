@@ -174,6 +174,8 @@ impl Registry {
             if let Some(client) = &client {
                 client.ensure_active()?;
             }
+            let _transaction = self.inner.transaction.lock().unwrap();
+            self.authorize_control(origin)?;
             return Ok(result.into());
         }
         let input = matches!(
@@ -270,6 +272,8 @@ impl Registry {
                     if let Some(client) = &client {
                         client.ensure_active()?;
                     }
+                    let _transaction = self.inner.transaction.lock().unwrap();
+                    self.authorize_control(origin)?;
                 }
                 Ok(result)
             })?

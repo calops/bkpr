@@ -1,6 +1,9 @@
 use super::*;
 use bkpr_protocol::control::{ControlAction, ControlReply, resolve};
 
+#[path = "binding_tests.rs"]
+mod binding_tests;
+
 struct ControlFixture {
     fixture: Fixture,
     pane: String,
@@ -158,6 +161,7 @@ fn control_request_reply(
             Request::new(Operation::Agent {
                 launch_id: grant.launch_id.clone(),
                 token: grant.token.clone(),
+                guard: None,
                 request: AgentRequest::Control {
                     request: Box::new(operation),
                     scope,

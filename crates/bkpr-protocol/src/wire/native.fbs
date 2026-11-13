@@ -159,6 +159,7 @@ table OperationAgent {
   launch_id:string (required);
   token:string (required);
   request:AgentRequest (required);
+  guard:AgentBindingGuard;
 }
 table OperationWorkspaceCreate {
   name:string;
@@ -374,9 +375,20 @@ table SpawnLayoutNodeSplit {
   second:SpawnLayoutNode (required);
 }
 union SpawnLayoutNode { SpawnLayoutNodeExisting, SpawnLayoutNodeNew, SpawnLayoutNodeSplit }
+table NativeConversation {
+  id:string (required);
+  source:ConversationSource;
+  generation:ulong;
+}
+table AgentBindingGuard {
+  conversation:NativeConversation (required);
+  context_id:string (required);
+}
 table CaptureEventBind {
   conversation_id:string (required);
   source:ConversationSource;
+  has_expected_revision:bool;
+  expected_revision:ulong;
 }
 table CaptureEventError {
   message:string (required);
@@ -399,7 +411,16 @@ table CaptureEventStatusReport {
   state:NativeStatusState;
   kind:NativeStatusKind;
 }
-union CaptureEvent { CaptureEventBind, CaptureEventError, CaptureEventEnd, CaptureEventPromptSubmitted, CaptureEventStatusEnroll, CaptureEventStatusReport }
+table CaptureEventUnbind {
+  conversation:NativeConversation;
+  has_expected_revision:bool;
+  expected_revision:ulong;
+}
+table CaptureEventNativeContext {
+  conversation:NativeConversation (required);
+  context_id:string (required);
+}
+union CaptureEvent { CaptureEventBind, CaptureEventError, CaptureEventEnd, CaptureEventPromptSubmitted, CaptureEventStatusEnroll, CaptureEventStatusReport, CaptureEventUnbind, CaptureEventNativeContext }
 table AgentRequestWhoami {
   detail:bool;
 }

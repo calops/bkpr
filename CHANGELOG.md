@@ -1,8 +1,13 @@
 ## Unreleased
 
+### Breaking changes
+
+* Native wire family 10 requires matching `bkpr` and `bkprd` binaries for conversation-fenced agent requests and revision-checked native binding changes. Existing incompatible sessions are not restarted automatically.
+
 ### Features
 
 * Animate visible working sidebar titles with a palette-derived gradient sweep, backed by reusable framework timing/text effects and dormant idle scheduling.
+* Manage OpenCode 2 interactive launches through private native standalone services, with the shared MCP catalog, selected-root capture, native queued inbox wakes and exact saved-session recovery. Preserve native UI, plugins, configuration and explicit external-service or utility modes.
 
 ### Fixes
 
@@ -18,15 +23,18 @@
 * Keep pending terminal device replies separate from paste bytes; preserve queued effects and their resource accounting when encoding plain-text or MIME paste.
 * Keep overlay modal ordering consistent when policies change, and erase complete intersected wide glyphs when framework text or clear operations replace only part of a glyph.
 * Refresh open finder diagnostics on metadata-only changes without losing the query or selected pane. Keep clipped search queries on complete grapheme boundaries and share their paint/highlight geometry.
+* Treat disappearing procfs processes as absent during native observation, preserving errors for genuine I/O failures and the independent immutable birth check for owned roots.
 
 ### Maintenance
 
 * Publish pane snapshots and PTY writer receipts through shared protocol types, preserving borrowed backend storage and owned client decoding. Reuse protocol transport payload limits instead of duplicating them.
 * Ship Ghostty-derived `bkpr` terminfo and its source, with matching device-reply patterns. Configure pane database lookup in the backend while preserving user search paths and the existing `TERM` value.
+* Keep server JSON helpers test-only and stabilize its native startup fixture with a blocking shell builtin instead of fork/exec polling.
 
 ### Documentation
 
 * Document protocol, core, terminal-engine, TUI-framework and client public consumer contracts and enforce missing API documentation at compile time. Add crate-local guidance and shared code-quality/context-loading rules.
+* Document daemon startup, headless defaults, owned shutdown and initial geometry units; add server crate guidance.
 
 ## [0.6.0](https://github.com/calops/bkpr/compare/v0.5.1...v0.6.0) (2026-11-10)
 

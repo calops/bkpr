@@ -133,6 +133,7 @@ fn native_prompt_fact_is_launch_scoped_and_never_invents_semantic_status() {
             event(CaptureEvent::Bind {
                 conversation_id: "native-one".into(),
                 source: ConversationSource::ClaudeHook,
+                expected_revision: None,
             }),
             &peer,
         )
@@ -176,6 +177,7 @@ fn native_prompt_fact_is_launch_scoped_and_never_invents_semantic_status() {
             event(CaptureEvent::Bind {
                 conversation_id: "native-two".into(),
                 source: ConversationSource::ClaudeHook,
+                expected_revision: None,
             }),
             &peer,
         )
@@ -231,6 +233,84 @@ fn native_prompt_fact_is_launch_scoped_and_never_invents_semantic_status() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn observer_releases_stale_launch_contexts_without_ending_its_live_pane() {
+    let fixture = Fixture::new();
+    let (pane_id, grant, _) = seed_launch_command(
+        &fixture,
+        HarnessKind::Claude,
+        "printf ready > cache-ready; while IFS= read -r line; do :; done",
+    );
+    await_file(&fixture.home.join("cache-ready"));
+    let (launch, retained) = {
+        let mut captures = fixture.registry.inner.captures.lock().unwrap();
+        let launch = (|| -> Result<crate::harness::Launch> {
+            captures.event(
+                &grant.launch_id,
+                &grant.token,
+                CaptureEvent::Bind {
+                    conversation_id: "native-root".into(),
+                    source: ConversationSource::ClaudeHook,
+                    expected_revision: None,
+                },
+            )?;
+            let launch = captures.lookup(&grant.launch_id, &grant.token)?;
+            captures.event(
+                &grant.launch_id,
+                &grant.token,
+                CaptureEvent::NativeContext {
+                    conversation: launch.managed.conversation.clone().unwrap(),
+                    context_id: "native-child".into(),
+                },
+            )?;
+            Ok(launch)
+        })();
+        (launch, captures.native_context_cache_count())
+    };
+    let launch = launch.unwrap();
+    assert_eq!(retained, 1);
+    fixture
+        .registry
+        .agent_register(&launch, &fixture.home)
+        .unwrap();
+    fixture
+        .registry
+        .inner
+        .captures
+        .lock()
+        .unwrap()
+        .launches
+        .get_mut(&grant.launch_id)
+        .unwrap()
+        .root
+        .identity
+        .push_str(":retired");
+    fixture.registry.observe_processes();
+    let (retired, retained) = {
+        let captures = fixture.registry.inner.captures.lock().unwrap();
+        (
+            captures.lookup(&grant.launch_id, &grant.token).is_err(),
+            captures.native_context_cache_count(),
+        )
+    };
+    assert!(retired);
+    assert_eq!(retained, 0);
+    assert!(!launch.control.is_valid());
+    assert_eq!(
+        fixture
+            .registry
+            .snapshot()
+            .unwrap()
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .unwrap()
+            .status,
+        PaneStatus::Running
+    );
+}
+
 #[test]
 fn execution_exit_revokes_before_late_callbacks_and_preserves_shell_exit() {
     let fixture = Fixture::new();
@@ -267,7 +347,8 @@ fn execution_exit_revokes_before_late_callbacks_and_preserves_shell_exit() {
                     token: grant.token,
                     event: CaptureEvent::Bind {
                         conversation_id: "too-late".into(),
-                        source: ConversationSource::ClaudeHook
+                        source: ConversationSource::ClaudeHook,
+                        expected_revision: None,
                     }
                 }),
                 &peer
@@ -414,6 +495,7 @@ fn authenticated_bind_storage_failure_revokes_capture_and_poison_does_not_stop_n
             event: CaptureEvent::Bind {
                 conversation_id: id.into(),
                 source: ConversationSource::ClaudeHook,
+                expected_revision: None,
             },
         })
     };
@@ -502,6 +584,7 @@ fn authenticated_end_revokes_even_if_agent_retirement_storage_fails_and_keeps_ve
                 event: CaptureEvent::Bind {
                     conversation_id: "verified-native".into(),
                     source: ConversationSource::ClaudeHook,
+                    expected_revision: None,
                 },
             }),
             &peer,
@@ -574,6 +657,7 @@ fn agent_recovery_control_defaults_to_live_workspace_and_cannot_resume_foreign_o
         Request::new(Operation::Agent {
             launch_id: grant.launch_id.clone(),
             token: grant.token.clone(),
+            guard: None,
             request: AgentRequest::Control {
                 request: Box::new(operation),
                 scope,
@@ -721,6 +805,7 @@ fn bind_native(registry: &Registry, grant: &CaptureGrant, peer: &Peer, id: &str)
                         HarnessKind::Codex => ConversationSource::CodexResume,
                         _ => ConversationSource::ClaudeHook,
                     },
+                    expected_revision: None,
                 },
             }),
             peer,
@@ -925,6 +1010,7 @@ fn closing_one_window_keeps_other_window_native_binding_and_agent_context_live()
         Request::new(Operation::Agent {
             launch_id: grant.launch_id.clone(),
             token: grant.token.clone(),
+            guard: None,
             request: AgentRequest::Whoami { detail: false },
         }),
         &peer,
@@ -1011,6 +1097,7 @@ fn ended_agent_cannot_execute_recovery_after_scope_sampling_before_spawn_reserva
     let request = Request::new(Operation::Agent {
         launch_id: grant.launch_id.clone(),
         token: grant.token.clone(),
+        guard: None,
         request: AgentRequest::Control {
             request: Box::new(Operation::PaneResume {
                 pane_id: source,
@@ -1089,6 +1176,7 @@ fn native_binding_never_substitutes_the_supervisor_working_directory() {
                     event: CaptureEvent::Bind {
                         conversation_id: "missing-native-process".into(),
                         source: ConversationSource::CodexResume,
+                        expected_revision: None,
                     },
                 }),
                 &peer,

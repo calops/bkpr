@@ -45,7 +45,7 @@ fn resume_flag(kind: HarnessKind) -> Result<&'static str> {
         HarnessKind::Codex => "resume",
         HarnessKind::Agy => "--conversation",
         HarnessKind::Pi => "--session",
-        HarnessKind::Opencode => bail!("OpenCode managed recovery is unavailable"),
+        HarnessKind::Opencode => "--bkpr-resume",
         _ => bail!("harness does not support managed recovery"),
     })
 }

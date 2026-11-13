@@ -117,6 +117,7 @@ impl Authority {
             Operation::Agent {
                 launch_id: self.launch_id.clone(),
                 token: self.token.clone(),
+                guard: None,
                 request,
             },
         )

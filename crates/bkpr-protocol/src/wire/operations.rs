@@ -206,6 +206,7 @@ pub(super) fn write_operation(
         Operation::Agent {
             launch_id,
             token,
+            guard,
             request,
         } => {
             let launch_id = {
@@ -217,7 +218,21 @@ pub(super) fn write_operation(
                 builder.create_string(token.as_str())
             };
             let request = write_agent_request(builder, request, budget, depth + 1)?;
-            let offset = g::OperationAgent::create(builder, launch_id, token, request);
+            let guard = guard
+                .as_ref()
+                .map(|guard| -> Result<_> {
+                    budget.node(depth + 1)?;
+                    let conversation =
+                        write_native_conversation(builder, &guard.conversation, budget, depth + 2)?;
+                    let context_id = write_text(builder, &guard.context_id, budget)?;
+                    Ok(g::AgentBindingGuard::create(
+                        builder,
+                        conversation,
+                        context_id,
+                    ))
+                })
+                .transpose()?;
+            let offset = g::OperationAgent::create(builder, launch_id, token, request, guard);
             g::Operation::create_operation_agent(builder, offset)
         }
         Operation::WorkspaceCreate { name, initial } => {
@@ -679,6 +694,20 @@ pub(super) fn read_operation(
                 budget.bytes(text.len())?;
                 text.to_owned()
             },
+            guard: value
+                .guard()?
+                .map(|guard| -> Result<_> {
+                    budget.node(depth + 1)?;
+                    Ok(AgentBindingGuard {
+                        conversation: read_native_conversation(
+                            guard.conversation()?,
+                            budget,
+                            depth + 2,
+                        )?,
+                        context_id: read_text(guard.context_id()?, budget)?,
+                    })
+                })
+                .transpose()?,
             request: read_agent_request(value.request()?, budget, depth + 1)?,
         },
         g::OperationRef::OperationWorkspaceCreate(value) => Operation::WorkspaceCreate {
@@ -1019,6 +1048,35 @@ pub(super) fn read_spawn_layout_node(
     })
 }
 
+fn write_native_conversation(
+    builder: &mut Builder,
+    value: &NativeConversation,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<planus::Offset<g::NativeConversation>> {
+    budget.node(depth)?;
+    let id = write_text(builder, &value.id, budget)?;
+    Ok(g::NativeConversation::create(
+        builder,
+        id,
+        write_conversation_source(value.source),
+        value.generation,
+    ))
+}
+
+fn read_native_conversation(
+    value: g::NativeConversationRef<'_>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<NativeConversation> {
+    budget.node(depth)?;
+    Ok(NativeConversation {
+        id: read_text(value.id()?, budget)?,
+        source: read_conversation_source(value.source()?),
+        generation: value.generation()?,
+    })
+}
+
 pub(super) fn write_capture_event(
     builder: &mut Builder,
     value: &CaptureEvent,
@@ -1030,14 +1088,42 @@ pub(super) fn write_capture_event(
         CaptureEvent::Bind {
             conversation_id,
             source,
+            expected_revision,
         } => {
             let conversation_id = {
                 budget.bytes(conversation_id.len())?;
                 builder.create_string(conversation_id.as_str())
             };
             let source = write_conversation_source(*source);
-            let offset = g::CaptureEventBind::create(builder, conversation_id, source);
+            let offset = g::CaptureEventBind::create(
+                builder,
+                conversation_id,
+                source,
+                expected_revision.is_some(),
+                expected_revision.unwrap_or_default(),
+            );
             g::CaptureEvent::create_capture_event_bind(builder, offset)
+        }
+        CaptureEvent::Unbind {
+            conversation,
+            expected_revision,
+        } => {
+            let conversation = conversation
+                .as_ref()
+                .map(|value| write_native_conversation(builder, value, budget, depth + 1))
+                .transpose()?;
+            let offset =
+                g::CaptureEventUnbind::create(builder, conversation, true, *expected_revision);
+            g::CaptureEvent::create_capture_event_unbind(builder, offset)
+        }
+        CaptureEvent::NativeContext {
+            conversation,
+            context_id,
+        } => {
+            let conversation = write_native_conversation(builder, conversation, budget, depth + 1)?;
+            let context_id = write_text(builder, context_id, budget)?;
+            let offset = g::CaptureEventNativeContext::create(builder, conversation, context_id);
+            g::CaptureEvent::create_capture_event_native_context(builder, offset)
         }
         CaptureEvent::PromptSubmitted {
             conversation_id,
@@ -1119,6 +1205,26 @@ pub(super) fn read_capture_event(
                 text.to_owned()
             },
             source: read_conversation_source(value.source()?),
+            expected_revision: value
+                .has_expected_revision()?
+                .then_some(value.expected_revision()?),
+        },
+        g::CaptureEventRef::CaptureEventUnbind(value) => {
+            anyhow::ensure!(
+                value.has_expected_revision()?,
+                "capture unbind is missing its expected binding revision"
+            );
+            CaptureEvent::Unbind {
+                conversation: value
+                    .conversation()?
+                    .map(|value| read_native_conversation(value, budget, depth + 1))
+                    .transpose()?,
+                expected_revision: value.expected_revision()?,
+            }
+        }
+        g::CaptureEventRef::CaptureEventNativeContext(value) => CaptureEvent::NativeContext {
+            conversation: read_native_conversation(value.conversation()?, budget, depth + 1)?,
+            context_id: read_text(value.context_id()?, budget)?,
         },
         g::CaptureEventRef::CaptureEventPromptSubmitted(value) => CaptureEvent::PromptSubmitted {
             conversation_id: read_text(value.conversation_id()?, budget)?,

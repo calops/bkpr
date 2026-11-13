@@ -27,6 +27,8 @@ export interface NativeCallbacks {
   request(value: Json, signal?: AbortSignal): Promise<Json>;
   /** Report an exact native binding or prompt submission. */
   fact(command: 'bind' | 'prompt-submitted', source: string, session: string, signal?: AbortSignal): Promise<void>;
+  /** Dispatch one typed capture event using its exact binding generation. */
+  event(value: Json, signal?: AbortSignal): Promise<Json>;
 }
 
 /** Semantic state supplied by an authenticated native integration. */
@@ -56,7 +58,7 @@ export function parseInboxPointer(value: unknown): InboxPointer {
   if (typeof item.notification_id !== 'string' || !item.notification_id || item.notification_id.length > 512 ||
       /[\u0000-\u001f\u007f]/u.test(item.notification_id) ||
       typeof item.generation !== 'number' || !Number.isSafeInteger(item.generation) || item.generation < 1 ||
-      typeof item.session_id !== 'string' || !item.session_id || Buffer.byteLength(item.session_id) > 256 ||
+      typeof item.session_id !== 'string' || !item.session_id || Buffer.byteLength(item.session_id) > 1024 ||
       /[\u0000-\u001f\u007f]/u.test(item.session_id) ||
       typeof item.message_count !== 'number' || !Number.isSafeInteger(item.message_count) || item.message_count < 1 ||
       typeof item.unread_count !== 'number' || !Number.isSafeInteger(item.unread_count) || item.unread_count < item.message_count) {
@@ -215,7 +217,12 @@ export function createNativeCallbacks(kind: string, providedEnvironment?: NodeJS
     });
     return promise;
   };
-  return { program, environment, request, fact };
+  const event = (value: Json, signal?: AbortSignal): Promise<Json> => {
+    const encoded = JSON.stringify(value);
+    if (Buffer.byteLength(encoded) > MAX_FRAME) return Promise.reject(new Error('native capture event exceeds limit'));
+    return callback(['capture', 'event', '--stdin'], encoded, signal);
+  };
+  return { program, environment, request, fact, event };
 }
 
 /** Open one bounded status stream for an exact native conversation. */

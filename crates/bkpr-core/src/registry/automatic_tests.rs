@@ -516,6 +516,9 @@ fn native_end_keeps_explicit_receipt_but_clears_automatic_role_and_shutdown_pres
         .unwrap();
     let launch = crate::harness::Launch {
         control: Default::default(),
+        binding_generation: 1,
+        binding_guard: None,
+        binding_context_admitted: false,
         root: process.clone(),
         pane_root: process,
         grant: CaptureGrant {

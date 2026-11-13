@@ -20,6 +20,7 @@ signal-hook = "0.3"
 tempfile = "3"
 toml = "0.9"
 serde_json.workspace = true
+jsonc-parser = { version = "0.34", features = ["serde_json"] }
 tokio = { version = "1", features = ["rt", "sync", "time", "process", "macros"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 bkpr-client = { path = "../bkpr-client" }

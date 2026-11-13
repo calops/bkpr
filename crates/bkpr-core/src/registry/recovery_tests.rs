@@ -98,34 +98,6 @@ fn restart_retains_only_native_descriptor_and_raw_cwd_without_live_authority_or_
     );
 }
 
-#[test]
-fn retired_opencode_recovery_survives_restart_without_launching_a_replacement() {
-    let root = private_tempdir();
-    let registry = Registry::open(root.path()).unwrap();
-    let workspace = create(&registry, "saved");
-    let (pane, _) = unavailable(&registry, &workspace, root.path());
-    let mut expected = descriptor(root.path());
-    expected.kind = HarnessKind::Opencode;
-    save(&registry, &pane, &expected);
-    drop(registry);
-
-    let registry = Registry::open(root.path()).unwrap();
-    registry
-        .configure_harnesses(
-            &root.path().join("owned.sock"),
-            &std::env::current_exe().unwrap(),
-        )
-        .unwrap();
-    let before = fs::read(root.path().join("registry.json")).unwrap();
-    let candidates = registry.recovery_candidates().unwrap();
-    assert_eq!(candidates[0].harness, expected);
-    assert_eq!(candidates[0].status, RecoveryStatus::Unavailable);
-    assert!(registry.resume(&pane, expected).is_err());
-    assert!(registry.inner.state.lock().unwrap().live.is_empty());
-    assert!(registry.inner.captures.lock().unwrap().launches.is_empty());
-    assert_eq!(fs::read(root.path().join("registry.json")).unwrap(), before);
-}
-
 // LEGACY_COMPAT(next-major): schema 2 did not authenticate durable recovery descriptors.
 #[test]
 fn schema_two_upgrade_does_not_promote_live_or_injected_recovery_facts() {

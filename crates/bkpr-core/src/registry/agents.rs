@@ -100,6 +100,8 @@ pub(super) struct Agents {
     changed: Condvar,
     #[cfg(test)]
     fail_directory_sync: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    request_barrier: Mutex<Option<(bool, Arc<SpawnBarrier>)>>,
 }
 #[derive(Clone)]
 struct ContextFact {
@@ -108,6 +110,7 @@ struct ContextFact {
     pane: PaneInfo,
     workspace_name: Option<String>,
     conversation: Option<NativeConversation>,
+    binding_revision: u64,
     cwd: Option<PathBuf>,
     repository: Option<PathBuf>,
     registry_revision: u64,
@@ -175,6 +178,33 @@ fn healthy_agents(state: &AgentState) -> Result<()> {
     Ok(())
 }
 impl Agents {
+    #[cfg(test)]
+    pub(super) fn pause_request(&self, mutation: bool, barrier: Arc<SpawnBarrier>) {
+        *self.request_barrier.lock().unwrap() = Some((mutation, barrier));
+    }
+    #[cfg(test)]
+    fn wait_request_barrier(&self, mutation: bool) {
+        let barrier = {
+            let mut pending = self.request_barrier.lock().unwrap();
+            if pending
+                .as_ref()
+                .is_some_and(|(phase, _)| *phase == mutation)
+            {
+                pending.take().map(|(_, barrier)| barrier)
+            } else {
+                None
+            }
+        };
+        if let Some(barrier) = barrier {
+            let _ = barrier.entered.send(());
+            let _ = barrier.resume.lock().unwrap().recv();
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn fail_next_commit(&self) {
+        self.fail_directory_sync
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     pub(super) fn check_health(&self) -> Result<()> {
         healthy_agents(&self.state.lock().unwrap())
     }
@@ -228,6 +258,8 @@ impl Agents {
             changed: Condvar::new(),
             #[cfg(test)]
             fail_directory_sync: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            request_barrier: Mutex::new(None),
         };
         this.transaction(|_| Ok(()))?;
         Ok(this)
@@ -929,6 +961,7 @@ impl Registry {
                         pane,
                         workspace_name,
                         conversation: launch.managed.conversation,
+                        binding_revision: launch.binding_generation,
                         cwd,
                         repository,
                         registry_revision: state.record.registry.revision,
@@ -956,16 +989,22 @@ impl Registry {
     ) -> Result<()> {
         let result = self.inner.agents.transaction_maybe(|store| {
             let mut captures = self.inner.captures.lock().unwrap();
-            let before = captures.lookup(launch_id, token)?.managed.conversation;
-            let is_bind = matches!(&event, CaptureEvent::Bind { .. });
+            let before = captures
+                .launches
+                .get(launch_id)
+                .map(|launch| launch.binding_generation);
+            let changes_binding = matches!(
+                &event,
+                CaptureEvent::Bind { .. } | CaptureEvent::Unbind { .. }
+            );
             captures.event(launch_id, token, event)?;
             let after = captures
                 .launches
                 .get(launch_id)
-                .and_then(|launch| launch.managed.conversation.clone());
+                .map(|launch| launch.binding_generation);
             drop(captures);
             let mut changed = false;
-            if is_bind && before != after {
+            if changes_binding && before != after {
                 {
                     let mut state = self.inner.agents.state.lock().unwrap();
                     state.receivers.remove(launch_id);
@@ -999,30 +1038,45 @@ impl Registry {
     // End. Recheck both launch capability and durable-agent retirement at admission.
     pub(super) fn authorize_resume_origin(&self, launch: &Launch) -> Result<()> {
         self.capture_pane(&launch.grant.pane_id)?;
-        self.inner
-            .captures
-            .lock()
-            .unwrap()
-            .lookup(&launch.grant.launch_id, &launch.grant.token)?;
+        ensure!(
+            launch.control.is_valid(),
+            "native conversation control binding changed"
+        );
+        self.authorize_agent_guard(launch)?;
         let state = self.inner.agents.state.lock().unwrap();
         healthy_agents(&state)?;
         Agents::require_live(&state.store, &launch.grant.launch_id)
     }
+    fn authorize_agent_guard(&self, launch: &Launch) -> Result<()> {
+        self.inner.captures.lock().unwrap().authorize(launch)
+    }
+    // The state lock fixes the durable/read snapshot; captures supplies the
+    // binding's linearization point. Capture writers never retain captures while
+    // waiting on agent state, so this order cannot invert their writer path.
+    fn agent_request_state(
+        &self,
+        launch: &Launch,
+    ) -> Result<std::sync::MutexGuard<'_, AgentState>> {
+        let state = self.inner.agents.state.lock().unwrap();
+        healthy_agents(&state)?;
+        Agents::require_live(&state.store, &launch.grant.launch_id)?;
+        self.authorize_agent_guard(launch)?;
+        Ok(state)
+    }
     pub(super) fn agent_request(
         &self,
-        launch: Launch,
+        mut launch: Launch,
         peer: &Peer,
         request: AgentRequest,
         is_connected: &dyn Fn() -> bool,
     ) -> Result<Value> {
         crate::harness::validate_callback(peer, &launch)?;
         self.capture_pane(&launch.grant.pane_id)?;
+        self.inner.captures.lock().unwrap().admit(&mut launch)?;
         let id = &launch.grant.launch_id;
-        {
-            let state = self.inner.agents.state.lock().unwrap();
-            healthy_agents(&state)?;
-            Agents::require_live(&state.store, id)?;
-        }
+        drop(self.agent_request_state(&launch)?);
+        #[cfg(test)]
+        self.inner.agents.wait_request_barrier(false);
         if let AgentRequest::SendMessage {
             to,
             text,
@@ -1031,7 +1085,7 @@ impl Registry {
             delivery,
         } = &request
         {
-            let state = self.inner.agents.state.lock().unwrap();
+            let state = self.agent_request_state(&launch)?;
             if let Some(receipt) = messages::retry(
                 &state.store,
                 id,
@@ -1048,7 +1102,7 @@ impl Registry {
             }
         }
         {
-            let state = self.inner.agents.state.lock().unwrap();
+            let state = self.agent_request_state(&launch)?;
             if let Some(result) = messages::unchanged(&state.store, id, &request)? {
                 return Ok(result);
             }
@@ -1069,9 +1123,7 @@ impl Registry {
                 let own = contexts.get(id).context("live agent context unavailable")?;
                 ensure!(own.active, "live foreground agent context unavailable");
                 {
-                    let state = self.inner.agents.state.lock().unwrap();
-                    healthy_agents(&state)?;
-                    Agents::require_live(&state.store, id)?;
+                    let state = self.agent_request_state(&launch)?;
                     require_scope(scope, own, &state.store)?;
                 }
                 let workspace = if scope == AgentScope::Workspace {
@@ -1086,6 +1138,8 @@ impl Registry {
                 };
                 match *request {
                     Operation::RecoveryList => {
+                        let _transaction = self.inner.transaction.lock().unwrap();
+                        self.authorize_resume_origin(&launch)?;
                         let recoveries = self
                             .recovery_candidates()?
                             .into_iter()
@@ -1156,8 +1210,7 @@ impl Registry {
                 generation,
             } => {
                 self.agent_receiver_peer(&launch, peer, &receiver_id)?;
-                let state = self.inner.agents.state.lock().unwrap();
-                healthy_agents(&state)?;
+                let state = self.agent_request_state(&launch)?;
                 Ok(
                     json!({"current":state.store.agents[id].notification.as_ref().is_some_and(|n| n.receiver_id == receiver_id && n.id == notification_id && n.generation == generation && n.state == "pending")}),
                 )
@@ -1170,6 +1223,7 @@ impl Registry {
             } => {
                 self.agent_receiver_peer(&launch, peer, &receiver_id)?;
                 self.inner.agents.transaction(|store| {
+                    self.authorize_agent_guard(&launch)?;
                     self.agent_receiver_peer(&launch, peer, &receiver_id)?;
                     messages::outcome(
                         store,
@@ -1248,9 +1302,11 @@ impl Registry {
                 } else {
                     BTreeMap::new()
                 };
+                #[cfg(test)]
+                self.inner.agents.wait_request_barrier(true);
                 match request {
                     AgentRequest::Whoami { detail } => {
-                        let state = self.inner.agents.state.lock().unwrap();
+                        let state = self.agent_request_state(&launch)?;
                         let own = contexts.get(id).context("live agent context unavailable")?;
                         let mut identity = public(
                             own,
@@ -1260,6 +1316,7 @@ impl Registry {
                             detail,
                         );
                         identity["protocol_version"] = json!(bkpr_protocol::PROTOCOL_VERSION);
+                        identity["binding_revision"] = json!(own.binding_revision);
                         Ok(identity)
                     }
                     AgentRequest::DiscoverAgents {
@@ -1270,7 +1327,7 @@ impl Registry {
                         after,
                         limit,
                     } => {
-                        let state = self.inner.agents.state.lock().unwrap();
+                        let state = self.agent_request_state(&launch)?;
                         let own = contexts.get(id).context("live agent context unavailable")?;
                         discover(
                             &state,
@@ -1292,7 +1349,7 @@ impl Registry {
                         limit,
                     } => {
                         // Diagnostics never observe process exit or advance retention.
-                        let state = self.inner.agents.state.lock().unwrap();
+                        let state = self.agent_request_state(&launch)?;
                         if let Some(message_id) = message_id {
                             let message = state
                                 .store
@@ -1324,6 +1381,7 @@ impl Registry {
                             "invalid agent title"
                         );
                         self.inner.agents.transaction_maybe(|store| {
+                            self.authorize_agent_guard(&launch)?;
                             Agents::require_live(store, id)?;
                             let agent = store.agents.get_mut(id).unwrap();
                             let changed = agent.title.as_deref() != Some(title.as_str());
@@ -1345,6 +1403,7 @@ impl Registry {
                                 && current_subscribers(&state, &to) > 0
                         };
                         self.inner.agents.transaction(|store| {
+                            self.authorize_agent_guard(&launch)?;
                             messages::send(
                                 store,
                                 id,
@@ -1368,6 +1427,7 @@ impl Registry {
                         ack_ids,
                         include_read,
                     } => self.inner.agents.transaction_maybe(|store| {
+                        self.authorize_agent_guard(&launch)?;
                         messages::read(
                             store,
                             id,
@@ -1383,12 +1443,15 @@ impl Registry {
                         offset,
                         max_bytes,
                     } => self.inner.agents.transaction_maybe(|store| {
+                        self.authorize_agent_guard(&launch)?;
                         messages::read_message(store, id, &message_id, offset, max_bytes, now())
                     }),
-                    AgentRequest::AckMessage { ids } => self
-                        .inner
-                        .agents
-                        .transaction_maybe(|store| messages::ack(store, id, &ids, now())),
+                    AgentRequest::AckMessage { ids } => {
+                        self.inner.agents.transaction_maybe(|store| {
+                            self.authorize_agent_guard(&launch)?;
+                            messages::ack(store, id, &ids, now())
+                        })
+                    }
                     _ => unreachable!("receiver requests dispatched above"),
                 }
             }
@@ -1428,6 +1491,7 @@ impl Registry {
         };
         crate::harness::ancestry(&process, &launch.root)?;
         let _writer = self.inner.agents.callback_guard()?;
+        self.authorize_agent_guard(launch)?;
         let current = self
             .inner
             .captures
@@ -1511,6 +1575,7 @@ impl Registry {
         Ok(result)
     }
     fn agent_receiver(&self, launch: &Launch, receiver_id: &str) -> Result<Receiver> {
+        self.authorize_agent_guard(launch)?;
         let receiver = {
             let state = self.inner.agents.state.lock().unwrap();
             healthy_agents(&state)?;
@@ -1577,6 +1642,7 @@ impl Registry {
         let id = &launch.grant.launch_id;
         {
             let _writer = service.callback_guard()?;
+            self.authorize_agent_guard(launch)?;
             let mut state = service.state.lock().unwrap();
             healthy_agents(&state)?;
             Agents::require_live(&state.store, id)?;
@@ -1621,6 +1687,7 @@ impl Registry {
             ensure!(is_connected(), "subscription transport disconnected");
             let revision = {
                 let state = service.state.lock().unwrap();
+                self.authorize_agent_guard(launch)?;
                 healthy_agents(&state)?;
                 state.revision
             };
@@ -1642,6 +1709,7 @@ impl Registry {
                 };
                 if available {
                     let notification = service.transaction_maybe(|store| {
+                        self.authorize_agent_guard(launch)?;
                         self.agent_receiver_peer(launch, peer, &receiver_id)?;
                         let notification = messages::claim(store, id, &receiver_id, now())?;
                         let changed = notification.is_some();

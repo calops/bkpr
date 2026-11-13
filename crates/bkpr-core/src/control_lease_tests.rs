@@ -49,8 +49,16 @@ fn eventually(mut condition: impl FnMut() -> bool) {
 
 #[test]
 fn queued_control_input_cannot_outlive_end_retirement_or_either_process_root() {
-    use bkpr_protocol::{CaptureEvent, HarnessKind};
-    for retirement in ["end", "pane-retirement", "source-exit", "pane-root-exit"] {
+    use bkpr_protocol::{CaptureEvent, ConversationSource, HarnessKind};
+    for retirement in [
+        "end",
+        "pane-retirement",
+        "source-exit",
+        "pane-root-exit",
+        "bind",
+        "unbind",
+        "aba",
+    ] {
         let home = tempfile::tempdir().unwrap();
         let size = Size {
             cols: 80,
@@ -69,6 +77,17 @@ fn queued_control_input_cannot_outlive_end_retirement_or_either_process_root() {
                 root.process(),
                 "source-pane".into(),
                 HarnessKind::Claude,
+            )
+            .unwrap();
+        captures
+            .event(
+                &grant.launch_id,
+                &grant.token,
+                CaptureEvent::Bind {
+                    conversation_id: "root-A".into(),
+                    source: ConversationSource::ClaudeHook,
+                    expected_revision: None,
+                },
             )
             .unwrap();
         let launch = captures.lookup(&grant.launch_id, &grant.token).unwrap();
@@ -157,9 +176,48 @@ fn queued_control_input_cannot_outlive_end_retirement_or_either_process_root() {
             "pane-retirement" => captures.retire_pane("source-pane"),
             "source-exit" => source.exit(),
             "pane-root-exit" => root.exit(),
+            "bind" => captures
+                .event(
+                    &grant.launch_id,
+                    &grant.token,
+                    CaptureEvent::Bind {
+                        conversation_id: "root-B".into(),
+                        source: ConversationSource::ClaudeHook,
+                        expected_revision: None,
+                    },
+                )
+                .unwrap(),
+            "unbind" => captures
+                .event(
+                    &grant.launch_id,
+                    &grant.token,
+                    CaptureEvent::Unbind {
+                        conversation: launch.managed.conversation.clone(),
+                        expected_revision: launch.binding_generation,
+                    },
+                )
+                .unwrap(),
+            "aba" => {
+                for id in ["root-B", "root-A"] {
+                    captures
+                        .event(
+                            &grant.launch_id,
+                            &grant.token,
+                            CaptureEvent::Bind {
+                                conversation_id: id.into(),
+                                source: ConversationSource::ClaudeHook,
+                                expected_revision: None,
+                            },
+                        )
+                        .unwrap();
+                }
+            }
             _ => unreachable!(),
         }
-        if matches!(retirement, "end" | "pane-retirement") {
+        if matches!(
+            retirement,
+            "end" | "pane-retirement" | "bind" | "unbind" | "aba"
+        ) {
             assert!(!lease.is_valid(), "{retirement} must revoke synchronously");
         }
         // Respond through the real callback bypass while the input request

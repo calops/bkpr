@@ -821,12 +821,16 @@ private-asset helpers provide the launch-specific glue.
 
 ### OpenCode 2 shared-service integration assessment
 
-**Decision:** target current OpenCode 2 rather than maintain a V1 compatibility
-track. Do not implicitly add `--standalone`. The harness-testing devshell supplies
-2.2.7; managed V2 integration is not implemented. The V1 adapter and its JSONC
-dependency are removed; saved native descriptors remain readable but unavailable
-for managed recovery. V1 runtime evidence is historical, not V2 acceptance.
-V2 implementation is deferred pending the shared-service architecture decision.
+**Decision:** target current OpenCode 2, not a V1 compatibility track. The approved
+interim managed integration uses native `--standalone`: the captured TUI owns its
+service and launch-local configuration. Explicit external-service modes remain
+native and unmanaged. The harness-testing devshell supplies 2.2.7.
+
+Shared-service ownership and authority remain separate research, not a
+prerequisite for this private-service integration. The V1 adapter is retired;
+its runtime evidence does not establish V2 acceptance. Durable installation for
+all harnesses and a first-launch, user-controlled installation wizard are
+roadmap work in `TODO.md`, not a claim that installers already exist.
 
 Sources checked at [`v2.2.7`](https://github.com/anomalyco/opencode/tree/v2.2.7),
 with acquisition hashes and detailed references in
@@ -924,15 +928,15 @@ shared service used by other clients. Verify service creation inside a pane
 against external pre-start, natural TUI exit against forced pane closure, and
 exact service PID/birth plus another client's continued operation.
 
-#### Native API gaps and acceptance gates
+#### Remaining shared-service API gaps and acceptance gates
 
-V2 server prompt hooks run before admission, but neither those hooks nor inbox
-events identify an authenticated submitting TUI. The public TUI client has no
-runtime request middleware or awaited body-free prompt lifecycle hook; creating
-a second client with custom `fetch` does not intercept the native UI's client.
-Preserving per-launch first-prompt attribution requires a narrow upstream
-hook/origin contract. Observing canonical native-session admission instead is
-a different metric and needs an explicit decision.
+Shared-service V2 prompt hooks run before admission, but neither those hooks nor
+inbox events identify an authenticated submitting TUI. The public TUI client has
+no runtime request middleware or awaited body-free prompt lifecycle hook;
+creating a second client with custom `fetch` does not intercept the native UI's
+client. With multiple TUIs, per-launch first-prompt attribution still needs an
+origin contract. The standalone integration has one owning TUI and uses a
+selected-root barrier; it does not solve multi-client attribution.
 
 There is no runtime server-plugin installation endpoint. This blocks transparent
 zero-install injection into an already-running service, not an explicitly
@@ -940,11 +944,126 @@ installed stable plugin. Context/session-scoped client-MCP routing and public
 readiness/cancellation/generation hooks would reduce relay complexity; the
 current helper's reconnect is not renewed Bkpr authority.
 
-Before choosing implementation scope, validate with a loopback-only native
-prototype: two different sessions in one location, two TUIs sharing one session,
-tool context selection, first-prompt ordering, queued work after TUI exit,
-reconnect/restart, stale relay origins and in-flight revocation. Use the existing
+Before extending the standalone integration to shared-service scope, validate
+with a loopback-only native prototype: two different sessions in one location,
+two TUIs sharing one session, tool context selection, first-prompt ordering,
+queued work after TUI exit, reconnect/restart, stale relay origins and in-flight
+revocation. Use the existing
 shared MCP catalog and truthful durable/wake/read/processed receipts. Do not
 substitute monkeypatched HTTP clients, duplicated SDKs, simulated PTY input or
 suppressed errors for missing native contracts.
 
+
+### OpenCode 2 managed standalone integration
+
+The interim adapter targets native 2.2.7. It uses the maintained V2 server/TUI
+plugin APIs, public plugin RPC and the existing shared Bkpr MCP server. It does
+not retain the retired V1 SDK or replace OpenCode's renderer, editor, title or
+OSC 7501 status implementation.
+
+- Interactive managed launches use native `--standalone`. The native TUI owns
+  its private stdio-leased service and MCP descendants. Explicit external-server,
+  utility and headless modes remain native and unmanaged.
+- Launch-local files carry capture authority in a private directory, not native
+  environment variables or durable OpenCode settings. Server and CLI JSONC
+  overlays preserve existing configuration, plugin options, instructions and
+  native argument precedence. MCP uses `codemode: false` so the shared catalog
+  is exposed directly.
+- Server and TUI plugins load independently. Before RPC admission in a location,
+  subscribe to native `plugin.updated`, observe the initial `server.connected`
+  frame, then inspect `plugin.list`. Only an active server/RPC entry is ready;
+  failed setup, stream loss, disposal or a 15-second deadline fails closed.
+  Lifecycle events invalidate the matching location's bounded readiness cache.
+  This uses the SDK's shared stream, not polling, provider/model catalog work
+  or replay of an `activate` mutation.
+- Native prompt admission waits for a body-free RPC answer from the owning TUI.
+  Binding follows its selected root, not the session that happened to emit an
+  event. Native parent IDs attest subagent ancestry; fork provenance does not.
+  Wake prompts and historical messages do not establish the launch-wide first
+  ordinary user-prompt fact.
+- MCP supplies OpenCode's authoritative `ai.opencode/sessionID` as the actual
+  caller context. Backend requests carry an exact root/source/generation fence.
+  Root switches and home unbind revoke old control leases, receivers and child
+  attestations. Returning to the same root creates a new generation.
+- Binding changes use an exact backend revision/conversation compare-and-swap.
+  TUI enrollment reserves an epoch even at home, and owner-scoped RPC answers
+  cannot consume another activation's pending challenge. Stale producers are
+  rejected before storage or publication. Cleanup can revoke only its retained
+  expected snapshots; an unknown mutation is never replayed or replaced by a
+  lookup-and-clear of the current owner.
+  Native owner queries distinguish active, inactive, unowned and superseded
+  enrollment; a closed current owner is not evidence that another owner replaced
+  it, and does not suppress fatal recovery cleanup.
+- Child attestations occupy a renewable 64-KiB/256-entry LRU cache, not a
+  lifetime subagent limit. An admitted request carries a private witness and
+  survives eviction, but not binding-epoch revocation. Attestation alone does
+  not write storage, publish a scene or change a visible revision.
+- Message wakes use native queued prompt admission. A validated native receipt
+  confirms wake acceptance, not read or processed acknowledgment. Unknown
+  outcomes are not replayed, and peer text never becomes terminal input.
+- Exact backend recovery uses the hidden wrapper argument `--bkpr-resume`.
+  The native server plugin resolves the saved ID through its public SDK in the
+  same private service, then shares its creation fingerprint with the TUI.
+  The TUI selects the existing session through the public router; no second
+  service, custom HTTP client or native create-if-missing `--session` is needed.
+  Missing or changed sessions terminate the attempted restore before model
+  admission. Ordinary user-supplied native `--session` is unchanged.
+
+Recovery failure closes admission but keeps the private service transport alive
+for the owning TUI's cleanup. The TUI awaits capture withdrawal even if native
+RPC cleanup fails, then terminates itself; native stdin-lease cleanup owns its
+service descendants. A volatile failure event is not a delivery receipt.
+Lifecycle-stream failure independently closes capture and terminates a recovered
+launch rather than leaving it reconnecting with stale conversation authority.
+Unconfirmed cleanup is reported, never retried as a successful mutation.
+Fatal recovery is launch-scoped: a new location or TUI activation cannot reopen
+admission after it fails.
+
+The native service remains an owned descendant. Callback ancestry recognizes
+only the directly paired, same-executable `serve --stdio --port 0` worker of a
+standalone native owner as transparent; that owner still counts as a harness
+boundary. This changes neither process ownership nor cleanup, and does not
+permit nested interactive harnesses.
+
+The released SDK has no awaitable native route-ready signal: `navigate()`
+returns void, and the route performs a separate private family synchronization.
+Recovery therefore retains the original identity check through the initial
+prompt's owning-TUI fence, including queued wakes and prompts from a fresh
+fallback root. Its handoff is a fresh identity/selection **pre-admission** fence,
+not proof of native route completion, durable admission or physical presentation.
+
+Native plugin RPC is location-scoped
+(`packages/core/src/rpc.ts:39–45,177`). A launch-private, process-memory
+coordinator shares lifecycle across those contexts and module reevaluations,
+with owner-scoped activation/deactivation and disposal of context listeners.
+At zero contexts, only bounded owner/phase/recovery metadata remains until the
+private process exits; no context, history, callback or pending challenge is
+retained. Recreating a server location alone resets neither its inactive phase
+nor its original recovery identity. A native TUI activation can reenroll it.
+Native 2.2.7's configured plugins take precedence over manual dialog toggles on
+reconciliation (`packages/tui/src/plugin/context.tsx:419–422`); Bkpr follows that
+native activation policy rather than maintaining a shadow preference.
+While inactive, ordinary native prompts proceed without Bkpr capture and Bkpr
+tools remain closed. Unselected roots can continue ordinary native work without
+taking over the selected root's binding or first-prompt fact.
+
+Native family 10 makes the new authority fence mandatory to understand before
+dispatch. An older peer must not silently ignore it. Additive capability
+negotiation remains roadmap work rather than a partial compatibility shim.
+
+**Dependency decision:** reuse
+[`dprint/jsonc-parser` 0.34](https://github.com/dprint/jsonc-parser) with only its
+`serde_json` feature instead of implementing a JSONC parser or stripping comments.
+The [published version](https://crates.io/api/v1/crates/jsonc-parser/0.34.0) is
+MIT-licensed, published 2026-09-27 and not yanked. Its AST conversion reuses the
+workspace's existing `serde_json`; no additional resolved package is needed.
+Optional indexing, hashing and display-width features remain disabled. All
+other integration glue uses the native plugin SDK and existing Bkpr helpers.
+
+**Native SDK cancellation boundary:** the released Promise server adapter
+ignores `session.get`'s advertised signal
+(`packages/plugin/src/promise/adapter.ts:266–281`). Deadline/cleanup checks before
+and after every await discard a late getter and prevent further traversal or
+attestation; callback subprocesses are cancellable. This is not a claim that the
+already-running native getter can be interrupted. Ancestor IDs are byte-bounded
+and cycles are rejected without imposing an arbitrary hierarchy-depth limit.
