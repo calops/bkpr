@@ -1,6 +1,7 @@
 //! One owner-qualified metadata tree. Native sessions supply fully unfolded rows;
 //! this model alone owns visible navigation and presentation-local folding.
 use crate::controller::{SessionGroup, SessionStatus, SidebarRow, SidebarRowKind, SidebarTarget};
+use crate::project_colors::{ProjectColors, ProjectHost, ProjectSlots};
 use bkpr_protocol::{PaneSnapshot, RegistrySnapshot};
 use bkpr_tui_framework::{Navigation, NavigationRow};
 use std::collections::{HashMap, HashSet};
@@ -104,6 +105,7 @@ impl NavigationRow<Target> for TreeRow {
 #[derive(Clone)]
 pub(crate) struct Session {
     pub owner: Owner,
+    pub project_host: ProjectHost,
     pub group: SessionGroup,
     pub registry: Arc<RegistrySnapshot>,
     pub rows: Arc<[SidebarRow]>,
@@ -120,7 +122,7 @@ pub(crate) struct Tree {
     navigation: Navigation<Target, TreeRow>,
     sessions: Vec<Arc<Session>>,
     collapsed: HashSet<Target>,
-    project_capacity: u32,
+    projects: ProjectColors,
 }
 impl std::ops::Deref for Tree {
     type Target = Navigation<Target, TreeRow>;
@@ -144,7 +146,13 @@ impl Tree {
         self.sessions.len()
     }
     pub fn project_capacity(&self) -> u32 {
-        self.project_capacity
+        self.projects.capacity()
+    }
+    pub fn project_slots(&self, owner: Owner) -> &ProjectSlots {
+        self.session(owner).map_or_else(
+            || self.projects.empty(),
+            |session| self.projects.slots(&session.project_host),
+        )
     }
     pub fn focus_edges(&self) -> [Option<FocusEdge>; 3] {
         let mut edges = [None; 3];
@@ -180,19 +188,16 @@ impl Tree {
                         != (b.group.status == SessionStatus::Online)
             });
         let registry_changed = sessions.len() != self.sessions.len()
-            || sessions
-                .iter()
-                .zip(&self.sessions)
-                .any(|(a, b)| !Arc::ptr_eq(&a.registry, &b.registry));
+            || sessions.iter().zip(&self.sessions).any(|(a, b)| {
+                a.project_host != b.project_host || !Arc::ptr_eq(&a.registry, &b.registry)
+            });
         self.sessions = sessions;
         if registry_changed {
-            self.project_capacity = self
-                .sessions
-                .iter()
-                .flat_map(|session| &session.registry.panes)
-                .filter_map(|pane| pane.project.as_ref().and_then(|project| project.color_slot))
-                .max()
-                .map_or(0, |slot| slot.saturating_add(1));
+            self.projects.reconcile(
+                self.sessions
+                    .iter()
+                    .map(|session| (&session.project_host, &session.registry)),
+            );
         }
         if topology_changed {
             self.collapsed.retain(|target| {
@@ -665,6 +670,7 @@ mod tests {
         sidebar.reconcile(&registry, Some("workspace"), Some("one"), Some("first"));
         Arc::new(Session {
             owner,
+            project_host: ProjectHost::Local,
             group: SessionGroup {
                 name: format!("owner {}", owner.slot),
                 host: None,
@@ -680,6 +686,48 @@ mod tests {
             statuses: Arc::new(HashMap::new()),
             history: Arc::new(HashMap::new()),
         })
+    }
+
+    #[test]
+    fn project_slots_survive_reconnect_without_cross_session_or_host_collisions() {
+        let mut first = session(owner(0), SessionStatus::Online, true);
+        let mut remote = session(owner(1), SessionStatus::Online, false);
+        let project = crate::ci::tests::project();
+        let first_mut = Arc::get_mut(&mut first).unwrap();
+        let registry = Arc::make_mut(&mut first_mut.registry);
+        registry.panes[0].project = Some(project.clone());
+        let mut worktree = project.clone();
+        worktree.repository.as_mut().unwrap().root = "/linked".into();
+        worktree.repository.as_mut().unwrap().git_dir = "/repo/.git/worktrees/linked".into();
+        registry.panes[1].project = Some(worktree.clone());
+        let remote_mut = Arc::get_mut(&mut remote).unwrap();
+        remote_mut.project_host = ProjectHost::Remote {
+            destination: "builder".into(),
+            ssh_config: None,
+        };
+        Arc::make_mut(&mut remote_mut.registry).panes[0].project = Some(project.clone());
+        let mut tree = Tree::new();
+        tree.reconcile(vec![first.clone(), remote.clone()], owner(0));
+        assert_eq!(tree.project_slots(owner(0)).slot(&project), Some(0));
+        assert_eq!(tree.project_slots(owner(0)).slot(&worktree), Some(0));
+        assert_eq!(tree.project_slots(owner(1)).slot(&project), Some(1));
+        // A second local backend sees the same canonical common directory.
+        let mut second = session(owner(2), SessionStatus::Online, false);
+        Arc::make_mut(&mut Arc::get_mut(&mut second).unwrap().registry).panes[0].project =
+            Some(project.clone());
+        tree.reconcile(
+            vec![first.clone(), remote.clone(), second.clone()],
+            owner(0),
+        );
+        assert_eq!(tree.project_slots(owner(2)).slot(&project), Some(0));
+        tree.reconcile(vec![first.clone(), second.clone()], owner(0));
+        let mut reconnect = remote.as_ref().clone();
+        reconnect.owner.generation += 1;
+        let reconnected = reconnect.owner;
+        tree.reconcile(vec![first, Arc::new(reconnect), second], owner(0));
+        assert_eq!(tree.project_slots(reconnected).slot(&project), Some(1));
+        assert_eq!(tree.project_slots(owner(1)).slot(&project), None);
+        assert_eq!(tree.project_capacity(), 2);
     }
 
     #[test]

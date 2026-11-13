@@ -1244,6 +1244,11 @@ The applicable Zellij MIT notice is retained in the framework source.
 Bkpr owns palette/content/material choices; the framework owns generic union
 geometry, glyph-safe color spans, preparation and image lifetime.
 
+This historical capture used backend-local project reservations. It does not
+establish distinct colors across independently attached sessions. The current
+[client-wide ownership policy](implementation-plan.md#terminal-native-theme)
+supersedes those reservation mechanics without changing the recorded pixels.
+
 The final debug pair is
 `target/smoke/sidebar-popups/bin-1339780935436455`:
 
@@ -3366,3 +3371,35 @@ native route-completion acknowledgment or physical presentation receipt.
 The native Promise server getter's cancellation limit and shared-service work
 remain documented in the implementation plan.
 
+
+## Client-wide project colors across native sessions
+
+Project identity remains a backend fact; presentation ordinals now belong to the
+client. `ProjectColors` qualifies canonical common Git paths by local filesystem
+or SSH destination/configuration route, shares worktree identities, retains live
+assignments, and bounds retired identity retention to 256. Sidebar names and
+markers, finder and metadata popovers consume the same host projection.
+Terminal palette changes resolve colors again without renumbering identities.
+The backend allocator and `ProjectSnapshot.color_slot` field are removed.
+
+Actual Kitty/Xvfb evidence:
+`target/showcase/pi-color/frontend-native-consent-1/native-claude-startup.png`.
+The local project name and bee are blue; the independently attached SSH project
+name and bee are pink. Pi's harness glyph uses its distinct accent role.
+The current public `run_sessions` consumer has SHA-256
+`7803139344c35f367556d5c8659039133e04f36c79c1351ec166ad559316417f`.
+It consumes the unchanged native family-10 daemon from `eb10a4f`; the old optional
+JSON color field is naturally ignored by the new typed decoder. No wire shim or
+version relaxation was added. Public product executables were not relinked.
+
+Affected-library verification: 385 client tests, 395 core tests (394 in the
+initial complete run plus the corrected pending-observation regression), and
+70 protocol tests passed; strict all-target Clippy passed for those packages.
+An initially added assertion incorrectly required a pending observation's
+entire repository value to equal the previous observation. It was removed:
+queued metadata may retain newly observed facts while truthfully remaining
+`Loading`. The existing loading/retry contract remains tested.
+
+This frame establishes frontend colors and native transport compatibility, not
+completed Claude onboarding or Pi–Claude delivery. That separate showcase
+acceptance must retain genuine native consent and broker receipts.

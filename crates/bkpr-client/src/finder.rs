@@ -19,7 +19,7 @@ use unicode_segmentation::UnicodeSegmentation;
 // grouping (Copyright (c) 2026 Rémi Labeyrie, MIT); no legacy transport is reused.
 mod entry;
 use crate::metadata::{self, Paragraph, PreviewLine, ProjectSpan};
-use crate::project_colors::ProjectPalette;
+use crate::project_colors::{ProjectPalette, ProjectSlots};
 use bkpr_tui_framework::{
     BackgroundSpan, ColorProbe, ForegroundSpan, Role, RoleSpan, TextInput, Theme, UiSurface,
 };
@@ -360,6 +360,7 @@ impl Finder {
     pub fn new<'a>(
         registry: &RegistrySnapshot,
         initial_pane: Option<&str>,
+        projects: &ProjectSlots,
         snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
     ) -> Self {
         let mut finder = Self {
@@ -385,7 +386,7 @@ impl Finder {
             foregrounds: Vec::new(),
             match_cells: Vec::new(),
         };
-        finder.update_registry(registry, snapshot);
+        finder.update_registry(registry, projects, snapshot);
         if let Some(index) = finder.results.iter().position(|result| {
             Some(finder.documents[result.document].target.pane_id.as_str()) == initial_pane
         }) {
@@ -420,6 +421,7 @@ impl Finder {
     pub fn update_registry<'a>(
         &mut self,
         registry: &RegistrySnapshot,
+        projects: &ProjectSlots,
         snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
     ) {
         if self.revision == Some(registry.revision)
@@ -430,8 +432,13 @@ impl Finder {
                 .zip(&registry.panes)
                 .all(|(document, pane)| {
                     let known = snapshot(&pane.id);
-                    document.harness_visible
-                        == crate::controller::recognized_harness(pane, known).is_some()
+                    document.project_slot
+                        == pane
+                            .project
+                            .as_ref()
+                            .and_then(|project| projects.slot(project))
+                        && document.harness_visible
+                            == crate::controller::recognized_harness(pane, known).is_some()
                         && document.status_visible
                             == crate::controller::harness_status(pane, known).is_some()
                         && document.terminal_error.as_deref()
@@ -465,8 +472,19 @@ impl Finder {
                     .project
                     .as_ref()
                     .is_some_and(|project| project.state != bkpr_protocol::ProjectState::Ready),
-                project_slot: pane.project.as_ref().and_then(|project| project.color_slot),
-                preview: metadata::content(pane, registry, known, false),
+                project_slot: pane
+                    .project
+                    .as_ref()
+                    .and_then(|project| projects.slot(project)),
+                preview: metadata::content(
+                    pane,
+                    registry,
+                    known,
+                    false,
+                    pane.project
+                        .as_ref()
+                        .and_then(|project| projects.slot(project)),
+                ),
             };
             // First value is always the title, including for an unnamed pane.
             let title = metadata::pane_title(pane, known);
@@ -1302,6 +1320,57 @@ fn excerpt(value: &Value, positions: &[u32], width: usize) -> (String, Vec<usize
 mod tests {
     use super::*;
     use bkpr_protocol::{PaneInfo, Window, Workspace};
+
+    #[test]
+    fn finder_and_preview_use_the_shared_client_mapping_and_invalidate_slot_changes() {
+        use crate::project_colors::{ProjectColors, ProjectHost};
+        use std::sync::Arc;
+        let mut registry = registry();
+        let project = crate::ci::tests::project();
+        for pane in &mut registry.panes {
+            pane.project = Some(project.clone());
+        }
+        let registry = Arc::new(registry);
+        let local = ProjectHost::Local;
+        let remote = ProjectHost::Remote {
+            destination: "builder".into(),
+            ssh_config: None,
+        };
+        let mut colors = ProjectColors::default();
+        colors.reconcile([(&local, &registry), (&remote, &registry)]);
+        let slots = colors.slots(&remote);
+        let mut finder = Finder::new(&registry, Some("b"), slots, |_| None);
+        finder.set_query("project:repo");
+        let selected = finder.selected_target().cloned();
+        assert!(
+            finder
+                .documents
+                .iter()
+                .all(|document| document.project_slot == Some(1))
+        );
+        let size = Size {
+            cols: 120,
+            rows: 40,
+            ..size()
+        };
+        let mut surface = UiSurface::new(size);
+        finder.paint(&mut surface, size);
+        assert!(!finder.projects.is_empty());
+        assert!(finder.projects.iter().all(|span| span.slot == Some(1)));
+        let retained = finder.documents.as_ptr();
+        finder.update_registry(&registry, slots, |_| None);
+        assert_eq!(finder.documents.as_ptr(), retained);
+        finder.update_registry(&registry, &ProjectSlots::default(), |_| None);
+        assert_eq!(finder.selected_target(), selected.as_ref());
+        assert!(
+            finder
+                .documents
+                .iter()
+                .all(|document| document.project_slot.is_none())
+        );
+        finder.paint(&mut surface, size);
+        assert!(finder.projects.iter().all(|span| span.slot.is_none()));
+    }
     fn registry() -> RegistrySnapshot {
         let pane = |id: &str, title: &str| PaneInfo {
             id: id.into(),
@@ -1358,7 +1427,7 @@ mod tests {
 
     #[test]
     fn palette_changes_retheme_unchanged_finder_without_losing_match_or_focus() {
-        let mut finder = Finder::new(&registry(), Some("b"), |_| None);
+        let mut finder = Finder::new(&registry(), Some("b"), &ProjectSlots::default(), |_| None);
         finder.set_query("build");
         let size = size();
         let mut surface = UiSurface::new(size);
@@ -1418,7 +1487,9 @@ mod tests {
                 "row_deltas":false,"scene_encodings":[]}
         }))
         .unwrap();
-        let mut finder = Finder::new(&registry, Some("b"), |id| (id == "b").then_some(&snapshot));
+        let mut finder = Finder::new(&registry, Some("b"), &ProjectSlots::default(), |id| {
+            (id == "b").then_some(&snapshot)
+        });
         finder.set_query("build");
         finder.navigate(1, size());
         let selected = finder.selected_target().cloned();
@@ -1443,7 +1514,9 @@ mod tests {
         for diagnostic in [Some("replacement terminal diagnostic"), None] {
             snapshot.snapshot_revision += 1;
             snapshot.error = diagnostic.map(str::to_owned);
-            finder.update_registry(&registry, |id| (id == "b").then_some(&snapshot));
+            finder.update_registry(&registry, &ProjectSlots::default(), |id| {
+                (id == "b").then_some(&snapshot)
+            });
             finder.paint(&mut surface, size);
             let shown = visible(&surface);
             assert!(!shown.contains("first terminal diagnostic"));
@@ -1457,7 +1530,7 @@ mod tests {
     }
     #[test]
     fn ranks_and_terms_match_separate_values_not_cross_value_fiction() {
-        let mut finder = Finder::new(&registry(), None, |_| None);
+        let mut finder = Finder::new(&registry(), None, &ProjectSlots::default(), |_| None);
         finder.set_query("build");
         assert_eq!(finder.selected_target().unwrap().pane_id, "a");
         finder.set_query("workspace:'Main Work' cwd:project status:running");
@@ -1469,7 +1542,7 @@ mod tests {
     }
     #[test]
     fn missing_forge_metadata_is_explicit_even_for_presence_queries() {
-        let mut finder = Finder::new(&registry(), None, |_| None);
+        let mut finder = Finder::new(&registry(), None, &ProjectSlots::default(), |_| None);
         finder.set_query("pr: ci:failed ticket:123");
         assert!(finder.results.is_empty());
         assert_eq!(finder.unsupported, ["pr", "ci", "ticket"]);
@@ -1480,15 +1553,15 @@ mod tests {
     #[test]
     fn registry_reorder_and_rename_preserve_identity_then_removed_selection_clamps() {
         let mut registry = registry();
-        let mut finder = Finder::new(&registry, Some("b"), |_| None);
+        let mut finder = Finder::new(&registry, Some("b"), &ProjectSlots::default(), |_| None);
         registry.panes.reverse();
         registry.panes[1].title = "a completely different title".into();
         registry.revision += 1;
-        finder.update_registry(&registry, |_| None);
+        finder.update_registry(&registry, &ProjectSlots::default(), |_| None);
         assert_eq!(finder.selected_target().unwrap().pane_id, "b");
         registry.panes.retain(|pane| pane.id != "b");
         registry.revision += 1;
-        finder.update_registry(&registry, |_| None);
+        finder.update_registry(&registry, &ProjectSlots::default(), |_| None);
         assert_eq!(finder.selected_target().unwrap().pane_id, "a");
         finder.navigate(isize::MAX, size());
         assert_eq!(finder.selected, 0);
@@ -1497,7 +1570,7 @@ mod tests {
     #[test]
     fn window_queries_keep_exact_pane_owner_across_same_workspace_windows() {
         let mut registry = registry();
-        let mut finder = Finder::new(&registry, None, |_| None);
+        let mut finder = Finder::new(&registry, None, &ProjectSlots::default(), |_| None);
         finder.set_query("window:builder");
         assert_eq!(finder.results.len(), 1);
         let target = finder.selected_target().unwrap().clone();
@@ -1506,7 +1579,7 @@ mod tests {
         registry.workspaces[0].windows.reverse();
         registry.panes.reverse();
         registry.revision += 1;
-        finder.update_registry(&registry, |_| None);
+        finder.update_registry(&registry, &ProjectSlots::default(), |_| None);
         assert_eq!(finder.selected_target(), Some(&target));
         assert_eq!(
             finder.handle_key(&key("Enter"), size()),
@@ -1515,7 +1588,7 @@ mod tests {
     }
     #[test]
     fn unicode_editing_erases_graphemes_and_bounds_pastes() {
-        let mut finder = Finder::new(&registry(), None, |_| None);
+        let mut finder = Finder::new(&registry(), None, &ProjectSlots::default(), |_| None);
         finder.paste("e\u{301}👩‍💻界");
         finder.handle_key(&key("ArrowLeft"), size());
         finder.handle_key(&key("Backspace"), size());
@@ -1550,7 +1623,7 @@ mod tests {
 
     #[test]
     fn finder_caret_tracks_joined_emoji_and_moves_by_whole_graphemes() {
-        let mut finder = Finder::new(&registry(), None, |_| None);
+        let mut finder = Finder::new(&registry(), None, &ProjectSlots::default(), |_| None);
         finder.paste("e\u{301}👩‍💻界");
         let mut surface = UiSurface::new(size());
         let input = finder.layout(size()).input;
@@ -1579,7 +1652,7 @@ mod tests {
     }
     #[test]
     fn compact_preview_is_keyboard_reachable_and_selection_stays_put() {
-        let mut finder = Finder::new(&registry(), Some("b"), |_| None);
+        let mut finder = Finder::new(&registry(), Some("b"), &ProjectSlots::default(), |_| None);
         finder.handle_key(&key("Tab"), size());
         finder.handle_key(&key("Tab"), size());
         assert_eq!(finder.compact, CompactView::Preview);
@@ -1594,7 +1667,7 @@ mod tests {
     fn pointer_scroll_routes_to_preview_and_click_activation_uses_stable_id() {
         let mut registry = registry();
         registry.panes[0].cwd = format!("/{}", "long-path/".repeat(40)).into();
-        let mut finder = Finder::new(&registry, Some("b"), |_| None);
+        let mut finder = Finder::new(&registry, Some("b"), &ProjectSlots::default(), |_| None);
         let wide = Size {
             cols: 90,
             rows: 10,
@@ -1622,7 +1695,7 @@ mod tests {
         let selected = finder.selected_target().unwrap().clone();
         registry.panes.reverse();
         registry.revision += 1;
-        finder.update_registry(&registry, |_| None);
+        finder.update_registry(&registry, &ProjectSlots::default(), |_| None);
         assert_eq!(
             finder.handle_mouse(
                 &mouse(
@@ -1645,7 +1718,7 @@ mod tests {
     }
     #[test]
     fn rejected_paste_and_cursor_motion_preserve_ranked_selection() {
-        let mut finder = Finder::new(&registry(), None, |_| None);
+        let mut finder = Finder::new(&registry(), None, &ProjectSlots::default(), |_| None);
         finder.set_query("build");
         finder.navigate(1, size());
         let selected = finder.selected_target().unwrap().clone();
@@ -1660,7 +1733,7 @@ mod tests {
     }
     #[test]
     fn graphical_regions_share_painted_and_pointer_geometry() {
-        let mut finder = Finder::new(&registry(), None, |_| None);
+        let mut finder = Finder::new(&registry(), None, &ProjectSlots::default(), |_| None);
         for (cols, rows) in [(120, 28), (84, 18), (60, 24), (40, 14)] {
             let size = Size {
                 cols,
@@ -1731,7 +1804,7 @@ mod tests {
 
     #[test]
     fn presentation_toggle_and_tiny_resize_preserve_query_selection_and_preview_focus() {
-        let mut finder = Finder::new(&registry(), None, |_| None);
+        let mut finder = Finder::new(&registry(), None, &ProjectSlots::default(), |_| None);
         finder.paste("build");
         finder.navigate(1, size());
         finder.handle_key(&key("ArrowLeft"), size());
@@ -1769,7 +1842,7 @@ mod tests {
     fn compact_view_switch_keeps_preview_scroll_when_hidden() {
         let mut registry = registry();
         registry.panes[0].cwd = format!("/{}", "long-path/".repeat(40)).into();
-        let mut finder = Finder::new(&registry, Some("b"), |_| None);
+        let mut finder = Finder::new(&registry, Some("b"), &ProjectSlots::default(), |_| None);
         finder.scroll_preview(3, size());
         let scroll = finder.preview_scroll;
         assert!(scroll > 0);
@@ -1786,7 +1859,7 @@ mod tests {
     fn metadata_matches_stay_in_their_actual_one_row_excerpt() {
         let mut registry = registry();
         registry.panes[0].cwd = "/a/long/directory/with/needle/at/the/end".into();
-        let mut finder = Finder::new(&registry, None, |_| None);
+        let mut finder = Finder::new(&registry, None, &ProjectSlots::default(), |_| None);
         finder.set_query("cwd:needle");
         assert_eq!(finder.results.len(), 1);
         for width in [12, 29, 60] {
@@ -1818,7 +1891,6 @@ mod tests {
         let mut registry = registry();
         registry.panes[0].id = "private-pane-uuid".into();
         registry.panes[0].project = Some(ProjectSnapshot {
-            color_slot: None,
             ci: None,
             cwd: "/work/project".into(),
             state: ProjectState::Loading,
@@ -1848,7 +1920,12 @@ mod tests {
                 }),
             }),
         });
-        let finder = Finder::new(&registry, Some("private-pane-uuid"), |_| None);
+        let finder = Finder::new(
+            &registry,
+            Some("private-pane-uuid"),
+            &ProjectSlots::default(),
+            |_| None,
+        );
         let document = &finder.documents[finder.results[finder.selected].document];
         let preview = document
             .preview

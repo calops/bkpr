@@ -128,9 +128,6 @@ impl Serialize for DurablePanes<'_> {
 struct State {
     record: Record,
     live: BTreeMap<String, Pane>,
-    // Completion may be followed by restoration before the project worker wakes.
-    // Preserve that ownership boundary even when the restored pane reuses its ID.
-    project_retired: BTreeSet<String>,
     spawning: usize,
     spawn_workspaces: BTreeSet<String>,
     spawn_workspace_names: BTreeMap<String, String>,
@@ -575,7 +572,6 @@ impl Registry {
                 state: Mutex::new(State {
                     record,
                     live: BTreeMap::new(),
-                    project_retired: BTreeSet::new(),
                     spawning: 0,
                     spawn_workspaces: BTreeSet::new(),
                     spawn_workspace_names: BTreeMap::new(),
@@ -1315,7 +1311,7 @@ impl Registry {
                 harness: None,
                 harness_status: None,
                 harness_status_changed_at_ms: None,
-                project: Some(project::loading(&entry.spec.cwd, None)),
+                project: Some(project::loading(&entry.spec.cwd)),
                 isolated_environment: entry.spec.isolated_environment,
             });
         }
@@ -1769,9 +1765,6 @@ impl Registry {
                         .store(true, std::sync::atomic::Ordering::Release);
                 }
                 state.live.remove(id);
-                // Forgotten identities cannot be restored. Keep retirement
-                // reservations bounded by the remaining pane records.
-                state.project_retired.remove(id);
                 state.closing_panes.remove(id);
             },
             |state| {
@@ -1873,14 +1866,7 @@ impl Registry {
         }
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
-        commit_projected(
-            &self.inner,
-            next,
-            |state| {
-                state.project_retired.insert(id.to_owned());
-            },
-            |_| (),
-        )?;
+        commit_projected(&self.inner, next, |_| (), |_| ())?;
         drop(_transaction);
         self.notify_session_end();
         // Keep the final in-memory scene readable until daemon shutdown; no pixels go to disk.

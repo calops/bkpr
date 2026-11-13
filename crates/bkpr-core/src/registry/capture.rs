@@ -639,11 +639,7 @@ impl Registry {
             .as_ref()
             .is_none_or(|snapshot| snapshot.cwd != project_cwd)
         {
-            let color_slot = info
-                .project
-                .as_ref()
-                .and_then(|snapshot| snapshot.color_slot);
-            info.project = Some(super::project::loading(project_cwd, color_slot));
+            info.project = Some(super::project::loading(project_cwd));
         }
         info.foreground_cwd = cwd;
         info.harness = harness;

@@ -1097,9 +1097,11 @@ impl App {
         self.selection_focus_lost();
         self.close_search();
         self.popover.hide();
+        let tree = self.tree.lock().unwrap();
         self.finder = Some(crate::finder::Finder::new(
             &self.registry,
             self.state.focused.as_deref(),
+            tree.project_slots(self.tree_owner()),
             |pane| self.views.get(pane).map(|view| &view.metadata),
         ));
     }
@@ -5037,7 +5039,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 surface.apply_theme(&theme, Role::Muted, &[]);
             }
             if let Some(finder) = &mut app.finder {
-                finder.update_registry(&app.registry, |pane| {
+                finder.update_registry(&app.registry, tree.project_slots(active_owner), |pane| {
                     app.views.get(pane).map(|view| &view.metadata)
                 });
             }
@@ -6442,6 +6444,7 @@ pub(super) mod tests {
         );
         Arc::new(tree::Session {
             owner,
+            project_host: Default::default(),
             group: SessionGroup {
                 name: format!("session {}", owner.slot),
                 host: None,

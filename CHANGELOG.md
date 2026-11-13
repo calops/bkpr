@@ -11,6 +11,8 @@
 
 ### Fixes
 
+* Allocate project colors in the terminal client across all attached sessions and hosts, sharing canonical linked-worktree identities without backend presentation ordinals.
+* Give Pi a distinct harness icon color instead of sharing Omp's palette role.
 * Shorten the rendering-mode hint to “toggle fancy chrome”.
 * Ellipsize long sidebar session, workspace, window and pane names at complete Unicode grapheme boundaries, preserving status indicators and working-title animation geometry.
 * Use whole-grapheme UI cell geometry for joined emoji, variation selectors and flags, keeping sparse repaints, sidebar status, text-input carets and search highlights aligned without changing canonical pane scenes.

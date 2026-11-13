@@ -102,7 +102,6 @@ impl Fixture {
                 project: Some(ProjectSnapshot {
                     cwd: cwd.to_owned(),
                     state: ProjectState::Ready,
-                    color_slot: Some(0),
                     repository: Some(repository),
                     error: None,
                     ci: None,
