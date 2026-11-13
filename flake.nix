@@ -142,6 +142,45 @@
             packages = harnessPackages ++ [ opencode2 ];
           };
         }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          showcase = pkgs.mkShell {
+            name = "bkpr-showcase";
+            packages = [
+              pkgs.just
+              pkgs.git
+              pkgs.bashInteractive
+              pkgs.nodejs
+              pkgs.kitty
+              pkgs.xorg-server
+              pkgs.xdotool
+              pkgs.openssh
+              pkgs.util-linux
+              pkgs.iproute2
+              pkgs.coreutils
+              pkgs.imagemagick
+              pkgs.fontconfig
+              agents.omp
+              agents.pi
+              (pkgs.python3.withPackages (ps: [
+                ps.pillow
+                ps.pyte
+                ps.regex
+                ps.wcwidth
+              ]))
+            ];
+            FONTCONFIG_FILE = pkgs.makeFontsConf {
+              fontDirectories = [
+                pkgs.nerd-fonts.jetbrains-mono
+                pkgs.noto-fonts-color-emoji
+              ];
+            };
+            SHOWCASE_FONT = "JetBrainsMono Nerd Font";
+            LIBGL_DRIVERS_PATH = "${pkgs.mesa}/lib/dri";
+            __EGL_VENDOR_LIBRARY_FILENAMES = "${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json";
+            __GLX_VENDOR_LIBRARY_NAME = "mesa";
+            LIBGL_ALWAYS_SOFTWARE = "1";
+          };
+        }
       );
 
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);

@@ -35,3 +35,7 @@ test:
     export BKPR_GHOSTTY_VT_DIR="$(bash scripts/prepare-ghostty-vt.sh --print-prefix)"
     export GHOSTTY_INSTALL_DIR="$BKPR_GHOSTTY_VT_DIR"
     cargo test --locked --workspace
+
+# Capture the isolated README demo using an existing matching native pair.
+screenshot bkpr_bin="target/debug/bkpr" bkprd_bin="target/debug/bkprd" output="docs/assets/showcase.png":
+    nix develop .#showcase --command python3 scripts/showcase/capture.py --bkpr "$1" --bkprd "$2" --output "$3"

@@ -55,7 +55,7 @@ The safe/sys SDK is pinned at [`575ed6b8ceb79ffaf247ecf7e34333876b0d5be4`](https
 
 ## Build and try it
 
-Use the current [README build and native CLI instructions](../../README.md#native-cli), which build both `bkpr` and `bkprd`. They describe default normal-profile execution and an explicit private fixture environment. Current work uses this feature worktree's own `target/` and bounded eight-job builds, not main's Cargo cache. The historical measurements below identify their own binaries and must not be read as acceptance of later code.
+Use the current [source build](../reference.md#build) and [native CLI instructions](../reference.md#native-cli), which build both `bkpr` and `bkprd`. They describe default normal-profile execution and an explicit private fixture environment. Current work uses this feature worktree's own `target/` and bounded eight-job builds, not main's Cargo cache. The historical measurements below identify their own binaries and must not be read as acceptance of later code.
 
 ## Retained observations
 
