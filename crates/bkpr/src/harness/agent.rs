@@ -428,8 +428,8 @@ fn mcp_request(request_value: Value, guard: Option<&AgentBindingGuard>) -> Resul
     }
 }
 
+/// Serve shared MCP tools after reauthenticating this harness's retained launch authority.
 pub(super) fn mcp(kind: HarnessKind) -> Result<i32> {
-    // Reauthentication precedes advertising tools; no identity is minted here.
     if std::env::var_os("BKPR_AGENT_RELAY_SOCKET").is_none() {
         let capture = Capture::from_environment()?;
         if capture.grant.kind != kind {
@@ -440,6 +440,15 @@ pub(super) fn mcp(kind: HarnessKind) -> Result<i32> {
     if identity["harness"] != kind.as_str() {
         bail!("authenticated MCP identity does not match requested harness");
     }
+    serve_mcp(kind, true)
+}
+
+/// Serve the common MCP without tools or daemon access outside a managed launch.
+pub(super) fn inactive_mcp(kind: HarnessKind) -> Result<i32> {
+    serve_mcp(kind, false)
+}
+
+fn serve_mcp(kind: HarnessKind, authorized: bool) -> Result<i32> {
     let output = Arc::new(Mutex::new(io::stdout()));
     let active = Arc::new(Mutex::new(HashMap::<String, Arc<AtomicBool>>::new()));
     let pages = Arc::new(output::Pages::default());
@@ -483,7 +492,7 @@ pub(super) fn mcp(kind: HarnessKind) -> Result<i32> {
             )?;
             continue;
         }
-        if method == "tools/call" && initialized {
+        if method == "tools/call" && initialized && authorized {
             let key = id.to_string();
             let cancelled = Arc::new(AtomicBool::new(false));
             {
@@ -565,14 +574,27 @@ pub(super) fn mcp(kind: HarnessKind) -> Result<i32> {
         }
         let result = match method {
             "initialize" => Ok(
-                json!({"protocolVersion":message["params"]["protocolVersion"].as_str().filter(|v| matches!(*v,"2024-11-05"|"2025-03-26"|"2025-06-18"|"2025-11-25")).unwrap_or("2025-11-25"),"capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"bkpr","version":env!("CARGO_PKG_VERSION")},"instructions":INSTRUCTIONS}),
+                json!({"protocolVersion":message["params"]["protocolVersion"].as_str().filter(|v| matches!(*v,"2024-11-05"|"2025-03-26"|"2025-06-18"|"2025-11-25")).unwrap_or("2025-11-25"),"capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"bkpr","version":env!("CARGO_PKG_VERSION")},"instructions":if authorized { INSTRUCTIONS } else { "Inactive outside a managed Bkpr launch. Start the harness with bkpr run HARNESS." }}),
             ),
             "ping" => Ok(json!({})),
-            "tools/list" if initialized => Ok(json!({"tools":tools()})),
-            "resources/list" if initialized => Ok(resources()),
+            "tools/call" if initialized && !authorized => Err((
+                -32002,
+                "Bkpr integration is inactive outside a managed launch",
+            )),
+            "tools/list" if initialized => Ok(if authorized {
+                json!({"tools":tools()})
+            } else {
+                json!({"tools":[]})
+            }),
+            "resources/list" if initialized => Ok(if authorized {
+                resources()
+            } else {
+                json!({"resources":[]})
+            }),
             "resources/templates/list" if initialized => Ok(json!({"resourceTemplates":[]})),
             "resources/read"
                 if initialized
+                    && authorized
                     && resource(message["params"]["uri"].as_str().unwrap_or("")).is_some() =>
             {
                 Ok(resource(message["params"]["uri"].as_str().unwrap_or(""))

@@ -1,7 +1,6 @@
 //! Launch-local native conversation hooks; Claude alone produces semantic status.
 use std::ffi::OsString;
 use std::io::{IsTerminal, Read};
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -9,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use bkpr_protocol::{ConversationSource, HarnessKind};
 use serde_json::{Value, json};
 
-use super::{Capture, claude_inbox, passthrough, run_managed, scrub};
+use super::{Capture, assets, claude_inbox, install, passthrough, run_managed, scrub};
 
 const MAX_CALLBACK_BYTES: u64 = 1024 * 1024;
 
@@ -232,6 +231,7 @@ fn supplement(arguments: &mut Vec<OsString>, plan: ArgumentPlan, settings: Value
     Ok(())
 }
 
+/// Run supported interactive native launches with scoped capture; preserve native utility modes and exit status.
 pub(super) fn launch(executable: PathBuf, mut arguments: Vec<OsString>) -> Result<i32> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return passthrough(&executable, arguments);
@@ -248,33 +248,41 @@ pub(super) fn launch(executable: PathBuf, mut arguments: Vec<OsString>) -> Resul
         );
         return passthrough(&executable, arguments);
     };
-    // Compose native settings before obtaining the launch-scoped grant.
+    let installed = install::runtime(HarnessKind::Claude, Default::default())?.is_some();
     let program = std::env::current_exe().context("locate Claude capture callback")?;
-    compose(
-        &mut settings,
-        program
-            .to_str()
-            .context("Claude callback path is not UTF-8")?,
-    )?;
-    supplement(&mut arguments, plan, settings)?;
-    let inbox = tempfile::Builder::new().prefix("bkpr-claude-").tempdir()?;
-    std::fs::set_permissions(inbox.path(), std::fs::Permissions::from_mode(0o700))?;
+    if !installed {
+        compose(
+            &mut settings,
+            program
+                .to_str()
+                .context("Claude callback path is not UTF-8")?,
+        )?;
+        supplement(&mut arguments, plan, settings)?;
+        let insertion = arguments
+            .iter()
+            .position(|argument| argument == "--")
+            .unwrap_or(arguments.len());
+        let server = serde_json::to_string(
+            &json!({"mcpServers":{"bkpr":{"type":"stdio","command":program,"args":["capture","mcp","--harness","claude"]}}}),
+        )?;
+        arguments.splice(
+            insertion..insertion,
+            [OsString::from("--mcp-config"), OsString::from(server)],
+        );
+    }
+    let inbox = assets::private_directory("bkpr-claude-")?;
     let capture = Capture::begin(HarnessKind::Claude)?;
-    let insertion = arguments
-        .iter()
-        .position(|argument| argument == "--")
-        .unwrap_or(arguments.len());
-    let server = serde_json::to_string(
-        &json!({"mcpServers":{"bkpr":{"type":"stdio","command":program,"args":["capture","mcp","--harness","claude"]}}}),
-    )?;
-    arguments.splice(
-        insertion..insertion,
-        [OsString::from("--mcp-config"), OsString::from(server)],
-    );
+    let credentials = inbox.path().join("capture.json");
+    if installed {
+        assets::write_credentials(&capture, &credentials)?;
+    }
     let mut command = Command::new(executable);
     scrub(&mut command);
     capture.apply(&mut command);
     command.env("BKPR_CLAUDE_INBOX_DIR", inbox.path());
+    if installed {
+        command.env("BKPR_INTEGRATION_FILE", credentials);
+    }
     command.args(arguments);
     let result = run_managed(&mut command, &capture);
     drop(inbox);

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use bkpr_protocol::{ConversationSource, HarnessKind};
 
-use super::{Capture, exit_code, passthrough, scrub};
+use super::{Capture, exit_code, install, passthrough, scrub};
 #[path = "codex_agent.rs"]
 mod agent;
 #[path = "codex_startup.rs"]
@@ -268,6 +268,7 @@ impl Drop for Signals {
     }
 }
 
+/// Run supported interactive native launches with scoped capture; preserve native utility modes and exit status.
 pub(super) fn launch(executable: PathBuf, arguments: Vec<OsString>) -> Result<i32> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return passthrough(&executable, arguments);
@@ -276,8 +277,9 @@ pub(super) fn launch(executable: PathBuf, arguments: Vec<OsString>) -> Result<i3
     if plan.passthrough {
         return passthrough(&executable, arguments);
     }
+    let installed = install::runtime(HarnessKind::Codex, Default::default())?.is_some();
     let capture = Capture::begin(HarnessKind::Codex)?;
-    let result = managed(&executable, arguments, &plan, &capture);
+    let result = managed(&executable, arguments, &plan, &capture, installed);
     if let Err(error) = &result {
         let _ = capture.error(&format!("Codex capture failed: {error:#}"));
     }
@@ -292,6 +294,7 @@ fn managed(
     arguments: Vec<OsString>,
     plan: &LaunchPlan,
     capture: &Capture,
+    installed: bool,
 ) -> Result<i32> {
     let cwd = fs::canonicalize(&plan.cwd).context("resolve Codex working directory")?;
     let arguments = native_tui_arguments(arguments, plan, &cwd);
@@ -300,15 +303,20 @@ fn managed(
         .tempdir_in("/tmp")?;
     fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700))?;
     let relay = agent::Relay::start(capture, runtime.path())?;
-    let mcp = format!(
-        "mcp_servers.bkpr={{command={},args=[\"capture\",\"mcp\",\"--harness\",\"codex\"],env_vars=[\"BKPR_AGENT_RELAY_SOCKET\",\"BKPR_AGENT_RELAY_TOKEN\"],enabled=true}}",
-        serde_json::to_string(
-            capture
-                .program
-                .to_str()
-                .context("Codex MCP program path is not UTF-8")?
-        )?,
-    );
+    let mcp = if installed {
+        // The native entry retains per-tool approvals and explicit disabled state.
+        None
+    } else {
+        Some(format!(
+            "mcp_servers.bkpr={{command={},args=[\"capture\",\"mcp\",\"--harness\",\"codex\"],env_vars=[\"BKPR_AGENT_RELAY_SOCKET\",\"BKPR_AGENT_RELAY_TOKEN\"],enabled=true}}",
+            serde_json::to_string(
+                capture
+                    .program
+                    .to_str()
+                    .context("Codex MCP program path is not UTF-8")?
+            )?,
+        ))
+    };
     let socket = runtime.path().join("server.sock");
     let endpoint = format!(
         "unix://{}",
@@ -338,13 +346,15 @@ fn managed(
     command
         .args(["app-server", "--listen", &endpoint])
         .args(&plan.overrides)
-        .args(["-c", &mcp])
         .env("BKPR_AGENT_RELAY_SOCKET", &relay.socket)
         .env("BKPR_AGENT_RELAY_TOKEN", &relay.token)
         .current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
+    if let Some(mcp) = mcp {
+        command.args(["-c", &mcp]);
+    }
     // The foreground TUI receives terminal interrupts, not the waiting supervisor.
     unsafe {
         command.pre_exec(|| {

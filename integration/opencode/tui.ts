@@ -1,7 +1,7 @@
 import { Plugin } from '@opencode/plugin/tui';
 import { createEffect, createRoot } from 'solid-js';
 import { randomUUID } from 'node:crypto';
-import { createNativeCallbacksFromFile } from '../shared/native.ts';
+import { optionalNativeCallbacks } from '../shared/native.ts';
 import { Contract, NativePluginReadiness } from './rpc.ts';
 import { NativeSession, object, requiredRequest, requiredSession, sessionID, validateRecovery, type RequiredSession } from './session.ts';
 
@@ -9,8 +9,9 @@ import { NativeSession, object, requiredRequest, requiredSession, sessionID, val
 export default Plugin.define({
   id: 'bkpr-native',
   async setup(ctx) {
-    if (typeof ctx.options.captureFile !== 'string') throw new Error('missing private native capture file');
-    const native = await createNativeCallbacksFromFile('opencode', ctx.options.captureFile);
+    const activation = await optionalNativeCallbacks('opencode', ctx.options.captureFile);
+    if (!activation) return;
+    const { native } = activation;
     const requested = requiredRequest(ctx.options.requiredSession);
     let required: RequiredSession | undefined;
     let restored = requested === undefined;

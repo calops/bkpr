@@ -140,10 +140,18 @@ fn append_plugin(config: &mut Value, plugin: Value) -> Result<()> {
         .expect("configuration object")
         .entry("plugins")
         .or_insert_with(|| json!([]));
-    plugins
+    let plugins = plugins
         .as_array_mut()
-        .context("OpenCode plugins must be an array")?
-        .push(plugin);
+        .context("OpenCode plugins must be an array")?;
+    if let Some(package) = plugin.get("package").and_then(Value::as_str) {
+        plugins.retain(|entry| {
+            entry
+                .as_str()
+                .or_else(|| entry.get("package").and_then(Value::as_str))
+                != Some(package)
+        });
+    }
+    plugins.push(plugin);
     Ok(())
 }
 
@@ -256,17 +264,22 @@ fn preserve_cli_plugins(cli: &mut Value, native: Option<&str>, legacy: Option<&s
 }
 
 fn read_native_config(path: &std::path::Path) -> Result<Option<String>> {
-    match fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).context("read native CLI plugin settings"),
-    }
+    super::install::read_native_config(path)?
+        .map(|bytes| {
+            String::from_utf8(bytes)
+                .map_err(|_| anyhow::anyhow!("native OpenCode CLI plugin settings must be UTF-8"))
+        })
+        .transpose()
 }
 
-fn launch_configs(capture: &Capture, directory: &std::path::Path) -> Result<(Value, Value)> {
+fn launch_configs(
+    capture: &Capture,
+    directory: &std::path::Path,
+    package: &str,
+    installation: Option<&std::path::Path>,
+) -> Result<(Value, Value)> {
     let credentials = directory.join("credentials.json");
-    let plugin =
-        json!({"package": directory.join("opencode"), "options": {"captureFile": credentials}});
+    let plugin = json!({"package": package, "options": {"captureFile": credentials}});
     let mut server = environment_config("OPENCODE_CONFIG_CONTENT")?;
     append_plugin(&mut server, plugin.clone())?;
     let mcp = server
@@ -279,9 +292,36 @@ fn launch_configs(capture: &Capture, directory: &std::path::Path) -> Result<(Val
         .context("OpenCode mcp must be an object")?
         .entry("servers")
         .or_insert_with(|| json!({}));
-    servers.as_object_mut().context("OpenCode mcp.servers must be an object")?.insert("bkpr".into(), json!({
-        "type":"local", "codemode":false, "command":[capture.program, "capture", "mcp", "--harness", "opencode", "--capture-file", credentials]
-    }));
+    let command = if let Some(manifest) = installation {
+        json!([
+            capture.program,
+            "capture",
+            "installed-mcp",
+            "--harness",
+            "opencode",
+            "--installation",
+            manifest
+        ])
+    } else {
+        json!([
+            capture.program,
+            "capture",
+            "mcp",
+            "--harness",
+            "opencode",
+            "--capture-file",
+            credentials
+        ])
+    };
+    servers
+        .as_object_mut()
+        .context("OpenCode mcp.servers must be an object")?
+        .insert(
+            "bkpr".into(),
+            json!({
+                "type":"local", "codemode":false, "command":command
+            }),
+        );
     let mut cli = environment_config("OPENCODE_CLI_CONFIG_CONTENT")?;
     // The launch-private array must retain native plugins before appending ours.
     // Do not read lower-precedence files when the environment replaces the list.
@@ -299,9 +339,12 @@ fn launch_configs(capture: &Capture, directory: &std::path::Path) -> Result<(Val
     Ok((server, cli))
 }
 
-fn package(capture: &Capture) -> Result<TempDir> {
+fn package(capture: &Capture, installed: bool) -> Result<TempDir> {
     let directory = private_directory("bkpr-opencode-")?;
     write_credentials(capture, &directory.path().join("credentials.json"))?;
+    if installed {
+        return Ok(directory);
+    }
     fs::create_dir(directory.path().join("opencode"))?;
     fs::create_dir(directory.path().join("shared"))?;
     write_private(
@@ -335,6 +378,7 @@ fn package(capture: &Capture) -> Result<TempDir> {
     Ok(directory)
 }
 
+/// Run supported interactive native launches with scoped capture; preserve native utility modes and exit status.
 pub(super) fn launch(executable: PathBuf, arguments: Vec<OsString>) -> Result<i32> {
     let (arguments, required) = recovery_arguments(arguments)?;
     if !std::io::stdin().is_terminal()
@@ -346,9 +390,21 @@ pub(super) fn launch(executable: PathBuf, arguments: Vec<OsString>) -> Result<i3
         }
         return passthrough(&executable, arguments);
     }
+    let installed = super::install::runtime(HarnessKind::Opencode, Default::default())?;
     let capture = Capture::begin(HarnessKind::Opencode)?;
-    let package = package(&capture)?;
-    let (mut server, mut cli) = launch_configs(&capture, package.path())?;
+    let package = package(&capture, installed.is_some())?;
+    let native_package = installed
+        .as_ref()
+        .map_or(package.path(), |runtime| runtime.root.as_path())
+        .join("opencode");
+    let native_package = url::Url::from_directory_path(native_package)
+        .map_err(|()| anyhow::anyhow!("OpenCode native package path must be absolute"))?;
+    let (mut server, mut cli) = launch_configs(
+        &capture,
+        package.path(),
+        native_package.as_str(),
+        installed.as_ref().map(|runtime| runtime.manifest.as_path()),
+    )?;
     if let Some(required) = required.as_deref() {
         for config in [&mut server, &mut cli] {
             let plugin = config["plugins"]
@@ -361,6 +417,10 @@ pub(super) fn launch(executable: PathBuf, arguments: Vec<OsString>) -> Result<i3
     }
     let mut command = Command::new(executable);
     scrub(&mut command);
+    command.env(
+        "BKPR_INTEGRATION_FILE",
+        package.path().join("credentials.json"),
+    );
     // Credentials live only in the private file, never the native server or
     // its tools' inherited environment. Only callback/MCP children claim them.
     command.env("OPENCODE_CONFIG_CONTENT", serde_json::to_string(&server)?);
@@ -607,5 +667,27 @@ mod tests {
         for text in ["[]", "{bad:1}", "{\"bad\":'value'}", "{\"bad\":NaN}"] {
             assert!(config(text).is_err());
         }
+    }
+
+    #[test]
+    fn installed_plugin_overlay_reuses_its_uri_without_duplicating_native_activation() {
+        let uri = "file:///private/bkpr%20%23%25/opencode/";
+        let mut cli = json!({
+            "theme":{"name":"native"},
+            "plugins":[{"package":uri}, "another-native-plugin"]
+        });
+        append_plugin(
+            &mut cli,
+            json!({"package":uri, "options":{"captureFile":"/private/capture"}}),
+        )
+        .unwrap();
+        assert_eq!(
+            cli["plugins"],
+            json!([
+                "another-native-plugin",
+                {"package":uri, "options":{"captureFile":"/private/capture"}}
+            ])
+        );
+        assert_eq!(cli["theme"]["name"], "native");
     }
 }

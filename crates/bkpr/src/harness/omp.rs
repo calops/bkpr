@@ -11,21 +11,20 @@ use tempfile::TempDir;
 
 use super::{
     Capture,
-    assets::{private_directory, write_private},
+    assets::{private_directory, write_credentials, write_private},
     passthrough, run_managed, scrub,
 };
 
 const EXTENSION: &str = include_str!("../../../../integration/omp/index.ts");
 
-fn interactive_arguments(arguments: &[OsString]) -> bool {
+fn interactive_arguments(arguments: &[OsString]) -> Option<super::install::Invocation> {
     let mut index = 0;
     let mut first_positional = true;
+    let mut invocation = super::install::Invocation::default();
     while index < arguments.len() {
-        let Some(argument) = arguments[index].to_str() else {
-            return false;
-        };
+        let argument = arguments[index].to_str()?;
         if argument == "--" {
-            return true;
+            return Some(invocation);
         }
         let (option, inline) = argument
             .split_once('=')
@@ -41,7 +40,7 @@ fn interactive_arguments(arguments: &[OsString]) -> bool {
             | "--export"
             | "--alias"
             | "--no-extensions"
-            | "--trusted-extension" => return false,
+            | "--trusted-extension" => return None,
             "--cwd"
             | "--add-dir"
             | "--profile"
@@ -73,11 +72,17 @@ fn interactive_arguments(arguments: &[OsString]) -> bool {
             | "--system-prompt"
             | "--system-prompt-template"
             | "--append-system-prompt" => {
-                if !inline {
+                let value = if let Some((_, value)) = argument.split_once('=') {
+                    std::ffi::OsStr::new(value)
+                } else {
                     index += 1;
-                    if index >= arguments.len() {
-                        return false;
-                    }
+                    arguments.get(index)?.as_os_str()
+                };
+                match option {
+                    "--profile" => invocation.profile = Some(value.to_owned()),
+                    "--cwd" => invocation.cwd = Some(PathBuf::from(value)),
+                    "--config" => invocation.config_files.push(PathBuf::from(value)),
+                    _ => {}
                 }
             }
             "--resume" | "-r" | "--session" | "--restore" => {
@@ -112,7 +117,7 @@ fn interactive_arguments(arguments: &[OsString]) -> bool {
             | "--no-rules"
             | "--no-context-files"
                 if !inline => {}
-            _ if option.starts_with('-') => return false,
+            _ if option.starts_with('-') => return None,
             "launch" if first_positional => first_positional = false,
             _ if first_positional => {
                 if matches!(
@@ -175,7 +180,7 @@ fn interactive_arguments(arguments: &[OsString]) -> bool {
                         | "uninstall"
                         | "extensions"
                 ) {
-                    return false;
+                    return None;
                 }
                 first_positional = false;
             }
@@ -183,38 +188,52 @@ fn interactive_arguments(arguments: &[OsString]) -> bool {
         }
         index += 1;
     }
-    true
+    Some(invocation)
 }
 
-fn extension_package(capture: &Capture) -> Result<TempDir> {
+fn extension_package(capture: &Capture, installed: bool) -> Result<TempDir> {
     let directory =
         private_directory("bkpr-omp-").context("create launch-local Omp capture package")?;
-    write_private(&directory.path().join("package.json"),
-        br#"{"name":"bkpr-native-capture","private":true,"type":"module","omp":{"extensions":["omp/index.ts"]}}"#)?;
-    fs::create_dir(directory.path().join("omp"))?;
-    fs::create_dir(directory.path().join("shared"))?;
-    write_private(&directory.path().join("omp/index.ts"), EXTENSION.as_bytes())?;
+    let extensions = if installed {
+        Vec::<PathBuf>::new()
+    } else {
+        vec![PathBuf::from("omp/index.ts")]
+    };
     write_private(
-        &directory.path().join("shared/native.ts"),
-        include_bytes!("../../../../integration/shared/native.ts"),
+        &directory.path().join("package.json"),
+        &serde_json::to_vec(&serde_json::json!({
+            "name":"bkpr-native-capture", "private":true, "type":"module",
+            "omp":{"extensions":extensions}
+        }))?,
     )?;
-    let config = serde_json::json!({"mcpServers":{"bkpr":{
-        "type":"stdio",
-        "command":capture.program,
-        "args":["capture","mcp","--harness","omp"],
-        "env":{
-            "BKPR_CAPTURE_LAUNCH_ID":capture.grant.launch_id,
-            "BKPR_CAPTURE_TOKEN":capture.grant.token,
-            "BKPR_CAPTURE_HARNESS":"omp",
-            "BKPR_CAPTURE_PROGRAM":capture.program,
-            "BKPR_SOCKET":capture.socket,
-            "BKPR_PANE_ID":capture.grant.pane_id
-        }
-    }}});
-    write_private(
-        &directory.path().join("mcp.json"),
-        &serde_json::to_vec(&config)?,
-    )?;
+    write_credentials(capture, &directory.path().join("capture.json"))?;
+    if !installed {
+        fs::create_dir(directory.path().join("omp"))?;
+        fs::create_dir(directory.path().join("shared"))?;
+        write_private(&directory.path().join("omp/index.ts"), EXTENSION.as_bytes())?;
+        write_private(
+            &directory.path().join("shared/native.ts"),
+            include_bytes!("../../../../integration/shared/native.ts"),
+        )?;
+        // Installed launches use the sole user MCP entry instead.
+        let config = serde_json::json!({"mcpServers":{"bkpr":{
+            "type":"stdio",
+            "command":capture.program,
+            "args":["capture","mcp","--harness","omp"],
+            "env":{
+                "BKPR_CAPTURE_LAUNCH_ID":capture.grant.launch_id,
+                "BKPR_CAPTURE_TOKEN":capture.grant.token,
+                "BKPR_CAPTURE_HARNESS":"omp",
+                "BKPR_CAPTURE_PROGRAM":capture.program,
+                "BKPR_SOCKET":capture.socket,
+                "BKPR_PANE_ID":capture.grant.pane_id
+            }
+        }}});
+        write_private(
+            &directory.path().join("mcp.json"),
+            &serde_json::to_vec(&config)?,
+        )?;
+    }
     // Native --no-skills/explicit skill selection governs package discovery too.
     let skill = directory.path().join("skills/bkpr-control");
     fs::create_dir_all(&skill)?;
@@ -225,21 +244,23 @@ fn extension_package(capture: &Capture) -> Result<TempDir> {
     Ok(directory)
 }
 
+/// Run supported interactive native launches with scoped capture; preserve native utility modes and exit status.
 pub(super) fn launch(executable: PathBuf, arguments: Vec<OsString>) -> Result<i32> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return passthrough(&executable, arguments);
     }
-    if !interactive_arguments(&arguments) {
+    let Some(invocation) = interactive_arguments(&arguments) else {
         eprintln!(
             "bkpr: Omp invocation is unchanged; launch-local capture is not enabled for this argument mode"
         );
         return passthrough(&executable, arguments);
-    }
+    };
+    let installed = super::install::runtime(HarnessKind::Omp, invocation)?;
     let capture = Capture::begin(HarnessKind::Omp)?;
-    let package = extension_package(&capture)?;
+    let package = extension_package(&capture, installed.is_some())?;
     let mut command = Command::new(executable);
     scrub(&mut command);
-    capture.apply(&mut command);
+    command.env("BKPR_INTEGRATION_FILE", package.path().join("capture.json"));
     command.arg("-e").arg(package.path()).args(arguments);
     // Keep the native loader's package alive through the child's entire life,
     // including error unwinding. run_managed owns launch revocation and signals.
@@ -258,28 +279,16 @@ mod tests {
 
     #[test]
     fn optouts_are_only_options_outside_consumed_values_and_literal_prompts() {
-        assert!(!interactive_arguments(&args(&[
-            "--no-extensions",
-            "prompt"
-        ])));
-        assert!(!interactive_arguments(&args(&[
-            "--trusted-extension=/tmp/ext.ts"
-        ])));
-        assert!(!interactive_arguments(&args(&[
-            "--trusted-extension",
-            "/tmp/ext.ts"
-        ])));
-        assert!(interactive_arguments(&args(&[
-            "--system-prompt",
-            "--no-extensions",
-            "prompt"
-        ])));
-        assert!(interactive_arguments(&args(&["--", "--trusted-extension"])));
-        assert!(interactive_arguments(&args(&["--no-skills", "prompt"])));
-        assert!(!interactive_arguments(&args(&[
-            "--future-option",
-            "prompt"
-        ])));
+        assert!(interactive_arguments(&args(&["--no-extensions", "prompt"])).is_none());
+        assert!(interactive_arguments(&args(&["--trusted-extension=/tmp/ext.ts"])).is_none());
+        assert!(interactive_arguments(&args(&["--trusted-extension", "/tmp/ext.ts"])).is_none());
+        assert!(
+            interactive_arguments(&args(&["--system-prompt", "--no-extensions", "prompt"]))
+                .is_some()
+        );
+        assert!(interactive_arguments(&args(&["--", "--trusted-extension"])).is_some());
+        assert!(interactive_arguments(&args(&["--no-skills", "prompt"])).is_some());
+        assert!(interactive_arguments(&args(&["--future-option", "prompt"])).is_none());
     }
 
     #[test]
@@ -292,10 +301,10 @@ mod tests {
             args(&["--fork", "native-id"]),
             args(&["launch", "models"]),
         ] {
-            assert!(interactive_arguments(&values));
+            assert!(interactive_arguments(&values).is_some());
         }
-        assert!(!interactive_arguments(&args(&["--mode", "rpc"])));
-        assert!(!interactive_arguments(&args(&["--print", "prompt"])));
-        assert!(!interactive_arguments(&args(&["models"])));
+        assert!(interactive_arguments(&args(&["--mode", "rpc"])).is_none());
+        assert!(interactive_arguments(&args(&["--print", "prompt"])).is_none());
+        assert!(interactive_arguments(&args(&["models"])).is_none());
     }
 }
