@@ -13,6 +13,7 @@
 
 ### Fixes
 
+* Keep CI-only npm manifests, dependencies and release configuration under `.github/`.
 * Allocate project colors in the terminal client across all attached sessions and hosts, sharing canonical linked-worktree identities without backend presentation ordinals.
 * Give Pi a distinct harness icon color instead of sharing Omp's palette role.
 * Shorten the rendering-mode hint to “toggle fancy chrome”.
