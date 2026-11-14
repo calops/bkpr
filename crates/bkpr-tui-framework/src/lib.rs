@@ -8,6 +8,7 @@ pub mod animation;
 pub mod chord;
 pub mod decoration;
 pub mod graphics;
+pub mod image_viewer;
 pub mod joined;
 mod joined_contour;
 mod navigation;

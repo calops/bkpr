@@ -1080,6 +1080,16 @@ frame rather than exposing an empty-image interval. Sidebar artwork sits above
 passive joined borders, including the hive's half-cell gutter extension, but
 below true modal content.
 
+Alt+left-click a pane image to open a screen-sized, aspect-fit viewer. Esc or
+the top-right × closes it. This gesture is local even when the application
+reports mouse input; ordinary clicks keep their application behavior.
+The viewer shows the full decoded image rather than the placement's crop and
+pins that immutable generation until dismissal. It follows terminal resizing,
+works in input-read-only views, and blocks typing and paste from reaching the
+pane while open. It requires confirmed Kitty graphics support, independently
+of fancy chrome. No backend image-fetch API, image archive, original-file metadata,
+or persistent settings are added.
+
 Normal-sized panes share a one-cell separator in both orientations and presentation
 modes, rather than reserving two borders plus another divider. PTY size, pointer
 coordinates and resize minima use that same content geometry. Unrepresentable

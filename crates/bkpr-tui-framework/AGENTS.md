@@ -13,6 +13,7 @@ Reusable terminal composition, host input/reply framing and physical output infr
 - Stretched atlas strips sample an interior texel with identical neighbors. Sampling a tile boundary lets host filtering bleed adjacent opaque corner pixels into transparent gutters; even minimal atlases need three texels per tile axis.
 - `surface.rs`/`theme.rs` retain trusted UI text/styles and observed default-color roles. `animation.rs` schedules sparse visible effects; idle or hidden content must not gain periodic repaint. `chord.rs` owns shared modifier/group geometry and Unicode cell widths; application descriptions/priorities remain client-owned.
 - Trusted UI text uses the allocation-free root `text_width` API: sum `unicode-width` widths of whole extended graphemes. `text`, `window::fit`, inputs, keycaps, lists and toasts share that geometry. Sanitize before measurement; native canonical frame widths remain authoritative. UI graphemes wider than canonical cells allow use equal-extent scalar cells when representable, otherwise a visible replacement plus padding preserves their measured extent and source strings.
+- `image_viewer.rs` picks canonical image placements and presents full immutable resources through the existing scene compositor. Callers own input/modifier policy and capability gating; source crops affect picking, not the viewed pixels.
 - Navigation, list/input, overlay, toast and window modules provide reusable interaction/layout primitives, not Bkpr workspace authority.
 
 ## Host ownership and evidence

@@ -178,6 +178,7 @@ See [recovery](docs/reference.md#explicit-harness-recovery).
 | Sidebar `/` | Find panes by metadata |
 | `Ctrl-b i` | Inspect the focused pane's local Git/project facts |
 | `Ctrl-b g` / `t` | Toggle decorative graphics / choose theme |
+| Alt+left-click an image | Open the full image; Esc or × closes the viewer |
 | `Ctrl-b d` | Detach without stopping programs |
 | `Ctrl-b Ctrl-b` | Send literal Ctrl-b to the live application |
 

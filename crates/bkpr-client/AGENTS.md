@@ -18,6 +18,7 @@
 - Search query suffix layout is shared by paint, cursor and role spans. Use the framework's whole-grapheme cell geometry for measurement and clipping; keep query, caret and highlight bounds tied to the same painted layout.
 - `chrome_graphics.rs` adapts product artwork/material requests to the framework. The framework owns physical rendering, capabilities, resource lifetimes and terminal restoration. No second output loop or terminal emulator belongs here.
 - Theme policy lives in `appearance.rs`, `themes.rs` and `project_colors.rs`; source scene cells remain canonical. Restore transient title effects before retained styling/layout, and leave inactive animation clocks dormant.
+- Pane image viewing is client-local: Alt-left-click picks canonical image placements and pins an immutable resource in the framework viewer. Consume the complete UI gesture, modal keys and paste; preserve ordinary pane input and release retained resources on dismissal.
 - `project_colors.rs::ProjectColors` owns project ordinals across all attachments. Qualify canonical common Git paths by local filesystem or SSH route, never by session/generation or a backend color slot. Sidebar, finder and popovers share the owner's projection; unknown owners stay muted. Live assignments remain stable and retired identities are bounded.
 - Read-only input, sizing eligibility and clipboard consent are independent policies. Clipboard replies remain device traffic, not keystrokes. Original offers, pane/view identity and exact byte payloads must survive asynchronous consent.
 
