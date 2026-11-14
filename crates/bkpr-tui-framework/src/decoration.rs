@@ -194,14 +194,29 @@ impl PreparedDecoration {
         // midpoint, never alter the requested radius/blur as the old atlas did.
         let ew = tw.min(width / 2);
         let eh = th.min(height / 2);
+        // Keep both filtering neighbors inside the constant straight tile.
         let parts = [
             (0, 0, 0, 0, ew, eh),
-            (ew, 0, tw, 0, width - 2 * ew, eh),
+            (ew, 0, tw + tw / 2, 0, width - 2 * ew, eh),
             (width - ew, 0, 3 * tw - ew, 0, ew, eh),
-            (0, eh, 0, th, ew, height - 2 * eh),
-            (width - ew, eh, 3 * tw - ew, th, ew, height - 2 * eh),
+            (0, eh, 0, th + th / 2, ew, height - 2 * eh),
+            (
+                width - ew,
+                eh,
+                3 * tw - ew,
+                th + th / 2,
+                ew,
+                height - 2 * eh,
+            ),
             (0, height - eh, 0, 3 * th - eh, ew, eh),
-            (ew, height - eh, tw, 3 * th - eh, width - 2 * ew, eh),
+            (
+                ew,
+                height - eh,
+                tw + tw / 2,
+                3 * th - eh,
+                width - 2 * ew,
+                eh,
+            ),
             (width - ew, height - eh, 3 * tw - ew, 3 * th - eh, ew, eh),
         ];
         // A bounded stack buffer keeps semantic caption cutouts allocation-free.
@@ -341,6 +356,7 @@ pub(crate) fn atlas_size(style: DecorationStyle, cell: [u32; 2]) -> Option<[u32;
             return None;
         }
         (extent.ceil() as u32)
+            .max(3)
             .div_ceil(cell[index])
             .checked_mul(cell[index])?
             .checked_mul(3)
@@ -643,6 +659,81 @@ mod tests {
                 normal.sample(3, x, 20.0),
                 "bevel and inner shadow must survive at {x}"
             );
+        }
+    }
+    #[test]
+    fn stretched_edges_do_not_filter_neighboring_corner_tiles() {
+        let transparent = DecorationStyle {
+            kind: DecorationKind::RecessedTransparentLeftGutter,
+            ..material()
+        };
+        let raised = DecorationStyle {
+            kind: DecorationKind::RaisedSurface,
+            ..material()
+        };
+        let minimal = DecorationStyle {
+            inset_px: [0, 0],
+            radius_px: 0,
+            sigma_milli: 1,
+            offset_milli: [0, 0],
+            lip_width_milli: 0,
+            ..transparent
+        };
+        for (style, cell) in [
+            (transparent, [10, 19]),
+            (raised, [8, 16]),
+            (minimal, [1, 1]),
+        ] {
+            let [width, height] = atlas_size(style, cell).unwrap();
+            let image = Arc::new(Image {
+                id: 1,
+                generation: 1,
+                width,
+                height,
+                format: PixelFormat::Rgba,
+                pixels: rasterize(style, cell).unwrap(),
+            });
+            let decoration = PreparedDecoration { style, cell, image };
+            let mut frame = crate::graphics_frame(Size {
+                cols: 120,
+                rows: 60,
+                cell_width: cell[0],
+                cell_height: cell[1],
+            });
+            assert!(decoration.place(
+                &mut frame,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 120,
+                    height: 60
+                },
+                1,
+            ));
+            let pixel = |x, y| {
+                let offset = ((y * width + x) * 4) as usize;
+                &decoration.image.pixels[offset..offset + 4]
+            };
+            for placement in &frame.placements {
+                let horizontal = placement.source_width == 1 && placement.width > 1;
+                let vertical = placement.source_height == 1 && placement.height > 1;
+                if !horizontal && !vertical {
+                    continue;
+                }
+                let length = if horizontal {
+                    placement.source_height
+                } else {
+                    placement.source_width
+                };
+                for offset in 0..length {
+                    let x = placement.source_x + if horizontal { 0 } else { offset };
+                    let y = placement.source_y + if vertical { 0 } else { offset };
+                    let (dx, dy) = if horizontal { (1, 0) } else { (0, 1) };
+                    let center = pixel(x, y);
+                    assert_eq!(pixel(x - dx, y - dy), center, "{style:?}, cell={cell:?}");
+                    assert_eq!(pixel(x + dx, y + dy), center, "{style:?}, cell={cell:?}");
+                }
+            }
         }
     }
     fn prepared() -> PreparedDecoration {
