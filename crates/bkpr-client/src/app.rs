@@ -114,7 +114,7 @@ fn raised_material(
         material_caption(frame, local, true),
     ];
     let body = window::content(frame.size);
-    let exclusions = [body].map(|rect| Rect {
+    let exclusions = [body, captions[0], captions[1]].map(|rect| Rect {
         x: outer.x + rect.x,
         y: outer.y + rect.y,
         ..rect
@@ -555,6 +555,7 @@ struct App {
     finder: Option<crate::finder::Finder>,
     theme: crate::themes::ThemeId,
     theme_picker: Option<theme_switcher::Picker>,
+    image_viewer: Option<image_viewer::ImageViewer>,
     popover: crate::popover::Popover,
     overlays: OverlayStack<OverlayFocus>,
     toasts: Arc<Mutex<toast::ToastStack>>,
@@ -2298,6 +2299,7 @@ impl App {
         let focused = if self.host_focused
             && self.state.form.is_none()
             && !self.picker_open()
+            && self.image_viewer.is_none()
             && !self.state.sidebar.active
             && !self.search_open()
             && !self
@@ -3504,6 +3506,15 @@ impl App {
             self.flush_key_releases()?;
             return Ok(false);
         }
+        if self.image_viewer.is_some() {
+            if event.key == "Escape" {
+                self.image_viewer = None;
+                self.overlays.remove("ui:image-viewer");
+                self.notify_focus()?;
+            }
+            self.state.suppressed.insert(event.key);
+            return Ok(false);
+        }
         if event.action == KeyAction::Repeat
             && self.held.get(&event.key).is_some_and(|held| held.pending)
         {
@@ -3938,6 +3949,22 @@ impl App {
             };
             (event_button, action)
         });
+        if self.image_viewer.is_some() {
+            self.last_button = button;
+            if action == MouseAction::Release {
+                self.pointer_capture = None;
+            } else if action == MouseAction::Press {
+                self.pointer_capture = Some(PointerCapture::Ui);
+                if event_button == MouseButton::Left
+                    && image_viewer::close_hit(size, mouse.x, mouse.y)
+                {
+                    self.image_viewer = None;
+                    self.overlays.remove("ui:image-viewer");
+                    self.notify_focus()?;
+                }
+            }
+            return Ok(());
+        }
         let captured = self.pointer_capture.clone();
         // Existing pane, selection, divider and UI gestures retain ownership
         // even when a new toast appears underneath their pointer.
@@ -4247,6 +4274,33 @@ impl App {
                 }))
         {
             return Ok(());
+        }
+        if origin.is_none()
+            && event_button == MouseButton::Left
+            && action == MouseAction::Press
+            && mouse.modifiers == Modifiers::ALT
+        {
+            let area = content(*rect);
+            if area.contains(mouse.x, mouse.y)
+                && let Some(frame) = self.views.get(pane).and_then(|view| view.frame.as_ref())
+                && let Some(image) = image_viewer::hit_test(
+                    frame,
+                    f32::from(mouse.x - area.x) + 0.5,
+                    f32::from(mouse.y - area.y) + 0.5,
+                )
+            {
+                if !self.colors.graphics.supported() {
+                    self.notify("Image viewing requires Kitty graphics support".into());
+                    return Ok(());
+                }
+                self.image_viewer = Some(image_viewer::ImageViewer::new(image));
+                self.state.prefix = false;
+                self.clear_tree_pointer();
+                self.sidebar_resize_hover = false;
+                self.update_resize_hover(size, None);
+                self.notify_focus()?;
+                return Ok(());
+            }
         }
         if origin.is_none() && button == MouseButton::Left && action == MouseAction::Press {
             self.leave_sidebar();
@@ -4613,6 +4667,7 @@ impl App {
             finder: None,
             theme: crate::themes::ThemeId::default(),
             theme_picker: None,
+            image_viewer: None,
             popover: crate::popover::Popover::new(initial_size),
             overlays: OverlayStack::default(),
             toasts,
@@ -4711,6 +4766,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut search_surface = UiSurface::new(initial_size);
         let mut window_effects = graphics_frame(initial_size);
         let mut popover_effects = graphics_frame(initial_size);
+        let mut image_surface = UiSurface::new(initial_size);
+        let mut image_effects = graphics_frame(initial_size);
         let mut guide_effects = graphics_frame(initial_size);
         let mut artwork_effects = graphics_frame(initial_size);
         let mut toast_effects = graphics_frame(initial_size);
@@ -4741,6 +4798,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             for frame in [
                 &mut window_effects,
                 &mut popover_effects,
+                &mut image_effects,
                 &mut guide_effects,
                 &mut artwork_effects,
                 &mut toast_effects,
@@ -5043,8 +5101,11 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     app.views.get(pane).map(|view| &view.metadata)
                 });
             }
-            let popup = consent_open || app.state.form.is_some() || app.picker_open();
-            let mut placement = popup.then(|| {
+            let popup = consent_open
+                || app.state.form.is_some()
+                || app.picker_open()
+                || app.image_viewer.is_some();
+            let mut placement = (popup && app.image_viewer.is_none()).then(|| {
                 if consent_open {
                     let placement = OverlayPlacement::centered(
                         size,
@@ -5298,6 +5359,35 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 );
             } else {
                 app.overlays.remove(crate::popover::SURFACE_ID);
+            }
+            if let Some(viewer) = &app.image_viewer {
+                let outer = Rect {
+                    x: 0,
+                    y: 0,
+                    width: size.cols,
+                    height: size.rows,
+                };
+                if image_surface.frame.size != size {
+                    image_surface = UiSurface::new(size);
+                }
+                viewer.paint(&mut image_surface, &theme);
+                raised_material(
+                    &graphics,
+                    &mut image_surface.frame,
+                    &mut image_effects,
+                    outer,
+                    1,
+                );
+                app.overlays.present(
+                    "ui:image-viewer",
+                    OverlayPlacement::framed(outer, size),
+                    OverlayPolicy::MODAL,
+                    None,
+                );
+            } else {
+                app.overlays.remove("ui:image-viewer");
+                image_surface.frame.images.clear();
+                image_surface.frame.placements.clear();
             }
             let guide_rect = app.guide_geometry(size, popup);
             let mut guide_draw_rect = None;
@@ -5771,6 +5861,31 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         && let Some(artwork) = artwork_surface.take()
                     {
                         surfaces.push(artwork);
+                    }
+                    if layer.id == "ui:image-viewer" {
+                        surfaces.push(Surface {
+                            palette: None,
+                            id: "ui:image-viewer",
+                            content: SurfaceContent::All,
+                            rect: layer.placement.outer,
+                            frame: &image_surface.frame,
+                            selection: &[],
+                            search: &[],
+                            focused: true,
+                            faint: false,
+                        });
+                        surfaces.push(Surface {
+                            palette: None,
+                            id: "ui:image-viewer:graphics",
+                            content: SurfaceContent::Graphics,
+                            rect: layer.placement.outer,
+                            frame: &image_effects,
+                            selection: &[],
+                            search: &[],
+                            focused: false,
+                            faint: false,
+                        });
+                        continue;
                     }
                     if layer.id == "ui:modal"
                         && let Some(regions) = finder_cards
@@ -6420,6 +6535,7 @@ pub(super) mod tests {
                 finder: None,
                 theme: crate::themes::ThemeId::default(),
                 theme_picker: None,
+                image_viewer: None,
                 popover: crate::popover::Popover::new(size()),
                 overlays: OverlayStack::default(),
                 toasts: Arc::new(Mutex::new(toast::ToastStack::default())),

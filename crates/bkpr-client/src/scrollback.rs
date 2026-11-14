@@ -112,6 +112,9 @@ impl App {
     }
 
     pub(super) fn paste(&mut self, text: String) -> Result<()> {
+        if self.image_viewer.is_some() {
+            return Ok(());
+        }
         if self
             .consent
             .as_ref()

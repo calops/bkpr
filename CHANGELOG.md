@@ -8,6 +8,7 @@
 ### Features
 
 * Animate visible working sidebar titles with a palette-derived gradient sweep, backed by reusable framework timing/text effects and dormant idle scheduling.
+* Add Alt-click full-image viewing through a reusable framework overlay, with aspect-fit resizing, Escape and close-button dismissal, and pinned decoded pixels. Keep ordinary application clicks unchanged without backend or protocol changes.
 * Manage OpenCode 2 interactive launches through private native standalone services, with the shared MCP catalog, selected-root capture, native queued inbox wakes and exact saved-session recovery. Preserve native UI, plugins, configuration and explicit external-service or utility modes.
 * Add explicit durable native integration installation for Claude, Codex, Omp, Pi, OpenCode 2 and Antigravity, with inspect/dry-run, owned updates/uninstall, native preference preservation and launch-local credentials.
 
