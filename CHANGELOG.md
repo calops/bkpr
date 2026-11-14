@@ -14,6 +14,7 @@
 ### Fixes
 
 * Keep CI-only npm manifests, dependencies and release configuration under `.github/`.
+* Remove stray border fragments around sidebar popovers by keeping stretched-edge filtering inside its atlas tile, preserving shadow strength and cached straight-edge rendering.
 * Allocate project colors in the terminal client across all attached sessions and hosts, sharing canonical linked-worktree identities without backend presentation ordinals.
 * Give Pi a distinct harness icon color instead of sharing Omp's palette role.
 * Shorten the rendering-mode hint to “toggle fancy chrome”.
