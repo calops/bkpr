@@ -1197,7 +1197,12 @@ fn managed_and_unmanaged_headless_requests_preserve_input_and_cleanup_receipts()
     let (lease, registered) = f
         .fixture
         .registry
-        .register_client(&stream, &session.session_id, &session.daemon_id)
+        .register_client(
+            &stream,
+            &session.session_id,
+            &session.daemon_id,
+            &session.session_instance_id,
+        )
         .unwrap();
     let authority: ClientAuthority = serde_json::from_value(registered["client"].clone()).unwrap();
     f.fixture
@@ -1371,7 +1376,12 @@ fn queued_managed_headless_key_loses_its_client_grant_on_takeover() {
     let (lease, registered) = f
         .fixture
         .registry
-        .register_client(&stream, &session.session_id, &session.daemon_id)
+        .register_client(
+            &stream,
+            &session.session_id,
+            &session.daemon_id,
+            &session.session_instance_id,
+        )
         .unwrap();
     let authority: ClientAuthority = serde_json::from_value(registered["client"].clone()).unwrap();
     f.fixture
@@ -1445,7 +1455,12 @@ fn queued_managed_headless_key_loses_its_client_grant_on_takeover() {
     let (_new_lease, registered) = f
         .fixture
         .registry
-        .register_client(&new_stream, &session.session_id, &session.daemon_id)
+        .register_client(
+            &new_stream,
+            &session.session_id,
+            &session.daemon_id,
+            &session.session_instance_id,
+        )
         .unwrap();
     let new_authority: ClientAuthority =
         serde_json::from_value(registered["client"].clone()).unwrap();
@@ -1486,7 +1501,12 @@ fn managed_headless_read_cannot_complete_after_client_detachment() {
     let (lease, registered) = f
         .fixture
         .registry
-        .register_client(&stream, &session.session_id, &session.daemon_id)
+        .register_client(
+            &stream,
+            &session.session_id,
+            &session.daemon_id,
+            &session.session_instance_id,
+        )
         .unwrap();
     let authority: ClientAuthority = serde_json::from_value(registered["client"].clone()).unwrap();
     f.fixture

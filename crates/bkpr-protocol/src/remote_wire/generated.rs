@@ -778,7 +778,9 @@ pub struct SessionInfo{
         /// The field `session_id` in the table `SessionInfo`
         pub session_id: ::planus::alloc::string::String,
         /// The field `daemon_id` in the table `SessionInfo`
-        pub daemon_id: ::planus::alloc::string::String,}
+        pub daemon_id: ::planus::alloc::string::String,
+        /// The field `session_instance_id` in the table `SessionInfo`
+        pub session_instance_id: ::planus::alloc::string::String,}
 
 
 #[allow(clippy::derivable_impls)]
@@ -788,6 +790,7 @@ impl ::core::default::Default for SessionInfo {
         name: ::core::default::Default::default(),
         session_id: ::core::default::Default::default(),
         daemon_id: ::core::default::Default::default(),
+        session_instance_id: ::core::default::Default::default(),
         
         }
     }
@@ -807,14 +810,15 @@ impl SessionInfo {
         field_name: impl ::planus::WriteAs<::planus::Offset<str>>,
         field_session_id: impl ::planus::WriteAs<::planus::Offset<str>>,
         field_daemon_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_session_instance_id: impl ::planus::WriteAs<::planus::Offset<str>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_name = field_name.prepare(builder);let prepared_session_id = field_session_id.prepare(builder);let prepared_daemon_id = field_daemon_id.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_name = field_name.prepare(builder);let prepared_session_id = field_session_id.prepare(builder);let prepared_daemon_id = field_daemon_id.prepare(builder);let prepared_session_instance_id = field_session_instance_id.prepare(builder);
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
-        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<str>>(2);
+        let mut table_writer: ::planus::table_writer::TableWriter::<12> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<str>>(2);table_writer.write_entry::<::planus::Offset<str>>(3);
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_name);object_writer.write::<_, _, 4>(&prepared_session_id);object_writer.write::<_, _, 4>(&prepared_daemon_id);
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_name);object_writer.write::<_, _, 4>(&prepared_session_id);object_writer.write::<_, _, 4>(&prepared_daemon_id);object_writer.write::<_, _, 4>(&prepared_session_instance_id);
                 
             });
         }builder.current_offset()
@@ -855,6 +859,10 @@ impl ::planus::WriteAsOffset<SessionInfo> for SessionInfo {
         
             
             &self.daemon_id,
+            
+        
+            
+            &self.session_instance_id,
             
         
         )
@@ -994,6 +1002,69 @@ impl<
     
 }
 
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> SessionInfoBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`session_instance_id` field](SessionInfo#structfield.session_instance_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn session_instance_id<T3>(self, value: T3) -> SessionInfoBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;SessionInfoBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
 
 
 impl<
@@ -1004,6 +1075,8 @@ impl<
     
         T2,
     
+        T3,
+    
 > SessionInfoBuilder<(
     
         T0,
@@ -1011,6 +1084,8 @@ impl<
         T1,
     
         T2,
+    
+        T3,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [SessionInfo].
@@ -1030,6 +1105,8 @@ impl<
     
         T2: ::planus::WriteAs<::planus::Offset<str>>,
     
+        T3: ::planus::WriteAs<::planus::Offset<str>>,
+    
 > ::planus::WriteAs<::planus::Offset<SessionInfo>> for SessionInfoBuilder<(
     
         T0,
@@ -1037,6 +1114,8 @@ impl<
         T1,
     
         T2,
+    
+        T3,
     
 )> {
     type Prepared = ::planus::Offset<SessionInfo>;
@@ -1055,6 +1134,8 @@ impl<
     
         T2: ::planus::WriteAs<::planus::Offset<str>>,
     
+        T3: ::planus::WriteAs<::planus::Offset<str>>,
+    
 > ::planus::WriteAsOptional<::planus::Offset<SessionInfo>> for SessionInfoBuilder<(
     
         T0,
@@ -1062,6 +1143,8 @@ impl<
         T1,
     
         T2,
+    
+        T3,
     
 )> {
     type Prepared = ::planus::Offset<SessionInfo>;
@@ -1080,6 +1163,8 @@ impl<
     
         T2: ::planus::WriteAs<::planus::Offset<str>>,
     
+        T3: ::planus::WriteAs<::planus::Offset<str>>,
+    
 > ::planus::WriteAsOffset<SessionInfo> for SessionInfoBuilder<(
     
         T0,
@@ -1087,6 +1172,8 @@ impl<
         T1,
     
         T2,
+    
+        T3,
     
 )> {
     #[inline]
@@ -1100,6 +1187,8 @@ impl<
             
                 v2,
             
+                v3,
+            
         ) = &self.0;SessionInfo::create(
             builder,
             
@@ -1108,6 +1197,8 @@ impl<
                 v1,
             
                 v2,
+            
+                v3,
             
         )
     }
@@ -1161,12 +1252,25 @@ impl<'a> SessionInfoRef<'a> {
             
         }
     
+        /// Getter for the [`session_instance_id` field](SessionInfo#structfield.session_instance_id).
+        #[inline]
+        pub fn session_instance_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(3, "SessionInfo", "session_instance_id")
+              
+            
+            
+            
+        }
+    
 }
 
 impl<'a> ::core::fmt::Debug for SessionInfoRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("SessionInfoRef");
-        f.field("name", &self.name());f.field("session_id", &self.session_id());f.field("daemon_id", &self.daemon_id());
+        f.field("name", &self.name());f.field("session_id", &self.session_id());f.field("daemon_id", &self.daemon_id());f.field("session_instance_id", &self.session_instance_id());
         f.finish()
     }
 }
@@ -1179,7 +1283,7 @@ impl<'a> ::core::convert::TryFrom<SessionInfoRef<'a>> for SessionInfo {
     fn try_from(value: SessionInfoRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            name: ::core::convert::Into::into(value.name()?),session_id: ::core::convert::Into::into(value.session_id()?),daemon_id: ::core::convert::Into::into(value.daemon_id()?),
+            name: ::core::convert::Into::into(value.name()?),session_id: ::core::convert::Into::into(value.session_id()?),daemon_id: ::core::convert::Into::into(value.daemon_id()?),session_instance_id: ::core::convert::Into::into(value.session_instance_id()?),
         })
     }
 }
@@ -1249,7 +1353,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SessionInfoRef<'a> {
 /// The table `UnixPath` in the namespace `remote_wire`
 /// 
 /// Generated from these locations:
-/// * Table `UnixPath` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:17`
+/// * Table `UnixPath` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:18`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -1554,7 +1658,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for UnixPathRef<'a> {
 /// The union `AgentPath` in the namespace `remote_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentPath` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:18`
+/// * Union `AgentPath` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:19`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -1696,7 +1800,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentPathRef<'a> {
 /// The table `OptionalAgentPath` in the namespace `remote_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalAgentPath` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:20`
+/// * Table `OptionalAgentPath` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:21`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -1991,7 +2095,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalAgentPathRef<'a> {
 /// The table `Welcome` in the namespace `remote_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Welcome` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:21`
+/// * Table `Welcome` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:22`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -2896,7 +3000,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for WelcomeRef<'a> {
 /// The table `Failure` in the namespace `remote_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Failure` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:29`
+/// * Table `Failure` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:30`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -3201,7 +3305,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FailureRef<'a> {
 /// The table `Ping` in the namespace `remote_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Ping` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:30`
+/// * Table `Ping` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:31`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -3517,7 +3621,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PingRef<'a> {
 /// The table `Pong` in the namespace `remote_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Pong` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:31`
+/// * Table `Pong` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:32`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -3833,7 +3937,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PongRef<'a> {
 /// The table `Close` in the namespace `remote_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Close` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:32`
+/// * Table `Close` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:33`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -4059,7 +4163,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CloseRef<'a> {
 /// The union `Control` in the namespace `remote_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Control` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:33`
+/// * Union `Control` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:34`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -4416,7 +4520,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ControlRef<'a> {
 /// The table `Message` in the namespace `remote_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Message` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:34`
+/// * Table `Message` in the file `crates/bkpr-protocol/src/remote_wire/remote.fbs:35`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize

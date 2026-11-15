@@ -62,7 +62,10 @@ impl Fixture {
         let cwd = root.path().join("cwd");
         fs::create_dir(&home).unwrap();
         fs::create_dir(&cwd).unwrap();
-        let socket = root.path().join("sock");
+        let socket = root
+            .path()
+            .join(bkpr_protocol::session_key(bkpr_protocol::DEFAULT_SESSION_NAME).unwrap())
+            .join("s");
         Self {
             _root: root,
             state,
@@ -72,7 +75,10 @@ impl Fixture {
             utility: std::env::current_exe().unwrap(),
         }
     }
-    fn daemon_command(&self) -> Command {
+    fn host_socket(&self) -> PathBuf {
+        self._root.path().join("d")
+    }
+    fn host_command(&self) -> Command {
         let executable = std::env::var_os("BKPR_TEST_SERVER")
             .unwrap_or_else(|| env!("CARGO_BIN_EXE_bkprd").into());
         let mut command = Command::new(executable);
@@ -85,13 +91,20 @@ impl Fixture {
             .env("HOME", &self.home)
             .env("TERM", "xterm-256color")
             .arg("--socket")
-            .arg(&self.socket)
+            .arg(self.host_socket())
             .arg("--state-root")
             .arg(&self.state)
             .arg("--bkpr")
             .arg(&self.utility)
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
+        command
+    }
+    fn daemon_command(&self) -> Command {
+        let mut command = self.host_command();
+        command
+            .arg("--session")
+            .arg(bkpr_protocol::DEFAULT_SESSION_NAME);
         command
     }
     fn command(&self, argv: &[&str]) -> Command {
@@ -106,6 +119,24 @@ impl Fixture {
         }
         command
     }
+    fn start_host(&self) -> Daemon {
+        let mut daemon = Daemon {
+            child: self.host_command().spawn().unwrap(),
+            socket: self.socket.clone(),
+            host_socket: self.host_socket(),
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !request(&daemon.host_socket, Operation::DaemonInfo).is_ok_and(|response| response.ok)
+        {
+            assert!(
+                daemon.child.try_wait().unwrap().is_none(),
+                "host exited before readiness"
+            );
+            assert!(Instant::now() < deadline, "host did not become ready");
+            thread::sleep(Duration::from_millis(10));
+        }
+        daemon
+    }
     fn start(&self, argv: &[&str]) -> Daemon {
         self.start_command(self.command(argv))
     }
@@ -114,6 +145,7 @@ impl Fixture {
         let mut daemon = Daemon {
             child,
             socket: self.socket.clone(),
+            host_socket: self.host_socket(),
         };
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -136,16 +168,22 @@ impl Fixture {
 struct Daemon {
     child: Child,
     socket: PathBuf,
+    host_socket: PathBuf,
 }
 impl Daemon {
     fn send(&self, operation: Operation) -> serde_json::Value {
-        let response = request(&self.socket, operation).unwrap();
-        assert!(
-            response.ok,
-            "daemon rejected fixture request: {:?}",
-            response.error
-        );
-        response.result.unwrap().into_json().unwrap()
+        control(&self.socket, operation)
+    }
+    fn host_send(&self, operation: Operation) -> serde_json::Value {
+        control(&self.host_socket, operation)
+    }
+    fn open(&self, name: &str, initial: Option<PaneSpawnSpec>) -> bkpr_protocol::SessionEndpoint {
+        serde_json::from_value(self.host_send(Operation::SessionOpen {
+            name: name.into(),
+            defaults: None,
+            initial,
+        }))
+        .unwrap()
     }
     fn snapshot(&self) -> RegistrySnapshot {
         let response: RegistryResult =
@@ -157,33 +195,68 @@ impl Daemon {
     }
     fn stop(&mut self) {
         self.send(Operation::Shutdown);
+        self.wait_for_session_end();
+    }
+    fn shutdown_host(&mut self) {
+        let info = request(&self.host_socket, Operation::DaemonInfo)
+            .unwrap()
+            .result
+            .unwrap()
+            .into_json()
+            .unwrap();
+        let response = request(
+            &self.host_socket,
+            Operation::DaemonShutdown {
+                daemon_id: info["daemon"]["daemon_id"].as_str().unwrap().into(),
+            },
+        )
+        .unwrap();
+        assert!(response.ok, "{:?}", response.error);
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
-                assert!(status.success());
+                assert!(status.success(), "host shutdown: {status}");
+                assert!(!self.host_socket.exists());
                 return;
             }
-            assert!(Instant::now() < deadline, "owned test daemon did not stop");
+            assert!(Instant::now() < deadline, "owned test host did not stop");
             thread::sleep(Duration::from_millis(10));
         }
     }
-    fn wait_for_exit(&mut self) {
+    fn wait_for_session_end(&mut self) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if let Some(status) = self.child.try_wait().unwrap() {
-                assert!(status.success(), "session-end daemon exit: {status}");
-                assert!(!self.socket.exists(), "session-end socket survived");
-                return;
-            }
-            assert!(Instant::now() < deadline, "session-end did not stop daemon");
+        while self.socket.exists() {
+            assert!(
+                self.child.try_wait().unwrap().is_none(),
+                "session end stopped host"
+            );
+            assert!(Instant::now() < deadline, "session socket survived");
             thread::sleep(Duration::from_millis(10));
         }
+        assert!(self.child.try_wait().unwrap().is_none(), "idle host exited");
+        assert!(
+            request(&self.host_socket, Operation::DaemonInfo)
+                .unwrap()
+                .ok
+        );
+        self.shutdown_host();
     }
 }
 impl Drop for Daemon {
     fn drop(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
-            let _ = request(&self.socket, Operation::Shutdown);
+            if let Ok(response) = request(&self.host_socket, Operation::DaemonInfo)
+                && let Some(payload) = response.result
+                && let Ok(info) = payload.into_json()
+                && let Some(daemon_id) = info["daemon"]["daemon_id"].as_str()
+            {
+                let _ = request(
+                    &self.host_socket,
+                    Operation::DaemonShutdown {
+                        daemon_id: daemon_id.into(),
+                    },
+                );
+            }
             let deadline = Instant::now() + Duration::from_secs(3);
             while self.child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(10));
@@ -192,6 +265,15 @@ impl Drop for Daemon {
             let _ = self.child.wait();
         }
     }
+}
+fn control(socket: &Path, operation: Operation) -> serde_json::Value {
+    let response = request(socket, operation).unwrap();
+    assert!(
+        response.ok,
+        "fixture control rejected: {:?}",
+        response.error
+    );
+    response.result.unwrap().into_json().unwrap()
 }
 fn request(socket: &Path, operation: Operation) -> anyhow::Result<Response> {
     let mut stream = UnixStream::connect(socket)?;
@@ -299,6 +381,46 @@ fn explicit_fresh_bootstrap_creates_a_usable_pane_and_second_daemon_cannot_reset
     assert_eq!(workspaces(&after), workspaces(&before));
     assert_eq!(after.panes.len(), before.panes.len());
     assert_eq!(after.panes[0].id, pane.id);
+    daemon.stop();
+}
+
+#[test]
+fn explicit_cwd_bootstraps_when_the_invocation_directory_has_been_deleted() {
+    let fixture = Fixture::new();
+    let invocation = fixture._root.path().join("deleted-invocation");
+    fs::create_dir(&invocation).unwrap();
+    let server = fixture.command(&["/bin/sh", "-c", "pwd -P > explicit-cwd; exec sleep 60"]);
+    let mut command = Command::new("/bin/sh");
+    command
+        .env_clear()
+        .args([
+            "-c",
+            "cd \"$1\" && rmdir \"$1\" && shift && exec \"$@\"",
+            "bkpr-deleted-cwd-fixture",
+        ])
+        .arg(&invocation)
+        .arg(server.get_program())
+        .args(server.get_args())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    for (key, value) in server.get_envs() {
+        match value {
+            Some(value) => {
+                command.env(key, value);
+            }
+            None => {
+                command.env_remove(key);
+            }
+        }
+    }
+    let mut daemon = fixture.start_command(command);
+    assert!(!invocation.exists());
+    wait_for(
+        &fixture.cwd.join("explicit-cwd"),
+        format!("{}\n", fixture.cwd.display()).as_bytes(),
+    );
+    assert_eq!(daemon.spawn_defaults().unwrap().cwd, fixture.cwd);
+    assert_eq!(daemon.snapshot().panes[0].cwd, fixture.cwd);
     daemon.stop();
 }
 
@@ -848,29 +970,37 @@ fn sleeping_spec(fixture: &Fixture) -> PaneSpawnSpec {
 }
 
 #[test]
-fn passive_last_shell_exit_stops_daemon_without_inspect_or_wait_and_other_session_survives() {
+fn passive_last_shell_exit_retires_session_without_stopping_host() {
     let fixture = Fixture::new();
-    let other_fixture = Fixture::new();
-    let mut other = other_fixture.start(&[]);
     let mut daemon = fixture.start(&[
         "/bin/sh",
         "-c",
         "printf ready > ready; while test ! -f release; do sleep 0.02; done",
     ]);
+    let other = daemon.open("other", Some(sleeping_spec(&fixture)));
+    let identity = daemon.send(Operation::SessionInfo);
     wait_for(&fixture.cwd.join("ready"), b"ready");
     // No control requests after releasing the last shell.
     fs::write(fixture.cwd.join("release"), b"exit").unwrap();
-    daemon.wait_for_exit();
-    assert!(other.child.try_wait().unwrap().is_none());
-    assert!(other.snapshot().workspaces.is_empty());
-    // The socket and metadata lease are both reusable after normal return.
-    let mut restarted = fixture.start(&[]);
-    restarted.stop();
-    other.stop();
+    wait_for_retired_session(&mut daemon, &fixture.socket);
+    let state: RegistryResult =
+        serde_json::from_value(control(&other.socket, Operation::Inspect)).unwrap();
+    assert_eq!(state.registry.panes[0].status, PaneStatus::Running);
+    let reopened = daemon.open(bkpr_protocol::DEFAULT_SESSION_NAME, None);
+    assert_eq!(
+        reopened.session.session_id,
+        identity["session"]["session_id"]
+    );
+    assert_ne!(
+        reopened.session.session_instance_id,
+        identity["session"]["session_instance_id"]
+    );
+    assert_eq!(reopened.session.daemon_id, other.session.daemon_id);
+    daemon.shutdown_host();
 }
 
 #[test]
-fn last_explicit_workspace_close_notifies_lifetime_and_reaps_standalone_without_ack() {
+fn last_explicit_workspace_close_notifies_lifetime_and_reaps_session_panes_without_ack() {
     let fixture = Fixture::new();
     let mut daemon = fixture.start(&["/bin/sh", "-c", "exec sleep 60"]);
     let snapshot = daemon.snapshot();
@@ -884,6 +1014,10 @@ fn last_explicit_workspace_close_notifies_lifetime_and_reaps_standalone_without_
         Operation::ClientRegister {
             session_id: identity["session"]["session_id"].as_str().unwrap().into(),
             daemon_id: identity["session"]["daemon_id"].as_str().unwrap().into(),
+            session_instance_id: identity["session"]["session_instance_id"]
+                .as_str()
+                .unwrap()
+                .into(),
         },
     )
     .unwrap();
@@ -915,7 +1049,7 @@ fn last_explicit_workspace_close_notifies_lifetime_and_reaps_standalone_without_
     assert!(closed.ok, "{:?}", closed.error);
     // Keep the lifetime open and send no acknowledgement. Shutdown cannot wait
     // for client participation, or for this reader to drain its event.
-    daemon.wait_for_exit();
+    daemon.wait_for_session_end();
     let bytes = bkpr_protocol::wire::read_frame(
         &mut lifetime,
         bkpr_protocol::wire::Kind::ClientEvent,
@@ -972,6 +1106,10 @@ fn administrative_documents_detach_and_layout_removal_do_not_end_session() {
         Operation::ClientRegister {
             session_id: identity["session"]["session_id"].as_str().unwrap().into(),
             daemon_id: identity["session"]["daemon_id"].as_str().unwrap().into(),
+            session_instance_id: identity["session"]["session_instance_id"]
+                .as_str()
+                .unwrap()
+                .into(),
         },
     )
     .unwrap();
@@ -1006,7 +1144,7 @@ fn last_pane_termination_ends_session_even_when_requester_disconnects_before_res
     .unwrap();
     // No response read and no lifetime acknowledgement can gate session teardown.
     drop(stream);
-    daemon.wait_for_exit();
+    daemon.wait_for_session_end();
     let mut restarted = fixture.start(&[]);
     restarted.stop();
 }
@@ -1271,9 +1409,10 @@ fn restored_last_shell_fast_exit_releases_socket_and_metadata_lease() {
             .spawn()
             .unwrap(),
         socket: fixture.socket.clone(),
+        host_socket: fixture.host_socket(),
     };
-    restored.wait_for_exit();
     wait_for(&fixture.cwd.join("fast-exit"), b"exited");
+    restored.wait_for_session_end();
     let mut headless = fixture.start(&[]);
     assert!(headless.snapshot().workspaces.is_empty());
     headless.stop();
@@ -1309,12 +1448,13 @@ fn shutdown_during_cold_restore_never_leaves_an_owned_startup_process_or_lease()
             .spawn()
             .unwrap(),
         socket: fixture.socket.clone(),
+        host_socket: fixture.host_socket(),
     };
     wait_for(&fixture.cwd.join("restore-started"), b"started");
     // This request is never gated behind bootstrap. It must be safe on either
     // side of the batch's final commit, with no Inspect/client admission first.
     restoring.send(Operation::Shutdown);
-    restoring.wait_for_exit();
+    restoring.wait_for_session_end();
     let mut headless = fixture.start(&[]);
     let stopped = headless.snapshot();
     assert_eq!(stopped.panes.len(), before.panes.len());
@@ -1332,7 +1472,7 @@ fn shutdown_during_cold_restore_never_leaves_an_owned_startup_process_or_lease()
 }
 
 #[test]
-fn failed_fresh_bootstrap_does_not_publish_ready_or_leave_socket_ownership() {
+fn failed_fresh_bootstrap_reports_failure_and_releases_host_and_session_ownership() {
     let fixture = Fixture::new();
     let output = fixture
         .command(&["/no-such-bkpr-owned-test-shell"])
@@ -1340,7 +1480,6 @@ fn failed_fresh_bootstrap_does_not_publish_ready_or_leave_socket_ownership() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("\"ready\":true"));
     assert!(!fixture.socket.exists());
     let mut headless = fixture.start(&[]);
     assert!(
@@ -1395,6 +1534,7 @@ fn closed_startup_stdout_cannot_strand_control_admission_or_session_ownership() 
             .spawn()
             .unwrap(),
         socket: fixture.socket.clone(),
+        host_socket: fixture.host_socket(),
     };
     require_startup_resolution(&fixture, &mut daemon);
     let mut headless = fixture.start(&[]);
@@ -1440,6 +1580,7 @@ fn closed_restore_stderr_cannot_strand_failed_saved_intent_or_session_ownership(
             .spawn()
             .unwrap(),
         socket: fixture.socket.clone(),
+        host_socket: fixture.host_socket(),
     };
     require_startup_resolution(&fixture, &mut daemon);
     let mut headless = fixture.start(&[]);
@@ -1452,4 +1593,324 @@ fn closed_restore_stderr_cannot_strand_failed_saved_intent_or_session_ownership(
     assert_eq!(failed.workspace_id.as_deref(), Some(workspace.as_str()));
     assert_ne!(failed.status, PaneStatus::Running);
     headless.stop();
+}
+
+fn wait_for_retired_session(daemon: &mut Daemon, socket: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while socket.exists() {
+        assert!(
+            daemon.child.try_wait().unwrap().is_none(),
+            "session end terminated its host"
+        );
+        assert!(Instant::now() < deadline, "session retained its socket");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        daemon.child.try_wait().unwrap().is_none(),
+        "idle host exited"
+    );
+    assert!(
+        request(&daemon.host_socket, Operation::DaemonInfo)
+            .unwrap()
+            .ok
+    );
+}
+
+#[test]
+fn one_host_pid_owns_independent_sessions_and_remains_idle_after_final_session_end() {
+    let fixture = Fixture::new();
+    let mut daemon = fixture.start_host();
+    let host = daemon.host_send(Operation::DaemonInfo);
+    assert_eq!(host["daemon"]["pid"], daemon.child.id());
+    assert!(
+        !fixture.socket.exists(),
+        "empty host implicitly opened a default session"
+    );
+    let mut alpha_spec = sleeping_spec(&fixture);
+    alpha_spec.argv = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "printf '%s' \"$PPID\" > alpha-parent; exec sleep 60".into(),
+    ];
+    let alpha = daemon.open("alpha", Some(alpha_spec));
+    let mut beta_spec = sleeping_spec(&fixture);
+    beta_spec.argv = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "printf '%s' \"$PPID\" > beta-parent; exec sleep 60".into(),
+    ];
+    let beta = daemon.open("beta", Some(beta_spec));
+    let host_pid = daemon.child.id().to_string();
+    wait_for(&fixture.cwd.join("alpha-parent"), host_pid.as_bytes());
+    wait_for(&fixture.cwd.join("beta-parent"), host_pid.as_bytes());
+    assert_eq!(alpha.session.daemon_id, beta.session.daemon_id);
+    assert_eq!(alpha.session.daemon_id, host["daemon"]["daemon_id"]);
+    assert_ne!(alpha.session.session_id, beta.session.session_id);
+    assert_ne!(
+        alpha.session.session_instance_id,
+        beta.session.session_instance_id
+    );
+    assert_ne!(alpha.socket, beta.socket);
+    assert!(
+        !request(
+            &daemon.host_socket,
+            Operation::DaemonShutdown {
+                daemon_id: "wrong-incarnation".into()
+            }
+        )
+        .unwrap()
+        .ok
+    );
+    let alpha_state: RegistryResult =
+        serde_json::from_value(control(&alpha.socket, Operation::Inspect)).unwrap();
+    let workspace = &alpha_state.registry.workspaces[0];
+    control(
+        &alpha.socket,
+        Operation::WorkspaceClose {
+            workspace_id: workspace.id.clone(),
+            expected_revision: workspace.revision,
+        },
+    );
+    wait_for_retired_session(&mut daemon, &alpha.socket);
+    let beta_state: RegistryResult =
+        serde_json::from_value(control(&beta.socket, Operation::Inspect)).unwrap();
+    let beta_pane = &beta_state.registry.panes[0];
+    assert_eq!(
+        control(
+            &beta.socket,
+            Operation::Pane {
+                pane_id: beta_pane.id.clone(),
+                request: PaneRequest::Inspect
+            }
+        )["lifecycle"],
+        "running"
+    );
+    let reopened = daemon.open("alpha", None);
+    assert_eq!(reopened.session.session_id, alpha.session.session_id);
+    assert_eq!(reopened.session.daemon_id, alpha.session.daemon_id);
+    assert_ne!(
+        reopened.session.session_instance_id,
+        alpha.session.session_instance_id
+    );
+    assert!(
+        !request(
+            &reopened.socket,
+            Operation::ClientRegister {
+                session_id: reopened.session.session_id.clone(),
+                daemon_id: reopened.session.daemon_id.clone(),
+                session_instance_id: alpha.session.session_instance_id,
+            }
+        )
+        .unwrap()
+        .ok
+    );
+    control(&reopened.socket, Operation::Shutdown);
+    wait_for_retired_session(&mut daemon, &reopened.socket);
+    control(&beta.socket, Operation::Shutdown);
+    wait_for_retired_session(&mut daemon, &beta.socket);
+    let gamma = daemon.open("after-idle", Some(sleeping_spec(&fixture)));
+    assert_eq!(gamma.session.daemon_id, alpha.session.daemon_id);
+    let state: RegistryResult =
+        serde_json::from_value(control(&gamma.socket, Operation::Inspect)).unwrap();
+    let pane = control(
+        &gamma.socket,
+        Operation::Pane {
+            pane_id: state.registry.panes[0].id.clone(),
+            request: PaneRequest::Inspect,
+        },
+    );
+    assert_eq!(pane["lifecycle"], "running");
+    daemon.shutdown_host();
+    assert!(!gamma.socket.exists());
+    #[cfg(target_os = "linux")]
+    assert!(
+        !Path::new("/proc")
+            .join(pane["pid"].as_u64().unwrap().to_string())
+            .exists()
+    );
+    let root = fixture
+        .state
+        .join("sessions")
+        .join(bkpr_protocol::session_key("after-idle").unwrap());
+    let recovered = bkpr_core::registry::Registry::open_named(&root, "after-idle").unwrap();
+    assert_eq!(
+        recovered.snapshot().unwrap().panes[0].status,
+        PaneStatus::Stopped
+    );
+}
+
+#[test]
+fn concurrent_session_open_requests_bootstrap_one_instance_once() {
+    let fixture = Fixture::new();
+    let mut daemon = fixture.start_host();
+    let mut spec = sleeping_spec(&fixture);
+    spec.argv = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "printf once >> single-flight; exec sleep 60".into(),
+    ];
+    let barrier = std::sync::Barrier::new(5);
+    let endpoints = thread::scope(|scope| {
+        let callers = (0..4)
+            .map(|_| {
+                let barrier = &barrier;
+                let socket = &daemon.host_socket;
+                let spec = spec.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    serde_json::from_value::<bkpr_protocol::SessionEndpoint>(control(
+                        socket,
+                        Operation::SessionOpen {
+                            name: "concurrent".into(),
+                            defaults: None,
+                            initial: Some(spec),
+                        },
+                    ))
+                    .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        callers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert!(endpoints.iter().all(|endpoint| endpoint == &endpoints[0]));
+    wait_for(&fixture.cwd.join("single-flight"), b"once");
+    let state: RegistryResult =
+        serde_json::from_value(control(&endpoints[0].socket, Operation::Inspect)).unwrap();
+    assert_eq!(state.registry.panes.len(), 1);
+    daemon.shutdown_host();
+}
+
+#[test]
+fn failed_session_open_reports_storage_and_exec_errors_without_stopping_other_sessions() {
+    let fixture = Fixture::new();
+    let mut daemon = fixture.start_host();
+    let stable = daemon.open("stable", Some(sleeping_spec(&fixture)));
+    let root = fixture
+        .state
+        .join("sessions")
+        .join(bkpr_protocol::session_key("broken").unwrap());
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::create_dir(root.join("registry.json")).unwrap();
+    assert!(
+        !request(
+            &daemon.host_socket,
+            Operation::SessionOpen {
+                name: "broken".into(),
+                defaults: None,
+                initial: None
+            }
+        )
+        .unwrap()
+        .ok
+    );
+    fs::remove_dir(root.join("registry.json")).unwrap();
+    let fixed = daemon.open("broken", None);
+    assert!(request(&fixed.socket, Operation::Inspect).unwrap().ok);
+    let mut invalid = sleeping_spec(&fixture);
+    invalid.argv = vec!["/no-such-bkpr-private-test-program".into()];
+    assert!(
+        !request(
+            &daemon.host_socket,
+            Operation::SessionOpen {
+                name: "bad-exec".into(),
+                defaults: None,
+                initial: Some(invalid)
+            }
+        )
+        .unwrap()
+        .ok
+    );
+    assert!(request(&stable.socket, Operation::Inspect).unwrap().ok);
+    let foreign_key = bkpr_protocol::session_key("foreign").unwrap();
+    let foreign_socket = fixture
+        .host_socket()
+        .parent()
+        .unwrap()
+        .join(&foreign_key)
+        .join("s");
+    fs::create_dir(foreign_socket.parent().unwrap()).unwrap();
+    fs::set_permissions(
+        foreign_socket.parent().unwrap(),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let foreign = std::os::unix::net::UnixListener::bind(&foreign_socket).unwrap();
+    assert!(
+        !request(
+            &daemon.host_socket,
+            Operation::SessionOpen {
+                name: "foreign".into(),
+                defaults: None,
+                initial: None
+            }
+        )
+        .unwrap()
+        .ok
+    );
+    assert!(!fixture.state.join("sessions").join(&foreign_key).exists());
+    drop(foreign);
+    fs::remove_file(&foreign_socket).unwrap();
+    daemon.open("foreign", None);
+    daemon.shutdown_host();
+}
+
+#[test]
+fn host_sigterm_drains_all_session_processes_and_releases_every_owned_endpoint() {
+    let fixture = Fixture::new();
+    let mut daemon = fixture.start_host();
+    let mut endpoints = Vec::new();
+    let mut pids = Vec::new();
+    for name in ["signal-alpha", "signal-beta"] {
+        let endpoint = daemon.open(name, Some(sleeping_spec(&fixture)));
+        let state: RegistryResult =
+            serde_json::from_value(control(&endpoint.socket, Operation::Inspect)).unwrap();
+        let pane = control(
+            &endpoint.socket,
+            Operation::Pane {
+                pane_id: state.registry.panes[0].id.clone(),
+                request: PaneRequest::Inspect,
+            },
+        );
+        pids.push(pane["pid"].as_u64().unwrap());
+        endpoints.push(endpoint);
+    }
+    assert!(
+        Command::new("/bin/sh")
+            .env_clear()
+            .args(["-c", "kill -TERM \"$1\"", "bkpr-signal-fixture"])
+            .arg(daemon.child.id().to_string())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = daemon.child.try_wait().unwrap() {
+            assert!(status.success(), "signal shutdown failed: {status}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "host signal cleanup did not finish"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!daemon.host_socket.exists());
+    for endpoint in endpoints {
+        assert!(!endpoint.socket.exists());
+        let root = fixture
+            .state
+            .join("sessions")
+            .join(bkpr_protocol::session_key(&endpoint.session.name).unwrap());
+        assert!(bkpr_core::registry::Registry::open_named(&root, &endpoint.session.name).is_ok());
+    }
+    #[cfg(target_os = "linux")]
+    for pid in pids {
+        assert!(!Path::new("/proc").join(pid.to_string()).exists());
+    }
 }

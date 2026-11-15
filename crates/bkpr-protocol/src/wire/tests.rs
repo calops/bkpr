@@ -13,6 +13,31 @@ fn assert_request(operation: Operation) {
 }
 
 #[test]
+fn registration_cannot_omit_the_session_instance_fence() {
+    let request = Request::new(Operation::ClientRegister {
+        session_id: "persistent-session".into(),
+        daemon_id: "host-incarnation".into(),
+        session_instance_id: "session-instance".into(),
+    });
+    let mut codec = Codec::new();
+    let mut encoded = codec.encode_request(&request).unwrap().to_vec();
+    let (_, operation_field) = root_field(&encoded, 2);
+    let operation = indirect(&encoded, operation_field);
+    let (instance_entry, _) = table_field(&encoded, operation, 2);
+    encoded[instance_entry..instance_entry + 2].fill(0);
+    assert!(decode_request(&encoded).is_err());
+    assert!(
+        serde_json::from_value::<Request>(serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "op": "client_register",
+            "session_id": "persistent-session",
+            "daemon_id": "host-incarnation"
+        }))
+        .is_err()
+    );
+}
+
+#[test]
 fn native_status_is_typed_bounded_and_round_trips_every_public_state() {
     let event = |event| Operation::HarnessEvent {
         launch_id: "launch".into(),
@@ -115,9 +140,40 @@ fn ci_refresh_preserves_exact_source_identity() {
 #[test]
 fn every_operation_and_optional_presence_roundtrips() {
     assert_request(Operation::SessionInfo);
+    assert_request(Operation::DaemonInfo);
+    assert_request(Operation::DaemonShutdown {
+        daemon_id: "host-incarnation".into(),
+    });
+    for configured in [false, true] {
+        for bootstrap in [false, true] {
+            assert_request(Operation::SessionOpen {
+                name: "work:日本語".into(),
+                defaults: configured.then(|| SpawnDefaults {
+                    argv: vec!["/bin/sh".into(), "-i".into()],
+                    cwd: "/work".into(),
+                    home: "/home/user".into(),
+                    isolated_environment: true,
+                }),
+                initial: bootstrap.then(|| PaneSpawnSpec {
+                    argv: vec!["/bin/sh".into(), "-i".into()],
+                    cwd: "/work".into(),
+                    home: "/home/user".into(),
+                    isolated_environment: true,
+                    title: None,
+                    size: Size {
+                        cols: 80,
+                        rows: 24,
+                        cell_width: 8,
+                        cell_height: 16,
+                    },
+                }),
+            });
+        }
+    }
     assert_request(Operation::ClientRegister {
         session_id: "日本語\0🦀".into(),
         daemon_id: "日本語\0🦀".into(),
+        session_instance_id: "日本語\0🦀".into(),
     });
     assert_request(Operation::Client {
         authority: ClientAuthority {
@@ -276,6 +332,7 @@ fn every_operation_and_optional_presence_roundtrips() {
     assert_request(Operation::ClientRegister {
         session_id: "日本語\0🦀".into(),
         daemon_id: "日本語\0🦀".into(),
+        session_instance_id: "日本語\0🦀".into(),
     });
     assert_request(Operation::Client {
         authority: ClientAuthority {

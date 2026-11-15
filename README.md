@@ -4,9 +4,9 @@ Bkpr is a native terminal multiplexer for working across projects, machines and
 coding agents. Keep shells and native agent UIs in split panes, organize them
 into windows and workspaces, and attach to local and SSH sessions from one TUI.
 
-A separate `bkprd` daemon owns the programs. Detaching leaves them running;
-reattaching brings you back. Agents keep their own interfaces, with Bkpr adding
-project context, native conversation recovery and authenticated peer messaging.
+One `bkprd` daemon per host/user owns the programs across independent sessions.
+Detaching leaves them running; reattaching brings you back. Agents keep their own
+interfaces, with Bkpr adding project context, recovery and authenticated messaging.
 
 <p align="center">
   <img src="https://calops.github.io/bkpr/showcase.png" alt="Bkpr with native agent panes, split terminals and local and SSH sessions"><br>
@@ -50,7 +50,7 @@ window and focus.
 
 ## Work across sessions and machines
 
-Named sessions have independent daemons and saved layouts:
+Named sessions share the host daemon but keep independent workspaces and saved layouts:
 
 ```sh
 bkpr --session work
@@ -76,6 +76,10 @@ is off unless you explicitly pass `--forward-agent` to a trusted host.
 stopping its programs. `bkpr stop -s work` terminates the selected session and
 its programs. In the sidebar, closing a window or workspace also terminates its
 owned terminals, including hidden ones. Detach isn't close.
+
+Closing the last session leaves the host daemon idle and ready for new sessions.
+`bkpr daemon info` inspects it without starting anything; `bkpr daemon stop`
+explicitly stops the host daemon and **all** of its sessions.
 
 See [remote sessions](docs/reference.md#remote-sessions) for connection options,
 reconnect behavior and headless commands.
@@ -134,8 +138,8 @@ recipient can read its inbox, do the work and explicitly acknowledge processing.
 Messages go through the authenticated broker and native harness integrations,
 not simulated terminal typing. Durable acceptance, native wake, inbox read and
 processed acknowledgement are separate facts. Discovery defaults to the current
-workspace; communication doesn't cross daemons or SSH sessions. Peer messages
-are context, not user instructions.
+workspace; communication stays within the owning session, not across sessions or
+hosts. Peer messages are context, not user instructions.
 
 See [agent communication](docs/reference.md#agent-communication) for tool names,
 scopes, retention and per-harness notification behavior.
@@ -152,8 +156,8 @@ bkpr --session work resume
 bkpr --session work resume --pane PANE_ID
 ```
 
-Open the named session first if its daemon is stopped. Recovery uses current
-native configuration and approvals, not saved credentials or provider flags.
+Open the named session first if it is stopped. Recovery uses current native
+configuration and approvals, not saved credentials or provider flags.
 Missing native state is an error, never a fallback to a fresh conversation.
 See [recovery](docs/reference.md#explicit-harness-recovery).
 
@@ -198,8 +202,8 @@ selection shortcuts. See [copy and selection](docs/reference.md#selection-and-co
 - Rich chrome needs confirmed Kitty graphics and color support. Other hosts use
   text borders. Theme choices are per-client and aren't persisted yet.
 - Sessions keep their own workspaces and authority. Cross-session layouts and
-  cross-daemon agent discovery aren't implemented. GitHub.com is the supported
-  forge; PR/CI/ticket finder filters aren't supported.
+  agent discovery aren't implemented. GitHub.com is the supported forge;
+  PR/CI/ticket finder filters aren't supported.
 - This native implementation replaces the former Zellij version. Old Zellij
   sessions aren't migrated. Release notes through 0.4.2 describe that older product.
 

@@ -16,6 +16,7 @@ fn welcome() -> Welcome {
             name: hello().session_name,
             session_id: "stable-session-id".into(),
             daemon_id: "current-daemon-id".into(),
+            session_instance_id: "current-session-instance".into(),
         },
         connection_nonce: hello().connection_nonce,
         capabilities: crate::wire::SUPPORTED_CAPABILITIES,
@@ -226,6 +227,19 @@ fn missing_required_session_and_nonce_fields_fail_at_consumer_boundary() {
             malformed[entry..entry + 2].fill(0);
             assert!(decode(&malformed).is_err());
         }
+    }
+    let valid = encoded(&Control::Welcome(welcome()));
+    let session = indirect(&valid, table_field(&valid, body(&valid), 0).1);
+    for slot in 0..4 {
+        let mut malformed = valid.clone();
+        let entry = table_field(&malformed, session, slot).0;
+        malformed[entry..entry + 2].fill(0);
+        assert!(decode(&malformed).is_err());
+    }
+    for instance in ["".to_owned(), "x".repeat(MAX_IDENTITY + 1)] {
+        let mut invalid = welcome();
+        invalid.session.session_instance_id = instance;
+        assert!(invalid.validate().is_err());
     }
 }
 

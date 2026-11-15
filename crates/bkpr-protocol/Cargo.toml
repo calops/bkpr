@@ -13,3 +13,4 @@ serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 schemars = "1"
 base64 = "0.22"
+sha2 = "0.10"

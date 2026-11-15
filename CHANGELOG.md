@@ -2,8 +2,9 @@
 
 ### Breaking changes
 
-* Native wire family 10 requires matching `bkpr` and `bkprd` binaries for conversation-fenced agent requests and revision-checked native binding changes. Existing incompatible sessions are not restarted automatically.
-* Remove `ProjectSnapshot.color_slot` from Rust/JSON metadata; clients assign presentation colors from repository identity. This optional metadata removal retains native wire family 10 compatibility.
+* Use one long-lived host/user daemon for all named sessions. Native wire family 11 and remote control version 2 require matching binaries and explicitly fence each session runtime instance. Session stop stays session-scoped; `bkpr daemon stop` explicitly stops the host and all sessions. Existing live incompatible daemons are never adopted, replaced or stopped automatically.
+* Native conversation-fenced agent requests and revision-checked binding changes require matching `bkpr` and `bkprd` binaries. Existing incompatible sessions are not restarted automatically.
+* Remove `ProjectSnapshot.color_slot` from Rust/JSON metadata; clients assign presentation colors from repository identity.
 
 ### Features
 
@@ -13,6 +14,8 @@
 * Add explicit durable native integration installation for Claude, Codex, Omp, Pi, OpenCode 2 and Antigravity, with inspect/dry-run, owned updates/uninstall, native preference preservation and launch-local credentials.
 
 ### Fixes
+
+* Keep the host daemon alive when its final session closes, preserve session-local attachment/takeover authority across local and remote targets, and open new sessions through the existing host process rather than starting a daemon per session.
 
 * Keep CI-only npm manifests, dependencies and release configuration under `.github/`.
 * Remove stray border fragments around sidebar popovers by keeping stretched-edge filtering inside its atlas tile, preserving shadow strength and cached straight-edge rendering.
@@ -41,6 +44,7 @@
 
 ### Documentation
 
+* Record the backend notification architecture, in-daemon durable delivery, desktop presentation and UnifiedPush-first mobile plan in `docs/notifications.md`.
 * Add a user-focused README and automated real Pi–Claude communication showcase, with Codex in another window and an isolated SSH session. Preserve the raw capture inside a thin sidebar-colored rounded frame, smooth bevel and transparent soft shadow; retain the technical reference and explicit native fixture consent.
 * Generate a fresh screenshot for each published release and replace the image hosted through artifact-based GitHub Pages; keep screenshots out of Git and expire CI artifacts after one day.
 * Document protocol, core, terminal-engine, TUI-framework and client public consumer contracts and enforce missing API documentation at compile time. Add crate-local guidance and shared code-quality/context-loading rules.

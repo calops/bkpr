@@ -1,7 +1,10 @@
 //! Daemon startup, service wiring and owned shutdown over `bkpr-core`.
 
 use anyhow::{Context, Result, ensure};
-use bkpr_core::{diagnostics, registry::Registry, transport};
+use bkpr_core::{
+    daemon::{HostConfig, HostDaemon},
+    diagnostics,
+};
 use bkpr_protocol::{PaneSpawnSpec, Size, SpawnDefaults};
 use clap::Parser;
 use std::path::PathBuf;
@@ -10,15 +13,15 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(name = "bkprd", version)]
 struct Cli {
-    /// Exact logical session name, independent of paths and this daemon's birth.
-    #[arg(short = 's', long, default_value = bkpr_protocol::DEFAULT_SESSION_NAME)]
-    session: String,
-    /// Explicit private Unix socket. A live listener is never replaced.
+    /// Optional initial session; argv alone selects the default session.
+    #[arg(short = 's', long)]
+    session: Option<String>,
+    /// Private host control socket. A live listener is never replaced.
     #[arg(long)]
-    socket: PathBuf,
-    /// Explicit metadata root; exclusive daemon ownership, no terminal contents.
+    socket: Option<PathBuf>,
+    /// Private host metadata root; named sessions retain independent roots.
     #[arg(long)]
-    state_root: PathBuf,
+    state_root: Option<PathBuf>,
     /// Bkpr utility executable used by private automatic harness wrappers.
     #[arg(long)]
     bkpr: Option<PathBuf>,
@@ -53,31 +56,26 @@ fn main() {
     }
 }
 fn run(cli: Cli) -> Result<()> {
-    ensure!(cli.socket.is_absolute(), "socket must be absolute");
-    let registry = Registry::open_named(&cli.state_root, &cli.session)?;
-    // Daemon-local opt-in, not a process-global logger installed by the library.
-    // Diagnostics are never a prerequisite for durable control or pane startup.
-    let diagnostic_guard =
-        match diagnostics::install(&cli.state_root, registry.diagnostic_session_id()) {
-            Ok(guard) => Some(guard),
-            Err(error) => {
-                eprintln!("bkprd: private diagnostics disabled: {error}");
-                None
-            }
-        };
-    diagnostics::record("daemon.start", None, "success");
-    let result = (|| -> Result<()> {
-        let initial_requested = !cli.argv.is_empty();
-        let startup = (|| -> Result<Option<PaneSpawnSpec>> {
-            let isolated_environment = cli.home.is_some();
+    let socket = cli
+        .socket
+        .map(Ok)
+        .unwrap_or_else(HostConfig::default_socket)?;
+    let state_root = cli
+        .state_root
+        .map(Ok)
+        .unwrap_or_else(HostConfig::default_state_root)?;
+    ensure!(socket.is_absolute(), "socket must be absolute");
+    let selected = cli
+        .session
+        .or_else(|| (!cli.argv.is_empty()).then(|| bkpr_protocol::DEFAULT_SESSION_NAME.into()));
+    let initial_requested = !cli.argv.is_empty();
+    let startup = if selected.is_some() {
+        let defaults = (|| -> Result<SpawnDefaults> {
             let home = cli
                 .home
+                .clone()
                 .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
                 .context("HOME is unavailable; supply --home")?;
-            let cwd = match cli.cwd {
-                Some(cwd) => cwd,
-                None => std::env::current_dir()?,
-            };
             let argv = if initial_requested {
                 cli.argv
             } else {
@@ -90,11 +88,24 @@ fn run(cli: Cli) -> Result<()> {
             };
             let defaults = SpawnDefaults {
                 argv,
-                cwd,
+                cwd: match cli.cwd {
+                    Some(cwd) => cwd,
+                    None => std::env::current_dir()?,
+                },
                 home,
-                isolated_environment,
+                isolated_environment: cli.home.is_some(),
             };
-            let initial = initial_requested.then(|| PaneSpawnSpec {
+            bkpr_core::registry::validate_spawn_defaults(&defaults)?;
+            Ok(defaults)
+        })();
+        let defaults = if initial_requested {
+            Some(defaults?)
+        } else {
+            defaults.ok()
+        };
+        let initial = initial_requested.then(|| {
+            let defaults = defaults.as_ref().expect("explicit startup defaults");
+            PaneSpawnSpec {
                 argv: defaults.argv.clone(),
                 cwd: defaults.cwd.clone(),
                 home: defaults.home.clone(),
@@ -106,37 +117,37 @@ fn run(cli: Cli) -> Result<()> {
                     cell_width: cli.cell_width,
                     cell_height: cli.cell_height,
                 },
-            });
-            registry.configure_spawn_defaults(defaults)?;
-            Ok(initial)
-        })();
-        let initial = if initial_requested {
-            startup?
-        } else {
-            // Headless startup stays usable without complete, valid daemon defaults.
-            // Never substitute programs/paths or infer them from saved panes.
-            startup.unwrap_or(None)
-        };
-        let listener = transport::bind(&cli.socket)?;
-        let executable = match cli.bkpr {
-            Some(executable) => executable,
-            None => std::env::current_exe()?.with_file_name("bkpr"),
-        };
-        registry.configure_harnesses(&cli.socket, &executable)?;
-        registry.configure_agent_forwarding(&cli.socket)?;
-        diagnostics::record("daemon.listen", None, "success");
-        listener.serve_bootstrap(registry.clone(), initial)
-    })();
-    // Even startup/bind failures must tear down only the children this daemon owns.
-    let cleanup = registry.shutdown();
+            }
+        });
+        Some((defaults, initial))
+    } else {
+        None
+    };
+    let executable = match cli.bkpr {
+        Some(executable) => executable,
+        None => std::env::current_exe()?.with_file_name("bkpr"),
+    };
+    let host = HostDaemon::bind(HostConfig {
+        socket,
+        state_root: state_root.clone(),
+        bkpr: executable,
+    })?;
+    let diagnostic_guard = match diagnostics::install(&state_root, &host.info().daemon_id) {
+        Ok(guard) => Some(guard),
+        Err(error) => {
+            eprintln!("bkprd: private diagnostics disabled: {error}");
+            None
+        }
+    };
+    diagnostics::record("daemon.start", None, "success");
+    let result = match selected.zip(startup) {
+        Some((name, (defaults, initial))) => host.serve_initial(name, defaults, initial),
+        None => host.serve(),
+    };
     diagnostics::record(
         "daemon.stop",
         None,
-        if result.is_ok() && cleanup.is_ok() {
-            "success"
-        } else {
-            "failed"
-        },
+        if result.is_ok() { "success" } else { "failed" },
     );
     if let Some(guard) = diagnostic_guard {
         let report = guard.finish();
@@ -144,9 +155,9 @@ fn run(cli: Cli) -> Result<()> {
         {
             eprintln!(
                 "bkprd: best-effort diagnostics: written={} dropped={} io_failures={} pending={} stopped={}",
-                report.written, report.dropped, report.io_failures, report.pending, report.stopped,
+                report.written, report.dropped, report.io_failures, report.pending, report.stopped
             );
         }
     }
-    result.and(cleanup)
+    result
 }

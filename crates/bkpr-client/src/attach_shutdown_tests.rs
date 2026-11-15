@@ -114,6 +114,7 @@ fn remote_window_creation_keeps_remote_paths_and_backend_shell_on_the_selected_e
         name: "remote".into(),
         session_id: "remote-session".into(),
         daemon_id: "remote-daemon".into(),
+        session_instance_id: "remote-session-instance".into(),
     };
     let expected = identity.clone();
     let registered = thread::spawn(move || {

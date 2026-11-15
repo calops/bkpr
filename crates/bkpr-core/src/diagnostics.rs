@@ -200,7 +200,7 @@ impl Drop for Guard {
 }
 /// Install the process-wide recorder after acquiring state-root ownership, before panes start.
 ///
-/// `root` must be an existing private, current-user-owned directory; `session_id`
+/// `root` must be an existing private, current-user-owned host directory; `daemon_id`
 /// must have UUID shape. Creates bounded diagnostic files under `root/diagnostics`.
 /// Successful installation is permanent for the process, even after the guard drops.
 /// Callers must treat failure as diagnostic loss, not failure of committed work.
@@ -209,21 +209,20 @@ impl Drop for Guard {
 /// Returns an error if already installed, identity or storage checks fail, storage
 /// cannot be opened or prepared, or the writer thread cannot be started. Storage
 /// checks reject symlinks, nonprivate or foreign-owned paths, and hard-linked files.
-pub fn install(root: &Path, session_id: &str) -> Result<Guard> {
+pub fn install(root: &Path, daemon_id: &str) -> Result<Guard> {
     ensure!(
         ACTIVE.get().is_none(),
         "daemon diagnostics already installed"
     );
-    let (recorder, guard) = start(root, session_id, FILE_BYTES)?;
+    let (recorder, guard) = start(root, daemon_id, FILE_BYTES)?;
     ensure!(
         ACTIVE.set(recorder).is_ok(),
         "daemon diagnostics already installed"
     );
     Ok(guard)
 }
-fn start(root: &Path, session_id: &str, file_bytes: u64) -> Result<(Recorder, Guard)> {
-    let session =
-        OpaqueId::new(session_id).context("diagnostics requires opaque session identity")?;
+fn start(root: &Path, daemon_id: &str, file_bytes: u64) -> Result<(Recorder, Guard)> {
+    let session = OpaqueId::new(daemon_id).context("diagnostics requires opaque host identity")?;
     let writer = PrivateFiles::open(root, file_bytes)?;
     let (queue, receiver) = bounded(QUEUE_EVENTS);
     let (stop, stopping) = bounded(1);
@@ -445,7 +444,7 @@ impl PrivateFiles {
         #[derive(Serialize)]
         struct Line<'a> {
             time_ms: u64,
-            session_id: &'a str,
+            daemon_id: &'a str,
             operation: &'static str,
             #[serde(skip_serializing_if = "Option::is_none")]
             target_id: Option<&'a str>,
@@ -461,7 +460,7 @@ impl PrivateFiles {
             &mut line,
             &Line {
                 time_ms: event.time_ms,
-                session_id: session.as_str(),
+                daemon_id: session.as_str(),
                 operation: event.operation,
                 target_id: event.target.as_ref().map(OpaqueId::as_str),
                 outcome: event.outcome,

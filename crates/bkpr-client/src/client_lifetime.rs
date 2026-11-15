@@ -476,6 +476,7 @@ impl RegisteredClient {
                             &Request::new(Operation::ClientRegister {
                                 session_id: expected.session.session_id.clone(),
                                 daemon_id: expected.session.daemon_id.clone(),
+                                session_instance_id: expected.session.session_instance_id.clone(),
                             }),
                             MAX_LIFETIME_PAYLOAD,
                         ).await?;
@@ -513,6 +514,7 @@ impl RegisteredClient {
         let request = Request::new(Operation::ClientRegister {
             session_id: expected.session_id.clone(),
             daemon_id: expected.daemon_id.clone(),
+            session_instance_id: expected.session_instance_id.clone(),
         });
         let mut codec = Codec::new();
         wire::write_frame(
@@ -531,8 +533,10 @@ impl RegisteredClient {
     fn validate_identity(session: &SessionInfo) -> Result<()> {
         bkpr_protocol::valid_session_name(&session.name)?;
         ensure!(
-            !session.session_id.is_empty() && !session.daemon_id.is_empty(),
-            "server omitted session or daemon identity"
+            !session.session_id.is_empty()
+                && !session.daemon_id.is_empty()
+                && !session.session_instance_id.is_empty(),
+            "server omitted session, daemon or session instance identity"
         );
         Ok(())
     }
@@ -549,7 +553,7 @@ impl RegisteredClient {
                 .context("decoding registered client identity")?;
         ensure!(
             registered.session == expected,
-            "server session or daemon changed during registration"
+            "server session runtime changed during registration"
         );
         ensure!(
             !registered.client.client_id.is_empty() && !registered.client.token.is_empty(),
@@ -828,6 +832,7 @@ mod tests {
             name: "../exact session 🐈".into(),
             session_id: "persistent-session".into(),
             daemon_id: "daemon-incarnation".into(),
+            session_instance_id: "session-instance".into(),
         }
     }
 
@@ -987,12 +992,14 @@ mod tests {
             let Operation::ClientRegister {
                 session_id,
                 daemon_id,
+                session_instance_id,
             } = read_request(&mut lifetime).operation
             else {
                 panic!("expected dedicated client registration");
             };
             assert_eq!(session_id, session().session_id);
             assert_eq!(daemon_id, session().daemon_id);
+            assert_eq!(session_instance_id, session().session_instance_id);
             run(lifetime, listener);
         });
         (directory, socket, server)
@@ -1025,22 +1032,28 @@ mod tests {
     }
 
     #[test]
-    fn registration_rejects_changed_daemon_without_activation() {
-        let (_directory, socket, server) = fixture(|mut lifetime, listener| {
-            let mut changed = session();
-            changed.daemon_id = "replacement-daemon".into();
-            lifetime
-                .write_all(&response(registration(changed)))
-                .unwrap();
-            let mut byte = [0];
-            assert_eq!(lifetime.read(&mut byte).unwrap(), 0);
-            listener.set_nonblocking(true).unwrap();
-            assert!(
-                matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
-            );
-        });
-        assert!(RegisteredClient::register_with_agent_socket(&socket, None).is_err());
-        server.join().unwrap();
+    fn registration_rejects_changed_host_or_session_instance_without_activation() {
+        for session_reopened in [false, true] {
+            let (_directory, socket, server) = fixture(move |mut lifetime, listener| {
+                let mut changed = session();
+                if session_reopened {
+                    changed.session_instance_id = "replacement-session-instance".into();
+                } else {
+                    changed.daemon_id = "replacement-daemon".into();
+                }
+                lifetime
+                    .write_all(&response(registration(changed)))
+                    .unwrap();
+                let mut byte = [0];
+                assert_eq!(lifetime.read(&mut byte).unwrap(), 0);
+                listener.set_nonblocking(true).unwrap();
+                assert!(
+                    matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+                );
+            });
+            assert!(RegisteredClient::register_with_agent_socket(&socket, None).is_err());
+            server.join().unwrap();
+        }
     }
     #[test]
     fn pinned_connector_registers_exact_welcome_identity_without_reprobing() {
@@ -1052,14 +1065,16 @@ mod tests {
             let Operation::ClientRegister {
                 session_id,
                 daemon_id,
+                session_instance_id,
             } = read_request(&mut lifetime).operation
             else {
                 panic!("pinned registration must not re-probe SessionInfo");
             };
             assert_eq!(session_id, session().session_id);
             assert_eq!(daemon_id, session().daemon_id);
+            assert_eq!(session_instance_id, session().session_instance_id);
             let mut replacement = session();
-            replacement.daemon_id = "replacement-daemon".into();
+            replacement.session_instance_id = "replacement-session-instance".into();
             lifetime
                 .write_all(&response(registration(replacement)))
                 .unwrap();
@@ -1459,7 +1474,7 @@ mod tests {
     }
 
     #[test]
-    fn cancellable_registration_rejects_replacement_daemon_authority() {
+    fn cancellable_registration_rejects_reopened_session_authority() {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("native.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -1475,24 +1490,24 @@ mod tests {
             let (mut lifetime, _) = listener.accept().unwrap();
             let request = read_request(&mut lifetime);
             assert!(
-                matches!(request.operation, Operation::ClientRegister { daemon_id, .. }
-                if daemon_id == session().daemon_id)
+                matches!(request.operation, Operation::ClientRegister { daemon_id, session_instance_id, .. }
+                if daemon_id == session().daemon_id && session_instance_id == session().session_instance_id)
             );
             let mut replacement = session();
-            replacement.daemon_id = "replacement-daemon".into();
+            replacement.session_instance_id = "replacement-session-instance".into();
             lifetime
                 .write_all(&response(registration(replacement)))
                 .unwrap();
             let mut byte = [0];
             assert_eq!(lifetime.read(&mut byte).unwrap(), 0);
         });
-        let error = RegisteredClient::register_cancellable(
-            &socket,
-            &tokio_util::sync::CancellationToken::new(),
-        )
-        .err()
-        .expect("replacement identity must fail admission");
-        assert!(format!("{error:#}").contains("session or daemon changed"));
+        assert!(
+            RegisteredClient::register_cancellable(
+                &socket,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .is_err()
+        );
         server.join().unwrap();
     }
 

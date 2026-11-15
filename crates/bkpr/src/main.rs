@@ -62,6 +62,22 @@ fn main() -> Result<()> {
         println!("{}", serde_json::to_string(&session::list(&roots)?)?);
         return Ok(());
     }
+    if command == "daemon" {
+        let mut host = roots.host()?;
+        if let Some(socket) = matches.get_one::<PathBuf>("socket") {
+            host.socket = cli::absolute(socket.clone())?;
+        }
+        let stop = matches
+            .subcommand_matches("daemon")
+            .context("missing daemon command")?
+            .subcommand_name()
+            == Some("stop");
+        println!(
+            "{}",
+            serde_json::to_string(&session::administer(&host, stop)?)?
+        );
+        return Ok(());
+    }
     let paths = session::LocalPaths::resolve(
         &roots,
         matches.get_one::<String>("session").map(String::as_str),
@@ -80,6 +96,22 @@ fn main() -> Result<()> {
     match command {
         "request" => {
             let request: Request = serde_json::from_str(payload()?)?;
+            if matches!(
+                &request.operation,
+                Operation::DaemonInfo
+                    | Operation::SessionOpen { .. }
+                    | Operation::DaemonShutdown { .. }
+            ) {
+                let socket = matches.get_one::<PathBuf>("socket")
+                    .context("host requests require an explicit --socket; inherited BKPR_SOCKET is session-scoped")?;
+                anyhow::ensure!(
+                    !matches.contains_id("state-root"),
+                    "host requests select --socket only"
+                );
+                let response = session::request_host(&cli::absolute(socket.clone())?, &request)?;
+                println!("{}", serde_json::to_string(&response)?);
+                return Ok(());
+            }
             session::validate_target(&paths)?;
             let response = bkpr_client::transport::request(&paths.socket, &request)?;
             println!("{}", serde_json::to_string(&response)?);

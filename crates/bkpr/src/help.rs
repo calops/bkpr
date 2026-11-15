@@ -67,6 +67,8 @@ fn scoped(command: Command, scope: &str) -> Command {
             "forward-agent",
         ],
         ("stop", _) => &["session", "socket", "state-root"],
+        ("daemon", _) => &["socket"],
+        ("request", _) => &["session", "socket", "state-root"],
         ("resume" | "context", _) => &["session", "socket", "state-root", "pane"],
         ("keyboard", _) => &["session", "socket", "state-root", "pane", "view"],
         ("api", "call") => &[
@@ -103,6 +105,8 @@ fn scoped(command: Command, scope: &str) -> Command {
                 argument
                     .value_name("NAME")
                     .help("Target one exact session name")
+            } else if id == "socket" && scope == "daemon" {
+                argument.help("Explicit private host control socket")
             } else {
                 argument
             };
@@ -120,6 +124,8 @@ fn scoped(command: Command, scope: &str) -> Command {
             .after_help(OVERVIEW),
         ("tui", _) => command.after_help("Examples:\n  bkpr -s work\n  bkpr -r devbox -s work\n  bkpr -s local:work -s devbox:build\n  bkpr -- /bin/bash --noprofile\n\nLocal sessions start if absent; remote sessions must already exist.\nRepeat -s to combine sessions. local:NAME escapes a literal local colon.\nRemote host keys must already be trusted. Forwarding is opt-in.\n\nKeyboard shortcuts: bkpr keys"),
         ("stop", _) => command.after_help("Stops this session and its programs; keeps recovery metadata.\nTo leave programs running, detach with Ctrl-b d instead.\n\nExample: bkpr stop -s work"),
+        ("daemon", _) => command.after_help("One host daemon owns independent local sessions and stays idle after the last closes.\ninfo never starts it. stop pins the observed daemon incarnation and stops every session.\nUse --socket only to administer an explicit private host namespace.\n\nExamples:\n  bkpr daemon info\n  bkpr daemon stop"),
+        ("request", _) => command.after_help("Sends exactly once; an unknown mutation outcome is never replayed.\nSession operations use the selected session or inherited BKPR_SOCKET.\nDaemonInfo, SessionOpen and DaemonShutdown require explicit --socket HOST.\nHost shutdown requires the daemon_id returned by DaemonInfo."),
         ("resume", _) => command.after_help("Without --pane, lists saved native conversations without starting them.\nWith --pane, resumes using current native configuration, not saved commands.\n\nExamples:\n  bkpr resume -s work\n  bkpr resume -s work --pane ID"),
         ("context", _) => command.after_help("Inside a pane, uses verified execution membership, not UI focus.\nOutside a pane, select --session and --pane. Does not start a daemon."),
         ("api", "call") => command.after_help("Managed agents default to their live workspace. Otherwise select a session.\nText input never adds Enter. Acceptance does not prove application consumption.\nIf a mutation's outcome is unknown, inspect state before acting again.\n\nDiscover arguments: bkpr api schema OPERATION"),

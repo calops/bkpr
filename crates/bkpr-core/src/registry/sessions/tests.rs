@@ -75,6 +75,7 @@ impl Server {
         let request = Request::new(Operation::ClientRegister {
             session_id: session.session_id,
             daemon_id: session.daemon_id,
+            session_instance_id: session.session_instance_id,
         });
         wire::write_frame(
             &mut stream,
@@ -546,10 +547,31 @@ fn registration_is_not_activation_and_bad_handshakes_never_displace_clients() {
     assert_eq!(server.managed(&first, Operation::Inspect)["ok"], false);
     assert_eq!(server.activate(&first, false)["ok"], true);
     let session = server.session();
-    for (session_id, daemon_id, version) in [
-        ("wrong".into(), session.daemon_id.clone(), PROTOCOL_VERSION),
-        (session.session_id.clone(), "wrong".into(), PROTOCOL_VERSION),
-        (session.session_id, session.daemon_id, PROTOCOL_VERSION + 1),
+    for (session_id, daemon_id, session_instance_id, version) in [
+        (
+            "wrong".into(),
+            session.daemon_id.clone(),
+            session.session_instance_id.clone(),
+            PROTOCOL_VERSION,
+        ),
+        (
+            session.session_id.clone(),
+            "wrong".into(),
+            session.session_instance_id.clone(),
+            PROTOCOL_VERSION,
+        ),
+        (
+            session.session_id.clone(),
+            session.daemon_id.clone(),
+            "wrong".into(),
+            PROTOCOL_VERSION,
+        ),
+        (
+            session.session_id,
+            session.daemon_id,
+            session.session_instance_id,
+            PROTOCOL_VERSION + 1,
+        ),
     ] {
         assert_eq!(
             wire_request(
@@ -558,7 +580,8 @@ fn registration_is_not_activation_and_bad_handshakes_never_displace_clients() {
                     version,
                     operation: Operation::ClientRegister {
                         session_id,
-                        daemon_id
+                        daemon_id,
+                        session_instance_id,
                     }
                 }
             )["ok"],
@@ -865,6 +888,7 @@ fn inherited_lifetime_fixture() {
     let request = Request::new(Operation::ClientRegister {
         session_id: session.session_id,
         daemon_id: session.daemon_id,
+        session_instance_id: session.session_instance_id,
     });
     wire::write_frame(
         &mut stream,
@@ -1235,6 +1259,7 @@ fn shutdown_closes_registration_before_retiring_existing_lifetimes() {
             Operation::ClientRegister {
                 session_id: session.session_id,
                 daemon_id: session.daemon_id,
+                session_instance_id: session.session_instance_id,
             }
         )["ok"],
         false

@@ -1,11 +1,10 @@
 //! Local session addressing and daemon bootstrap belong to the launcher, not a frontend.
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_client::{SpawnDefaults, transport};
-use bkpr_protocol::{Operation, SessionInfo, Size};
+use bkpr_protocol::{DaemonInfo, Operation, PaneSpawnSpec, SessionEndpoint, SessionInfo, Size};
 use fs2::FileExt;
 use notify::{RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
@@ -26,8 +25,16 @@ pub struct LocalPaths {
     pub state_root: PathBuf,
     /// None means explicit/headless socket routing, without a claimed session name.
     pub name: Option<String>,
+    /// Host namespace for named routes; inherited data sockets have no host route.
+    pub host: Option<HostPaths>,
 }
 
+/// The single control endpoint and durable root of a local host daemon.
+#[derive(Clone)]
+pub struct HostPaths {
+    pub socket: PathBuf,
+    pub state_root: PathBuf,
+}
 pub struct Roots {
     runtime: PathBuf,
     state: PathBuf,
@@ -60,9 +67,21 @@ impl Roots {
         })
     }
 
+    /// Resolve the host owner without opening a session or creating directories.
+    pub fn host(&self) -> Result<HostPaths> {
+        Ok(HostPaths {
+            socket: self.runtime.join("d"),
+            state_root: self
+                .state
+                .parent()
+                .context("host state root missing")?
+                .to_owned(),
+        })
+    }
+
     pub fn named(&self, name: &str) -> Result<LocalPaths> {
         validate_name(name)?;
-        let hash = name_hash(name);
+        let hash = bkpr_protocol::session_key(name)?;
         let socket = self.runtime.join(&hash).join("s");
         // Both control and its `.agent` companion need a trailing NUL in
         // sockaddr_un.sun_path on Linux/macOS.
@@ -75,6 +94,7 @@ impl Roots {
             socket,
             state_root: self.state.join(hash),
             name: Some(name.to_owned()),
+            host: Some(self.host()?),
         })
     }
 }
@@ -87,14 +107,9 @@ pub fn validate_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn name_hash(name: &str) -> String {
-    format!("{:x}", Sha256::digest(name.as_bytes()))
-}
-
 impl LocalPaths {
-    /// Explicit session names always override inherited pane routing. Normal TUI
-    /// and stop commands use the default named session; only headless pane tools
-    /// inherit BKPR_SOCKET. Explicit fixture paths never select a named root.
+    /// Explicit names override inherited pane routing. A fixture socket plus
+    /// state root selects a private host namespace; a socket alone is data-only.
     pub fn resolve(
         roots: &Roots,
         name: Option<&str>,
@@ -117,13 +132,25 @@ impl LocalPaths {
                 !bootstrap || state_root.is_some(),
                 "explicit TUI --socket requires --state-root for unambiguous bootstrap"
             );
+            let socket = crate::cli::absolute(socket)?;
+            if let Some(state_root) = state_root {
+                let state_root = crate::cli::absolute(state_root)?;
+                let fixture = Roots {
+                    runtime: socket
+                        .parent()
+                        .context("host socket needs parent")?
+                        .to_owned(),
+                    state: state_root.join("sessions"),
+                };
+                let mut paths = fixture.named(DEFAULT_SESSION)?;
+                paths.host = Some(HostPaths { socket, state_root });
+                return Ok(paths);
+            }
             return Ok(Self {
-                socket: crate::cli::absolute(socket)?,
-                state_root: state_root
-                    .map(crate::cli::absolute)
-                    .transpose()?
-                    .unwrap_or_default(),
+                socket,
+                state_root: PathBuf::new(),
                 name: None,
+                host: None,
             });
         }
         if headless
@@ -134,6 +161,7 @@ impl LocalPaths {
                 socket: crate::cli::absolute(socket)?,
                 state_root: PathBuf::new(),
                 name: None,
+                host: None,
             });
         }
         roots.named(name.unwrap_or(DEFAULT_SESSION))
@@ -315,10 +343,10 @@ fn inspect_cancellable(
     }
     let value = match cancellation {
         Some(cancellation) => {
-            transport::checked_cancellable(&paths.socket, Operation::SessionInfo, cancellation)?
+            transport::checked_cancellable(&paths.socket, Operation::SessionInfo, cancellation)
         }
-        None => transport::checked(&paths.socket, Operation::SessionInfo)?,
-    };
+        None => transport::checked(&paths.socket, Operation::SessionInfo),
+    }.context("cannot inspect the selected live session; for an incompatible owner, explicitly stop it with its matching bkpr before retrying")?;
     let info: SessionInfo = serde_json::from_value(
         value
             .get("session")
@@ -337,7 +365,96 @@ fn inspect_cancellable(
             "server session identity does not match stored named session"
         );
     }
+    ensure!(
+        !info.session_id.is_empty()
+            && !info.daemon_id.is_empty()
+            && !info.session_instance_id.is_empty(),
+        "session endpoint omitted its complete runtime identity"
+    );
+    if let Some(host) = &paths.host {
+        let owner = inspect_host(host, cancellation).map_err(|error| {
+            anyhow::anyhow!(
+                "live session has no compatible host owner: {error:#}; explicitly stop the old session with its matching bkpr before retrying"
+            )
+        })?;
+        ensure!(
+            owner.daemon_id == info.daemon_id,
+            "live session belongs to another daemon; explicitly stop the old session with its matching bkpr before retrying"
+        );
+    }
     Ok(info)
+}
+
+fn inspect_host(paths: &HostPaths, cancellation: Option<&CancellationToken>) -> Result<DaemonInfo> {
+    if !private_directory(
+        paths.socket.parent().context("host socket needs parent")?,
+        false,
+    )? {
+        return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into());
+    }
+    let metadata = std::fs::symlink_metadata(&paths.socket)?;
+    ensure!(
+        metadata.file_type().is_socket() && owned_private(&metadata),
+        "host endpoint must be a private owned Unix socket"
+    );
+    let value = match cancellation {
+        Some(cancellation) => {
+            transport::checked_cancellable(&paths.socket, Operation::DaemonInfo, cancellation)
+        }
+        None => transport::checked(&paths.socket, Operation::DaemonInfo),
+    }
+    .context(
+        "incompatible live daemon; explicitly stop it with its matching bkpr before retrying",
+    )?;
+    let info: DaemonInfo = serde_json::from_value(
+        value
+            .get("daemon")
+            .context("endpoint is not a host daemon; explicitly stop the old daemon first")?
+            .clone(),
+    )?;
+    ensure!(
+        !info.daemon_id.is_empty() && info.pid > 0,
+        "host omitted its runtime identity"
+    );
+    Ok(info)
+}
+
+/// Inspect or explicitly stop the current host incarnation without opening sessions.
+pub fn administer(host: &HostPaths, stop: bool) -> Result<serde_json::Value> {
+    let daemon = inspect_host(host, None)?;
+    if stop {
+        transport::checked(
+            &host.socket,
+            Operation::DaemonShutdown {
+                daemon_id: daemon.daemon_id,
+            },
+        )
+    } else {
+        Ok(serde_json::json!({ "daemon": daemon }))
+    }
+}
+
+/// Dispatch one raw host request to an explicitly selected compatible host, without replay.
+pub fn request_host(
+    socket: &Path,
+    request: &bkpr_protocol::Request,
+) -> Result<bkpr_protocol::Response> {
+    let host = HostPaths {
+        socket: socket.to_owned(),
+        state_root: PathBuf::new(),
+    };
+    let daemon = inspect_host(&host, None)?;
+    match &request.operation {
+        Operation::DaemonInfo | Operation::SessionOpen { .. } => {}
+        Operation::DaemonShutdown { daemon_id } => {
+            ensure!(
+                daemon_id == &daemon.daemon_id,
+                "host shutdown incarnation no longer matches"
+            );
+        }
+        _ => bail!("operation requires a session data endpoint"),
+    }
+    transport::request(socket, request)
 }
 
 /// Headless commands never bootstrap. Validate exact named identity before their
@@ -420,6 +537,71 @@ pub fn ensure_server(
     size: Size,
     cancellation: &CancellationToken,
 ) -> Result<()> {
+    ensure!(
+        !cancellation.is_cancelled(),
+        "local session preparation cancelled"
+    );
+    let host = paths
+        .host
+        .as_ref()
+        .context("TUI preparation requires a host namespace")?;
+    match inspect_cancellable(paths, Some(cancellation)) {
+        Ok(_) => {}
+        Err(error) if unavailable(&error) => {}
+        Err(error) => return Err(error),
+    }
+    if inspect_host(host, Some(cancellation)).is_err_and(|error| unavailable(&error))
+        && private_directory(&paths.state_root, false)?
+    {
+        match private_file(&paths.state_root.join("owner.lock"), false) {
+            Ok(file) => match file.try_lock_exclusive() {
+                Ok(()) => FileExt::unlock(&file)?,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    bail!(
+                        "session storage is owned by a live daemon; explicitly stop it with its matching bkpr before retrying"
+                    );
+                }
+                Err(error) => return Err(error).context("checking existing session owner"),
+            },
+            Err(error) if unavailable(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let owner = ensure_host(host, binary, cancellation)?;
+    let value = transport::checked_cancellable(
+        &host.socket,
+        Operation::SessionOpen {
+            name: paths.name.clone().context("host session needs a name")?,
+            defaults: Some(defaults.clone()),
+            initial: Some(PaneSpawnSpec {
+                argv: defaults.argv.clone(),
+                cwd: defaults.cwd.clone(),
+                home: defaults.home.clone(),
+                isolated_environment: defaults.isolated_environment,
+                size,
+                title: None,
+            }),
+        },
+        cancellation,
+    )?;
+    let endpoint: SessionEndpoint = serde_json::from_value(value)?;
+    ensure!(
+        endpoint.socket == paths.socket && endpoint.session.daemon_id == owner.daemon_id,
+        "host opened a session outside the selected namespace or incarnation"
+    );
+    let observed = inspect_cancellable(paths, Some(cancellation))?;
+    ensure!(
+        observed == endpoint.session,
+        "session changed during preparation"
+    );
+    Ok(())
+}
+
+fn ensure_host(
+    paths: &HostPaths,
+    binary: Option<&Path>,
+    cancellation: &CancellationToken,
+) -> Result<DaemonInfo> {
     let check_cancelled = || -> Result<()> {
         ensure!(
             !cancellation.is_cancelled(),
@@ -432,7 +614,6 @@ pub fn ensure_server(
         .enable_all()
         .build()
         .context("creating local startup wait runtime")?;
-    named_directories(paths, true)?;
     private_directory(paths.socket.parent().context("socket needs parent")?, true)?;
     private_directory(&paths.state_root, true)?;
     let lock = LaunchLock(private_file(&paths.state_root.join("launch.lock"), true)?);
@@ -444,7 +625,7 @@ pub fn ensure_server(
             match lock.0.try_lock_exclusive() {
                 Ok(()) => return Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(error).context("locking session bootstrap"),
+                Err(error) => return Err(error).context("locking host bootstrap"),
             }
             // flock has no pollable unlock notification. Bound this kernel-lock
             // retry fallback, back off while idle, and wake immediately on cancel.
@@ -452,7 +633,7 @@ pub fn ensure_server(
                 biased;
                 _ = cancellation.cancelled() => bail!("local session preparation cancelled"),
                 _ = tokio::time::sleep_until(deadline) => {
-                    bail!("timed out waiting for the session bootstrap lock");
+                    bail!("timed out waiting for the host bootstrap lock");
                 }
                 _ = tokio::time::sleep(retry) => {}
             }
@@ -460,16 +641,8 @@ pub fn ensure_server(
         }
     })?;
     check_cancelled()?;
-    if let Some(name) = &paths.name
-        && let Some(stored) = read_manifest(&paths.state_root)?
-    {
-        ensure!(
-            &stored.name == name,
-            "stored session name does not match selected name"
-        );
-    }
-    match inspect_cancellable(paths, Some(cancellation)) {
-        Ok(_) => return Ok(()),
+    match inspect_host(paths, Some(cancellation)) {
+        Ok(info) => return Ok(info),
         Err(error) if unavailable(&error) => {}
         Err(error) => return Err(error),
     }
@@ -517,22 +690,8 @@ pub fn ensure_server(
         .arg(&paths.socket)
         .arg("--state-root")
         .arg(&paths.state_root)
-        .arg(format!(
-            "--session={}",
-            paths.name.as_deref().unwrap_or(DEFAULT_SESSION)
-        ))
         .arg("--bkpr")
-        .arg(&bkpr)
-        .arg("--cwd")
-        .arg(&defaults.cwd)
-        .arg("--cols")
-        .arg(size.cols.to_string())
-        .arg("--rows")
-        .arg(size.rows.to_string())
-        .arg("--cell-width")
-        .arg(size.cell_width.to_string())
-        .arg("--cell-height")
-        .arg(size.cell_height.to_string());
+        .arg(&bkpr);
     for (key, _) in std::env::vars_os() {
         let name = key.to_string_lossy();
         if name.starts_with("BKPR_")
@@ -555,12 +714,7 @@ pub fn ensure_server(
     if let Some(directory) = std::env::var_os("BKPR_TERMINFO_DIR") {
         command.env("BKPR_TERMINFO_DIR", directory);
     }
-    if defaults.isolated_environment {
-        command.arg("--home").arg(&defaults.home);
-    }
     command
-        .arg("--")
-        .args(&defaults.argv)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout.as_file().try_clone()?))
         .stderr(Stdio::from(log.try_clone()?));
@@ -633,8 +787,8 @@ pub fn ensure_server(
     // Exactly one authoritative owner validation follows readiness (or an exit
     // where another launcher may have won the daemon lease). Never reconnect by
     // replaying bootstrap and never kill a started daemon on wait cancellation.
-    match inspect_cancellable(paths, Some(cancellation)) {
-        Ok(_) => Ok(()),
+    match inspect_host(paths, Some(cancellation)) {
+        Ok(info) => Ok(info),
         Err(error) => match exited {
             Some(status) => Err(error)
                 .with_context(|| format!("bkprd exited ({status}); see {}", log_path.display())),
@@ -659,8 +813,306 @@ mod tests {
     fn roots(root: &Path) -> Roots {
         Roots {
             runtime: root.join("r"),
-            state: root.join("state"),
+            state: root.join("state/sessions"),
         }
+    }
+
+    struct HostFixture {
+        child: std::process::Child,
+        roots: Roots,
+        home: PathBuf,
+        _directory: tempfile::TempDir,
+    }
+
+    impl HostFixture {
+        fn start() -> Self {
+            use std::io::BufRead;
+            use std::os::fd::AsRawFd;
+            let directory = private_fixture();
+            let roots = roots(directory.path());
+            let host = roots.host().unwrap();
+            let home = directory.path().join("home");
+            let daemon_home = directory.path().join("daemon-home");
+            private_directory(&home, true).unwrap();
+            private_directory(&daemon_home, true).unwrap();
+            let server = std::env::var_os("BKPR_TEST_SERVER")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::env::current_exe()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                        .join("bkprd")
+                });
+            assert!(
+                server.is_file(),
+                "build matching bkprd or set BKPR_TEST_SERVER"
+            );
+            let mut child = Command::new(server)
+                .env_clear()
+                .env("HOME", &daemon_home)
+                .env("PATH", "/usr/bin:/bin")
+                .env("TERM", "xterm-256color")
+                .args(["--socket"])
+                .arg(&host.socket)
+                .args(["--state-root"])
+                .arg(&host.state_root)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let output = child.stdout.take().unwrap();
+            let mut poll = libc::pollfd {
+                fd: output.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&mut poll, 1, 10_000) } != 1 {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("host did not report readiness");
+            }
+            let mut ready = String::new();
+            std::io::BufReader::new(output)
+                .read_line(&mut ready)
+                .unwrap();
+            let mut fixture = Self {
+                child,
+                roots,
+                home,
+                _directory: directory,
+            };
+            let record: serde_json::Value = serde_json::from_str(&ready).unwrap();
+            assert_eq!(record["ready"], true);
+            assert!(fixture.child.try_wait().unwrap().is_none());
+            fixture
+        }
+
+        fn prepare(&self, name: &str) -> SessionInfo {
+            let paths = self.roots.named(name).unwrap();
+            let defaults = SpawnDefaults {
+                argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
+                cwd: self._directory.path().to_owned(),
+                home: self.home.clone(),
+                isolated_environment: true,
+            };
+            ensure_server(
+                &paths,
+                Some(Path::new("/must-not-launch-another-bkprd")),
+                &defaults,
+                Size {
+                    cols: 80,
+                    rows: 24,
+                    cell_width: 8,
+                    cell_height: 16,
+                },
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            validate_target(&paths).unwrap()
+        }
+    }
+
+    impl Drop for HostFixture {
+        fn drop(&mut self) {
+            if let Ok(host) = self.roots.host() {
+                let _ = administer(&host, true);
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while self.child.try_wait().ok().flatten().is_none()
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if self.child.try_wait().ok().flatten().is_none() {
+                let _ = self.child.kill();
+            }
+            let _ = self.child.wait();
+        }
+    }
+
+    #[test]
+    fn local_preparation_reuses_one_host_and_preserves_other_sessions() {
+        let fixture = HostFixture::start();
+        let first = fixture.prepare("alpha");
+        let second = fixture.prepare("beta");
+        assert_eq!(first.daemon_id, second.daemon_id);
+        assert_ne!(first.session_id, second.session_id);
+        assert_ne!(first.session_instance_id, second.session_instance_id);
+        assert_eq!(fixture.prepare("alpha"), first);
+        let host = fixture.roots.host().unwrap();
+        assert_eq!(inspect_host(&host, None).unwrap().pid, fixture.child.id());
+        let alpha = fixture.roots.named("alpha").unwrap();
+        transport::checked(&alpha.socket, Operation::Shutdown).unwrap();
+        assert_eq!(
+            validate_target(&fixture.roots.named("beta").unwrap()).unwrap(),
+            second
+        );
+        let listed = list(&fixture.roots).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(
+            listed
+                .iter()
+                .find(|session| session.name == "beta")
+                .unwrap()
+                .running
+        );
+    }
+
+    #[test]
+    fn host_shutdown_rejects_stale_incarnation_without_stopping_sessions() {
+        let fixture = HostFixture::start();
+        let session = fixture.prepare("kept");
+        let host = fixture.roots.host().unwrap();
+        assert!(
+            transport::checked(
+                &host.socket,
+                Operation::DaemonShutdown {
+                    daemon_id: format!("{}-stale", session.daemon_id),
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            validate_target(&fixture.roots.named("kept").unwrap()).unwrap(),
+            session
+        );
+        assert_eq!(
+            administer(&host, false).unwrap()["daemon"]["pid"],
+            fixture.child.id()
+        );
+        let socket = fixture.roots.named("kept").unwrap().socket;
+        assert!(
+            transport::checked(
+                &socket,
+                Operation::ClientRegister {
+                    session_id: session.session_id.clone(),
+                    daemon_id: session.daemon_id.clone(),
+                    session_instance_id: format!("{}-stale", session.session_instance_id),
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_raw_host_open_is_headless_and_checks_shutdown_incarnation() {
+        let fixture = HostFixture::start();
+        let host = fixture.roots.host().unwrap();
+        let response = request_host(
+            &host.socket,
+            &bkpr_protocol::Request::new(Operation::SessionOpen {
+                name: "headless".into(),
+                defaults: None,
+                initial: None,
+            }),
+        )
+        .unwrap();
+        assert!(response.ok);
+        let paths = fixture.roots.named("headless").unwrap();
+        let info = validate_target(&paths).unwrap();
+        let snapshot = transport::checked(&paths.socket, Operation::Inspect).unwrap();
+        assert!(
+            snapshot["registry"]["workspaces"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            request_host(
+                &host.socket,
+                &bkpr_protocol::Request::new(Operation::DaemonShutdown {
+                    daemon_id: format!("{}-stale", info.daemon_id)
+                },)
+            )
+            .is_err()
+        );
+        assert_eq!(validate_target(&paths).unwrap(), info);
+    }
+
+    #[test]
+    fn cancellation_releases_the_single_host_launch_lock_without_starting() {
+        let directory = private_fixture();
+        let host = roots(directory.path()).host().unwrap();
+        private_directory(&host.state_root, true).unwrap();
+        let lock = LaunchLock(private_file(&host.state_root.join("launch.lock"), true).unwrap());
+        lock.0.lock_exclusive().unwrap();
+        let cancellation = CancellationToken::new();
+        let worker_token = cancellation.clone();
+        let worker_host = host.clone();
+        let worker = std::thread::spawn(move || {
+            ensure_host(
+                &worker_host,
+                Some(Path::new("/must-not-start")),
+                &worker_token,
+            )
+        });
+        cancellation.cancel();
+        assert!(worker.join().unwrap().is_err());
+        assert!(!host.socket.exists());
+        drop(lock);
+        let next = private_file(&host.state_root.join("launch.lock"), false).unwrap();
+        next.try_lock_exclusive().unwrap();
+        FileExt::unlock(&next).unwrap();
+    }
+
+    #[test]
+    fn explicit_fixture_routes_through_its_private_host_and_default_session() {
+        let directory = private_fixture();
+        let normal = roots(directory.path());
+        let host_socket = directory.path().join("private/d");
+        let host_state = directory.path().join("private-state");
+        let fixture = LocalPaths::resolve(
+            &normal,
+            None,
+            Some(host_socket.clone()),
+            Some(host_state.clone()),
+            Some("/ignored/inherited".into()),
+            false,
+            true,
+        )
+        .unwrap();
+        let key = bkpr_protocol::session_key(DEFAULT_SESSION).unwrap();
+        assert_eq!(
+            fixture.socket,
+            host_socket.parent().unwrap().join(&key).join("s")
+        );
+        assert_eq!(fixture.state_root, host_state.join("sessions").join(key));
+        assert_eq!(fixture.host.unwrap().socket, host_socket);
+        assert!(!host_state.exists());
+        assert!(!directory.path().join("private").exists());
+    }
+
+    #[test]
+    fn live_session_lease_refuses_host_start_even_without_a_data_socket() {
+        let directory = private_fixture();
+        let paths = roots(directory.path()).named("legacy").unwrap();
+        private_directory(&paths.state_root, true).unwrap();
+        let lease = LaunchLock(private_file(&paths.state_root.join("owner.lock"), true).unwrap());
+        lease.0.lock_exclusive().unwrap();
+        let defaults = SpawnDefaults {
+            argv: vec!["/bin/sh".into()],
+            cwd: directory.path().to_owned(),
+            home: directory.path().to_owned(),
+            isolated_environment: true,
+        };
+        let error = ensure_server(
+            &paths,
+            Some(Path::new("/must-not-start")),
+            &defaults,
+            Size {
+                cols: 80,
+                rows: 24,
+                cell_width: 8,
+                cell_height: 16,
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("owned by a live daemon"));
+        assert!(!paths.host.unwrap().state_root.join("bkprd.log").exists());
     }
 
     #[test]
@@ -878,14 +1330,14 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o600)).unwrap();
         for (name, session_id, accepted) in [
-            ("selected", "logical", true),
+            ("selected", "logical", false),
             ("unrelated", "logical", false),
             ("selected", "replacement", false),
         ] {
             let server = reply_once(
                 &paths.socket,
                 serde_json::json!({
-                    "session": {"name":name, "session_id":session_id, "daemon_id":"birth"}
+                    "session": {"name":name, "session_id":session_id, "daemon_id":"birth", "session_instance_id":"instance"}
                 }),
             );
             assert_eq!(validate_target(&paths).is_ok(), accepted);
@@ -901,6 +1353,10 @@ mod tests {
             socket: directory.path().join("socket"),
             state_root: directory.path().join("state"),
             name: None,
+            host: Some(HostPaths {
+                socket: directory.path().join("d"),
+                state_root: directory.path().join("host"),
+            }),
         };
         let server = reply_once(
             &paths.socket,

@@ -34,6 +34,12 @@ The initial framework retains the existing terminal writer and uses a thin retai
 
 Add a GUI client only when implemented; `bkpr` may select it later without changing backend authority. Harness adapters, Git/CI, recovery and storage initially remain modules in the relevant libraries. Extract additional crates only for concrete shared consumers, independent interfaces or dependency boundaries.
 
+### Host daemon lifetime and user notifications
+
+The runtime uses one long-lived `bkprd` per host/OS user owning multiple independent sessions, not one daemon process per session. Closing the final workspace closes that session and its clients, but leaves the daemon available with zero sessions. Independent local/remote TUI attachments retain session-qualified identity, reconnect generations and session-scoped takeover/closure.
+
+The agreed [notification plan](../notifications.md) records authoritative event derivation, routing, durable delivery, TUI desktop presentation and UnifiedPush-first mobile delivery. Notification workers belong inside the host daemon; no separate local notification daemon is required. Host/session lifetime correction is the prerequisite, not proof those notification features are already implemented.
+
 
 ## Reuse and design decisions
 
@@ -295,13 +301,13 @@ Existing termwiz/Crossterm, protocol styles and the Scene renderer supply infras
 
 ### Named-session and client-lifetime boundary
 
-`bkpr` owns session-name resolution, read-only local discovery and serialized daemon startup; `bkprd`/core own the persistent logical session ID and fresh daemon incarnation. One local name selects one daemon and registry. Exact UTF-8 names are SHA-256-addressed, not sanitized into path components. Main `9ad93bd`'s `launcher.rs` supplies the familiar default `bkpr`, `--session/-s`, `--detach-others/-d` and nonempty/control-free naming intent; no legacy native-session assets, plugin reload policy or automatic live-daemon restart is carried over.
+`bkpr` owns session-name resolution, read-only local discovery and serialized host startup; `bkprd`/core own one long-lived host process and independently-lived session registries. Exact UTF-8 names remain SHA-256-addressed, not sanitized into path components. Persistent session IDs, host daemon incarnation and fresh per-open session instance are separate identities. The host control endpoint opens sessions; session-native endpoints retain existing pane, harness and attachment authority. Main `9ad93bd`'s `launcher.rs` supplies the familiar default `bkpr`, `--session/-s`, `--detach-others/-d` and nonempty/control-free naming intent; no legacy native-session assets, plugin reload policy or automatic live-daemon restart is carried over.
 
-Use maintained `clap` for native-argv parsing, `sha2` for stable addressing and `fs2` for the cross-launcher advisory lock; its guard explicitly unlocks before an inherited descriptor can prolong ownership. Core's exclusive root lease and atomic private `session.json` remain the single identity authority. Headless tools never bootstrap. Ordinary TUI/stop targeting defaults to `bkpr`; context/request/keyboard may inherit a pane's socket unless explicitly named.
+Use maintained `clap` for native-argv parsing, `sha2` for stable addressing and `fs2` for the cross-launcher host lock; its guard explicitly unlocks before an inherited descriptor can prolong ownership. The protocol's pure `session_key` helper gives the launcher and core identical addressing using the existing SHA-256 dependency, without another version or service library. Core's exclusive host/session root leases and atomic private `session.json` retain ownership and logical identity. Headless inspection never bootstraps. Ordinary TUI/stop targeting defaults to `bkpr`; context/request/keyboard may inherit a pane's data socket unless explicitly named. `bkpr daemon stop` is explicit whole-host administration, never the meaning of ordinary session stop.
 
-The version-2 transport adds `SessionInfo`, a dedicated `ClientRegister` lifetime stream and process-bound ephemeral `ClientAuthority`. Managed short requests carry that authority; admin/headless requests never implicitly adopt managed views. Initialization precedes one-shot `ClientActivate`, and only successful activation may revoke other attachments. A repeated activation cannot detach later arrivals. EOF, owner exit or explicit detach retire managed views, queued callbacks and device grants without closing pane processes or rewriting layouts. Client and view lifetime are not bounded by fixed admission counts.
+The native transport includes `SessionInfo`, a dedicated `ClientRegister` lifetime stream and process-bound ephemeral `ClientAuthority`. Managed short requests carry that authority; admin/headless requests never implicitly adopt managed views. Initialization precedes one-shot `ClientActivate`, and only successful activation may revoke other attachments. A repeated activation cannot detach later arrivals. EOF, owner exit or explicit detach retire managed views, queued callbacks and device grants without closing pane processes or rewriting layouts. Client and view lifetime are not bounded by fixed admission counts.
 
-Keep existing synchronous Unix transport and narrow OS credential/exit observers rather than adding another async runtime. Linux retains a kernel peer pidfd; ordinary managed requests validate cheap kernel identity/liveness instead of scanning process/CWD/argv state on each key. Pane exec receives trusted immutable logical session ID/name, not client credentials. Actual scope/TTY/takeover acceptance and platform limits are recorded in the engine report; remote endpoint aggregation and cross-daemon agent discovery remain future work.
+Keep existing synchronous bounded native Unix transport and narrow OS credential/exit observers rather than adding another async runtime or socket parser. Host and session endpoints share transport infrastructure; the host alone owns signal handling and diagnostics. Opening/closing one session must not hold a global lock during startup, durable I/O or child cleanup. Linux retains a kernel peer pidfd; ordinary managed requests validate cheap kernel identity/liveness instead of scanning process/CWD/argv state on each key. Pane exec receives trusted immutable logical session ID/name, not client credentials. Cross-session agent discovery remains separate work; sharing a host process does not broaden existing session-native scopes.
 
 Pane records, running panes, workspaces, windows, clients and views have no fixed
 count ceiling. Keep the existing durable-record, message, image, input and
@@ -552,8 +558,8 @@ its [actual SSH proof](engine-proof.md#remote-session-backend-and-headless-conne
 records exact binaries, bounds, native authority, failure behavior and limits.
 The normal client [attaches directly over that endpoint](engine-proof.md#direct-remote-tui-attachment),
 without a local gateway or second transport. It now supports multiple independent
-local and remote attachments in one physical TUI. Native family 6, remote control 1
-and durable schema 4 remain unchanged. Mixed-owner layouts and cross-session
+local and remote attachments in one physical TUI. Native family 11 and remote
+control 2 require matching peers; durable schema 4 is retained. Mixed-owner layouts and cross-session
 workspace references remain deferred.
 
 A compatible launcher/helper must already be installed on the remote host and

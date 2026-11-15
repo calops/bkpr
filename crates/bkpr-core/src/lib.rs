@@ -2,6 +2,7 @@
 #![deny(missing_docs)]
 
 pub mod authority;
+pub mod daemon;
 pub mod diagnostics;
 #[cfg(target_os = "linux")]
 mod process_tree;

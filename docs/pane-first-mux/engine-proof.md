@@ -3511,3 +3511,69 @@ Nix formatting, workflow lint and offline local link/anchor checks pass.
 Both daemons, Kitty, Xvfb and sshd exit normally; inner and namespace cleanup
 report no surviving owned processes. The manual CI workflow was linted, not
 remotely dispatched.
+
+## One host daemon with independent local and remote sessions
+
+The host/session migration uses native wire family 11, remote control version 2
+and unchanged durable schema 4. Matching binaries are required. Existing live
+incompatible daemons are not adopted, replaced or stopped automatically.
+
+The final incremental debug pair is preserved under
+`target/smoke/host-daemon/final-pair/`:
+
+* `bkpr`: `338353f219b2ec79a2d802ab4db012c26e950dee57f0fd59b9a754f9e8a8942a`.
+* `bkprd`: `ba099dbe7b918c166c9b2fd31a14753f29840170347bda6e4180010ec8fa9bf2`.
+
+One process owns the private host control endpoint and independent session
+registries, native endpoints and recovery roots. Persistent session identity,
+host incarnation and fresh session-instance identity have separate contracts.
+Registration and remote Welcome fence the exact triple; alias detection no
+longer conflates independent sessions sharing one daemon. Closing a session
+does not widen takeover, agent scope, child cleanup or transport cancellation
+into sibling sessions.
+
+`target/smoke/host-daemon/actual-6/acceptance.json` records the real changed-path
+acceptance: UID 1000, private HOME/XDG, loopback-only namespace, Kitty 0.48.2,
+Xvfb 21.1.24, OpenSSH 10.5p1, 156×54 cells and shell-only applications. Two local
+sessions share one host process; two remote sessions share another. One actual
+TUI displays all four, plus a duplicate SSH alias that must not seize ownership.
+Physical screenshots, native device transcripts and exact backend text prove:
+
+* Each session receives input only for its selected pane.
+* Forced reconnect replaces only the selected remote session's views.
+* Terminating the retained owned SSH process triggers real EOF/reconnection
+  without restarting either backend session or disrupting other attachments.
+* A second TUI taking over remote-b retires only its previous target; local
+  sessions and remote-a remain interactive in the first TUI.
+* Individual/final session closure exits the relevant clients, not either host.
+  A new session after zero-session idle executes its real shell in the same
+  host incarnation.
+* Explicit incarnation-pinned host shutdown exits both daemons normally.
+  Inner and namespace cleanup retain no surviving owned process identities.
+
+During the measured 2.000077064-second zero-session interval, both hosts consumed
+zero additional CPU ticks at 100 ticks/second. Local/remote RSS stayed at
+20,552/20,860 KiB respectively, with three threads each. This is an idle
+observation, not a latency guarantee or full performance benchmark.
+
+Workspace verification totals 1,260 passing tests and 19 ignored tests.
+Coordinated host-UID receipts are under
+`target/smoke/harness-integrations/build/checks-{402980213110725,403362114993262,403547326532635,404164413538570}/`.
+The first two runs exposed fixture-only `/bin/kill` and nonempty-HOME assumptions;
+corrected affected harnesses pass in the later receipts. Protected workspace
+all-target strict Clippy, formatting, doctests, warnings-denied rustdoc and all
+47 showcase Python tests pass. Actual `bkprd --help` and `bkpr daemon --help`
+outputs are retained under `target/smoke/host-daemon/`.
+
+Earlier GUI attempts exposed fixture input/occlusion mistakes, not accepted
+product results. Final acceptance uses actual Ctrl-Space key events, valid
+remote-only arguments and explicitly raised owned X windows for physical clicks.
+The fixture/controller sources are archived in
+`target/smoke/host-daemon/source.zip`; the permanent showcase helper now shares
+one Host between its sessions and shuts down sessions and hosts separately.
+
+Public debug/release executable hashes and inodes were preserved by protected
+build receipts. No live user sessions, providers, approvals or profiles were
+used or changed. No release, tag or runtime binary was promoted. The
+[notification architecture](../notifications.md) remains a design; its host
+lifecycle prerequisite is implemented, not notification delivery providers.

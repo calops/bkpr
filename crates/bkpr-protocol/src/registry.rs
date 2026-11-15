@@ -24,6 +24,22 @@ impl Request {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Operation {
+    /// Read the host daemon identity without selecting or creating a session.
+    DaemonInfo,
+    /// Open one local session; existing active sessions are never bootstrapped again.
+    SessionOpen {
+        /// Exact logical session name, not a filesystem path.
+        name: String,
+        /// Defaults for a newly opened session; never replaces an active policy.
+        defaults: Option<crate::SpawnDefaults>,
+        /// Explicit bootstrap/restoration command; absence executes nothing.
+        initial: Option<PaneSpawnSpec>,
+    },
+    /// Stop the exact host daemon incarnation and all of its sessions.
+    DaemonShutdown {
+        /// Expected host incarnation; checked before any shutdown effects.
+        daemon_id: String,
+    },
     /// Read the logical session and current daemon identities.
     SessionInfo,
     /// Upgrade this connection to a dedicated attachment lifetime stream.
@@ -32,6 +48,8 @@ pub enum Operation {
         session_id: String,
         /// Expected daemon incarnation.
         daemon_id: String,
+        /// Expected instance of this session within the daemon.
+        session_instance_id: String,
     },
     /// Authenticate an exact attachment, never inferred from the caller PID.
     Client {
@@ -238,7 +256,7 @@ pub enum Operation {
         /// Maximum wait in milliseconds.
         wait_ms: u64,
     },
-    /// Shut down the daemon and its owned executions.
+    /// Stop this session and its executions, preserving durable recovery intent.
     Shutdown,
 }
 impl std::fmt::Debug for Operation {
