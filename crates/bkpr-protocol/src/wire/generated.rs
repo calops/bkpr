@@ -28495,10 +28495,4388 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationDaemonShutdownRef<'a> {
 }
 
     
+/// The enum `NotificationKind` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Enum `NotificationKind` in the file `crates/bkpr-protocol/src/wire/native.fbs:270`
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum NotificationKind {
+    
+        /// The variant `Attention` in the enum `NotificationKind`
+        Attention = 0,
+    
+        /// The variant `Error` in the enum `NotificationKind`
+        Error = 1,
+    
+        /// The variant `Idle` in the enum `NotificationKind`
+        Idle = 2,
+    
+        /// The variant `Done` in the enum `NotificationKind`
+        Done = 3,
+    
+}
+
+impl NotificationKind {
+    /// Array containing all valid variants of NotificationKind
+    pub const ENUM_VALUES: [Self; 4] = [Self::Attention,Self::Error,Self::Idle,Self::Done,];
+}
+
+impl ::core::convert::TryFrom<u8> for NotificationKind {
+    type Error = ::planus::errors::UnknownEnumTagKind;
+    #[inline]
+    fn try_from(value: u8) -> ::core::result::Result<Self, ::planus::errors::UnknownEnumTagKind> {
+        #[allow(clippy::match_single_binding)]
+        match value {
+            0 => ::core::result::Result::Ok(NotificationKind::Attention),
+            1 => ::core::result::Result::Ok(NotificationKind::Error),
+            2 => ::core::result::Result::Ok(NotificationKind::Idle),
+            3 => ::core::result::Result::Ok(NotificationKind::Done),
+            
+
+            _ => ::core::result::Result::Err(::planus::errors::UnknownEnumTagKind { tag: value as i128 }),
+        }
+    }
+}
+
+impl ::core::convert::From<NotificationKind> for u8 {
+    #[inline]
+    fn from(value: NotificationKind) -> Self {
+        value as u8
+    }
+}
+
+/// # Safety
+/// The Planus compiler correctly calculates `ALIGNMENT` and `SIZE`.
+unsafe impl ::planus::Primitive for NotificationKind {
+    const ALIGNMENT: usize = 1;
+    const SIZE: usize = 1;
+}
+
+impl ::planus::WriteAsPrimitive<NotificationKind> for NotificationKind {
+    #[inline]
+    fn write<const N: usize>(&self, cursor: ::planus::Cursor<'_, N>, buffer_position: u32) {
+        (*self as u8).write(cursor, buffer_position);
+    }
+}
+
+impl ::planus::WriteAs<NotificationKind> for NotificationKind {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> NotificationKind {
+        *self
+    }
+}
+
+impl ::planus::WriteAsDefault<NotificationKind, NotificationKind> for NotificationKind {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder, default: &NotificationKind) -> ::core::option::Option<NotificationKind> {
+        if self == default {
+            ::core::option::Option::None
+        } else {
+            ::core::option::Option::Some(*self)
+        }
+    }
+}
+
+impl ::planus::WriteAsOptional<NotificationKind> for NotificationKind {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> ::core::option::Option<NotificationKind> {
+        ::core::option::Option::Some(*self)
+    }
+}
+
+impl<'buf> ::planus::TableRead<'buf> for NotificationKind {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'buf>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        let n: u8 = ::planus::TableRead::from_buffer(buffer, offset)?;
+        ::core::result::Result::Ok(::core::convert::TryInto::try_into(n)?)
+    }
+}
+
+impl<'buf> ::planus::VectorReadInner<'buf> for NotificationKind {
+    type Error = ::planus::errors::UnknownEnumTag;
+    const STRIDE: usize = 1;
+    #[inline]
+    unsafe fn from_buffer(
+        buffer: ::planus::SliceWithStartOffset<'buf>,
+        offset: usize,
+    ) -> ::core::result::Result<Self, ::planus::errors::UnknownEnumTag> {let value = unsafe { *buffer.buffer.get_unchecked(offset) };let value: ::core::result::Result<Self, _> = ::core::convert::TryInto::try_into(value);
+        value.map_err(|error_kind| error_kind.with_error_location(
+            "NotificationKind",
+            "VectorRead::from_buffer",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<NotificationKind> for NotificationKind {
+    const STRIDE: usize = 1;
+
+    type Value = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> Self {
+        *self
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[Self],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 1];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                
+                buffer_position - i as u32,
+                
+            );
+        }
+    }
+}
+
+    
+/// The table `NotificationScope` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `NotificationScope` in the file `crates/bkpr-protocol/src/wire/native.fbs:271`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct NotificationScope{
+    
+        /// The field `session_id` in the table `NotificationScope`
+        pub session_id: ::core::option::Option<::planus::alloc::string::String>,
+        /// The field `workspace_id` in the table `NotificationScope`
+        pub workspace_id: ::core::option::Option<::planus::alloc::string::String>,
+        /// The field `pane_id` in the table `NotificationScope`
+        pub pane_id: ::core::option::Option<::planus::alloc::string::String>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for NotificationScope {
+    fn default() -> Self {
+        Self {
+        session_id: ::core::default::Default::default(),
+        workspace_id: ::core::default::Default::default(),
+        pane_id: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl NotificationScope {
+    /// Creates a [NotificationScopeBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> NotificationScopeBuilder<()> {
+        NotificationScopeBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_session_id: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+        field_workspace_id: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+        field_pane_id: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_session_id = field_session_id.prepare(builder);let prepared_workspace_id = field_workspace_id.prepare(builder);let prepared_pane_id = field_pane_id.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        if prepared_session_id.is_some() {table_writer.write_entry::<::planus::Offset<str>>(0);}if prepared_workspace_id.is_some() {table_writer.write_entry::<::planus::Offset<str>>(1);}if prepared_pane_id.is_some() {table_writer.write_entry::<::planus::Offset<str>>(2);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_session_id) = prepared_session_id {object_writer.write::<_, _, 4>(&prepared_session_id);}if let ::core::option::Option::Some(prepared_workspace_id) = prepared_workspace_id {object_writer.write::<_, _, 4>(&prepared_workspace_id);}if let ::core::option::Option::Some(prepared_pane_id) = prepared_pane_id {object_writer.write::<_, _, 4>(&prepared_pane_id);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<NotificationScope>> for NotificationScope {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationScope> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<NotificationScope>> for NotificationScope {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationScope>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<NotificationScope> for NotificationScope {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationScope> {
+        NotificationScope::create(
+            builder,
+        
+            
+            &self.session_id,
+            
+        
+            
+            &self.workspace_id,
+            
+        
+            
+            &self.pane_id,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [NotificationScope] type.
+///
+/// Can be created using the [NotificationScope::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct NotificationScopeBuilder<State>(State);
+
+impl<
+    
+> NotificationScopeBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`session_id` field](NotificationScope#structfield.session_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn session_id<T0>(self, value: T0) -> NotificationScopeBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
+    {
+        NotificationScopeBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`session_id` field](NotificationScope#structfield.session_id) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn session_id_as_null(self) -> NotificationScopeBuilder<(
+        
+        (),
+    )>
+    {
+        self.session_id(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+> NotificationScopeBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`workspace_id` field](NotificationScope#structfield.workspace_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn workspace_id<T1>(self, value: T1) -> NotificationScopeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;NotificationScopeBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`workspace_id` field](NotificationScope#structfield.workspace_id) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn workspace_id_as_null(self) -> NotificationScopeBuilder<(
+        
+            T0,
+        
+        (),
+    )>
+    {
+        self.workspace_id(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> NotificationScopeBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`pane_id` field](NotificationScope#structfield.pane_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn pane_id<T2>(self, value: T2) -> NotificationScopeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;NotificationScopeBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`pane_id` field](NotificationScope#structfield.pane_id) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn pane_id_as_null(self) -> NotificationScopeBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        (),
+    )>
+    {
+        self.pane_id(())
+    }
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> NotificationScopeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [NotificationScope].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationScope>
+        where Self: ::planus::WriteAsOffset<NotificationScope>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T2: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+> ::planus::WriteAs<::planus::Offset<NotificationScope>> for NotificationScopeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationScope>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationScope> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T2: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<NotificationScope>> for NotificationScopeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationScope>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationScope>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T2: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+> ::planus::WriteAsOffset<NotificationScope> for NotificationScopeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationScope> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;NotificationScope::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [NotificationScope].
+#[derive(Copy, Clone)]
+pub struct NotificationScopeRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> NotificationScopeRef<'a> {
+    
+        /// Getter for the [`session_id` field](NotificationScope#structfield.session_id).
+        #[inline]
+        pub fn session_id(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
+            
+            
+              
+              self.0.access(0, "NotificationScope", "session_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`workspace_id` field](NotificationScope#structfield.workspace_id).
+        #[inline]
+        pub fn workspace_id(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
+            
+            
+              
+              self.0.access(1, "NotificationScope", "workspace_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`pane_id` field](NotificationScope#structfield.pane_id).
+        #[inline]
+        pub fn pane_id(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
+            
+            
+              
+              self.0.access(2, "NotificationScope", "pane_id")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for NotificationScopeRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("NotificationScopeRef");
+        if let ::core::option::Option::Some(field_session_id) = self.session_id().transpose() {
+                f.field("session_id", &field_session_id);
+            }if let ::core::option::Option::Some(field_workspace_id) = self.workspace_id().transpose() {
+                f.field("workspace_id", &field_workspace_id);
+            }if let ::core::option::Option::Some(field_pane_id) = self.pane_id().transpose() {
+                f.field("pane_id", &field_pane_id);
+            }
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<NotificationScopeRef<'a>> for NotificationScope {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: NotificationScopeRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            session_id: 
+                                value.session_id()?.map(::core::convert::Into::into)
+                            ,workspace_id: 
+                                value.workspace_id()?.map(::core::convert::Into::into)
+                            ,pane_id: 
+                                value.pane_id()?.map(::core::convert::Into::into)
+                            ,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for NotificationScopeRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for NotificationScopeRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationScopeRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<NotificationScope>> for NotificationScope {
+    type Value = ::planus::Offset<NotificationScope>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<NotificationScope>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for NotificationScopeRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationScopeRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `NotificationCursor` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `NotificationCursor` in the file `crates/bkpr-protocol/src/wire/native.fbs:276`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct NotificationCursor{
+    
+        /// The field `store_id` in the table `NotificationCursor`
+        pub store_id: ::planus::alloc::string::String,
+        /// The field `sequence` in the table `NotificationCursor`
+        pub sequence: u64,
+        /// The field `loss_generation` in the table `NotificationCursor`
+        pub loss_generation: u64,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for NotificationCursor {
+    fn default() -> Self {
+        Self {
+        store_id: ::core::default::Default::default(),
+        sequence: 0,
+        loss_generation: 0,
+        
+        }
+    }
+}
+
+
+impl NotificationCursor {
+    /// Creates a [NotificationCursorBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> NotificationCursorBuilder<()> {
+        NotificationCursorBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_store_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_sequence: impl ::planus::WriteAsDefault<u64, u64>,
+        field_loss_generation: impl ::planus::WriteAsDefault<u64, u64>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_store_id = field_store_id.prepare(builder);let prepared_sequence = field_sequence.prepare(builder, &0);let prepared_loss_generation = field_loss_generation.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        if prepared_sequence.is_some() {table_writer.write_entry::<u64>(1);}if prepared_loss_generation.is_some() {table_writer.write_entry::<u64>(2);}table_writer.write_entry::<::planus::Offset<str>>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_sequence) = prepared_sequence {object_writer.write::<_, _, 8>(&prepared_sequence);}if let ::core::option::Option::Some(prepared_loss_generation) = prepared_loss_generation {object_writer.write::<_, _, 8>(&prepared_loss_generation);}object_writer.write::<_, _, 4>(&prepared_store_id);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<NotificationCursor>> for NotificationCursor {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationCursor> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<NotificationCursor>> for NotificationCursor {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationCursor>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<NotificationCursor> for NotificationCursor {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationCursor> {
+        NotificationCursor::create(
+            builder,
+        
+            
+            &self.store_id,
+            
+        
+            
+            self.sequence,
+            
+        
+            
+            self.loss_generation,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [NotificationCursor] type.
+///
+/// Can be created using the [NotificationCursor::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct NotificationCursorBuilder<State>(State);
+
+impl<
+    
+> NotificationCursorBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`store_id` field](NotificationCursor#structfield.store_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn store_id<T0>(self, value: T0) -> NotificationCursorBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        NotificationCursorBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> NotificationCursorBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`sequence` field](NotificationCursor#structfield.sequence).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn sequence<T1>(self, value: T1) -> NotificationCursorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;NotificationCursorBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`sequence` field](NotificationCursor#structfield.sequence) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn sequence_as_default(self) -> NotificationCursorBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.sequence(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> NotificationCursorBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`loss_generation` field](NotificationCursor#structfield.loss_generation).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn loss_generation<T2>(self, value: T2) -> NotificationCursorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;NotificationCursorBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`loss_generation` field](NotificationCursor#structfield.loss_generation) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn loss_generation_as_default(self) -> NotificationCursorBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.loss_generation(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> NotificationCursorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [NotificationCursor].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationCursor>
+        where Self: ::planus::WriteAsOffset<NotificationCursor>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAs<::planus::Offset<NotificationCursor>> for NotificationCursorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationCursor>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationCursor> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<NotificationCursor>> for NotificationCursorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationCursor>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationCursor>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOffset<NotificationCursor> for NotificationCursorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationCursor> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;NotificationCursor::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [NotificationCursor].
+#[derive(Copy, Clone)]
+pub struct NotificationCursorRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> NotificationCursorRef<'a> {
+    
+        /// Getter for the [`store_id` field](NotificationCursor#structfield.store_id).
+        #[inline]
+        pub fn store_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "NotificationCursor", "store_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`sequence` field](NotificationCursor#structfield.sequence).
+        #[inline]
+        pub fn sequence(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "NotificationCursor", "sequence")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`loss_generation` field](NotificationCursor#structfield.loss_generation).
+        #[inline]
+        pub fn loss_generation(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(2, "NotificationCursor", "loss_generation")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for NotificationCursorRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("NotificationCursorRef");
+        f.field("store_id", &self.store_id());f.field("sequence", &self.sequence());f.field("loss_generation", &self.loss_generation());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<NotificationCursorRef<'a>> for NotificationCursor {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: NotificationCursorRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            store_id: ::core::convert::Into::into(value.store_id()?),sequence: ::core::convert::TryInto::try_into(value.sequence()?)?,loss_generation: ::core::convert::TryInto::try_into(value.loss_generation()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for NotificationCursorRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for NotificationCursorRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationCursorRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<NotificationCursor>> for NotificationCursor {
+    type Value = ::planus::Offset<NotificationCursor>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<NotificationCursor>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for NotificationCursorRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationCursorRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `NotificationQuery` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `NotificationQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:281`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct NotificationQuery{
+    
+        /// The field `scope` in the table `NotificationQuery`
+        pub scope: ::planus::alloc::boxed::Box<self::NotificationScope>,
+        /// The field `kinds` in the table `NotificationQuery`
+        pub kinds: ::planus::alloc::vec::Vec<self::NotificationKind>,
+        /// The field `limit` in the table `NotificationQuery`
+        pub limit: u16,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for NotificationQuery {
+    fn default() -> Self {
+        Self {
+        scope: ::core::default::Default::default(),
+        kinds: ::core::default::Default::default(),
+        limit: 0,
+        
+        }
+    }
+}
+
+
+impl NotificationQuery {
+    /// Creates a [NotificationQueryBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> NotificationQueryBuilder<()> {
+        NotificationQueryBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_scope: impl ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+        field_kinds: impl ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+        field_limit: impl ::planus::WriteAsDefault<u16, u16>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_scope = field_scope.prepare(builder);let prepared_kinds = field_kinds.prepare(builder);let prepared_limit = field_limit.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::NotificationScope>>(0);table_writer.write_entry::<::planus::Offset<[self::NotificationKind]>>(1);if prepared_limit.is_some() {table_writer.write_entry::<u16>(2);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_scope);object_writer.write::<_, _, 4>(&prepared_kinds);if let ::core::option::Option::Some(prepared_limit) = prepared_limit {object_writer.write::<_, _, 2>(&prepared_limit);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<NotificationQuery>> for NotificationQuery {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationQuery> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<NotificationQuery>> for NotificationQuery {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationQuery>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<NotificationQuery> for NotificationQuery {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationQuery> {
+        NotificationQuery::create(
+            builder,
+        
+            
+            &self.scope,
+            
+        
+            
+            &self.kinds,
+            
+        
+            
+            self.limit,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [NotificationQuery] type.
+///
+/// Can be created using the [NotificationQuery::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct NotificationQueryBuilder<State>(State);
+
+impl<
+    
+> NotificationQueryBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`scope` field](NotificationQuery#structfield.scope).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn scope<T0>(self, value: T0) -> NotificationQueryBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>
+    {
+        NotificationQueryBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> NotificationQueryBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`kinds` field](NotificationQuery#structfield.kinds).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn kinds<T1>(self, value: T1) -> NotificationQueryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;NotificationQueryBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> NotificationQueryBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`limit` field](NotificationQuery#structfield.limit).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn limit<T2>(self, value: T2) -> NotificationQueryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsDefault<u16, u16>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;NotificationQueryBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`limit` field](NotificationQuery#structfield.limit) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn limit_as_default(self) -> NotificationQueryBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.limit(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> NotificationQueryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [NotificationQuery].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationQuery>
+        where Self: ::planus::WriteAsOffset<NotificationQuery>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+    
+        T2: ::planus::WriteAsDefault<u16, u16>,
+    
+> ::planus::WriteAs<::planus::Offset<NotificationQuery>> for NotificationQueryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationQuery>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationQuery> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+    
+        T2: ::planus::WriteAsDefault<u16, u16>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<NotificationQuery>> for NotificationQueryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationQuery>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationQuery>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+    
+        T2: ::planus::WriteAsDefault<u16, u16>,
+    
+> ::planus::WriteAsOffset<NotificationQuery> for NotificationQueryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationQuery> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;NotificationQuery::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [NotificationQuery].
+#[derive(Copy, Clone)]
+pub struct NotificationQueryRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> NotificationQueryRef<'a> {
+    
+        /// Getter for the [`scope` field](NotificationQuery#structfield.scope).
+        #[inline]
+        pub fn scope(&self) -> ::planus::Result<self::NotificationScopeRef<'a>> {
+            
+            
+              
+              self.0.access_required(0, "NotificationQuery", "scope")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`kinds` field](NotificationQuery#structfield.kinds).
+        #[inline]
+        pub fn kinds(&self) -> ::planus::Result<::planus::Vector<'a, ::core::result::Result<self::NotificationKind, ::planus::errors::UnknownEnumTag>>> {
+            
+            
+              
+              self.0.access_required(1, "NotificationQuery", "kinds")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`limit` field](NotificationQuery#structfield.limit).
+        #[inline]
+        pub fn limit(&self) -> ::planus::Result<u16> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(2, "NotificationQuery", "limit")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for NotificationQueryRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("NotificationQueryRef");
+        f.field("scope", &self.scope());f.field("kinds", &self.kinds());f.field("limit", &self.limit());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<NotificationQueryRef<'a>> for NotificationQuery {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: NotificationQueryRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            scope: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.scope()?)?),kinds: value.kinds()?.to_vec_result()?,limit: ::core::convert::TryInto::try_into(value.limit()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for NotificationQueryRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for NotificationQueryRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationQueryRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<NotificationQuery>> for NotificationQuery {
+    type Value = ::planus::Offset<NotificationQuery>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<NotificationQuery>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for NotificationQueryRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationQueryRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `NotificationPolicy` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `NotificationPolicy` in the file `crates/bkpr-protocol/src/wire/native.fbs:286`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct NotificationPolicy{
+    
+        /// The field `scope` in the table `NotificationPolicy`
+        pub scope: ::planus::alloc::boxed::Box<self::NotificationScope>,
+        /// The field `kinds` in the table `NotificationPolicy`
+        pub kinds: ::planus::alloc::vec::Vec<self::NotificationKind>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for NotificationPolicy {
+    fn default() -> Self {
+        Self {
+        scope: ::core::default::Default::default(),
+        kinds: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl NotificationPolicy {
+    /// Creates a [NotificationPolicyBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> NotificationPolicyBuilder<()> {
+        NotificationPolicyBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_scope: impl ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+        field_kinds: impl ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_scope = field_scope.prepare(builder);let prepared_kinds = field_kinds.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::NotificationScope>>(0);table_writer.write_entry::<::planus::Offset<[self::NotificationKind]>>(1);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_scope);object_writer.write::<_, _, 4>(&prepared_kinds);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<NotificationPolicy>> for NotificationPolicy {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationPolicy> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<NotificationPolicy>> for NotificationPolicy {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationPolicy>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<NotificationPolicy> for NotificationPolicy {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationPolicy> {
+        NotificationPolicy::create(
+            builder,
+        
+            
+            &self.scope,
+            
+        
+            
+            &self.kinds,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [NotificationPolicy] type.
+///
+/// Can be created using the [NotificationPolicy::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct NotificationPolicyBuilder<State>(State);
+
+impl<
+    
+> NotificationPolicyBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`scope` field](NotificationPolicy#structfield.scope).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn scope<T0>(self, value: T0) -> NotificationPolicyBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>
+    {
+        NotificationPolicyBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> NotificationPolicyBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`kinds` field](NotificationPolicy#structfield.kinds).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn kinds<T1>(self, value: T1) -> NotificationPolicyBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;NotificationPolicyBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> NotificationPolicyBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [NotificationPolicy].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationPolicy>
+        where Self: ::planus::WriteAsOffset<NotificationPolicy>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+    
+> ::planus::WriteAs<::planus::Offset<NotificationPolicy>> for NotificationPolicyBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationPolicy>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationPolicy> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<NotificationPolicy>> for NotificationPolicyBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationPolicy>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationPolicy>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+    
+> ::planus::WriteAsOffset<NotificationPolicy> for NotificationPolicyBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationPolicy> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;NotificationPolicy::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [NotificationPolicy].
+#[derive(Copy, Clone)]
+pub struct NotificationPolicyRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> NotificationPolicyRef<'a> {
+    
+        /// Getter for the [`scope` field](NotificationPolicy#structfield.scope).
+        #[inline]
+        pub fn scope(&self) -> ::planus::Result<self::NotificationScopeRef<'a>> {
+            
+            
+              
+              self.0.access_required(0, "NotificationPolicy", "scope")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`kinds` field](NotificationPolicy#structfield.kinds).
+        #[inline]
+        pub fn kinds(&self) -> ::planus::Result<::planus::Vector<'a, ::core::result::Result<self::NotificationKind, ::planus::errors::UnknownEnumTag>>> {
+            
+            
+              
+              self.0.access_required(1, "NotificationPolicy", "kinds")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for NotificationPolicyRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("NotificationPolicyRef");
+        f.field("scope", &self.scope());f.field("kinds", &self.kinds());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<NotificationPolicyRef<'a>> for NotificationPolicy {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: NotificationPolicyRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            scope: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.scope()?)?),kinds: value.kinds()?.to_vec_result()?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for NotificationPolicyRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for NotificationPolicyRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationPolicyRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<NotificationPolicy>> for NotificationPolicy {
+    type Value = ::planus::Offset<NotificationPolicy>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<NotificationPolicy>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for NotificationPolicyRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationPolicyRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `NotificationRequestInspect` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `NotificationRequestInspect` in the file `crates/bkpr-protocol/src/wire/native.fbs:290`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct NotificationRequestInspect{
+    
+        /// The field `query` in the table `NotificationRequestInspect`
+        pub query: ::planus::alloc::boxed::Box<self::NotificationQuery>,
+        /// The field `after` in the table `NotificationRequestInspect`
+        pub after: ::core::option::Option<::planus::alloc::boxed::Box<self::NotificationCursor>>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for NotificationRequestInspect {
+    fn default() -> Self {
+        Self {
+        query: ::core::default::Default::default(),
+        after: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl NotificationRequestInspect {
+    /// Creates a [NotificationRequestInspectBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> NotificationRequestInspectBuilder<()> {
+        NotificationRequestInspectBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_query: impl ::planus::WriteAs<::planus::Offset<self::NotificationQuery>>,
+        field_after: impl ::planus::WriteAsOptional<::planus::Offset<self::NotificationCursor>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_query = field_query.prepare(builder);let prepared_after = field_after.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::NotificationQuery>>(0);if prepared_after.is_some() {table_writer.write_entry::<::planus::Offset<self::NotificationCursor>>(1);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_query);if let ::core::option::Option::Some(prepared_after) = prepared_after {object_writer.write::<_, _, 4>(&prepared_after);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<NotificationRequestInspect>> for NotificationRequestInspect {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestInspect> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<NotificationRequestInspect>> for NotificationRequestInspect {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationRequestInspect>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<NotificationRequestInspect> for NotificationRequestInspect {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestInspect> {
+        NotificationRequestInspect::create(
+            builder,
+        
+            
+            &self.query,
+            
+        
+            
+            &self.after,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [NotificationRequestInspect] type.
+///
+/// Can be created using the [NotificationRequestInspect::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct NotificationRequestInspectBuilder<State>(State);
+
+impl<
+    
+> NotificationRequestInspectBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`query` field](NotificationRequestInspect#structfield.query).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn query<T0>(self, value: T0) -> NotificationRequestInspectBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<self::NotificationQuery>>
+    {
+        NotificationRequestInspectBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> NotificationRequestInspectBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`after` field](NotificationRequestInspect#structfield.after).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn after<T1>(self, value: T1) -> NotificationRequestInspectBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsOptional<::planus::Offset<self::NotificationCursor>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;NotificationRequestInspectBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`after` field](NotificationRequestInspect#structfield.after) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn after_as_null(self) -> NotificationRequestInspectBuilder<(
+        
+            T0,
+        
+        (),
+    )>
+    {
+        self.after(())
+    }
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> NotificationRequestInspectBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [NotificationRequestInspect].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestInspect>
+        where Self: ::planus::WriteAsOffset<NotificationRequestInspect>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationQuery>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<self::NotificationCursor>>,
+    
+> ::planus::WriteAs<::planus::Offset<NotificationRequestInspect>> for NotificationRequestInspectBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationRequestInspect>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestInspect> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationQuery>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<self::NotificationCursor>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<NotificationRequestInspect>> for NotificationRequestInspectBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationRequestInspect>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationRequestInspect>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationQuery>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<self::NotificationCursor>>,
+    
+> ::planus::WriteAsOffset<NotificationRequestInspect> for NotificationRequestInspectBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestInspect> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;NotificationRequestInspect::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [NotificationRequestInspect].
+#[derive(Copy, Clone)]
+pub struct NotificationRequestInspectRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> NotificationRequestInspectRef<'a> {
+    
+        /// Getter for the [`query` field](NotificationRequestInspect#structfield.query).
+        #[inline]
+        pub fn query(&self) -> ::planus::Result<self::NotificationQueryRef<'a>> {
+            
+            
+              
+              self.0.access_required(0, "NotificationRequestInspect", "query")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`after` field](NotificationRequestInspect#structfield.after).
+        #[inline]
+        pub fn after(&self) -> ::planus::Result<::core::option::Option<self::NotificationCursorRef<'a>>> {
+            
+            
+              
+              self.0.access(1, "NotificationRequestInspect", "after")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for NotificationRequestInspectRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("NotificationRequestInspectRef");
+        f.field("query", &self.query());if let ::core::option::Option::Some(field_after) = self.after().transpose() {
+                f.field("after", &field_after);
+            }
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<NotificationRequestInspectRef<'a>> for NotificationRequestInspect {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: NotificationRequestInspectRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            query: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.query()?)?),after: 
+                                if let ::core::option::Option::Some(after) = value.after()? {
+                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(after)?))
+                                } else {
+                                    ::core::option::Option::None
+                                }
+                            ,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for NotificationRequestInspectRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for NotificationRequestInspectRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationRequestInspectRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<NotificationRequestInspect>> for NotificationRequestInspect {
+    type Value = ::planus::Offset<NotificationRequestInspect>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<NotificationRequestInspect>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for NotificationRequestInspectRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationRequestInspectRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `NotificationRequestSubscribe` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `NotificationRequestSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:294`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct NotificationRequestSubscribe{
+    
+        /// The field `query` in the table `NotificationRequestSubscribe`
+        pub query: ::planus::alloc::boxed::Box<self::NotificationQuery>,
+        /// The field `after` in the table `NotificationRequestSubscribe`
+        pub after: ::core::option::Option<::planus::alloc::boxed::Box<self::NotificationCursor>>,
+        /// The field `wait_ms` in the table `NotificationRequestSubscribe`
+        pub wait_ms: u32,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for NotificationRequestSubscribe {
+    fn default() -> Self {
+        Self {
+        query: ::core::default::Default::default(),
+        after: ::core::default::Default::default(),
+        wait_ms: 0,
+        
+        }
+    }
+}
+
+
+impl NotificationRequestSubscribe {
+    /// Creates a [NotificationRequestSubscribeBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> NotificationRequestSubscribeBuilder<()> {
+        NotificationRequestSubscribeBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_query: impl ::planus::WriteAs<::planus::Offset<self::NotificationQuery>>,
+        field_after: impl ::planus::WriteAsOptional<::planus::Offset<self::NotificationCursor>>,
+        field_wait_ms: impl ::planus::WriteAsDefault<u32, u32>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_query = field_query.prepare(builder);let prepared_after = field_after.prepare(builder);let prepared_wait_ms = field_wait_ms.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::NotificationQuery>>(0);if prepared_after.is_some() {table_writer.write_entry::<::planus::Offset<self::NotificationCursor>>(1);}if prepared_wait_ms.is_some() {table_writer.write_entry::<u32>(2);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_query);if let ::core::option::Option::Some(prepared_after) = prepared_after {object_writer.write::<_, _, 4>(&prepared_after);}if let ::core::option::Option::Some(prepared_wait_ms) = prepared_wait_ms {object_writer.write::<_, _, 4>(&prepared_wait_ms);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<NotificationRequestSubscribe>> for NotificationRequestSubscribe {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestSubscribe> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<NotificationRequestSubscribe>> for NotificationRequestSubscribe {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationRequestSubscribe>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<NotificationRequestSubscribe> for NotificationRequestSubscribe {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestSubscribe> {
+        NotificationRequestSubscribe::create(
+            builder,
+        
+            
+            &self.query,
+            
+        
+            
+            &self.after,
+            
+        
+            
+            self.wait_ms,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [NotificationRequestSubscribe] type.
+///
+/// Can be created using the [NotificationRequestSubscribe::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct NotificationRequestSubscribeBuilder<State>(State);
+
+impl<
+    
+> NotificationRequestSubscribeBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`query` field](NotificationRequestSubscribe#structfield.query).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn query<T0>(self, value: T0) -> NotificationRequestSubscribeBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<self::NotificationQuery>>
+    {
+        NotificationRequestSubscribeBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> NotificationRequestSubscribeBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`after` field](NotificationRequestSubscribe#structfield.after).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn after<T1>(self, value: T1) -> NotificationRequestSubscribeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsOptional<::planus::Offset<self::NotificationCursor>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;NotificationRequestSubscribeBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`after` field](NotificationRequestSubscribe#structfield.after) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn after_as_null(self) -> NotificationRequestSubscribeBuilder<(
+        
+            T0,
+        
+        (),
+    )>
+    {
+        self.after(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> NotificationRequestSubscribeBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`wait_ms` field](NotificationRequestSubscribe#structfield.wait_ms).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn wait_ms<T2>(self, value: T2) -> NotificationRequestSubscribeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsDefault<u32, u32>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;NotificationRequestSubscribeBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`wait_ms` field](NotificationRequestSubscribe#structfield.wait_ms) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn wait_ms_as_default(self) -> NotificationRequestSubscribeBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.wait_ms(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> NotificationRequestSubscribeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [NotificationRequestSubscribe].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestSubscribe>
+        where Self: ::planus::WriteAsOffset<NotificationRequestSubscribe>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationQuery>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<self::NotificationCursor>>,
+    
+        T2: ::planus::WriteAsDefault<u32, u32>,
+    
+> ::planus::WriteAs<::planus::Offset<NotificationRequestSubscribe>> for NotificationRequestSubscribeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationRequestSubscribe>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestSubscribe> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationQuery>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<self::NotificationCursor>>,
+    
+        T2: ::planus::WriteAsDefault<u32, u32>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<NotificationRequestSubscribe>> for NotificationRequestSubscribeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationRequestSubscribe>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationRequestSubscribe>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationQuery>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<self::NotificationCursor>>,
+    
+        T2: ::planus::WriteAsDefault<u32, u32>,
+    
+> ::planus::WriteAsOffset<NotificationRequestSubscribe> for NotificationRequestSubscribeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestSubscribe> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;NotificationRequestSubscribe::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [NotificationRequestSubscribe].
+#[derive(Copy, Clone)]
+pub struct NotificationRequestSubscribeRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> NotificationRequestSubscribeRef<'a> {
+    
+        /// Getter for the [`query` field](NotificationRequestSubscribe#structfield.query).
+        #[inline]
+        pub fn query(&self) -> ::planus::Result<self::NotificationQueryRef<'a>> {
+            
+            
+              
+              self.0.access_required(0, "NotificationRequestSubscribe", "query")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`after` field](NotificationRequestSubscribe#structfield.after).
+        #[inline]
+        pub fn after(&self) -> ::planus::Result<::core::option::Option<self::NotificationCursorRef<'a>>> {
+            
+            
+              
+              self.0.access(1, "NotificationRequestSubscribe", "after")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`wait_ms` field](NotificationRequestSubscribe#structfield.wait_ms).
+        #[inline]
+        pub fn wait_ms(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(2, "NotificationRequestSubscribe", "wait_ms")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for NotificationRequestSubscribeRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("NotificationRequestSubscribeRef");
+        f.field("query", &self.query());if let ::core::option::Option::Some(field_after) = self.after().transpose() {
+                f.field("after", &field_after);
+            }f.field("wait_ms", &self.wait_ms());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<NotificationRequestSubscribeRef<'a>> for NotificationRequestSubscribe {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: NotificationRequestSubscribeRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            query: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.query()?)?),after: 
+                                if let ::core::option::Option::Some(after) = value.after()? {
+                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(after)?))
+                                } else {
+                                    ::core::option::Option::None
+                                }
+                            ,wait_ms: ::core::convert::TryInto::try_into(value.wait_ms()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for NotificationRequestSubscribeRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for NotificationRequestSubscribeRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationRequestSubscribeRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<NotificationRequestSubscribe>> for NotificationRequestSubscribe {
+    type Value = ::planus::Offset<NotificationRequestSubscribe>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<NotificationRequestSubscribe>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for NotificationRequestSubscribeRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationRequestSubscribeRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `NotificationRequestPolicyGet` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `NotificationRequestPolicyGet` in the file `crates/bkpr-protocol/src/wire/native.fbs:299`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct NotificationRequestPolicyGet{
+    }
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for NotificationRequestPolicyGet {
+    fn default() -> Self {
+        Self {
+        
+        }
+    }
+}
+
+
+impl NotificationRequestPolicyGet {
+    /// Creates a [NotificationRequestPolicyGetBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> NotificationRequestPolicyGetBuilder<()> {
+        NotificationRequestPolicyGetBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        
+    ) -> ::planus::Offset<Self> {
+
+        let table_writer: ::planus::table_writer::TableWriter::<4> = ::core::default::Default::default();
+        unsafe {
+            table_writer.finish(builder, |_table_writer| {});
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<NotificationRequestPolicyGet>> for NotificationRequestPolicyGet {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPolicyGet> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<NotificationRequestPolicyGet>> for NotificationRequestPolicyGet {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationRequestPolicyGet>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<NotificationRequestPolicyGet> for NotificationRequestPolicyGet {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPolicyGet> {
+        NotificationRequestPolicyGet::create(
+            builder,
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [NotificationRequestPolicyGet] type.
+///
+/// Can be created using the [NotificationRequestPolicyGet::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct NotificationRequestPolicyGetBuilder<State>(State);
+
+
+
+impl<
+    
+> NotificationRequestPolicyGetBuilder<(
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [NotificationRequestPolicyGet].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPolicyGet>
+        where Self: ::planus::WriteAsOffset<NotificationRequestPolicyGet>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAs<::planus::Offset<NotificationRequestPolicyGet>> for NotificationRequestPolicyGetBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationRequestPolicyGet>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPolicyGet> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOptional<::planus::Offset<NotificationRequestPolicyGet>> for NotificationRequestPolicyGetBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationRequestPolicyGet>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationRequestPolicyGet>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOffset<NotificationRequestPolicyGet> for NotificationRequestPolicyGetBuilder<(
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPolicyGet> {
+        NotificationRequestPolicyGet::create(
+            builder,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [NotificationRequestPolicyGet].
+#[derive(Copy, Clone)]
+pub struct NotificationRequestPolicyGetRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> NotificationRequestPolicyGetRef<'a> {
+    
+}
+
+impl<'a> ::core::fmt::Debug for NotificationRequestPolicyGetRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("NotificationRequestPolicyGetRef");
+        
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<NotificationRequestPolicyGetRef<'a>> for NotificationRequestPolicyGet {
+    type Error = ::planus::Error;
+
+
+    fn try_from(_value: NotificationRequestPolicyGetRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for NotificationRequestPolicyGetRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for NotificationRequestPolicyGetRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationRequestPolicyGetRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<NotificationRequestPolicyGet>> for NotificationRequestPolicyGet {
+    type Value = ::planus::Offset<NotificationRequestPolicyGet>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<NotificationRequestPolicyGet>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for NotificationRequestPolicyGetRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationRequestPolicyGetRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `NotificationRequestHealth` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `NotificationRequestHealth` in the file `crates/bkpr-protocol/src/wire/native.fbs:300`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct NotificationRequestHealth{
+    }
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for NotificationRequestHealth {
+    fn default() -> Self {
+        Self {
+        
+        }
+    }
+}
+
+
+impl NotificationRequestHealth {
+    /// Creates a [NotificationRequestHealthBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> NotificationRequestHealthBuilder<()> {
+        NotificationRequestHealthBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        
+    ) -> ::planus::Offset<Self> {
+
+        let table_writer: ::planus::table_writer::TableWriter::<4> = ::core::default::Default::default();
+        unsafe {
+            table_writer.finish(builder, |_table_writer| {});
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<NotificationRequestHealth>> for NotificationRequestHealth {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestHealth> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<NotificationRequestHealth>> for NotificationRequestHealth {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationRequestHealth>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<NotificationRequestHealth> for NotificationRequestHealth {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestHealth> {
+        NotificationRequestHealth::create(
+            builder,
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [NotificationRequestHealth] type.
+///
+/// Can be created using the [NotificationRequestHealth::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct NotificationRequestHealthBuilder<State>(State);
+
+
+
+impl<
+    
+> NotificationRequestHealthBuilder<(
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [NotificationRequestHealth].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestHealth>
+        where Self: ::planus::WriteAsOffset<NotificationRequestHealth>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAs<::planus::Offset<NotificationRequestHealth>> for NotificationRequestHealthBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationRequestHealth>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestHealth> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOptional<::planus::Offset<NotificationRequestHealth>> for NotificationRequestHealthBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationRequestHealth>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationRequestHealth>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOffset<NotificationRequestHealth> for NotificationRequestHealthBuilder<(
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestHealth> {
+        NotificationRequestHealth::create(
+            builder,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [NotificationRequestHealth].
+#[derive(Copy, Clone)]
+pub struct NotificationRequestHealthRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> NotificationRequestHealthRef<'a> {
+    
+}
+
+impl<'a> ::core::fmt::Debug for NotificationRequestHealthRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("NotificationRequestHealthRef");
+        
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<NotificationRequestHealthRef<'a>> for NotificationRequestHealth {
+    type Error = ::planus::Error;
+
+
+    fn try_from(_value: NotificationRequestHealthRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for NotificationRequestHealthRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for NotificationRequestHealthRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationRequestHealthRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<NotificationRequestHealth>> for NotificationRequestHealth {
+    type Value = ::planus::Offset<NotificationRequestHealth>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<NotificationRequestHealth>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for NotificationRequestHealthRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationRequestHealthRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `NotificationRequestPolicySet` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `NotificationRequestPolicySet` in the file `crates/bkpr-protocol/src/wire/native.fbs:301`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct NotificationRequestPolicySet{
+    
+        /// The field `policy` in the table `NotificationRequestPolicySet`
+        pub policy: ::planus::alloc::boxed::Box<self::NotificationPolicy>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for NotificationRequestPolicySet {
+    fn default() -> Self {
+        Self {
+        policy: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl NotificationRequestPolicySet {
+    /// Creates a [NotificationRequestPolicySetBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> NotificationRequestPolicySetBuilder<()> {
+        NotificationRequestPolicySetBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_policy: impl ::planus::WriteAs<::planus::Offset<self::NotificationPolicy>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_policy = field_policy.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::NotificationPolicy>>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_policy);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<NotificationRequestPolicySet>> for NotificationRequestPolicySet {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPolicySet> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<NotificationRequestPolicySet>> for NotificationRequestPolicySet {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationRequestPolicySet>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<NotificationRequestPolicySet> for NotificationRequestPolicySet {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPolicySet> {
+        NotificationRequestPolicySet::create(
+            builder,
+        
+            
+            &self.policy,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [NotificationRequestPolicySet] type.
+///
+/// Can be created using the [NotificationRequestPolicySet::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct NotificationRequestPolicySetBuilder<State>(State);
+
+impl<
+    
+> NotificationRequestPolicySetBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`policy` field](NotificationRequestPolicySet#structfield.policy).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn policy<T0>(self, value: T0) -> NotificationRequestPolicySetBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<self::NotificationPolicy>>
+    {
+        NotificationRequestPolicySetBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> NotificationRequestPolicySetBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [NotificationRequestPolicySet].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPolicySet>
+        where Self: ::planus::WriteAsOffset<NotificationRequestPolicySet>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationPolicy>>,
+    
+> ::planus::WriteAs<::planus::Offset<NotificationRequestPolicySet>> for NotificationRequestPolicySetBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationRequestPolicySet>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPolicySet> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationPolicy>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<NotificationRequestPolicySet>> for NotificationRequestPolicySetBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationRequestPolicySet>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationRequestPolicySet>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::NotificationPolicy>>,
+    
+> ::planus::WriteAsOffset<NotificationRequestPolicySet> for NotificationRequestPolicySetBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPolicySet> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;NotificationRequestPolicySet::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [NotificationRequestPolicySet].
+#[derive(Copy, Clone)]
+pub struct NotificationRequestPolicySetRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> NotificationRequestPolicySetRef<'a> {
+    
+        /// Getter for the [`policy` field](NotificationRequestPolicySet#structfield.policy).
+        #[inline]
+        pub fn policy(&self) -> ::planus::Result<self::NotificationPolicyRef<'a>> {
+            
+            
+              
+              self.0.access_required(0, "NotificationRequestPolicySet", "policy")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for NotificationRequestPolicySetRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("NotificationRequestPolicySetRef");
+        f.field("policy", &self.policy());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<NotificationRequestPolicySetRef<'a>> for NotificationRequestPolicySet {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: NotificationRequestPolicySetRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            policy: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.policy()?)?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for NotificationRequestPolicySetRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for NotificationRequestPolicySetRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationRequestPolicySetRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<NotificationRequestPolicySet>> for NotificationRequestPolicySet {
+    type Value = ::planus::Offset<NotificationRequestPolicySet>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<NotificationRequestPolicySet>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for NotificationRequestPolicySetRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationRequestPolicySetRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The union `NotificationRequest` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Union `NotificationRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:304`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize)]
+pub enum NotificationRequest{
+    
+        /// The variant of type `NotificationRequestInspect` in the union `NotificationRequest`
+        NotificationRequestInspect(::planus::alloc::boxed::Box<self::NotificationRequestInspect>),
+    
+        /// The variant of type `NotificationRequestSubscribe` in the union `NotificationRequest`
+        NotificationRequestSubscribe(::planus::alloc::boxed::Box<self::NotificationRequestSubscribe>),
+    
+        /// The variant of type `NotificationRequestPolicyGet` in the union `NotificationRequest`
+        NotificationRequestPolicyGet(::planus::alloc::boxed::Box<self::NotificationRequestPolicyGet>),
+    
+        /// The variant of type `NotificationRequestPolicySet` in the union `NotificationRequest`
+        NotificationRequestPolicySet(::planus::alloc::boxed::Box<self::NotificationRequestPolicySet>),
+    
+        /// The variant of type `NotificationRequestHealth` in the union `NotificationRequest`
+        NotificationRequestHealth(::planus::alloc::boxed::Box<self::NotificationRequestHealth>),
+    
+}
+
+
+impl NotificationRequest {
+    /// Creates a [NotificationRequestBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> NotificationRequestBuilder<::planus::Uninitialized> {
+        NotificationRequestBuilder(::planus::Uninitialized)
+    }
+
+    #[inline]
+    pub fn create_notification_request_inspect(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::NotificationRequestInspect>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(1, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_notification_request_subscribe(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::NotificationRequestSubscribe>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(2, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_notification_request_policy_get(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::NotificationRequestPolicyGet>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(3, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_notification_request_policy_set(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::NotificationRequestPolicySet>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(4, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_notification_request_health(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::NotificationRequestHealth>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(5, value.prepare(builder).downcast())
+    }
+
+    
+}
+
+
+
+impl ::planus::WriteAsUnion<NotificationRequest> for NotificationRequest {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<Self> {
+        match self {
+            Self::NotificationRequestInspect(value) => Self::create_notification_request_inspect(builder, value),
+            Self::NotificationRequestSubscribe(value) => Self::create_notification_request_subscribe(builder, value),
+            Self::NotificationRequestPolicyGet(value) => Self::create_notification_request_policy_get(builder, value),
+            Self::NotificationRequestPolicySet(value) => Self::create_notification_request_policy_set(builder, value),
+            Self::NotificationRequestHealth(value) => Self::create_notification_request_health(builder, value),
+            
+        }
+    }
+}
+
+
+impl ::planus::WriteAsOptionalUnion<NotificationRequest> for NotificationRequest {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<Self>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+
+/// Builder for serializing an instance of the [NotificationRequest] type.
+///
+/// Can be created using the [NotificationRequest::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct NotificationRequestBuilder<T>(T);
+
+impl NotificationRequestBuilder<::planus::Uninitialized> {
+    /// Creates an instance of the [`NotificationRequestInspect` variant](NotificationRequest#variant.NotificationRequestInspect).
+    #[inline]
+    pub fn notification_request_inspect<T>(
+        self,
+        value: T,
+    ) -> NotificationRequestBuilder<::planus::Initialized<1, T>>
+        where T: ::planus::WriteAsOffset<self::NotificationRequestInspect> {
+        NotificationRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`NotificationRequestSubscribe` variant](NotificationRequest#variant.NotificationRequestSubscribe).
+    #[inline]
+    pub fn notification_request_subscribe<T>(
+        self,
+        value: T,
+    ) -> NotificationRequestBuilder<::planus::Initialized<2, T>>
+        where T: ::planus::WriteAsOffset<self::NotificationRequestSubscribe> {
+        NotificationRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`NotificationRequestPolicyGet` variant](NotificationRequest#variant.NotificationRequestPolicyGet).
+    #[inline]
+    pub fn notification_request_policy_get<T>(
+        self,
+        value: T,
+    ) -> NotificationRequestBuilder<::planus::Initialized<3, T>>
+        where T: ::planus::WriteAsOffset<self::NotificationRequestPolicyGet> {
+        NotificationRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`NotificationRequestPolicySet` variant](NotificationRequest#variant.NotificationRequestPolicySet).
+    #[inline]
+    pub fn notification_request_policy_set<T>(
+        self,
+        value: T,
+    ) -> NotificationRequestBuilder<::planus::Initialized<4, T>>
+        where T: ::planus::WriteAsOffset<self::NotificationRequestPolicySet> {
+        NotificationRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`NotificationRequestHealth` variant](NotificationRequest#variant.NotificationRequestHealth).
+    #[inline]
+    pub fn notification_request_health<T>(
+        self,
+        value: T,
+    ) -> NotificationRequestBuilder<::planus::Initialized<5, T>>
+        where T: ::planus::WriteAsOffset<self::NotificationRequestHealth> {
+        NotificationRequestBuilder(::planus::Initialized(value))
+    }
+
+    
+}
+
+impl<const N: u8, T> NotificationRequestBuilder<::planus::Initialized<N, T>> {
+    /// Finish writing the builder to get an [UnionOffset](::planus::UnionOffset) to a serialized [NotificationRequest].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<NotificationRequest>
+        where Self: ::planus::WriteAsUnion<NotificationRequest>
+    {
+        ::planus::WriteAsUnion::prepare(&self, builder)
+    }
+}
+
+impl<T> ::planus::WriteAsUnion<NotificationRequest> for NotificationRequestBuilder<::planus::Initialized<1, T>>
+    where T: ::planus::WriteAsOffset<self::NotificationRequestInspect>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<NotificationRequest> {
+        ::planus::UnionOffset::new(1, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<NotificationRequest> for NotificationRequestBuilder<::planus::Initialized<1, T>>
+    where T: ::planus::WriteAsOffset<self::NotificationRequestInspect>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<NotificationRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<NotificationRequest> for NotificationRequestBuilder<::planus::Initialized<2, T>>
+    where T: ::planus::WriteAsOffset<self::NotificationRequestSubscribe>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<NotificationRequest> {
+        ::planus::UnionOffset::new(2, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<NotificationRequest> for NotificationRequestBuilder<::planus::Initialized<2, T>>
+    where T: ::planus::WriteAsOffset<self::NotificationRequestSubscribe>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<NotificationRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<NotificationRequest> for NotificationRequestBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::NotificationRequestPolicyGet>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<NotificationRequest> {
+        ::planus::UnionOffset::new(3, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<NotificationRequest> for NotificationRequestBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::NotificationRequestPolicyGet>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<NotificationRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<NotificationRequest> for NotificationRequestBuilder<::planus::Initialized<4, T>>
+    where T: ::planus::WriteAsOffset<self::NotificationRequestPolicySet>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<NotificationRequest> {
+        ::planus::UnionOffset::new(4, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<NotificationRequest> for NotificationRequestBuilder<::planus::Initialized<4, T>>
+    where T: ::planus::WriteAsOffset<self::NotificationRequestPolicySet>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<NotificationRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<NotificationRequest> for NotificationRequestBuilder<::planus::Initialized<5, T>>
+    where T: ::planus::WriteAsOffset<self::NotificationRequestHealth>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<NotificationRequest> {
+        ::planus::UnionOffset::new(5, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<NotificationRequest> for NotificationRequestBuilder<::planus::Initialized<5, T>>
+    where T: ::planus::WriteAsOffset<self::NotificationRequestHealth>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<NotificationRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+
+
+/// Reference to a deserialized [NotificationRequest].
+#[derive(Copy, Clone, Debug)]
+pub enum NotificationRequestRef<'a>{
+    NotificationRequestInspect(self::NotificationRequestInspectRef<'a>),
+    NotificationRequestSubscribe(self::NotificationRequestSubscribeRef<'a>),
+    NotificationRequestPolicyGet(self::NotificationRequestPolicyGetRef<'a>),
+    NotificationRequestPolicySet(self::NotificationRequestPolicySetRef<'a>),
+    NotificationRequestHealth(self::NotificationRequestHealthRef<'a>),
+    
+}
+
+
+impl<'a> ::core::convert::TryFrom<NotificationRequestRef<'a>> for NotificationRequest {
+    type Error = ::planus::Error;
+
+    fn try_from(value: NotificationRequestRef<'a>) -> ::planus::Result<Self> {
+        ::core::result::Result::Ok(match value {
+            
+                NotificationRequestRef::NotificationRequestInspect(value) => Self::NotificationRequestInspect(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                NotificationRequestRef::NotificationRequestSubscribe(value) => Self::NotificationRequestSubscribe(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                NotificationRequestRef::NotificationRequestPolicyGet(value) => Self::NotificationRequestPolicyGet(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                NotificationRequestRef::NotificationRequestPolicySet(value) => Self::NotificationRequestPolicySet(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                NotificationRequestRef::NotificationRequestHealth(value) => Self::NotificationRequestHealth(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+        })
+    }
+}
+
+
+
+impl<'a> ::planus::TableReadUnion<'a> for NotificationRequestRef<'a> {
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        match tag {
+            1 => ::core::result::Result::Ok(Self::NotificationRequestInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::NotificationRequestSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::NotificationRequestPolicyGet(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::NotificationRequestPolicySet(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::NotificationRequestHealth(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+        }
+    }
+}
+
+
+
+impl<'a> ::planus::VectorReadUnion<'a> for NotificationRequestRef<'a> {
+    const VECTOR_NAME: &'static str = "[NotificationRequestRef]";
+}
+
+
+    
+/// The table `OperationNotifications` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `OperationNotifications` in the file `crates/bkpr-protocol/src/wire/native.fbs:311`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct OperationNotifications{
+    
+        /// The field `request` in the table `OperationNotifications`
+        pub request: self::NotificationRequest,}
+
+
+
+impl OperationNotifications {
+    /// Creates a [OperationNotificationsBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> OperationNotificationsBuilder<()> {
+        OperationNotificationsBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_request: impl ::planus::WriteAsUnion<self::NotificationRequest>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_request = field_request.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::NotificationRequest>>(1);table_writer.write_entry::<u8>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_request.offset());object_writer.write::<_, _, 1>(&prepared_request.tag());
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<OperationNotifications>> for OperationNotifications {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<OperationNotifications> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<OperationNotifications>> for OperationNotifications {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<OperationNotifications>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<OperationNotifications> for OperationNotifications {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<OperationNotifications> {
+        OperationNotifications::create(
+            builder,
+        
+            
+            &self.request,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [OperationNotifications] type.
+///
+/// Can be created using the [OperationNotifications::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct OperationNotificationsBuilder<State>(State);
+
+impl<
+    
+> OperationNotificationsBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`request` field](OperationNotifications#structfield.request).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn request<T0>(self, value: T0) -> OperationNotificationsBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsUnion<self::NotificationRequest>
+    {
+        OperationNotificationsBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> OperationNotificationsBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [OperationNotifications].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<OperationNotifications>
+        where Self: ::planus::WriteAsOffset<OperationNotifications>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::NotificationRequest>,
+    
+> ::planus::WriteAs<::planus::Offset<OperationNotifications>> for OperationNotificationsBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<OperationNotifications>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<OperationNotifications> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::NotificationRequest>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<OperationNotifications>> for OperationNotificationsBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<OperationNotifications>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<OperationNotifications>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::NotificationRequest>,
+    
+> ::planus::WriteAsOffset<OperationNotifications> for OperationNotificationsBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<OperationNotifications> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;OperationNotifications::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [OperationNotifications].
+#[derive(Copy, Clone)]
+pub struct OperationNotificationsRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> OperationNotificationsRef<'a> {
+    
+        /// Getter for the [`request` field](OperationNotifications#structfield.request).
+        #[inline]
+        pub fn request(&self) -> ::planus::Result<self::NotificationRequestRef<'a>> {
+            
+            
+              
+              self.0.access_union_required(0, "OperationNotifications", "request")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for OperationNotificationsRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("OperationNotificationsRef");
+        f.field("request", &self.request());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<OperationNotificationsRef<'a>> for OperationNotifications {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: OperationNotificationsRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            request: ::core::convert::TryInto::try_into(value.request()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for OperationNotificationsRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for OperationNotificationsRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[OperationNotificationsRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<OperationNotifications>> for OperationNotifications {
+    type Value = ::planus::Offset<OperationNotifications>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<OperationNotifications>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for OperationNotificationsRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[OperationNotificationsRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The union `Operation` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Operation` in the file `crates/bkpr-protocol/src/wire/native.fbs:270`
+/// * Union `Operation` in the file `crates/bkpr-protocol/src/wire/native.fbs:314`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -28605,6 +32983,9 @@ pub enum Operation{
     
         /// The variant of type `OperationDaemonShutdown` in the union `Operation`
         OperationDaemonShutdown(::planus::alloc::boxed::Box<self::OperationDaemonShutdown>),
+    
+        /// The variant of type `OperationNotifications` in the union `Operation`
+        OperationNotifications(::planus::alloc::boxed::Box<self::OperationNotifications>),
     
 }
 
@@ -28888,6 +33269,14 @@ impl Operation {
         ::planus::UnionOffset::new(34, value.prepare(builder).downcast())
     }
 
+    #[inline]
+    pub fn create_operation_notifications(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::OperationNotifications>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(35, value.prepare(builder).downcast())
+    }
+
     
 }
 
@@ -28931,6 +33320,7 @@ impl ::planus::WriteAsUnion<Operation> for Operation {
             Self::OperationDaemonInfo(value) => Self::create_operation_daemon_info(builder, value),
             Self::OperationSessionOpen(value) => Self::create_operation_session_open(builder, value),
             Self::OperationDaemonShutdown(value) => Self::create_operation_daemon_shutdown(builder, value),
+            Self::OperationNotifications(value) => Self::create_operation_notifications(builder, value),
             
         }
     }
@@ -29289,6 +33679,16 @@ impl OperationBuilder<::planus::Uninitialized> {
         value: T,
     ) -> OperationBuilder<::planus::Initialized<34, T>>
         where T: ::planus::WriteAsOffset<self::OperationDaemonShutdown> {
+        OperationBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`OperationNotifications` variant](Operation#variant.OperationNotifications).
+    #[inline]
+    pub fn operation_notifications<T>(
+        self,
+        value: T,
+    ) -> OperationBuilder<::planus::Initialized<35, T>>
+        where T: ::planus::WriteAsOffset<self::OperationNotifications> {
         OperationBuilder(::planus::Initialized(value))
     }
 
@@ -29883,6 +34283,23 @@ impl<T> ::planus::WriteAsOptionalUnion<Operation> for OperationBuilder<::planus:
         ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
     }
 }
+impl<T> ::planus::WriteAsUnion<Operation> for OperationBuilder<::planus::Initialized<35, T>>
+    where T: ::planus::WriteAsOffset<self::OperationNotifications>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<Operation> {
+        ::planus::UnionOffset::new(35, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<Operation> for OperationBuilder<::planus::Initialized<35, T>>
+    where T: ::planus::WriteAsOffset<self::OperationNotifications>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<Operation>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
 
 
 /// Reference to a deserialized [Operation].
@@ -29922,6 +34339,7 @@ pub enum OperationRef<'a>{
     OperationDaemonInfo(self::OperationDaemonInfoRef<'a>),
     OperationSessionOpen(self::OperationSessionOpenRef<'a>),
     OperationDaemonShutdown(self::OperationDaemonShutdownRef<'a>),
+    OperationNotifications(self::OperationNotificationsRef<'a>),
     
 }
 
@@ -30034,6 +34452,9 @@ impl<'a> ::core::convert::TryFrom<OperationRef<'a>> for Operation {
                 OperationRef::OperationDaemonShutdown(value) => Self::OperationDaemonShutdown(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
+                OperationRef::OperationNotifications(value) => Self::OperationNotifications(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
         })
     }
 }
@@ -30043,7 +34464,7 @@ impl<'a> ::core::convert::TryFrom<OperationRef<'a>> for Operation {
 impl<'a> ::planus::TableReadUnion<'a> for OperationRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::OperationSessionInfo(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::OperationClientRegister(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::OperationClient(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::OperationClientActivate(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::OperationClientDetach(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::OperationInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::OperationContext(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::OperationRecoveryList(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::OperationPaneResume(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::OperationHarnessBegin(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::OperationHarnessEvent(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::OperationHarnessContext(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::OperationAgent(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::OperationWorkspaceCreate(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::OperationWorkspaceRename(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::OperationWorkspaceClose(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::OperationWindowCreate(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::OperationWindowRename(::planus::TableRead::from_buffer(buffer, field_offset)?)),19 => ::core::result::Result::Ok(Self::OperationWindowClose(::planus::TableRead::from_buffer(buffer, field_offset)?)),20 => ::core::result::Result::Ok(Self::OperationPaneSpawn(::planus::TableRead::from_buffer(buffer, field_offset)?)),21 => ::core::result::Result::Ok(Self::OperationPaneReopen(::planus::TableRead::from_buffer(buffer, field_offset)?)),22 => ::core::result::Result::Ok(Self::OperationPaneTerminate(::planus::TableRead::from_buffer(buffer, field_offset)?)),23 => ::core::result::Result::Ok(Self::OperationPaneForget(::planus::TableRead::from_buffer(buffer, field_offset)?)),24 => ::core::result::Result::Ok(Self::OperationPaneRename(::planus::TableRead::from_buffer(buffer, field_offset)?)),25 => ::core::result::Result::Ok(Self::OperationLayoutUpdate(::planus::TableRead::from_buffer(buffer, field_offset)?)),26 => ::core::result::Result::Ok(Self::OperationPane(::planus::TableRead::from_buffer(buffer, field_offset)?)),27 => ::core::result::Result::Ok(Self::OperationWait(::planus::TableRead::from_buffer(buffer, field_offset)?)),28 => ::core::result::Result::Ok(Self::OperationShutdown(::planus::TableRead::from_buffer(buffer, field_offset)?)),29 => ::core::result::Result::Ok(Self::OperationCiRefresh(::planus::TableRead::from_buffer(buffer, field_offset)?)),30 => ::core::result::Result::Ok(Self::OperationControlInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),31 => ::core::result::Result::Ok(Self::OperationControlPaneRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),32 => ::core::result::Result::Ok(Self::OperationDaemonInfo(::planus::TableRead::from_buffer(buffer, field_offset)?)),33 => ::core::result::Result::Ok(Self::OperationSessionOpen(::planus::TableRead::from_buffer(buffer, field_offset)?)),34 => ::core::result::Result::Ok(Self::OperationDaemonShutdown(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::OperationSessionInfo(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::OperationClientRegister(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::OperationClient(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::OperationClientActivate(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::OperationClientDetach(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::OperationInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::OperationContext(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::OperationRecoveryList(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::OperationPaneResume(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::OperationHarnessBegin(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::OperationHarnessEvent(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::OperationHarnessContext(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::OperationAgent(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::OperationWorkspaceCreate(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::OperationWorkspaceRename(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::OperationWorkspaceClose(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::OperationWindowCreate(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::OperationWindowRename(::planus::TableRead::from_buffer(buffer, field_offset)?)),19 => ::core::result::Result::Ok(Self::OperationWindowClose(::planus::TableRead::from_buffer(buffer, field_offset)?)),20 => ::core::result::Result::Ok(Self::OperationPaneSpawn(::planus::TableRead::from_buffer(buffer, field_offset)?)),21 => ::core::result::Result::Ok(Self::OperationPaneReopen(::planus::TableRead::from_buffer(buffer, field_offset)?)),22 => ::core::result::Result::Ok(Self::OperationPaneTerminate(::planus::TableRead::from_buffer(buffer, field_offset)?)),23 => ::core::result::Result::Ok(Self::OperationPaneForget(::planus::TableRead::from_buffer(buffer, field_offset)?)),24 => ::core::result::Result::Ok(Self::OperationPaneRename(::planus::TableRead::from_buffer(buffer, field_offset)?)),25 => ::core::result::Result::Ok(Self::OperationLayoutUpdate(::planus::TableRead::from_buffer(buffer, field_offset)?)),26 => ::core::result::Result::Ok(Self::OperationPane(::planus::TableRead::from_buffer(buffer, field_offset)?)),27 => ::core::result::Result::Ok(Self::OperationWait(::planus::TableRead::from_buffer(buffer, field_offset)?)),28 => ::core::result::Result::Ok(Self::OperationShutdown(::planus::TableRead::from_buffer(buffer, field_offset)?)),29 => ::core::result::Result::Ok(Self::OperationCiRefresh(::planus::TableRead::from_buffer(buffer, field_offset)?)),30 => ::core::result::Result::Ok(Self::OperationControlInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),31 => ::core::result::Result::Ok(Self::OperationControlPaneRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),32 => ::core::result::Result::Ok(Self::OperationDaemonInfo(::planus::TableRead::from_buffer(buffer, field_offset)?)),33 => ::core::result::Result::Ok(Self::OperationSessionOpen(::planus::TableRead::from_buffer(buffer, field_offset)?)),34 => ::core::result::Result::Ok(Self::OperationDaemonShutdown(::planus::TableRead::from_buffer(buffer, field_offset)?)),35 => ::core::result::Result::Ok(Self::OperationNotifications(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
@@ -30059,7 +34480,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for OperationRef<'a> {
 /// The table `PaneRequestInspect` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestInspect` in the file `crates/bkpr-protocol/src/wire/native.fbs:306`
+/// * Table `PaneRequestInspect` in the file `crates/bkpr-protocol/src/wire/native.fbs:351`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -30285,7 +34706,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestInspectRef<'a> {
 /// The table `PaneRequestAttach` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestAttach` in the file `crates/bkpr-protocol/src/wire/native.fbs:309`
+/// * Table `PaneRequestAttach` in the file `crates/bkpr-protocol/src/wire/native.fbs:354`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -30590,7 +35011,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestAttachRef<'a> {
 /// The table `PaneRequestUpdate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:312`
+/// * Table `PaneRequestUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:357`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -30979,7 +35400,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestUpdateRef<'a> {
 /// The table `PaneRequestDetach` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestDetach` in the file `crates/bkpr-protocol/src/wire/native.fbs:316`
+/// * Table `PaneRequestDetach` in the file `crates/bkpr-protocol/src/wire/native.fbs:361`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -31284,7 +35705,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestDetachRef<'a> {
 /// The table `PaneRequestPoll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPoll` in the file `crates/bkpr-protocol/src/wire/native.fbs:319`
+/// * Table `PaneRequestPoll` in the file `crates/bkpr-protocol/src/wire/native.fbs:364`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -32507,7 +36928,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPollRef<'a> {
 /// The table `PaneRequestPin` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPin` in the file `crates/bkpr-protocol/src/wire/native.fbs:329`
+/// * Table `PaneRequestPin` in the file `crates/bkpr-protocol/src/wire/native.fbs:374`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -32917,7 +37338,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPinRef<'a> {
 /// The table `PaneRequestInput` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestInput` in the file `crates/bkpr-protocol/src/wire/native.fbs:333`
+/// * Table `PaneRequestInput` in the file `crates/bkpr-protocol/src/wire/native.fbs:378`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -33306,7 +37727,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestInputRef<'a> {
 /// The table `PaneRequestPaste` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPaste` in the file `crates/bkpr-protocol/src/wire/native.fbs:337`
+/// * Table `PaneRequestPaste` in the file `crates/bkpr-protocol/src/wire/native.fbs:382`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -33695,7 +38116,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPasteRef<'a> {
 /// The table `PaneRequestPasteContents` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPasteContents` in the file `crates/bkpr-protocol/src/wire/native.fbs:341`
+/// * Table `PaneRequestPasteContents` in the file `crates/bkpr-protocol/src/wire/native.fbs:386`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -34314,7 +38735,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPasteContentsRef<'a> {
 /// The table `PaneRequestKey` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestKey` in the file `crates/bkpr-protocol/src/wire/native.fbs:347`
+/// * Table `PaneRequestKey` in the file `crates/bkpr-protocol/src/wire/native.fbs:392`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -34703,7 +39124,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestKeyRef<'a> {
 /// The table `PaneRequestMouse` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestMouse` in the file `crates/bkpr-protocol/src/wire/native.fbs:351`
+/// * Table `PaneRequestMouse` in the file `crates/bkpr-protocol/src/wire/native.fbs:396`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -35092,7 +39513,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestMouseRef<'a> {
 /// The table `PaneRequestFocus` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestFocus` in the file `crates/bkpr-protocol/src/wire/native.fbs:355`
+/// * Table `PaneRequestFocus` in the file `crates/bkpr-protocol/src/wire/native.fbs:400`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -35494,7 +39915,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestFocusRef<'a> {
 /// The table `PaneRequestScroll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestScroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:359`
+/// * Table `PaneRequestScroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:404`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -35896,7 +40317,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestScrollRef<'a> {
 /// The table `PaneRequestSelect` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestSelect` in the file `crates/bkpr-protocol/src/wire/native.fbs:363`
+/// * Table `PaneRequestSelect` in the file `crates/bkpr-protocol/src/wire/native.fbs:408`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -36285,7 +40706,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestSelectRef<'a> {
 /// The table `PaneRequestCopySelection` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestCopySelection` in the file `crates/bkpr-protocol/src/wire/native.fbs:367`
+/// * Table `PaneRequestCopySelection` in the file `crates/bkpr-protocol/src/wire/native.fbs:412`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -36590,7 +41011,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestCopySelectionRef<'a> {
 /// The table `PaneRequestSearch` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestSearch` in the file `crates/bkpr-protocol/src/wire/native.fbs:370`
+/// * Table `PaneRequestSearch` in the file `crates/bkpr-protocol/src/wire/native.fbs:415`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -36968,7 +41389,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestSearchRef<'a> {
 /// The table `PaneRequestClipboard` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestClipboard` in the file `crates/bkpr-protocol/src/wire/native.fbs:374`
+/// * Table `PaneRequestClipboard` in the file `crates/bkpr-protocol/src/wire/native.fbs:419`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -37451,7 +41872,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestClipboardRef<'a> {
 /// The table `PaneRequestColors` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestColors` in the file `crates/bkpr-protocol/src/wire/native.fbs:379`
+/// * Table `PaneRequestColors` in the file `crates/bkpr-protocol/src/wire/native.fbs:424`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -38200,7 +42621,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestColorsRef<'a> {
 /// The table `PaneRequestTerminate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestTerminate` in the file `crates/bkpr-protocol/src/wire/native.fbs:386`
+/// * Table `PaneRequestTerminate` in the file `crates/bkpr-protocol/src/wire/native.fbs:431`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -38505,7 +42926,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestTerminateRef<'a> {
 /// The table `PaneRequestShutdown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestShutdown` in the file `crates/bkpr-protocol/src/wire/native.fbs:389`
+/// * Table `PaneRequestShutdown` in the file `crates/bkpr-protocol/src/wire/native.fbs:434`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -38731,7 +43152,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestShutdownRef<'a> {
 /// The union `PaneRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:392`
+/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:437`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -39690,7 +44111,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PaneRequestRef<'a> {
 /// The table `SearchActionQuery` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:393`
+/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:438`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -39995,7 +44416,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionQueryRef<'a> {
 /// The table `SearchActionNext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:396`
+/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:441`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -40221,7 +44642,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionNextRef<'a> {
 /// The table `SearchActionPrevious` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:399`
+/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:444`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -40447,7 +44868,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionPreviousRef<'a> {
 /// The table `SearchActionClear` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:402`
+/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:447`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -40673,7 +45094,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionClearRef<'a> {
 /// The union `SearchAction` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:405`
+/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:450`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -40944,7 +45365,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SearchActionRef<'a> {
 /// The table `LayoutNodeLeaf` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:406`
+/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:451`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -41249,7 +45670,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeLeafRef<'a> {
 /// The table `LayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:409`
+/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:454`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -41847,7 +46268,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeSplitRef<'a> {
 /// The union `LayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:415`
+/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:460`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -42032,7 +46453,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for LayoutNodeRef<'a> {
 /// The table `SpawnLayoutNodeExisting` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:416`
+/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:461`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -42337,7 +46758,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeExistingRef<'a> {
 /// The table `SpawnLayoutNodeNew` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:419`
+/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:464`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -42642,7 +47063,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeNewRef<'a> {
 /// The table `SpawnLayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:422`
+/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:467`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -43240,7 +47661,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeSplitRef<'a> {
 /// The union `SpawnLayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:428`
+/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:473`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -43468,7 +47889,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SpawnLayoutNodeRef<'a> {
 /// The table `NativeConversation` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NativeConversation` in the file `crates/bkpr-protocol/src/wire/native.fbs:429`
+/// * Table `NativeConversation` in the file `crates/bkpr-protocol/src/wire/native.fbs:474`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -43979,7 +48400,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NativeConversationRef<'a> {
 /// The table `AgentBindingGuard` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentBindingGuard` in the file `crates/bkpr-protocol/src/wire/native.fbs:434`
+/// * Table `AgentBindingGuard` in the file `crates/bkpr-protocol/src/wire/native.fbs:479`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -44368,7 +48789,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentBindingGuardRef<'a> {
 /// The table `CaptureEventBind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:438`
+/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:483`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -45000,7 +49421,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventBindRef<'a> {
 /// The table `CaptureEventError` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:444`
+/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:489`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -45305,7 +49726,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventErrorRef<'a> {
 /// The table `CaptureEventEnd` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:447`
+/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:492`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -45531,7 +49952,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventEndRef<'a> {
 /// The table `CaptureEventPromptSubmitted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventPromptSubmitted` in the file `crates/bkpr-protocol/src/wire/native.fbs:450`
+/// * Table `CaptureEventPromptSubmitted` in the file `crates/bkpr-protocol/src/wire/native.fbs:495`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -45933,7 +50354,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventPromptSubmittedRef<'a> {
 /// The table `CaptureEventStatusEnroll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventStatusEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:454`
+/// * Table `CaptureEventStatusEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:499`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -46335,7 +50756,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventStatusEnrollRef<'a> {
 /// The table `CaptureEventStatusReport` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventStatusReport` in the file `crates/bkpr-protocol/src/wire/native.fbs:458`
+/// * Table `CaptureEventStatusReport` in the file `crates/bkpr-protocol/src/wire/native.fbs:503`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -47100,7 +51521,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventStatusReportRef<'a> {
 /// The table `CaptureEventUnbind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventUnbind` in the file `crates/bkpr-protocol/src/wire/native.fbs:465`
+/// * Table `CaptureEventUnbind` in the file `crates/bkpr-protocol/src/wire/native.fbs:510`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -47630,7 +52051,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventUnbindRef<'a> {
 /// The table `CaptureEventNativeContext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventNativeContext` in the file `crates/bkpr-protocol/src/wire/native.fbs:470`
+/// * Table `CaptureEventNativeContext` in the file `crates/bkpr-protocol/src/wire/native.fbs:515`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -48019,7 +52440,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventNativeContextRef<'a> {
 /// The union `CaptureEvent` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:474`
+/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:519`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -48462,7 +52883,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for CaptureEventRef<'a> {
 /// The table `AgentRequestWhoami` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:475`
+/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:520`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -48778,7 +53199,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWhoamiRef<'a> {
 /// The table `AgentRequestControl` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:478`
+/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:523`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -49277,7 +53698,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestControlRef<'a> {
 /// The table `AgentRequestSetTitle` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:483`
+/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:528`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -49582,7 +54003,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSetTitleRef<'a> {
 /// The table `AgentRequestDiscoverAgents` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:486`
+/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:531`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -50523,7 +54944,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestDiscoverAgentsRef<'a> {
 /// The table `AgentRequestSendMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:494`
+/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:539`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -51260,7 +55681,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSendMessageRef<'a> {
 /// The table `AgentRequestReadInbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:501`
+/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:546`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -51900,7 +56321,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadInboxRef<'a> {
 /// The table `AgentRequestReadMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:507`
+/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:552`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -52427,7 +56848,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadMessageRef<'a> {
 /// The table `AgentRequestAckMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:512`
+/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:557`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -52732,7 +57153,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestAckMessageRef<'a> {
 /// The table `AgentRequestInspectOutbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:515`
+/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:560`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -53270,7 +57691,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestInspectOutboxRef<'a> {
 /// The table `AgentRequestReceiverRegister` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:520`
+/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:565`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -53781,7 +58202,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverRegisterRef<'a> {
 /// The table `AgentRequestReceiverSubscribe` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:525`
+/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:570`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -54183,7 +58604,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverSubscribeRef<'a> {
 /// The table `AgentRequestWakeValidate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:529`
+/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:574`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -54681,7 +59102,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeValidateRef<'a> {
 /// The table `AgentRequestWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:534`
+/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:579`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -55270,7 +59691,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeOutcomeRef<'a> {
 /// The union `AgentRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:540`
+/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:585`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -55928,7 +60349,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentRequestRef<'a> {
 /// The table `AgentWakeOutcomeAccepted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:541`
+/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:586`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56154,7 +60575,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeAcceptedRef<'a> {
 /// The table `AgentWakeOutcomeFailed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:544`
+/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:589`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56459,7 +60880,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeFailedRef<'a> {
 /// The table `AgentWakeOutcomeUnknown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:547`
+/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:592`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56764,7 +61185,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeUnknownRef<'a> {
 /// The union `AgentWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:550`
+/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:595`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -56992,7 +61413,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentWakeOutcomeRef<'a> {
 /// The table `RequestFailureSessionClosing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:551`
+/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:596`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -57308,7 +61729,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureSessionClosingRef<'a> {
 /// The table `RequestFailureBusy` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:554`
+/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:599`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -57613,7 +62034,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureBusyRef<'a> {
 /// The union `RequestFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:557`
+/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:602`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -57798,7 +62219,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for RequestFailureRef<'a> {
 /// The table `OptionalU64` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:558`
+/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:603`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58114,7 +62535,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalU64Ref<'a> {
 /// The table `OptionalPalette` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:561`
+/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:606`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58419,7 +62840,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPaletteRef<'a> {
 /// The table `OptionalUsize` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:564`
+/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:609`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58735,7 +63156,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalUsizeRef<'a> {
 /// The table `NullValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:569`
+/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:614`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58961,7 +63382,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NullValueRef<'a> {
 /// The table `BoolValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:570`
+/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:615`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -59277,7 +63698,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for BoolValueRef<'a> {
 /// The table `SignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:571`
+/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:616`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -59593,7 +64014,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SignedValueRef<'a> {
 /// The table `UnsignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:572`
+/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:617`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -59909,7 +64330,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for UnsignedValueRef<'a> {
 /// The table `FloatValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:573`
+/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:618`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -60225,7 +64646,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FloatValueRef<'a> {
 /// The table `StringValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:574`
+/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:619`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -60530,7 +64951,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for StringValueRef<'a> {
 /// The table `ArrayValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:575`
+/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:620`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -60835,7 +65256,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ArrayValueRef<'a> {
 /// The table `Entry` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:576`
+/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:621`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -61213,7 +65634,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for EntryRef<'a> {
 /// The table `ObjectValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:577`
+/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:622`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -61518,7 +65939,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ObjectValueRef<'a> {
 /// The union `ValueBody` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:578`
+/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:623`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -61961,7 +66382,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ValueBodyRef<'a> {
 /// The table `Value` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:579`
+/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:624`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -62256,7 +66677,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ValueRef<'a> {
 /// The table `ControlPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:580`
+/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:625`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -62551,7 +66972,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ControlPayloadRef<'a> {
 /// The table `PanePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:581`
+/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:626`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -62944,7 +67365,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PanePayloadRef<'a> {
 /// The union `Payload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:582`
+/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:627`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -63129,7 +67550,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PayloadRef<'a> {
 /// The table `Request` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:583`
+/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:628`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -63518,7 +67939,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestRef<'a> {
 /// The table `OptionalPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:584`
+/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:629`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -63813,7 +68234,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPayloadRef<'a> {
 /// The table `OptionalFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:585`
+/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:630`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64108,7 +68529,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalFailureRef<'a> {
 /// The table `Response` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:586`
+/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:631`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize

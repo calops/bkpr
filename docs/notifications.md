@@ -2,9 +2,58 @@
 
 ## Status and prerequisite
 
-Notification handling is an agreed design, not implemented acceptance. Its lifecycle prerequisite is now implemented: one long-lived `bkprd` per host/OS user, owning multiple independent sessions. Closing the last workspace closes that session and its attached clients, not the daemon. An empty daemon remains idle and available. Notification handling is a module/worker inside `bkprd`, not an additional local daemon. The future publisher-operated push relay is a separate remote deployment.
+The backend event/store/subscription foundation is implemented. Desktop and push delivery remain an agreed design, not implemented acceptance. The lifecycle prerequisite is one long-lived `bkprd` per host/OS user, owning multiple independent sessions. Closing the last workspace closes that session and its attached clients, not the daemon. An empty daemon remains idle and available. Notification handling lives inside `bkprd`, not an additional local daemon. Desktop presentation is tracked in [issue #7](https://github.com/calops/bkpr/issues/7); the future publisher-operated push relay is a separate remote deployment.
 
 Named sessions retain independently leased endpoints and recovery roots inside the host process. Incompatible live daemons are never adopted, replaced or stopped automatically. Explicit private runtime/state roots remain available for isolated fixtures.
+
+## Implemented foundation
+
+Authenticated OSC 7501 observations are captured through the existing canonical
+engine status reducer before PTY-read/frame coalescing. Native status enrollment,
+binding and foreground process-birth checks retain their existing authority.
+Per-pane ordering and feed epochs fence replacement; no status-only process scan
+or second terminal parser is introduced.
+
+Routine working reports, duplicate reports and disabled notification kinds do
+not write episode state to disk. Episode suppression is volatile and withdrawn
+with its source; a restart never restores live authority from historical rows.
+Distinct attention categories remain eligible within an episode. Only an
+explicit working-to-idle transition produces idle; done requires an explicit
+report. The default policy enables attention and error, not idle or done.
+
+One bounded worker owns the host's private `notifications/notifications.sqlite3`.
+`rusqlite` 0.42.0 is MIT-licensed and actively maintained
+([release metadata](https://crates.io/api/v1/crates/rusqlite/0.42.0)).
+Defaults are disabled and bundled SQLite avoids a new system-library dependency
+in copied Nix recipes. This adds a native C build, not an async runtime or a
+custom database/WAL implementation. A single connection uses SQLite's rollback
+journal and full synchronization; subscribers never retain database readers.
+
+Retained notification bodies are limited to 4,096 records and 8 MiB, with
+seven-day expiry and a concrete next-expiry deadline rather than periodic
+polling. Other bounds are 4,096 volatile episodes, 64 policy rules, 512 queued
+work items, 32 in-flight requests and 32 waiting subscribers. Pages contain at
+most 64 records and 128 KiB of record bodies. Saturation is rejected/reported,
+not a pane-count limit or a successful-looking durable receipt.
+
+Admission is nonblocking and not crash-proof capture: overflow or a crash before
+commit can lose an observation. Persisted loss counters and cursor
+`loss_generation` make continuity gaps explicit and acknowledgeable. A new
+subscription establishes a current baseline without replay; resuming an older
+cursor reports loss/pruning, and the returned cursor permits normal waiting
+again. Shutdown success means accepted work drained, not lossless historical
+capture, provider delivery or user read. Storage failures and unknown drain
+outcomes remain errors.
+
+Unsafe paths and conflicting ownership fail closed. Ordinary corrupt/unavailable
+notification storage leaves an explicit unhealthy notification service, without
+disabling session execution or fabricating a cursor/policy. `Health` and host
+`DaemonInfo` metadata expose this state; no automatic repair overwrites the
+database. A stalled worker retains its exclusive storage lease after a bounded
+shutdown timeout.
+
+The native API and examples are in the
+[reference](reference.md#notification-records-and-subscriptions).
 
 ## Responsibilities
 
@@ -104,8 +153,8 @@ Initial content is session name/status. Rich E2E payloads remain later explorati
 ## Delivery order and acceptance
 
 1. Implemented: host daemon/session ownership, independent session closure, zero-session idle lifetime, creation/recovery, local/remote routing and explicit host shutdown. See [runtime acceptance](pane-first-mux/engine-proof.md#one-host-daemon-with-independent-local-and-remote-sessions).
-2. Implement typed events, scoped policy, bounded outbox/delivery state and observable health.
-3. Add resumable client subscriptions and delivery inspection without exposing endpoint secrets.
+2. Implemented: typed transitions, scoped policy, bounded durable notification records and observable health. Provider-specific delivery attempts remain part of their adapters.
+3. Implemented: resumable scoped inspection/subscriptions with store identity, sequence and acknowledgeable loss generation.
 4. Coordinate TUI desktop presentation with the frontend owner.
 5. Implement UnifiedPush publisher and mobile enrollment/receiver. Exercise at least two distributors with isolated registrations and explicit test-device/provider approval.
 6. Add the custom publisher relay later as another adapter, not a parallel notification model.

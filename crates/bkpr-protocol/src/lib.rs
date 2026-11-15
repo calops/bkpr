@@ -13,6 +13,9 @@ pub use harness::*;
 mod model;
 pub mod path_wire;
 pub use model::*;
+/// Host-owned semantic notification records, scoped policy and resumable queries.
+pub mod notifications;
+pub use notifications::*;
 mod project;
 pub use project::*;
 mod registry;

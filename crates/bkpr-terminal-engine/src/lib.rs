@@ -13,6 +13,7 @@ mod status;
 use bkpr_protocol::*;
 use libghostty_vt as sdk;
 pub use offers::{PASTE_OFFER_MAX_BYTES, PASTE_OFFER_MAX_COUNT, PASTE_OFFER_TIMEOUT};
+pub use status::ProgramStatusView;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, sync::Arc};
 
 /// Native Ghostty source revision required by this adapter.
@@ -51,6 +52,9 @@ fn valid_size(size: Size) -> Result<()> {
 }
 /// Synchronous clipboard policy invoked on the pane worker with exact MIME contents.
 pub type ClipboardHandler = Box<dyn FnMut(ClipboardRequest) -> ClipboardResponse + Send>;
+/// Ordered status changes on the terminal worker; `false` denotes withdrawal,
+/// never completion. The borrowed records cannot outlive the callback.
+pub type ProgramStatusObserver = Box<dyn FnMut(ProgramStatusView<'_>, bool)>;
 struct CallbackState {
     effects: Vec<Effect>,
     effect_bytes: usize,
@@ -59,18 +63,19 @@ struct CallbackState {
     hold_since: Option<std::time::Instant>,
     held_frame: Option<Frame>,
     status: status::StatusRecords,
+    status_observer: Option<ProgramStatusObserver>,
     size: Size,
     paste_offers: HashMap<u64, Arc<offers::PasteOffer>>,
 }
 impl CallbackState {
     fn push(&mut self, effect: Effect, bytes: usize) {
+        self.status.update(&effect);
         if self.effect_bytes.saturating_add(bytes) > EFFECT_MAX_BYTES || self.effects.len() >= 65536
         {
             self.failed = true;
             return;
         }
         self.effect_bytes += bytes;
-        self.status.update(&effect);
         self.effects.push(effect);
     }
 }
@@ -114,6 +119,7 @@ impl Terminal {
             hold_since: None,
             held_frame: None,
             status: status::StatusRecords::default(),
+            status_observer: None,
             size,
             paste_offers: HashMap::new(),
         }));
@@ -141,6 +147,11 @@ impl Terminal {
     /// grants and offer correlations never replace current view authority.
     pub fn set_clipboard_handler(&mut self, handler: ClipboardHandler) {
         self.callbacks.borrow_mut().clipboard = Some(handler);
+    }
+    /// Observe every canonical status replacement before feed/effect coalescing.
+    /// Callbacks run synchronously and must not block on storage or process scans.
+    pub fn set_program_status_observer(&mut self, observer: ProgramStatusObserver) {
+        self.callbacks.borrow_mut().status_observer = Some(observer);
     }
     /// Set default RGB colors; `None` clears the explicit cursor-color override.
     pub fn set_default_colors(

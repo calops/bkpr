@@ -38,7 +38,7 @@ Add a GUI client only when implemented; `bkpr` may select it later without chang
 
 The runtime uses one long-lived `bkprd` per host/OS user owning multiple independent sessions, not one daemon process per session. Closing the final workspace closes that session and its clients, but leaves the daemon available with zero sessions. Independent local/remote TUI attachments retain session-qualified identity, reconnect generations and session-scoped takeover/closure.
 
-The agreed [notification plan](../notifications.md) records authoritative event derivation, routing, durable delivery, TUI desktop presentation and UnifiedPush-first mobile delivery. Notification workers belong inside the host daemon; no separate local notification daemon is required. Host/session lifetime correction is the prerequisite, not proof those notification features are already implemented.
+The [notification design](../notifications.md) now has a backend foundation: authenticated pre-coalescing transitions, bounded host-owned durable records/policy and scoped resumable subscriptions with acknowledgeable gaps. Notification storage failure remains separate from session execution. TUI desktop presentation and UnifiedPush-first mobile delivery remain later adapters; notification records do not claim provider delivery or user read. No separate local notification daemon is required.
 
 
 ## Reuse and design decisions

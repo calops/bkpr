@@ -42,6 +42,11 @@ pub(super) fn write_operation(
             let offset = g::OperationDaemonShutdown::create(builder, daemon_id);
             g::Operation::create_operation_daemon_shutdown(builder, offset)
         }
+        Operation::Notifications { request } => {
+            let request = super::notifications::write_request(builder, request, budget, depth + 1)?;
+            let offset = g::OperationNotifications::create(builder, request);
+            g::Operation::create_operation_notifications(builder, offset)
+        }
         Operation::SessionInfo => {
             let offset = g::OperationSessionInfo::create(builder);
             g::Operation::create_operation_session_info(builder, offset)
@@ -590,6 +595,9 @@ pub(super) fn read_operation(
         },
         g::OperationRef::OperationDaemonShutdown(value) => Operation::DaemonShutdown {
             daemon_id: read_text(value.daemon_id()?, budget)?,
+        },
+        g::OperationRef::OperationNotifications(value) => Operation::Notifications {
+            request: super::notifications::read_request(value.request()?, budget, depth + 1)?,
         },
         g::OperationRef::OperationSessionInfo(_value) => Operation::SessionInfo,
         g::OperationRef::OperationClientRegister(value) => Operation::ClientRegister {

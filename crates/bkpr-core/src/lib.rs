@@ -4,6 +4,7 @@
 pub mod authority;
 pub mod daemon;
 pub mod diagnostics;
+pub mod notifications;
 #[cfg(target_os = "linux")]
 mod process_tree;
 use bkpr_protocol::scene_wire;
@@ -312,6 +313,7 @@ struct SnapshotBarrier {
     resume: mpsc::Receiver<()>,
 }
 type BeforeTerminate = Arc<dyn Fn() -> Result<()> + Send + Sync>;
+type StatusObserver = Box<dyn Fn(bkpr_terminal_engine::ProgramStatusView<'_>, bool) + Send + Sync>;
 struct Shared {
     authority: Mutex<Authority>,
     published: Mutex<Published>,
@@ -340,8 +342,12 @@ struct Shared {
     workspace: Option<(String, String)>,
     ssh_agent_socket: Option<PathBuf>,
     status_reset: AtomicBool,
+    status_epoch: std::sync::atomic::AtomicU64,
+    status_feed_epoch: std::sync::atomic::AtomicU64,
     status_dirty: AtomicBool,
     status_wake: Option<crossbeam_channel::Sender<()>>,
+    status_observer: std::sync::OnceLock<StatusObserver>,
+    notification_capture: Mutex<registry::notification_capture::Capture>,
     #[cfg(test)]
     resize_barrier: Mutex<Option<Arc<ResizeBarrier>>>,
     #[cfg(all(test, target_os = "linux"))]
@@ -456,8 +462,12 @@ impl Pane {
             workspace,
             ssh_agent_socket,
             status_reset: AtomicBool::new(false),
+            status_epoch: std::sync::atomic::AtomicU64::new(0),
+            status_feed_epoch: std::sync::atomic::AtomicU64::new(0),
             status_dirty: AtomicBool::new(false),
             status_wake,
+            status_observer: std::sync::OnceLock::new(),
+            notification_capture: Mutex::new(Default::default()),
             #[cfg(test)]
             resize_barrier: Mutex::new(None),
             #[cfg(all(test, target_os = "linux"))]
@@ -1659,6 +1669,14 @@ fn run_pane(
                 }
             }
         })?;
+    let status_state = Arc::downgrade(&shared);
+    terminal.set_program_status_observer(Box::new(move |records, explicit| {
+        if let Some(shared) = status_state.upgrade()
+            && let Some(observer) = shared.status_observer.get()
+        {
+            observer(records, explicit);
+        }
+    }));
     let clipboard_state = shared.clone();
     terminal.set_clipboard_handler(Box::new(move |request| {
         let authority = clipboard_state.authority.lock().unwrap();
@@ -1783,8 +1801,15 @@ fn run_pane(
                 let next = pending_output.take().map_or_else(|| output.try_recv(), Ok);
                 match next {
                     Ok(bytes) => {
-                        if shared.status_reset.swap(false, Ordering::AcqRel) {
-                            terminal.clear_program_status();
+                        {
+                            let _published = shared.published.lock().unwrap();
+                            if shared.status_reset.swap(false, Ordering::AcqRel) {
+                                terminal.clear_program_status();
+                            }
+                            shared.status_feed_epoch.store(
+                                shared.status_epoch.load(Ordering::Acquire),
+                                Ordering::Release,
+                            );
                         }
                         route_effects(terminal.feed(&bytes)?, &writer, &shared)?;
                         dirty = true;
@@ -2427,8 +2452,12 @@ mod snapshot_tests {
                 session: None,
                 workspace: None,
                 status_reset: AtomicBool::new(false),
+                status_epoch: std::sync::atomic::AtomicU64::new(0),
+                status_feed_epoch: std::sync::atomic::AtomicU64::new(0),
                 status_dirty: AtomicBool::new(false),
                 status_wake: None,
+                status_observer: std::sync::OnceLock::new(),
+                notification_capture: Mutex::new(Default::default()),
                 resize_barrier: Mutex::new(None),
                 #[cfg(target_os = "linux")]
                 snapshot_barrier: Mutex::new(None),

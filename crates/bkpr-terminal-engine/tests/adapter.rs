@@ -464,6 +464,40 @@ fn osc7501_native_validation_hierarchy_prompt_and_reset_lifecycle() {
 }
 
 #[test]
+fn status_observer_preserves_a_single_feed_burst_and_borrowed_inheritance() {
+    let mut term = terminal();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let output = observed.clone();
+    term.set_program_status_observer(Box::new(move |records, explicit| {
+        output.lock().unwrap().push((
+            explicit,
+            records
+                .iter()
+                .map(|(record, app)| {
+                    (
+                        record.id.clone(),
+                        record.state.clone(),
+                        app.map(str::to_owned),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ));
+    }));
+    term.feed(b"\x1b]7501;state=blocked:app=claude\x07\x1b]7501;state=working:app=claude\x07\x1b]7501;state=blocked:kind=question:id=tool\x07\x1b]7501;state=clear:id=tool\x07\x1b]133;A\x07").unwrap();
+    let observed = observed.lock().unwrap();
+    assert_eq!(observed.len(), 5);
+    assert_eq!(observed[0].1[0].1, "blocked");
+    assert_eq!(observed[1].1[0].1, "working");
+    assert_eq!(
+        observed[2].1[1],
+        ("tool".into(), "blocked".into(), Some("claude".into()))
+    );
+    assert!(!observed[3].0);
+    assert!(!observed[4].0);
+    assert!(observed[4].1.is_empty());
+}
+
+#[test]
 fn clipboard52_is_decoded_owned_and_answered_synchronously() {
     let mut term = terminal();
     let requests = Arc::new(Mutex::new(Vec::new()));

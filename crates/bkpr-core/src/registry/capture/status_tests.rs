@@ -80,6 +80,14 @@ fn status_summary_is_identity_scoped_prioritized_and_last_update_wins() {
 #[test]
 fn registry_watcher_receives_hidden_harness_status_without_admitting_any_views() {
     let fixture = Fixture::new();
+    let notifications = crate::notifications::NotificationService::open(
+        &fixture._root.path().join("notifications"),
+    )
+    .unwrap();
+    fixture
+        .registry
+        .configure_notifications(notifications.clone())
+        .unwrap();
     let workspace = fixture
         .registry
         .request(Request::new(Operation::WorkspaceCreate {
@@ -202,4 +210,35 @@ fn registry_watcher_receives_hidden_harness_status_without_admitting_any_views()
         durable,
         "status changes must never write durable metadata"
     );
+    let page: NotificationPage = serde_json::from_value(
+        notifications
+            .request(
+                NotificationRequest::Inspect {
+                    query: NotificationQuery::default(),
+                    after: None,
+                },
+                None,
+                &|| true,
+            )
+            .unwrap()
+            .into_json()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        page.notifications
+            .iter()
+            .map(|record| record.kind)
+            .collect::<Vec<_>>(),
+        [NotificationKind::Attention, NotificationKind::Error]
+    );
+    assert!(
+        page.notifications
+            .iter()
+            .all(|record| record.source.pane_id == pane_id
+                && record.source.launch_id.is_none()
+                && !record.source.process.birth.is_empty())
+    );
+    fixture.registry.shutdown().unwrap();
+    notifications.shutdown().unwrap();
 }

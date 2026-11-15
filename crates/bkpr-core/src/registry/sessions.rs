@@ -301,6 +301,11 @@ impl Registry {
                 self.detach_client(&client, "detached");
                 Ok(Payload::Control(json!({"detached":true})))
             }
+            Operation::Notifications { request } => self.request_notifications(request, &|| {
+                client.is_active()
+                    && crate::transport::lifetime_connected(stream)
+                    && crate::transport::lifetime_connected(&client.lifetime)
+            }),
             Operation::Client { .. }
             | Operation::ClientRegister { .. }
             | Operation::Shutdown

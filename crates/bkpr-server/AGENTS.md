@@ -9,6 +9,7 @@ This package builds `bkprd`; it has no public Rust library API. `src/main.rs` pa
 - `--home` selects core's scrubbed fixture environment, not an OS sandbox. Use a separate empty fixture HOME; GUI tools can populate their own HOME before the daemon initializes its isolation marker.
 - Session-local harness/forwarding services are configured before session bootstrap. `--bkpr` supplies the companion utility; otherwise it is resolved adjacent to the daemon executable. Never use an incompatible or live debug helper in a fixture.
 - Final workspace closure and session `Shutdown` retire only that session; zero-session hosts remain idle. Explicit expected-ID `DaemonShutdown`, SIGINT and SIGTERM drain all sessions through normal owned cleanup. Core installs process signals only on host control.
+- The core host owns one notification worker and drains it after sessions. Corrupt/unavailable notification storage exposes explicit health without preventing session execution; unsafe ownership or a competing writer fails closed. Bounded drain failure never claims durable success. Historical records/cursors survive session closure and never restore live harness authority.
 - Diagnostics are host-local and best effort, tagged by host incarnation. Failure to install diagnostics does not authorize successful control/persistence or skipped cleanup.
 
 ## Dependencies and verification

@@ -37,6 +37,7 @@ impl Registry {
         origin_lease.bind(&chain[0], &original.pane_root)?;
         let pane = self.capture_pane(&original.grant.pane_id)?;
         let _transaction = self.inner.transaction.lock().unwrap();
+        let mut notification_capture = pane.shared.notification_capture.lock().unwrap();
         let mut state = self.inner.state.lock().unwrap();
         healthy(&state)?;
         ensure!(
@@ -96,6 +97,13 @@ impl Registry {
             state.record.registry.revision = revision;
             self.inner.changed.notify_all();
         }
+        drop(published);
+        drop(captures);
+        drop(state);
+        drop(_transaction);
+        if let Some(service) = self.inner.notifications.get() {
+            notification_capture.withdraw_launch(service, launch_id);
+        }
         let response = json!({"generation":binding.generation});
         Ok((
             NativeStatusStream {
@@ -144,7 +152,13 @@ impl Registry {
             "native status report does not match enrollment"
         );
         stream.ensure_active()?;
+        let notification_pane = self.capture_pane(&stream.grant.pane_id)?;
         let _transaction = self.inner.transaction.lock().unwrap();
+        let mut notification_capture = notification_pane
+            .shared
+            .notification_capture
+            .lock()
+            .unwrap();
         let mut state = self.inner.state.lock().unwrap();
         healthy(&state)?;
         ensure!(!state.closing, "native status daemon is closing");
@@ -237,6 +251,31 @@ impl Registry {
                     .unwrap_or(u64::MAX),
             });
         }
+        let notification = super::super::notification_capture::source(
+            &self.inner.session,
+            info,
+            &published,
+            &captures,
+        )
+        .filter(|source| {
+            source.launch_id.as_deref() == Some(launch_id.as_str())
+                && source.binding_generation == Some(generation)
+        })
+        .map(|source| {
+            super::super::notification_capture::observation(
+                source,
+                if status.state == NativeStatusState::Clear {
+                    None
+                } else {
+                    captures
+                        .native_status
+                        .get(&launch_id)
+                        .and_then(|channel| channel.observation.as_ref())
+                        .map(|report| &report.status)
+                },
+                super::super::notification_capture::now_ms(),
+            )
+        });
         let (summary, changed_at_ms) = visible_status(info.harness.as_ref(), &published, &captures);
         if info.harness_status.as_ref() != summary
             || info.harness_status_changed_at_ms != changed_at_ms
@@ -246,12 +285,37 @@ impl Registry {
             state.record.registry.revision = revision;
             self.inner.changed.notify_all();
         }
+        drop(published);
+        drop(captures);
+        drop(state);
+        drop(_transaction);
+        if let Some(service) = self.inner.notifications.get()
+            && let Some(notification) = notification
+        {
+            notification_capture.publish(service, notification);
+        }
         Ok(json!({"accepted":true,"generation":generation}))
     }
 
     /// Remove only the observation owned by this enrollment.
     pub(crate) fn end_native_status(&self, stream: &NativeStatusStream) -> Result<()> {
         let _transaction = self.inner.transaction.lock().unwrap();
+        let Some(notification_pane) = self
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .live
+            .get(&stream.grant.pane_id)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let mut notification_capture = notification_pane
+            .shared
+            .notification_capture
+            .lock()
+            .unwrap();
         let mut state = self.inner.state.lock().unwrap();
         let mut captures = self.inner.captures.lock().unwrap();
         if !captures
@@ -286,6 +350,13 @@ impl Registry {
             info.harness_status_changed_at_ms = changed_at_ms;
             state.record.registry.revision = revision;
             self.inner.changed.notify_all();
+        }
+        drop(published);
+        drop(captures);
+        drop(state);
+        drop(_transaction);
+        if let Some(service) = self.inner.notifications.get() {
+            notification_capture.withdraw_launch(service, &stream.grant.launch_id);
         }
         Ok(())
     }

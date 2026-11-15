@@ -192,6 +192,16 @@ fn parse_operation(bytes: &[u8]) -> Result<Operation> {
         ),
         "attachment and harness authority cannot be supplied through the operation console"
     );
+    if let Operation::Notifications { request } = &operation {
+        request.validate()?;
+        ensure!(
+            !matches!(
+                request,
+                bkpr_protocol::NotificationRequest::PolicySet { .. }
+            ),
+            "notification policy writes require an explicit host control socket"
+        );
+    }
     Ok(operation)
 }
 
@@ -619,5 +629,33 @@ mod tests {
             parse_operation(b"{\"op\":\"shutdown\"}").unwrap(),
             Operation::Shutdown
         ));
+    }
+
+    #[test]
+    fn notification_console_accepts_session_reads_but_not_host_policy_writes() {
+        for method in ["policy_get", "health"] {
+            let bytes = serde_json::to_vec(
+                &serde_json::json!({"op":"notifications","request":{"method":method}}),
+            )
+            .unwrap();
+            assert!(parse_operation(&bytes).is_ok());
+        }
+        for method in ["inspect", "subscribe"] {
+            let mut request = serde_json::json!({
+                "method":method,
+                "query":{"scope":{},"kinds":[],"limit":64},
+                "after":null
+            });
+            if method == "subscribe" {
+                request["wait_ms"] = serde_json::json!(5000);
+            }
+            let bytes =
+                serde_json::to_vec(&serde_json::json!({"op":"notifications","request":request}))
+                    .unwrap();
+            assert!(parse_operation(&bytes).is_ok());
+        }
+        assert!(parse_operation(br#"{"op":"notifications","request":{"method":"policy_set","policy":{"scope":{},"kinds":["attention","error"]}}}"#).is_err());
+        assert!(parse_operation(br#"{"op":"notifications","request":{"method":"inspect","query":{"scope":{},"kinds":[],"limit":0},"after":null}}"#).is_err());
+        assert!(parse_operation(br#"{"op":"notifications","request":{"method":"subscribe","query":{"scope":{},"kinds":[],"limit":1},"after":null,"wait_ms":5001}}"#).is_err());
     }
 }

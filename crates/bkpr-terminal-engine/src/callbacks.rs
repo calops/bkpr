@@ -17,6 +17,19 @@ fn guarded(state: &Shared, callback: impl FnOnce() -> Result<()>) {
         state.borrow_mut().failed = true;
     }
 }
+fn notify_status(shared: &Shared, explicit: bool) {
+    let (mut observer, status) = {
+        let mut state = shared.borrow_mut();
+        let Some(observer) = state.status_observer.take() else {
+            return;
+        };
+        (observer, std::mem::take(&mut state.status))
+    };
+    observer(status.view(), explicit);
+    let mut state = shared.borrow_mut();
+    state.status = status;
+    state.status_observer = Some(observer);
+}
 pub(super) fn install(
     terminal: &mut sdk::Terminal<'static, 'static>,
     shared: &Shared,
@@ -114,6 +127,7 @@ pub(super) fn install(
                 },
                 bytes,
             );
+            notify_status(&state, name != "clear");
             Ok(())
         })
     })?;
@@ -122,6 +136,7 @@ pub(super) fn install(
         guarded(&state, || {
             if event.kind()? == native::SemanticPromptKind::PromptStart {
                 state.borrow_mut().status.prompt_or_exit();
+                notify_status(&state, false);
             }
             Ok(())
         })

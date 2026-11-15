@@ -1914,3 +1914,73 @@ fn host_sigterm_drains_all_session_processes_and_releases_every_owned_endpoint()
         assert!(!Path::new("/proc").join(pid.to_string()).exists());
     }
 }
+
+#[test]
+fn corrupt_notification_storage_does_not_disable_session_execution() {
+    let fixture = Fixture::new();
+    let notification_root = fixture.state.join("notifications");
+    fs::create_dir(&fixture.state).unwrap();
+    fs::set_permissions(&fixture.state, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::create_dir(&notification_root).unwrap();
+    fs::set_permissions(&notification_root, fs::Permissions::from_mode(0o700)).unwrap();
+    let database = notification_root.join("notifications.sqlite3");
+    let corrupt = b"deliberately invalid private notification database";
+    fs::write(&database, corrupt).unwrap();
+    fs::set_permissions(&database, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let mut daemon = fixture.start_host();
+    let health = daemon.host_send(Operation::Notifications {
+        request: bkpr_protocol::NotificationRequest::Health {},
+    });
+    assert_eq!(health["healthy"], false);
+    assert!(health["error"].is_string());
+    let rejected = request(
+        &daemon.host_socket,
+        Operation::Notifications {
+            request: bkpr_protocol::NotificationRequest::Inspect {
+                query: bkpr_protocol::NotificationQuery::default(),
+                after: None,
+            },
+        },
+    )
+    .unwrap();
+    assert!(!rejected.ok);
+    assert!(rejected.result.is_none());
+
+    let endpoint = daemon.open(
+        bkpr_protocol::DEFAULT_SESSION_NAME,
+        Some(sleeping_spec(&fixture)),
+    );
+    let snapshot = daemon.snapshot();
+    let pane = snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.status == PaneStatus::Running)
+        .unwrap();
+    let execution = control(
+        &endpoint.socket,
+        Operation::Pane {
+            pane_id: pane.id.clone(),
+            request: PaneRequest::Inspect,
+        },
+    );
+    let pid = execution["pid"].as_u64().expect("real pane process") as u32;
+    assert_ne!(pid, 0);
+    #[cfg(target_os = "linux")]
+    assert!(Path::new("/proc").join(pid.to_string()).exists());
+    let stopped = request(
+        &daemon.host_socket,
+        Operation::DaemonShutdown {
+            daemon_id: endpoint.session.daemon_id,
+        },
+    )
+    .unwrap();
+    assert!(
+        !stopped.ok,
+        "notification failure must remain explicit at shutdown"
+    );
+    assert!(!daemon.child.wait().unwrap().success());
+    assert_eq!(fs::read(database).unwrap(), corrupt);
+    #[cfg(target_os = "linux")]
+    assert!(!Path::new("/proc").join(pid.to_string()).exists());
+}
