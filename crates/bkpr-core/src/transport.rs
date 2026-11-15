@@ -1,7 +1,6 @@
-//! Private Unix-socket request serving for the daemon registry.
+//! Shared private Unix-socket request serving for host and session endpoints.
 //!
-//! Binding owns the socket path and exclusive lease; serving adds request dispatch,
-//! bootstrap admission, signal handling and registry shutdown.
+//! One framing, admission and response-drain implementation serves both roles.
 
 use crate::registry::{Registry, RegistryBusy, SessionClosing};
 mod capacity;
@@ -19,6 +18,7 @@ use capacity::{FrameBuffers, WorkStages};
 pub(crate) use clients::{ClientOwner, lifetime_connected, send_lifetime_event};
 use serde_json::json;
 use std::{
+    collections::BTreeMap,
     io::{Read, Write},
     os::unix::{
         fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -79,6 +79,130 @@ impl Drop for SocketLease {
         let _ = fs2::FileExt::unlock(&self.0);
     }
 }
+
+#[derive(Default)]
+struct PredecodeReaders {
+    state: Mutex<PredecodeState>,
+    changed: Condvar,
+}
+#[derive(Default)]
+struct PredecodeState {
+    sockets: BTreeMap<i32, UnixStream>,
+    workers: usize,
+}
+struct PredecodeReader {
+    stop: Stop,
+    id: i32,
+    active: bool,
+}
+impl PredecodeReader {
+    fn admit(&mut self, responses: &Arc<ResponseDrain>) -> Result<PendingResponse> {
+        let mut state = self.stop.readers.state.lock().unwrap();
+        anyhow::ensure!(
+            !self.stop.flag.load(Ordering::Acquire),
+            SessionClosing("endpoint is shutting down")
+        );
+        let socket = state.sockets.remove(&self.id);
+        let pending = PendingResponse::track(responses);
+        state.workers -= 1;
+        self.active = false;
+        self.stop.readers.changed.notify_all();
+        drop(state);
+        drop(socket);
+        Ok(pending)
+    }
+}
+impl Drop for PredecodeReader {
+    fn drop(&mut self) {
+        if self.active {
+            let mut state = self.stop.readers.state.lock().unwrap();
+            let socket = state.sockets.remove(&self.id);
+            state.workers -= 1;
+            self.stop.readers.changed.notify_all();
+            drop(state);
+            drop(socket);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Stop {
+    pub(crate) flag: Arc<AtomicBool>,
+    pub(crate) closing: Arc<AtomicBool>,
+    wake: Arc<UnixStream>,
+    readers: Arc<PredecodeReaders>,
+}
+impl Stop {
+    pub(crate) fn new() -> Result<(Self, UnixStream)> {
+        let (read, write) = UnixStream::pair()?;
+        write.set_nonblocking(true)?;
+        Ok((
+            Self {
+                flag: Arc::new(AtomicBool::new(false)),
+                closing: Arc::new(AtomicBool::new(false)),
+                wake: Arc::new(write),
+                readers: Arc::new(PredecodeReaders::default()),
+            },
+            read,
+        ))
+    }
+    pub(crate) fn request(&self) {
+        self.closing.store(true, Ordering::Release);
+        self.flag.store(true, Ordering::Release);
+        let _ = (&*self.wake).write_all(b"\0");
+    }
+    fn register_reader(&self, stream: &UnixStream) -> Result<PredecodeReader> {
+        let mut state = self.readers.state.lock().unwrap();
+        anyhow::ensure!(
+            !self.flag.load(Ordering::Acquire),
+            SessionClosing("endpoint is shutting down")
+        );
+        let socket = stream.try_clone()?;
+        let id = socket.as_raw_fd();
+        state.sockets.insert(id, socket);
+        state.workers += 1;
+        Ok(PredecodeReader {
+            stop: self.clone(),
+            id,
+            active: true,
+        })
+    }
+    fn cancel_readers(&self) {
+        let sockets = std::mem::take(&mut self.readers.state.lock().unwrap().sockets);
+        for socket in sockets.into_values() {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+    }
+    fn wait_for_readers(&self) {
+        let state = self.readers.state.lock().unwrap();
+        drop(
+            self.readers
+                .changed
+                .wait_while(state, |state| state.workers != 0)
+                .unwrap(),
+        );
+    }
+}
+#[derive(Clone)]
+enum Service {
+    Session(Registry),
+    Host(crate::daemon::HostDaemon),
+}
+impl Service {
+    fn registry(&self) -> Option<&Registry> {
+        match self {
+            Self::Session(registry) => Some(registry),
+            Self::Host(_) => None,
+        }
+    }
+    fn shutdown(&self) -> Result<()> {
+        match self {
+            Self::Session(registry) => registry.shutdown(),
+            Self::Host(host) => host.shutdown_sessions(),
+        }
+    }
+}
+pub(crate) type Ready = Arc<dyn Fn(std::result::Result<(), String>) + Send + Sync>;
 // Native wrapper callbacks must run during bootstrap, but clients must never
 // attach to a half-restored layout. Cancellation releases all waiting requests.
 struct StartupGate {
@@ -199,7 +323,11 @@ fn diagnostic_operation(operation: &Operation) -> Option<DiagnosticOperation> {
         Operation::LayoutUpdate { window_id, .. } => {
             ("layout.update", Some(window_id.as_str()), "success")
         }
-        Operation::Shutdown => ("daemon.shutdown", None, "success"),
+        Operation::Shutdown => ("session.shutdown", None, "success"),
+        Operation::DaemonShutdown { daemon_id } => {
+            ("daemon.shutdown", Some(daemon_id.as_str()), "success")
+        }
+        Operation::SessionOpen { .. } => ("session.open", None, "success"),
         // Includes inspect/read, subscription/status and every pane input request.
         _ => return None,
     };
@@ -257,6 +385,7 @@ pub fn bind(socket: &Path) -> Result<BoundSocket> {
     if !metadata.is_file()
         || metadata.uid() != unsafe { libc::geteuid() }
         || metadata.permissions().mode() & 0o077 != 0
+        || metadata.nlink() != 1
     {
         bail!("socket lock must be private and current-user-owned");
     }
@@ -300,32 +429,66 @@ pub fn serve(socket: &Path, registry: Registry) -> Result<()> {
     bind(socket)?.serve(registry)
 }
 impl BoundSocket {
-    /// Serve requests without an initial pane bootstrap, announcing readiness immediately.
+    /// Serves a lower-level session component without installing process signals.
     ///
-    /// Blocks until SIGINT, SIGTERM, a shutdown request or registry session end.
-    /// On leaving the request loop, shuts down the registry and waits for decoded
-    /// request replies; idle sockets and client lifetime watches are not drained.
-    ///
-    /// # Errors
-    /// Returns signal/listener setup, readiness output, serving or registry
-    /// shutdown errors.
+    /// Session termination drains decoded replies and accepted spawns. Production
+    /// callers use [`crate::daemon::HostDaemon`] to own this component.
     pub fn serve(self, registry: Registry) -> Result<()> {
         self.serve_bootstrap(registry, None)
     }
-    /// Serve requests while optionally bootstrapping or restoring panes.
+    /// Serves a session component with callback-safe bootstrap admission.
     ///
-    /// With `initial`, native callbacks are admitted during bootstrap, but ordinary
-    /// control waits until the batch finishes. Readiness is emitted after successful
-    /// bootstrap; cancellation releases waiting requests. Without `initial`, this
-    /// has the same lifecycle as [`Self::serve`].
-    ///
-    /// On leaving the request loop, shuts down the registry, joins bootstrap and
-    /// waits for decoded request replies, excluding idle sockets and lifetime watches.
-    ///
-    /// # Errors
-    /// Returns setup, readiness output, bootstrap, serving or registry shutdown
-    /// errors. Individual request failures are returned to their callers.
+    /// Blocks until that session ends or shuts down; ordinary requests wait for
+    /// bootstrap, while native callbacks remain available. No process signals
+    /// or host readiness records are installed by session components.
     pub fn serve_bootstrap(self, registry: Registry, initial: Option<PaneSpawnSpec>) -> Result<()> {
+        let (stop, wake) = Stop::new()?;
+        self.serve_service(Service::Session(registry), initial, stop, wake, None, false)
+    }
+    pub(crate) fn serve_session(
+        self,
+        registry: Registry,
+        initial: Option<PaneSpawnSpec>,
+        stop: Stop,
+        wake: UnixStream,
+        ready: Ready,
+    ) -> Result<()> {
+        self.serve_service(
+            Service::Session(registry),
+            initial,
+            stop,
+            wake,
+            Some(ready),
+            false,
+        )
+    }
+    pub(crate) fn serve_host(
+        self,
+        host: crate::daemon::HostDaemon,
+        stop: Stop,
+        wake: UnixStream,
+    ) -> Result<()> {
+        let mut signals = SignalRegistrations::default();
+        for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
+            signals
+                .0
+                .push(signal_hook::flag::register(signal, stop.flag.clone())?);
+            signals.0.push(signal_hook::low_level::pipe::register(
+                signal,
+                stop.wake.try_clone()?,
+            )?);
+        }
+        self.serve_service(Service::Host(host), None, stop, wake, None, true)
+    }
+    fn serve_service(
+        self,
+        service: Service,
+        initial: Option<PaneSpawnSpec>,
+        stop: Stop,
+        wake_read: UnixStream,
+        ready: Option<Ready>,
+        announce: bool,
+    ) -> Result<()> {
         let Self {
             listener,
             socket,
@@ -334,7 +497,8 @@ impl BoundSocket {
             #[cfg(test)]
             dispatch_observer,
         } = self;
-        let shutdown = Arc::new(AtomicBool::new(false));
+        let service = Arc::new(service);
+        let shutdown = stop.flag.clone();
         let request_buffers = Arc::new(FrameBuffers::default());
         let decode_work = Arc::new(WorkStages::new(FRAME_WORKERS));
         let response_work = Arc::new(WorkStages::new(FRAME_WORKERS));
@@ -343,74 +507,85 @@ impl BoundSocket {
             FRAME_WORKERS * MAX_RESPONSE,
         ));
         let responses = Arc::new(ResponseDrain::default());
-        let (wake_read, wake_write) = UnixStream::pair()?;
-        wake_write.set_nonblocking(true)?;
-        let wake_write = Arc::new(wake_write);
-        let mut signals = SignalRegistrations::default();
-        for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
-            signals
-                .0
-                .push(signal_hook::flag::register(signal, shutdown.clone())?);
-            signals.0.push(signal_hook::low_level::pipe::register(
-                signal,
-                wake_write.try_clone()?,
-            )?);
+        let wake_write = stop.wake.clone();
+        if let Some(registry) = service.registry() {
+            let end_stop = stop.clone();
+            registry.set_session_end_waker(Arc::new(move || end_stop.request()));
         }
-        // Registration replays an already-committed session end. The flag and
-        // private wake fd cover both sides of entering the blocking accept poll.
-        let end_shutdown = shutdown.clone();
-        let end_wake = wake_write.clone();
-        registry.set_session_end_waker(Arc::new(move || {
-            end_shutdown.store(true, Ordering::Release);
-            let _ = (&*end_wake).write_all(b"\0");
-        }));
         let startup = Arc::new(StartupGate {
             complete: Mutex::new(initial.is_none()),
             changed: Condvar::new(),
             cancelled: AtomicBool::new(false),
         });
-        let bootstrap = initial.map(|spec| {
-            let registry = registry.clone();
-            let startup = startup.clone();
-            let shutdown = shutdown.clone();
-            let wake_write = wake_write.clone();
-            let socket = socket.clone();
-            thread::Builder::new().name("bkpr-bootstrap".into()).spawn(move || {
-                // Include diagnostics/readiness in the worker failure boundary:
-                // a closed output fd must never strand the admission gate.
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
-                    let value = registry.bootstrap(spec)?;
-                    if let Some(failures) = value.get("failures").and_then(|v| v.as_array()) {
-                        for failure in failures {
-                            writeln!(std::io::stderr().lock(), "bkprd: automatic restore: {failure}")?;
+        let bootstrap = initial
+            .map(|spec| {
+                let registry = service.registry().expect("session bootstrap").clone();
+                let startup = startup.clone();
+                let shutdown = shutdown.clone();
+                let wake_write = wake_write.clone();
+                let ready = ready.clone();
+                thread::Builder::new()
+                    .name("bkpr-bootstrap".into())
+                    .spawn(move || {
+                        // Include diagnostics/readiness in the worker failure boundary:
+                        // a closed output fd must never strand the admission gate.
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                            || -> Result<()> {
+                                let value = registry.bootstrap(spec)?;
+                                if let Some(failures) =
+                                    value.get("failures").and_then(|v| v.as_array())
+                                {
+                                    for failure in failures {
+                                        writeln!(
+                                            std::io::stderr().lock(),
+                                            "bkprd: automatic restore: {failure}"
+                                        )?;
+                                    }
+                                }
+                                anyhow::ensure!(
+                                    !shutdown.load(Ordering::Acquire)
+                                        && !startup.cancelled.load(Ordering::Acquire),
+                                    SessionClosing("session ended during bootstrap")
+                                );
+                                if let Some(ready) = &ready {
+                                    ready(Ok(()));
+                                }
+                                Ok(())
+                            },
+                        ))
+                        .map_err(|_| anyhow::anyhow!("bootstrap thread panicked"))
+                        .and_then(|result| result);
+                        let cancelled = shutdown.load(Ordering::Acquire)
+                            || startup.cancelled.load(Ordering::Acquire);
+                        if let Err(error) = &result
+                            && let Some(ready) = &ready
+                        {
+                            ready(Err(format!("{error:#}")));
                         }
-                    }
-                    if !shutdown.load(Ordering::Acquire) && !startup.cancelled.load(Ordering::Acquire) {
-                        writeln!(
-                            std::io::stdout().lock(), "{}",
-                            json!({"version":PROTOCOL_VERSION,"ready":true,"socket":bkpr_protocol::path_wire::WirePath(&socket)})
-                        )?;
-                    }
-                    Ok(())
-                }))
-                .map_err(|_| anyhow::anyhow!("bootstrap thread panicked"))
-                .and_then(|result| result);
-                let cancelled = shutdown.load(Ordering::Acquire)
-                    || startup.cancelled.load(Ordering::Acquire);
-                if result.is_err() && !cancelled {
-                    shutdown.store(true, Ordering::Release);
-                    let _ = (&*wake_write).write_all(b"\0");
-                }
-                startup.finish();
-                if cancelled { Ok(()) } else { result }
+                        if result.is_err() && !cancelled {
+                            shutdown.store(true, Ordering::Release);
+                            let _ = (&*wake_write).write_all(b"\0");
+                        }
+                        startup.finish();
+                        if cancelled { Ok(()) } else { result }
+                    })
             })
-        }).transpose()?;
-        if bootstrap.is_none() {
+            .transpose()?;
+        if bootstrap.is_none() && announce {
             writeln!(
                 std::io::stdout().lock(),
                 "{}",
                 json!({"version":PROTOCOL_VERSION,"ready":true,"socket":bkpr_protocol::path_wire::WirePath(&socket)})
             )?;
+        }
+        if bootstrap.is_none()
+            && let Some(ready) = &ready
+        {
+            if shutdown.load(Ordering::Acquire) {
+                ready(Err("session is shutting down".into()));
+            } else {
+                ready(Ok(()));
+            }
         }
         let serving = (|| -> Result<()> {
             while !shutdown.load(Ordering::Acquire) {
@@ -422,8 +597,21 @@ impl BoundSocket {
                         if shutdown.load(Ordering::Acquire) {
                             break;
                         }
-                        let registry = registry.clone();
+                        let mut reader = match stop.register_reader(&stream) {
+                            Ok(reader) => reader,
+                            Err(error) => {
+                                if !shutdown.load(Ordering::Acquire) {
+                                    let _ = writeln!(
+                                        std::io::stderr().lock(),
+                                        "bkprd: registering request reader: {error}"
+                                    );
+                                }
+                                continue;
+                            }
+                        };
+                        let endpoint = Arc::downgrade(&service);
                         let shutdown = shutdown.clone();
+                        let closing = stop.closing.clone();
                         let request_buffers = request_buffers.clone();
                         let decode_work = decode_work.clone();
                         let response_work = response_work.clone();
@@ -444,11 +632,14 @@ impl BoundSocket {
                     let mut pending_response = None;
                     let mut dispatched = false;
                     let mut diagnostic = None;
+                    let mut service = None;
                     let result = (|| -> Result<_> {
                         let (request, _request_buffer) = capacity::read_request(
                             &mut stream, &request_buffers, &decode_work,
                         )?;
-                        pending_response = Some(PendingResponse::track(&responses));
+                        pending_response = Some(reader.admit(&responses)?);
+                        service = endpoint.upgrade();
+                        let service = service.as_ref().context("endpoint is shutting down")?;
                         diagnostic = diagnostic_operation(&request.operation);
                         let requested_subscription = match &request.operation {
                             Operation::Agent {
@@ -458,8 +649,15 @@ impl BoundSocket {
                             } => Some((launch_id.clone(), receiver_id.clone())),
                             _ => None,
                         };
-                        stop = request.version == PROTOCOL_VERSION && matches!(&request.operation, Operation::Shutdown);
                         anyhow::ensure!(request.version == PROTOCOL_VERSION, "unsupported protocol version");
+                        if let Service::Host(host) = service.as_ref() {
+                            dispatched = true;
+                            let result = host.request(request.operation)?;
+                            stop = host.stop_requested();
+                            return Ok(result);
+                        }
+                        let registry = service.registry().expect("session endpoint");
+                        stop = matches!(&request.operation, Operation::Shutdown);
                         if !startup_callback(&request.operation) {
                             #[cfg(test)]
                             if !*startup.complete.lock().unwrap() {
@@ -489,11 +687,12 @@ impl BoundSocket {
                         }
                         dispatched = true;
                         if stop {
+                            closing.store(true, Ordering::Release);
                             startup.cancel();
                         }
                         let result = match request.operation {
-                            Operation::ClientRegister { session_id, daemon_id } => {
-                                let (client, response) = registry.register_client(&stream, &session_id, &daemon_id)?;
+                            Operation::ClientRegister { session_id, daemon_id, session_instance_id } => {
+                                let (client, response) = registry.register_client(&stream, &session_id, &daemon_id, &session_instance_id)?;
                                 lifetime = Some(client);
                                 Payload::Control(response)
                             }
@@ -529,12 +728,15 @@ impl BoundSocket {
                         });
                         Ok(result)
                     })();
+                    if pending_response.is_none() && shutdown.load(Ordering::Acquire) {
+                        return;
+                    }
                     // Only a typed closing guard can authorize shutdown handling.
                     // In particular, never turn a generic error into a closing
                     // success because another request ended the session.
                     let result = match result {
                         Err(error) if error.is::<SessionClosing>() => {
-                            registry.request_health().and(Err(error))
+                            service.as_ref().and_then(|service| service.registry()).map_or(Ok(()), Registry::request_health).and(Err(error))
                         }
                         result => result,
                     };
@@ -573,7 +775,7 @@ impl BoundSocket {
                     if sent.is_err()
                         && let Some((launch_id, receiver_id, notification_id, generation)) = subscription
                     {
-                        let _ = registry.agent_subscription_disconnected(
+                        let _ = service.as_ref().and_then(|service| service.registry()).expect("session subscription").agent_subscription_disconnected(
                             &launch_id, &receiver_id, &notification_id, generation,
                         );
                     }
@@ -581,24 +783,25 @@ impl BoundSocket {
                         drop(pending_response.take());
                         if sent.is_ok() {
                             let _ = status::serve(
-                                &mut stream, &registry, &enrollment, &peer, &shutdown,
+                                &mut stream, service.as_ref().and_then(|service| service.registry()).expect("session status"), &enrollment, &peer, &shutdown,
                                 status::Resources {
                                     request_buffers: &request_buffers, decode_work: &decode_work,
                                     response_work: &response_work, response_buffers: &response_buffers,
                                 },
                             );
                         }
-                        let _ = registry.end_native_status(&enrollment);
+                        let _ = service.as_ref().and_then(|service| service.registry()).expect("session status").end_native_status(&enrollment);
                     }
                     if let Some(client) = lifetime {
                         if sent.is_ok() {
                             client.handshake_complete();
                             drop(pending_response.take());
-                            clients::watch_client(&stream, &registry, &client);
+                            clients::watch_client(&stream, service.as_ref().and_then(|service| service.registry()).expect("session client"), &client);
                         } else {
-                            registry.detach_client(&client, "disconnected");
+                            service.as_ref().and_then(|service| service.registry()).expect("session client").detach_client(&client, "disconnected");
                         }
                     }
+                    drop(service);
                     drop(pending_response);
                     // A valid explicit shutdown closes the daemon even when owned cleanup
                     // reports an error. Keep the error response, not a poisoned listener.
@@ -633,9 +836,11 @@ impl BoundSocket {
             Ok(())
         })();
         drop(listener);
-        shutdown.store(true, Ordering::Release);
+        stop.request();
+        stop.cancel_readers();
+        decode_work.cancel();
         startup.finish();
-        let cleanup = registry.shutdown();
+        let cleanup = service.shutdown();
         let bootstrapped = bootstrap
             .map(|thread| {
                 thread
@@ -643,6 +848,7 @@ impl BoundSocket {
                     .map_err(|_| anyhow::anyhow!("bootstrap thread panicked"))?
             })
             .transpose();
+        stop.wait_for_readers();
         let mut pending = responses.pending.lock().unwrap();
         while *pending != 0 {
             pending = responses.changed.wait(pending).unwrap();

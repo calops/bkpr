@@ -389,6 +389,7 @@ fn transport_failure_retires_every_endpoint_without_reconnect_or_empty_inspectio
         name: "remote".into(),
         session_id: "existing-session".into(),
         daemon_id: "existing-daemon".into(),
+        session_instance_id: "existing-session-instance".into(),
     };
     let expected = identity.clone();
     let (close, close_now) = sync::sync_channel(1);
@@ -679,6 +680,7 @@ fn authoritative_shutdown_drains_original_mutation_receipt_after_owner_drop() {
         name: "remote".into(),
         session_id: "persistent".into(),
         daemon_id: "daemon".into(),
+        session_instance_id: "session-instance".into(),
     };
     let expected = identity.clone();
     let (sender, receiver) = mpsc::channel(STREAMS - 1);

@@ -13,6 +13,7 @@ table SessionInfo {
   name:string (required);
   session_id:string (required);
   daemon_id:string (required);
+  session_instance_id:string (required);
 }
 table UnixPath { bytes:[ubyte] (required); }
 union AgentPath { UnixPath }

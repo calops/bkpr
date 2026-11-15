@@ -179,56 +179,101 @@ def graphics_readiness(output: bytes, device_input: bytes) -> dict | None:
             "complete_synchronized_frame": True}
 
 
-class Session:
-    def __init__(self, name: str, env: dict[str, str], pair: Path, owned: OwnedProcesses, root: Path):
-        self.name, self.env, self.pair, self.owned, self.root = name, env, pair, owned, root
-        key = hashlib.sha256(name.encode()).hexdigest()
-        self.endpoint = Path(env["XDG_RUNTIME_DIR"]) / "bkpr" / key / "s"
-        self.state = Path(env["XDG_STATE_HOME"]) / "bkpr/sessions" / key
-        for directory in (
-            Path(env["XDG_RUNTIME_DIR"]) / "bkpr", self.endpoint.parent,
-            Path(env["XDG_STATE_HOME"]) / "bkpr", self.state.parent, self.state,
-        ):
+def native_request(pair: Path, env: dict[str, str], endpoint: Path, family: int, op: str, **fields):
+    result = subprocess.run([str(pair / "bkpr"), "request", "--socket", str(endpoint),
+                             json.dumps({"version": family, "op": op, **fields})],
+                            env=env, capture_output=True, timeout=35, check=True)
+    if len(result.stdout) > 8 * 1024 * 1024:
+        raise RuntimeError("Native request exceeded evidence bound")
+    value = json.loads(result.stdout)
+    if not value.get("ok"):
+        raise RuntimeError(f"Native request {op} failed: {value}")
+    return value["result"]
+
+
+class Host:
+    def __init__(self, label: str, env: dict[str, str], pair: Path, owned: OwnedProcesses, cwd: Path):
+        self.label, self.env, self.pair, self.owned, self.cwd = label, env, pair, owned, cwd
+        self.endpoint = Path(env["XDG_RUNTIME_DIR"]) / "bkpr/d"
+        self.state = Path(env["XDG_STATE_HOME"]) / "bkpr"
+        for directory in (self.endpoint.parent, self.state):
             directory.mkdir(mode=0o700, exist_ok=True)
         self.process = None
         self.family = None
+        self.identity = None
 
     def start(self):
-        argv = [self.pair / "bkprd", "--bkpr", self.pair / "bkpr", "--session", self.name,
-                "--socket", self.endpoint, "--state-root", self.state, "--home", self.env["HOME"],
-                "--cwd", self.root]
-        with (self.owned.evidence / f"daemon-{self.name}.log").open("wb") as log:
+        if self.process is not None:
+            if self.process.poll() is not None:
+                raise RuntimeError(f"Owned host {self.label} unexpectedly exited")
+            return
+        argv = [self.pair / "bkprd", "--bkpr", self.pair / "bkpr",
+                "--socket", self.endpoint, "--state-root", self.state,
+                "--home", self.env["HOME"], "--cwd", self.cwd]
+        log_path = self.owned.evidence / f"daemon-{self.label}.log"
+        with log_path.open("wb") as log:
             self.process = subprocess.Popen(list(map(str, argv)), env=self.env,
                                             start_new_session=True, stdout=log, stderr=subprocess.STDOUT)
-        self.owned.children.append((f"daemon-{self.name}", self.process))
+        self.owned.children.append((f"daemon-{self.label}", self.process))
         self.owned.discover()
-        log = self.owned.evidence / f"daemon-{self.name}.log"
-        with Changes([log, self.endpoint.parent]) as changes:
+        with Changes([log_path, self.endpoint.parent]) as changes:
             def ready():
                 if self.process.poll() is not None:
-                    raise RuntimeError(f"Owned daemon exited before readiness: {log.read_text()}")
-                for line in log.read_text().splitlines():
+                    raise RuntimeError(f"Owned host exited before readiness: {log_path.read_text()}")
+                for line in log_path.read_text().splitlines():
                     with contextlib.suppress(ValueError):
                         value = json.loads(line)
                         if isinstance(value, dict) and value.get("ready") is True:
                             version = value.get("version")
                             if type(version) is not int or version <= 0:
-                                raise RuntimeError("Owned daemon readiness has no valid protocol version")
+                                raise RuntimeError("Owned host readiness has no valid protocol version")
                             return version if self.endpoint.exists() else None
                 return None
-            self.family = changes.until(ready, f"Owned daemon {self.name} protocol readiness")
-        self.request("session_info")
+            self.family = changes.until(ready, f"Owned host {self.label} protocol readiness")
+        self.identity = self.request("daemon_info")["daemon"]
+        if self.identity["pid"] != self.process.pid:
+            raise RuntimeError("Owned host identity does not match its actual process")
 
     def request(self, op: str, **fields):
-        result = subprocess.run([str(self.pair / "bkpr"), "request", "--socket", str(self.endpoint),
-                                 json.dumps({"version": self.family, "op": op, **fields})],
-                                env=self.env, capture_output=True, timeout=35, check=True)
-        if len(result.stdout) > 8 * 1024 * 1024:
-            raise RuntimeError("Native request exceeded evidence bound")
-        value = json.loads(result.stdout)
-        if not value.get("ok"):
-            raise RuntimeError(f"Native request {op} failed: {value}")
-        return value["result"]
+        return native_request(self.pair, self.env, self.endpoint, self.family, op, **fields)
+
+    def stop(self):
+        if self.process is None or self.process.poll() is not None:
+            return {"host": self.label, "normal_shutdown": False}
+        self.request("daemon_shutdown", daemon_id=self.identity["daemon_id"])
+        code = self.process.wait(timeout=30)
+        if code:
+            raise RuntimeError(f"Owned host {self.label} exited {code}")
+        return {"host": self.label, "returncode": code, "normal_shutdown": True}
+
+
+class Session:
+    def __init__(self, name: str, host: Host, cwd: Path):
+        self.name, self.host, self.root = name, host, cwd
+        self.env, self.pair, self.owned = host.env, host.pair, host.owned
+        key = hashlib.sha256(name.encode()).hexdigest()
+        self.endpoint = host.endpoint.parent / key / "s"
+        self.state = host.state / "sessions" / key
+        for directory in (self.endpoint.parent, self.state.parent, self.state):
+            directory.mkdir(mode=0o700, exist_ok=True)
+        self.family = None
+        self.started = False
+
+    def start(self):
+        self.host.start()
+        self.family = self.host.family
+        defaults = None
+        if shell := self.env.get("SHELL"):
+            defaults = {"argv": [shell], "cwd": str(self.root), "home": self.env["HOME"],
+                        "isolated_environment": True}
+        opened = self.host.request("session_open", name=self.name, defaults=defaults, initial=None)
+        if Path(opened["socket"]) != self.endpoint or opened["session"]["daemon_id"] != self.host.identity["daemon_id"]:
+            raise RuntimeError("Session was not opened by its expected host")
+        self.request("session_info")
+        self.started = True
+
+    def request(self, op: str, **fields):
+        return native_request(self.pair, self.env, self.endpoint, self.family, op, **fields)
 
     def registry(self):
         return self.request("inspect")["registry"]
@@ -245,14 +290,16 @@ class Session:
             self.request("wait", after=snapshot["revision"], wait_ms=min(int(remaining * 1000), 30000))
 
     def stop(self):
-        if self.process and self.process.poll() is None:
-            self.request("shutdown")
-            code = self.process.wait(timeout=30)
-            if code:
-                raise RuntimeError(f"Owned session {self.name} exited {code}")
-            return {"session": self.name, "returncode": code, "normal_shutdown": True}
-        return {"session": self.name, "returncode": self.process.poll() if self.process else None,
-                "normal_shutdown": False}
+        if not self.started:
+            return {"session": self.name, "normal_shutdown": False}
+        with Changes([self.endpoint.parent]) as changes:
+            if self.endpoint.exists():
+                self.request("shutdown")
+            changes.until(lambda: not self.endpoint.exists(), f"Session {self.name} retired")
+        self.started = False
+        if self.host.process.poll() is not None:
+            raise RuntimeError("Session closure unexpectedly stopped its host daemon")
+        return {"session": self.name, "normal_shutdown": True, "host_still_running": True}
 
 
 def spawn_spec(argv: list, cwd: Path, env: dict[str, str], title: str) -> dict:
@@ -481,6 +528,7 @@ def capture_inside(args) -> None:
     provider = ScriptedProvider(evidence)
     preflight = None
     sessions: list[Session] = []
+    hosts: list[Host] = []
     manifest = {"passed": False, "scenario": "Scripted demo; real native Claude/Pi UIs, managed Codex window, real broker tools, real loopback SSH",
                 "network": {"interfaces": ["lo"], "host_home_mounted": False, "external_provider_calls": 0},
                 "approval_bypass": False, "peer_message_pty_typing": False,
@@ -527,8 +575,11 @@ def capture_inside(args) -> None:
         remote_env.update(PATH=env["PATH"], SHELL=str(tools["bash"]))
         remote_repo = remote_root / "build-tools"
         repository(owned, remote_repo, "main")
-        local = Session(SESSION, env, pair, owned, repo)
-        remote = Session(REMOTE_SESSION, remote_env, pair, owned, remote_repo)
+        local_host = Host("local", env, pair, owned, repo)
+        remote_host = Host("remote", remote_env, pair, owned, remote_repo)
+        hosts.extend((local_host, remote_host))
+        local = Session(SESSION, local_host, repo)
+        remote = Session(REMOTE_SESSION, remote_host, remote_repo)
         sessions.extend((local, remote))
         for session in sessions:
             session.start()
@@ -866,6 +917,7 @@ The Unicode review handoff is assigned to Claude and Pi.""")
         if code:
             raise RuntimeError(f"Actual terminal client normal detach exited {code}")
         manifest["normal_exits"] = [session.stop() for session in sessions]
+        manifest["host_exits"] = [host.stop() for host in hosts]
         manifest["passed"] = True
     except BaseException as failure:
         error = failure
@@ -899,6 +951,9 @@ The Unicode review handoff is assigned to Claude and Pi.""")
         for session in reversed(sessions):
             with contextlib.suppress(Exception):
                 session.stop()
+        for host in reversed(hosts):
+            with contextlib.suppress(Exception):
+                host.stop()
         try:
             manifest["cleanup"] = owned.close()
         except Exception as cleanup_error:

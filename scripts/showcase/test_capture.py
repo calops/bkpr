@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from capture import FIXTURE_BROKER_TOOLS, broker_conversation, client_command, field, ensure_success, graphics_readiness, is_fixture_broker_dialog, is_fixture_key_prompt, is_fixture_project_prompt, is_security_notice, managed_bindings, Session
+from capture import FIXTURE_BROKER_TOOLS, broker_conversation, client_command, field, ensure_success, graphics_readiness, is_fixture_broker_dialog, is_fixture_key_prompt, is_fixture_project_prompt, is_security_notice, managed_bindings, Host, Session
 from runtime import Changes, private_environment, native
 from provider import FIXTURE_API_KEY
 
@@ -206,7 +206,8 @@ Enter to confirm · Esc to cancel
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             env = private_environment(root, {})
-            session = Session("test", env, root, None, root)
+            host = Host("test", env, root, None, root)
+            session = Session("test", host, root)
             for path in (session.endpoint.parent, session.endpoint.parent.parent,
                          session.state, session.state.parent, session.state.parent.parent):
                 self.assertEqual(path.stat().st_mode & 0o777, 0o700)

@@ -172,6 +172,7 @@ struct Inner {
     ci_inputs: Mutex<BTreeMap<PathBuf, u64>>,
     ci_input_generation: std::sync::atomic::AtomicU64,
     public_handles: std::sync::atomic::AtomicUsize,
+    shutdown_result: Mutex<Option<std::result::Result<(), String>>>,
     changed: Condvar,
     _lease: Lease,
     #[cfg(test)]
@@ -214,10 +215,30 @@ struct SpawnBarrier {
 }
 #[cfg(test)]
 type SpawnStarted = Arc<dyn Fn(&Pane) + Send + Sync>;
-struct Lease(File);
+struct Lease {
+    file: File,
+    released: Arc<LeaseReleased>,
+}
+#[derive(Default)]
+pub(crate) struct LeaseReleased {
+    complete: Mutex<bool>,
+    changed: Condvar,
+}
+impl LeaseReleased {
+    pub(crate) fn wait(&self) {
+        let complete = self.complete.lock().unwrap();
+        drop(
+            self.changed
+                .wait_while(complete, |complete| !*complete)
+                .unwrap(),
+        );
+    }
+}
 impl Drop for Lease {
     fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.0);
+        let _ = FileExt::unlock(&self.file);
+        *self.released.complete.lock().unwrap() = true;
+        self.released.changed.notify_all();
     }
 }
 enum SpawnTarget {
@@ -478,9 +499,11 @@ impl Drop for Registry {
 }
 
 impl Registry {
-    /// Returns the current session ID for correlating backend diagnostics.
-    pub fn diagnostic_session_id(&self) -> &str {
-        &self.inner.session.session_id
+    pub(crate) fn lease_released(&self) -> Arc<LeaseReleased> {
+        self.inner._lease.released.clone()
+    }
+    pub(crate) fn session_info(&self) -> &SessionInfo {
+        &self.inner.session
     }
     /// Opens the state root using [`DEFAULT_SESSION_NAME`].
     ///
@@ -500,6 +523,14 @@ impl Registry {
     /// root, an existing owner, invalid stored metadata, or a storage or
     /// background-service startup failure.
     pub fn open_named(root: &Path, name: &str) -> Result<Self> {
+        Self::open_named_in_host(root, name, &Uuid::new_v4().to_string())
+    }
+    /// Opens an independent session belonging to the given host incarnation.
+    ///
+    /// Retains [`Self::open_named`]'s storage and ownership checks, and assigns
+    /// a fresh session instance even when reopening the same durable session.
+    pub fn open_named_in_host(root: &Path, name: &str, daemon_id: &str) -> Result<Self> {
+        ensure!(Uuid::parse_str(daemon_id).is_ok(), "invalid host identity");
         valid_session_name(name)?;
         ensure!(root.is_absolute(), "state root must be absolute");
         private_directory(root)?;
@@ -512,11 +543,18 @@ impl Registry {
             .custom_flags(libc::O_NOFOLLOW)
             .open(root.join("owner.lock"))?;
         check_file(&lease)?;
+        ensure!(
+            lease.metadata()?.nlink() == 1,
+            "owner lease cannot have hard links"
+        );
         lease
             .try_lock_exclusive()
             .context("state root already owned by another daemon")?;
-        let lease = Lease(lease);
-        let session = sessions::open_session(root, name)?;
+        let lease = Lease {
+            file: lease,
+            released: Arc::new(LeaseReleased::default()),
+        };
+        let session = sessions::open_session(root, name, daemon_id)?;
         let stored = read_record(root)?;
         let fresh = stored.is_none();
         let mut record = stored.unwrap_or(Record {
@@ -609,6 +647,7 @@ impl Registry {
                 ci_inputs: Mutex::new(BTreeMap::new()),
                 ci_input_generation: std::sync::atomic::AtomicU64::new(0),
                 public_handles: std::sync::atomic::AtomicUsize::new(1),
+                shutdown_result: Mutex::new(None),
                 changed: Condvar::new(),
                 _lease: lease,
                 #[cfg(test)]
@@ -812,7 +851,7 @@ impl Registry {
     /// Returns an error for invalid or excessive arguments, nonabsolute or
     /// NUL-containing paths, or defaults that have already been configured.
     pub fn configure_spawn_defaults(&self, defaults: SpawnDefaults) -> Result<()> {
-        validate_spawn_arguments(&defaults.argv, &defaults.cwd, &defaults.home)?;
+        validate_spawn_defaults(&defaults)?;
         self.inner
             .spawn_defaults
             .set(defaults)
@@ -869,6 +908,9 @@ impl Registry {
                 "session": self.inner.session,
                 "spawn_defaults": self.inner.spawn_defaults.get(),
             })),
+            Operation::DaemonInfo | Operation::SessionOpen { .. } | Operation::DaemonShutdown { .. } => {
+                bail!("host operations require the host control endpoint")
+            }
             Operation::ClientRegister { .. }
             | Operation::Client { .. }
             | Operation::ClientActivate { .. }
@@ -2103,7 +2145,8 @@ impl Registry {
     /// Flushes directory observations before teardown, closes mutation admission,
     /// revokes harness control and client attachments, and waits for accepted
     /// spawns to finish or abort. The state-root lease remains held by the
-    /// registry handles.
+    /// registry handles. Concurrent and repeated calls join the same teardown
+    /// and retain its outcome without repeating process observations or cleanup.
     ///
     /// # Errors
     ///
@@ -2111,6 +2154,23 @@ impl Registry {
     /// recorded directory, service, pane-shutdown, or completion-persistence
     /// error. An error does not mean teardown was rolled back.
     pub fn shutdown(&self) -> Result<()> {
+        let mut completed = self.inner.shutdown_result.lock().unwrap();
+        if let Some(result) = &*completed {
+            return result
+                .as_ref()
+                .copied()
+                .map_err(|error| anyhow::anyhow!("{error}"));
+        }
+        let result = self.shutdown_inner();
+        *completed = Some(
+            result
+                .as_ref()
+                .copied()
+                .map_err(|error| format!("{error:#}")),
+        );
+        result
+    }
+    fn shutdown_inner(&self) -> Result<()> {
         // Observe while the process tree still exists; never derive intent from teardown.
         self.observe_processes();
         let directory_capture = self.flush_directories();
@@ -2481,6 +2541,12 @@ fn existing_spawn_layout(node: &LayoutNode) -> SpawnLayoutNode {
         },
     }
 }
+/// Validates volatile defaults without opening storage or running a program.
+///
+/// Rejects empty or excessive arguments and nonabsolute or NUL-containing paths.
+pub fn validate_spawn_defaults(defaults: &SpawnDefaults) -> Result<()> {
+    validate_spawn_arguments(&defaults.argv, &defaults.cwd, &defaults.home)
+}
 fn validate_spawn_arguments(argv: &[String], cwd: &Path, home: &Path) -> Result<()> {
     use std::os::unix::ffi::OsStrExt;
     ensure!(
@@ -2500,18 +2566,20 @@ fn validate_spawn_arguments(argv: &[String], cwd: &Path, home: &Path) -> Result<
     );
     Ok(())
 }
-fn validate_spawn_spec(spec: &PaneSpawnSpec) -> Result<String> {
+pub(crate) fn validate_spawn_intent(spec: &PaneSpawnSpec) -> Result<&str> {
     valid_size(spec.size)?;
     validate_spawn_arguments(&spec.argv, &spec.cwd, &spec.home)?;
-    let title = spec.title.clone().unwrap_or_else(|| {
+    let title = spec.title.as_deref().unwrap_or_else(|| {
         Path::new(&spec.argv[0])
             .file_name()
+            .and_then(|name| name.to_str())
             .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned()
     });
-    valid_name(&title)?;
+    valid_name(title)?;
     Ok(title)
+}
+fn validate_spawn_spec(spec: &PaneSpawnSpec) -> Result<String> {
+    validate_spawn_intent(spec).map(str::to_owned)
 }
 fn resolve_spawn_layout(
     node: &SpawnLayoutNode,
@@ -2762,7 +2830,7 @@ fn validate_record(record: &Record) -> Result<()> {
     }
     Ok(())
 }
-fn private_directory(root: &Path) -> Result<()> {
+pub(crate) fn private_directory(root: &Path) -> Result<()> {
     if !root.exists() {
         fs::DirBuilder::new()
             .recursive(true)
@@ -2776,10 +2844,13 @@ fn private_directory(root: &Path) -> Result<()> {
     );
     Ok(())
 }
-fn check_file(file: &File) -> Result<()> {
+pub(crate) fn check_file(file: &File) -> Result<()> {
     let m = file.metadata()?;
     ensure!(
-        m.is_file() && m.uid() == unsafe { libc::geteuid() } && m.permissions().mode() & 0o077 == 0,
+        m.is_file()
+            && m.nlink() <= 1
+            && m.uid() == unsafe { libc::geteuid() }
+            && m.permissions().mode() & 0o077 == 0,
         "registry file must be private and current-user-owned"
     );
     Ok(())

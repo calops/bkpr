@@ -1578,10 +1578,11 @@ fn validate_identity<'a>(
     if expected.is_some_and(|expected| expected != candidate.session_id) {
         return Err(IdentityRejection::Replacement.into());
     }
-    // Names and persistent UUIDs alone do not establish an owner. A fresh
-    // daemon incarnation can reattach only with entirely new native authority.
+    // Only an exact live session instance establishes an alias; host identity is shared.
     if owners.any(|owner| {
-        owner.daemon_id == candidate.daemon_id && owner.session_id == candidate.session_id
+        owner.daemon_id == candidate.daemon_id
+            && owner.session_id == candidate.session_id
+            && owner.session_instance_id == candidate.session_instance_id
     }) {
         return Err(IdentityRejection::Alias.into());
     }
@@ -2078,8 +2079,11 @@ mod tests {
             name: "work".into(),
             session_id: "logical".into(),
             daemon_id: "old".into(),
+            session_instance_id: "old-instance".into(),
         };
         let mut candidate = first.clone();
+        candidate.session_instance_id = "new-instance".into();
+        assert!(validate_identity(Some(&first.session_id), &candidate, std::iter::empty()).is_ok());
         candidate.daemon_id = "new".into();
         assert!(validate_identity(Some(&first.session_id), &candidate, std::iter::empty()).is_ok());
         candidate.session_id = "replacement".into();
@@ -2094,6 +2098,7 @@ mod tests {
             name: "work".into(),
             session_id: "logical".into(),
             daemon_id: "one".into(),
+            session_instance_id: "instance".into(),
         };
         let mut candidate = first.clone();
         candidate.daemon_id = "two".into();
@@ -2101,6 +2106,13 @@ mod tests {
         candidate.daemon_id.clone_from(&first.daemon_id);
         candidate.name = "alias".into();
         assert!(validate_identity(None, &candidate, std::iter::once(&first)).is_err());
+        candidate.session_instance_id = "reopened-instance".into();
+        assert!(validate_identity(None, &candidate, std::iter::once(&first)).is_ok());
+        candidate
+            .session_instance_id
+            .clone_from(&first.session_instance_id);
+        candidate.session_id = "another-session-on-same-host".into();
+        assert!(validate_identity(None, &candidate, std::iter::once(&first)).is_ok());
     }
 
     fn pending_session(now: Instant) -> Session {
@@ -2135,6 +2147,7 @@ mod tests {
             name: "authoritative session".into(),
             session_id: "logical".into(),
             daemon_id: "daemon".into(),
+            session_instance_id: "instance".into(),
         });
         assert!(refresh_presentation(0, &mut session, &empty));
         assert_eq!(

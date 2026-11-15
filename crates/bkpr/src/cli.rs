@@ -94,8 +94,10 @@ pub fn command() -> Command {
                 .value_name("PATH")
                 .value_parser(value_parser!(PathBuf))
                 .help(match name {
-                    "socket" => "Connect to an explicit local daemon socket",
-                    "state-root" => "Recovery storage for an explicit local socket",
+                    "socket" => {
+                        "Explicit local host socket with --state-root, or headless session socket"
+                    }
+                    "state-root" => "Host recovery storage for an explicit private namespace",
                     "cwd" => "Starting directory for new local terminals",
                     "home" => "Isolated HOME for local fixtures",
                     "bkprd" => "Use an explicit local daemon executable",
@@ -151,6 +153,13 @@ pub fn command() -> Command {
         )
         .subcommand(
             Command::new("stop").about("Stop only the selected session and its pane processes"),
+        )
+        .subcommand(
+            Command::new("daemon")
+                .about("Administer the local host daemon without opening sessions")
+                .subcommand_required(true)
+                .subcommand(Command::new("info").about("Inspect the current host daemon"))
+                .subcommand(Command::new("stop").about("Stop this host daemon and all its sessions")),
         )
         .subcommand(
             Command::new("context")
@@ -336,6 +345,35 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<ArgMatches> {
         self::command().try_get_matches_from(args)?
     };
     let name = matches.subcommand_name().unwrap_or("tui");
+    if matches!(name, "daemon" | "keys" | "completions") {
+        let forbidden = [
+            "session",
+            "remote",
+            "ssh-config",
+            "remote-bkpr-bin",
+            "pane",
+            "view",
+            "cols",
+            "rows",
+            "cell-width",
+            "cell-height",
+        ];
+        if forbidden.iter().any(|option| matches.contains_id(option))
+            || matches.get_flag("forward-agent")
+        {
+            bail!("{name} does not accept session, SSH or pane target options");
+        }
+        if name != "daemon"
+            && ["socket", "state-root"]
+                .iter()
+                .any(|option| matches.contains_id(option))
+        {
+            bail!("{name} does not accept daemon target options");
+        }
+        if name == "daemon" && matches.contains_id("state-root") {
+            bail!("daemon administration selects only a host --socket, not --state-root");
+        }
+    }
     let remote_host = matches.get_one::<String>("remote").is_some();
     if session_count(&matches) > 0
         && ["socket", "state-root"]
@@ -510,6 +548,47 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn host_administration_is_local_explicit_and_never_session_scoped() {
+        for action in ["info", "stop"] {
+            assert!(parse(args(&["bkpr", "daemon", action])).is_ok());
+            assert!(
+                parse(args(&[
+                    "bkpr",
+                    "daemon",
+                    action,
+                    "--socket",
+                    "/tmp/private/d"
+                ]))
+                .is_ok()
+            );
+            for option in [
+                "-s",
+                "-r",
+                "--pane",
+                "--view",
+                "--cols",
+                "--state-root",
+                "--cwd",
+                "--bkprd",
+            ] {
+                assert!(parse(args(&["bkpr", "daemon", action, option, "value"])).is_err());
+            }
+            assert!(parse(args(&["bkpr", "-s", "session", "daemon", action])).is_err());
+            assert!(parse(args(&["bkpr", "daemon", action, "--forward-agent"])).is_err());
+            assert!(parse(args(&["bkpr", "daemon", action, "--read-only"])).is_err());
+        }
+        for action in ["keys", "completions"] {
+            let mut values = vec!["bkpr", action];
+            if action == "completions" {
+                values.push("bash");
+            }
+            values.extend(["-s", "session"]);
+            assert!(parse(args(&values)).is_err());
+        }
+        assert!(command().find_subcommand("daemon").is_some());
     }
 
     #[test]

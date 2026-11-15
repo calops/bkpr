@@ -82,6 +82,7 @@ struct WorkState {
     available: usize,
     next: usize,
     serving: usize,
+    cancelled: bool,
 }
 pub(super) struct WorkStage<'a>(&'a WorkStages);
 impl WorkStages {
@@ -91,21 +92,34 @@ impl WorkStages {
                 available: count,
                 next: 0,
                 serving: 0,
+                cancelled: false,
             }),
             changed: Condvar::new(),
         }
     }
     pub(super) fn enter(&self) -> WorkStage<'_> {
+        self.enter_cancellable()
+            .expect("uncancelled response work stages")
+    }
+    pub(super) fn enter_cancellable(&self) -> Result<WorkStage<'_>> {
         let mut state = self.state.lock().unwrap();
         let ticket = state.next;
         state.next = state.next.wrapping_add(1);
-        while state.available == 0 || state.serving != ticket {
+        while !state.cancelled && (state.available == 0 || state.serving != ticket) {
             state = self.changed.wait(state).unwrap();
         }
+        anyhow::ensure!(
+            !state.cancelled,
+            SessionClosing("endpoint is shutting down")
+        );
         state.available -= 1;
         state.serving = state.serving.wrapping_add(1);
         self.changed.notify_all();
-        WorkStage(self)
+        Ok(WorkStage(self))
+    }
+    pub(super) fn cancel(&self) {
+        self.state.lock().unwrap().cancelled = true;
+        self.changed.notify_all();
     }
 }
 impl Drop for WorkStage<'_> {
@@ -133,7 +147,7 @@ pub(super) fn read_request<'a>(
         .context("allocating request buffer; request not dispatched")?;
     bytes.resize(length, 0);
     stream.read_exact(&mut bytes)?;
-    let work = decode_work.enter();
+    let work = decode_work.enter_cancellable()?;
     let request = reservation.decode(&bytes)?;
     drop(bytes);
     reservation.release_raw(length);
@@ -246,6 +260,35 @@ mod tests {
             .recv_timeout(Duration::from_secs(10))
             .unwrap()
             .unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn cancelled_decode_wait_releases_its_frame_budget_without_waiting_for_a_stage() {
+        let work = Arc::new(WorkStages::new(1));
+        let held = work.enter();
+        let buffers = Arc::new(FrameBuffers::new(1024, MAX_REQUEST));
+        let waiting_work = work.clone();
+        let waiting_buffers = buffers.clone();
+        let (entered, waiting) = std::sync::mpsc::sync_channel(1);
+        let (done, finished) = std::sync::mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let reservation = waiting_buffers.reserve(MAX_REQUEST).unwrap();
+            entered.send(()).unwrap();
+            let result = waiting_work.enter_cancellable().map(drop);
+            drop(reservation);
+            done.send(result).unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        work.cancel();
+        assert!(
+            finished
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(*buffers.large.lock().unwrap(), 0);
+        drop(held);
         worker.join().unwrap();
     }
 }

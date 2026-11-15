@@ -39,7 +39,8 @@ fn resolve_paths(paths: crate::session::LocalPaths, hello: &Hello) -> Result<Res
     ensure!(
         info.name == hello.session_name
             && !info.session_id.is_empty()
-            && !info.daemon_id.is_empty(),
+            && !info.daemon_id.is_empty()
+            && !info.session_instance_id.is_empty(),
         "remote session did not provide the selected exact identity"
     );
     let agent_socket = if hello.forward_agent {
@@ -338,6 +339,7 @@ mod tests {
             name: "remote / λ".into(),
             session_id: "logical".into(),
             daemon_id: "birth".into(),
+            session_instance_id: "instance".into(),
         }
     }
 
@@ -446,7 +448,7 @@ mod tests {
     fn console_rejects_authority_envelopes_before_dispatch() {
         let mut input = console_input(
             concat!(
-                "{\"op\":\"client_register\",\"session_id\":\"s\",\"daemon_id\":\"d\"}\n",
+                "{\"op\":\"client_register\",\"session_id\":\"s\",\"daemon_id\":\"d\",\"session_instance_id\":\"i\"}\n",
                 "{\"op\":\"client_activate\",\"detach_others\":true,\"agent_socket\":null}\n",
                 "{\"op\":\"harness_begin\",\"kind\":\"omp\"}\n",
                 "{\"op\":\"client_detach\"}\n",
@@ -573,6 +575,10 @@ mod tests {
             socket: runtime.join("hash/s"),
             state_root: state.join("hash"),
             name: Some(info().name.clone()),
+            host: Some(crate::session::HostPaths {
+                socket: runtime.join("d"),
+                state_root: state.clone(),
+            }),
         };
         let hello = Hello {
             session_name: info().name,

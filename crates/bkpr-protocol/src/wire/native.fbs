@@ -49,6 +49,12 @@ table PaneSpawnSpec {
   title:string;
   isolated_environment:bool;
 }
+table SpawnDefaults {
+  argv:[string] (required);
+  cwd:[ubyte] (required);
+  home:[ubyte] (required);
+  isolated_environment:bool;
+}
 table HarnessRecovery {
   kind:HarnessKind;
   conversation_id:string (required);
@@ -95,6 +101,7 @@ table OperationSessionInfo {
 table OperationClientRegister {
   session_id:string (required);
   daemon_id:string (required);
+  session_instance_id:string (required);
 }
 table OperationClient {
   authority:ClientAuthority (required);
@@ -251,7 +258,51 @@ table OperationCiRefresh {
   local_head_sha:string (required);
   checked_ref:string;
 }
-union Operation { OperationSessionInfo, OperationClientRegister, OperationClient, OperationClientActivate, OperationClientDetach, OperationInspect, OperationContext, OperationRecoveryList, OperationPaneResume, OperationHarnessBegin, OperationHarnessEvent, OperationHarnessContext, OperationAgent, OperationWorkspaceCreate, OperationWorkspaceRename, OperationWorkspaceClose, OperationWindowCreate, OperationWindowRename, OperationWindowClose, OperationPaneSpawn, OperationPaneReopen, OperationPaneTerminate, OperationPaneForget, OperationPaneRename, OperationLayoutUpdate, OperationPane, OperationWait, OperationShutdown, OperationCiRefresh, OperationControlInspect, OperationControlPaneRead }
+table OperationDaemonInfo {}
+table OperationSessionOpen {
+  name:string (required);
+  defaults:SpawnDefaults;
+  initial:PaneSpawnSpec;
+}
+table OperationDaemonShutdown {
+  daemon_id:string (required);
+}
+union Operation {
+  OperationSessionInfo,
+  OperationClientRegister,
+  OperationClient,
+  OperationClientActivate,
+  OperationClientDetach,
+  OperationInspect,
+  OperationContext,
+  OperationRecoveryList,
+  OperationPaneResume,
+  OperationHarnessBegin,
+  OperationHarnessEvent,
+  OperationHarnessContext,
+  OperationAgent,
+  OperationWorkspaceCreate,
+  OperationWorkspaceRename,
+  OperationWorkspaceClose,
+  OperationWindowCreate,
+  OperationWindowRename,
+  OperationWindowClose,
+  OperationPaneSpawn,
+  OperationPaneReopen,
+  OperationPaneTerminate,
+  OperationPaneForget,
+  OperationPaneRename,
+  OperationLayoutUpdate,
+  OperationPane,
+  OperationWait,
+  OperationShutdown,
+  OperationCiRefresh,
+  OperationControlInspect,
+  OperationControlPaneRead,
+  OperationDaemonInfo,
+  OperationSessionOpen,
+  OperationDaemonShutdown
+}
 table PaneRequestInspect {
 
 }

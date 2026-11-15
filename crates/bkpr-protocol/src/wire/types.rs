@@ -417,6 +417,80 @@ pub(super) fn read_client_authority(
     })
 }
 
+fn write_argv(
+    builder: &mut Builder,
+    argv: &[String],
+    budget: &mut Budget,
+) -> Result<Offset<[Offset<str>]>> {
+    budget.vector(argv.len(), 8)?;
+    let mut values = Vec::with_capacity(argv.len());
+    for value in argv {
+        values.push(write_text(builder, value, budget)?);
+    }
+    Ok(builder.create_vector(&values))
+}
+
+fn read_argv<'a>(
+    argv: planus::Vector<'a, planus::Result<&'a str>>,
+    budget: &mut Budget,
+) -> Result<Vec<String>> {
+    budget.vector(argv.len(), std::mem::size_of::<String>())?;
+    let mut values = Vec::with_capacity(argv.len());
+    for value in argv {
+        values.push(read_text(value?, budget)?);
+    }
+    Ok(values)
+}
+
+pub(super) fn write_spawn_defaults(
+    builder: &mut Builder,
+    value: &SpawnDefaults,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Offset<g::SpawnDefaults>> {
+    budget.node(depth)?;
+    let argv = write_argv(builder, &value.argv, budget)?;
+    let cwd = {
+        let bytes = path_bytes(&value.cwd)?;
+        budget.bytes(bytes.len())?;
+        builder.create_vector(bytes.as_ref())
+    };
+    let home = {
+        let bytes = path_bytes(&value.home)?;
+        budget.bytes(bytes.len())?;
+        builder.create_vector(bytes.as_ref())
+    };
+    Ok(g::SpawnDefaults::create(
+        builder,
+        argv,
+        cwd,
+        home,
+        value.isolated_environment,
+    ))
+}
+
+pub(super) fn read_spawn_defaults(
+    value: g::SpawnDefaultsRef<'_>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<SpawnDefaults> {
+    budget.node(depth)?;
+    Ok(SpawnDefaults {
+        argv: read_argv(value.argv()?, budget)?,
+        cwd: {
+            let bytes = value.cwd()?;
+            budget.bytes(bytes.len())?;
+            read_path(bytes)?
+        },
+        home: {
+            let bytes = value.home()?;
+            budget.bytes(bytes.len())?;
+            read_path(bytes)?
+        },
+        isolated_environment: value.isolated_environment()?,
+    })
+}
+
 pub(super) fn write_pane_spawn_spec(
     builder: &mut Builder,
     value: &PaneSpawnSpec,
@@ -424,17 +498,7 @@ pub(super) fn write_pane_spawn_spec(
     depth: usize,
 ) -> Result<Offset<g::PaneSpawnSpec>> {
     budget.node(depth)?;
-    let argv = {
-        budget.vector(value.argv.len(), 8)?;
-        let mut values = Vec::with_capacity(value.argv.len());
-        for value in value.argv.iter() {
-            values.push({
-                budget.bytes(value.len())?;
-                builder.create_string(value.as_str())
-            });
-        }
-        builder.create_vector(&values)
-    };
+    let argv = write_argv(builder, &value.argv, budget)?;
     let cwd = {
         let bytes = path_bytes(&value.cwd)?;
         budget.bytes(bytes.len())?;
@@ -475,20 +539,7 @@ pub(super) fn read_pane_spawn_spec(
 ) -> Result<PaneSpawnSpec> {
     budget.node(depth)?;
     Ok(PaneSpawnSpec {
-        argv: {
-            let vector = value.argv()?;
-            budget.vector(vector.len(), std::mem::size_of::<String>())?;
-            let mut values = Vec::with_capacity(vector.len());
-            for value in vector {
-                let value = value?;
-                values.push({
-                    let text = value;
-                    budget.bytes(text.len())?;
-                    text.to_owned()
-                });
-            }
-            values
-        },
+        argv: read_argv(value.argv()?, budget)?,
         cwd: {
             let bytes = value.cwd()?;
             budget.bytes(bytes.len())?;

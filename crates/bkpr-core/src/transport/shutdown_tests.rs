@@ -281,6 +281,7 @@ fn session_shutdown_during_client_registration_preserves_response_then_lifetime_
             &server,
             identity["session"]["session_id"].as_str().unwrap(),
             identity["session"]["daemon_id"].as_str().unwrap(),
+            identity["session"]["session_instance_id"].as_str().unwrap(),
         )
         .unwrap();
     // Freeze at the real control-loop boundary: registration has committed,
@@ -528,5 +529,40 @@ fn pending_registry_read_and_last_pane_or_document_close_keep_their_successful_r
                 >= after
         );
         assert!(registry.session_end_requested());
+    }
+}
+
+#[test]
+fn endpoint_stop_closes_only_readers_not_handed_to_the_response_drain() {
+    for admitted in [false, true] {
+        let (stop, _wake) = Stop::new().unwrap();
+        let (mut server, mut peer) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let responses = Arc::new(ResponseDrain::default());
+        let mut reader = stop.register_reader(&server).unwrap();
+        let pending = admitted.then(|| reader.admit(&responses).unwrap());
+        stop.request();
+        stop.cancel_readers();
+        if admitted {
+            let reply = response(Ok(Payload::Control(json!({"accepted":true}))), true);
+            let mut codec = Codec::new();
+            wire::write_frame(
+                &mut server,
+                Kind::Response,
+                codec.encode_response(&reply).unwrap(),
+            )
+            .unwrap();
+            let bytes = wire::read_frame(&mut peer, Kind::Response, MAX_RESPONSE).unwrap();
+            let reply = wire::decode_response(&bytes).unwrap();
+            assert!(reply.ok);
+            assert_eq!(reply.result.unwrap().into_json().unwrap()["accepted"], true);
+        } else {
+            assert!(reader.admit(&responses).is_err());
+            assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        }
+        drop(reader);
+        stop.wait_for_readers();
+        drop(pending);
+        assert_eq!(*responses.pending.lock().unwrap(), 0);
     }
 }

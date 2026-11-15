@@ -11,7 +11,7 @@ struct SessionRecord {
     session_id: String,
 }
 
-pub(super) fn open_session(root: &Path, name: &str) -> Result<SessionInfo> {
+pub(super) fn open_session(root: &Path, name: &str, daemon_id: &str) -> Result<SessionInfo> {
     let stored = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
@@ -60,7 +60,8 @@ pub(super) fn open_session(root: &Path, name: &str) -> Result<SessionInfo> {
     Ok(SessionInfo {
         name: stored.name,
         session_id: stored.session_id,
-        daemon_id: Uuid::new_v4().to_string(),
+        daemon_id: daemon_id.to_owned(),
+        session_instance_id: Uuid::new_v4().to_string(),
     })
 }
 
@@ -226,11 +227,13 @@ impl Registry {
         stream: &UnixStream,
         session_id: &str,
         daemon_id: &str,
+        session_instance_id: &str,
     ) -> Result<(Arc<ClientLease>, Value)> {
         ensure!(
             session_id == self.inner.session.session_id
-                && daemon_id == self.inner.session.daemon_id,
-            "session or daemon identity changed"
+                && daemon_id == self.inner.session.daemon_id
+                && session_instance_id == self.inner.session.session_instance_id,
+            "session, daemon or session instance identity changed"
         );
         let owner = crate::transport::ClientOwner::authenticate(stream)?;
         let client = Arc::new(ClientLease {
@@ -301,6 +304,9 @@ impl Registry {
             Operation::Client { .. }
             | Operation::ClientRegister { .. }
             | Operation::Shutdown
+            | Operation::DaemonInfo
+            | Operation::SessionOpen { .. }
+            | Operation::DaemonShutdown { .. }
             | Operation::HarnessBegin { .. }
             | Operation::HarnessEvent { .. }
             | Operation::HarnessContext { .. }

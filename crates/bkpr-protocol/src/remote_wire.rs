@@ -1,4 +1,4 @@
-//! Remote attachment control version 1, independent of native operation framing.
+//! Remote attachment control version 2, independent of native operation framing.
 //!
 //! Control payloads carry handshakes and lease heartbeats, never native operations.
 //! Decoding validates individual messages; callers must associate handshakes with [`Welcome::validate_for`].
@@ -18,7 +18,7 @@ use std::{
 };
 
 /// Remote control wire version, independent of the native wire family.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// Remote frame header size in bytes.
 pub const HEADER_LEN: usize = 16;
 /// Maximum remote control payload size in bytes, excluding its header.
@@ -163,6 +163,11 @@ impl Welcome {
         validate_name(&self.session.name)?;
         validate_text(&self.session.session_id, MAX_IDENTITY, "session identity")?;
         validate_text(&self.session.daemon_id, MAX_IDENTITY, "daemon identity")?;
+        validate_text(
+            &self.session.session_instance_id,
+            MAX_IDENTITY,
+            "session instance",
+        )?;
         ensure!(
             (MIN_HEARTBEAT_MS..=MAX_HEARTBEAT_MS).contains(&self.heartbeat_interval_ms),
             "remote heartbeat interval outside supported bounds"
@@ -302,7 +307,8 @@ impl Codec {
                 let name = b.create_string(&welcome.session.name);
                 let session_id = b.create_string(&welcome.session.session_id);
                 let daemon_id = b.create_string(&welcome.session.daemon_id);
-                let session = g::SessionInfo::create(b, name, session_id, daemon_id);
+                let instance_id = b.create_string(&welcome.session.session_instance_id);
+                let session = g::SessionInfo::create(b, name, session_id, daemon_id, instance_id);
                 let nonce = b.create_vector(welcome.connection_nonce.as_slice());
                 let agent = welcome
                     .agent_socket
@@ -380,6 +386,11 @@ pub fn decode(payload: &[u8]) -> Result<Control> {
                 name: budget.text(session.name()?, MAX_SESSION_NAME, "session name")?,
                 session_id: budget.text(session.session_id()?, MAX_IDENTITY, "session identity")?,
                 daemon_id: budget.text(session.daemon_id()?, MAX_IDENTITY, "daemon identity")?,
+                session_instance_id: budget.text(
+                    session.session_instance_id()?,
+                    MAX_IDENTITY,
+                    "session instance",
+                )?,
             };
             let agent_socket = welcome
                 .agent_socket()?

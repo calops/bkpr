@@ -54,7 +54,7 @@ fn local_sink_writes_body_free_events_and_counts_rejected_data() {
     let records = lines(&path);
     assert_eq!(records.len(), 3);
     assert_eq!(records[0]["operation"], "workspace.rename");
-    assert_eq!(records[0]["session_id"], SESSION);
+    assert_eq!(records[0]["daemon_id"], SESSION);
     assert_eq!(records[0]["target_id"], TARGET);
     assert_eq!(records[1]["outcome"], "unknown");
     assert_eq!(records[2]["dropped_total"], 2);
@@ -63,7 +63,7 @@ fn local_sink_writes_body_free_events_and_counts_rejected_data() {
         assert!(object.keys().all(|key| matches!(
             key.as_str(),
             "time_ms"
-                | "session_id"
+                | "daemon_id"
                 | "operation"
                 | "target_id"
                 | "outcome"

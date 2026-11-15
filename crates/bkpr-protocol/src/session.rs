@@ -16,18 +16,48 @@ pub fn valid_session_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Persistent session identity qualified by the daemon incarnation serving it.
+/// Derive a path-safe storage key for an exact valid logical session name.
+///
+/// Returns an error if the name is empty or contains control characters.
+pub fn session_key(name: &str) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    valid_session_name(name)?;
+    Ok(format!("{:x}", Sha256::digest(name.as_bytes())))
+}
+
+/// Live identity of the host daemon, independent of its sessions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonInfo {
+    /// Fresh host-process incarnation, never restored from storage.
+    pub daemon_id: String,
+    /// Current operating-system process ID; not an authentication credential.
+    pub pid: u32,
+}
+
+/// One open session and its session-scoped native endpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionEndpoint {
+    /// Persistent identity and current runtime instance.
+    pub session: SessionInfo,
+    /// Private Unix socket serving only this session.
+    #[serde(with = "crate::path_wire")]
+    pub socket: std::path::PathBuf,
+}
+
+/// Persistent session identity qualified by its live host and session instances.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
     /// Exact user-visible session name, not a filesystem path component.
     pub name: String,
     /// Persistent logical identity; independent of any daemon process.
     pub session_id: String,
-    /// Fresh daemon incarnation, never restored from storage.
+    /// Host-process incarnation shared by its sessions, never restored from storage.
     pub daemon_id: String,
+    /// Fresh session runtime instance, including reopen within the same daemon.
+    pub session_instance_id: String,
 }
 
-/// Immutable daemon startup policy for new panes; never client environment.
+/// Immutable session startup policy for new panes; never client-local state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnDefaults {
     /// Default program and arguments used when a new pane supplies no command.
@@ -59,7 +89,7 @@ impl std::fmt::Debug for ClientAuthority {
     }
 }
 
-/// Daemon lifecycle notification on an attached client's event stream.
+/// Session attachment lifecycle notification on its client's event stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientEvent {
     /// Event discriminator, currently `client_detached` for forced detachment.

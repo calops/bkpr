@@ -135,9 +135,9 @@ See [Harness capture](#harness-capture) for the supported native behavior.
 
 ## Native CLI
 
-After building both executables, bare `bkpr` connects to or starts the local
-named session `bkpr` and opens its terminal client. Each name owns one `bkprd`
-and an independent persisted workspace/layout registry:
+After building both executables, bare `bkpr` connects to or starts the host/user
+daemon, opens the named session `bkpr`, and enters its terminal client. All local
+names share that daemon while retaining independent session registries:
 
 ```sh
 "$CARGO_TARGET_DIR/debug/bkpr"
@@ -190,21 +190,27 @@ layouts. Later normal attachments are not detached again.
 
 `list` discovers running/stopped stored sessions without creating state or
 starting a daemon. `stop` terminates only the selected session and its programs;
-without `-s` it targets `bkpr`. Restart preserves the logical session identity
-and layout records, but gets a new daemon identity and never replays old argv.
+without `-s` it targets `bkpr`. Reopening preserves the logical session identity
+and recovery intent but gets a new session runtime instance. The host incarnation
+changes only when `bkprd` restarts. Closing the final session leaves the host idle.
+`bkpr daemon info` inspects the host without starting it; `bkpr daemon stop`
+explicitly stops the host and all its sessions.
 
 `bkpr context`, `bkpr request` and `bkpr keyboard` are headless and never start a
 daemon. Inside a managed pane they default to its `BKPR_SOCKET`; explicit `-s`
 overrides inherited routing. Normal TUI and `stop` commands default to `bkpr`,
-not an inherited pane socket. Explicit `--socket` selects a fixture endpoint;
-TUI attachment also requires its matching `--state-root`.
+not an inherited pane socket. Explicit TUI `--socket` plus `--state-root` selects
+a private host namespace and its default session. A headless `--socket` alone
+selects a session data endpoint. Host-only raw requests require an explicit host
+socket; they never infer one from a pane's `BKPR_SOCKET`.
 
-Starting a new daemon with `bkpr` supplies the current client's configured shell.
-If loaded metadata has no running execution, it creates a fresh workspace named
-`Main` (or `Main 2`, `Main 3`, …) and a usable shell without changing historical
-layouts or replaying recorded commands. Starting `bkprd` directly without argv
-after `--` is headless: it never creates a bootstrap process. Attaching to an
-existing daemon never creates panes or resets layouts or another client's focus.
+Opening a stopped local session with `bkpr` supplies the current client's configured
+shell, HOME and CWD as immutable session defaults. Cold opening restores saved
+layout/recovery intent with current commands, or creates `Main` and a usable shell
+when needed. Starting `bkprd` directly without `--session` or argv creates an empty
+host; `--session NAME` opens a headless session without executing anything. Argv
+after `--` explicitly authorizes initial bootstrap/restoration. Attaching to an
+already-open session never creates panes or resets layouts or another client's focus.
 The TUI initially prefers a workspace with a running projected pane; historical
 workspaces remain explicitly selectable.
 
@@ -238,19 +244,22 @@ scrubbed fixture environment, not an OS/filesystem sandbox. `--bkprd PATH`
 selects the server executable; `bkprd --bkpr PATH` selects the matching utility
 and harness wrappers when testing independently staged binaries.
 
-Named paths live under `$XDG_RUNTIME_DIR/bkpr/<name-hash>/s` and
-`$XDG_STATE_HOME/bkpr/sessions/<name-hash>/`. Without these variables, runtime
-uses a private `bkpr-<uid>/bkpr/` beneath the resolved system `/tmp`, and state
-uses `$HOME/.local/state/bkpr/sessions/`. Resolving the system temporary-directory
-alias does not permit symlinks in Bkpr-owned descendants.
+The host control socket is `$XDG_RUNTIME_DIR/bkpr/d`; named session data sockets
+remain `$XDG_RUNTIME_DIR/bkpr/<name-hash>/s`. The host owns
+`$XDG_STATE_HOME/bkpr/`, with saved session records under `sessions/<name-hash>/`.
+Without these variables, runtime uses a private `bkpr-<uid>/bkpr/` beneath the
+resolved system `/tmp`, and state uses `$HOME/.local/state/bkpr/`. Resolving the
+system temporary-directory alias does not permit symlinks in Bkpr-owned descendants.
 Launch serialization, private filesystem checks and exact stored/live identities
 prevent accidental attachment to another session. A live protocol or identity
 failure never causes an automatic restart.
 
-The daemon keeps its startup environment. Fresh panes do not import the attaching
-client's environment; this includes `PATH`, `TMPDIR` and account-wrapper choices.
-Start a daemon from a stable environment, and explicitly stop/restart it to change
-those defaults. Fixture `--home` isolation remains separate from normal execution.
+The host keeps its startup environment. Pane launches use their session's configured
+defaults and do not import an attaching client's arbitrary environment; this includes
+`PATH`, `TMPDIR` and account-wrapper choices. Restart the host explicitly to change
+its inherited environment. Reopening a stopped session supplies current shell/CWD/HOME
+defaults; it does not rewrite active sessions. Fixture isolation remains separate
+from normal execution.
 
 A cold `bkpr --session work` restart restores saved owned terminals in their
 original workspaces/windows and split positions, including hidden terminals.
@@ -333,8 +342,8 @@ and native harness callbacks. Theme, graphics preference, terminal capabilities
 and transient toasts belong to the physical client instance. An initially empty
 existing session stays empty until an explicit creation action.
 
-Both hosts need matching native wire family 10 builds. Remote TUI attachment
-also requires authoritative daemon spawn defaults.
+Both hosts need matching native wire family 11 and remote control version 2 builds.
+Remote TUI attachment also requires authoritative session spawn defaults.
 Unavailable defaults or an incompatible/missing session fail before takeover,
 without local-path fallbacks, installation, bootstrap or automatic restart.
 Local launch overrides (`--cwd`, `--home`, `--bkprd` and shell arguments) apply only
@@ -1375,9 +1384,10 @@ window or workspace. Clients choose active windows independently.
 
 Closing a window terminates all its owned terminals, including terminals absent
 from its displayed layout. Closing the last terminal, including normal shell
-exit, closes its workspace. Closing the last workspace closes the session.
-Detaching a client or removing a layout projection does not terminate a program.
-An intentionally empty headless server stays available until explicitly stopped.
+exit, closes its workspace. Closing the last workspace closes the session and its
+attachments, not the host daemon. Detaching a client or removing a layout projection
+does not terminate a program. A host with zero sessions remains idle and available
+until explicit host shutdown.
 
 Whole-workspace references across sessions or remote endpoints are still planned,
 not implemented routing. They will allow normal use through the owner, not
@@ -1463,11 +1473,12 @@ permission approval.
 
 ### Requests and explicit shutdown
 
-Native client/server connections use binary Planus wire family 10. Registry
-operations target workspaces, their independent windows and owned panes;
-terminal/view operations are pane-scoped. Active-window selection belongs to
-each client. The `request` utility still accepts and prints JSON; that is its
-human-facing boundary, not the socket format.
+Native client/server connections use binary Planus wire family 11. Host control
+opens named sessions and handles explicit whole-host shutdown; independent session
+endpoints serve registry, pane and attachment operations. Registration pins persistent
+session ID, host daemon incarnation and fresh session instance. Active-window selection
+belongs to each client. The `request` utility accepts and prints JSON at its human-facing
+boundary, not on the native socket.
 
 Use a matching launcher/server pair. Sessions on an older wire family stay
 running and remain usable with their matching client. A newer client refuses
@@ -1483,16 +1494,20 @@ with takeover. Repeated activation never republishes the source or repeats takeo
 Source paths are ephemeral, redacted from request debug output and never session metadata.
 
 ```sh
-"$CARGO_TARGET_DIR/debug/bkpr" context --socket "$BKPR_RUN/control.sock"
-"$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
-  '{"version":10,"op":"inspect"}'
-"$CARGO_TARGET_DIR/debug/bkpr" request --socket "$BKPR_RUN/control.sock" \
-  '{"version":10,"op":"shutdown"}'
+"$CARGO_TARGET_DIR/debug/bkpr" context \
+  --socket "$BKPR_RUN/control.sock" --state-root "$BKPR_RUN/state"
+"$CARGO_TARGET_DIR/debug/bkpr" request \
+  --socket "$BKPR_RUN/control.sock" --state-root "$BKPR_RUN/state" \
+  '{"version":11,"op":"inspect"}'
+"$CARGO_TARGET_DIR/debug/bkpr" stop \
+  --socket "$BKPR_RUN/control.sock" --state-root "$BKPR_RUN/state"
+"$CARGO_TARGET_DIR/debug/bkpr" daemon stop --socket "$BKPR_RUN/control.sock"
 ```
 
-Check `ok` and `error` before treating an operation as successful. Shutdown closes
-the listener even if cleanup/durability reports an error; an error is not a
-successful persistence acknowledgement. Never target an unrelated live daemon.
+Check `ok` and `error` before treating an operation as successful. Session shutdown
+closes only that session listener even if cleanup/durability reports an error;
+the host stays available. Host shutdown explicitly drains all sessions. An error
+is not a successful persistence acknowledgement. Never target an unrelated live daemon.
 
 Expected shutdown is distinct from request failure. Responses may carry
 `failure: {"kind":"session_closing","outcome":"not_dispatched"}` when that
@@ -1516,7 +1531,7 @@ stopped. Older metadata upgrades without inventing active native bindings;
 ambiguous foreign-workspace ownership is rejected without replacing the record.
 
 Retired metadata can be explicitly forgotten with
-`{"version":10,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
+`{"version":11,"op":"pane_forget","pane_id":"RETURNED_PANE_ID"}` after the process
 has stopped, every layout reference has been removed and all its views detached.
 This removes its retained metadata and stored bytes; it is not termination or automatic history pruning.
 

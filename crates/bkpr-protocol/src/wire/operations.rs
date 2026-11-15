@@ -16,6 +16,32 @@ pub(super) fn write_operation(
 ) -> Result<UnionOffset<g::Operation>> {
     budget.node(depth)?;
     Ok(match value {
+        Operation::DaemonInfo => {
+            let offset = g::OperationDaemonInfo::create(builder);
+            g::Operation::create_operation_daemon_info(builder, offset)
+        }
+        Operation::SessionOpen {
+            name,
+            defaults,
+            initial,
+        } => {
+            let name = write_text(builder, name, budget)?;
+            let defaults = defaults
+                .as_ref()
+                .map(|value| write_spawn_defaults(builder, value, budget, depth + 1))
+                .transpose()?;
+            let initial = initial
+                .as_ref()
+                .map(|value| write_pane_spawn_spec(builder, value, budget, depth + 1))
+                .transpose()?;
+            let offset = g::OperationSessionOpen::create(builder, name, defaults, initial);
+            g::Operation::create_operation_session_open(builder, offset)
+        }
+        Operation::DaemonShutdown { daemon_id } => {
+            let daemon_id = write_text(builder, daemon_id, budget)?;
+            let offset = g::OperationDaemonShutdown::create(builder, daemon_id);
+            g::Operation::create_operation_daemon_shutdown(builder, offset)
+        }
         Operation::SessionInfo => {
             let offset = g::OperationSessionInfo::create(builder);
             g::Operation::create_operation_session_info(builder, offset)
@@ -23,6 +49,7 @@ pub(super) fn write_operation(
         Operation::ClientRegister {
             session_id,
             daemon_id,
+            session_instance_id,
         } => {
             let session_id = {
                 budget.bytes(session_id.len())?;
@@ -32,7 +59,13 @@ pub(super) fn write_operation(
                 budget.bytes(daemon_id.len())?;
                 builder.create_string(daemon_id.as_str())
             };
-            let offset = g::OperationClientRegister::create(builder, session_id, daemon_id);
+            let session_instance_id = write_text(builder, session_instance_id, budget)?;
+            let offset = g::OperationClientRegister::create(
+                builder,
+                session_id,
+                daemon_id,
+                session_instance_id,
+            );
             g::Operation::create_operation_client_register(builder, offset)
         }
         Operation::Client { authority, request } => {
@@ -543,6 +576,21 @@ pub(super) fn read_operation(
 ) -> Result<Operation> {
     budget.node(depth)?;
     Ok(match value {
+        g::OperationRef::OperationDaemonInfo(_) => Operation::DaemonInfo,
+        g::OperationRef::OperationSessionOpen(value) => Operation::SessionOpen {
+            name: read_text(value.name()?, budget)?,
+            defaults: value
+                .defaults()?
+                .map(|value| read_spawn_defaults(value, budget, depth + 1))
+                .transpose()?,
+            initial: value
+                .initial()?
+                .map(|value| read_pane_spawn_spec(value, budget, depth + 1))
+                .transpose()?,
+        },
+        g::OperationRef::OperationDaemonShutdown(value) => Operation::DaemonShutdown {
+            daemon_id: read_text(value.daemon_id()?, budget)?,
+        },
         g::OperationRef::OperationSessionInfo(_value) => Operation::SessionInfo,
         g::OperationRef::OperationClientRegister(value) => Operation::ClientRegister {
             session_id: {
@@ -555,6 +603,7 @@ pub(super) fn read_operation(
                 budget.bytes(text.len())?;
                 text.to_owned()
             },
+            session_instance_id: read_text(value.session_instance_id()?, budget)?,
         },
         g::OperationRef::OperationClient(value) => Operation::Client {
             authority: read_client_authority(value.authority()?, budget, depth + 1)?,
