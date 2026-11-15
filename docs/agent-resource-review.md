@@ -127,7 +127,7 @@ unknown mutation.
 existing seven-day retention, protecting message/receiver/waiter references. Saved
 recovery descriptors, final scenes and referenced receipt history keep their
 existing explicit retention policy. They are not globally memory-bounded by this
-change. Configurable retention and bulk-forget policy are tracked in `TODO.md`.
+change. Configurable retention and bulk-forget policy are tracked in [issue #13](https://github.com/calops/bkpr/issues/13).
 
 **Diagnostics:** a private body-free daemon mutation/lifecycle trail uses a
 nonblocking 256-event queue and four slots of at most 1 MiB each. Descriptor-relative

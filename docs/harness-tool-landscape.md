@@ -21,7 +21,7 @@ Selected linked tools and named adjacent systems are covered below; this is not 
 
 ## What Bkpr already covers
 
-The [native implementation report](pane-first-mux/engine-proof.md) and [TODO](../TODO.md) distinguish implemented work from future scope:
+The [native implementation report](pane-first-mux/engine-proof.md) and [GitHub issues](https://github.com/calops/bkpr/issues) distinguish implemented work from future scope:
 
 - Native daemon-owned panes/processes/PTYs, workspace/window/layout ownership, canonical terminal state and independent clients.
 - Typed CLI/MCP control, atomic pane creation/final placement, explicit terminal input and visible-viewport reads.
@@ -200,4 +200,4 @@ Artifact references can precede storage infrastructure: producer, owning endpoin
 5. **Isolation proof:** if sandbox work is approved, test host-file, network and credential boundaries independently. A successful Docker launch or a valid image name is not acceptance.
 6. **Failure economics:** compare human interruptions, review corrections, abandoned/stalled tasks, whole-system resource use and time-to-accepted-result, not agent count or tokens generated. No performance/quality ranking of these projects is established by this survey.
 
-No source changes to Bkpr's runtime or active remote feature were made for this report. No external application was executed or installer/configuration change performed. A subsequent explicit user decision added the five accepted workflow items to `TODO.md` and recorded terminal-first, harness-native integration with ACP hosting as a non-goal.
+No source changes to Bkpr's runtime or active remote feature were made for this report. No external application was executed or installer/configuration change performed. Subsequent user-approved workflow work is tracked in [chatrooms](https://github.com/calops/bkpr/issues/16), [attention inbox](https://github.com/calops/bkpr/issues/17), [handoffs](https://github.com/calops/bkpr/issues/18), [reservations](https://github.com/calops/bkpr/issues/19) and [result artifacts](https://github.com/calops/bkpr/issues/20). Terminal-first, harness-native integration remains the product direction; ACP hosting is a non-goal.

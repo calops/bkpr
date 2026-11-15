@@ -578,7 +578,7 @@ The offline text oracle strips SGR before pyte because its colon-SGR handling ot
 | Three dense searches | 109,912,064 |
 | All cleared, after replacements | 81,395,712 |
 
-The SDK retains flattened result endpoints for all matches and has no configurable result-memory cap. Bkpr materializes only viewport-page matches for clipped spans; it doesn't copy all matches into another search engine. Existing history/view admission bounds are not a separate byte-hard search allocation cap. Dense multi-view memory and post-clear RSS need allocation/lifetime profiling; this observation alone does not diagnose a leak. Exact results/counts are retained rather than silently capped. `TODO.md` tracks the optimization and required discussion before changing supported semantics.
+The SDK retains flattened result endpoints for all matches and has no configurable result-memory cap. Bkpr materializes only viewport-page matches for clipped spans; it doesn't copy all matches into another search engine. Existing history/view admission bounds are not a separate byte-hard search allocation cap. Dense multi-view memory and post-clear RSS need allocation/lifetime profiling; this observation alone does not diagnose a leak. Exact results/counts are retained rather than silently capped. [Issue #6](https://github.com/calops/bkpr/issues/6) tracks the profiling and required discussion before changing supported semantics.
 
 Raw control-completion timings are retained in the JSON, including polling/serialization overhead and an 80 ms sampling interval; they are not physical presentation latency. No editor/animation CPU improvement is claimed.
 
