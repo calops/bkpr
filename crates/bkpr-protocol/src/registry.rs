@@ -258,6 +258,11 @@ pub enum Operation {
     },
     /// Stop this session and its executions, preserving durable recovery intent.
     Shutdown,
+    /// Inspect or subscribe to host-owned notifications, or administer scoped policy.
+    Notifications {
+        /// Validated structural notification request; policy writes require the host endpoint.
+        request: crate::NotificationRequest,
+    },
 }
 impl std::fmt::Debug for Operation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

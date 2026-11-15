@@ -267,6 +267,50 @@ table OperationSessionOpen {
 table OperationDaemonShutdown {
   daemon_id:string (required);
 }
+enum NotificationKind : ubyte { Attention, Error, Idle, Done }
+table NotificationScope {
+  session_id:string;
+  workspace_id:string;
+  pane_id:string;
+}
+table NotificationCursor {
+  store_id:string (required);
+  sequence:ulong;
+  loss_generation:ulong;
+}
+table NotificationQuery {
+  scope:NotificationScope (required);
+  kinds:[NotificationKind] (required);
+  limit:ushort;
+}
+table NotificationPolicy {
+  scope:NotificationScope (required);
+  kinds:[NotificationKind] (required);
+}
+table NotificationRequestInspect {
+  query:NotificationQuery (required);
+  after:NotificationCursor;
+}
+table NotificationRequestSubscribe {
+  query:NotificationQuery (required);
+  after:NotificationCursor;
+  wait_ms:uint;
+}
+table NotificationRequestPolicyGet {}
+table NotificationRequestHealth {}
+table NotificationRequestPolicySet {
+  policy:NotificationPolicy (required);
+}
+union NotificationRequest {
+  NotificationRequestInspect,
+  NotificationRequestSubscribe,
+  NotificationRequestPolicyGet,
+  NotificationRequestPolicySet,
+  NotificationRequestHealth
+}
+table OperationNotifications {
+  request:NotificationRequest (required);
+}
 union Operation {
   OperationSessionInfo,
   OperationClientRegister,
@@ -301,7 +345,8 @@ union Operation {
   OperationControlPaneRead,
   OperationDaemonInfo,
   OperationSessionOpen,
-  OperationDaemonShutdown
+  OperationDaemonShutdown,
+  OperationNotifications
 }
 table PaneRequestInspect {
 

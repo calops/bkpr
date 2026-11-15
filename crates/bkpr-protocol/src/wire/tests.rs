@@ -13,6 +13,183 @@ fn assert_request(operation: Operation) {
 }
 
 #[test]
+fn notifications_roundtrip_structural_requests_and_optional_cursors() {
+    let kinds = vec![
+        NotificationKind::Attention,
+        NotificationKind::Error,
+        NotificationKind::Idle,
+        NotificationKind::Done,
+    ];
+    for scope in [
+        NotificationScope::default(),
+        NotificationScope {
+            session_id: Some("session".into()),
+            workspace_id: Some("workspace".into()),
+            pane_id: Some("pane".into()),
+        },
+    ] {
+        for after in [
+            None,
+            Some(NotificationCursor {
+                store_id: "store".into(),
+                sequence: 0,
+                loss_generation: 0,
+            }),
+            Some(NotificationCursor {
+                store_id: "store".into(),
+                sequence: u64::MAX,
+                loss_generation: u64::MAX,
+            }),
+            Some(NotificationCursor {
+                store_id: "store".into(),
+                sequence: 7,
+                loss_generation: 3,
+            }),
+        ] {
+            for enabled in [Vec::new(), kinds.clone()] {
+                for limit in [1, MAX_NOTIFICATION_LIMIT] {
+                    let query = NotificationQuery {
+                        scope: scope.clone(),
+                        kinds: enabled.clone(),
+                        limit,
+                    };
+                    assert_request(Operation::Notifications {
+                        request: NotificationRequest::Inspect {
+                            query: query.clone(),
+                            after: after.clone(),
+                        },
+                    });
+                    for wait_ms in [0, MAX_NOTIFICATION_WAIT_MS] {
+                        assert_request(Operation::Notifications {
+                            request: NotificationRequest::Subscribe {
+                                query: query.clone(),
+                                after: after.clone(),
+                                wait_ms,
+                            },
+                        });
+                    }
+                }
+            }
+        }
+        for enabled in [Vec::new(), kinds.clone()] {
+            assert_request(Operation::Notifications {
+                request: NotificationRequest::PolicySet {
+                    policy: NotificationPolicy {
+                        scope: scope.clone(),
+                        kinds: enabled,
+                    },
+                },
+            });
+        }
+    }
+    assert_request(Operation::Notifications {
+        request: NotificationRequest::PolicyGet {},
+    });
+    assert_request(Operation::Notifications {
+        request: NotificationRequest::Health {},
+    });
+}
+
+#[test]
+fn notification_validation_applies_to_both_encoder_and_untrusted_structural_decode() {
+    let invalid = Request::new(Operation::Notifications {
+        request: NotificationRequest::Subscribe {
+            query: NotificationQuery::default(),
+            after: None,
+            wait_ms: MAX_NOTIFICATION_WAIT_MS + 1,
+        },
+    });
+    assert!(Codec::new().encode_request(&invalid).is_err());
+
+    fn unchecked_inspect(
+        limit: u16,
+        kinds: &[g::NotificationKind],
+        store_id: &str,
+        session: &str,
+    ) -> Vec<u8> {
+        let mut builder = Builder::new();
+        let session = builder.create_string(session);
+        let scope = g::NotificationScope::create(
+            &mut builder,
+            Some(session),
+            None::<planus::Offset<str>>,
+            None::<planus::Offset<str>>,
+        );
+        let kinds = builder.create_vector(kinds);
+        let query = g::NotificationQuery::create(&mut builder, scope, kinds, limit);
+        let store_id = builder.create_string(store_id);
+        let cursor = g::NotificationCursor::create(&mut builder, store_id, 0, 0);
+        let inspect = g::NotificationRequestInspect::create(&mut builder, query, Some(cursor));
+        let request =
+            g::NotificationRequest::create_notification_request_inspect(&mut builder, inspect);
+        let notifications = g::OperationNotifications::create(&mut builder, request);
+        let operation = g::Operation::create_operation_notifications(&mut builder, notifications);
+        let root = g::Request::create(&mut builder, PROTOCOL_VERSION, operation);
+        builder.finish(root, None).to_vec()
+    }
+    let valid = unchecked_inspect(64, &[g::NotificationKind::Attention], "store", "session");
+    assert!(decode_request(&valid).is_ok());
+    for bytes in [
+        unchecked_inspect(0, &[], "store", "session"),
+        unchecked_inspect(65, &[], "store", "session"),
+        unchecked_inspect(1, &[g::NotificationKind::Error; 2], "store", "session"),
+        unchecked_inspect(1, &[g::NotificationKind::Error; 5], "store", "session"),
+        unchecked_inspect(1, &[], "", "session"),
+        unchecked_inspect(1, &[], &"s".repeat(257), "session"),
+        unchecked_inspect(1, &[], "store", "bad\nsession"),
+        unchecked_inspect(1, &[], "store", &"s".repeat(257)),
+    ] {
+        assert!(decode_request(&bytes).is_err());
+    }
+    let (_, operation_field) = root_field(&valid, 2);
+    let operation = indirect(&valid, operation_field);
+    let (_, request_field) = table_field(&valid, operation, 1);
+    let inspect = indirect(&valid, request_field);
+    let (_, query_field) = table_field(&valid, inspect, 0);
+    let query = indirect(&valid, query_field);
+    for (table, field) in [(operation, 1), (inspect, 0), (query, 0), (query, 1)] {
+        let mut malformed = valid.clone();
+        let (entry, _) = table_field(&malformed, table, field);
+        malformed[entry..entry + 2].fill(0);
+        assert!(decode_request(&malformed).is_err());
+    }
+    let mut unknown_request = valid.clone();
+    let (_, request_tag) = table_field(&unknown_request, operation, 0);
+    unknown_request[request_tag] = 255;
+    assert!(decode_request(&unknown_request).is_err());
+    let mut unknown_kind = valid;
+    let (_, kinds_field) = table_field(&unknown_kind, query, 1);
+    let kinds = indirect(&unknown_kind, kinds_field);
+    unknown_kind[kinds + 4] = 255;
+    assert!(decode_request(&unknown_kind).is_err());
+}
+
+#[test]
+fn appended_notification_union_preserves_existing_operation_ordinals() {
+    let mut codec = Codec::new();
+    for (operation, expected) in [
+        (Operation::SessionInfo, 1),
+        (Operation::Inspect, 6),
+        (
+            Operation::DaemonShutdown {
+                daemon_id: "host".into(),
+            },
+            34,
+        ),
+        (
+            Operation::Notifications {
+                request: NotificationRequest::PolicyGet {},
+            },
+            35,
+        ),
+    ] {
+        let bytes = codec.encode_request(&Request::new(operation)).unwrap();
+        let (_, tag) = root_field(bytes, 1);
+        assert_eq!(bytes[tag], expected);
+    }
+}
+
+#[test]
 fn registration_cannot_omit_the_session_instance_fence() {
     let request = Request::new(Operation::ClientRegister {
         session_id: "persistent-session".into(),

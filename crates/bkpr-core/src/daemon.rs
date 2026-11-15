@@ -67,6 +67,7 @@ impl Drop for HostLease {
 struct Inner {
     config: HostConfig,
     info: DaemonInfo,
+    notifications: crate::notifications::NotificationService,
     listener: Mutex<Option<BoundSocket>>,
     wake: Mutex<Option<UnixStream>>,
     stop: Stop,
@@ -129,6 +130,9 @@ impl HostDaemon {
             .context("host state root already owned by another daemon")?;
         let lease = HostLease(lease);
         registry::private_directory(&config.state_root.join("sessions"))?;
+        let notifications = crate::notifications::NotificationService::open(
+            &config.state_root.join("notifications"),
+        )?;
         let listener = transport::bind(&config.socket)?;
         let (stop, wake) = Stop::new()?;
         Ok(Self {
@@ -138,6 +142,7 @@ impl HostDaemon {
                     daemon_id: Uuid::new_v4().to_string(),
                     pid: std::process::id(),
                 },
+                notifications,
                 listener: Mutex::new(Some(listener)),
                 wake: Mutex::new(Some(wake)),
                 stop,
@@ -175,7 +180,7 @@ impl HostDaemon {
             .take()
             .context("host already serving")?;
         let serving = listener.serve_host(self.clone(), self.inner.stop.clone(), wake);
-        let cleanup = self.shutdown_sessions();
+        let cleanup = self.shutdown();
         serving.and(cleanup)
     }
     /// Serves the host while opening one CLI-authorized initial session.
@@ -215,9 +220,21 @@ impl HostDaemon {
     pub(crate) fn stop_requested(&self) -> bool {
         self.inner.stop.flag.load(Ordering::Acquire)
     }
-    pub(crate) fn request(&self, operation: Operation) -> Result<Payload> {
+    pub(crate) fn request(
+        &self,
+        operation: Operation,
+        is_connected: &dyn Fn() -> bool,
+    ) -> Result<Payload> {
         let value = match operation {
-            Operation::DaemonInfo => json!({"daemon":self.info()}),
+            Operation::Notifications { request } => {
+                return self
+                    .inner
+                    .notifications
+                    .request(request, None, is_connected);
+            }
+            Operation::DaemonInfo => {
+                json!({"daemon":self.info(),"notifications":self.inner.notifications.health()})
+            }
             Operation::SessionOpen {
                 name,
                 defaults,
@@ -229,7 +246,7 @@ impl HostDaemon {
                     "host daemon identity changed"
                 );
                 self.request_shutdown();
-                self.shutdown_sessions()?;
+                self.shutdown()?;
                 json!({"shutdown":true})
             }
             _ => bail!("operation requires a session endpoint"),
@@ -363,6 +380,7 @@ impl HostDaemon {
         }
         let root = self.inner.config.state_root.join("sessions").join(key);
         let registry = Registry::open_named_in_host(&root, name, &self.info().daemon_id)?;
+        registry.configure_notifications(self.inner.notifications.clone())?;
         let released = registry.lease_released();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             ensure!(
@@ -452,6 +470,12 @@ impl HostDaemon {
         }
         slot.changed.notify_all();
         self.inner.changed.notify_all();
+    }
+    /// Drains sessions before the host notification worker and reports either failure.
+    pub(crate) fn shutdown(&self) -> Result<()> {
+        let sessions = self.shutdown_sessions();
+        let notifications = self.inner.notifications.shutdown();
+        sessions.and(notifications)
     }
     pub(crate) fn shutdown_sessions(&self) -> Result<()> {
         let mut sessions = self.inner.sessions.lock().unwrap();

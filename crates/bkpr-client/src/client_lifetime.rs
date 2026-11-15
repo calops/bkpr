@@ -71,6 +71,12 @@ fn observational(operation: &Operation) -> bool {
             | Operation::SessionInfo
             | Operation::Wait { .. }
             | Operation::RecoveryList
+            | Operation::Notifications {
+                request: bkpr_protocol::NotificationRequest::Health {}
+                    | bkpr_protocol::NotificationRequest::Inspect { .. }
+                    | bkpr_protocol::NotificationRequest::Subscribe { .. }
+                    | bkpr_protocol::NotificationRequest::PolicyGet {},
+            }
             | Operation::Pane {
                 request: bkpr_protocol::PaneRequest::Inspect
                     | bkpr_protocol::PaneRequest::Poll { .. },

@@ -537,3 +537,292 @@ fn retirement_replacement_and_failed_publication_never_acknowledge_status() {
             .contains_key(&replacement.launch_id)
     );
 }
+
+fn notification_fixture() -> (StatusFixture, crate::notifications::NotificationService) {
+    let fixture = Fixture::new();
+    let service = crate::notifications::NotificationService::open(
+        &fixture._root.path().join("notifications"),
+    )
+    .unwrap();
+    fixture
+        .registry
+        .configure_notifications(service.clone())
+        .unwrap();
+    service
+        .request(
+            NotificationRequest::PolicySet {
+                policy: NotificationPolicy {
+                    scope: NotificationScope::default(),
+                    kinds: vec![
+                        NotificationKind::Attention,
+                        NotificationKind::Error,
+                        NotificationKind::Idle,
+                        NotificationKind::Done,
+                    ],
+                },
+            },
+            None,
+            &|| true,
+        )
+        .unwrap();
+    let (pane_id, grant, peer) =
+        seed_launch_command(&fixture, HarnessKind::Opencode, "IFS= read -r hold");
+    let fixture = StatusFixture {
+        fixture,
+        pane_id,
+        grant,
+        peer,
+    };
+    fixture.bind("session-one");
+    (fixture, service)
+}
+
+fn notification_page(service: &crate::notifications::NotificationService) -> NotificationPage {
+    serde_json::from_value(
+        service
+            .request(
+                NotificationRequest::Inspect {
+                    query: NotificationQuery::default(),
+                    after: None,
+                },
+                None,
+                &|| true,
+            )
+            .unwrap()
+            .into_json()
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+fn notification_terminal(
+    fixture: &StatusFixture,
+) -> (bkpr_terminal_engine::Terminal, Arc<crate::Shared>) {
+    let pane = fixture
+        .fixture
+        .registry
+        .capture_pane(&fixture.pane_id)
+        .unwrap();
+    let shared = pane.shared.clone();
+    shared.status_feed_epoch.store(
+        shared.status_epoch.load(Ordering::Acquire),
+        Ordering::Release,
+    );
+    let mut terminal = bkpr_terminal_engine::Terminal::new(Size {
+        cols: 80,
+        rows: 24,
+        cell_width: 8,
+        cell_height: 16,
+    })
+    .unwrap();
+    let callback = shared.clone();
+    terminal.set_program_status_observer(Box::new(move |records, explicit| {
+        callback.status_observer.get().unwrap()(records, explicit);
+    }));
+    (terminal, shared)
+}
+
+#[test]
+fn notification_capture_keeps_bursts_before_frames_and_deduplicates_reports() {
+    let (fixture, service) = notification_fixture();
+    let (mut terminal, _) = notification_terminal(&fixture);
+    terminal.feed(b"\x1b]7501;state=blocked:kind=permission:app=opencode\x07\x1b]7501;state=blocked:kind=permission:app=opencode\x07\x1b]7501;state=working:app=opencode\x07\x1b]7501;state=blocked:kind=question:app=opencode\x07").unwrap();
+    assert!(
+        fixture.info().harness_status.is_none(),
+        "no frame/status summary was published"
+    );
+    let page = notification_page(&service);
+    assert_eq!(page.notifications.len(), 2);
+    assert_eq!(
+        page.notifications[0].attention_kind.as_deref(),
+        Some("permission")
+    );
+    assert_eq!(
+        page.notifications[1].attention_kind.as_deref(),
+        Some("question")
+    );
+    assert!(page.notifications.iter().all(|notification| {
+        notification.kind == NotificationKind::Attention
+            && notification.source.process.pid == fixture.peer.pid as u32
+            && notification.source.process.birth == fixture.peer.birth
+            && notification.source.launch_id.as_deref() == Some(fixture.grant.launch_id.as_str())
+            && notification.source.binding_generation == Some(1)
+    }));
+    let original = {
+        let mut captures = fixture.fixture.registry.inner.captures.lock().unwrap();
+        let original = captures
+            .lookup(&fixture.grant.launch_id, &fixture.grant.token)
+            .unwrap();
+        captures
+            .launches
+            .get_mut(&fixture.grant.launch_id)
+            .unwrap()
+            .managed
+            .first_prompt_submitted_at_ms = Some(42);
+        original
+    };
+    fixture
+        .fixture
+        .registry
+        .publish_capture_change(&original)
+        .unwrap();
+    terminal
+        .feed(b"\x1b]7501;state=blocked:kind=question:app=opencode\x07")
+        .unwrap();
+    assert_eq!(
+        notification_page(&service).notifications.len(),
+        2,
+        "prompt metadata must not restart an attention episode"
+    );
+    fixture.fixture.registry.shutdown().unwrap();
+    service.shutdown().unwrap();
+}
+
+#[test]
+fn native_notifications_keep_precedence_and_clear_eof_never_complete() {
+    let (fixture, service) = notification_fixture();
+    let stream = fixture.enroll();
+    fixture.report(&stream, NativeStatusState::Working).unwrap();
+    let (mut terminal, _) = notification_terminal(&fixture);
+    terminal
+        .feed(b"\x1b]7501;state=blocked:app=opencode\x07\x1b]7501;state=done:app=opencode\x07")
+        .unwrap();
+    assert!(notification_page(&service).notifications.is_empty());
+    fixture.report(&stream, NativeStatusState::Blocked).unwrap();
+    fixture.report(&stream, NativeStatusState::Blocked).unwrap();
+    fixture.report(&stream, NativeStatusState::Clear).unwrap();
+    fixture.fixture.registry.end_native_status(&stream).unwrap();
+    let page = notification_page(&service);
+    assert_eq!(page.notifications.len(), 1);
+    assert_eq!(page.notifications[0].kind, NotificationKind::Attention);
+    let replacement = fixture.enroll();
+    assert!(fixture.report(&stream, NativeStatusState::Done).is_err());
+    fixture
+        .report(&replacement, NativeStatusState::Working)
+        .unwrap();
+    fixture.fixture.registry.end_native_status(&stream).unwrap();
+    fixture
+        .report(&replacement, NativeStatusState::Idle)
+        .unwrap();
+    fixture
+        .report(&replacement, NativeStatusState::Done)
+        .unwrap();
+    let page = notification_page(&service);
+    assert_eq!(
+        page.notifications
+            .iter()
+            .map(|record| record.kind)
+            .collect::<Vec<_>>(),
+        [
+            NotificationKind::Attention,
+            NotificationKind::Idle,
+            NotificationKind::Done
+        ]
+    );
+    fixture.fixture.registry.shutdown().unwrap();
+    service.shutdown().unwrap();
+}
+
+#[test]
+fn notification_capture_rejects_stale_birth_binding_and_mid_feed_authority() {
+    let (fixture, service) = notification_fixture();
+    let (mut terminal, shared) = notification_terminal(&fixture);
+    shared
+        .published
+        .lock()
+        .unwrap()
+        .program_identity
+        .as_mut()
+        .unwrap()
+        .birth = "reused-pid".into();
+    terminal
+        .feed(b"\x1b]7501;state=blocked:app=opencode\x07")
+        .unwrap();
+    assert!(notification_page(&service).notifications.is_empty());
+    shared
+        .published
+        .lock()
+        .unwrap()
+        .program_identity
+        .as_mut()
+        .unwrap()
+        .birth = fixture.peer.birth.clone();
+    let previous = fixture.info().harness.unwrap().managed;
+    fixture.bind("session-two");
+    let current = fixture.info().harness.unwrap().managed;
+    {
+        let mut state = fixture.fixture.registry.inner.state.lock().unwrap();
+        state
+            .record
+            .registry
+            .panes
+            .iter_mut()
+            .find(|info| info.id == fixture.pane_id)
+            .unwrap()
+            .harness
+            .as_mut()
+            .unwrap()
+            .managed = previous;
+    }
+    shared.status_feed_epoch.store(
+        shared.status_epoch.load(Ordering::Acquire),
+        Ordering::Release,
+    );
+    terminal
+        .feed(b"\x1b]7501;state=blocked:app=opencode\x07")
+        .unwrap();
+    assert!(notification_page(&service).notifications.is_empty());
+    {
+        let mut state = fixture.fixture.registry.inner.state.lock().unwrap();
+        state
+            .record
+            .registry
+            .panes
+            .iter_mut()
+            .find(|info| info.id == fixture.pane_id)
+            .unwrap()
+            .harness
+            .as_mut()
+            .unwrap()
+            .managed = current;
+    }
+    let callback = shared.clone();
+    let mut first = true;
+    terminal.set_program_status_observer(Box::new(move |records, explicit| {
+        callback.status_observer.get().unwrap()(records, explicit);
+        if first {
+            first = false;
+            callback.status_epoch.fetch_add(1, Ordering::AcqRel);
+        }
+    }));
+    terminal.feed(b"\x1b]7501;state=blocked:app=opencode\x07\x1b]7501;state=working:app=opencode\x07\x1b]7501;state=blocked:app=opencode\x07").unwrap();
+    let page = notification_page(&service);
+    assert_eq!(
+        page.notifications.len(),
+        1,
+        "retired feed cannot acquire the replacement authority"
+    );
+    assert_eq!(page.notifications[0].source.binding_generation, Some(2));
+    shared.status_feed_epoch.store(
+        shared.status_epoch.load(Ordering::Acquire),
+        Ordering::Release,
+    );
+    terminal
+        .feed(b"\x1b]7501;state=blocked:app=opencode\x07")
+        .unwrap();
+    assert_eq!(
+        notification_page(&service).notifications.len(),
+        1,
+        "a rejected old feed cannot withdraw and reopen the live attention episode"
+    );
+    fixture.bind("session-three");
+    let (mut terminal, _) = notification_terminal(&fixture);
+    terminal
+        .feed(b"\x1b]7501;state=blocked:app=opencode\x07")
+        .unwrap();
+    let page = notification_page(&service);
+    assert_eq!(page.notifications.len(), 2);
+    assert_eq!(page.notifications[1].source.binding_generation, Some(3));
+    fixture.fixture.registry.shutdown().unwrap();
+    service.shutdown().unwrap();
+}

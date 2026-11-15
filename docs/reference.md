@@ -1718,6 +1718,62 @@ advancing `unstable`. Branch dispatch runs the same package builds and loader
 checks without publishing notes or advancing `unstable`.
 Historical versions remain in [CHANGELOG.md](../CHANGELOG.md).
 
+## Notification records and subscriptions
+
+`Operation::Notifications` exposes backend records, not desktop presentation,
+push delivery or agent-inbox acknowledgements. It is an additive native operation
+in family 11 (remote control 2); older peers reject this operation before
+dispatch. This does not negotiate general optional-feature compatibility.
+An already-running older daemon must be explicitly restarted to collect records;
+normal attachment never replaces it.
+
+For the usual XDG runtime, inspect notification health without selecting a
+session:
+
+```sh
+bkpr request --socket "$XDG_RUNTIME_DIR/bkpr/d" \
+  '{"version":11,"op":"notifications","request":{"method":"health"}}'
+```
+
+The request methods are `health`, `inspect`, `subscribe`, `policy_get` and
+`policy_set`. Inspection/subscription queries contain `scope`, `kinds` and
+`limit` (1..64). Scope selectors are AND-combined `session_id`, `workspace_id`
+and `pane_id`; empty `kinds` means all. A session endpoint always clamps reads
+to its own persistent session ID and rejects a conflicting selector. Policy
+writes require an explicit host control socket; workspace/pane policy selectors
+also require a session ID. The most-specific matching policy overrides broader
+rules; ambiguous equal-specificity rules are rejected. An empty policy kind list
+disables that exact scope.
+
+```sh
+bkpr request --socket "$XDG_RUNTIME_DIR/bkpr/d" \
+  '{"version":11,"op":"notifications","request":{"method":"inspect","query":{"scope":{},"kinds":[],"limit":16},"after":null}}'
+```
+
+`inspect` without `after` returns the newest matching retained page, ordered by
+sequence. `subscribe` without `after` establishes a current baseline without
+replaying history. To resume, pass the returned cursor unchanged as `after`;
+it contains `store_id`, `sequence` and `loss_generation`. Foreign/future cursors
+are rejected. The cursor advances through filtered entries, and `gap` reports
+retention or newly observed loss. Using the returned cursor acknowledges that
+continuity boundary, not reading/dismissing a notification. `subscribe` adds
+`wait_ms` (0..5000); new records wake it, and disconnect/attachment retirement
+cancel the wait.
+
+Remote reads use the normal session attachment and stay scoped to that session:
+
+```sh
+bkpr -r devbox -s work remote request \
+  '{"op":"notifications","request":{"method":"subscribe","query":{"scope":{},"kinds":[],"limit":16},"after":null,"wait_ms":5000}}'
+```
+
+Local raw replies and remote request replies expose the typed result under
+`result`. Records include structured source identities and semantic categories,
+not terminal contents, prompts, arbitrary status messages or capture tokens.
+Inspection/subscription is not a provider delivery receipt. See the
+[notification design](notifications.md) for bounds, failure semantics and the
+desktop/UnifiedPush roadmap.
+
 ## License
 
 MIT; see [LICENSE](../LICENSE). Reused external source retains its applicable

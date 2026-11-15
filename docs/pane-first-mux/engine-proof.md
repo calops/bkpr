@@ -3577,3 +3577,73 @@ build receipts. No live user sessions, providers, approvals or profiles were
 used or changed. No release, tag or runtime binary was promoted. The
 [notification architecture](../notifications.md) remains a design; its host
 lifecycle prerequisite is implemented, not notification delivery providers.
+
+## Backend notification capture, durability and resumable subscriptions
+
+The accepted incremental debug pair is frozen under
+`target/smoke/harness-integrations/build/compiled-409441397424611/executables/`:
+
+* `bkpr`: `78a31fdf7402b8c90e150c9eaf0dd00101f3bbeaa983976a0a5e232e67f7c490`.
+* `bkprd`: `a14d9269b84ec77b32cb3fcc619385ea8356524eb10af0ff66c83ca6b3c99c65`.
+
+Native family 11, remote control 2 and recovery schema 4 are unchanged.
+Notifications append operation tag 35 without reassigning existing tags.
+Older peers reject the unsupported operation before dispatch; this is not
+general optional-feature negotiation or automatic live-daemon replacement.
+
+`target/smoke/notifications/actual-2/acceptance.json` records changed-path
+acceptance as UID 1000 inside a private current-user filesystem/network namespace.
+A verified `/bin/sh` copy at an isolated recognized native Claude-shaped path
+emits controlled OSC 7501 through real PTYs and the pinned Ghostty engine.
+This is a synthetic harness fixture, not genuine Claude/plugin/model acceptance.
+The real `bkpr` CLI and real loopback OpenSSH exercise:
+
+* One PTY `printf` containing working/blocked/working/blocked produces two durable
+  attention records despite an identical final status and coalesced frames.
+* Duplicates, idle without preceding working, clear and foreign-app reports
+  produce no invented notification; opted-in idle/error/explicit done work.
+* Session endpoints clamp history, reject foreign-session selectors and establish
+  non-replaying subscription baselines. Arbitrary OSC prompt/message text is not
+  retained in notification records.
+* SSH reads/subscriptions preserve session scope; remote policy writes fail
+  without changing the host policy.
+* Closing every session leaves records readable in the idle host. Restart
+  preserves exact history, store identity, policy and cursor without restoring
+  live source authority.
+
+The same fixture observes fresh-state host-control readiness at 83.829292 ms,
+existing-state restart at 42.459854 ms, and burst emission through CLI-observed
+durable page at 64.853911 ms. These are single samples under concurrent test load,
+including controller/CLI overhead, not physical presentation latency or a
+controlled tail-latency benchmark. During 2.0002555 seconds at zero sessions,
+CPU ticks stayed at 17 (100 ticks/second), RSS at 22,336 KiB and threads at four.
+
+Coordinated workspace verification totals 1,303 passing tests and 19 ignored.
+Receipts are under
+`target/smoke/harness-integrations/build/checks-{409220033162445,409648228483787,409814034516005}/`.
+The first receipt contains passing non-core/protocol harnesses; final core
+433/protocol 79 runs supersede the earlier failures. Notification regressions
+cover stale birth/binding/feed epochs, native precedence, scoped policies,
+category-aware episodes, failed commits, queue/subscriber/source bounds,
+retention/expiry, restart, acknowledgeable loss generations, cancellation and
+timed-out shutdown retaining writer authority. A real server regression proves
+corrupt notification storage does not disable session execution or silently
+overwrite the database, and shutdown still reports the storage failure.
+
+Initial checks caught missing checked-unsigned SQLite features, ambiguous Planus
+test constructor types, Serde unit variants ignoring unknown fields and nonprivate
+temporary fixture parents. Final code enables maintained checked conversions,
+uses closed empty-struct request variants and creates fixture directories 0700.
+No production ownership check was weakened and no regression was narrowed.
+
+Protected all-target workspace strict Clippy, formatting and doctests pass.
+Warnings-denied workspace rustdoc passes. Public debug/release executable hashes
+and inodes were preserved. Both inner and namespace cleanup report no survivors;
+no live sessions, native approval caches, user profiles or real model/provider
+services were used. Controller sources are retained in
+`target/smoke/notifications/source.zip`; loose throwaways are removed.
+
+The [notification reference](../reference.md#notification-records-and-subscriptions)
+documents the API and the [design](../notifications.md) distinguishes implemented
+records/subscriptions from later desktop, UnifiedPush and hosted-relay adapters.
+No desktop/push delivery, OS display, user read or activation is claimed.

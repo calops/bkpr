@@ -7,6 +7,7 @@ mod framing;
 #[rustfmt::skip]
 #[allow(dead_code, unused_imports, clippy::all)]
 mod generated;
+mod notifications;
 mod operations;
 mod pane;
 mod paths;

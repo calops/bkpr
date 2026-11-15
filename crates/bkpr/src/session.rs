@@ -385,18 +385,23 @@ fn inspect_cancellable(
     Ok(info)
 }
 
-fn inspect_host(paths: &HostPaths, cancellation: Option<&CancellationToken>) -> Result<DaemonInfo> {
+fn validate_endpoint_socket(socket: &Path) -> Result<()> {
     if !private_directory(
-        paths.socket.parent().context("host socket needs parent")?,
+        socket.parent().context("endpoint socket needs parent")?,
         false,
     )? {
         return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into());
     }
-    let metadata = std::fs::symlink_metadata(&paths.socket)?;
+    let metadata = std::fs::symlink_metadata(socket)?;
     ensure!(
         metadata.file_type().is_socket() && owned_private(&metadata),
-        "host endpoint must be a private owned Unix socket"
+        "endpoint must be a private owned Unix socket"
     );
+    Ok(())
+}
+
+fn inspect_host(paths: &HostPaths, cancellation: Option<&CancellationToken>) -> Result<DaemonInfo> {
+    validate_endpoint_socket(&paths.socket)?;
     let value = match cancellation {
         Some(cancellation) => {
             transport::checked_cancellable(&paths.socket, Operation::DaemonInfo, cancellation)
@@ -446,6 +451,7 @@ pub fn request_host(
     let daemon = inspect_host(&host, None)?;
     match &request.operation {
         Operation::DaemonInfo | Operation::SessionOpen { .. } => {}
+        Operation::Notifications { request } => request.validate()?,
         Operation::DaemonShutdown { daemon_id } => {
             ensure!(
                 daemon_id == &daemon.daemon_id,
@@ -454,6 +460,29 @@ pub fn request_host(
         }
         _ => bail!("operation requires a session data endpoint"),
     }
+    transport::request(socket, request)
+}
+
+/// Dispatch a notification request once to an explicit host or session endpoint.
+/// Policy writes additionally inspect the host identity and cannot target a session.
+pub fn request_notifications(
+    socket: &Path,
+    request: &bkpr_protocol::Request,
+) -> Result<bkpr_protocol::Response> {
+    let Operation::Notifications {
+        request: notification,
+    } = &request.operation
+    else {
+        bail!("expected a notification request");
+    };
+    notification.validate()?;
+    if matches!(
+        notification,
+        bkpr_protocol::NotificationRequest::PolicySet { .. }
+    ) {
+        return request_host(socket, request);
+    }
+    validate_endpoint_socket(socket)?;
     transport::request(socket, request)
 }
 
@@ -1256,6 +1285,14 @@ mod tests {
     }
 
     fn reply_once(socket: &Path, result: serde_json::Value) -> std::thread::JoinHandle<()> {
+        reply_operation_once(socket, result, Operation::SessionInfo)
+    }
+
+    fn reply_operation_once(
+        socket: &Path,
+        result: serde_json::Value,
+        expected: Operation,
+    ) -> std::thread::JoinHandle<()> {
         use std::os::{fd::AsRawFd, unix::net::UnixListener};
         let listener = UnixListener::bind(socket).unwrap();
         std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -1285,7 +1322,10 @@ mod tests {
             .unwrap();
             let mut codec = bkpr_protocol::wire::Codec::new();
             let request = bkpr_protocol::wire::decode_request(&bytes).unwrap();
-            assert!(matches!(request.operation, Operation::SessionInfo));
+            assert_eq!(
+                serde_json::to_value(request.operation).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
             let response = bkpr_protocol::Response {
                 version: bkpr_protocol::PROTOCOL_VERSION,
                 ok: true,
@@ -1301,6 +1341,62 @@ mod tests {
             )
             .unwrap();
         })
+    }
+
+    #[test]
+    fn explicit_notification_reads_dispatch_once_without_session_selection() {
+        use bkpr_protocol::{NotificationQuery, NotificationRequest, Request};
+        for notification in [
+            NotificationRequest::Inspect {
+                query: NotificationQuery::default(),
+                after: None,
+            },
+            NotificationRequest::Subscribe {
+                query: NotificationQuery::default(),
+                after: None,
+                wait_ms: 0,
+            },
+            NotificationRequest::PolicyGet {},
+            NotificationRequest::Health {},
+        ] {
+            let directory = private_fixture();
+            let socket = directory.path().join("s");
+            let operation = Operation::Notifications {
+                request: notification,
+            };
+            let server = reply_operation_once(
+                &socket,
+                serde_json::json!({"selected":"exact-endpoint"}),
+                operation.clone(),
+            );
+            let response = request_notifications(&socket, &Request::new(operation)).unwrap();
+            assert!(response.ok);
+            assert_eq!(
+                response.result.unwrap().into_json().unwrap()["selected"],
+                "exact-endpoint"
+            );
+            server.join().unwrap();
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn explicit_notification_policy_write_requires_a_verified_host_before_mutation() {
+        use bkpr_protocol::{NotificationPolicy, NotificationRequest, Request};
+        let directory = private_fixture();
+        let socket = directory.path().join("s");
+        let server = reply_operation_once(
+            &socket,
+            serde_json::json!({"session":{"session_id":"not-a-host"}}),
+            Operation::DaemonInfo,
+        );
+        let request = Request::new(Operation::Notifications {
+            request: NotificationRequest::PolicySet {
+                policy: NotificationPolicy::default(),
+            },
+        });
+        assert!(request_notifications(&socket, &request).is_err());
+        server.join().unwrap();
     }
 
     #[test]

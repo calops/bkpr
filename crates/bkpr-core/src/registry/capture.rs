@@ -102,6 +102,9 @@ impl Registry {
                 // cannot be verified. Only proven activity grants automatic intent.
                 let automatic_binding = descriptor.is_some()
                     && foreground_context(&launch).is_ok_and(|(active, _)| active);
+                let notification_pane = self.capture_pane(&launch.grant.pane_id)?;
+                let _notification_flush =
+                    super::notification_capture::Flush::new(self, notification_pane);
                 let _transaction = self.inner.transaction.lock().unwrap();
                 {
                     let captures = self.inner.captures.lock().unwrap();
@@ -442,6 +445,7 @@ impl Registry {
     }
     fn publish_capture_change(&self, original: &Launch) -> Result<()> {
         let pane = self.capture_pane(&original.grant.pane_id)?;
+        let mut notification_capture = pane.shared.notification_capture.lock().unwrap();
         let mut state = self.inner.state.lock().unwrap();
         ensure!(
             !state.closing && !pane.shared.finished.load(Ordering::Acquire),
@@ -472,6 +476,9 @@ impl Registry {
         if visible.managed == managed {
             return Ok(());
         }
+        let authority_changed =
+            super::notification_capture::managed_authority(visible.managed.as_ref())
+                != super::notification_capture::managed_authority(managed.as_ref());
         let ended = managed.is_none();
         let supervisor =
             visible.pid == original.root.pid as u32 && visible.birth == original.root.identity;
@@ -484,6 +491,7 @@ impl Registry {
             info.harness_status = None;
             info.harness_status_changed_at_ms = None;
             let mut published = pane.shared.published.lock().unwrap();
+            pane.shared.status_epoch.fetch_add(1, Ordering::AcqRel);
             published.status.clear();
             published.status_changed_at_ms.clear();
             published.program_identity = info.harness.as_ref().map(|h| ProcessIdentity {
@@ -494,6 +502,10 @@ impl Registry {
             pane.shared.changes.notify();
         } else {
             let published = pane.shared.published.lock().unwrap();
+            if authority_changed {
+                pane.shared.status_epoch.fetch_add(1, Ordering::AcqRel);
+                pane.shared.status_reset.store(true, Ordering::Release);
+            }
             let (summary, changed_at_ms) =
                 visible_status(info.harness.as_ref(), &published, &captures);
             info.harness_status = summary.cloned();
@@ -501,6 +513,11 @@ impl Registry {
         }
         state.record.registry.revision = next_revision(state.record.registry.revision)?;
         self.inner.changed.notify_all();
+        drop(captures);
+        drop(state);
+        if authority_changed {
+            notification_capture.invalidate();
+        }
         Ok(())
     }
     fn running_panes(&self) -> Vec<(String, Pane, Process)> {
@@ -535,6 +552,7 @@ impl Registry {
         expected_capture_version: Option<u64>,
     ) -> Result<()> {
         let _transaction = self.inner.transaction.lock().unwrap();
+        let mut notification_capture = pane.shared.notification_capture.lock().unwrap();
         let mut state = self.inner.state.lock().unwrap();
         let captures = self.inner.captures.lock().unwrap();
         if expected_capture_version.is_some_and(|expected| captures.version != expected) {
@@ -582,6 +600,21 @@ impl Registry {
         if info.foreground_cwd == cwd && info.harness == harness {
             return Ok(());
         }
+        let notification_changed = info.harness.as_ref().map(|h| {
+            (
+                h.kind,
+                h.pid,
+                &h.birth,
+                super::notification_capture::managed_authority(h.managed.as_ref()),
+            )
+        }) != harness.as_ref().map(|h| {
+            (
+                h.kind,
+                h.pid,
+                &h.birth,
+                super::notification_capture::managed_authority(h.managed.as_ref()),
+            )
+        });
         let identity = harness.as_ref().map(|h| ProcessIdentity {
             pid: h.pid,
             birth: h.birth.clone(),
@@ -597,6 +630,11 @@ impl Registry {
             .map(|m| m.launch_id.as_str());
         let initial_child = old_launch.zip(new_launch).is_some_and(|(old_id, new_id)| {
             old_id == new_id
+                && super::notification_capture::managed_authority(
+                    info.harness.as_ref().and_then(|h| h.managed.as_ref()),
+                ) == super::notification_capture::managed_authority(
+                    harness.as_ref().and_then(|h| h.managed.as_ref()),
+                )
                 && captures.launches.get(new_id).is_some_and(|launch| {
                     info.harness.as_ref().is_some_and(|old| {
                         old.pid == launch.root.pid as u32 && old.birth == launch.root.identity
@@ -607,7 +645,8 @@ impl Registry {
         });
         {
             let mut published = pane.shared.published.lock().unwrap();
-            if published.program_identity != identity || old_launch != new_launch {
+            if published.program_identity != identity || notification_changed {
+                pane.shared.status_epoch.fetch_add(1, Ordering::AcqRel);
                 if !initial_child {
                     published.status.clear();
                     published.status_changed_at_ms.clear();
@@ -650,6 +689,12 @@ impl Registry {
             .ci_input_generation
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let _ = self.inner.ci_wake.try_send(());
+        drop(captures);
+        drop(state);
+        drop(_transaction);
+        if notification_changed && let Some(service) = self.inner.notifications.get() {
+            notification_capture.withdraw(service);
+        }
         Ok(())
     }
     pub(super) fn start_observer(&self) -> Result<()> {
@@ -1105,25 +1150,35 @@ fn harness_summary<'a>(
     {
         return None;
     }
-    published
-        .status
-        .iter()
-        .filter(|record| match record.app.as_deref() {
-            Some(app) => HarnessKind::from_command(app) == Some(harness.kind),
-            None => record.id.is_empty(),
-        })
-        .filter(|record| {
-            matches!(
+    status_summary(
+        harness.kind,
+        published
+            .status
+            .iter()
+            .map(|record| (record, record.app.as_deref())),
+    )
+}
+
+pub(super) fn status_summary<'a>(
+    kind: HarnessKind,
+    records: impl Iterator<Item = (&'a ProgramStatus, Option<&'a str>)>,
+) -> Option<&'a ProgramStatus> {
+    records
+        .filter(|(record, app)| {
+            app.map_or(record.id.is_empty(), |app| {
+                HarnessKind::from_command(app) == Some(kind)
+            }) && matches!(
                 record.state.as_str(),
                 "error" | "blocked" | "working" | "done" | "idle"
             )
         })
-        .max_by_key(|record| match record.state.as_str() {
+        .max_by_key(|(record, _)| match record.state.as_str() {
             "error" => 3,
             "blocked" => 2,
             "working" => 1,
             _ => 0,
         })
+        .map(|(record, _)| record)
 }
 
 fn visible_status<'a>(
@@ -1144,6 +1199,8 @@ fn visible_status<'a>(
         && launch.managed.conversation.as_ref() == Some(binding)
         && let Some(channel) = captures.native_status.get(&managed.launch_id)
         && &channel.binding == binding
+        && channel.origin.is_valid()
+        && channel.launch.is_valid()
         && let Some(observation) = &channel.observation
     {
         return (Some(&observation.status), Some(observation.changed_at_ms));

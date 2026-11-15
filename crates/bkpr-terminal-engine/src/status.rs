@@ -1,5 +1,29 @@
 use super::*;
 
+/// Borrowed canonical OSC 7501 records, including nearest-ancestor app inheritance.
+#[derive(Clone, Copy)]
+pub struct ProgramStatusView<'a> {
+    records: &'a [ProgramStatus],
+}
+impl<'a> ProgramStatusView<'a> {
+    /// Iterate records and their effective app without copying status text.
+    pub fn iter(self) -> impl Iterator<Item = (&'a ProgramStatus, Option<&'a str>)> {
+        self.records.iter().map(move |record| {
+            let mut app = record.app.as_deref();
+            let mut id = record.id.as_str();
+            while app.is_none() && !id.is_empty() {
+                id = id.rsplit_once('/').map_or("", |(parent, _)| parent);
+                app = self
+                    .records
+                    .iter()
+                    .find(|parent| parent.id == id)
+                    .and_then(|parent| parent.app.as_deref());
+            }
+            (record, app)
+        })
+    }
+}
+
 #[derive(Default)]
 pub(super) struct StatusRecords {
     records: Vec<ProgramStatus>,
@@ -52,26 +76,17 @@ impl StatusRecords {
         self.records
             .retain(|r| !matches!(r.state.as_str(), "done" | "error"));
     }
+    pub(super) fn view(&self) -> ProgramStatusView<'_> {
+        ProgramStatusView {
+            records: &self.records,
+        }
+    }
     pub(super) fn snapshot(&self) -> Vec<ProgramStatus> {
-        self.records
+        self.view()
             .iter()
-            .map(|r| {
-                let mut owned = r.clone();
-                if owned.app.is_none() {
-                    let mut id = r.id.as_str();
-                    while !id.is_empty() {
-                        id = id.rsplit_once('/').map_or("", |(parent, _)| parent);
-                        if let Some(app) = self
-                            .records
-                            .iter()
-                            .find(|parent| parent.id == id)
-                            .and_then(|parent| parent.app.as_ref())
-                        {
-                            owned.app = Some(app.clone());
-                            break;
-                        }
-                    }
-                }
+            .map(|(record, app)| {
+                let mut owned = record.clone();
+                owned.app = app.map(str::to_owned);
                 owned
             })
             .collect()

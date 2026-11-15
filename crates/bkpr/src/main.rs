@@ -78,6 +78,9 @@ fn main() -> Result<()> {
         );
         return Ok(());
     }
+    if command == "request" {
+        return run_request(&matches, &roots);
+    }
     let paths = session::LocalPaths::resolve(
         &roots,
         matches.get_one::<String>("session").map(String::as_str),
@@ -94,29 +97,6 @@ fn main() -> Result<()> {
             .context("command needs a JSON payload")
     };
     match command {
-        "request" => {
-            let request: Request = serde_json::from_str(payload()?)?;
-            if matches!(
-                &request.operation,
-                Operation::DaemonInfo
-                    | Operation::SessionOpen { .. }
-                    | Operation::DaemonShutdown { .. }
-            ) {
-                let socket = matches.get_one::<PathBuf>("socket")
-                    .context("host requests require an explicit --socket; inherited BKPR_SOCKET is session-scoped")?;
-                anyhow::ensure!(
-                    !matches.contains_id("state-root"),
-                    "host requests select --socket only"
-                );
-                let response = session::request_host(&cli::absolute(socket.clone())?, &request)?;
-                println!("{}", serde_json::to_string(&response)?);
-                return Ok(());
-            }
-            session::validate_target(&paths)?;
-            let response = bkpr_client::transport::request(&paths.socket, &request)?;
-            println!("{}", serde_json::to_string(&response)?);
-            Ok(())
-        }
         "context" => {
             session::validate_target(&paths)?;
             context::execute(
@@ -163,6 +143,54 @@ fn main() -> Result<()> {
         }
         _ => unreachable!(),
     }
+}
+
+fn run_request(matches: &clap::ArgMatches, roots: &session::Roots) -> Result<()> {
+    let payload = matches
+        .subcommand_matches("request")
+        .and_then(|arguments| arguments.get_one::<String>("payload"))
+        .context("request needs a JSON payload")?;
+    let request: Request = serde_json::from_str(payload)?;
+    let host_only = matches!(
+        &request.operation,
+        Operation::DaemonInfo
+            | Operation::SessionOpen { .. }
+            | Operation::DaemonShutdown { .. }
+            | Operation::Notifications {
+                request: bkpr_protocol::NotificationRequest::PolicySet { .. }
+            }
+    );
+    let explicit_notifications = matches!(&request.operation, Operation::Notifications { .. })
+        && matches.contains_id("socket");
+    let response = if host_only || explicit_notifications {
+        let socket = matches.get_one::<PathBuf>("socket").context(
+            "host requests require an explicit --socket; inherited BKPR_SOCKET is session-scoped",
+        )?;
+        anyhow::ensure!(
+            !matches.contains_id("session") && !matches.contains_id("state-root"),
+            "explicit endpoint requests select --socket only"
+        );
+        let socket = cli::absolute(socket.clone())?;
+        if matches!(&request.operation, Operation::Notifications { .. }) {
+            session::request_notifications(&socket, &request)?
+        } else {
+            session::request_host(&socket, &request)?
+        }
+    } else {
+        let paths = session::LocalPaths::resolve(
+            roots,
+            matches.get_one::<String>("session").map(String::as_str),
+            matches.get_one::<PathBuf>("socket").cloned(),
+            matches.get_one::<PathBuf>("state-root").cloned(),
+            std::env::var_os("BKPR_SOCKET").map(PathBuf::from),
+            true,
+            false,
+        )?;
+        session::validate_target(&paths)?;
+        bkpr_client::transport::request(&paths.socket, &request)?
+    };
+    println!("{}", serde_json::to_string(&response)?);
+    Ok(())
 }
 
 fn run_tui(matches: &clap::ArgMatches) -> Result<()> {
@@ -256,4 +284,82 @@ fn local_defaults(matches: &clap::ArgMatches) -> Result<SpawnDefaults> {
         },
         isolated_environment: matches.contains_id("home"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::{
+        fd::AsRawFd,
+        unix::{fs::PermissionsExt, net::UnixListener},
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn raw_notification_request_uses_the_explicit_endpoint_without_selecting_a_session() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = directory.path().join("s");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut ready = libc::pollfd {
+                fd: listener.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(unsafe { libc::poll(&mut ready, 1, 3000) }, 1);
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let bytes = bkpr_protocol::wire::read_frame(
+                &mut stream,
+                bkpr_protocol::wire::Kind::Request,
+                bkpr_protocol::wire::MAX_REQUEST,
+            )
+            .unwrap();
+            assert!(matches!(
+                bkpr_protocol::wire::decode_request(&bytes)
+                    .unwrap()
+                    .operation,
+                Operation::Notifications {
+                    request: bkpr_protocol::NotificationRequest::Health {}
+                }
+            ));
+            let response = bkpr_protocol::Response {
+                version: bkpr_protocol::PROTOCOL_VERSION,
+                ok: true,
+                result: Some(serde_json::json!({"healthy":true}).into()),
+                error: None,
+                failure: None,
+            };
+            let mut codec = bkpr_protocol::wire::Codec::new();
+            let bytes = codec.encode_response(&response).unwrap();
+            bkpr_protocol::wire::write_frame(
+                &mut stream,
+                bkpr_protocol::wire::Kind::Response,
+                bytes,
+            )
+            .unwrap();
+        });
+        let payload = serde_json::to_string(&Request::new(Operation::Notifications {
+            request: bkpr_protocol::NotificationRequest::Health {},
+        }))
+        .unwrap();
+        let matches = cli::parse(vec![
+            "bkpr".into(),
+            "--socket".into(),
+            socket.into_os_string(),
+            "request".into(),
+            payload.into(),
+        ])
+        .unwrap();
+        run_request(&matches, &session::Roots::inherited().unwrap()).unwrap();
+        server.join().unwrap();
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 }

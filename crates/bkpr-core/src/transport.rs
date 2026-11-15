@@ -198,7 +198,7 @@ impl Service {
     fn shutdown(&self) -> Result<()> {
         match self {
             Self::Session(registry) => registry.shutdown(),
-            Self::Host(host) => host.shutdown_sessions(),
+            Self::Host(host) => host.shutdown(),
         }
     }
 }
@@ -652,7 +652,9 @@ impl BoundSocket {
                         anyhow::ensure!(request.version == PROTOCOL_VERSION, "unsupported protocol version");
                         if let Service::Host(host) = service.as_ref() {
                             dispatched = true;
-                            let result = host.request(request.operation)?;
+                            let result = host.request(request.operation, &|| {
+                                !shutdown.load(Ordering::Acquire) && peer_connected(&stream)
+                            })?;
                             stop = host.stop_requested();
                             return Ok(result);
                         }
@@ -708,6 +710,11 @@ impl BoundSocket {
                                 )?;
                                 status_stream = Some((enrollment, peer));
                                 Payload::Control(response)
+                            }
+                            Operation::Notifications { request } => {
+                                registry.request_notifications(request, &|| {
+                                    !shutdown.load(Ordering::Acquire) && peer_connected(&stream)
+                                })?
                             }
                             operation @ (Operation::Context { .. } | Operation::HarnessBegin { .. } | Operation::HarnessEvent { .. }
                             | Operation::HarnessContext { .. } | Operation::Agent { .. }) => {

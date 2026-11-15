@@ -8,6 +8,7 @@ mod ci;
 mod context;
 mod control;
 mod directories;
+pub(crate) mod notification_capture;
 mod project;
 mod recovery;
 pub(crate) mod sessions;
@@ -152,6 +153,7 @@ struct Inner {
     // Serialize durable writers, never pane I/O. Lock order: transaction, then state.
     transaction: Mutex<()>,
     captures: Mutex<crate::harness::Captures>,
+    notifications: std::sync::OnceLock<crate::notifications::NotificationService>,
     agents: Arc<agents::Agents>,
     spawn_environment: Mutex<Option<crate::harness::SpawnEnvironment>>,
     ssh_agent: Mutex<Option<Arc<crate::ssh_agent::Relay>>>,
@@ -627,6 +629,7 @@ impl Registry {
                 }),
                 transaction: Mutex::new(()),
                 captures: Mutex::new(crate::harness::Captures::default()),
+                notifications: std::sync::OnceLock::new(),
                 agents,
                 spawn_environment: Mutex::new(None),
                 ssh_agent: Mutex::new(None),
@@ -904,6 +907,11 @@ impl Registry {
             bkpr_protocol::control::validate_native(&request.operation)?;
         }
         match request.operation {
+            Operation::Notifications { request } => {
+                return self.request_notifications(request, &|| {
+                    client.as_ref().is_none_or(|client| client.is_active())
+                });
+            }
             Operation::SessionInfo => Ok(json!({
                 "session": self.inner.session,
                 "spawn_defaults": self.inner.spawn_defaults.get(),
@@ -1553,6 +1561,7 @@ impl Registry {
                 }),
                 ssh_agent_socket.clone(),
             )?;
+            self.install_notification_capture(&pane);
             children.panes.push(pane);
             #[cfg(test)]
             {
@@ -1836,6 +1845,7 @@ impl Registry {
             };
             (status, p.exit_code.map(|code| code as i32))
         };
+        self.withdraw_notifications(&pane);
         self.inner.captures.lock().unwrap().retire_pane(id);
         let unbound_restore = {
             let mut state = self.inner.state.lock().unwrap();
@@ -1851,6 +1861,9 @@ impl Registry {
         let agent_retirement = self.inner.agents.retire_pane(id);
         {
             let mut published = pane.shared.published.lock().unwrap();
+            pane.shared
+                .status_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             published.status.clear();
             published.status_changed_at_ms.clear();
             published.program_identity = None;
