@@ -1374,7 +1374,7 @@ Search uses bounded native work on the pane worker and publishes view annotation
 not copies of full terminal history. Completed idle searches add no progress timer.
 The native library retains result endpoints for all matches: dense queries across
 many views can consume substantial memory. Exact matches/counts aren't silently
-capped; resource optimization remains tracked in `TODO.md`.
+capped; allocation/lifetime profiling is tracked in [issue #6](https://github.com/calops/bkpr/issues/6).
 
 ### Workspace and session ownership
 

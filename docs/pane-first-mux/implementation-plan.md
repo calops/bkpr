@@ -832,11 +832,13 @@ interim managed integration uses native `--standalone`: the captured TUI owns it
 service and launch-local configuration. Explicit external-service modes remain
 native and unmanaged. The harness-testing devshell supplies 2.2.7.
 
-Shared-service ownership and authority remain separate research, not a
+Shared-service ownership and authority remain separate [research](https://github.com/calops/bkpr/issues/24), not a
 prerequisite for this private-service integration. The V1 adapter is retired;
-its runtime evidence does not establish V2 acceptance. Durable installation for
-all harnesses and a first-launch, user-controlled installation wizard are
-roadmap work in `TODO.md`, not a claim that installers already exist.
+its runtime evidence does not establish V2 acceptance. Durable installation now
+exists for the six supported managed harnesses; see the
+[installer acceptance](engine-proof.md#durable-native-integration-installation).
+A first-launch, user-controlled installation wizard remains tracked in
+[issue #23](https://github.com/calops/bkpr/issues/23).
 
 Sources checked at [`v2.2.7`](https://github.com/anomalyco/opencode/tree/v2.2.7),
 with acquisition hashes and detailed references in
