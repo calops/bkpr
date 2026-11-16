@@ -62,6 +62,41 @@ fn saturated_remote_observations_queue_fairly_without_starving_control_or_lifeti
 }
 
 #[test]
+fn async_observation_cancel_releases_admission_without_opening_or_replay() {
+    runtime().block_on(async {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let connector = RemoteConnector {
+            sender,
+            lifetime: Arc::new(Semaphore::new(1)),
+            control: Arc::new(Semaphore::new(1)),
+            observations: Arc::new(Semaphore::new(0)),
+        };
+        let cancellation = CancellationToken::new();
+        let mut connection = connector.connect_async(ConnectionPurpose::Observation, &cancellation);
+        assert!(futures::poll!(connection.as_mut()).is_pending());
+        cancellation.cancel();
+        assert!(connection.await.is_err());
+        assert!(receiver.try_recv().is_err());
+
+        connector.observations.add_permits(1);
+        let cancellation = CancellationToken::new();
+        let mut connection = connector.connect_async(ConnectionPurpose::Observation, &cancellation);
+        assert!(futures::poll!(connection.as_mut()).is_pending());
+        let mut pair = receiver.try_recv().unwrap();
+        cancellation.cancel();
+        assert!(connection.await.is_err());
+        timeout(Duration::from_secs(1), pair.reply.closed())
+            .await
+            .unwrap();
+        let mut byte = [0];
+        assert_eq!(pair.stream.read(&mut byte).unwrap(), 0);
+        assert!(receiver.try_recv().is_err());
+        drop(pair);
+        assert_eq!(connector.observations.available_permits(), 1);
+    });
+}
+
+#[test]
 fn inspection_rejects_attachment_side_effects_before_transport_start() {
     let mut forwarded = target();
     forwarded.forward_agent = true;
@@ -375,6 +410,13 @@ fn transport_failure_retires_every_endpoint_without_reconnect_or_empty_inspectio
                 .unwrap()
                 .take()
                 .context("unexpected reconnect")
+        }
+        fn connect_async<'a>(
+            &'a self,
+            purpose: ConnectionPurpose,
+            _cancellation: &'a CancellationToken,
+        ) -> Pin<Box<dyn Future<Output = Result<UnixStream>> + Send + 'a>> {
+            Box::pin(async move { self.connect(purpose) })
         }
     }
     let (lifetime, mut daemon) = UnixStream::pair().unwrap();

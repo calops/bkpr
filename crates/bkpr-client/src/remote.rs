@@ -76,7 +76,28 @@ pub struct ResolvedSession {
 struct OpenPair {
     stream: UnixStream,
     permit: OwnedSemaphorePermit,
-    reply: sync::SyncSender<Result<()>>,
+    reply: OpenReply,
+}
+
+enum OpenReply {
+    Blocking(sync::SyncSender<Result<()>>),
+    Async(oneshot::Sender<Result<()>>),
+}
+
+impl OpenReply {
+    fn send(self, result: Result<()>) -> Result<(), Result<()>> {
+        match self {
+            Self::Blocking(sender) => sender.send(result).map_err(|error| error.0),
+            Self::Async(sender) => sender.send(result),
+        }
+    }
+
+    async fn closed(&mut self) {
+        match self {
+            Self::Blocking(_) => std::future::pending().await,
+            Self::Async(sender) => sender.closed().await,
+        }
+    }
 }
 
 struct RemoteConnector {
@@ -116,7 +137,7 @@ impl Connector for RemoteConnector {
             .try_send(OpenPair {
                 stream: relay,
                 permit,
-                reply: tx,
+                reply: OpenReply::Blocking(tx),
             })
             .map_err(|_| anyhow::anyhow!("remote connection closed or admission queue full"))?;
         match rx.recv_timeout(OPEN_TIMEOUT) {
@@ -127,6 +148,40 @@ impl Connector for RemoteConnector {
                 Err(error).context("opening remote native stream; request not dispatched")
             }
         }
+    }
+    fn connect_async<'a>(
+        &'a self,
+        purpose: ConnectionPurpose,
+        cancellation: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<UnixStream>> + Send + 'a>> {
+        Box::pin(async move {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => bail!("remote connection cancelled"),
+                result = async {
+                    let permit = self.reserve(purpose).await?;
+                    let (client, relay) = UnixStream::pair()
+                        .context("creating remote native socket pair")?;
+                    socket_bounds(&client)?;
+                    socket_bounds(&relay)?;
+                    let (reply, received) = oneshot::channel();
+                    self.sender
+                        .try_send(OpenPair {
+                            stream: relay,
+                            permit,
+                            reply: OpenReply::Async(reply),
+                        })
+                        .map_err(|_| anyhow::anyhow!(
+                            "remote connection closed or admission queue full"
+                        ))?;
+                    timeout(OPEN_TIMEOUT, received)
+                        .await
+                        .context("opening remote native stream; request not dispatched")?
+                        .context("remote stream admission abandoned")??;
+                    Ok(client)
+                } => result,
+            }
+        })
     }
 }
 
@@ -785,11 +840,15 @@ where
                 match worker { Some(Ok(Ok(()))) => bail!("remote transport worker unexpectedly ended"), Some(Ok(Err(error))) => return Err(error), Some(Err(error)) => return Err(error.into()), None => bail!("remote transport workers stopped") }
             }
             pair = receiver.recv(), if bridges.len() < STREAMS - 1 => {
-                let Some(pair) = pair else { return Ok(()); };
-                let stream = match timeout(OPEN_TIMEOUT, open_mux(&opens)).await {
-                    Ok(Ok(stream)) => stream,
-                    Ok(Err(error)) => { let _ = pair.reply.send(Err(error)); continue; }
-                    Err(error) => { let _ = pair.reply.send(Err(error.into())); continue; }
+                let Some(mut pair) = pair else { return Ok(()); };
+                let stream = tokio::select! {
+                    biased;
+                    _ = pair.reply.closed() => continue,
+                    result = timeout(OPEN_TIMEOUT, open_mux(&opens)) => match result {
+                        Ok(Ok(stream)) => stream,
+                        Ok(Err(error)) => { let _ = pair.reply.send(Err(error)); continue; }
+                        Err(error) => { let _ = pair.reply.send(Err(error.into())); continue; }
+                    },
                 };
                 let OpenPair { stream: local, permit, reply } = pair;
                 local.set_nonblocking(true)?;

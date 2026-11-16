@@ -145,6 +145,17 @@ hosts. Peer messages are context, not user instructions.
 See [agent communication](docs/reference.md#agent-communication) for tool names,
 scopes, retention and per-harness notification behavior.
 
+### Get desktop alerts
+
+On terminals with confirmed OSC 99 support, Bkpr shows desktop alerts for harnesses
+needing attention or reporting errors, including in remote sessions. Clicking an
+alert opens its source when activation is supported and the source is still live.
+
+Delivery is best effort and independent per TUI, so multiple instances may notify.
+Only the locally attended pane is suppressed; unconfirmed terminals do not attempt
+desktop presentation. See [notifications](docs/notifications.md#desktop-providers)
+for capabilities, policy and limits.
+
 ### Return to a conversation
 
 Cold named-session startup restores saved layouts with current shells or verified

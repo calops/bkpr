@@ -2,7 +2,7 @@
 
 ## Status and prerequisite
 
-The backend event/store/subscription foundation is implemented. Desktop and push delivery remain an agreed design, not implemented acceptance. The lifecycle prerequisite is one long-lived `bkprd` per host/OS user, owning multiple independent sessions. Closing the last workspace closes that session and its attached clients, not the daemon. An empty daemon remains idle and available. Notification handling lives inside `bkprd`, not an additional local daemon. Desktop presentation is tracked in [issue #7](https://github.com/calops/bkpr/issues/7); the future publisher-operated push relay is a separate remote deployment.
+The backend event/store/subscription foundation and best-effort TUI desktop presentation are implemented. Push delivery remains a design, not implemented acceptance. The lifecycle prerequisite is one long-lived `bkprd` per host/OS user, owning multiple independent sessions. Closing the last workspace closes that session and its attached clients, not the daemon. An empty daemon remains idle and available. Notification handling lives inside `bkprd`, not an additional local daemon. Desktop presentation is tracked in [issue #7](https://github.com/calops/bkpr/issues/7); the future publisher-operated push relay is a separate remote deployment.
 
 Named sessions retain independently leased endpoints and recovery roots inside the host process. Incompatible live daemons are never adopted, replaced or stopped automatically. Explicit private runtime/state roots remain available for isolated fixtures.
 
@@ -103,13 +103,17 @@ Coalesce repeated/superseded updates within an attention episode, not unrelated 
 
 Destinations select scope (host/session/workspace/pane), event filters, delivery preferences and an independently enabled/error state. Explicit fan-out first. Do not suppress configured phone push merely because a TUI is attached: attachment is not evidence of attention.
 
-TUI clients provide observed focus/visibility hints and decide local presentation. Suppress intrusive desktop alerts for an actually attended target where evidence permits; unknown focus must not count as known attention. Coordinate presentation ownership to avoid duplicate alerts for the same desktop destination when multiple TUI instances subscribe. Notification ownership is separate from pane input, sizing and clipboard authority.
+Each attached TUI independently presents best-effort desktop notifications from its live session subscriptions. Multiple TUIs may display the same event, including on the same desktop. There are no global desktop claims, durable presentation receipts, retries or physical-desktop deduplication requirements. This supersedes the earlier shared logical desktop grouping proposal; it does not relax backend record durability or future push delivery contracts.
+
+TUI clients suppress an intrusive alert only for their own actually attended source, using observed physical focus and the current owner-qualified pane/launch/binding. Unknown focus is not known attention. A fresh subscription or reconnect establishes a baseline rather than replaying history. Disconnection, unsupported presentation capabilities, source retirement and bounded resource eviction may lose desktop alerts; no terminal write is an acceptance/display acknowledgement. Notification presentation is separate from pane input, sizing and clipboard authority.
 
 Notification activation navigates to a structured source using ordinary client authority, never injects input, executes a provider-supplied command or implicitly creates/replays a pane. Missing/retired sources are reported honestly. User read/dismiss actions and provider acceptance are distinct from application task completion.
 
 Cross-device escalation or delayed phone fallback is not an initial routing requirement; it needs explicit deadlines and acknowledgement semantics.
 
 ## Durable outbox and responsiveness
+
+The provider outbox/retry design below applies to daemon-owned push delivery. Best-effort TUI desktop attempts do not acquire durable claims or report delivery receipts.
 
 The host daemon remains alive after zero sessions and owns delivery independently of any viewer or particular session. Capture compact immutable events and hand off after releasing pane/registry/capture locks. Do not run network, provider calls, storage work, process scans or full-scene cloning on status publication or frontend input/render paths.
 
@@ -140,9 +144,15 @@ Sources:
 
 ## Desktop providers
 
-Present on the viewing machine, not the remote session's desktop. Evaluate `notify-rust` for native desktop integration and confirmed terminal protocols such as OSC 99 for suitable physical/SSH-hosted terminals. Choose one path per destination, not both. Route terminal writes and activation replies through the existing framework path. Sanitize/encode untrusted text; no escape injection, shell notification commands or model messages typed into panes.
+The TUI uses the viewing terminal's positively queried [OSC 99 protocol](https://sw.kovidgoyal.net/kitty/desktop-notifications/), including when the TUI or its panes are SSH-hosted. No terminal-name guess enables it. The framework owns discovery, safe UTF-8/base64 framing, reply demultiplexing, physical focus and terminal-resource cleanup; the client owns source policy and navigation. One output owner handles all terminal traffic. Notifications contain the event category, session name and harness family, not arbitrary status messages, prompts or transcripts.
 
-Unsupported desktop capabilities must remain explicit. A local UI toast is not proof of an OS desktop notification. Native OS presentation/activation needs actual isolated desktop/terminal surface verification.
+Each admitted session has one cancellable observer outside the management-worker pool, reusing a runtime and a one-page queue. Processing is round-robin and bounded to one page per UI turn. Empty pages advance the cursor without waking the UI unless health or continuity changes. New attachments and replacement stores establish a fresh baseline; observation failures stop that subscription without replay. Reconnecting the owning session starts a new baseline. At most 64 physical IDs/source callbacks are retained; expiry, eviction, attachment retirement and TUI exit release owned resources on a best-effort basis.
+
+Only a positively observed, locally focused application pane with matching current source identity suppresses an alert. Logical session focus is not physical evidence. Click navigation requires confirmed activation reporting and closure support; otherwise the terminal may provide focus-only or non-actionable presentation according to its capabilities. Activation checks attachment generation, host/session runtime, pane ownership, process birth, launch and binding generation against current published metadata, then uses ordinary client navigation. Retired sources and blocking dialogs produce an honest local toast, not input injection, process creation or deferred automatic navigation.
+
+Unconfirmed/unsupported OSC 99 means no OS presentation attempt; a UI toast is not an OS delivery receipt. OSC 99 has no provider-acceptance/display acknowledgement, so successful writes remain unknown outcomes. Multiple TUI instances may independently notify, and the OS may group or discard attempts. No direct native fallback or new dependency is installed: [notify-rust 4.19](https://docs.rs/notify-rust/4.19.0/notify_rust/) was evaluated, but a TUI-local native provider can target the wrong machine when the TUI itself is SSH-hosted. The selected terminal path preserves viewing-machine ownership.
+
+Actual incremental-debug acceptance with Kitty 0.49.2, Dunst 1.13.2, private D-Bus/Xvfb and real loopback SSH is retained under `target/smoke/desktop-notifications/integrated-actual-4/`. It covers non-replaying fresh attachments, independent TUI attempts, physical popup activation to both local and remote sources, local focus suppression, retired-source rejection and device/input separation. `unconfirmed-actual-2/` proves real xterm leaves OSC 99 unconfirmed without emitting unsupported notifications or breaking ordinary pane input. Screenshots were inspected; owned cleanup had no survivors. Coordinated workspace tests (1,339 passed, 19 ignored), strict all-target Clippy, formatting and warnings-denied rustdoc passed for the joined source.
 
 ## Later provider: Bkpr publisher relay
 
@@ -155,7 +165,7 @@ Initial content is session name/status. Rich E2E payloads remain later explorati
 1. Implemented: host daemon/session ownership, independent session closure, zero-session idle lifetime, creation/recovery, local/remote routing and explicit host shutdown. See [runtime acceptance](pane-first-mux/engine-proof.md#one-host-daemon-with-independent-local-and-remote-sessions).
 2. Implemented: typed transitions, scoped policy, bounded durable notification records and observable health. Provider-specific delivery attempts remain part of their adapters.
 3. Implemented: resumable scoped inspection/subscriptions with store identity, sequence and acknowledgeable loss generation.
-4. Coordinate TUI desktop presentation with the frontend owner.
+4. Implemented: independent best-effort TUI desktop presentation and source activation through confirmed OSC 99, with local observed-focus suppression. See desktop provider acceptance above.
 5. Implement UnifiedPush publisher and mobile enrollment/receiver. Exercise at least two distributors with isolated registrations and explicit test-device/provider approval.
 6. Add the custom publisher relay later as another adapter, not a parallel notification model.
 

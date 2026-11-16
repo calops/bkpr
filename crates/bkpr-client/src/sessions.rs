@@ -139,6 +139,8 @@ struct Session {
     owner: Option<Attachment>,
     app: Option<App>,
     registry: Option<Pump<RegistrySnapshot>>,
+    notifications: Option<crate::notification_updates::Observer>,
+    notifications_attempted: bool,
     phase: Phase,
     status: String,
     failures: u32,
@@ -163,6 +165,8 @@ impl Session {
             owner: None,
             app: None,
             registry: None,
+            notifications: None,
+            notifications_attempted: false,
             phase: Phase::Queued,
             status: "queued".into(),
             failures: 0,
@@ -241,6 +245,8 @@ pub(super) struct Coordinator {
     admissions: HashMap<(usize, u64), bool>,
     retirements: HashSet<(usize, u64)>,
     retirement_jobs: Option<jobs::Jobs<Retirement>>,
+    desktop: crate::desktop::Desktop,
+    notification_turn: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -558,6 +564,8 @@ impl Coordinator {
             admissions: HashMap::new(),
             retirements: HashSet::new(),
             retirement_jobs: Some(retirement_jobs),
+            desktop: crate::desktop::Desktop::default(),
+            notification_turn: 0,
         })
     }
 
@@ -792,6 +800,8 @@ impl Coordinator {
             None
         };
         session.registry.take();
+        session.notifications.take();
+        session.notifications_attempted = false;
         let mut app = session.app.take();
         if let Some(app) = &mut app {
             app.backgrounded = true;
@@ -1303,6 +1313,10 @@ impl Coordinator {
                 session.owner.as_ref().map(Attachment::lifetime_fd),
                 session.registry.as_ref().map(|pump| pump.wake.as_raw_fd()),
                 session
+                    .notifications
+                    .as_ref()
+                    .map(|observer| observer.wake.as_raw_fd()),
+                session
                     .app
                     .as_ref()
                     .filter(|_| index != self.selected)
@@ -1336,6 +1350,7 @@ impl Coordinator {
             })
             .filter_map(|session| session.next_attempt)
             .chain(self.spinner.next_deadline())
+            .chain(self.desktop.deadline())
             .fold(timeout, |timeout, deadline| {
                 timeout.min(
                     deadline
@@ -1344,6 +1359,188 @@ impl Coordinator {
                         .min(i32::MAX as u128) as i32,
                 )
             })
+    }
+
+    pub(super) fn desktop_notifications(
+        &mut self,
+        terminal: &mut TerminalGuard,
+        out: &mut impl Write,
+    ) -> Result<()> {
+        terminal.expire_notifications(Instant::now());
+        let sessions = &self.sessions;
+        self.desktop.expire(
+            |owner| {
+                sessions.get(owner.slot).is_some_and(|session| {
+                    session.present
+                        && session.generation == owner.generation
+                        && session.owner.is_some()
+                })
+            },
+            terminal,
+            out,
+        )?;
+        if !terminal
+            .notification_capabilities()
+            .is_some_and(|caps| caps.title)
+        {
+            return Ok(());
+        }
+        for index in 0..self.sessions.len() {
+            let session = &mut self.sessions[index];
+            if session.phase != Phase::Online || session.notifications_attempted {
+                continue;
+            }
+            let Some(owner) = &session.owner else {
+                continue;
+            };
+            session.notifications_attempted = true;
+            match crate::notification_updates::Observer::start(owner.endpoint()) {
+                Ok(observer) => session.notifications = Some(observer),
+                Err(error) => self.app_mut().notify(format!(
+                    "Desktop notification subscription unavailable: {error:#}"
+                )),
+            }
+        }
+        let count = self.sessions.len();
+        for offset in 0..count {
+            let index = (self.notification_turn + offset) % count;
+            let Some(update) = self.sessions[index]
+                .notifications
+                .as_mut()
+                .and_then(|observer| observer.next())
+            else {
+                continue;
+            };
+            self.notification_turn = (index + 1) % count;
+            let page = match update {
+                Ok(page) => page,
+                Err(error) => {
+                    self.sessions[index].notifications.take();
+                    self.app_mut().notify(format!(
+                        "Desktop notification subscription stopped: {error:#}"
+                    ));
+                    break;
+                }
+            };
+            if page.gap {
+                self.app_mut()
+                    .notify("Some desktop notifications were missed".into());
+            }
+            if !page.health.healthy {
+                self.app_mut().notify(format!(
+                    "Notification history is unhealthy: {}",
+                    page.health
+                        .error
+                        .as_deref()
+                        .unwrap_or("unknown storage error")
+                ));
+            }
+            let session = &self.sessions[index];
+            let owner = crate::tree::Owner {
+                slot: index,
+                generation: session.generation,
+            };
+            let attended = (index == self.selected && terminal.observed_focus() == Some(true))
+                .then(|| session.app.as_ref().and_then(App::focused_application))
+                .flatten();
+            for record in page.notifications {
+                if !session.owner.as_ref().is_some_and(|attachment| {
+                    crate::desktop::source_session_is_current(&record.source, attachment.info())
+                }) {
+                    continue;
+                }
+                let current = session
+                    .owner
+                    .as_ref()
+                    .zip(session.app.as_ref())
+                    .is_some_and(|(attachment, app)| {
+                        app.registry
+                            .panes
+                            .iter()
+                            .find(|pane| pane.id == record.source.pane_id)
+                            .is_some_and(|pane| {
+                                crate::desktop::source_is_current(
+                                    &record.source,
+                                    attachment.info(),
+                                    pane,
+                                )
+                            })
+                    });
+                if current
+                    && attended
+                        .as_ref()
+                        .is_some_and(|(pane, _)| *pane == record.source.pane_id)
+                {
+                    continue;
+                }
+                self.desktop.show(owner, record, terminal, out)?;
+            }
+            out.flush()?;
+            break;
+        }
+        Ok(())
+    }
+
+    pub(super) fn notification_reply(
+        &mut self,
+        response: &[u8],
+        terminal: &mut TerminalGuard,
+        out: &mut impl Write,
+        size: Size,
+    ) -> Result<bool> {
+        let Some(notification::Reply::Activated { id }) =
+            terminal.notification_reply(response, Instant::now())
+        else {
+            return Ok(false);
+        };
+        let Some(target) = self.desktop.take(id) else {
+            return Ok(false);
+        };
+        terminal.close_notification(out, id)?;
+        let current = self.sessions.get(target.owner.slot).is_some_and(|session| {
+            session.present
+                && session.generation == target.owner.generation
+                && session
+                    .owner
+                    .as_ref()
+                    .zip(session.app.as_ref())
+                    .is_some_and(|(attachment, app)| {
+                        app.registry
+                            .panes
+                            .iter()
+                            .find(|pane| pane.id == target.source.pane_id)
+                            .is_some_and(|pane| {
+                                crate::desktop::source_is_current(
+                                    &target.source,
+                                    attachment.info(),
+                                    pane,
+                                )
+                            })
+                    })
+        });
+        if !current {
+            self.app_mut()
+                .notify("Notification source is no longer available".into());
+        } else if !self.app().session_navigation_allowed() {
+            self.app_mut()
+                .notify("Close the active dialog before opening the notification source".into());
+        } else if let Some(workspace) = target.source.workspace_id {
+            self.dispatch_tree(
+                crate::tree::Target {
+                    owner: target.owner,
+                    node: crate::tree::Node::Native(SidebarTarget::Pane {
+                        workspace,
+                        pane: target.source.pane_id,
+                    }),
+                },
+                crate::keyguide::Action::ActivateSelected,
+                size,
+            )?;
+        } else {
+            self.app_mut()
+                .notify("Notification source has no workspace".into());
+        }
+        Ok(true)
     }
 
     pub fn route_device_reply(&mut self, response: &[u8]) -> Result<bool> {

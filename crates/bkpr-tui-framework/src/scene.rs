@@ -335,6 +335,9 @@ impl TerminalGuard {
             requested_clipboard_mode: None,
             theme_mode: None,
             background: background::Background::default(),
+            notification_probe: crate::notification::Probe::default(),
+            notifications: VecDeque::new(),
+            observed_focus: None,
         };
         let mut out = std::io::stdout();
         write!(
@@ -343,6 +346,7 @@ impl TerminalGuard {
         )?;
         guard.prepare_background_query();
         out.write_all(&ColorProbe::query())?;
+        guard.notification_probe.begin(&mut out, Instant::now())?;
         out.flush()?;
         Ok(guard)
     }
@@ -1613,6 +1617,9 @@ mod scene_tests {
             requested_clipboard_mode: None,
             theme_mode: None,
             background: background::Background::default(),
+            notification_probe: crate::notification::Probe::default(),
+            notifications: VecDeque::new(),
+            observed_focus: None,
         })
     }
     #[test]

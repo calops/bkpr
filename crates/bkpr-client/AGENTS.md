@@ -10,6 +10,7 @@
 - `transport.rs` owns framed request/receipt handling. `client_lifetime.rs::RegisteredClient` owns the sole native lifetime stream; cloned `Endpoint`s share revocation, not lifetime ownership. Registration and activation are separate. Activation is one-shot even when its receipt is ambiguous.
 - `remote.rs` owns one OpenSSH child, multiplexed native connections and its transport lease. It does not reconnect or replay requests. Remote path resolution stays with the remote helper. `cancel`, `retire` and blocking `disconnect` have different drain/teardown contracts; do not substitute one for another.
 - `updates.rs`, `input.rs` and `jobs.rs` bridge workers into pollable wake descriptors. Input acceptance/receipts, metadata observations and scoped job completion are distinct. Keep mutation ordering and retired-generation rejection intact; do not turn a lost receipt into replay permission.
+- `notification_updates.rs` owns bounded cancellable live subscriptions outside the management pool, with one reusable runtime per observer and no empty-page UI wakeups. New attachments/store identities establish a fresh baseline; errors do not retry or replay.
 
 ## Presentation and authority
 
@@ -22,6 +23,7 @@
 - Pane image viewing is client-local: Alt-left-click picks canonical image placements and pins an immutable resource in the framework viewer. Consume the complete UI gesture, modal keys and paste; preserve ordinary pane input and release retained resources on dismissal.
 - `project_colors.rs::ProjectColors` owns project ordinals across all attachments. Qualify canonical common Git paths by local filesystem or SSH route, never by session/generation or a backend color slot. Sidebar, finder and popovers share the owner's projection; unknown owners stay muted. Live assignments remain stable and retired identities are bounded.
 - Read-only input, sizing eligibility and clipboard consent are independent policies. Clipboard replies remain device traffic, not keystrokes. Original offers, pane/view identity and exact byte payloads must survive asynchronous consent.
+- `desktop.rs` owns best-effort per-TUI presentation and bounded source callbacks, not backend deliveries. Multiple TUIs may independently notify. Suppress only a current attended source with positively observed physical focus; `App.host_focused` is also used for synthetic session projection and is not physical evidence. Activation rechecks attachment/session/process/launch/binding identity and uses ordinary owner navigation; terminal writes are never presentation receipts.
 
 ## Dependencies and review
 

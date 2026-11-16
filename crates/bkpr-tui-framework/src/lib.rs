@@ -13,6 +13,7 @@ pub mod joined;
 mod joined_contour;
 mod navigation;
 pub use navigation::{Navigation, NavigationRow};
+pub mod notification;
 pub mod overlay;
 pub mod search_list;
 mod spinner;
