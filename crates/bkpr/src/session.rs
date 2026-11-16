@@ -18,6 +18,8 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+mod administration;
+
 pub const DEFAULT_SESSION: &str = "bkpr";
 
 pub struct LocalPaths {
@@ -346,7 +348,7 @@ fn inspect_cancellable(
             transport::checked_cancellable(&paths.socket, Operation::SessionInfo, cancellation)
         }
         None => transport::checked(&paths.socket, Operation::SessionInfo),
-    }.context("cannot inspect the selected live session; for an incompatible owner, explicitly stop it with its matching bkpr before retrying")?;
+    }.context("cannot inspect the selected live session; use bkpr stop for version-independent shutdown before retrying")?;
     let info: SessionInfo = serde_json::from_value(
         value
             .get("session")
@@ -374,12 +376,12 @@ fn inspect_cancellable(
     if let Some(host) = &paths.host {
         let owner = inspect_host(host, cancellation).map_err(|error| {
             anyhow::anyhow!(
-                "live session has no compatible host owner: {error:#}; explicitly stop the old session with its matching bkpr before retrying"
+                "live session has no compatible host owner: {error:#}; explicitly stop the selected session with bkpr stop before retrying"
             )
         })?;
         ensure!(
             owner.daemon_id == info.daemon_id,
-            "live session belongs to another daemon; explicitly stop the old session with its matching bkpr before retrying"
+            "live session belongs to another daemon; explicitly stop the selected session with bkpr stop before retrying"
         );
     }
     Ok(info)
@@ -409,7 +411,7 @@ fn inspect_host(paths: &HostPaths, cancellation: Option<&CancellationToken>) -> 
         None => transport::checked(&paths.socket, Operation::DaemonInfo),
     }
     .context(
-        "incompatible live daemon; explicitly stop it with its matching bkpr before retrying",
+        "incompatible live daemon; bkpr daemon stop shuts down this host and all its sessions without requiring a matching wire version",
     )?;
     let info: DaemonInfo = serde_json::from_value(
         value
@@ -426,16 +428,10 @@ fn inspect_host(paths: &HostPaths, cancellation: Option<&CancellationToken>) -> 
 
 /// Inspect or explicitly stop the current host incarnation without opening sessions.
 pub fn administer(host: &HostPaths, stop: bool) -> Result<serde_json::Value> {
-    let daemon = inspect_host(host, None)?;
     if stop {
-        transport::checked(
-            &host.socket,
-            Operation::DaemonShutdown {
-                daemon_id: daemon.daemon_id,
-            },
-        )
+        administration::stop_host(host)
     } else {
-        Ok(serde_json::json!({ "daemon": daemon }))
+        Ok(serde_json::json!({ "daemon": inspect_host(host, None)? }))
     }
 }
 
@@ -486,10 +482,15 @@ pub fn request_notifications(
     transport::request(socket, request)
 }
 
-/// Headless commands never bootstrap. Validate exact named identity before their
-/// request, including stop, instead of trusting the socket filename alone.
+/// Headless data-plane commands never bootstrap and require a compatible exact
+/// named identity. Explicit shutdown uses independent administration instead.
 pub fn validate_target(paths: &LocalPaths) -> Result<SessionInfo> {
     inspect(paths)
+}
+
+/// Stop only the selected session without requiring its native data-plane version.
+pub fn stop(paths: &LocalPaths) -> Result<serde_json::Value> {
+    administration::stop_session(paths)
 }
 
 #[derive(Serialize)]
@@ -974,7 +975,7 @@ mod tests {
         let host = fixture.roots.host().unwrap();
         assert_eq!(inspect_host(&host, None).unwrap().pid, fixture.child.id());
         let alpha = fixture.roots.named("alpha").unwrap();
-        transport::checked(&alpha.socket, Operation::Shutdown).unwrap();
+        stop(&alpha).unwrap();
         assert_eq!(
             validate_target(&fixture.roots.named("beta").unwrap()).unwrap(),
             second

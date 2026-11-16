@@ -2,6 +2,8 @@
 
 Own user CLI/bootstrap, utility dispatch and native harness adapters; the default terminal application lives in `bkpr-client`. Depend on protocol/client/framework, not backend implementation. `cli.rs` defines public commands; `harness/mod.rs` dispatches native utility arguments before TUI initialization.
 
+`session/administration.rs` owns explicit stop routing independently of the native data-plane family. Inspect and fence the exact host/session incarnation over frozen BKPA v1; never escalate a session stop to a host signal. Pin the mutation connection before observation for known legacy native owners, validate private paths and named manifests, and never replay an uncertain shutdown.
+
 ## Harness authority
 
 Managed launches obtain authority through the backend's verified launcher/PTY ancestry checks. Keep capture credentials launch-local; persisted native settings contain code references only. Native bindings, first-prompt facts, notification readiness and OSC semantic status remain distinct. Preserve native interfaces, arguments, consent and unmanaged opt-outs. Codex's private app-server/proxy and OpenCode 2's standalone service are ownership boundaries, not optional installer shortcuts.

@@ -1191,6 +1191,92 @@ fn indirect(bytes: &[u8], field: usize) -> usize {
 }
 
 #[test]
+fn sends_to_family_eleven_omit_delivery_and_preserve_the_retired_slot() {
+    let request = Request::new(Operation::Agent {
+        launch_id: "launch".into(),
+        token: "secret".into(),
+        guard: None,
+        request: AgentRequest::SendMessage {
+            to: "recipient".into(),
+            text: "body".into(),
+            idempotency_key: "key".into(),
+            scope: AgentScope::Session,
+        },
+    });
+    let mut codec = Codec::new();
+    let encoded = codec.encode_request(&request).unwrap();
+    let framed = encode_frame(Kind::Request, encoded).unwrap();
+    assert_eq!(u32::from_le_bytes(framed[4..8].try_into().unwrap()), 11);
+    let (_, operation_field) = root_field(encoded, 2);
+    let operation = indirect(encoded, operation_field);
+    let (_, send_field) = table_field(encoded, operation, 3);
+
+    // Frozen reader slots/default from 44d3dc1^ generated.rs:55524–55595.
+    let legacy = planus::table_reader::Table::from_buffer(
+        planus::SliceWithStartOffset {
+            buffer: encoded,
+            offset_from_start: 0,
+        },
+        send_field,
+    )
+    .unwrap();
+    assert_eq!(
+        legacy
+            .access_required::<&str>(0, "SendMessage", "to")
+            .unwrap(),
+        "recipient"
+    );
+    assert_eq!(
+        legacy
+            .access_required::<&str>(1, "SendMessage", "text")
+            .unwrap(),
+        "body"
+    );
+    assert_eq!(
+        legacy
+            .access_required::<&str>(2, "SendMessage", "key")
+            .unwrap(),
+        "key"
+    );
+    assert_eq!(
+        legacy
+            .access::<u8>(3, "SendMessage", "scope")
+            .unwrap()
+            .unwrap_or(0),
+        1
+    );
+    assert_eq!(
+        legacy
+            .access::<u8>(4, "SendMessage", "delivery")
+            .unwrap()
+            .unwrap_or(0),
+        0
+    );
+
+    // Materialize the old nonzero trailing byte without restoring its public API.
+    let send = indirect(encoded, send_field);
+    let distance = i32::from_le_bytes(encoded[send..send + 4].try_into().unwrap());
+    let old_vtable = usize::try_from(send as i64 - i64::from(distance)).unwrap();
+    let old_size = usize::from(u16::from_le_bytes(
+        encoded[old_vtable..old_vtable + 2].try_into().unwrap(),
+    ));
+    let mut vtable = encoded[old_vtable..old_vtable + old_size].to_vec();
+    vtable.resize(14, 0);
+    vtable[..2].copy_from_slice(&14_u16.to_le_bytes());
+    let scope_offset = vtable[10..12].to_vec();
+    vtable[12..14].copy_from_slice(&scope_offset);
+    let mut retired = encoded.to_vec();
+    let new_distance = i32::try_from(send as i64 - retired.len() as i64).unwrap();
+    retired.extend_from_slice(&vtable);
+    retired[send..send + 4].copy_from_slice(&new_distance.to_le_bytes());
+    let decoded = decode_request(&retired).unwrap();
+    assert_eq!(
+        serde_json::to_value(decoded).unwrap(),
+        serde_json::to_value(request).unwrap()
+    );
+}
+
+#[test]
 fn required_operations_and_unknown_union_tags_fail_closed() {
     let mut codec = Codec::new();
     let bytes = codec
