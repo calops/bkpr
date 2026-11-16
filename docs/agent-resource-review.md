@@ -66,8 +66,10 @@ Raw comparisons: `target/smoke/agent-costs/actual-native/comparison.json`.
   filters, cursors, `detail:true` and explicit retired-record inclusion. Scope
   filtering precedes pagination. Default pages omit layouts, projects and titles.
 - `whoami` exposes exact launch/binding/ownership/revision/readiness facts.
-  Discovery adds exact launch/pane filters and cursor pages. Full project/context
-  requires `detail:true`; obsolete duplicate identity/readiness aliases are gone.
+  Discovery adds exact launch/pane filters and cursor pages. Routine discovery
+  keeps launch/pane IDs, label, semantic state, readiness and cached CWD/project
+  name/branch; ownership, timestamps, full status and Git/CI context require
+  `detail:true`. Unavailable labels/context are omitted rather than expanded.
 - `pane.read` defaults to 2048 UTF-8 bytes, trims only trailing row padding,
   preserves indentation/interior spaces and supports tail rows. Continuations
   require the returned canonical scene revision. Temporary-view publication does
@@ -231,3 +233,42 @@ evidence root before rerunning the recorded commands.
 The separate extension regression runs with
 `bun test integration/omp/index.test.ts` (verified with the repository-pinned
 nixpkgs Bun 1.4.2). Bun is a test tool here, not a new Bkpr runtime dependency.
+
+## Routine discovery context without full expansion
+
+Routine `discover_agents` now retains launch/pane IDs, an optional discovery
+label, semantic state/readiness and cached `cwd`, `project_name` and `branch`.
+Ownership IDs/revisions, timestamps, progress and full Git/CI data require
+`detail:true`. The summary is extracted only from the active foreground's matching
+ready project cache, without cloning repository/provider snapshots or adding
+Git/provider work. Workspace-default scope, exact filters and pagination are
+unchanged.
+
+Actual native MCP acceptance is recorded in
+`target/smoke/discovery-compact/actual-1/acceptance.json`. Two compiled synthetic
+managed harnesses run through real private PTYs, capture binding and the shared
+MCP. The default query identifies its peer, label, CWD, repository name and branch;
+an exact `detail:true` expansion recovers the actual uncommitted Git change and
+workspace ownership. This is not genuine model/provider acceptance.
+
+| One-peer response | JSON content bytes | MCP frame bytes |
+| --- | ---: | ---: |
+| Default | 298 | 747 |
+| Explicit detail | 1,273 | 2,813 |
+
+These compare response modes for the same peer, not before/after tokenizer
+measurements. The frozen incremental debug pair is under
+`target/smoke/harness-integrations/build/compiled-485515964662212/executables/`:
+`bkpr` SHA-256 `b4f54749941ae0f2a933d0940aa2b7885179423bf045286fac3bd919ffb81408`,
+`bkprd` SHA-256 `5ea8c2a63d6c3bb91c0115e7e7f9d48bc9cf2fad98af1fc71f18cf6ad7151551`.
+
+Workspace tests pass: 1,305 passed, 19 ignored, with receipt
+`target/smoke/harness-integrations/build/checks-485636144559052/`.
+Protected all-target strict Clippy, formatting and doctests pass. Regression
+coverage preserves explicit expansion and rejects stale/background project
+context. Public executable hashes/inodes and live sessions were preserved;
+private and namespace cleanup have no survivors. Controllers are archived in
+`target/smoke/discovery-compact/source.zip`; the reused synthetic actor and MCP
+framing come from the earlier `agent-costs/controllers.zip` fixture.
+
+The metadata projection changes, not native family 11 or remote control 2.
