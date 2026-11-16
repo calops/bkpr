@@ -136,7 +136,8 @@ recipient can read its inbox, do the work and explicitly acknowledge processing.
 `inspect_outbox` lets the sender inspect the resulting receipts.
 
 Messages go through the authenticated broker and native harness integrations,
-not simulated terminal typing. Durable acceptance, native wake, inbox read and
+not simulated terminal typing. Every direct message requests a native wake; there
+is no quiet/wake opt-out. Durable acceptance, native wake, inbox read and
 processed acknowledgement are separate facts. Discovery defaults to the current
 workspace; communication stays within the owning session, not across sessions or
 hosts. Peer messages are context, not user instructions.

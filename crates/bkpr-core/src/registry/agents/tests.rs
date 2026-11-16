@@ -97,7 +97,6 @@ fn send(
                 text: text.into(),
                 idempotency_key: key.into(),
                 scope,
-                delivery: AgentDelivery::Notify,
                 receiver_ready: false,
             },
             &"a".repeat(64),
@@ -200,7 +199,6 @@ fn exact_retry_survives_recipient_exit_and_membership_change_but_conflicts_fail(
                 text: "hello".into(),
                 idempotency_key: "same".into(),
                 scope: AgentScope::Workspace,
-                delivery: AgentDelivery::Notify,
                 receiver_ready: false,
             },
             &"a".repeat(64),
@@ -860,7 +858,6 @@ fn committed_send_pushes_pointer_without_reading_and_disconnect_retires_readines
                     text: "private peer body".into(),
                     idempotency_key: "push".into(),
                     scope: AgentScope::Workspace,
-                    delivery: AgentDelivery::Notify,
                     receiver_ready: true,
                 },
                 &"a".repeat(64),
@@ -1028,7 +1025,6 @@ fn native_rebind_does_not_replay_old_ambiguity_but_new_messages_get_new_generati
                     text: key.into(),
                     idempotency_key: key.into(),
                     scope: AgentScope::Workspace,
-                    delivery: AgentDelivery::Notify,
                     receiver_ready: true,
                 },
                 &"a".repeat(64),
@@ -1108,7 +1104,6 @@ fn receiver_mode_replacement_retires_old_claim_without_replaying_it() {
                     text: key.into(),
                     idempotency_key: key.into(),
                     scope: AgentScope::Workspace,
-                    delivery: AgentDelivery::Notify,
                     receiver_ready: true,
                 },
                 &"a".repeat(64),
@@ -1298,6 +1293,46 @@ fn rename_then_sync_failure_reports_unknown_and_restart_reconciles_committed_sen
 }
 
 #[test]
+fn obsolete_stored_sender_choice_is_discarded_without_replaying_old_inboxes() {
+    let (dir, service, contexts) = fixture();
+    let sent = send(
+        &service,
+        &contexts,
+        "historical",
+        "body",
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    let id = sent["message_id"].as_str().unwrap();
+    let path = dir.path().join("agents/state.json");
+    let mut old: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    old["messages"][id]["delivery"] = json!("quiet");
+    old["messages"][id]["wake_state"] = json!("quiet");
+    fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+    drop(service);
+    let restarted = Agents::open(dir.path()).unwrap();
+    let state = restarted.state.lock().unwrap();
+    assert!(state.receivers.is_empty());
+    assert!(
+        state
+            .store
+            .agents
+            .values()
+            .all(|agent| agent.exited_at.is_some() && agent.notification.is_none())
+    );
+    assert_eq!(state.store.messages[id].wake_state, "quiet");
+    assert!(state.store.messages[id].notification_id.is_none());
+    assert!(Agents::require_live(&state.store, "b").is_err());
+    let rewritten: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert!(rewritten["messages"][id].get("delivery").is_none());
+    assert!(
+        summary(&state.store.messages[id])
+            .get("delivery_mode")
+            .is_none()
+    );
+}
+
+#[test]
 fn inbox_defaults_to_unread_and_combines_only_explicit_previously_read_acks_atomically() {
     let (_dir, service, contexts) = fixture();
     let first = send(
@@ -1460,7 +1495,7 @@ fn large_inbox_snippets_and_recipient_only_utf8_pages_preserve_every_body_byte()
 }
 
 #[test]
-fn quiet_delivery_never_wakes_or_joins_a_claim_and_changed_delivery_conflicts() {
+fn every_direct_message_requests_a_wake_and_joins_the_current_claim() {
     let (_dir, registry, launch, receiver_id) = receiver_fixture();
     registry
         .inner
@@ -1473,7 +1508,7 @@ fn quiet_delivery_never_wakes_or_joins_a_claim_and_changed_delivery_conflicts() 
     ]
     .into_iter()
     .collect::<BTreeMap<_, _>>();
-    let send_to_a = |key: &str, delivery| {
+    let send_to_a = |key: &str| {
         registry.inner.agents.transaction(|store| {
             messages::send(
                 store,
@@ -1485,34 +1520,30 @@ fn quiet_delivery_never_wakes_or_joins_a_claim_and_changed_delivery_conflicts() 
                     text: "body-free wake test body".into(),
                     idempotency_key: key.into(),
                     scope: AgentScope::Workspace,
-                    delivery,
                     receiver_ready: false,
                 },
                 &"a".repeat(64),
             )
         })
     };
-    let quiet = send_to_a("quiet", AgentDelivery::Quiet).unwrap();
-    assert_eq!(quiet["wake"]["state"], "quiet");
-    assert!(send_to_a("quiet", AgentDelivery::Notify).is_err());
+    let first = send_to_a("first").unwrap();
+    assert_eq!(first["wake"]["state"], "blocked");
+    let duplicate = send_to_a("first").unwrap();
+    assert_eq!(duplicate["message_id"], first["message_id"]);
+    assert_eq!(duplicate["duplicate"], true);
     let peer = Peer {
         pid: std::process::id() as i32,
         uid: unsafe { libc::geteuid() },
         birth: launch.root.identity.clone(),
     };
-    let empty = registry
-        .agent_subscribe(&launch, &peer, receiver_id.clone(), 0, &|| true)
-        .unwrap();
-    assert!(empty["notification"].is_null());
-    let notifying = send_to_a("notify", AgentDelivery::Notify).unwrap();
-    assert_eq!(notifying["wake"]["state"], "blocked");
     let pointer = registry
         .agent_subscribe(&launch, &peer, receiver_id.clone(), 0, &|| true)
         .unwrap();
     assert_eq!(pointer["notification"]["message_count"], 1);
-    assert_eq!(pointer["notification"]["unread_count"], 2);
+    assert_eq!(pointer["notification"]["unread_count"], 1);
     assert!(!pointer.to_string().contains("body-free wake test body"));
-    let later_quiet = send_to_a("later-quiet", AgentDelivery::Quiet).unwrap();
+    let later = send_to_a("later").unwrap();
+    assert_eq!(later["wake"]["state"], "pending");
     let saved = registry
         .inner
         .agents
@@ -1522,9 +1553,12 @@ fn quiet_delivery_never_wakes_or_joins_a_claim_and_changed_delivery_conflicts() 
         .store
         .messages
         .clone();
-    for receipt in [quiet, later_quiet] {
+    for receipt in [first, later] {
         let message = &saved[receipt["message_id"].as_str().unwrap()];
-        assert!(message.notification_id.is_none());
+        assert_eq!(
+            message.notification_id.as_deref(),
+            pointer["notification"]["notification_id"].as_str()
+        );
         assert!(message.read_at.is_none());
         assert!(message.acknowledged_at.is_none());
     }

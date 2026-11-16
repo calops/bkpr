@@ -124,6 +124,12 @@ The full native registry remains available to the TUI; agent-facing expansion is
 explicit. Remote framing, scene encoding, engine ABI and private recovery schema
 remain unchanged. Existing live family-7 sessions need their matching binaries.
 
+Native wire family 12 supersedes the family-8 quiet-delivery option: every direct
+message requests a native wake, with no sender delivery parameter. Matching
+binaries and explicit session recovery are required; existing launches and
+ambiguous wakes are never adopted or replayed on upgrade. Remote control stays 2
+and durable recovery stays schema 4.
+
 
 ### Native fork source
 
@@ -558,7 +564,7 @@ its [actual SSH proof](engine-proof.md#remote-session-backend-and-headless-conne
 records exact binaries, bounds, native authority, failure behavior and limits.
 The normal client [attaches directly over that endpoint](engine-proof.md#direct-remote-tui-attachment),
 without a local gateway or second transport. It now supports multiple independent
-local and remote attachments in one physical TUI. Native family 11 and remote
+local and remote attachments in one physical TUI. Native family 12 and remote
 control 2 require matching peers; durable schema 4 is retained. Mixed-owner layouts and cross-session
 workspace references remain deferred.
 

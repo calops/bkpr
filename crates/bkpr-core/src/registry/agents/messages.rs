@@ -5,14 +5,12 @@ pub(super) struct SendInput {
     pub text: String,
     pub idempotency_key: String,
     pub scope: AgentScope,
-    pub delivery: AgentDelivery,
     pub receiver_ready: bool,
 }
 pub(super) struct SendPayload<'a> {
     pub to: &'a str,
     pub text: &'a str,
     pub scope: AgentScope,
-    pub delivery: AgentDelivery,
 }
 pub(super) fn retry(
     store: &Store,
@@ -21,12 +19,7 @@ pub(super) fn retry(
     idempotency_key: &str,
     token: &str,
 ) -> Result<Option<Value>> {
-    let SendPayload {
-        to,
-        text,
-        scope,
-        delivery,
-    } = input;
+    let SendPayload { to, text, scope } = input;
     Agents::require_live(store, id)?;
     ensure!(
         !idempotency_key.is_empty() && idempotency_key.len() <= 256,
@@ -43,8 +36,8 @@ pub(super) fn retry(
         .find(|m| m.from == id && m.key == key)
     {
         ensure!(
-            m.digest == payload(to, text, scope) && m.delivery == delivery,
-            "idempotency key conflicts with original recipient, text, scope or delivery"
+            m.digest == payload(to, text, scope),
+            "idempotency key conflicts with original recipient, text or scope"
         );
         return Ok(Some(receipt(m, true)));
     }
@@ -65,7 +58,6 @@ pub(super) fn send(
             to: &input.to,
             text: &input.text,
             scope: input.scope,
-            delivery: input.delivery,
         },
         &input.idempotency_key,
         token,
@@ -77,7 +69,6 @@ pub(super) fn send(
         text,
         idempotency_key,
         scope,
-        delivery,
         receiver_ready,
     } = input;
     ensure!(to != id, "cannot message self");
@@ -130,9 +121,7 @@ pub(super) fn send(
         .sequence
         .checked_add(1)
         .context("message sequence exhausted")?;
-    let n = (delivery == AgentDelivery::Notify)
-        .then(|| store.agents[&to].notification.as_ref())
-        .flatten();
+    let n = store.agents[&to].notification.as_ref();
     let digest = payload(&to, &text, scope);
     let message = Message {
         id: Uuid::new_v4().to_string(),
@@ -142,7 +131,6 @@ pub(super) fn send(
         key: hash(idempotency_key.as_bytes()),
         digest,
         scope,
-        delivery,
         sequence: store.sequence,
         created_at: now(),
         read_at: None,
@@ -152,15 +140,11 @@ pub(super) fn send(
         generation: n.map(|n| n.generation),
         receiver_id: n.map(|n| n.receiver_id.clone()),
         wake_claimed_at: n.map(|n| n.claimed_at),
-        wake_state: if delivery == AgentDelivery::Quiet {
-            "quiet".into()
-        } else {
-            n.map_or_else(
-                || if receiver_ready { "pending" } else { "blocked" }.into(),
-                |n| n.state.clone(),
-            )
-        },
-        wake_reason: if delivery == AgentDelivery::Quiet || receiver_ready {
+        wake_state: n.map_or_else(
+            || if receiver_ready { "pending" } else { "blocked" }.into(),
+            |n| n.state.clone(),
+        ),
+        wake_reason: if receiver_ready {
             n.and_then(|n| n.reason.clone())
         } else {
             n.map_or_else(

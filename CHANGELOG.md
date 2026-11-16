@@ -2,6 +2,7 @@
 
 ### Breaking changes
 
+* Direct peer messages always request a native wake. Remove the `delivery` parameter, Rust enum and persisted sender choice; obsolete JSON arguments are rejected. Native wire family 12 requires matching binaries and explicit session recovery, never automatic replacement of live daemons. Durable acceptance remains separate from native wake outcomes, including unobservable acceptance.
 * Use one long-lived host/user daemon for all named sessions. Native wire family 11 and remote control version 2 require matching binaries and explicitly fence each session runtime instance. Session stop stays session-scoped; `bkpr daemon stop` explicitly stops the host and all sessions. Existing live incompatible daemons are never adopted, replaced or stopped automatically.
 * Native conversation-fenced agent requests and revision-checked binding changes require matching `bkpr` and `bkprd` binaries. Existing incompatible sessions are not restarted automatically.
 * Remove `ProjectSnapshot.color_slot` from Rust/JSON metadata; clients assign presentation colors from repository identity.

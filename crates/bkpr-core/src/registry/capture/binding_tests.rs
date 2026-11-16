@@ -123,13 +123,12 @@ fn other(f: &ControlFixture) -> (CaptureGrant, Peer) {
         .unwrap();
     (grant, peer)
 }
-fn send(to: &CaptureGrant, key: &str, delivery: AgentDelivery) -> AgentRequest {
+fn send(to: &CaptureGrant, key: &str) -> AgentRequest {
     AgentRequest::SendMessage {
         to: to.launch_id.clone(),
         text: format!("body-{key}"),
         idempotency_key: key.into(),
         scope: AgentScope::All,
-        delivery,
     }
 }
 fn inbox() -> AgentRequest {
@@ -234,7 +233,7 @@ fn guarded_read_ack_send_and_cached_returns_are_fenced_at_the_consumer() {
             &other,
             &peer,
             None,
-            send(&f.grant, "incoming", AgentDelivery::Quiet),
+            send(&f.grant, "incoming"),
         )
         .unwrap();
         let id = incoming["message_id"].as_str().unwrap();
@@ -259,12 +258,7 @@ fn guarded_read_ack_send_and_cached_returns_are_fenced_at_the_consumer() {
             true,
         );
         assert!(outbox(&f, &other, &peer, id)["acknowledged_at"].is_null());
-        race(
-            &f,
-            transition,
-            send(&other, "not-sent", AgentDelivery::Quiet),
-            true,
-        );
+        race(&f, transition, send(&other, "not-sent"), true);
         let sent = own_call(
             &f,
             AgentRequest::InspectOutbox {
@@ -275,16 +269,11 @@ fn guarded_read_ack_send_and_cached_returns_are_fenced_at_the_consumer() {
         )
         .unwrap();
         assert!(sent["messages"].as_array().unwrap().is_empty());
-        let sent = own_call(&f, send(&other, "duplicate", AgentDelivery::Quiet)).unwrap();
-        race(
-            &f,
-            transition,
-            send(&other, "duplicate", AgentDelivery::Quiet),
-            false,
-        );
+        let sent = own_call(&f, send(&other, "duplicate")).unwrap();
+        race(&f, transition, send(&other, "duplicate"), false);
         assert_eq!(
-            outbox(&f, &f.grant, &f.peer, sent["message_id"].as_str().unwrap())["delivery_mode"],
-            "quiet"
+            outbox(&f, &f.grant, &f.peer, sent["message_id"].as_str().unwrap())["delivery"]["state"],
+            "blocked"
         );
         // Both no-write fast paths must still validate the binding.
         race(
@@ -759,7 +748,7 @@ fn conditional_binding_storage_failure_is_fail_closed_without_erasing_recovery()
             &other,
             &peer,
             None,
-            send(&f.grant, "pending-unbind", AgentDelivery::Notify),
+            send(&f.grant, "pending-unbind"),
         )
         .unwrap();
         let claimed = own_call(

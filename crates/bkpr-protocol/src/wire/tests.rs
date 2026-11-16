@@ -935,7 +935,6 @@ fn every_nested_request_variant_roundtrips() {
             text: "日本語\0🦀".into(),
             idempotency_key: "日本語\0🦀".into(),
             scope: AgentScope::All,
-            delivery: AgentDelivery::Quiet,
         },
     });
     assert_request(Operation::Agent {
@@ -1901,7 +1900,6 @@ fn compact_control_and_agent_options_preserve_absence_zero_and_expansion() {
             text: "body".into(),
             idempotency_key: "key".into(),
             scope: AgentScope::Workspace,
-            delivery: AgentDelivery::Notify,
         },
         AgentRequest::ReadInbox {
             after: None,
@@ -2033,7 +2031,7 @@ fn compact_query_and_ack_required_fields_cannot_disappear() {
 }
 
 #[test]
-fn compact_reply_and_delivery_unknown_values_fail_closed() {
+fn compact_reply_and_agent_scope_unknown_values_fail_closed() {
     let mut codec = Codec::new();
     for (request, slot) in [
         (
@@ -2050,9 +2048,8 @@ fn compact_reply_and_delivery_unknown_values_fail_closed() {
                 text: "body".into(),
                 idempotency_key: "key".into(),
                 scope: AgentScope::All,
-                delivery: AgentDelivery::Quiet,
             },
-            4,
+            3,
         ),
     ] {
         let mut bytes = codec

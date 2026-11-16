@@ -63,7 +63,6 @@ pub(super) fn write_agent_request(
             text,
             idempotency_key,
             scope,
-            delivery,
         } => {
             let to = {
                 budget.bytes(to.len())?;
@@ -78,18 +77,8 @@ pub(super) fn write_agent_request(
                 builder.create_string(idempotency_key.as_str())
             };
             let scope = write_agent_scope(*scope);
-            let delivery = match delivery {
-                AgentDelivery::Notify => g::AgentDelivery::Notify,
-                AgentDelivery::Quiet => g::AgentDelivery::Quiet,
-            };
-            let offset = g::AgentRequestSendMessage::create(
-                builder,
-                to,
-                text,
-                idempotency_key,
-                scope,
-                delivery,
-            );
+            let offset =
+                g::AgentRequestSendMessage::create(builder, to, text, idempotency_key, scope);
             g::AgentRequest::create_agent_request_send_message(builder, offset)
         }
         AgentRequest::ReadInbox {
@@ -295,10 +284,6 @@ pub(super) fn read_agent_request(
                 text.to_owned()
             },
             scope: read_agent_scope(value.scope()?),
-            delivery: match value.delivery()? {
-                g::AgentDelivery::Notify => AgentDelivery::Notify,
-                g::AgentDelivery::Quiet => AgentDelivery::Quiet,
-            },
         },
         g::AgentRequestRef::AgentRequestReadInbox(value) => AgentRequest::ReadInbox {
             after: read_optional_text(value.after()?, budget)?,
