@@ -1,3 +1,9 @@
+## [0.7.1](https://github.com/calops/bkpr/compare/v0.7.0...v0.7.1) (2026-11-16)
+
+### Bug Fixes
+
+* **showcase:** use mandatory native peer notifications ([292a250](https://github.com/calops/bkpr/commit/292a25017427dc24dc7f57d1cc1ae7b0b23aad25))
+
 ## [0.7.0](https://github.com/calops/bkpr/compare/v0.6.0...v0.7.0) (2026-11-16)
 
 ### ⚠ BREAKING CHANGES
