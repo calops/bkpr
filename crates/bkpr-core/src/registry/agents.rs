@@ -4,7 +4,6 @@ use crate::{
     harness::{Launch, Peer},
     harness_process as proc,
 };
-use bkpr_protocol::AgentDelivery;
 use sha2::{Digest, Sha256};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 mod messages;
@@ -38,8 +37,6 @@ struct Message {
     key: String,
     digest: String,
     scope: AgentScope,
-    #[serde(default)]
-    delivery: AgentDelivery,
     sequence: u64,
     created_at: u64,
     read_at: Option<u64>,
@@ -180,10 +177,10 @@ fn unread(m: &Message) -> bool {
     pending(m) && m.read_at.is_none()
 }
 fn claimable(m: &Message) -> bool {
-    unread(m) && m.delivery == AgentDelivery::Notify && m.notification_id.is_none()
+    unread(m) && m.notification_id.is_none()
 }
 fn summary(m: &Message) -> Value {
-    json!({"message_id":m.id,"from":m.from,"to":m.to,"scope":m.scope,"delivery_mode":m.delivery,"created_at":m.created_at,"read_at":m.read_at,"acknowledged_at":m.acknowledged_at,"expired_at":m.expired_at,"wake_failure":m.wake_failure,"delivery":{"state":m.wake_state,"reason":m.wake_reason,"notification_id":m.notification_id,"generation":m.generation}})
+    json!({"message_id":m.id,"from":m.from,"to":m.to,"scope":m.scope,"created_at":m.created_at,"read_at":m.read_at,"acknowledged_at":m.acknowledged_at,"expired_at":m.expired_at,"wake_failure":m.wake_failure,"delivery":{"state":m.wake_state,"reason":m.wake_reason,"notification_id":m.notification_id,"generation":m.generation}})
 }
 fn receipt(m: &Message, duplicate: bool) -> Value {
     let mut value = json!({"message_id":m.id,"durable":true,"duplicate":duplicate,"wake":{"state":m.wake_state}});
@@ -1119,7 +1116,6 @@ impl Registry {
             text,
             idempotency_key,
             scope,
-            delivery,
         } = &request
         {
             let state = self.agent_request_state(&launch)?;
@@ -1130,7 +1126,6 @@ impl Registry {
                     to,
                     text,
                     scope: *scope,
-                    delivery: *delivery,
                 },
                 idempotency_key,
                 &launch.grant.token,
@@ -1432,7 +1427,6 @@ impl Registry {
                         text,
                         idempotency_key,
                         scope,
-                        delivery,
                     } => {
                         let own = contexts.get(id).context("live agent context unavailable")?;
                         let receiver_ready = {
@@ -1452,7 +1446,6 @@ impl Registry {
                                     text,
                                     idempotency_key,
                                     scope,
-                                    delivery,
                                     receiver_ready,
                                 },
                                 &launch.grant.token,

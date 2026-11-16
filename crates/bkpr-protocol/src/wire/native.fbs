@@ -6,7 +6,6 @@ enum HarnessKind : ubyte { Claude, Codex, Omp, Agy, Opencode, Cursor, Copilot, A
 enum ConversationSource : ubyte { ClaudeHook, OmpExtension, CodexStart, CodexResume, CodexFork, AgyMcp, OpencodePlugin, PiExtension }
 enum AgentScope : ubyte { Workspace, Session, Repository, All }
 enum AgentReceiverMode : ubyte { ActiveTurn, FutureTurn }
-enum AgentDelivery : ubyte { Notify, Quiet }
 enum ControlReply : ubyte { Receipt, Full }
 enum Axis : ubyte { Horizontal, Vertical }
 enum ClipboardLocation : ubyte { Standard, Selection, Primary }
@@ -541,7 +540,6 @@ table AgentRequestSendMessage {
   text:string (required);
   idempotency_key:string (required);
   scope:AgentScope;
-  delivery:AgentDelivery;
 }
 table AgentRequestReadInbox {
   after:string;

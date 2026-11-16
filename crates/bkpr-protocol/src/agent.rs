@@ -15,16 +15,6 @@ pub enum AgentScope {
     /// All eligible launches in this daemon, including background launches.
     All,
 }
-/// Whether durable message acceptance also requests a native wake.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentDelivery {
-    /// Request a wake when a current native receiver is subscribed.
-    #[default]
-    Notify,
-    /// Store the message without requesting a wake.
-    Quiet,
-}
 /// Native turn boundary at which the receiver can surface an inbox pointer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -98,7 +88,7 @@ pub enum AgentRequest {
         #[serde(default)]
         limit: Option<usize>,
     },
-    /// Durably send untrusted peer text to one exact launch.
+    /// Durably send untrusted peer text to one exact launch and request its native wake.
     SendMessage {
         /// Recipient launch ID, never a native conversation ID.
         to: String,
@@ -109,9 +99,6 @@ pub enum AgentRequest {
         /// Required relationship between sender and recipient.
         #[serde(default)]
         scope: AgentScope,
-        /// Whether acceptance should also request a native wake.
-        #[serde(default)]
-        delivery: AgentDelivery,
     },
     /// Page pending inbox summaries and mark returned messages read, not processed.
     ReadInbox {
@@ -192,4 +179,41 @@ pub enum AgentRequest {
         /// Confirmed, failed or ambiguous native dispatch result.
         outcome: AgentWakeOutcome,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn direct_message_json_has_no_delivery_or_wake_choice() {
+        let request =
+            json!({"method":"send_message","to":"peer","text":"context","idempotency_key":"key"});
+        let decoded: AgentRequest = serde_json::from_value(request.clone()).unwrap();
+        assert!(matches!(
+            decoded,
+            AgentRequest::SendMessage {
+                scope: AgentScope::Workspace,
+                ..
+            }
+        ));
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            json!({"method":"send_message","to":"peer","text":"context","idempotency_key":"key","scope":"workspace"})
+        );
+        for (field, value) in [
+            ("delivery", json!("quiet")),
+            ("delivery", json!("notify")),
+            ("wake", json!(false)),
+            ("notify", json!(false)),
+        ] {
+            let mut obsolete = request.clone();
+            obsolete[field] = value;
+            assert!(
+                serde_json::from_value::<AgentRequest>(obsolete).is_err(),
+                "{field}"
+            );
+        }
+    }
 }

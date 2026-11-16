@@ -152,7 +152,7 @@ blocked storage may leave pending records.
 | I07 — retired ownership/history | Explicit retired/unowned errors, excluded from default inspection. Destructive history expiry deliberately not introduced. |
 | I08 — combined processed acks/batch hints | Explicit prior-read `ack_ids`; body-free batch and unread counts captured at durable claim creation. |
 | I09 — Claude idle wake appears as hook error | Concise truthful `asyncRewake` wording; native exit-2 wake mechanism intentionally retained rather than falsely reporting success. |
-| I10 — quiet delivery | Opt-in `delivery:"quiet"`; durable, never joins a wake claim, part of idempotency equivalence. |
+| I10 — quiet delivery | Superseded by the mandatory-wake contract: direct sends have no delivery/wake choice; obsolete parameters are rejected. Historical quiet outcomes remain diagnostics only. |
 | I11 — repeated inbox bodies | Unread-only default; explicit revisiting and complete body expansion. |
 | I12 — timed-out claim blocks later wakes | Release expired claim slot; later distinct messages can wake without replaying old ambiguous effects. |
 | I13 — official Claude installer unrecognized | Strict `claude/versions/<semver>` kernel executable recognition, preserving OS birth/ancestry/foreground rules. Irrelevant deeper classifier faults cannot invalidate an already selected shallower native root. |
@@ -272,3 +272,40 @@ private and namespace cleanup have no survivors. Controllers are archived in
 framing come from the earlier `agent-costs/controllers.zip` fixture.
 
 The metadata projection changes, not native family 11 or remote control 2.
+
+## Mandatory direct-message wakes
+
+Direct messages no longer accept a sender `delivery`, `wake` or `notify` choice.
+The Rust enum, native schema field and stored sender mode are removed. Every
+accepted new message can enter the current authenticated receiver's wake claim,
+including messages accepted before a receiver subscribes and messages joining
+an existing batch. Identical retries preserve recipient, text and scope without
+replaying a wake. Native family 12 rejects family-11 peers before dispatch;
+remote control remains 2 and recovery remains schema 4.
+
+Old stored sender-choice fields disappear on rewrite. Restart still retires all
+old launch authority and inboxes, so previously quiet unread messages remain
+historical diagnostics, not new native wake requests. Historical failed/unknown
+wakes are not replayed. Existing sessions require their matching old binaries
+until explicit recovery with a matching new pair; no live daemon was restarted.
+
+Protected formatting, all-target strict Clippy, doctests and warnings-denied
+workspace rustdoc pass. Workspace tests pass: 1,313 passed, 19 ignored, with
+receipt `target/smoke/harness-integrations/build/checks-531928137971862/`.
+The frozen debug pair and compiler receipts are in
+`target/smoke/harness-integrations/build/compiled-531827851340194/`; public
+executable hashes and inodes remained unchanged in
+`target/smoke/harness-integrations/build/protected-531827459693473/result.json`.
+
+Actual isolated native acceptance is in
+`target/smoke/mandatory-wake/actual-3/acceptance.json`. Compiled synthetic Claude
+actors use real PTYs, authenticated native MCP and durable storage to verify
+omitted delivery, closed obsolete-argument rejection, idempotency, batch claims,
+mode-free storage, explicit read/processed receipts and truthful storage failures.
+A genuine Omp 18.19.0 TUI receives a direct-message native aside; its exact inbox
+pointer reaches the local fake model. The outbox correctly remains `unknown`:
+Omp's void `sendMessage` API does not expose native queue acceptance. This is not
+a quiet-delivery failure or permission to replay. No peer body is typed through
+the PTY, no external provider is called, and fixture plus namespace survivor
+lists are empty. Controllers are archived in
+`target/smoke/mandatory-wake/source.zip`.
