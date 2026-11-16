@@ -437,7 +437,7 @@ def broker_conversation(provider: ScriptedProvider, on_tool=None) -> dict:
     sent = tool("claude", "send_message", {
         "to": launches["pi"],
         "text": "Please review Unicode token boundaries in the search-index patch: café, 東京, and empty queries. Preserve matching semantics; flag normalization changes before merge.",
-        "scope": "workspace", "delivery": "quiet", "idempotency_key": "showcase-search-review"})
+        "scope": "workspace", "idempotency_key": "showcase-search-review"})
     inbox = tool("pi", "read_inbox")
     message = field(sent, "message_id")
     if not any(item.get("message_id", item.get("id")) == message for item in objects(inbox)):
@@ -446,7 +446,7 @@ def broker_conversation(provider: ScriptedProvider, on_tool=None) -> dict:
     reply = tool("pi", "send_message", {
         "to": launches["claude"],
         "text": "Review request received. I'll cover café, 東京, and whitespace-only queries, then report normalization risks before merge.",
-        "scope": "workspace", "delivery": "quiet", "idempotency_key": "showcase-search-review-reply"})
+        "scope": "workspace", "idempotency_key": "showcase-search-review-reply"})
     reply_id = field(reply, "message_id")
     received = tool("claude", "read_inbox")
     if not any(item.get("message_id", item.get("id")) == reply_id for item in objects(received)):
