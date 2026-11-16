@@ -52,11 +52,9 @@ class CaptureTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             graphics_readiness(output, b"\x1b_Gi=99;EINVAL\x1b\\")
 
-    def test_broker_uses_quiet_native_tools_and_exact_processed_ids(self):
+    def test_broker_runs_native_tools_and_preserves_exact_processed_ids(self):
         provider = BrokerScenario()
         result = broker_conversation(provider)
-        sends = [arguments for _, name, arguments in provider.calls if name == "send_message"]
-        self.assertEqual([value["delivery"] for value in sends], ["quiet", "quiet"])
         acks = [(role, arguments) for role, name, arguments in provider.calls if name == "ack_message"]
         self.assertEqual(acks, [("pi", {"ids": ["request"]}), ("claude", {"ids": ["reply"]})])
         self.assertEqual(set(provider.summaries), {"claude", "pi"})

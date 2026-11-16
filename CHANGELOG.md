@@ -81,6 +81,7 @@ Existing incompatible live daemons are not migrated automatically.
 
 ### Fixes
 
+* Remove obsolete quiet-delivery arguments from the real-harness screenshot scenario so native broker calls use the mandatory-notification API.
 * Make `bkpr stop` and explicit `bkpr daemon stop` independent of native wire-family matching through frozen, identity-guarded administration. Preserve unrelated sessions, reject changed targets and keep cleanup failures truthful; support already-running binary-native owners through a bounded legacy shutdown bridge.
 * Preserve newer-client/older-daemon compatibility for optional schema additions and retired fields. Restore native family 11 for the always-notify update and reserve its removed field slot rather than forcing an unnecessary session recovery.
 * Make routine agent discovery useful without full expansion, reusing matching foreground project metadata without cloning repository/provider snapshots or triggering extra Git/CI work.
