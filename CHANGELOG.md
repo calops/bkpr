@@ -1,3 +1,64 @@
+## [0.7.0](https://github.com/calops/bkpr/compare/v0.6.0...v0.7.0) (2026-11-16)
+
+### ⚠ BREAKING CHANGES
+
+* **agents:** Native wire family 12 requires matching bkpr and bkprd binaries. Direct sends reject the removed delivery parameter; recover sessions explicitly without replacing live daemons.
+* **mcp:** default discover_agents omits workspace/window IDs,
+timestamps and detailed status fields. Request detail:true to retrieve them.
+Native wire family and remote control versions are unchanged.
+* **core:** bkprd --socket and --state-root select a host namespace.
+Native wire family 11 and remote control version 2 require matching binaries.
+Existing incompatible live daemons are not migrated automatically.
+* **client:** ProjectSnapshot no longer exposes the backend color_slot Rust/JSON field. Clients allocate presentation colors from repository identity. Native wire family 10 remains compatible through ordinary optional JSON metadata decoding.
+* **harness:** Native wire family 10 requires matching bkpr and bkprd binaries for conversation guards and binding compare-and-swap. Incompatible running sessions are not restarted automatically.
+* **dev:** OpenCode 1 managed capture and recovery are retired. OpenCode 2 currently runs without Bkpr-managed MCP/capture while proper shared-service integration is designed.
+* **harness:** native wire family 9 requires matching bkpr and bkprd executables and restarting daemons from earlier wire families.
+
+### Features
+
+* add durable native harness integrations ([f8d6618](https://github.com/calops/bkpr/commit/f8d661873d6b462686a756913c9bc49bff5518b6))
+* **client:** add best-effort desktop alerts ([877ad57](https://github.com/calops/bkpr/commit/877ad5788ff801a56e6d1849b682eb592d7dc5be))
+* **client:** animate working sidebar titles ([308d2d6](https://github.com/calops/bkpr/commit/308d2d6317266c5ae7336618a6be86491f464efe))
+* **core:** add durable harness notification records ([588e653](https://github.com/calops/bkpr/commit/588e653dc200890095ab5ef11dfce4a399042e67)), closes [#7](https://github.com/calops/bkpr/issues/7)
+* **dev:** add harness testing shell and retire OpenCode 1 ([620a8c5](https://github.com/calops/bkpr/commit/620a8c529a6737ae901abd5be0ec2a7e5a2714d9))
+* **harness:** integrate native OpenCode and Pi sessions ([7e71a0b](https://github.com/calops/bkpr/commit/7e71a0bbd4dc786a9b1ac5bf584b3d33d6333344))
+* **harness:** manage OpenCode 2 through native standalone services ([eb10a4f](https://github.com/calops/bkpr/commit/eb10a4f7f68f28125e50a3104aebcd3c58356a02))
+* **tui:** open full images in an overlay with Alt-click ([cdfeb9f](https://github.com/calops/bkpr/commit/cdfeb9fc0135726f1800d54f944db6bc78cbf048))
+
+### Bug Fixes
+
+* **agents:** always request native wakes for direct messages ([44d3dc1](https://github.com/calops/bkpr/commit/44d3dc1f15e43c1c7e370da9b32d71eeb176d16d))
+* **agents:** report daemon protocol version in whoami ([130601c](https://github.com/calops/bkpr/commit/130601c7ec967326a0b83b50138a09e9462310dd))
+* **ci:** accept declared binary caches for showcase harnesses ([ef6088f](https://github.com/calops/bkpr/commit/ef6088fa95ccd773411b1895cdb5f6e6aea81259))
+* **ci:** capture native package binaries with their terminfo ([262201e](https://github.com/calops/bkpr/commit/262201e700000ed31a29c9ebeb982b7ff436af17))
+* **ci:** permit isolated showcase namespaces on Ubuntu runners ([262979d](https://github.com/calops/bkpr/commit/262979d2f1529cb6d2e12cc8c23006917c46ffff))
+* **client:** ellipsize clipped sidebar names ([1aa44f2](https://github.com/calops/bkpr/commit/1aa44f252ba141e9e42b605125e9fb4bc7746270))
+* **client:** own project colors across attached sessions ([fbc2b22](https://github.com/calops/bkpr/commit/fbc2b224e5a3c656181d7611b2d337b02db6f0d9))
+* **client:** refresh diagnostics and clip search graphemes ([905432c](https://github.com/calops/bkpr/commit/905432cee02b72365a4914e568f76fa536ac41ea))
+* **client:** shorten chrome toggle hint ([2b4b527](https://github.com/calops/bkpr/commit/2b4b5271a3af98db1ea45f87e9ae330fbd76bbb5))
+* **client:** speed up sweep and match working status color ([92537ba](https://github.com/calops/bkpr/commit/92537ba4a73df760058e03be6cf897d30f189992))
+* **client:** strengthen working-title gradient ([8ff5286](https://github.com/calops/bkpr/commit/8ff5286501bd2a5794962d436136e66233028e43))
+* **client:** strip OMP title status prefixes ([0e389b9](https://github.com/calops/bkpr/commit/0e389b9cf98cbd0f85567f55a62973ef3dbf5568))
+* **client:** use Nerd Font Git refresh icon ([9677fc3](https://github.com/calops/bkpr/commit/9677fc3d1ae04e41121abc1d88c64540884d78a0))
+* **cli:** keep explicit shutdown independent of wire versions ([2696832](https://github.com/calops/bkpr/commit/2696832a2067514411de1ac3a4f32a0ca60a68d9))
+* **codex:** advertise Kitty graphics to managed TUI ([35b0971](https://github.com/calops/bkpr/commit/35b0971e72ad19c332a84bdb55f188418d21d9fa))
+* **core:** configure Ghostty-derived pane terminfo ([31cee91](https://github.com/calops/bkpr/commit/31cee911d461935358b92b4ae849f70bf106ef1f))
+* **core:** share one host daemon across sessions ([ab420b9](https://github.com/calops/bkpr/commit/ab420b958aaa80497a5d6663c259908a396b2667))
+* **mcp:** keep routine agent discovery concise ([73483f2](https://github.com/calops/bkpr/commit/73483f2bf0036d2a0a35af7ee2a08d6bdd15e0f4))
+* **notifications:** enable every event kind by default ([ce68777](https://github.com/calops/bkpr/commit/ce68777a69a9b55d5106aa5e9b074e55e22db934))
+* **omp:** enable images through native terminal API ([466fcf5](https://github.com/calops/bkpr/commit/466fcf57578165a83ae15025596f8a1c842adbc6))
+* **protocol:** bound Unix byte paths while decoding ([a567b7f](https://github.com/calops/bkpr/commit/a567b7fca4db9d84b0854bb2c8e17feccc9caf7a))
+* **showcase:** include CJK glyphs in isolated captures ([8023dd5](https://github.com/calops/bkpr/commit/8023dd52ad58d752b0c31bf3cc3fa4622862a4af))
+* **showcase:** trim unused transparent framing padding ([91eada9](https://github.com/calops/bkpr/commit/91eada98dedf6361fec8d7d82ce82ed1d6d5da3e))
+* **terminal:** preserve queued effects when encoding paste ([83d6e25](https://github.com/calops/bkpr/commit/83d6e254ee3124f0e1bf30682ba8663b8117e9dd))
+* **tui:** preserve overlay and wide-glyph invariants ([0fdc80d](https://github.com/calops/bkpr/commit/0fdc80dba81023a4ede22973156c04620c4ed277))
+* **tui:** prevent atlas-edge bleed around popovers ([ad26851](https://github.com/calops/bkpr/commit/ad26851cfb3844bf146d4b9ae62c900ff2212646))
+* **tui:** use whole-grapheme UI geometry ([6bdb294](https://github.com/calops/bkpr/commit/6bdb294b20030a3958b52f9f8b64fb87ad8ce9d4))
+
+### Performance Improvements
+
+* **tui:** negotiate local transports for prepared chrome ([c500e72](https://github.com/calops/bkpr/commit/c500e72357098b1de2683cbfee96a1cf9256b0a6))
+
 ## Unreleased
 
 ### Breaking changes
