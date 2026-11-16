@@ -19,7 +19,16 @@ not write episode state to disk. Episode suppression is volatile and withdrawn
 with its source; a restart never restores live authority from historical rows.
 Distinct attention categories remain eligible within an episode. Only an
 explicit working-to-idle transition produces idle; done requires an explicit
-report. The default policy enables attention and error, not idle or done.
+report. The default policy enables attention, error, idle and done. Existing persisted policy overrides are preserved.
+
+Existing stores retain their saved policy, including an earlier default. To explicitly enable every kind on an existing host without restarting it:
+
+```sh
+bkpr request --socket "$XDG_RUNTIME_DIR/bkpr/d" \
+  '{"version":11,"op":"notifications","request":{"method":"policy_set","policy":{"scope":{},"kinds":["attention","error","idle","done"]}}}'
+```
+
+More-specific saved rules still override the host rule. This changes event eligibility, not the TUI's local focused-pane suppression.
 
 One bounded worker owns the host's private `notifications/notifications.sqlite3`.
 `rusqlite` 0.42.0 is MIT-licensed and actively maintained

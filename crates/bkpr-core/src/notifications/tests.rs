@@ -147,15 +147,9 @@ fn episodes_deduplicate_semantic_categories_and_require_working_to_rearm() {
 }
 
 #[test]
-fn idle_requires_working_and_done_requires_explicit_opted_in_report() {
+fn default_policy_records_attention_idle_and_explicit_done_without_duplicates() {
     let (_directory, root) = root();
     let mut store = store(&root);
-    store
-        .set_policy(NotificationPolicy {
-            scope: NotificationScope::default(),
-            kinds: vec![NotificationKind::Idle, NotificationKind::Done],
-        })
-        .unwrap();
     let now = now_ms();
     for state in [
         Some("idle"),
@@ -177,7 +171,11 @@ fn idle_requires_working_and_done_requires_explicit_opted_in_report() {
             .iter()
             .map(|n| n.kind)
             .collect::<Vec<_>>(),
-        [NotificationKind::Idle, NotificationKind::Done]
+        [
+            NotificationKind::Attention,
+            NotificationKind::Idle,
+            NotificationKind::Done
+        ]
     );
 }
 
@@ -939,6 +937,12 @@ fn attention_category_changes_are_distinct_but_repeats_do_not_storm() {
 fn working_duplicates_and_disabled_notifications_never_require_a_database_write() {
     let (_directory, root) = root();
     let mut store = store(&root);
+    store
+        .set_policy(NotificationPolicy {
+            scope: NotificationScope::default(),
+            kinds: vec![],
+        })
+        .unwrap();
     store.fail_writes();
     for state in ["working", "working", "idle", "done", "working"] {
         assert!(!store.observe(observation(Some(state)), now_ms()).unwrap());
