@@ -57,6 +57,7 @@ fn context(id: &str, workspace: Option<&str>) -> ContextFact {
         binding_revision: 1,
         cwd: Some(PathBuf::from("/")),
         repository: Some(PathBuf::from("/repository.git")),
+        project_summary: None,
         registry_revision: 7,
         workspace_revision: Some(3),
         window_revision: Some(2),
@@ -1839,4 +1840,108 @@ fn default_status_is_elementary_bounded_and_detail_recovers_full_osc_fields() {
     assert_eq!(compact["conversation"]["id"], "native-a");
     assert_eq!(compact["conversation"]["generation"], 1);
     assert_eq!(compact["attached"], true);
+}
+
+fn discovery_test_project() -> ProjectSnapshot {
+    ProjectSnapshot {
+        cwd: PathBuf::from("/repo"),
+        state: ProjectState::Ready,
+        repository: Some(RepositoryInfo {
+            name: "bkpr".into(),
+            root: PathBuf::from("/repo"),
+            common_dir: PathBuf::from("/repo/.git"),
+            git_dir: PathBuf::from("/repo/.git"),
+            branch: Some("feature/concise-discovery".into()),
+            head_sha: Some("a".repeat(40)),
+            staged: ChangeSummary::default(),
+            unstaged: ChangeSummary {
+                files: 42,
+                insertions: 1000,
+                ..Default::default()
+            },
+            untracked_files: 12,
+            base_ref: Some("origin/main".into()),
+            base_sha: Some("b".repeat(40)),
+            committed: None,
+        }),
+        ci: None,
+        error: None,
+    }
+}
+
+#[test]
+fn discovery_keeps_actionable_context_without_repository_or_status_internals() {
+    let (_directory, service, mut contexts) = fixture();
+    let project = discovery_test_project();
+    let status = ProgramStatus {
+        state: "working".into(),
+        kind: None,
+        app: Some("omp".into()),
+        id: "nested/task".into(),
+        message: Some("status detail".into()),
+        title: "terminal detail".into(),
+        progress: Some(42),
+    };
+    let peer = contexts.get_mut("b").unwrap();
+    peer.cwd = Some(project.cwd.clone());
+    peer.project_summary = discovery_project(Some(&project), peer.cwd.as_deref(), true);
+    peer.pane.project = Some(project);
+    peer.status = status_summary(Some(&status));
+    peer.pane.harness_status = Some(status);
+    let mut state = service.state.lock().unwrap();
+    state.store.agents.get_mut("b").unwrap().title = Some("Frontend".into());
+    let page = |detail| {
+        discover(
+            &state,
+            &contexts,
+            &contexts["a"],
+            DiscoveryQuery {
+                scope: AgentScope::Workspace,
+                detail,
+                launch_id: Some("b"),
+                pane_id: None,
+                after: None,
+                limit: None,
+            },
+        )
+        .unwrap()
+    };
+    let compact = page(false);
+    let expanded = page(true);
+    let peer = &compact["agents"][0];
+    assert_eq!(peer["launch_id"], "b");
+    assert_eq!(peer["title"], "Frontend");
+    assert_eq!(peer["cwd"], "/repo");
+    assert_eq!(peer["status"], json!({"state":"working"}));
+    assert_eq!(peer["project_name"], "bkpr");
+    assert_eq!(peer["branch"], "feature/concise-discovery");
+    assert!(peer.get("project").is_none());
+    for field in [
+        "workspace_id",
+        "window_id",
+        "status_changed_at_ms",
+        "first_prompt_submitted_at_ms",
+        "conversation",
+        "registry_revision",
+    ] {
+        assert!(
+            peer.get(field).is_none(),
+            "{field} belongs to explicit detail"
+        );
+    }
+    assert_eq!(
+        expanded["agents"][0]["project"]["repository"]["unstaged"]["files"],
+        42
+    );
+    assert_eq!(expanded["agents"][0]["status"]["message"], "status detail");
+    assert_eq!(expanded["agents"][0]["workspace_id"], "one");
+}
+
+#[test]
+fn discovery_project_context_requires_matching_live_foreground_cache() {
+    let mut project = discovery_test_project();
+    assert!(discovery_project(Some(&project), Some(Path::new("/elsewhere")), true).is_none());
+    assert!(discovery_project(Some(&project), Some(Path::new("/repo")), false).is_none());
+    project.state = ProjectState::Loading;
+    assert!(discovery_project(Some(&project), Some(Path::new("/repo")), true).is_none());
 }

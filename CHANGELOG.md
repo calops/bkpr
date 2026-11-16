@@ -5,6 +5,7 @@
 * Use one long-lived host/user daemon for all named sessions. Native wire family 11 and remote control version 2 require matching binaries and explicitly fence each session runtime instance. Session stop stays session-scoped; `bkpr daemon stop` explicitly stops the host and all sessions. Existing live incompatible daemons are never adopted, replaced or stopped automatically.
 * Native conversation-fenced agent requests and revision-checked binding changes require matching `bkpr` and `bkprd` binaries. Existing incompatible sessions are not restarted automatically.
 * Remove `ProjectSnapshot.color_slot` from Rust/JSON metadata; clients assign presentation colors from repository identity.
+* Keep default `discover_agents` responses lean: ownership IDs/revisions, timestamps and detailed status now require `detail:true`. Routine listings retain launch/pane IDs, discovery labels, semantic state/readiness and compact CWD/project-name/branch context; full Git/CI remains explicit.
 
 ### Features
 
@@ -16,6 +17,7 @@
 
 ### Fixes
 
+* Make routine agent discovery useful without full expansion, reusing matching foreground project metadata without cloning repository/provider snapshots or triggering extra Git/CI work.
 * Keep the host daemon alive when its final session closes, preserve session-local attachment/takeover authority across local and remote targets, and open new sessions through the existing host process rather than starting a daemon per session.
 
 * Keep CI-only npm manifests, dependencies and release configuration under `.github/`.

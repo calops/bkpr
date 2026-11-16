@@ -104,6 +104,27 @@ pub(super) struct Agents {
     request_barrier: Mutex<Option<(bool, Arc<SpawnBarrier>)>>,
 }
 #[derive(Clone)]
+struct DiscoveryProject {
+    name: String,
+    branch: Option<String>,
+}
+
+fn discovery_project(
+    project: Option<&ProjectSnapshot>,
+    cwd: Option<&Path>,
+    active: bool,
+) -> Option<DiscoveryProject> {
+    let project = project.filter(|project| {
+        active && project.state == ProjectState::Ready && cwd == Some(project.cwd.as_path())
+    })?;
+    let repository = project.repository.as_ref()?;
+    Some(DiscoveryProject {
+        name: repository.name.clone(),
+        branch: repository.branch.clone(),
+    })
+}
+
+#[derive(Clone)]
 struct ContextFact {
     launch_id: String,
     active: bool,
@@ -113,6 +134,7 @@ struct ContextFact {
     binding_revision: u64,
     cwd: Option<PathBuf>,
     repository: Option<PathBuf>,
+    project_summary: Option<DiscoveryProject>,
     registry_revision: u64,
     workspace_revision: Option<u64>,
     window_revision: Option<u64>,
@@ -123,6 +145,7 @@ struct ContextFact {
 #[derive(Default)]
 struct ContextSelection<'a> {
     all: bool,
+    project_summary: bool,
     recipient: Option<&'a str>,
     launch_id: Option<&'a str>,
     pane_id: Option<&'a str>,
@@ -733,14 +756,23 @@ fn discover(
                     true,
                 )
             } else {
-                json!({
+                let mut value = json!({
                     "launch_id":other.launch_id,"pane_id":other.pane.id,
-                    "workspace_id":other.pane.workspace_id,"window_id":other.pane.window_id,
-                    "harness":agent.harness.as_str(),"status":other.status,
-                    "status_changed_at_ms":other.pane.harness_status_changed_at_ms,
-                    "first_prompt_submitted_at_ms":other.first_prompt_submitted_at_ms,
+                    "harness":agent.harness.as_str(),
+                    "status":other.status.get("state").map(|state| json!({"state":state})),
                     "notification_ready":ready,
-                })
+                });
+                if let Some(title) = &agent.title {
+                    value["title"] = json!(title);
+                }
+                if let Some(cwd) = &other.cwd {
+                    value["cwd"] = json!(path_wire::WirePath(cwd));
+                }
+                if let Some(project) = &other.project_summary {
+                    value["project_name"] = json!(project.name);
+                    value["branch"] = json!(project.branch);
+                }
+                value
             }
         })
         .collect::<Vec<_>>();
@@ -952,6 +984,10 @@ impl Registry {
                     .live
                     .get(&pane.id)
                     .map(|pane| pane.shared.published.lock().unwrap().revision);
+                let project_summary = (selection.project_summary
+                    && launch.grant.launch_id != own_id)
+                    .then(|| discovery_project(original.project.as_ref(), cwd.as_deref(), active))
+                    .flatten();
                 let id = launch.grant.launch_id;
                 Some((
                     id.clone(),
@@ -964,6 +1000,7 @@ impl Registry {
                         binding_revision: launch.binding_generation,
                         cwd,
                         repository,
+                        project_summary,
                         registry_revision: state.record.registry.revision,
                         workspace_revision,
                         window_revision,
@@ -1262,6 +1299,7 @@ impl Registry {
                     } => (
                         ContextSelection {
                             all: true,
+                            project_summary: !*detail,
                             launch_id: launch_id.as_deref(),
                             pane_id: pane_id.as_deref(),
                             ..Default::default()

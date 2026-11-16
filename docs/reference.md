@@ -733,7 +733,7 @@ explicit passthrough invocations remain unchanged.
 | --- | --- |
 | `whoami` | Compact launch/binding/ownership/readiness facts and serving daemon `protocol_version` (native wire family); `detail:true` adds context/project |
 | `set_title` | Discoverable agent label, separate from the pane name |
-| `discover_agents` | Current-workspace launches; exact launch/pane filters and cursor pagination |
+| `discover_agents` | Current-workspace peers with IDs, label, status and cached CWD/project name/branch; exact filters and cursor pagination |
 | `send_message` | Compact durable receipt; `delivery:"quiet"` suppresses native wake |
 | `read_inbox` | Unread summaries; `include_read:true` revisits unacknowledged reads |
 | `read_message` | Recipient-only UTF-8 body pages, without processed acknowledgement |
@@ -748,6 +748,13 @@ viewer's layout or repository directory. Explicit `session` and `all` scopes are
 limited to this daemon; `repository` compares canonical common Git directories
 from current foreground CWD and fails closed when unknown. Remote discovery is
 not implemented.
+
+Routine discovery omits ownership revisions, workspace/window IDs, timestamps,
+progress, repository diffs and CI/provider state. When available, `title` is the
+agent's explicit discovery label; `cwd`, `project_name` and `branch` are compact
+foreground context from the matching backend cache. No Git/provider request is
+started by discovery. Use `detail:true` with an exact `launch_id` or `pane_id`
+when ownership, full semantic status or the complete `project` snapshot is needed.
 
 Control/input use `{operation,arguments,scope?,reply?}`. Exact IDs are required;
 bounded, in-scope prefix hints never resolve or redirect a mutation automatically.
