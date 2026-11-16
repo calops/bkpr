@@ -2295,8 +2295,8 @@ impl App {
         }
         self.notify_focus()
     }
-    fn notify_focus(&mut self) -> Result<()> {
-        let focused = if self.host_focused
+    fn focused_application(&self) -> Option<(String, String)> {
+        if self.host_focused
             && self.state.form.is_none()
             && !self.picker_open()
             && self.image_viewer.is_none()
@@ -2310,7 +2310,11 @@ impl App {
             self.active()
         } else {
             None
-        };
+        }
+    }
+
+    fn notify_focus(&mut self) -> Result<()> {
+        let focused = self.focused_application();
         if focused != self.notified_focus
             && let Some(previous) = self.notified_focus.take()
         {
@@ -4785,12 +4789,24 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             title_animation.restore(&mut chrome_surface.frame);
             let size = dimensions()?;
             sessions.tick(size)?;
+            sessions.desktop_notifications(&mut terminal, &mut out)?;
             if sessions.should_exit() {
                 return Ok(());
             }
             session_fds.clear();
             sessions.append_poll_fds(&mut session_fds);
             let session_timeout = sessions.timeout(1000);
+            let session_timeout =
+                terminal
+                    .notification_deadline()
+                    .map_or(session_timeout, |deadline| {
+                        session_timeout.min(
+                            deadline
+                                .saturating_duration_since(Instant::now())
+                                .as_millis()
+                                .min(i32::MAX as u128) as i32,
+                        )
+                    });
             let (attachment, generation) = sessions.namespace();
             let active_owner = sessions.current_owner();
             let app = sessions.app_mut();
@@ -6137,6 +6153,20 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             };
             incoming.extend(decode_input(&mut parser, parts, available));
             while let Some(event) = incoming.pop_front() {
+                if let ClientEvent::Reply(response) = &event {
+                    terminal.observe_focus_reply(response);
+                    if response.starts_with(b"notification;") {
+                        if sessions.notification_reply(
+                            response,
+                            &mut terminal,
+                            &mut out,
+                            input_size,
+                        )? {
+                            break;
+                        }
+                        continue;
+                    }
+                }
                 if sessions.route_release(&event, input_size)? {
                     continue;
                 }

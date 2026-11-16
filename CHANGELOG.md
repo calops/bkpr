@@ -10,6 +10,7 @@
 
 ### Features
 
+* Add independent best-effort TUI desktop alerts over confirmed OSC 99, with local physical-focus suppression, owner-qualified click navigation, bounded resources and cancellable local/SSH subscriptions. Keep notification replies separate from pane input; do not require global desktop claims or delivery receipts.
 * Add backend-owned harness notifications with pre-coalescing authenticated transition capture, bounded durable history, scoped policy and resumable local/remote subscriptions. Report storage failures and acknowledgeable retention/loss gaps without conflating records with desktop/push delivery.
 * Animate visible working sidebar titles with a palette-derived gradient sweep, backed by reusable framework timing/text effects and dormant idle scheduling.
 * Add Alt-click full-image viewing through a reusable framework overlay, with aspect-fit resizing, Escape and close-button dismissal, and pinned decoded pixels. Keep ordinary application clicks unchanged without backend or protocol changes.

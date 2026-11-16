@@ -1804,9 +1804,11 @@ bkpr -r devbox -s work remote request \
 Local raw replies and remote request replies expose the typed result under
 `result`. Records include structured source identities and semantic categories,
 not terminal contents, prompts, arbitrary status messages or capture tokens.
-Inspection/subscription is not a provider delivery receipt. See the
-[notification design](notifications.md) for bounds, failure semantics and the
-desktop/UnifiedPush roadmap.
+Inspection/subscription is not a provider delivery receipt. Attached TUIs may
+independently present best-effort OS alerts through confirmed OSC 99, with local
+focus suppression and source activation. Unconfirmed terminals do not attempt
+desktop presentation. See the [notification design](notifications.md) for bounds,
+failure semantics, implemented desktop presentation and future UnifiedPush delivery.
 
 ## License
 

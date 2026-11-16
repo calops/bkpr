@@ -107,6 +107,18 @@ fn remote_window_creation_keeps_remote_paths_and_backend_shell_on_the_selected_e
                 .pop_front()
                 .context("unexpected extra request")
         }
+        fn connect_async<'a>(
+            &'a self,
+            purpose: ConnectionPurpose,
+            cancellation: &'a tokio_util::sync::CancellationToken,
+        ) -> std::pin::Pin<
+            Box<dyn Future<Output = Result<UnixStream>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                anyhow::ensure!(!cancellation.is_cancelled(), "native connection cancelled");
+                self.connect(purpose)
+            })
+        }
     }
     let (lifetime, mut registration) = UnixStream::pair().unwrap();
     let (control, mut backend) = UnixStream::pair().unwrap();

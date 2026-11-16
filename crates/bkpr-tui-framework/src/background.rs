@@ -146,6 +146,9 @@ mod tests {
             requested_clipboard_mode: None,
             theme_mode: None,
             background: Background::default(),
+            notification_probe: crate::notification::Probe::default(),
+            notifications: std::collections::VecDeque::new(),
+            observed_focus: None,
         })
     }
 

@@ -19,6 +19,7 @@ use std::{
         unix::net::UnixStream,
     },
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -87,6 +88,7 @@ fn observational(operation: &Operation) -> bool {
 
 struct Lease {
     authority: Option<ClientAuthority>,
+    cancellation: tokio_util::sync::CancellationToken,
     state: Mutex<LeaseState>,
 }
 
@@ -103,6 +105,8 @@ impl Lease {
         {
             let _ = request.stream.shutdown(Shutdown::Both);
         }
+        drop(state);
+        self.cancellation.cancel();
     }
 }
 /// Admission classes let remote observations exhaust only their own capacity.
@@ -113,6 +117,7 @@ pub(crate) enum ConnectionPurpose {
     Observation,
 }
 
+/// Opens worker-owned streams without retaining attachment lifetime ownership.
 pub(crate) trait Connector: Send + Sync {
     fn connect(&self, purpose: ConnectionPurpose) -> Result<UnixStream>;
     fn connect_cancellable(
@@ -123,6 +128,12 @@ pub(crate) trait Connector: Send + Sync {
         ensure!(!cancellation.is_cancelled(), "native connection cancelled");
         self.connect(purpose)
     }
+    /// Open without blocking the executor; dropping the future cancels admission.
+    fn connect_async<'a>(
+        &'a self,
+        purpose: ConnectionPurpose,
+        cancellation: &'a tokio_util::sync::CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<UnixStream>> + Send + 'a>>;
     fn remote(&self) -> bool {
         false
     }
@@ -134,6 +145,13 @@ impl Connector for UnavailableConnector {
     fn connect(&self, _purpose: ConnectionPurpose) -> Result<UnixStream> {
         Err(DetachedBeforeDispatch.into())
     }
+    fn connect_async<'a>(
+        &'a self,
+        _purpose: ConnectionPurpose,
+        _cancellation: &'a tokio_util::sync::CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<UnixStream>> + Send + 'a>> {
+        Box::pin(async { Err(DetachedBeforeDispatch.into()) })
+    }
 }
 
 struct LocalConnector(PathBuf);
@@ -143,23 +161,33 @@ impl Connector for LocalConnector {
     }
     fn connect_cancellable(
         &self,
-        _purpose: ConnectionPurpose,
+        purpose: ConnectionPurpose,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<UnixStream> {
         let stream = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(async {
-                tokio::select! {
-                    biased;
-                    _ = cancellation.cancelled() => bail!("local connection cancelled"),
-                    stream = tokio::net::UnixStream::connect(&self.0) => {
-                        Ok(stream?.into_std()?)
-                    }
-                }
-            })?;
+            .block_on(self.connect_async(purpose, cancellation))?;
         stream.set_nonblocking(false)?;
         Ok(stream)
+    }
+    fn connect_async<'a>(
+        &'a self,
+        _purpose: ConnectionPurpose,
+        cancellation: &'a tokio_util::sync::CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<UnixStream>> + Send + 'a>> {
+        Box::pin(async move {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => bail!("local connection cancelled"),
+                stream = tokio::net::UnixStream::connect(&self.0) => {
+                    stream
+                        .with_context(|| format!("connecting to {}", self.0.display()))?
+                        .into_std()
+                        .context("converting local native stream")
+                }
+            }
+        })
     }
 }
 
@@ -181,6 +209,7 @@ impl Endpoint {
             connector,
             lease: Arc::new(Lease {
                 authority,
+                cancellation: tokio_util::sync::CancellationToken::new(),
                 state: Mutex::new(LeaseState {
                     revoked: false,
                     session_ended: false,
@@ -216,6 +245,11 @@ impl Endpoint {
         self.lease.state.lock().unwrap().revoked
     }
 
+    /// Wait without polling until this attachment's shared authority is revoked.
+    pub(crate) async fn wait_revoked(&self) {
+        self.lease.cancellation.cancelled().await;
+    }
+
     pub(crate) fn session_ended(&self) -> bool {
         self.lease.state.lock().unwrap().session_ended
     }
@@ -244,44 +278,65 @@ impl Endpoint {
         operation: Operation,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<Value> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(self.checked_observation_async(operation, cancellation))
+    }
+
+    /// Observe once on the caller's runtime, cancelling connect/read on either
+    /// request cancellation or attachment revocation. Never replay an error.
+    pub(crate) async fn checked_observation_async(
+        &self,
+        operation: Operation,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<Value> {
         ensure!(
             observational(&operation),
             "cancellable endpoint request must be observational"
         );
-        let result = (|| {
-            self.ensure_live()?;
-            let stream = self
-                .connector
-                .connect_cancellable(ConnectionPurpose::Observation, cancellation)?;
-            let _inflight = self.track_request(&stream, true)?;
-            stream.set_nonblocking(true)?;
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?
-                .block_on(async {
-                    let mut stream = tokio::net::UnixStream::from_std(stream)?;
-                    let dispatched = std::cell::Cell::new(false);
-                    tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => {
-                            let error = anyhow::anyhow!("client observation cancelled");
-                            Err(if dispatched.get() { super::mark_outcome_unknown(error) } else { error })
-                        },
-                        response = async {
-                            self.ensure_live()?;
-                            dispatched.set(true);
-                            match &self.lease.authority {
-                                Some(authority) => super::request_client_async(
-                                    &mut stream, authority, &operation,
-                                ).await,
-                                None => super::request_async(
-                                    &mut stream, &Request::new(operation), wire::MAX_RESPONSE,
-                                ).await,
-                            }
-                        } => checked_response(response?),
-                    }
+        self.ensure_live()?;
+        let dispatched = std::cell::Cell::new(false);
+        let result = tokio::select! {
+            biased;
+            _ = self.lease.cancellation.cancelled() => {
+                Err(if dispatched.get() {
+                    super::mark_outcome_unknown(
+                        std::io::Error::new(
+                            std::io::ErrorKind::NotConnected,
+                            "client attachment detached",
+                        )
+                        .into(),
+                    )
+                } else {
+                    DetachedBeforeDispatch.into()
                 })
-        })();
+            },
+            _ = cancellation.cancelled() => {
+                let error = anyhow::anyhow!("client observation cancelled");
+                Err(if dispatched.get() { super::mark_outcome_unknown(error) } else { error })
+            },
+            response = async {
+                let stream = self
+                    .connector
+                    .connect_async(ConnectionPurpose::Observation, cancellation)
+                    .await?;
+                let _inflight = self.track_request(&stream, true)?;
+                stream.set_nonblocking(true)?;
+                let mut stream = tokio::net::UnixStream::from_std(stream)?;
+                self.ensure_live()?;
+                dispatched.set(true);
+                let response = match &self.lease.authority {
+                    Some(authority) => super::request_client_async(
+                        &mut stream, authority, &operation,
+                    ).await,
+                    None => super::request_async(
+                        &mut stream, &Request::new(operation), wire::MAX_RESPONSE,
+                    ).await,
+                }?;
+                checked_response(response)
+            } => response,
+        };
         result.map_err(super::observation_error)
     }
 
@@ -1107,6 +1162,13 @@ mod tests {
             }
             fn connect(&self, _: ConnectionPurpose) -> Result<UnixStream> {
                 panic!("authority must be rejected before connecting");
+            }
+            fn connect_async<'a>(
+                &'a self,
+                purpose: ConnectionPurpose,
+                _cancellation: &'a tokio_util::sync::CancellationToken,
+            ) -> Pin<Box<dyn Future<Output = Result<UnixStream>> + Send + 'a>> {
+                Box::pin(async move { self.connect(purpose) })
             }
         }
         let endpoint = Endpoint::from_connector(Arc::new(NoAuthority), None);

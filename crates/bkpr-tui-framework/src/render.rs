@@ -5,8 +5,8 @@ use bkpr_protocol::*;
 use std::sync::Arc;
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
-    io::Write,
+    collections::{HashMap, HashSet, VecDeque},
+    io::{self, Write},
     time::Instant,
 };
 use termwiz::input::{InputEvent, InputParser, KeyCode, Modifiers};
@@ -133,7 +133,14 @@ impl GraphicsState {
         Ok(())
     }
 }
-/// Owning host-terminal mode, background and image-resource restoration guard.
+#[derive(Clone, Copy)]
+struct OwnedNotification {
+    id: crate::notification::Id,
+    report_activation: bool,
+    report_close: bool,
+}
+
+/// Owning host-terminal modes, physical observations and presentation resources.
 pub struct TerminalGuard {
     graphics: GraphicsState,
     /// Whether the owned Kitty keyboard mode must be popped on exit.
@@ -142,8 +149,139 @@ pub struct TerminalGuard {
     requested_clipboard_mode: Option<bool>,
     theme_mode: Option<bool>,
     background: background::Background,
+    notification_probe: crate::notification::Probe,
+    notifications: VecDeque<OwnedNotification>,
+    observed_focus: Option<bool>,
 }
 impl TerminalGuard {
+    /// Positively correlated physical-terminal features, or unknown.
+    pub fn notification_capabilities(&self) -> Option<crate::notification::Capabilities> {
+        self.notification_probe.capabilities()
+    }
+
+    /// Pending discovery deadline for the existing input loop, without polling.
+    pub fn notification_deadline(&self) -> Option<Instant> {
+        self.notification_probe.deadline()
+    }
+
+    /// Expire unanswered discovery without inventing negative capability evidence.
+    pub fn expire_notifications(&mut self, now: Instant) {
+        self.notification_probe.expire(now);
+    }
+
+    /// Consume correlated capabilities and return only owned, requested callbacks.
+    /// A tracked close releases ownership; an untracked report is not closure.
+    pub fn notification_reply(
+        &mut self,
+        packet: &[u8],
+        now: Instant,
+    ) -> Option<crate::notification::Reply> {
+        use crate::notification::Reply;
+        let reply = crate::notification::parse_reply(packet)?;
+        match reply {
+            Reply::Capabilities { .. } => {
+                self.notification_probe.consume(reply, now);
+                None
+            }
+            Reply::Activated { id } => self
+                .notifications
+                .iter()
+                .any(|owned| owned.id == id && owned.report_activation)
+                .then_some(reply),
+            Reply::Closed { id, tracked } => {
+                let index = self
+                    .notifications
+                    .iter()
+                    .position(|owned| owned.id == id && owned.report_close)?;
+                if tracked {
+                    self.notifications.remove(index);
+                }
+                Some(reply)
+            }
+        }
+    }
+
+    /// Physical terminal focus from trusted reports; initially unknown.
+    pub fn observed_focus(&self) -> Option<bool> {
+        self.observed_focus
+    }
+
+    /// Record only the shared demultiplexer's exact physical focus reports.
+    pub fn observe_focus_reply(&mut self, packet: &[u8]) -> Option<bool> {
+        let focused = match packet {
+            b"focus;in" => true,
+            b"focus;out" => false,
+            _ => return None,
+        };
+        self.observed_focus = Some(focused);
+        Some(focused)
+    }
+
+    /// Write a validated notification and own its bounded cleanup/callback lifetime.
+    /// Returns the evicted correlation for caller callback removal. Output, including
+    /// partial output on error, never establishes provider acceptance or display.
+    pub fn show_notification(
+        &mut self,
+        out: &mut impl Write,
+        notice: &crate::notification::Notification<'_>,
+    ) -> io::Result<Option<crate::notification::Id>> {
+        let capabilities = self.notification_capabilities().unwrap_or_default();
+        crate::notification::validate(capabilities, notice)?;
+        if let Some(index) = self
+            .notifications
+            .iter()
+            .position(|owned| owned.id == notice.id)
+        {
+            self.notifications.remove(index);
+        }
+        let evicted = if self.notifications.len() == crate::notification::MAX_ACTIVE {
+            self.notifications.pop_front().map(|owned| owned.id)
+        } else {
+            None
+        };
+        self.notifications.push_back(OwnedNotification {
+            id: notice.id,
+            report_activation: false,
+            report_close: false,
+        });
+        if let Some(id) = evicted
+            && capabilities.close
+        {
+            crate::notification::close(out, capabilities, id)?;
+        }
+        crate::notification::show_validated(out, capabilities, notice)?;
+        let owned = self
+            .notifications
+            .back_mut()
+            .expect("notification was retained");
+        owned.report_activation = matches!(
+            notice.activation,
+            crate::notification::Activation::Report
+                | crate::notification::Activation::ReportAndFocus
+        );
+        owned.report_close = notice.report_close;
+        Ok(evicted)
+    }
+
+    /// Release an owned correlation and request closure only when supported.
+    /// Unknown IDs produce no output; a write is not proof of OS closure.
+    pub fn close_notification(
+        &mut self,
+        out: &mut impl Write,
+        id: crate::notification::Id,
+    ) -> io::Result<()> {
+        let Some(index) = self.notifications.iter().position(|owned| owned.id == id) else {
+            return Ok(());
+        };
+        self.notifications.remove(index);
+        if let Some(capabilities) = self.notification_capabilities()
+            && capabilities.close
+        {
+            crate::notification::close(out, capabilities, id)?;
+        }
+        Ok(())
+    }
+
     /// Snapshot ownership immediately before sending ColorProbe::query().
     pub fn prepare_background_query(&mut self) {
         self.background.prepare_query();
@@ -204,6 +342,13 @@ impl TerminalGuard {
         // OSC restoration must precede alternate-screen reset, including when
         // unwinding after a partial write or render error.
         let _ = self.background.restore(out);
+        while let Some(owned) = self.notifications.pop_front() {
+            if let Some(capabilities) = self.notification_capabilities()
+                && capabilities.close
+            {
+                let _ = crate::notification::close(out, capabilities, owned.id);
+            }
+        }
         for id in self.graphics.all_ids() {
             let _ = write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\");
         }
@@ -1063,9 +1208,14 @@ impl ReplyDemux {
                             && payload.starts_with(b"G")
                         {
                             b"graphics;"
-                        } else if payload.starts_with(b"graphics;") {
-                            // The internal route tag cannot be forged by an
-                            // OSC/DCS payload carrying its literal spelling.
+                        } else if self.buffer[start + 1] == b']' && payload.starts_with(b"99;") {
+                            crate::notification::REPLY_PREFIX
+                        } else if payload.starts_with(b"graphics;")
+                            || payload.starts_with(crate::notification::REPLY_PREFIX)
+                            || payload.starts_with(b"focus;")
+                        {
+                            // Internal route tags cannot be forged by a literal
+                            // OSC/DCS payload carrying their spelling.
                             b"unrecognized;"
                         } else {
                             b""
@@ -2105,6 +2255,9 @@ mod tests {
             requested_clipboard_mode: None,
             theme_mode: None,
             background: background::Background::default(),
+            notification_probe: crate::notification::Probe::default(),
+            notifications: VecDeque::new(),
+            observed_focus: None,
         });
         let mut out = Vec::new();
         for reply in [
@@ -2588,6 +2741,9 @@ mod material_cache_tests {
             requested_clipboard_mode: None,
             theme_mode: None,
             background: background::Background::default(),
+            notification_probe: crate::notification::Probe::default(),
+            notifications: VecDeque::new(),
+            observed_focus: None,
         });
 
         let cold = render(&mut renderer, &mut terminal, &first, None);
@@ -2639,5 +2795,221 @@ mod material_cache_tests {
         );
         assert_eq!(terminal.graphics.image_ids, physical);
         assert!(terminal.graphics.derived_ids.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod notification_host_tests {
+    use super::*;
+    use crate::notification::{Activation, Id, MAX_ACTIVE, Notification, Reply, Urgency};
+
+    fn terminal() -> std::mem::ManuallyDrop<TerminalGuard> {
+        std::mem::ManuallyDrop::new(TerminalGuard {
+            graphics: GraphicsState::new(1000),
+            kitty_keyboard: false,
+            clipboard_mode: None,
+            requested_clipboard_mode: None,
+            theme_mode: None,
+            background: background::Background::default(),
+            notification_probe: crate::notification::Probe::default(),
+            notifications: VecDeque::new(),
+            observed_focus: None,
+        })
+    }
+
+    fn confirm(guard: &mut TerminalGuard, fields: &str, now: Instant) {
+        let mut query = Vec::new();
+        guard.notification_probe.begin(&mut query, now).unwrap();
+        assert!(guard.notification_deadline().is_some());
+        let query = std::str::from_utf8(&query).unwrap();
+        let id = query.split_once("i=").unwrap().1.split(':').next().unwrap();
+        let packet = format!("notification;99;i={id}:p=?;{fields}");
+        assert_eq!(guard.notification_reply(packet.as_bytes(), now), None);
+        assert!(guard.notification_capabilities().is_some());
+        assert_eq!(guard.notification_deadline(), None);
+    }
+
+    fn notice(id: Id) -> Notification<'static> {
+        Notification {
+            id,
+            app_name: "test",
+            title: "attention",
+            body: "",
+            activation: Activation::Report,
+            report_close: true,
+            urgency: Urgency::Normal,
+        }
+    }
+
+    fn activate(guard: &mut TerminalGuard, id: Id, now: Instant) -> Option<Reply> {
+        guard.notification_reply(format!("notification;99;i={id};").as_bytes(), now)
+    }
+
+    #[test]
+    fn only_owned_requested_callbacks_survive_until_tracked_close() {
+        let now = Instant::now();
+        let mut guard = terminal();
+        let mut out = Vec::new();
+        let id = Id::new();
+        assert_eq!(
+            guard
+                .show_notification(&mut out, &notice(id))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert!(out.is_empty());
+        assert_eq!(activate(&mut guard, id, now), None);
+        confirm(&mut guard, "p=title,close:a=report:c=1", now);
+        guard.show_notification(&mut out, &notice(id)).unwrap();
+        assert_eq!(activate(&mut guard, Id::new(), now), None);
+        assert_eq!(activate(&mut guard, id, now), Some(Reply::Activated { id }));
+        let untracked = format!("notification;99;i={id}:p=close;untracked");
+        assert_eq!(
+            guard.notification_reply(untracked.as_bytes(), now),
+            Some(Reply::Closed { id, tracked: false })
+        );
+        assert_eq!(activate(&mut guard, id, now), Some(Reply::Activated { id }));
+        let closed = format!("notification;99;i={id}:p=close;");
+        assert_eq!(
+            guard.notification_reply(closed.as_bytes(), now),
+            Some(Reply::Closed { id, tracked: true })
+        );
+        assert_eq!(activate(&mut guard, id, now), None);
+        assert_eq!(guard.notification_reply(closed.as_bytes(), now), None);
+        let mut silent = notice(Id::new());
+        silent.activation = Activation::None;
+        silent.report_close = false;
+        guard.show_notification(&mut out, &silent).unwrap();
+        assert_eq!(activate(&mut guard, silent.id, now), None);
+        let closed = format!("notification;99;i={}:p=close;", silent.id);
+        assert_eq!(guard.notification_reply(closed.as_bytes(), now), None);
+    }
+
+    #[test]
+    fn eviction_explicit_close_and_exit_release_owned_resources() {
+        let now = Instant::now();
+        let mut guard = terminal();
+        confirm(&mut guard, "p=title,close:a=report:c=1", now);
+        let mut out = Vec::new();
+        let first = Id::new();
+        guard.show_notification(&mut out, &notice(first)).unwrap();
+        for _ in 1..MAX_ACTIVE {
+            assert_eq!(
+                guard
+                    .show_notification(&mut out, &notice(Id::new()))
+                    .unwrap(),
+                None
+            );
+        }
+        let last = Id::new();
+        assert_eq!(
+            guard.show_notification(&mut out, &notice(last)).unwrap(),
+            Some(first)
+        );
+        assert_eq!(activate(&mut guard, first, now), None);
+        assert!(out.windows(6).any(|bytes| bytes == b":p=clo"));
+        out.clear();
+        guard.close_notification(&mut out, last).unwrap();
+        assert_eq!(out, format!("\x1b]99;i={last}:p=close;\x1b\\").as_bytes());
+        assert_eq!(activate(&mut guard, last, now), None);
+        out.clear();
+        guard.close_notification(&mut out, last).unwrap();
+        assert!(out.is_empty());
+        guard.restore_output(&mut out);
+        let output = std::str::from_utf8(&out).unwrap();
+        assert_eq!(output.matches(":p=close;").count(), MAX_ACTIVE - 1);
+        assert!(output.rfind(":p=close;").unwrap() < output.find("\x1b[?1049l").unwrap());
+        out.clear();
+        guard.restore_output(&mut out);
+        assert!(!std::str::from_utf8(&out).unwrap().contains(":p=close;"));
+    }
+
+    #[test]
+    fn close_without_confirmed_support_is_local_only() {
+        let now = Instant::now();
+        let mut guard = terminal();
+        confirm(&mut guard, "p=title:a=report", now);
+        let mut out = Vec::new();
+        let mut notification = notice(Id::new());
+        notification.report_close = false;
+        guard.show_notification(&mut out, &notification).unwrap();
+        out.clear();
+        guard.close_notification(&mut out, notification.id).unwrap();
+        assert!(out.is_empty());
+        assert_eq!(activate(&mut guard, notification.id, now), None);
+    }
+
+    #[test]
+    fn partial_output_does_not_authorize_callbacks_but_retains_cleanup() {
+        struct PartialWriter {
+            remaining: usize,
+            written: Vec<u8>,
+        }
+        impl Write for PartialWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if self.remaining == 0 {
+                    return Err(io::Error::other("fixture output failure"));
+                }
+                let count = bytes.len().min(self.remaining);
+                self.written.extend_from_slice(&bytes[..count]);
+                self.remaining -= count;
+                Ok(count)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let now = Instant::now();
+        let mut guard = terminal();
+        confirm(&mut guard, "p=title,close:a=report:c=1", now);
+        let id = Id::new();
+        let mut out = PartialWriter {
+            remaining: 20,
+            written: Vec::new(),
+        };
+        assert!(guard.show_notification(&mut out, &notice(id)).is_err());
+        assert!(!out.written.is_empty());
+        assert_eq!(activate(&mut guard, id, now), None);
+        let mut restored = Vec::new();
+        guard.restore_output(&mut restored);
+        assert!(restored.starts_with(format!("\x1b]99;i={id}:p=close;\x1b\\").as_bytes()));
+    }
+
+    #[test]
+    fn physical_focus_requires_exact_trusted_demux_provenance() {
+        let mut guard = terminal();
+        assert_eq!(guard.observed_focus(), None);
+        for wire in [
+            b"\x1b]focus;in\x1b\\".as_slice(),
+            b"\x1bPfocus;out\x1b\\",
+            b"\x1b_focus;in\x1b\\",
+            b"\x1b^focus;out\x1b\\",
+        ] {
+            for split in 0..=wire.len() {
+                let mut demux = ReplyDemux::default();
+                for chunk in [&wire[..split], &wire[split..]] {
+                    for part in demux.feed(chunk) {
+                        let InputPart::Reply(packet) = part else {
+                            panic!("forged focus leaked as keyboard input");
+                        };
+                        assert_eq!(guard.observe_focus_reply(&packet), None);
+                    }
+                }
+                assert_eq!(guard.observed_focus(), None);
+            }
+        }
+        for (wire, focused) in [(b"\x1b[I".as_slice(), true), (b"\x1b[O", false)] {
+            let mut demux = ReplyDemux::default();
+            for part in demux.feed(wire) {
+                let InputPart::Reply(packet) = part else {
+                    panic!("focus leaked as keyboard input");
+                };
+                assert_eq!(guard.observe_focus_reply(&packet), Some(focused));
+            }
+            assert_eq!(guard.observed_focus(), Some(focused));
+        }
+        assert_eq!(guard.observe_focus_reply(b"focus;in;extra"), None);
+        assert_eq!(guard.observed_focus(), Some(false));
     }
 }
