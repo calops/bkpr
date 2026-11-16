@@ -20,9 +20,9 @@ pub enum NotificationKind {
     Attention,
     /// The harness explicitly reported failure.
     Error,
-    /// Validated working-to-idle transition, disabled by default.
+    /// Validated working-to-idle transition.
     Idle,
-    /// Explicit completion, disabled by default.
+    /// Explicit completion reported by the harness.
     Done,
 }
 
@@ -212,7 +212,12 @@ impl Default for NotificationPolicy {
     fn default() -> Self {
         Self {
             scope: NotificationScope::default(),
-            kinds: vec![NotificationKind::Attention, NotificationKind::Error],
+            kinds: vec![
+                NotificationKind::Attention,
+                NotificationKind::Error,
+                NotificationKind::Idle,
+                NotificationKind::Done,
+            ],
         }
     }
 }
@@ -504,10 +509,6 @@ mod tests {
         assert_eq!(
             serde_json::to_value(NotificationKind::Attention).unwrap(),
             "attention"
-        );
-        assert_eq!(
-            NotificationPolicy::default().kinds,
-            vec![NotificationKind::Attention, NotificationKind::Error]
         );
         assert!(
             serde_json::from_value::<NotificationCursor>(

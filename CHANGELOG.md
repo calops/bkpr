@@ -10,6 +10,7 @@
 
 ### Features
 
+* Enable attention, error, idle and explicit completion notifications by default while retaining local focused-pane suppression and existing persisted policy overrides.
 * Add independent best-effort TUI desktop alerts over confirmed OSC 99, with local physical-focus suppression, owner-qualified click navigation, bounded resources and cancellable local/SSH subscriptions. Keep notification replies separate from pane input; do not require global desktop claims or delivery receipts.
 * Add backend-owned harness notifications with pre-coalescing authenticated transition capture, bounded durable history, scoped policy and resumable local/remote subscriptions. Report storage failures and acknowledgeable retention/loss gaps without conflating records with desktop/push delivery.
 * Animate visible working sidebar titles with a palette-derived gradient sweep, backed by reusable framework timing/text effects and dormant idle scheduling.
