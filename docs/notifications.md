@@ -140,9 +140,73 @@ Use standard Web Push: RFC 8030 delivery, RFC 8291 `aes128gcm` encryption, and R
 
 The app transports registration/rotation/revocation to the backend through the authenticated client boundary. Validate enrollment with a push challenge. Prevent arbitrary HTTP/SSRF forwarding: checked endpoint destinations, no unchecked redirects/DNS rebinding, and narrow explicit allowances for private self-hosted providers. Do not globally forbid legitimate private hosting or silently allow arbitrary private targets.
 
-POST ciphertext to the enrolled endpoint, not a fabricated ntfy topic. Honor TTL, urgency, provider acceptance/rejection and subscription expiry. A successful HTTP submission does not establish device delivery. Keep payloads well below provider limits and avoid any need to fetch terminal content to display a notification. Evaluate maintained Web Push libraries rather than implement encryption or VAPID ourselves; `web-push` is a candidate, not a selected/pinned dependency yet.
+POST ciphertext to the enrolled endpoint, not a fabricated ntfy topic. Honor TTL, urgency, provider acceptance/rejection and subscription expiry. A successful HTTP submission does not establish device delivery. Keep payloads well below provider limits and avoid any need to fetch terminal content to display a notification. The publisher spike below evaluates maintained libraries; no production dependency is selected yet.
 
-Sources:
+### Publisher feasibility spike (2026-11-16)
+
+The isolated incremental-debug spike exercised genuine library encryption/signing
+through Reqwest 0.12 with Rustls and a private, explicitly trusted TLS receiver.
+The receiver independently checked ES256 signatures, the enrolled publisher key,
+exact origin including port, expiry, TTL 60, urgency and decrypted session/status
+bytes. No real distributor, phone, account or provider was contacted.
+
+| Published candidate | License | Normal package closure, including candidate | Observed fit |
+| --- | --- | ---: | --- |
+| [`web-push` 0.11.0](https://docs.rs/web-push/0.11.0/web_push/) with default clients disabled | Apache-2.0 | 139 | Working encrypted POSTs and VAPID with supported exact-origin override; ECE still requires OpenSSL and request types use HTTP 0.2. |
+| [`web-push-native` 0.5.0](https://docs.rs/web-push-native/0.5.0/web_push_native/) with only `vapid` | MIT OR Apache-2.0 | 123 | Transport-neutral HTTP 1 request, pure-Rust encryption; receiver decrypted correctly but rejected VAPID on the fixture's non-default port. |
+
+Counts are unique normal-dependency packages in the locked combined spike, not
+compile-time or memory measurements and not the selection criterion.
+
+Both libraries' default VAPID audience construction drops a non-default port.
+`web-push` exposes `add_claim("aud", exact_origin)`, which the spike used
+successfully without custom signing. Native's emitted audience remained
+`https://push.fixture` instead of the actual port-qualified origin; its signed
+requests received HTTP 403. The source still has this gap at upstream revision
+`e7a7787bc5300eed0876285b35e75b2e8d86f2ad`.
+Native also couples TTL and JWT validity without enforcing VAPID's 24-hour
+maximum; the long-TTL issue is source-derived, not a runtime result here.
+The established library's actual plaintext bound is 3,052 bytes: that size
+succeeded and 3,053 failed, despite documentation advertising 3,800.
+
+**Security gate:** both resolved chains include `crypto-bigint` 0.5.5 through
+`jwt-simple` 0.12.17 and the RustCrypto curve stack.
+[RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html)
+fixes secret-dependent timing issues in versions 0.7.6 and later. This proves
+affected dependency exposure, not practical exploitability of these adapters.
+Native's [unreleased changelog](https://github.com/leotaku/web-push-native/blob/e7a7787bc5300eed0876285b35e75b2e8d86f2ad/CHANGELOG.md)
+includes the crypto upgrades and a malformed-auth deserialization panic fix.
+The spike disabled native's unused subscription-serialization feature and
+validated auth length; that does not resolve the cryptographic advisory.
+
+**Recommendation:** prefer the transport-neutral native design, but do not ship
+either evaluated release unchanged. Seek upstream security publication and
+exact-origin/independent-expiry fixes, then repeat this acceptance on the exact
+candidate revision. The established crate remains an alternative if its crypto
+dependencies are modernized; its supported audience override is sufficient
+for the demonstrated port issue. Do not maintain replacement encryption or JWT
+signing code to work around these dependencies.
+
+The receiver observed 20 encrypted POSTs. Established requests preserved 201,
+400, 401, 403, 404, 410, 429 with `Retry-After: 120`, 503 and 302; redirects were
+not followed. Deliberate EOF after receiving a POST stayed an unknown transport
+outcome without another POST. Tampered ciphertext, a wrong subscription secret,
+an unenrolled publisher and altered TTL were rejected. Five endpoint-policy
+cases rejected plaintext HTTP, userinfo, an unapproved origin and disallowed
+or mixed resolved-address sets. Valid requests used the exact pinned loopback
+address with proxies disabled. This is explicit fixture allowlisting, not a
+complete general-purpose public-IP/SSRF implementation or a real DNS-rebinding
+attack test. Minimal payload encryption worked for both libraries.
+
+Evidence: `target/smoke/webpush-spike/evidence/acceptance.json`,
+`verification-summary.json`, `crypto-chain.txt` and the candidate dependency
+trees/notes under that evidence root. Reproduction sources and lockfile are
+archived in `target/smoke/webpush-spike/source.zip`; loose sources and ephemeral
+fixture private keys are removed. No production manifest/lock, daemon, session
+or product executable was changed. Enrollment, durable push delivery and mobile
+UI acceptance are not implemented by this experiment.
+
+### Protocol sources
 
 - https://unifiedpush.org/developers/intro/
 - https://unifiedpush.org/developers/spec/definitions/
