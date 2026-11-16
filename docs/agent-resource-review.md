@@ -276,18 +276,20 @@ The metadata projection changes, not native family 11 or remote control 2.
 ## Mandatory direct-message wakes
 
 Direct messages no longer accept a sender `delivery`, `wake` or `notify` choice.
-The Rust enum, native schema field and stored sender mode are removed. Every
-accepted new message can enter the current authenticated receiver's wake claim,
+The Rust enum and stored sender mode are removed; the native field slot is retired.
+Every accepted new message can enter the current authenticated receiver's wake claim,
 including messages accepted before a receiver subscribes and messages joining
 an existing batch. Identical retries preserve recipient, text and scope without
-replaying a wake. Native family 12 rejects family-11 peers before dispatch;
-remote control remains 2 and recovery remains schema 4.
+replaying a wake. The initial verification below used family 12; a subsequent
+schema review restored family 11 because omitting the retired trailing field is
+compatible with older daemons' Notify default. Remote control remains 2 and
+recovery remains schema 4.
 
 Old stored sender-choice fields disappear on rewrite. Restart still retires all
 old launch authority and inboxes, so previously quiet unread messages remain
 historical diagnostics, not new native wake requests. Historical failed/unknown
-wakes are not replayed. Existing sessions require their matching old binaries
-until explicit recovery with a matching new pair; no live daemon was restarted.
+wakes are not replayed. Newer clients can keep using existing family-11 owners;
+no live daemon was restarted.
 
 Protected formatting, all-target strict Clippy, doctests and warnings-denied
 workspace rustdoc pass. Workspace tests pass: 1,313 passed, 19 ignored, with
@@ -309,3 +311,42 @@ a quiet-delivery failure or permission to replay. No peer body is typed through
 the PTY, no external provider is called, and fixture plus namespace survivor
 lists are empty. Controllers are archived in
 `target/smoke/mandatory-wake/source.zip`.
+
+## Stable explicit shutdown and compatible field retirement
+
+`bkpr stop` and explicit `bkpr daemon stop` now use frozen `BKPA` administration
+version 1 rather than requiring the native data-plane family. Both reuse the
+private Unix endpoint, byte/decode admission, predecode cancellation and accepted
+response drain. Complete role/incarnation matching precedes shutdown effects.
+Named session manifests remain required; stopping one session never signals or
+shuts down the whole host. Failed cleanup is an error, not a stopped receipt.
+
+The removed sender field is a deprecated Planus slot, not a renumbered/reused
+field. Newer clients omit it and older family-11 readers default to Notify.
+Native family 11 is restored; remote control remains 2 and recovery schema 4.
+Compatibility policy covers newer clients with older daemons, optional additions
+and permanent field retirement. Required semantics still need capability
+enforcement; new unsupported operations do not imply general attachment failure.
+
+The bounded legacy bridge covers binary-native families 5–12, verified against
+their historical schema/framing revisions. Actual private native CLI acceptance
+uses the checked current daemon plus preserved family-11 and family-12 owners:
+`target/smoke/stable-stop/actual-3/stable/acceptance.json` and
+`target/smoke/stable-stop/actual-5/acceptance.json`. It proves wrong-role/stale
+identity and mismatched-manifest rejection, newer-client/older-family-11 native
+observation, stop despite family-12 data-plane incompatibility, selected listener
+removal, unchanged unrelated pane identity, retained recovery manifests and
+explicit whole-host shutdown with exit zero. All owned survivor lists are empty.
+Internet sockets were denied; no live session or public binary was changed.
+
+The coordinated workspace snapshot includes frontend-owned client/framework work
+not staged in this backend commit. Formatting, strict all-target Clippy, doctests,
+warnings-denied rustdoc and host-UID workspace tests pass: 1,339 passed, 19 ignored.
+Compiler/pair receipt:
+`target/smoke/harness-integrations/build/compiled-534959875186875/manifest.json`;
+test receipt:
+`target/smoke/harness-integrations/build/checks-535125337674963/result.json`;
+public-output preservation:
+`target/smoke/harness-integrations/build/protected-534959483485970/result.json`.
+Full scope, corrected fixture assumptions and archived reproduction sources are
+recorded in `target/smoke/stable-stop/verification-summary.json` and `source.zip`.

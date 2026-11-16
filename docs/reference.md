@@ -342,7 +342,7 @@ and native harness callbacks. Theme, graphics preference, terminal capabilities
 and transient toasts belong to the physical client instance. An initially empty
 existing session stays empty until an explicit creation action.
 
-Both hosts need matching native wire family 12 and remote control version 2 builds.
+Both hosts need compatible native wire family 11 and remote control version 2 builds.
 Remote TUI attachment also requires authoritative session spawn defaults.
 Unavailable defaults or an incompatible/missing session fail before takeover,
 without local-path fallbacks, installation, bootstrap or automatic restart.
@@ -780,12 +780,13 @@ atomically while returning the next unread page; it never auto-acknowledges newl
 returned messages. Native notifications carry batch/unread counts, not bodies.
 An expired wake claim releases its slot without replaying the old ambiguous wake.
 
-Wire family 12 removes the old sender delivery choice. Upgrade with matching
-`bkpr`/`bkprd` binaries and explicitly recover sessions; never replace a live daemon
-automatically. Restart retires all previous launch authorities and inboxes, including
-previously quiet unread messages: those remain historical diagnostics and are not
-adopted or replayed into new launches. The obsolete stored choice is discarded on
-rewrite; historical wake outcomes remain truthful, including quiet and unknown.
+Removing the sender delivery choice keeps native family 11: its trailing field
+slot is permanently retired, so an older daemon defaults an omitted choice to
+notify. No session recovery is required solely for this client update. A daemon
+restart still retires all previous launch authorities and inboxes, including
+previously quiet unread messages: those remain historical diagnostics and are
+not adopted or replayed. Obsolete stored choices disappear on rewrite; historical
+wake outcomes remain truthful, including quiet and unknown.
 
 MCP logical tool content is bounded to 8 KiB of serialized JSON. Oversized explicit
 results return an opaque ID for `read_result`; failed/unknown native outcomes stay
@@ -1492,18 +1493,32 @@ permission approval.
 
 ### Requests and explicit shutdown
 
-Native client/server connections use binary Planus wire family 12. Host control
+Native client/server connections use binary Planus wire family 11. Host control
 opens named sessions and handles explicit whole-host shutdown; independent session
 endpoints serve registry, pane and attachment operations. Registration pins persistent
 session ID, host daemon incarnation and fresh session instance. Active-window selection
 belongs to each client. The `request` utility accepts and prints JSON at its human-facing
 boundary, not on the native socket.
 
-Use a matching launcher/server pair. Sessions on an older wire family stay
-running and remain usable with their matching client. A newer client refuses
-attachment or takeover rather than restarting or replacing them. Keep the old
-binaries for those sessions, or explicitly stop the intended session before
-starting a fresh one. Wire compatibility is separate from the recovery schema.
+A native family marks a breaking compatibility boundary, not a release.
+The supported skew is a newer client with an older daemon in the same family:
+append optional fields with safe defaults, preserve existing field positions and
+types, and permanently retire removed slots. Older daemons ignore additional
+table fields. New operations may be unsupported; mandatory semantics need an
+explicit required capability, not silent field omission. Ordinary attachment
+still rejects a different native family without replacing or restarting its owner.
+
+`bkpr stop` does not require data-plane compatibility. Frozen `BKPA` administration
+version 1 shares the private Unix endpoint and existing bounded admission/drain,
+but independently inspects and stops an exact host/session incarnation. A named
+session must match its private identity manifest. Session stop never escalates
+to whole-host shutdown; `bkpr daemon stop` is the explicit host-wide operation.
+Already-running binary-native families 5–12 use a bounded four-operation legacy
+bridge; only families 11–12 expose host administration. The mutation connection
+is pinned before observation so replacing the socket cannot redirect a stop into
+a successor. Failed or lost replies remain errors, never automatic retries or
+successful-looking cleanup acknowledgements. Recovery schema compatibility is
+separate from both administration and the data plane.
 
 Client registration does not select an SSH agent. The attaching client captures
 its original `SSH_AUTH_SOCK` locally, resolving relative paths against its
@@ -1741,8 +1756,8 @@ Historical versions remain in [CHANGELOG.md](../CHANGELOG.md).
 
 `Operation::Notifications` exposes backend records, not desktop presentation,
 push delivery or agent-inbox acknowledgements. It was added in native family 11;
-current family 12 (remote control 2) requires matching peers. Older peers reject
-unsupported operations before dispatch, not through general feature negotiation.
+current family 11 (remote control 2) accepts compatible newer clients. Older peers
+reject unsupported operations before dispatch, not through general feature negotiation.
 An already-running older daemon must be explicitly restarted to collect records;
 normal attachment never replaces it.
 

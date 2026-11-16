@@ -109,8 +109,7 @@ fn main() -> Result<()> {
             )
         }
         "stop" => {
-            session::validate_target(&paths)?;
-            let result = bkpr_client::transport::checked(&paths.socket, Operation::Shutdown)?;
+            let result = session::stop(&paths)?;
             println!("{}", serde_json::to_string(&result)?);
             Ok(())
         }

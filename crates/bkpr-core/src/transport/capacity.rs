@@ -129,15 +129,73 @@ impl Drop for WorkStage<'_> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn read_request<'a>(
     stream: &mut UnixStream,
     buffers: &'a FrameBuffers,
     decode_work: &WorkStages,
 ) -> Result<(Request, BufferReservation<'a>)> {
-    // No worker gate is held while the peer supplies its header or body.
     let mut header = [0; wire::HEADER_LEN];
     stream.read_exact(&mut header)?;
-    let length = wire::frame_payload_len(&header, Kind::Request, MAX_REQUEST)?;
+    read_native(stream, buffers, decode_work, &header)
+}
+
+pub(super) enum Incoming<'a> {
+    Native(Result<(Request, BufferReservation<'a>)>),
+    Administration(
+        Result<(
+            bkpr_protocol::administration::Request,
+            BufferReservation<'a>,
+        )>,
+    ),
+}
+
+pub(super) fn read_incoming<'a>(
+    stream: &mut UnixStream,
+    buffers: &'a FrameBuffers,
+    decode_work: &WorkStages,
+) -> Incoming<'a> {
+    let mut header = [0; wire::HEADER_LEN];
+    if let Err(error) = stream.read_exact(&mut header) {
+        return Incoming::Native(Err(error.into()));
+    }
+    if header[..4] == bkpr_protocol::administration::MAGIC {
+        Incoming::Administration(read_administration(stream, buffers, decode_work, &header))
+    } else {
+        Incoming::Native(read_native(stream, buffers, decode_work, &header))
+    }
+}
+
+fn read_administration<'a>(
+    stream: &mut UnixStream,
+    buffers: &'a FrameBuffers,
+    decode_work: &WorkStages,
+    header: &[u8],
+) -> Result<(
+    bkpr_protocol::administration::Request,
+    BufferReservation<'a>,
+)> {
+    use bkpr_protocol::administration;
+    let length = administration::frame_payload_len(header, false)?;
+    let mut reservation =
+        buffers.reserve(length * 3 + std::mem::size_of::<administration::Request>())?;
+    let mut bytes = [0; administration::MAX_PAYLOAD];
+    stream.read_exact(&mut bytes[..length])?;
+    let work = decode_work.enter_cancellable()?;
+    let request = administration::decode_request(&bytes[..length])?;
+    reservation.release_raw(length);
+    drop(work);
+    Ok((request, reservation))
+}
+
+fn read_native<'a>(
+    stream: &mut UnixStream,
+    buffers: &'a FrameBuffers,
+    decode_work: &WorkStages,
+    header: &[u8],
+) -> Result<(Request, BufferReservation<'a>)> {
+    // No worker gate is held while the peer supplies its header or body.
+    let length = wire::frame_payload_len(header, Kind::Request, MAX_REQUEST)?;
     let mut reservation = buffers
         .reserve(length)
         .context("reserving request buffer; request not dispatched")?;
@@ -158,6 +216,93 @@ pub(super) fn read_request<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn administration_uses_existing_budgets_and_does_not_relax_native_admission() {
+        use bkpr_protocol::administration as admin;
+        let buffers = FrameBuffers::new(64 * 1024, MAX_REQUEST);
+        let work = WorkStages::new(1);
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        admin::write_request(&mut sender, &admin::Request::Inspect {}).unwrap();
+        let Incoming::Administration(result) = read_incoming(&mut receiver, &buffers, &work) else {
+            panic!("administration was sent to native decoding")
+        };
+        let (request, reservation) = result.unwrap();
+        assert!(matches!(request, admin::Request::Inspect {}));
+        assert!(*buffers.small.lock().unwrap() > 0);
+        drop(reservation);
+        assert_eq!(*buffers.small.lock().unwrap(), 0);
+
+        let mut codec = Codec::new();
+        let mut native = wire::encode_frame(
+            Kind::Request,
+            codec
+                .encode_request(&Request::new(Operation::Shutdown))
+                .unwrap(),
+        )
+        .unwrap();
+        native[4..8].copy_from_slice(&(PROTOCOL_VERSION + 1).to_le_bytes());
+        sender.write_all(&native).unwrap();
+        let Incoming::Native(result) = read_incoming(&mut receiver, &buffers, &work) else {
+            panic!("native mismatch entered administration")
+        };
+        assert!(result.is_err());
+        assert_eq!(*buffers.small.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn malformed_administration_is_bounded_and_never_becomes_native_input() {
+        use bkpr_protocol::administration as admin;
+        let buffers = FrameBuffers::new(64 * 1024, MAX_REQUEST);
+        let work = WorkStages::new(1);
+        for body in [
+            br#"{"op":"inspect","extra":true}"#.as_slice(),
+            br#"{"op":"stop","expected":{"kind":"host","daemon_id":""}}"#.as_slice(),
+        ] {
+            let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+            let mut header = [0; admin::HEADER_LEN];
+            header[..4].copy_from_slice(&admin::MAGIC);
+            header[4..8].copy_from_slice(&1_u32.to_le_bytes());
+            header[8] = 1;
+            header[12..16].copy_from_slice(&(body.len() as u32).to_le_bytes());
+            sender.write_all(&header).unwrap();
+            sender.write_all(body).unwrap();
+            let Incoming::Administration(result) = read_incoming(&mut receiver, &buffers, &work)
+            else {
+                panic!("invalid administration entered native decoding")
+            };
+            assert!(result.is_err());
+            assert_eq!(*buffers.small.lock().unwrap(), 0);
+        }
+        for (offset, value) in [(4, 2), (8, 2), (9, 1), (16, 1), (12, 255)] {
+            let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+            let mut header = [0; admin::HEADER_LEN];
+            header[..4].copy_from_slice(&admin::MAGIC);
+            header[4..8].copy_from_slice(&1_u32.to_le_bytes());
+            header[8] = 1;
+            if offset == 12 {
+                header[12..16].copy_from_slice(&((admin::MAX_PAYLOAD + 1) as u32).to_le_bytes());
+            } else {
+                header[offset] = value;
+            }
+            sender.write_all(&header).unwrap();
+            let Incoming::Administration(result) = read_incoming(&mut receiver, &buffers, &work)
+            else {
+                panic!("invalid administration entered native decoding")
+            };
+            assert!(result.is_err());
+            assert_eq!(*buffers.small.lock().unwrap(), 0);
+        }
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        admin::write_request(&mut sender, &admin::Request::Inspect {}).unwrap();
+        let exhausted = FrameBuffers::new(0, MAX_REQUEST);
+        let Incoming::Administration(result) = read_incoming(&mut receiver, &exhausted, &work)
+        else {
+            panic!("administration bypassed admission")
+        };
+        assert!(result.is_err());
+        assert_eq!(*exhausted.small.lock().unwrap(), 0);
+    }
 
     #[test]
     fn small_request_decoding_survives_large_body_pressure_and_releases_its_actual_charge() {

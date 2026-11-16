@@ -124,11 +124,12 @@ The full native registry remains available to the TUI; agent-facing expansion is
 explicit. Remote framing, scene encoding, engine ABI and private recovery schema
 remain unchanged. Existing live family-7 sessions need their matching binaries.
 
-Native wire family 12 supersedes the family-8 quiet-delivery option: every direct
-message requests a native wake, with no sender delivery parameter. Matching
-binaries and explicit session recovery are required; existing launches and
-ambiguous wakes are never adopted or replayed on upgrade. Remote control stays 2
-and durable recovery stays schema 4.
+Direct messages supersede the family-8 quiet-delivery option: every send requests
+a native wake, with no sender parameter. The old trailing field slot is retired
+with Planus's `deprecated` attribute, preserving family 11 and older daemons'
+Notify default. The initial family-12 bump was unnecessary. Existing launches
+and ambiguous wakes are never adopted or replayed after restart. Remote control
+stays 2 and durable recovery stays schema 4.
 
 
 ### Native fork source
@@ -358,6 +359,23 @@ Wire family 6 uses [Planus 1.3.0](https://docs.rs/planus/1.3.0/planus/) and chec
 
 Preserve table ordinals, enum tags and the fixed scene structs within a family. Add only optional fields with conservative semantics; use required capability bits for new mandatory behavior, and bump the family for incompatible representation changes. Presence-bearing unions are required inside nullable wrapper tables, including optional spawn placement. Do not revive a JSON fallback or infer compatibility from matching product version strings. Family-6 attachment to a family-4/5 daemon fails closed without restarting, displacing or terminating it; its matching old client remains usable. Durable schema 4 is unchanged.
 
+Supported skew is newer client → older daemon within that family. Removed fields
+retain deprecated slots permanently; never renumber or reuse them. A missing
+new response field needs a safe client default, and a new operation can be
+rejected without disabling unrelated existing operations. The always-notify
+interop regression checks the retired sender slot against the older Notify
+default. Broader capability discovery remains future work, not permission to
+ignore correctness or authority fields.
+
+Explicit stop has a frozen `BKPA` version-1 cold control path, independent of the
+native data-plane family. It shares the existing private Unix listener, admission,
+cancellation and response drain, and compares complete host/session incarnation
+before cleanup. Bounded Serde JSON for these two fixed operations reuses existing
+dependencies; no new generic RPC library or competing lifecycle is needed.
+Known binary-native families 5–12 have a four-operation migration codec so a newer
+launcher can stop already-running old owners without signals or ordinary
+data-plane compatibility. Whole-host stop remains explicit.
+
 The schema compiler is development-only: `planus-cli =1.3.0`. Regenerate `wire/generated.rs` from `wire/native.fbs`, and `scene_wire/scene_generated.rs` from `scene_wire/scene.fbs`, using `planus rust --format false -o OUTPUT SCHEMA`. Generated modules are excluded from hand formatting; normal builds need only the locked runtime dependency. Acceptance and matched whole-mux CPU evidence are recorded in the engine report.
 
 ### Atomic process creation and placement
@@ -564,8 +582,8 @@ its [actual SSH proof](engine-proof.md#remote-session-backend-and-headless-conne
 records exact binaries, bounds, native authority, failure behavior and limits.
 The normal client [attaches directly over that endpoint](engine-proof.md#direct-remote-tui-attachment),
 without a local gateway or second transport. It now supports multiple independent
-local and remote attachments in one physical TUI. Native family 12 and remote
-control 2 require matching peers; durable schema 4 is retained. Mixed-owner layouts and cross-session
+local and remote attachments in one physical TUI. Native family 11 and remote
+control 2 require compatible peers; durable schema 4 is retained. Mixed-owner layouts and cross-session
 workspace references remain deferred.
 
 A compatible launcher/helper must already be installed on the remote host and

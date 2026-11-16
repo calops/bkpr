@@ -540,6 +540,7 @@ table AgentRequestSendMessage {
   text:string (required);
   idempotency_key:string (required);
   scope:AgentScope;
+  retired_delivery:ubyte (deprecated);
 }
 table AgentRequestReadInbox {
   after:string;

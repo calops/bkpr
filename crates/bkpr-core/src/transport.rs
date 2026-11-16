@@ -3,6 +3,7 @@
 //! One framing, admission and response-drain implementation serves both roles.
 
 use crate::registry::{Registry, RegistryBusy, SessionClosing};
+mod administration;
 mod capacity;
 mod clients;
 mod status;
@@ -625,6 +626,27 @@ impl BoundSocket {
                     .name("bkpr-control".into())
                     .spawn(move || {
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                    let incoming = match capacity::read_incoming(&mut stream, &request_buffers, &decode_work) {
+                        capacity::Incoming::Administration(request) => {
+                            administration::serve(
+                                &mut stream,
+                                request,
+                                &mut reader,
+                                administration::Resources {
+                                    endpoint: &endpoint,
+                                    responses: &responses,
+                                    response_work: &response_work,
+                                    response_buffers: &response_buffers,
+                                    shutdown: &shutdown,
+                                    closing: &closing,
+                                    startup: &startup,
+                                    wake: &wake_write,
+                                },
+                            );
+                            return;
+                        }
+                        capacity::Incoming::Native(request) => request,
+                    };
                     let mut stop = false;
                     let mut subscription = None;
                     let mut lifetime = None;
@@ -634,9 +656,7 @@ impl BoundSocket {
                     let mut diagnostic = None;
                     let mut service = None;
                     let result = (|| -> Result<_> {
-                        let (request, _request_buffer) = capacity::read_request(
-                            &mut stream, &request_buffers, &decode_work,
-                        )?;
+                        let (request, _request_buffer) = incoming?;
                         pending_response = Some(reader.admit(&responses)?);
                         service = endpoint.upgrade();
                         let service = service.as_ref().context("endpoint is shutting down")?;

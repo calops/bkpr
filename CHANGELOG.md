@@ -2,7 +2,7 @@
 
 ### Breaking changes
 
-* Direct peer messages always request a native wake. Remove the `delivery` parameter, Rust enum and persisted sender choice; obsolete JSON arguments are rejected. Native wire family 12 requires matching binaries and explicit session recovery, never automatic replacement of live daemons. Durable acceptance remains separate from native wake outcomes, including unobservable acceptance.
+* Direct peer messages always request a native wake. Remove the `delivery` parameter, Rust enum and persisted sender choice; obsolete JSON arguments are rejected. Retire the native field slot without changing wire family 11. Durable acceptance remains separate from native wake outcomes, including unobservable acceptance.
 * Use one long-lived host/user daemon for all named sessions. Native wire family 11 and remote control version 2 require matching binaries and explicitly fence each session runtime instance. Session stop stays session-scoped; `bkpr daemon stop` explicitly stops the host and all sessions. Existing live incompatible daemons are never adopted, replaced or stopped automatically.
 * Native conversation-fenced agent requests and revision-checked binding changes require matching `bkpr` and `bkprd` binaries. Existing incompatible sessions are not restarted automatically.
 * Remove `ProjectSnapshot.color_slot` from Rust/JSON metadata; clients assign presentation colors from repository identity.
@@ -18,6 +18,8 @@
 
 ### Fixes
 
+* Make `bkpr stop` and explicit `bkpr daemon stop` independent of native wire-family matching through frozen, identity-guarded administration. Preserve unrelated sessions, reject changed targets and keep cleanup failures truthful; support already-running binary-native owners through a bounded legacy shutdown bridge.
+* Preserve newer-client/older-daemon compatibility for optional schema additions and retired fields. Restore native family 11 for the always-notify update and reserve its removed field slot rather than forcing an unnecessary session recovery.
 * Make routine agent discovery useful without full expansion, reusing matching foreground project metadata without cloning repository/provider snapshots or triggering extra Git/CI work.
 * Keep the host daemon alive when its final session closes, preserve session-local attachment/takeover authority across local and remote targets, and open new sessions through the existing host process rather than starting a daemon per session.
 
