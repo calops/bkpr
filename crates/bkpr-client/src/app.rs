@@ -470,7 +470,7 @@ impl SidebarTitleAnimation {
                 },
                 effect: bkpr_tui_framework::animation::TextSweep {
                     highlight: color.bright(),
-                    half_width_cells: 6.0,
+                    half_width_cells: 8.0,
                     cells_per_second: 32.0,
                 },
             });
