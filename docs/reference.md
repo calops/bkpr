@@ -1135,8 +1135,9 @@ Visible sidebar pane titles with current harness status `working` receive a
 foreground sweep in a vivid, perceptually normalized version of their project's
 bee hue when truecolor is confirmed. Light backgrounds use deeper saturated ink;
 dark backgrounds use lighter ink. The framework owns cached Okhsl color families,
-the animation clock and the text effect; Bkpr chooses the tone targets, a 16-cell
-band, 32 terminal cells/second and a 50-ms sampling cadence. Title length changes
+the animation clock and the text effect; Bkpr chooses the tone targets, two evenly
+spaced 16-cell bands, 32 terminal cells/second and a 50-ms sampling cadence.
+Overlapping bands blend once, without amplifying the ink. Title length changes
 the repeat interval, not travel speed. Icons, tree guides, status and branch metadata remain
 static. Selection backgrounds and whole Unicode glyphs are preserved. Hidden,
 modal-covered and non-working titles schedule no animation; unsupported color

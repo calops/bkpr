@@ -497,7 +497,12 @@ impl SidebarTitleAnimation {
     fn apply(&self, frame: &mut bkpr_protocol::Frame) {
         self.restore(frame);
         for span in &self.spans {
-            span.effect.apply(frame, span.rect, self.clock.elapsed());
+            span.effect.apply_repeated(
+                frame,
+                span.rect,
+                self.clock.elapsed(),
+                std::num::NonZeroU16::new(2).unwrap(),
+            );
         }
     }
 
