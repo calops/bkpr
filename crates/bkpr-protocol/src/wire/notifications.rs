@@ -1,3 +1,4 @@
+use super::push::{read_push, write_push};
 use super::types::{read_optional_text, read_text, write_optional_text, write_text};
 use super::{Budget, generated::native_wire as g};
 use crate::*;
@@ -45,6 +46,11 @@ pub(super) fn write_request(
             let offset = g::NotificationRequestPolicySet::create(builder, policy);
             g::NotificationRequest::create_notification_request_policy_set(builder, offset)
         }
+        NotificationRequest::Push { request } => {
+            let request = write_push(builder, request, budget, depth + 1)?;
+            let offset = g::NotificationRequestPush::create(builder, request);
+            g::NotificationRequest::create_notification_request_push(builder, offset)
+        }
     })
 }
 
@@ -82,12 +88,15 @@ pub(super) fn read_request(
                 },
             }
         }
+        g::NotificationRequestRef::NotificationRequestPush(value) => NotificationRequest::Push {
+            request: Box::new(read_push(value.request()?, budget, depth + 1)?),
+        },
     };
     request.validate()?;
     Ok(request)
 }
 
-fn write_scope(
+pub(super) fn write_scope(
     builder: &mut Builder,
     scope: &NotificationScope,
     budget: &mut Budget,
@@ -102,7 +111,7 @@ fn write_scope(
     ))
 }
 
-fn read_scope(
+pub(super) fn read_scope(
     value: g::NotificationScopeRef<'_>,
     budget: &mut Budget,
     depth: usize,
@@ -196,7 +205,7 @@ fn read_query(
     })
 }
 
-fn write_kinds(
+pub(super) fn write_kinds(
     builder: &mut Builder,
     values: &[NotificationKind],
     budget: &mut Budget,
@@ -214,7 +223,7 @@ fn write_kinds(
     Ok(builder.create_vector(&kinds[..values.len()]))
 }
 
-fn read_kinds(
+pub(super) fn read_kinds(
     values: planus::Vector<
         '_,
         core::result::Result<g::NotificationKind, planus::errors::UnknownEnumTag>,

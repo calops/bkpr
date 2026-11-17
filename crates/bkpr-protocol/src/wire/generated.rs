@@ -32121,10 +32121,5743 @@ impl<'a> ::planus::ReadAsRoot<'a> for NotificationRequestPolicySetRef<'a> {
 }
 
     
+/// The table `PushSubscription` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PushSubscription` in the file `crates/bkpr-protocol/src/wire/native.fbs:303`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PushSubscription{
+    
+        /// The field `endpoint` in the table `PushSubscription`
+        pub endpoint: ::planus::alloc::string::String,
+        /// The field `p256dh` in the table `PushSubscription`
+        pub p256dh: ::planus::alloc::string::String,
+        /// The field `auth` in the table `PushSubscription`
+        pub auth: ::planus::alloc::string::String,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PushSubscription {
+    fn default() -> Self {
+        Self {
+        endpoint: ::core::default::Default::default(),
+        p256dh: ::core::default::Default::default(),
+        auth: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl PushSubscription {
+    /// Creates a [PushSubscriptionBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PushSubscriptionBuilder<()> {
+        PushSubscriptionBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_endpoint: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_p256dh: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_auth: impl ::planus::WriteAs<::planus::Offset<str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_endpoint = field_endpoint.prepare(builder);let prepared_p256dh = field_p256dh.prepare(builder);let prepared_auth = field_auth.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<str>>(2);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_endpoint);object_writer.write::<_, _, 4>(&prepared_p256dh);object_writer.write::<_, _, 4>(&prepared_auth);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PushSubscription>> for PushSubscription {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushSubscription> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PushSubscription>> for PushSubscription {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushSubscription>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PushSubscription> for PushSubscription {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushSubscription> {
+        PushSubscription::create(
+            builder,
+        
+            
+            &self.endpoint,
+            
+        
+            
+            &self.p256dh,
+            
+        
+            
+            &self.auth,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PushSubscription] type.
+///
+/// Can be created using the [PushSubscription::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PushSubscriptionBuilder<State>(State);
+
+impl<
+    
+> PushSubscriptionBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`endpoint` field](PushSubscription#structfield.endpoint).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn endpoint<T0>(self, value: T0) -> PushSubscriptionBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        PushSubscriptionBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> PushSubscriptionBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`p256dh` field](PushSubscription#structfield.p256dh).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn p256dh<T1>(self, value: T1) -> PushSubscriptionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;PushSubscriptionBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> PushSubscriptionBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`auth` field](PushSubscription#structfield.auth).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn auth<T2>(self, value: T2) -> PushSubscriptionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;PushSubscriptionBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> PushSubscriptionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PushSubscription].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushSubscription>
+        where Self: ::planus::WriteAsOffset<PushSubscription>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAs<::planus::Offset<PushSubscription>> for PushSubscriptionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<PushSubscription>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushSubscription> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<PushSubscription>> for PushSubscriptionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<PushSubscription>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushSubscription>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOffset<PushSubscription> for PushSubscriptionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushSubscription> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;PushSubscription::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PushSubscription].
+#[derive(Copy, Clone)]
+pub struct PushSubscriptionRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PushSubscriptionRef<'a> {
+    
+        /// Getter for the [`endpoint` field](PushSubscription#structfield.endpoint).
+        #[inline]
+        pub fn endpoint(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "PushSubscription", "endpoint")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`p256dh` field](PushSubscription#structfield.p256dh).
+        #[inline]
+        pub fn p256dh(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(1, "PushSubscription", "p256dh")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`auth` field](PushSubscription#structfield.auth).
+        #[inline]
+        pub fn auth(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(2, "PushSubscription", "auth")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for PushSubscriptionRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PushSubscriptionRef");
+        f.field("endpoint", &self.endpoint());f.field("p256dh", &self.p256dh());f.field("auth", &self.auth());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PushSubscriptionRef<'a>> for PushSubscription {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: PushSubscriptionRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            endpoint: ::core::convert::Into::into(value.endpoint()?),p256dh: ::core::convert::Into::into(value.p256dh()?),auth: ::core::convert::Into::into(value.auth()?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PushSubscriptionRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PushSubscriptionRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PushSubscriptionRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PushSubscription>> for PushSubscription {
+    type Value = ::planus::Offset<PushSubscription>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PushSubscription>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PushSubscriptionRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PushSubscriptionRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `PushEndpointPolicy` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PushEndpointPolicy` in the file `crates/bkpr-protocol/src/wire/native.fbs:308`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PushEndpointPolicy{
+    
+        /// The field `allow_private_cidrs` in the table `PushEndpointPolicy`
+        pub allow_private_cidrs: ::planus::alloc::vec::Vec<::planus::alloc::string::String>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PushEndpointPolicy {
+    fn default() -> Self {
+        Self {
+        allow_private_cidrs: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl PushEndpointPolicy {
+    /// Creates a [PushEndpointPolicyBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PushEndpointPolicyBuilder<()> {
+        PushEndpointPolicyBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_allow_private_cidrs: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_allow_private_cidrs = field_allow_private_cidrs.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_allow_private_cidrs);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PushEndpointPolicy>> for PushEndpointPolicy {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushEndpointPolicy> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PushEndpointPolicy>> for PushEndpointPolicy {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushEndpointPolicy>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PushEndpointPolicy> for PushEndpointPolicy {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushEndpointPolicy> {
+        PushEndpointPolicy::create(
+            builder,
+        
+            
+            &self.allow_private_cidrs,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PushEndpointPolicy] type.
+///
+/// Can be created using the [PushEndpointPolicy::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PushEndpointPolicyBuilder<State>(State);
+
+impl<
+    
+> PushEndpointPolicyBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`allow_private_cidrs` field](PushEndpointPolicy#structfield.allow_private_cidrs).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn allow_private_cidrs<T0>(self, value: T0) -> PushEndpointPolicyBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>
+    {
+        PushEndpointPolicyBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> PushEndpointPolicyBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PushEndpointPolicy].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushEndpointPolicy>
+        where Self: ::planus::WriteAsOffset<PushEndpointPolicy>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
+    
+> ::planus::WriteAs<::planus::Offset<PushEndpointPolicy>> for PushEndpointPolicyBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<PushEndpointPolicy>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushEndpointPolicy> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<PushEndpointPolicy>> for PushEndpointPolicyBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<PushEndpointPolicy>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushEndpointPolicy>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
+    
+> ::planus::WriteAsOffset<PushEndpointPolicy> for PushEndpointPolicyBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushEndpointPolicy> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;PushEndpointPolicy::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PushEndpointPolicy].
+#[derive(Copy, Clone)]
+pub struct PushEndpointPolicyRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PushEndpointPolicyRef<'a> {
+    
+        /// Getter for the [`allow_private_cidrs` field](PushEndpointPolicy#structfield.allow_private_cidrs).
+        #[inline]
+        pub fn allow_private_cidrs(&self) -> ::planus::Result<::planus::Vector<'a, ::planus::Result<&'a ::core::primitive::str>>> {
+            
+            
+              
+              self.0.access_required(0, "PushEndpointPolicy", "allow_private_cidrs")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for PushEndpointPolicyRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PushEndpointPolicyRef");
+        f.field("allow_private_cidrs", &self.allow_private_cidrs());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PushEndpointPolicyRef<'a>> for PushEndpointPolicy {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: PushEndpointPolicyRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            allow_private_cidrs: value.allow_private_cidrs()?.to_vec_result()?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PushEndpointPolicyRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PushEndpointPolicyRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PushEndpointPolicyRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PushEndpointPolicy>> for PushEndpointPolicy {
+    type Value = ::planus::Offset<PushEndpointPolicy>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PushEndpointPolicy>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PushEndpointPolicyRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PushEndpointPolicyRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `PushRevision` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PushRevision` in the file `crates/bkpr-protocol/src/wire/native.fbs:309`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PushRevision{
+    
+        /// The field `destination_id` in the table `PushRevision`
+        pub destination_id: ::planus::alloc::string::String,
+        /// The field `generation` in the table `PushRevision`
+        pub generation: u64,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PushRevision {
+    fn default() -> Self {
+        Self {
+        destination_id: ::core::default::Default::default(),
+        generation: 0,
+        
+        }
+    }
+}
+
+
+impl PushRevision {
+    /// Creates a [PushRevisionBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PushRevisionBuilder<()> {
+        PushRevisionBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_destination_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_generation: impl ::planus::WriteAsDefault<u64, u64>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_destination_id = field_destination_id.prepare(builder);let prepared_generation = field_generation.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        if prepared_generation.is_some() {table_writer.write_entry::<u64>(1);}table_writer.write_entry::<::planus::Offset<str>>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_generation) = prepared_generation {object_writer.write::<_, _, 8>(&prepared_generation);}object_writer.write::<_, _, 4>(&prepared_destination_id);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PushRevision>> for PushRevision {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRevision> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PushRevision>> for PushRevision {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRevision>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PushRevision> for PushRevision {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRevision> {
+        PushRevision::create(
+            builder,
+        
+            
+            &self.destination_id,
+            
+        
+            
+            self.generation,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PushRevision] type.
+///
+/// Can be created using the [PushRevision::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PushRevisionBuilder<State>(State);
+
+impl<
+    
+> PushRevisionBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`destination_id` field](PushRevision#structfield.destination_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn destination_id<T0>(self, value: T0) -> PushRevisionBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        PushRevisionBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> PushRevisionBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`generation` field](PushRevision#structfield.generation).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn generation<T1>(self, value: T1) -> PushRevisionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;PushRevisionBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`generation` field](PushRevision#structfield.generation) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn generation_as_default(self) -> PushRevisionBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.generation(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> PushRevisionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PushRevision].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRevision>
+        where Self: ::planus::WriteAsOffset<PushRevision>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAs<::planus::Offset<PushRevision>> for PushRevisionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<PushRevision>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRevision> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<PushRevision>> for PushRevisionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<PushRevision>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRevision>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOffset<PushRevision> for PushRevisionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRevision> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;PushRevision::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PushRevision].
+#[derive(Copy, Clone)]
+pub struct PushRevisionRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PushRevisionRef<'a> {
+    
+        /// Getter for the [`destination_id` field](PushRevision#structfield.destination_id).
+        #[inline]
+        pub fn destination_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "PushRevision", "destination_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`generation` field](PushRevision#structfield.generation).
+        #[inline]
+        pub fn generation(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "PushRevision", "generation")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for PushRevisionRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PushRevisionRef");
+        f.field("destination_id", &self.destination_id());f.field("generation", &self.generation());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PushRevisionRef<'a>> for PushRevision {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: PushRevisionRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            destination_id: ::core::convert::Into::into(value.destination_id()?),generation: ::core::convert::TryInto::try_into(value.generation()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PushRevisionRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PushRevisionRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRevisionRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PushRevision>> for PushRevision {
+    type Value = ::planus::Offset<PushRevision>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PushRevision>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PushRevisionRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRevisionRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `PushRequestPublicKey` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PushRequestPublicKey` in the file `crates/bkpr-protocol/src/wire/native.fbs:310`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PushRequestPublicKey{
+    }
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PushRequestPublicKey {
+    fn default() -> Self {
+        Self {
+        
+        }
+    }
+}
+
+
+impl PushRequestPublicKey {
+    /// Creates a [PushRequestPublicKeyBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PushRequestPublicKeyBuilder<()> {
+        PushRequestPublicKeyBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        
+    ) -> ::planus::Offset<Self> {
+
+        let table_writer: ::planus::table_writer::TableWriter::<4> = ::core::default::Default::default();
+        unsafe {
+            table_writer.finish(builder, |_table_writer| {});
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PushRequestPublicKey>> for PushRequestPublicKey {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestPublicKey> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PushRequestPublicKey>> for PushRequestPublicKey {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestPublicKey>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PushRequestPublicKey> for PushRequestPublicKey {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestPublicKey> {
+        PushRequestPublicKey::create(
+            builder,
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PushRequestPublicKey] type.
+///
+/// Can be created using the [PushRequestPublicKey::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PushRequestPublicKeyBuilder<State>(State);
+
+
+
+impl<
+    
+> PushRequestPublicKeyBuilder<(
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PushRequestPublicKey].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestPublicKey>
+        where Self: ::planus::WriteAsOffset<PushRequestPublicKey>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAs<::planus::Offset<PushRequestPublicKey>> for PushRequestPublicKeyBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestPublicKey>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestPublicKey> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOptional<::planus::Offset<PushRequestPublicKey>> for PushRequestPublicKeyBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestPublicKey>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestPublicKey>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOffset<PushRequestPublicKey> for PushRequestPublicKeyBuilder<(
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestPublicKey> {
+        PushRequestPublicKey::create(
+            builder,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PushRequestPublicKey].
+#[derive(Copy, Clone)]
+pub struct PushRequestPublicKeyRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PushRequestPublicKeyRef<'a> {
+    
+}
+
+impl<'a> ::core::fmt::Debug for PushRequestPublicKeyRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PushRequestPublicKeyRef");
+        
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PushRequestPublicKeyRef<'a>> for PushRequestPublicKey {
+    type Error = ::planus::Error;
+
+
+    fn try_from(_value: PushRequestPublicKeyRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PushRequestPublicKeyRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PushRequestPublicKeyRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestPublicKeyRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PushRequestPublicKey>> for PushRequestPublicKey {
+    type Value = ::planus::Offset<PushRequestPublicKey>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PushRequestPublicKey>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PushRequestPublicKeyRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestPublicKeyRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `PushRequestList` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PushRequestList` in the file `crates/bkpr-protocol/src/wire/native.fbs:311`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PushRequestList{
+    }
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PushRequestList {
+    fn default() -> Self {
+        Self {
+        
+        }
+    }
+}
+
+
+impl PushRequestList {
+    /// Creates a [PushRequestListBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PushRequestListBuilder<()> {
+        PushRequestListBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        
+    ) -> ::planus::Offset<Self> {
+
+        let table_writer: ::planus::table_writer::TableWriter::<4> = ::core::default::Default::default();
+        unsafe {
+            table_writer.finish(builder, |_table_writer| {});
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PushRequestList>> for PushRequestList {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestList> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PushRequestList>> for PushRequestList {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestList>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PushRequestList> for PushRequestList {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestList> {
+        PushRequestList::create(
+            builder,
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PushRequestList] type.
+///
+/// Can be created using the [PushRequestList::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PushRequestListBuilder<State>(State);
+
+
+
+impl<
+    
+> PushRequestListBuilder<(
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PushRequestList].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestList>
+        where Self: ::planus::WriteAsOffset<PushRequestList>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAs<::planus::Offset<PushRequestList>> for PushRequestListBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestList>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestList> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOptional<::planus::Offset<PushRequestList>> for PushRequestListBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestList>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestList>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOffset<PushRequestList> for PushRequestListBuilder<(
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestList> {
+        PushRequestList::create(
+            builder,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PushRequestList].
+#[derive(Copy, Clone)]
+pub struct PushRequestListRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PushRequestListRef<'a> {
+    
+}
+
+impl<'a> ::core::fmt::Debug for PushRequestListRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PushRequestListRef");
+        
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PushRequestListRef<'a>> for PushRequestList {
+    type Error = ::planus::Error;
+
+
+    fn try_from(_value: PushRequestListRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PushRequestListRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PushRequestListRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestListRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PushRequestList>> for PushRequestList {
+    type Value = ::planus::Offset<PushRequestList>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PushRequestList>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PushRequestListRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestListRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `PushRequestEnroll` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PushRequestEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:312`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PushRequestEnroll{
+    
+        /// The field `request_id` in the table `PushRequestEnroll`
+        pub request_id: ::planus::alloc::string::String,
+        /// The field `subscription` in the table `PushRequestEnroll`
+        pub subscription: ::planus::alloc::boxed::Box<self::PushSubscription>,
+        /// The field `policy` in the table `PushRequestEnroll`
+        pub policy: ::planus::alloc::boxed::Box<self::PushEndpointPolicy>,
+        /// The field `scope` in the table `PushRequestEnroll`
+        pub scope: ::planus::alloc::boxed::Box<self::NotificationScope>,
+        /// The field `kinds` in the table `PushRequestEnroll`
+        pub kinds: ::planus::alloc::vec::Vec<self::NotificationKind>,
+        /// The field `replaces` in the table `PushRequestEnroll`
+        pub replaces: ::core::option::Option<::planus::alloc::boxed::Box<self::PushRevision>>,
+        /// The field `device_label` in the table `PushRequestEnroll`
+        pub device_label: ::core::option::Option<::planus::alloc::string::String>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PushRequestEnroll {
+    fn default() -> Self {
+        Self {
+        request_id: ::core::default::Default::default(),
+        subscription: ::core::default::Default::default(),
+        policy: ::core::default::Default::default(),
+        scope: ::core::default::Default::default(),
+        kinds: ::core::default::Default::default(),
+        replaces: ::core::default::Default::default(),
+        device_label: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl PushRequestEnroll {
+    /// Creates a [PushRequestEnrollBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PushRequestEnrollBuilder<()> {
+        PushRequestEnrollBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_request_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_subscription: impl ::planus::WriteAs<::planus::Offset<self::PushSubscription>>,
+        field_policy: impl ::planus::WriteAs<::planus::Offset<self::PushEndpointPolicy>>,
+        field_scope: impl ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+        field_kinds: impl ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+        field_replaces: impl ::planus::WriteAsOptional<::planus::Offset<self::PushRevision>>,
+        field_device_label: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_request_id = field_request_id.prepare(builder);let prepared_subscription = field_subscription.prepare(builder);let prepared_policy = field_policy.prepare(builder);let prepared_scope = field_scope.prepare(builder);let prepared_kinds = field_kinds.prepare(builder);let prepared_replaces = field_replaces.prepare(builder);let prepared_device_label = field_device_label.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<18> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::PushSubscription>>(1);table_writer.write_entry::<::planus::Offset<self::PushEndpointPolicy>>(2);table_writer.write_entry::<::planus::Offset<self::NotificationScope>>(3);table_writer.write_entry::<::planus::Offset<[self::NotificationKind]>>(4);if prepared_replaces.is_some() {table_writer.write_entry::<::planus::Offset<self::PushRevision>>(5);}if prepared_device_label.is_some() {table_writer.write_entry::<::planus::Offset<str>>(6);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_request_id);object_writer.write::<_, _, 4>(&prepared_subscription);object_writer.write::<_, _, 4>(&prepared_policy);object_writer.write::<_, _, 4>(&prepared_scope);object_writer.write::<_, _, 4>(&prepared_kinds);if let ::core::option::Option::Some(prepared_replaces) = prepared_replaces {object_writer.write::<_, _, 4>(&prepared_replaces);}if let ::core::option::Option::Some(prepared_device_label) = prepared_device_label {object_writer.write::<_, _, 4>(&prepared_device_label);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PushRequestEnroll>> for PushRequestEnroll {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestEnroll> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PushRequestEnroll>> for PushRequestEnroll {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestEnroll>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PushRequestEnroll> for PushRequestEnroll {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestEnroll> {
+        PushRequestEnroll::create(
+            builder,
+        
+            
+            &self.request_id,
+            
+        
+            
+            &self.subscription,
+            
+        
+            
+            &self.policy,
+            
+        
+            
+            &self.scope,
+            
+        
+            
+            &self.kinds,
+            
+        
+            
+            &self.replaces,
+            
+        
+            
+            &self.device_label,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PushRequestEnroll] type.
+///
+/// Can be created using the [PushRequestEnroll::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PushRequestEnrollBuilder<State>(State);
+
+impl<
+    
+> PushRequestEnrollBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`request_id` field](PushRequestEnroll#structfield.request_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn request_id<T0>(self, value: T0) -> PushRequestEnrollBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        PushRequestEnrollBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> PushRequestEnrollBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`subscription` field](PushRequestEnroll#structfield.subscription).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn subscription<T1>(self, value: T1) -> PushRequestEnrollBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<self::PushSubscription>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;PushRequestEnrollBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> PushRequestEnrollBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`policy` field](PushRequestEnroll#structfield.policy).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn policy<T2>(self, value: T2) -> PushRequestEnrollBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAs<::planus::Offset<self::PushEndpointPolicy>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;PushRequestEnrollBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> PushRequestEnrollBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`scope` field](PushRequestEnroll#structfield.scope).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn scope<T3>(self, value: T3) -> PushRequestEnrollBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;PushRequestEnrollBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+> PushRequestEnrollBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )
+>
+{
+    /// Setter for the [`kinds` field](PushRequestEnroll#structfield.kinds).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn kinds<T4>(self, value: T4) -> PushRequestEnrollBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+    )>
+    where T4: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        ) = self.0;PushRequestEnrollBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+> PushRequestEnrollBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+    )
+>
+{
+    /// Setter for the [`replaces` field](PushRequestEnroll#structfield.replaces).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn replaces<T5>(self, value: T5) -> PushRequestEnrollBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+    )>
+    where T5: ::planus::WriteAsOptional<::planus::Offset<self::PushRevision>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+        ) = self.0;PushRequestEnrollBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`replaces` field](PushRequestEnroll#structfield.replaces) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn replaces_as_null(self) -> PushRequestEnrollBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+        (),
+    )>
+    {
+        self.replaces(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+> PushRequestEnrollBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+    )
+>
+{
+    /// Setter for the [`device_label` field](PushRequestEnroll#structfield.device_label).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn device_label<T6>(self, value: T6) -> PushRequestEnrollBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+    )>
+    where T6: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+        ) = self.0;PushRequestEnrollBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`device_label` field](PushRequestEnroll#structfield.device_label) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn device_label_as_null(self) -> PushRequestEnrollBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+        (),
+    )>
+    {
+        self.device_label(())
+    }
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+> PushRequestEnrollBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PushRequestEnroll].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestEnroll>
+        where Self: ::planus::WriteAsOffset<PushRequestEnroll>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::PushSubscription>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<self::PushEndpointPolicy>>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+    
+        T4: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+    
+        T5: ::planus::WriteAsOptional<::planus::Offset<self::PushRevision>>,
+    
+        T6: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+> ::planus::WriteAs<::planus::Offset<PushRequestEnroll>> for PushRequestEnrollBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestEnroll>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestEnroll> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::PushSubscription>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<self::PushEndpointPolicy>>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+    
+        T4: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+    
+        T5: ::planus::WriteAsOptional<::planus::Offset<self::PushRevision>>,
+    
+        T6: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<PushRequestEnroll>> for PushRequestEnrollBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestEnroll>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestEnroll>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::PushSubscription>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<self::PushEndpointPolicy>>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+    
+        T4: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+    
+        T5: ::planus::WriteAsOptional<::planus::Offset<self::PushRevision>>,
+    
+        T6: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+> ::planus::WriteAsOffset<PushRequestEnroll> for PushRequestEnrollBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestEnroll> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+        ) = &self.0;PushRequestEnroll::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PushRequestEnroll].
+#[derive(Copy, Clone)]
+pub struct PushRequestEnrollRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PushRequestEnrollRef<'a> {
+    
+        /// Getter for the [`request_id` field](PushRequestEnroll#structfield.request_id).
+        #[inline]
+        pub fn request_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "PushRequestEnroll", "request_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`subscription` field](PushRequestEnroll#structfield.subscription).
+        #[inline]
+        pub fn subscription(&self) -> ::planus::Result<self::PushSubscriptionRef<'a>> {
+            
+            
+              
+              self.0.access_required(1, "PushRequestEnroll", "subscription")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`policy` field](PushRequestEnroll#structfield.policy).
+        #[inline]
+        pub fn policy(&self) -> ::planus::Result<self::PushEndpointPolicyRef<'a>> {
+            
+            
+              
+              self.0.access_required(2, "PushRequestEnroll", "policy")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`scope` field](PushRequestEnroll#structfield.scope).
+        #[inline]
+        pub fn scope(&self) -> ::planus::Result<self::NotificationScopeRef<'a>> {
+            
+            
+              
+              self.0.access_required(3, "PushRequestEnroll", "scope")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`kinds` field](PushRequestEnroll#structfield.kinds).
+        #[inline]
+        pub fn kinds(&self) -> ::planus::Result<::planus::Vector<'a, ::core::result::Result<self::NotificationKind, ::planus::errors::UnknownEnumTag>>> {
+            
+            
+              
+              self.0.access_required(4, "PushRequestEnroll", "kinds")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`replaces` field](PushRequestEnroll#structfield.replaces).
+        #[inline]
+        pub fn replaces(&self) -> ::planus::Result<::core::option::Option<self::PushRevisionRef<'a>>> {
+            
+            
+              
+              self.0.access(5, "PushRequestEnroll", "replaces")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`device_label` field](PushRequestEnroll#structfield.device_label).
+        #[inline]
+        pub fn device_label(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
+            
+            
+              
+              self.0.access(6, "PushRequestEnroll", "device_label")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for PushRequestEnrollRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PushRequestEnrollRef");
+        f.field("request_id", &self.request_id());f.field("subscription", &self.subscription());f.field("policy", &self.policy());f.field("scope", &self.scope());f.field("kinds", &self.kinds());if let ::core::option::Option::Some(field_replaces) = self.replaces().transpose() {
+                f.field("replaces", &field_replaces);
+            }if let ::core::option::Option::Some(field_device_label) = self.device_label().transpose() {
+                f.field("device_label", &field_device_label);
+            }
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PushRequestEnrollRef<'a>> for PushRequestEnroll {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: PushRequestEnrollRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            request_id: ::core::convert::Into::into(value.request_id()?),subscription: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.subscription()?)?),policy: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.policy()?)?),scope: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.scope()?)?),kinds: value.kinds()?.to_vec_result()?,replaces: 
+                                if let ::core::option::Option::Some(replaces) = value.replaces()? {
+                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(replaces)?))
+                                } else {
+                                    ::core::option::Option::None
+                                }
+                            ,device_label: 
+                                value.device_label()?.map(::core::convert::Into::into)
+                            ,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PushRequestEnrollRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PushRequestEnrollRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestEnrollRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PushRequestEnroll>> for PushRequestEnroll {
+    type Value = ::planus::Offset<PushRequestEnroll>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PushRequestEnroll>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PushRequestEnrollRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestEnrollRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `PushRequestConfirm` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PushRequestConfirm` in the file `crates/bkpr-protocol/src/wire/native.fbs:321`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PushRequestConfirm{
+    
+        /// The field `destination_id` in the table `PushRequestConfirm`
+        pub destination_id: ::planus::alloc::string::String,
+        /// The field `generation` in the table `PushRequestConfirm`
+        pub generation: u64,
+        /// The field `nonce` in the table `PushRequestConfirm`
+        pub nonce: ::planus::alloc::string::String,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PushRequestConfirm {
+    fn default() -> Self {
+        Self {
+        destination_id: ::core::default::Default::default(),
+        generation: 0,
+        nonce: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl PushRequestConfirm {
+    /// Creates a [PushRequestConfirmBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PushRequestConfirmBuilder<()> {
+        PushRequestConfirmBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_destination_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_generation: impl ::planus::WriteAsDefault<u64, u64>,
+        field_nonce: impl ::planus::WriteAs<::planus::Offset<str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_destination_id = field_destination_id.prepare(builder);let prepared_generation = field_generation.prepare(builder, &0);let prepared_nonce = field_nonce.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        if prepared_generation.is_some() {table_writer.write_entry::<u64>(1);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(2);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_generation) = prepared_generation {object_writer.write::<_, _, 8>(&prepared_generation);}object_writer.write::<_, _, 4>(&prepared_destination_id);object_writer.write::<_, _, 4>(&prepared_nonce);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PushRequestConfirm>> for PushRequestConfirm {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestConfirm> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PushRequestConfirm>> for PushRequestConfirm {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestConfirm>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PushRequestConfirm> for PushRequestConfirm {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestConfirm> {
+        PushRequestConfirm::create(
+            builder,
+        
+            
+            &self.destination_id,
+            
+        
+            
+            self.generation,
+            
+        
+            
+            &self.nonce,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PushRequestConfirm] type.
+///
+/// Can be created using the [PushRequestConfirm::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PushRequestConfirmBuilder<State>(State);
+
+impl<
+    
+> PushRequestConfirmBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`destination_id` field](PushRequestConfirm#structfield.destination_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn destination_id<T0>(self, value: T0) -> PushRequestConfirmBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        PushRequestConfirmBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> PushRequestConfirmBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`generation` field](PushRequestConfirm#structfield.generation).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn generation<T1>(self, value: T1) -> PushRequestConfirmBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;PushRequestConfirmBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`generation` field](PushRequestConfirm#structfield.generation) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn generation_as_default(self) -> PushRequestConfirmBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.generation(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> PushRequestConfirmBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`nonce` field](PushRequestConfirm#structfield.nonce).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn nonce<T2>(self, value: T2) -> PushRequestConfirmBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;PushRequestConfirmBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> PushRequestConfirmBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PushRequestConfirm].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestConfirm>
+        where Self: ::planus::WriteAsOffset<PushRequestConfirm>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAs<::planus::Offset<PushRequestConfirm>> for PushRequestConfirmBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestConfirm>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestConfirm> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<PushRequestConfirm>> for PushRequestConfirmBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestConfirm>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestConfirm>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOffset<PushRequestConfirm> for PushRequestConfirmBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestConfirm> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;PushRequestConfirm::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PushRequestConfirm].
+#[derive(Copy, Clone)]
+pub struct PushRequestConfirmRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PushRequestConfirmRef<'a> {
+    
+        /// Getter for the [`destination_id` field](PushRequestConfirm#structfield.destination_id).
+        #[inline]
+        pub fn destination_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "PushRequestConfirm", "destination_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`generation` field](PushRequestConfirm#structfield.generation).
+        #[inline]
+        pub fn generation(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "PushRequestConfirm", "generation")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`nonce` field](PushRequestConfirm#structfield.nonce).
+        #[inline]
+        pub fn nonce(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(2, "PushRequestConfirm", "nonce")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for PushRequestConfirmRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PushRequestConfirmRef");
+        f.field("destination_id", &self.destination_id());f.field("generation", &self.generation());f.field("nonce", &self.nonce());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PushRequestConfirmRef<'a>> for PushRequestConfirm {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: PushRequestConfirmRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            destination_id: ::core::convert::Into::into(value.destination_id()?),generation: ::core::convert::TryInto::try_into(value.generation()?)?,nonce: ::core::convert::Into::into(value.nonce()?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PushRequestConfirmRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PushRequestConfirmRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestConfirmRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PushRequestConfirm>> for PushRequestConfirm {
+    type Value = ::planus::Offset<PushRequestConfirm>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PushRequestConfirm>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PushRequestConfirmRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestConfirmRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `PushRequestRevoke` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PushRequestRevoke` in the file `crates/bkpr-protocol/src/wire/native.fbs:326`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PushRequestRevoke{
+    
+        /// The field `destination_id` in the table `PushRequestRevoke`
+        pub destination_id: ::planus::alloc::string::String,
+        /// The field `generation` in the table `PushRequestRevoke`
+        pub generation: u64,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PushRequestRevoke {
+    fn default() -> Self {
+        Self {
+        destination_id: ::core::default::Default::default(),
+        generation: 0,
+        
+        }
+    }
+}
+
+
+impl PushRequestRevoke {
+    /// Creates a [PushRequestRevokeBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PushRequestRevokeBuilder<()> {
+        PushRequestRevokeBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_destination_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_generation: impl ::planus::WriteAsDefault<u64, u64>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_destination_id = field_destination_id.prepare(builder);let prepared_generation = field_generation.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        if prepared_generation.is_some() {table_writer.write_entry::<u64>(1);}table_writer.write_entry::<::planus::Offset<str>>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_generation) = prepared_generation {object_writer.write::<_, _, 8>(&prepared_generation);}object_writer.write::<_, _, 4>(&prepared_destination_id);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PushRequestRevoke>> for PushRequestRevoke {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestRevoke> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PushRequestRevoke>> for PushRequestRevoke {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestRevoke>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PushRequestRevoke> for PushRequestRevoke {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestRevoke> {
+        PushRequestRevoke::create(
+            builder,
+        
+            
+            &self.destination_id,
+            
+        
+            
+            self.generation,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PushRequestRevoke] type.
+///
+/// Can be created using the [PushRequestRevoke::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PushRequestRevokeBuilder<State>(State);
+
+impl<
+    
+> PushRequestRevokeBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`destination_id` field](PushRequestRevoke#structfield.destination_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn destination_id<T0>(self, value: T0) -> PushRequestRevokeBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        PushRequestRevokeBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> PushRequestRevokeBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`generation` field](PushRequestRevoke#structfield.generation).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn generation<T1>(self, value: T1) -> PushRequestRevokeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;PushRequestRevokeBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`generation` field](PushRequestRevoke#structfield.generation) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn generation_as_default(self) -> PushRequestRevokeBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.generation(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> PushRequestRevokeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PushRequestRevoke].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestRevoke>
+        where Self: ::planus::WriteAsOffset<PushRequestRevoke>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAs<::planus::Offset<PushRequestRevoke>> for PushRequestRevokeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestRevoke>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestRevoke> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<PushRequestRevoke>> for PushRequestRevokeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestRevoke>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestRevoke>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOffset<PushRequestRevoke> for PushRequestRevokeBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestRevoke> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;PushRequestRevoke::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PushRequestRevoke].
+#[derive(Copy, Clone)]
+pub struct PushRequestRevokeRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PushRequestRevokeRef<'a> {
+    
+        /// Getter for the [`destination_id` field](PushRequestRevoke#structfield.destination_id).
+        #[inline]
+        pub fn destination_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "PushRequestRevoke", "destination_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`generation` field](PushRequestRevoke#structfield.generation).
+        #[inline]
+        pub fn generation(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "PushRequestRevoke", "generation")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for PushRequestRevokeRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PushRequestRevokeRef");
+        f.field("destination_id", &self.destination_id());f.field("generation", &self.generation());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PushRequestRevokeRef<'a>> for PushRequestRevoke {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: PushRequestRevokeRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            destination_id: ::core::convert::Into::into(value.destination_id()?),generation: ::core::convert::TryInto::try_into(value.generation()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PushRequestRevokeRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PushRequestRevokeRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestRevokeRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PushRequestRevoke>> for PushRequestRevoke {
+    type Value = ::planus::Offset<PushRequestRevoke>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PushRequestRevoke>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PushRequestRevokeRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestRevokeRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `PushRequestTest` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PushRequestTest` in the file `crates/bkpr-protocol/src/wire/native.fbs:327`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PushRequestTest{
+    
+        /// The field `request_id` in the table `PushRequestTest`
+        pub request_id: ::planus::alloc::string::String,
+        /// The field `destination_id` in the table `PushRequestTest`
+        pub destination_id: ::planus::alloc::string::String,
+        /// The field `generation` in the table `PushRequestTest`
+        pub generation: u64,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PushRequestTest {
+    fn default() -> Self {
+        Self {
+        request_id: ::core::default::Default::default(),
+        destination_id: ::core::default::Default::default(),
+        generation: 0,
+        
+        }
+    }
+}
+
+
+impl PushRequestTest {
+    /// Creates a [PushRequestTestBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PushRequestTestBuilder<()> {
+        PushRequestTestBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_request_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_destination_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_generation: impl ::planus::WriteAsDefault<u64, u64>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_request_id = field_request_id.prepare(builder);let prepared_destination_id = field_destination_id.prepare(builder);let prepared_generation = field_generation.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        if prepared_generation.is_some() {table_writer.write_entry::<u64>(2);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_generation) = prepared_generation {object_writer.write::<_, _, 8>(&prepared_generation);}object_writer.write::<_, _, 4>(&prepared_request_id);object_writer.write::<_, _, 4>(&prepared_destination_id);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PushRequestTest>> for PushRequestTest {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestTest> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PushRequestTest>> for PushRequestTest {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestTest>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PushRequestTest> for PushRequestTest {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestTest> {
+        PushRequestTest::create(
+            builder,
+        
+            
+            &self.request_id,
+            
+        
+            
+            &self.destination_id,
+            
+        
+            
+            self.generation,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PushRequestTest] type.
+///
+/// Can be created using the [PushRequestTest::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PushRequestTestBuilder<State>(State);
+
+impl<
+    
+> PushRequestTestBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`request_id` field](PushRequestTest#structfield.request_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn request_id<T0>(self, value: T0) -> PushRequestTestBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        PushRequestTestBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> PushRequestTestBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`destination_id` field](PushRequestTest#structfield.destination_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn destination_id<T1>(self, value: T1) -> PushRequestTestBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;PushRequestTestBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> PushRequestTestBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`generation` field](PushRequestTest#structfield.generation).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn generation<T2>(self, value: T2) -> PushRequestTestBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;PushRequestTestBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`generation` field](PushRequestTest#structfield.generation) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn generation_as_default(self) -> PushRequestTestBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.generation(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> PushRequestTestBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PushRequestTest].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestTest>
+        where Self: ::planus::WriteAsOffset<PushRequestTest>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAs<::planus::Offset<PushRequestTest>> for PushRequestTestBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestTest>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestTest> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<PushRequestTest>> for PushRequestTestBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestTest>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestTest>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOffset<PushRequestTest> for PushRequestTestBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestTest> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;PushRequestTest::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PushRequestTest].
+#[derive(Copy, Clone)]
+pub struct PushRequestTestRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PushRequestTestRef<'a> {
+    
+        /// Getter for the [`request_id` field](PushRequestTest#structfield.request_id).
+        #[inline]
+        pub fn request_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "PushRequestTest", "request_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`destination_id` field](PushRequestTest#structfield.destination_id).
+        #[inline]
+        pub fn destination_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(1, "PushRequestTest", "destination_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`generation` field](PushRequestTest#structfield.generation).
+        #[inline]
+        pub fn generation(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(2, "PushRequestTest", "generation")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for PushRequestTestRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PushRequestTestRef");
+        f.field("request_id", &self.request_id());f.field("destination_id", &self.destination_id());f.field("generation", &self.generation());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PushRequestTestRef<'a>> for PushRequestTest {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: PushRequestTestRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            request_id: ::core::convert::Into::into(value.request_id()?),destination_id: ::core::convert::Into::into(value.destination_id()?),generation: ::core::convert::TryInto::try_into(value.generation()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PushRequestTestRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PushRequestTestRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestTestRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PushRequestTest>> for PushRequestTest {
+    type Value = ::planus::Offset<PushRequestTest>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PushRequestTest>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PushRequestTestRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestTestRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `PushRequestDiagnostics` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PushRequestDiagnostics` in the file `crates/bkpr-protocol/src/wire/native.fbs:332`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PushRequestDiagnostics{
+    }
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PushRequestDiagnostics {
+    fn default() -> Self {
+        Self {
+        
+        }
+    }
+}
+
+
+impl PushRequestDiagnostics {
+    /// Creates a [PushRequestDiagnosticsBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PushRequestDiagnosticsBuilder<()> {
+        PushRequestDiagnosticsBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        
+    ) -> ::planus::Offset<Self> {
+
+        let table_writer: ::planus::table_writer::TableWriter::<4> = ::core::default::Default::default();
+        unsafe {
+            table_writer.finish(builder, |_table_writer| {});
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PushRequestDiagnostics>> for PushRequestDiagnostics {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestDiagnostics> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PushRequestDiagnostics>> for PushRequestDiagnostics {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestDiagnostics>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PushRequestDiagnostics> for PushRequestDiagnostics {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestDiagnostics> {
+        PushRequestDiagnostics::create(
+            builder,
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PushRequestDiagnostics] type.
+///
+/// Can be created using the [PushRequestDiagnostics::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PushRequestDiagnosticsBuilder<State>(State);
+
+
+
+impl<
+    
+> PushRequestDiagnosticsBuilder<(
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PushRequestDiagnostics].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestDiagnostics>
+        where Self: ::planus::WriteAsOffset<PushRequestDiagnostics>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAs<::planus::Offset<PushRequestDiagnostics>> for PushRequestDiagnosticsBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestDiagnostics>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestDiagnostics> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOptional<::planus::Offset<PushRequestDiagnostics>> for PushRequestDiagnosticsBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestDiagnostics>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestDiagnostics>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOffset<PushRequestDiagnostics> for PushRequestDiagnosticsBuilder<(
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestDiagnostics> {
+        PushRequestDiagnostics::create(
+            builder,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PushRequestDiagnostics].
+#[derive(Copy, Clone)]
+pub struct PushRequestDiagnosticsRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PushRequestDiagnosticsRef<'a> {
+    
+}
+
+impl<'a> ::core::fmt::Debug for PushRequestDiagnosticsRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PushRequestDiagnosticsRef");
+        
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PushRequestDiagnosticsRef<'a>> for PushRequestDiagnostics {
+    type Error = ::planus::Error;
+
+
+    fn try_from(_value: PushRequestDiagnosticsRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PushRequestDiagnosticsRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PushRequestDiagnosticsRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestDiagnosticsRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PushRequestDiagnostics>> for PushRequestDiagnostics {
+    type Value = ::planus::Offset<PushRequestDiagnostics>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PushRequestDiagnostics>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PushRequestDiagnosticsRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestDiagnosticsRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `PushRequestUpdate` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PushRequestUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:333`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PushRequestUpdate{
+    
+        /// The field `request_id` in the table `PushRequestUpdate`
+        pub request_id: ::planus::alloc::string::String,
+        /// The field `destination_id` in the table `PushRequestUpdate`
+        pub destination_id: ::planus::alloc::string::String,
+        /// The field `generation` in the table `PushRequestUpdate`
+        pub generation: u64,
+        /// The field `scope` in the table `PushRequestUpdate`
+        pub scope: ::planus::alloc::boxed::Box<self::NotificationScope>,
+        /// The field `kinds` in the table `PushRequestUpdate`
+        pub kinds: ::planus::alloc::vec::Vec<self::NotificationKind>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PushRequestUpdate {
+    fn default() -> Self {
+        Self {
+        request_id: ::core::default::Default::default(),
+        destination_id: ::core::default::Default::default(),
+        generation: 0,
+        scope: ::core::default::Default::default(),
+        kinds: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl PushRequestUpdate {
+    /// Creates a [PushRequestUpdateBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PushRequestUpdateBuilder<()> {
+        PushRequestUpdateBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_request_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_destination_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_generation: impl ::planus::WriteAsDefault<u64, u64>,
+        field_scope: impl ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+        field_kinds: impl ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_request_id = field_request_id.prepare(builder);let prepared_destination_id = field_destination_id.prepare(builder);let prepared_generation = field_generation.prepare(builder, &0);let prepared_scope = field_scope.prepare(builder);let prepared_kinds = field_kinds.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<14> = ::core::default::Default::default();
+        if prepared_generation.is_some() {table_writer.write_entry::<u64>(2);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<self::NotificationScope>>(3);table_writer.write_entry::<::planus::Offset<[self::NotificationKind]>>(4);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_generation) = prepared_generation {object_writer.write::<_, _, 8>(&prepared_generation);}object_writer.write::<_, _, 4>(&prepared_request_id);object_writer.write::<_, _, 4>(&prepared_destination_id);object_writer.write::<_, _, 4>(&prepared_scope);object_writer.write::<_, _, 4>(&prepared_kinds);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PushRequestUpdate>> for PushRequestUpdate {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestUpdate> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PushRequestUpdate>> for PushRequestUpdate {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestUpdate>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PushRequestUpdate> for PushRequestUpdate {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestUpdate> {
+        PushRequestUpdate::create(
+            builder,
+        
+            
+            &self.request_id,
+            
+        
+            
+            &self.destination_id,
+            
+        
+            
+            self.generation,
+            
+        
+            
+            &self.scope,
+            
+        
+            
+            &self.kinds,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PushRequestUpdate] type.
+///
+/// Can be created using the [PushRequestUpdate::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PushRequestUpdateBuilder<State>(State);
+
+impl<
+    
+> PushRequestUpdateBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`request_id` field](PushRequestUpdate#structfield.request_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn request_id<T0>(self, value: T0) -> PushRequestUpdateBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        PushRequestUpdateBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> PushRequestUpdateBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`destination_id` field](PushRequestUpdate#structfield.destination_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn destination_id<T1>(self, value: T1) -> PushRequestUpdateBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;PushRequestUpdateBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> PushRequestUpdateBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`generation` field](PushRequestUpdate#structfield.generation).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn generation<T2>(self, value: T2) -> PushRequestUpdateBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;PushRequestUpdateBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`generation` field](PushRequestUpdate#structfield.generation) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn generation_as_default(self) -> PushRequestUpdateBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.generation(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> PushRequestUpdateBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`scope` field](PushRequestUpdate#structfield.scope).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn scope<T3>(self, value: T3) -> PushRequestUpdateBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;PushRequestUpdateBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+> PushRequestUpdateBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )
+>
+{
+    /// Setter for the [`kinds` field](PushRequestUpdate#structfield.kinds).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn kinds<T4>(self, value: T4) -> PushRequestUpdateBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+    )>
+    where T4: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        ) = self.0;PushRequestUpdateBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+> PushRequestUpdateBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PushRequestUpdate].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestUpdate>
+        where Self: ::planus::WriteAsOffset<PushRequestUpdate>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+    
+        T4: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+    
+> ::planus::WriteAs<::planus::Offset<PushRequestUpdate>> for PushRequestUpdateBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestUpdate>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestUpdate> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+    
+        T4: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<PushRequestUpdate>> for PushRequestUpdateBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+)> {
+    type Prepared = ::planus::Offset<PushRequestUpdate>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PushRequestUpdate>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<self::NotificationScope>>,
+    
+        T4: ::planus::WriteAs<::planus::Offset<[self::NotificationKind]>>,
+    
+> ::planus::WriteAsOffset<PushRequestUpdate> for PushRequestUpdateBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PushRequestUpdate> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+        ) = &self.0;PushRequestUpdate::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PushRequestUpdate].
+#[derive(Copy, Clone)]
+pub struct PushRequestUpdateRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PushRequestUpdateRef<'a> {
+    
+        /// Getter for the [`request_id` field](PushRequestUpdate#structfield.request_id).
+        #[inline]
+        pub fn request_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "PushRequestUpdate", "request_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`destination_id` field](PushRequestUpdate#structfield.destination_id).
+        #[inline]
+        pub fn destination_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(1, "PushRequestUpdate", "destination_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`generation` field](PushRequestUpdate#structfield.generation).
+        #[inline]
+        pub fn generation(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(2, "PushRequestUpdate", "generation")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`scope` field](PushRequestUpdate#structfield.scope).
+        #[inline]
+        pub fn scope(&self) -> ::planus::Result<self::NotificationScopeRef<'a>> {
+            
+            
+              
+              self.0.access_required(3, "PushRequestUpdate", "scope")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`kinds` field](PushRequestUpdate#structfield.kinds).
+        #[inline]
+        pub fn kinds(&self) -> ::planus::Result<::planus::Vector<'a, ::core::result::Result<self::NotificationKind, ::planus::errors::UnknownEnumTag>>> {
+            
+            
+              
+              self.0.access_required(4, "PushRequestUpdate", "kinds")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for PushRequestUpdateRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PushRequestUpdateRef");
+        f.field("request_id", &self.request_id());f.field("destination_id", &self.destination_id());f.field("generation", &self.generation());f.field("scope", &self.scope());f.field("kinds", &self.kinds());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PushRequestUpdateRef<'a>> for PushRequestUpdate {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: PushRequestUpdateRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            request_id: ::core::convert::Into::into(value.request_id()?),destination_id: ::core::convert::Into::into(value.destination_id()?),generation: ::core::convert::TryInto::try_into(value.generation()?)?,scope: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.scope()?)?),kinds: value.kinds()?.to_vec_result()?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PushRequestUpdateRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PushRequestUpdateRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestUpdateRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PushRequestUpdate>> for PushRequestUpdate {
+    type Value = ::planus::Offset<PushRequestUpdate>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PushRequestUpdate>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PushRequestUpdateRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PushRequestUpdateRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The union `PushRequest` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Union `PushRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:340`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize)]
+pub enum PushRequest{
+    
+        /// The variant of type `PushRequestPublicKey` in the union `PushRequest`
+        PushRequestPublicKey(::planus::alloc::boxed::Box<self::PushRequestPublicKey>),
+    
+        /// The variant of type `PushRequestList` in the union `PushRequest`
+        PushRequestList(::planus::alloc::boxed::Box<self::PushRequestList>),
+    
+        /// The variant of type `PushRequestEnroll` in the union `PushRequest`
+        PushRequestEnroll(::planus::alloc::boxed::Box<self::PushRequestEnroll>),
+    
+        /// The variant of type `PushRequestConfirm` in the union `PushRequest`
+        PushRequestConfirm(::planus::alloc::boxed::Box<self::PushRequestConfirm>),
+    
+        /// The variant of type `PushRequestRevoke` in the union `PushRequest`
+        PushRequestRevoke(::planus::alloc::boxed::Box<self::PushRequestRevoke>),
+    
+        /// The variant of type `PushRequestTest` in the union `PushRequest`
+        PushRequestTest(::planus::alloc::boxed::Box<self::PushRequestTest>),
+    
+        /// The variant of type `PushRequestDiagnostics` in the union `PushRequest`
+        PushRequestDiagnostics(::planus::alloc::boxed::Box<self::PushRequestDiagnostics>),
+    
+        /// The variant of type `PushRequestUpdate` in the union `PushRequest`
+        PushRequestUpdate(::planus::alloc::boxed::Box<self::PushRequestUpdate>),
+    
+}
+
+
+impl PushRequest {
+    /// Creates a [PushRequestBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PushRequestBuilder<::planus::Uninitialized> {
+        PushRequestBuilder(::planus::Uninitialized)
+    }
+
+    #[inline]
+    pub fn create_push_request_public_key(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::PushRequestPublicKey>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(1, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_push_request_list(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::PushRequestList>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(2, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_push_request_enroll(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::PushRequestEnroll>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(3, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_push_request_confirm(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::PushRequestConfirm>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(4, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_push_request_revoke(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::PushRequestRevoke>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(5, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_push_request_test(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::PushRequestTest>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(6, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_push_request_diagnostics(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::PushRequestDiagnostics>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(7, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_push_request_update(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::PushRequestUpdate>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(8, value.prepare(builder).downcast())
+    }
+
+    
+}
+
+
+
+impl ::planus::WriteAsUnion<PushRequest> for PushRequest {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<Self> {
+        match self {
+            Self::PushRequestPublicKey(value) => Self::create_push_request_public_key(builder, value),
+            Self::PushRequestList(value) => Self::create_push_request_list(builder, value),
+            Self::PushRequestEnroll(value) => Self::create_push_request_enroll(builder, value),
+            Self::PushRequestConfirm(value) => Self::create_push_request_confirm(builder, value),
+            Self::PushRequestRevoke(value) => Self::create_push_request_revoke(builder, value),
+            Self::PushRequestTest(value) => Self::create_push_request_test(builder, value),
+            Self::PushRequestDiagnostics(value) => Self::create_push_request_diagnostics(builder, value),
+            Self::PushRequestUpdate(value) => Self::create_push_request_update(builder, value),
+            
+        }
+    }
+}
+
+
+impl ::planus::WriteAsOptionalUnion<PushRequest> for PushRequest {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<Self>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+
+/// Builder for serializing an instance of the [PushRequest] type.
+///
+/// Can be created using the [PushRequest::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PushRequestBuilder<T>(T);
+
+impl PushRequestBuilder<::planus::Uninitialized> {
+    /// Creates an instance of the [`PushRequestPublicKey` variant](PushRequest#variant.PushRequestPublicKey).
+    #[inline]
+    pub fn push_request_public_key<T>(
+        self,
+        value: T,
+    ) -> PushRequestBuilder<::planus::Initialized<1, T>>
+        where T: ::planus::WriteAsOffset<self::PushRequestPublicKey> {
+        PushRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`PushRequestList` variant](PushRequest#variant.PushRequestList).
+    #[inline]
+    pub fn push_request_list<T>(
+        self,
+        value: T,
+    ) -> PushRequestBuilder<::planus::Initialized<2, T>>
+        where T: ::planus::WriteAsOffset<self::PushRequestList> {
+        PushRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`PushRequestEnroll` variant](PushRequest#variant.PushRequestEnroll).
+    #[inline]
+    pub fn push_request_enroll<T>(
+        self,
+        value: T,
+    ) -> PushRequestBuilder<::planus::Initialized<3, T>>
+        where T: ::planus::WriteAsOffset<self::PushRequestEnroll> {
+        PushRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`PushRequestConfirm` variant](PushRequest#variant.PushRequestConfirm).
+    #[inline]
+    pub fn push_request_confirm<T>(
+        self,
+        value: T,
+    ) -> PushRequestBuilder<::planus::Initialized<4, T>>
+        where T: ::planus::WriteAsOffset<self::PushRequestConfirm> {
+        PushRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`PushRequestRevoke` variant](PushRequest#variant.PushRequestRevoke).
+    #[inline]
+    pub fn push_request_revoke<T>(
+        self,
+        value: T,
+    ) -> PushRequestBuilder<::planus::Initialized<5, T>>
+        where T: ::planus::WriteAsOffset<self::PushRequestRevoke> {
+        PushRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`PushRequestTest` variant](PushRequest#variant.PushRequestTest).
+    #[inline]
+    pub fn push_request_test<T>(
+        self,
+        value: T,
+    ) -> PushRequestBuilder<::planus::Initialized<6, T>>
+        where T: ::planus::WriteAsOffset<self::PushRequestTest> {
+        PushRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`PushRequestDiagnostics` variant](PushRequest#variant.PushRequestDiagnostics).
+    #[inline]
+    pub fn push_request_diagnostics<T>(
+        self,
+        value: T,
+    ) -> PushRequestBuilder<::planus::Initialized<7, T>>
+        where T: ::planus::WriteAsOffset<self::PushRequestDiagnostics> {
+        PushRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`PushRequestUpdate` variant](PushRequest#variant.PushRequestUpdate).
+    #[inline]
+    pub fn push_request_update<T>(
+        self,
+        value: T,
+    ) -> PushRequestBuilder<::planus::Initialized<8, T>>
+        where T: ::planus::WriteAsOffset<self::PushRequestUpdate> {
+        PushRequestBuilder(::planus::Initialized(value))
+    }
+
+    
+}
+
+impl<const N: u8, T> PushRequestBuilder<::planus::Initialized<N, T>> {
+    /// Finish writing the builder to get an [UnionOffset](::planus::UnionOffset) to a serialized [PushRequest].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<PushRequest>
+        where Self: ::planus::WriteAsUnion<PushRequest>
+    {
+        ::planus::WriteAsUnion::prepare(&self, builder)
+    }
+}
+
+impl<T> ::planus::WriteAsUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<1, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestPublicKey>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<PushRequest> {
+        ::planus::UnionOffset::new(1, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<1, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestPublicKey>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<PushRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<2, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestList>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<PushRequest> {
+        ::planus::UnionOffset::new(2, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<2, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestList>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<PushRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestEnroll>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<PushRequest> {
+        ::planus::UnionOffset::new(3, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestEnroll>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<PushRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<4, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestConfirm>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<PushRequest> {
+        ::planus::UnionOffset::new(4, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<4, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestConfirm>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<PushRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<5, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestRevoke>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<PushRequest> {
+        ::planus::UnionOffset::new(5, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<5, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestRevoke>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<PushRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<6, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestTest>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<PushRequest> {
+        ::planus::UnionOffset::new(6, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<6, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestTest>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<PushRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<7, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestDiagnostics>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<PushRequest> {
+        ::planus::UnionOffset::new(7, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<7, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestDiagnostics>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<PushRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<8, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestUpdate>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<PushRequest> {
+        ::planus::UnionOffset::new(8, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<PushRequest> for PushRequestBuilder<::planus::Initialized<8, T>>
+    where T: ::planus::WriteAsOffset<self::PushRequestUpdate>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<PushRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+
+
+/// Reference to a deserialized [PushRequest].
+#[derive(Copy, Clone, Debug)]
+pub enum PushRequestRef<'a>{
+    PushRequestPublicKey(self::PushRequestPublicKeyRef<'a>),
+    PushRequestList(self::PushRequestListRef<'a>),
+    PushRequestEnroll(self::PushRequestEnrollRef<'a>),
+    PushRequestConfirm(self::PushRequestConfirmRef<'a>),
+    PushRequestRevoke(self::PushRequestRevokeRef<'a>),
+    PushRequestTest(self::PushRequestTestRef<'a>),
+    PushRequestDiagnostics(self::PushRequestDiagnosticsRef<'a>),
+    PushRequestUpdate(self::PushRequestUpdateRef<'a>),
+    
+}
+
+
+impl<'a> ::core::convert::TryFrom<PushRequestRef<'a>> for PushRequest {
+    type Error = ::planus::Error;
+
+    fn try_from(value: PushRequestRef<'a>) -> ::planus::Result<Self> {
+        ::core::result::Result::Ok(match value {
+            
+                PushRequestRef::PushRequestPublicKey(value) => Self::PushRequestPublicKey(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                PushRequestRef::PushRequestList(value) => Self::PushRequestList(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                PushRequestRef::PushRequestEnroll(value) => Self::PushRequestEnroll(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                PushRequestRef::PushRequestConfirm(value) => Self::PushRequestConfirm(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                PushRequestRef::PushRequestRevoke(value) => Self::PushRequestRevoke(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                PushRequestRef::PushRequestTest(value) => Self::PushRequestTest(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                PushRequestRef::PushRequestDiagnostics(value) => Self::PushRequestDiagnostics(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                PushRequestRef::PushRequestUpdate(value) => Self::PushRequestUpdate(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+        })
+    }
+}
+
+
+
+impl<'a> ::planus::TableReadUnion<'a> for PushRequestRef<'a> {
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        match tag {
+            1 => ::core::result::Result::Ok(Self::PushRequestPublicKey(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::PushRequestList(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::PushRequestEnroll(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::PushRequestConfirm(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::PushRequestRevoke(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::PushRequestTest(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::PushRequestDiagnostics(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::PushRequestUpdate(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+        }
+    }
+}
+
+
+
+impl<'a> ::planus::VectorReadUnion<'a> for PushRequestRef<'a> {
+    const VECTOR_NAME: &'static str = "[PushRequestRef]";
+}
+
+
+    
+/// The table `NotificationRequestPush` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `NotificationRequestPush` in the file `crates/bkpr-protocol/src/wire/native.fbs:350`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct NotificationRequestPush{
+    
+        /// The field `request` in the table `NotificationRequestPush`
+        pub request: self::PushRequest,}
+
+
+
+impl NotificationRequestPush {
+    /// Creates a [NotificationRequestPushBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> NotificationRequestPushBuilder<()> {
+        NotificationRequestPushBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_request: impl ::planus::WriteAsUnion<self::PushRequest>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_request = field_request.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::PushRequest>>(1);table_writer.write_entry::<u8>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_request.offset());object_writer.write::<_, _, 1>(&prepared_request.tag());
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<NotificationRequestPush>> for NotificationRequestPush {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPush> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<NotificationRequestPush>> for NotificationRequestPush {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationRequestPush>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<NotificationRequestPush> for NotificationRequestPush {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPush> {
+        NotificationRequestPush::create(
+            builder,
+        
+            
+            &self.request,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [NotificationRequestPush] type.
+///
+/// Can be created using the [NotificationRequestPush::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct NotificationRequestPushBuilder<State>(State);
+
+impl<
+    
+> NotificationRequestPushBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`request` field](NotificationRequestPush#structfield.request).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn request<T0>(self, value: T0) -> NotificationRequestPushBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsUnion<self::PushRequest>
+    {
+        NotificationRequestPushBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> NotificationRequestPushBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [NotificationRequestPush].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPush>
+        where Self: ::planus::WriteAsOffset<NotificationRequestPush>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::PushRequest>,
+    
+> ::planus::WriteAs<::planus::Offset<NotificationRequestPush>> for NotificationRequestPushBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationRequestPush>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPush> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::PushRequest>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<NotificationRequestPush>> for NotificationRequestPushBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<NotificationRequestPush>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<NotificationRequestPush>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::PushRequest>,
+    
+> ::planus::WriteAsOffset<NotificationRequestPush> for NotificationRequestPushBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<NotificationRequestPush> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;NotificationRequestPush::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [NotificationRequestPush].
+#[derive(Copy, Clone)]
+pub struct NotificationRequestPushRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> NotificationRequestPushRef<'a> {
+    
+        /// Getter for the [`request` field](NotificationRequestPush#structfield.request).
+        #[inline]
+        pub fn request(&self) -> ::planus::Result<self::PushRequestRef<'a>> {
+            
+            
+              
+              self.0.access_union_required(0, "NotificationRequestPush", "request")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for NotificationRequestPushRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("NotificationRequestPushRef");
+        f.field("request", &self.request());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<NotificationRequestPushRef<'a>> for NotificationRequestPush {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: NotificationRequestPushRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            request: ::core::convert::TryInto::try_into(value.request()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for NotificationRequestPushRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for NotificationRequestPushRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationRequestPushRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<NotificationRequestPush>> for NotificationRequestPush {
+    type Value = ::planus::Offset<NotificationRequestPush>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<NotificationRequestPush>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for NotificationRequestPushRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[NotificationRequestPushRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The union `NotificationRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `NotificationRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:303`
+/// * Union `NotificationRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:351`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -32144,6 +37877,9 @@ pub enum NotificationRequest{
     
         /// The variant of type `NotificationRequestHealth` in the union `NotificationRequest`
         NotificationRequestHealth(::planus::alloc::boxed::Box<self::NotificationRequestHealth>),
+    
+        /// The variant of type `NotificationRequestPush` in the union `NotificationRequest`
+        NotificationRequestPush(::planus::alloc::boxed::Box<self::NotificationRequestPush>),
     
 }
 
@@ -32195,6 +37931,14 @@ impl NotificationRequest {
         ::planus::UnionOffset::new(5, value.prepare(builder).downcast())
     }
 
+    #[inline]
+    pub fn create_notification_request_push(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::NotificationRequestPush>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(6, value.prepare(builder).downcast())
+    }
+
     
 }
 
@@ -32209,6 +37953,7 @@ impl ::planus::WriteAsUnion<NotificationRequest> for NotificationRequest {
             Self::NotificationRequestPolicyGet(value) => Self::create_notification_request_policy_get(builder, value),
             Self::NotificationRequestPolicySet(value) => Self::create_notification_request_policy_set(builder, value),
             Self::NotificationRequestHealth(value) => Self::create_notification_request_health(builder, value),
+            Self::NotificationRequestPush(value) => Self::create_notification_request_push(builder, value),
             
         }
     }
@@ -32277,6 +38022,16 @@ impl NotificationRequestBuilder<::planus::Uninitialized> {
         value: T,
     ) -> NotificationRequestBuilder<::planus::Initialized<5, T>>
         where T: ::planus::WriteAsOffset<self::NotificationRequestHealth> {
+        NotificationRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`NotificationRequestPush` variant](NotificationRequest#variant.NotificationRequestPush).
+    #[inline]
+    pub fn notification_request_push<T>(
+        self,
+        value: T,
+    ) -> NotificationRequestBuilder<::planus::Initialized<6, T>>
+        where T: ::planus::WriteAsOffset<self::NotificationRequestPush> {
         NotificationRequestBuilder(::planus::Initialized(value))
     }
 
@@ -32378,6 +38133,23 @@ impl<T> ::planus::WriteAsOptionalUnion<NotificationRequest> for NotificationRequ
         ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
     }
 }
+impl<T> ::planus::WriteAsUnion<NotificationRequest> for NotificationRequestBuilder<::planus::Initialized<6, T>>
+    where T: ::planus::WriteAsOffset<self::NotificationRequestPush>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<NotificationRequest> {
+        ::planus::UnionOffset::new(6, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<NotificationRequest> for NotificationRequestBuilder<::planus::Initialized<6, T>>
+    where T: ::planus::WriteAsOffset<self::NotificationRequestPush>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<NotificationRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
 
 
 /// Reference to a deserialized [NotificationRequest].
@@ -32388,6 +38160,7 @@ pub enum NotificationRequestRef<'a>{
     NotificationRequestPolicyGet(self::NotificationRequestPolicyGetRef<'a>),
     NotificationRequestPolicySet(self::NotificationRequestPolicySetRef<'a>),
     NotificationRequestHealth(self::NotificationRequestHealthRef<'a>),
+    NotificationRequestPush(self::NotificationRequestPushRef<'a>),
     
 }
 
@@ -32413,6 +38186,9 @@ impl<'a> ::core::convert::TryFrom<NotificationRequestRef<'a>> for NotificationRe
                 NotificationRequestRef::NotificationRequestHealth(value) => Self::NotificationRequestHealth(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
+                NotificationRequestRef::NotificationRequestPush(value) => Self::NotificationRequestPush(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
         })
     }
 }
@@ -32422,7 +38198,7 @@ impl<'a> ::core::convert::TryFrom<NotificationRequestRef<'a>> for NotificationRe
 impl<'a> ::planus::TableReadUnion<'a> for NotificationRequestRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::NotificationRequestInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::NotificationRequestSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::NotificationRequestPolicyGet(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::NotificationRequestPolicySet(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::NotificationRequestHealth(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::NotificationRequestInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::NotificationRequestSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::NotificationRequestPolicyGet(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::NotificationRequestPolicySet(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::NotificationRequestHealth(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::NotificationRequestPush(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
@@ -32438,7 +38214,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for NotificationRequestRef<'a> {
 /// The table `OperationNotifications` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OperationNotifications` in the file `crates/bkpr-protocol/src/wire/native.fbs:310`
+/// * Table `OperationNotifications` in the file `crates/bkpr-protocol/src/wire/native.fbs:359`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -32733,7 +38509,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationNotificationsRef<'a> {
 /// The union `Operation` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Operation` in the file `crates/bkpr-protocol/src/wire/native.fbs:313`
+/// * Union `Operation` in the file `crates/bkpr-protocol/src/wire/native.fbs:362`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -34337,7 +40113,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for OperationRef<'a> {
 /// The table `PaneRequestInspect` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestInspect` in the file `crates/bkpr-protocol/src/wire/native.fbs:350`
+/// * Table `PaneRequestInspect` in the file `crates/bkpr-protocol/src/wire/native.fbs:399`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -34563,7 +40339,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestInspectRef<'a> {
 /// The table `PaneRequestAttach` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestAttach` in the file `crates/bkpr-protocol/src/wire/native.fbs:353`
+/// * Table `PaneRequestAttach` in the file `crates/bkpr-protocol/src/wire/native.fbs:402`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -34868,7 +40644,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestAttachRef<'a> {
 /// The table `PaneRequestUpdate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:356`
+/// * Table `PaneRequestUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:405`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -35257,7 +41033,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestUpdateRef<'a> {
 /// The table `PaneRequestDetach` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestDetach` in the file `crates/bkpr-protocol/src/wire/native.fbs:360`
+/// * Table `PaneRequestDetach` in the file `crates/bkpr-protocol/src/wire/native.fbs:409`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -35562,7 +41338,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestDetachRef<'a> {
 /// The table `PaneRequestPoll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPoll` in the file `crates/bkpr-protocol/src/wire/native.fbs:363`
+/// * Table `PaneRequestPoll` in the file `crates/bkpr-protocol/src/wire/native.fbs:412`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -36785,7 +42561,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPollRef<'a> {
 /// The table `PaneRequestPin` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPin` in the file `crates/bkpr-protocol/src/wire/native.fbs:373`
+/// * Table `PaneRequestPin` in the file `crates/bkpr-protocol/src/wire/native.fbs:422`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -37195,7 +42971,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPinRef<'a> {
 /// The table `PaneRequestInput` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestInput` in the file `crates/bkpr-protocol/src/wire/native.fbs:377`
+/// * Table `PaneRequestInput` in the file `crates/bkpr-protocol/src/wire/native.fbs:426`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -37584,7 +43360,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestInputRef<'a> {
 /// The table `PaneRequestPaste` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPaste` in the file `crates/bkpr-protocol/src/wire/native.fbs:381`
+/// * Table `PaneRequestPaste` in the file `crates/bkpr-protocol/src/wire/native.fbs:430`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -37973,7 +43749,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPasteRef<'a> {
 /// The table `PaneRequestPasteContents` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPasteContents` in the file `crates/bkpr-protocol/src/wire/native.fbs:385`
+/// * Table `PaneRequestPasteContents` in the file `crates/bkpr-protocol/src/wire/native.fbs:434`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -38592,7 +44368,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPasteContentsRef<'a> {
 /// The table `PaneRequestKey` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestKey` in the file `crates/bkpr-protocol/src/wire/native.fbs:391`
+/// * Table `PaneRequestKey` in the file `crates/bkpr-protocol/src/wire/native.fbs:440`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -38981,7 +44757,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestKeyRef<'a> {
 /// The table `PaneRequestMouse` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestMouse` in the file `crates/bkpr-protocol/src/wire/native.fbs:395`
+/// * Table `PaneRequestMouse` in the file `crates/bkpr-protocol/src/wire/native.fbs:444`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -39370,7 +45146,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestMouseRef<'a> {
 /// The table `PaneRequestFocus` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestFocus` in the file `crates/bkpr-protocol/src/wire/native.fbs:399`
+/// * Table `PaneRequestFocus` in the file `crates/bkpr-protocol/src/wire/native.fbs:448`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -39772,7 +45548,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestFocusRef<'a> {
 /// The table `PaneRequestScroll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestScroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:403`
+/// * Table `PaneRequestScroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:452`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -40174,7 +45950,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestScrollRef<'a> {
 /// The table `PaneRequestSelect` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestSelect` in the file `crates/bkpr-protocol/src/wire/native.fbs:407`
+/// * Table `PaneRequestSelect` in the file `crates/bkpr-protocol/src/wire/native.fbs:456`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -40563,7 +46339,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestSelectRef<'a> {
 /// The table `PaneRequestCopySelection` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestCopySelection` in the file `crates/bkpr-protocol/src/wire/native.fbs:411`
+/// * Table `PaneRequestCopySelection` in the file `crates/bkpr-protocol/src/wire/native.fbs:460`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -40868,7 +46644,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestCopySelectionRef<'a> {
 /// The table `PaneRequestSearch` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestSearch` in the file `crates/bkpr-protocol/src/wire/native.fbs:414`
+/// * Table `PaneRequestSearch` in the file `crates/bkpr-protocol/src/wire/native.fbs:463`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -41246,7 +47022,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestSearchRef<'a> {
 /// The table `PaneRequestClipboard` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestClipboard` in the file `crates/bkpr-protocol/src/wire/native.fbs:418`
+/// * Table `PaneRequestClipboard` in the file `crates/bkpr-protocol/src/wire/native.fbs:467`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -41729,7 +47505,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestClipboardRef<'a> {
 /// The table `PaneRequestColors` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestColors` in the file `crates/bkpr-protocol/src/wire/native.fbs:423`
+/// * Table `PaneRequestColors` in the file `crates/bkpr-protocol/src/wire/native.fbs:472`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -42478,7 +48254,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestColorsRef<'a> {
 /// The table `PaneRequestTerminate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestTerminate` in the file `crates/bkpr-protocol/src/wire/native.fbs:430`
+/// * Table `PaneRequestTerminate` in the file `crates/bkpr-protocol/src/wire/native.fbs:479`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -42783,7 +48559,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestTerminateRef<'a> {
 /// The table `PaneRequestShutdown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestShutdown` in the file `crates/bkpr-protocol/src/wire/native.fbs:433`
+/// * Table `PaneRequestShutdown` in the file `crates/bkpr-protocol/src/wire/native.fbs:482`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -43009,7 +48785,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestShutdownRef<'a> {
 /// The union `PaneRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:436`
+/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:485`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -43968,7 +49744,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PaneRequestRef<'a> {
 /// The table `SearchActionQuery` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:437`
+/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:486`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -44273,7 +50049,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionQueryRef<'a> {
 /// The table `SearchActionNext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:440`
+/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:489`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -44499,7 +50275,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionNextRef<'a> {
 /// The table `SearchActionPrevious` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:443`
+/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:492`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -44725,7 +50501,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionPreviousRef<'a> {
 /// The table `SearchActionClear` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:446`
+/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:495`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -44951,7 +50727,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionClearRef<'a> {
 /// The union `SearchAction` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:449`
+/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:498`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -45222,7 +50998,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SearchActionRef<'a> {
 /// The table `LayoutNodeLeaf` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:450`
+/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:499`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -45527,7 +51303,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeLeafRef<'a> {
 /// The table `LayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:453`
+/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:502`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -46125,7 +51901,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeSplitRef<'a> {
 /// The union `LayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:459`
+/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:508`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -46310,7 +52086,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for LayoutNodeRef<'a> {
 /// The table `SpawnLayoutNodeExisting` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:460`
+/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:509`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -46615,7 +52391,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeExistingRef<'a> {
 /// The table `SpawnLayoutNodeNew` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:463`
+/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:512`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -46920,7 +52696,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeNewRef<'a> {
 /// The table `SpawnLayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:466`
+/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:515`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -47518,7 +53294,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeSplitRef<'a> {
 /// The union `SpawnLayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:472`
+/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:521`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -47746,7 +53522,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SpawnLayoutNodeRef<'a> {
 /// The table `NativeConversation` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NativeConversation` in the file `crates/bkpr-protocol/src/wire/native.fbs:473`
+/// * Table `NativeConversation` in the file `crates/bkpr-protocol/src/wire/native.fbs:522`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -48257,7 +54033,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NativeConversationRef<'a> {
 /// The table `AgentBindingGuard` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentBindingGuard` in the file `crates/bkpr-protocol/src/wire/native.fbs:478`
+/// * Table `AgentBindingGuard` in the file `crates/bkpr-protocol/src/wire/native.fbs:527`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -48646,7 +54422,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentBindingGuardRef<'a> {
 /// The table `CaptureEventBind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:482`
+/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:531`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -49278,7 +55054,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventBindRef<'a> {
 /// The table `CaptureEventError` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:488`
+/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:537`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -49583,7 +55359,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventErrorRef<'a> {
 /// The table `CaptureEventEnd` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:491`
+/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:540`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -49809,7 +55585,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventEndRef<'a> {
 /// The table `CaptureEventPromptSubmitted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventPromptSubmitted` in the file `crates/bkpr-protocol/src/wire/native.fbs:494`
+/// * Table `CaptureEventPromptSubmitted` in the file `crates/bkpr-protocol/src/wire/native.fbs:543`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -50211,7 +55987,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventPromptSubmittedRef<'a> {
 /// The table `CaptureEventStatusEnroll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventStatusEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:498`
+/// * Table `CaptureEventStatusEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:547`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -50613,7 +56389,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventStatusEnrollRef<'a> {
 /// The table `CaptureEventStatusReport` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventStatusReport` in the file `crates/bkpr-protocol/src/wire/native.fbs:502`
+/// * Table `CaptureEventStatusReport` in the file `crates/bkpr-protocol/src/wire/native.fbs:551`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -51378,7 +57154,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventStatusReportRef<'a> {
 /// The table `CaptureEventUnbind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventUnbind` in the file `crates/bkpr-protocol/src/wire/native.fbs:509`
+/// * Table `CaptureEventUnbind` in the file `crates/bkpr-protocol/src/wire/native.fbs:558`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -51908,7 +57684,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventUnbindRef<'a> {
 /// The table `CaptureEventNativeContext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventNativeContext` in the file `crates/bkpr-protocol/src/wire/native.fbs:514`
+/// * Table `CaptureEventNativeContext` in the file `crates/bkpr-protocol/src/wire/native.fbs:563`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -52297,7 +58073,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventNativeContextRef<'a> {
 /// The union `CaptureEvent` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:518`
+/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:567`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -52740,7 +58516,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for CaptureEventRef<'a> {
 /// The table `AgentRequestWhoami` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:519`
+/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:568`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -53056,7 +58832,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWhoamiRef<'a> {
 /// The table `AgentRequestControl` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:522`
+/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:571`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -53555,7 +59331,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestControlRef<'a> {
 /// The table `AgentRequestSetTitle` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:527`
+/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:576`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -53860,7 +59636,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSetTitleRef<'a> {
 /// The table `AgentRequestDiscoverAgents` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:530`
+/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:579`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -54801,7 +60577,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestDiscoverAgentsRef<'a> {
 /// The table `AgentRequestSendMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:538`
+/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:587`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -55405,7 +61181,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSendMessageRef<'a> {
 /// The table `AgentRequestReadInbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:545`
+/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:594`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56045,7 +61821,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadInboxRef<'a> {
 /// The table `AgentRequestReadMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:551`
+/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:600`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56572,7 +62348,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadMessageRef<'a> {
 /// The table `AgentRequestAckMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:556`
+/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:605`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56877,7 +62653,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestAckMessageRef<'a> {
 /// The table `AgentRequestInspectOutbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:559`
+/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:608`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -57415,7 +63191,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestInspectOutboxRef<'a> {
 /// The table `AgentRequestReceiverRegister` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:564`
+/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:613`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -57926,7 +63702,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverRegisterRef<'a> {
 /// The table `AgentRequestReceiverSubscribe` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:569`
+/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:618`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58328,7 +64104,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverSubscribeRef<'a> {
 /// The table `AgentRequestWakeValidate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:573`
+/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:622`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58826,7 +64602,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeValidateRef<'a> {
 /// The table `AgentRequestWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:578`
+/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:627`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -59415,7 +65191,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeOutcomeRef<'a> {
 /// The union `AgentRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:584`
+/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:633`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -60073,7 +65849,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentRequestRef<'a> {
 /// The table `AgentWakeOutcomeAccepted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:585`
+/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:634`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -60299,7 +66075,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeAcceptedRef<'a> {
 /// The table `AgentWakeOutcomeFailed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:588`
+/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:637`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -60604,7 +66380,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeFailedRef<'a> {
 /// The table `AgentWakeOutcomeUnknown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:591`
+/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:640`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -60909,7 +66685,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeUnknownRef<'a> {
 /// The union `AgentWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:594`
+/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:643`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -61137,7 +66913,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentWakeOutcomeRef<'a> {
 /// The table `RequestFailureSessionClosing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:595`
+/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:644`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -61453,7 +67229,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureSessionClosingRef<'a> {
 /// The table `RequestFailureBusy` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:598`
+/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:647`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -61758,7 +67534,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureBusyRef<'a> {
 /// The union `RequestFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:601`
+/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:650`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -61943,7 +67719,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for RequestFailureRef<'a> {
 /// The table `OptionalU64` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:602`
+/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:651`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62259,7 +68035,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalU64Ref<'a> {
 /// The table `OptionalPalette` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:605`
+/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:654`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62564,7 +68340,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPaletteRef<'a> {
 /// The table `OptionalUsize` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:608`
+/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:657`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62880,7 +68656,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalUsizeRef<'a> {
 /// The table `NullValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:613`
+/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:662`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -63106,7 +68882,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NullValueRef<'a> {
 /// The table `BoolValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:614`
+/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:663`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -63422,7 +69198,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for BoolValueRef<'a> {
 /// The table `SignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:615`
+/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:664`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -63738,7 +69514,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SignedValueRef<'a> {
 /// The table `UnsignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:616`
+/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:665`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64054,7 +69830,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for UnsignedValueRef<'a> {
 /// The table `FloatValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:617`
+/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:666`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -64370,7 +70146,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FloatValueRef<'a> {
 /// The table `StringValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:618`
+/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:667`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64675,7 +70451,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for StringValueRef<'a> {
 /// The table `ArrayValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:619`
+/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:668`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -64980,7 +70756,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ArrayValueRef<'a> {
 /// The table `Entry` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:620`
+/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:669`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -65358,7 +71134,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for EntryRef<'a> {
 /// The table `ObjectValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:621`
+/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:670`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -65663,7 +71439,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ObjectValueRef<'a> {
 /// The union `ValueBody` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:622`
+/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:671`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -66106,7 +71882,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ValueBodyRef<'a> {
 /// The table `Value` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:623`
+/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:672`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -66401,7 +72177,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ValueRef<'a> {
 /// The table `ControlPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:624`
+/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:673`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -66696,7 +72472,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ControlPayloadRef<'a> {
 /// The table `PanePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:625`
+/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:674`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -67089,7 +72865,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PanePayloadRef<'a> {
 /// The union `Payload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:626`
+/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:675`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -67274,7 +73050,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PayloadRef<'a> {
 /// The table `Request` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:627`
+/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:676`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -67663,7 +73439,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestRef<'a> {
 /// The table `OptionalPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:628`
+/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:677`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -67958,7 +73734,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPayloadRef<'a> {
 /// The table `OptionalFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:629`
+/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:678`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -68253,7 +74029,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalFailureRef<'a> {
 /// The table `Response` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:630`
+/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:679`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize

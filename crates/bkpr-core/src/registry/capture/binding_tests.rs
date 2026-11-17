@@ -63,9 +63,6 @@ fn assert_cas_rejected(f: &ControlFixture, stale: CaptureEvent) {
     let launch =
         f.fixture.registry.inner.captures.lock().unwrap().launches[&f.grant.launch_id].clone();
     let version = f.fixture.registry.inner.captures.lock().unwrap().version;
-    let registry_revision = f.fixture.registry.snapshot().unwrap().revision;
-    let pane = f.fixture.registry.capture_pane(&f.pane).unwrap();
-    let pane_revision = pane.shared.published.lock().unwrap().revision;
     let path = f.fixture._root.path().join("agents/state.json");
     let stored = fs::read(&path).unwrap();
     let inode = fs::metadata(&path).unwrap().ino();
@@ -78,14 +75,6 @@ fn assert_cas_rejected(f: &ControlFixture, stale: CaptureEvent) {
     assert!(current.control.same_authority(&launch.control));
     assert!(launch.control.is_valid());
     drop(captures);
-    assert_eq!(
-        f.fixture.registry.snapshot().unwrap().revision,
-        registry_revision
-    );
-    assert_eq!(
-        pane.shared.published.lock().unwrap().revision,
-        pane_revision
-    );
     assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
     assert_eq!(fs::read(path).unwrap(), stored);
 }

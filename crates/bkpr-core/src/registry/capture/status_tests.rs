@@ -230,7 +230,11 @@ fn registry_watcher_receives_hidden_harness_status_without_admitting_any_views()
             .iter()
             .map(|record| record.kind)
             .collect::<Vec<_>>(),
-        [NotificationKind::Attention, NotificationKind::Error]
+        [
+            NotificationKind::Attention,
+            NotificationKind::Error,
+            NotificationKind::Done
+        ]
     );
     assert!(
         page.notifications

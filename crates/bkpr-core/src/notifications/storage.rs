@@ -101,7 +101,7 @@ struct Episode {
 
 pub(super) struct Store {
     // Connection closes before exclusive authority is released.
-    connection: Connection,
+    pub(super) connection: Connection,
     _directory: File,
     _lease: Arc<Lease>,
     store_id: String,
@@ -111,6 +111,9 @@ pub(super) struct Store {
     episodes: BTreeMap<String, BTreeMap<String, Episode>>,
     episode_count: usize,
     next_expiry: Option<Option<u64>>,
+    pub(super) push_dirty: bool,
+    pub(super) push_deadline_cache: Option<(bool, Option<u64>)>,
+    pub(super) push_key: Option<Arc<str>>,
 }
 impl Store {
     pub(super) fn open(root: &Path) -> Result<Opened> {
@@ -213,6 +216,7 @@ impl Store {
             )?;
             transaction.commit()?;
         }
+        super::push_store::initialize(&connection)?;
         let store_id: String = connection.query_row(
             "SELECT store_id FROM metadata WHERE singleton=1",
             [],
@@ -265,6 +269,9 @@ impl Store {
             episodes: BTreeMap::new(),
             episode_count: 0,
             next_expiry: None,
+            push_dirty: true,
+            push_deadline_cache: None,
+            push_key: None,
         };
         let (latest, pruned, retained, bytes): (i64, i64, i64, i64) = store.connection.query_row(
             "SELECT sequence,pruned,retained,bytes FROM metadata WHERE singleton=1",
@@ -327,6 +334,9 @@ impl Store {
     }
     pub(super) fn failed(&self) -> bool {
         self.failed
+    }
+    pub(super) fn mark_failed(&mut self) {
+        self.failed = true;
     }
     pub(super) fn policies(&self) -> &[NotificationPolicy] {
         &self.policies
@@ -518,8 +528,18 @@ impl Store {
                 "UPDATE metadata SET sequence=?1 WHERE singleton=1",
                 [sequence],
             )?;
+            let push_created = super::push_store::enqueue_notification(
+                &transaction,
+                &notification,
+                &self.store_id,
+                now,
+            )?;
             prune_transaction(&transaction, now)?;
             transaction.commit()?;
+            self.push_dirty |= push_created;
+            if push_created {
+                self.push_deadline_cache = None;
+            }
             self.update_episode(&notification.source, state, seen);
             self.next_expiry = None;
             Ok(true)
@@ -716,7 +736,7 @@ fn ambiguous(a: &NotificationScope, b: &NotificationScope) -> bool {
         && overlap(&a.workspace_id, &b.workspace_id)
         && overlap(&a.pane_id, &b.pane_id)
 }
-fn matches_scope(scope: &NotificationScope, source: &NotificationSource) -> bool {
+pub(super) fn matches_scope(scope: &NotificationScope, source: &NotificationSource) -> bool {
     scope
         .session_id
         .as_ref()

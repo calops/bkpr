@@ -300,12 +300,61 @@ table NotificationRequestHealth {}
 table NotificationRequestPolicySet {
   policy:NotificationPolicy (required);
 }
+table PushSubscription {
+  endpoint:string (required);
+  p256dh:string (required);
+  auth:string (required);
+}
+table PushEndpointPolicy { allow_private_cidrs:[string] (required); }
+table PushRevision { destination_id:string (required); generation:ulong; }
+table PushRequestPublicKey {}
+table PushRequestList {}
+table PushRequestEnroll {
+  request_id:string (required);
+  subscription:PushSubscription (required);
+  policy:PushEndpointPolicy (required);
+  scope:NotificationScope (required);
+  kinds:[NotificationKind] (required);
+  replaces:PushRevision;
+  device_label:string;
+}
+table PushRequestConfirm {
+  destination_id:string (required);
+  generation:ulong;
+  nonce:string (required);
+}
+table PushRequestRevoke { destination_id:string (required); generation:ulong; }
+table PushRequestTest {
+  request_id:string (required);
+  destination_id:string (required);
+  generation:ulong;
+}
+table PushRequestDiagnostics {}
+table PushRequestUpdate {
+  request_id:string (required);
+  destination_id:string (required);
+  generation:ulong;
+  scope:NotificationScope (required);
+  kinds:[NotificationKind] (required);
+}
+union PushRequest {
+  PushRequestPublicKey,
+  PushRequestList,
+  PushRequestEnroll,
+  PushRequestConfirm,
+  PushRequestRevoke,
+  PushRequestTest,
+  PushRequestDiagnostics,
+  PushRequestUpdate
+}
+table NotificationRequestPush { request:PushRequest (required); }
 union NotificationRequest {
   NotificationRequestInspect,
   NotificationRequestSubscribe,
   NotificationRequestPolicyGet,
   NotificationRequestPolicySet,
-  NotificationRequestHealth
+  NotificationRequestHealth,
+  NotificationRequestPush
 }
 table OperationNotifications {
   request:NotificationRequest (required);

@@ -460,7 +460,7 @@ pub fn request_host(
 }
 
 /// Dispatch a notification request once to an explicit host or session endpoint.
-/// Policy writes additionally inspect the host identity and cannot target a session.
+/// Host-only policy and push management inspect host identity and cannot target a session.
 pub fn request_notifications(
     socket: &Path,
     request: &bkpr_protocol::Request,
@@ -472,10 +472,7 @@ pub fn request_notifications(
         bail!("expected a notification request");
     };
     notification.validate()?;
-    if matches!(
-        notification,
-        bkpr_protocol::NotificationRequest::PolicySet { .. }
-    ) {
+    if notification.host_only() {
         return request_host(socket, request);
     }
     validate_endpoint_socket(socket)?;

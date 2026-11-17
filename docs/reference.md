@@ -1754,10 +1754,11 @@ Historical versions remain in [CHANGELOG.md](../CHANGELOG.md).
 
 ## Notification records and subscriptions
 
-`Operation::Notifications` exposes backend records, not desktop presentation,
-push delivery or agent-inbox acknowledgements. It was added in native family 11;
-current family 11 (remote control 2) accepts compatible newer clients. Older peers
-reject unsupported operations before dispatch, not through general feature negotiation.
+`Operation::Notifications` exposes backend records and host-owned push management,
+not desktop presentation or agent-inbox acknowledgements. The foundation was
+added in native family 11; push management appends a request variant without
+changing that family (remote control 2). Older daemons reject unsupported
+requests rather than accepting work they cannot perform.
 An already-running older daemon must be explicitly restarted to collect records;
 normal attachment never replaces it.
 
@@ -1808,7 +1809,65 @@ Inspection/subscription is not a provider delivery receipt. Attached TUIs may
 independently present best-effort OS alerts through confirmed OSC 99, with local
 focus suppression and source activation. Unconfirmed terminals do not attempt
 desktop presentation. See the [notification design](notifications.md) for bounds,
-failure semantics, implemented desktop presentation and future UnifiedPush delivery.
+failure semantics, desktop presentation and the selected UnifiedPush publisher.
+
+### Push destinations
+
+Push management requires the host control socket, never a session socket. It
+does not open an HTTP enrollment listener. Requests use the nested shape
+`{"version":11,"op":"notifications","request":{"method":"push","request":{...}}}`.
+
+| Inner method | Contract |
+| --- | --- |
+| `public_key` | Persistent host VAPID public key for distributor registration. |
+| `enroll` | Subscription, network policy, source scope, kinds, optional device label and request ID; commits a pending generation and encrypted challenge. |
+| `confirm` | Destination ID, generation and challenge nonce; activates only after proof. |
+| `list` | Bounded secret-free destination/settings summaries, including pending and retired state. |
+| `update` | Expected destination generation, scope, kinds and request ID; changes future delivery without replaying history. |
+| `test` | Destination ID, generation and request ID; durably queues an explicit test. |
+| `revoke` | Exact destination generation; removes subscription secrets and cancels undispatched work. |
+| `diagnostics` | Bounded job states and redacted provider outcomes, not device delivery receipts. |
+
+Read the public key:
+
+```sh
+bkpr request --socket "$XDG_RUNTIME_DIR/bkpr/d" \
+  '{"version":11,"op":"notifications","request":{"method":"push","request":{"method":"public_key"}}}'
+```
+
+Subscription endpoints/authentication and confirmation nonces are secrets. Send
+their complete request JSON through stdin, not shell arguments/history:
+
+```sh
+bkpr request --socket "$XDG_RUNTIME_DIR/bkpr/d" - < private-enrollment.json
+# The same authenticated host operation over SSH:
+ssh devbox 'bkpr request --socket "$XDG_RUNTIME_DIR/bkpr/d" -' < private-enrollment.json
+```
+
+Keep that input file private, or stream directly from the receiving application.
+Enrollment takes `subscription: {endpoint, p256dh, auth}` with uncompressed P-256
+and 16-byte authentication keys encoded as unpadded base64url;
+`policy: {allow_private_cidrs: []}` defaults to public HTTPS destinations.
+Private providers require explicit permitted CIDRs and still require valid TLS.
+The nonce is delivered only inside encrypted push, never in the enrollment reply.
+
+Rotation supplies `replaces: {destination_id, generation}`. The existing active
+subscription remains valid until the new generation is proven; expired
+subscriptions can renew under the same logical identity. Generation checks
+fence stale updates/completions. Empty push `kinds` mute automatic delivery;
+explicit tests remain available, and re-enabling sends only future events.
+
+Enrollment, filter updates and tests deduplicate identical request IDs/arguments
+for seven days; their receipts expose `idempotency_expires_at_ms`. Do not replay
+an ambiguous mutation after that horizon. Confirmation/revocation are
+revision-idempotent. A queued receipt requires a successful durable commit.
+Revocation cannot retract an already admitted network attempt.
+
+Provider acceptance, retryable rejection, expiry and ambiguous outcomes are
+distinct. Interrupted/ambiguous dispatch is not blindly replayed after restart.
+HTTP success does not prove that a distributor delivered, or a phone displayed,
+the message. A receiving mobile application and distributor registration remain
+separate work.
 
 ## License
 

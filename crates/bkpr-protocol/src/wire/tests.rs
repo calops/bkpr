@@ -13,6 +13,153 @@ fn assert_request(operation: Operation) {
 }
 
 #[test]
+fn outer_request_debug_never_serializes_push_capabilities_or_proofs() {
+    for request in [
+        PushRequest::Enroll {
+            request_id: "enroll".into(),
+            subscription: PushSubscription {
+                endpoint: "https://private-provider.test/capability-secret".into(),
+                p256dh: "recipient-key-secret".into(),
+                auth: "authentication-secret".into(),
+            },
+            policy: PushEndpointPolicy::default(),
+            scope: NotificationScope::default(),
+            kinds: vec![],
+            replaces: None,
+            device_label: None,
+        },
+        PushRequest::Confirm {
+            destination_id: "destination".into(),
+            generation: 1,
+            nonce: "challenge-proof-secret".into(),
+        },
+    ] {
+        let operation = Operation::Notifications {
+            request: NotificationRequest::Push {
+                request: Box::new(request),
+            },
+        };
+        for operation in [
+            operation.clone(),
+            Operation::Client {
+                authority: ClientAuthority {
+                    client_id: "client".into(),
+                    token: "attachment-secret".into(),
+                },
+                request: Box::new(operation),
+            },
+        ] {
+            let debug = format!("{:?}", Request::new(operation));
+            for secret in [
+                "private-provider",
+                "capability-secret",
+                "recipient-key-secret",
+                "authentication-secret",
+                "challenge-proof-secret",
+                "attachment-secret",
+            ] {
+                assert!(!debug.contains(secret));
+            }
+        }
+    }
+}
+
+#[test]
+fn push_requests_are_structural_and_reject_invalid_revisions() {
+    let subscription = PushSubscription {
+        endpoint: "https://push.example.test/private-capability".into(),
+        p256dh: "recipient-key".into(),
+        auth: "recipient-secret".into(),
+    };
+    let requests = [
+        PushRequest::PublicKey {},
+        PushRequest::List {},
+        PushRequest::Diagnostics {},
+        PushRequest::Enroll {
+            request_id: "enroll".into(),
+            subscription,
+            policy: PushEndpointPolicy {
+                allow_private_cidrs: vec!["127.0.0.1/32".into()],
+            },
+            scope: NotificationScope {
+                session_id: Some("session".into()),
+                workspace_id: None,
+                pane_id: None,
+            },
+            kinds: vec![NotificationKind::Attention, NotificationKind::Done],
+            replaces: Some(PushRevision {
+                destination_id: "destination".into(),
+                generation: 7,
+            }),
+            device_label: Some("fixture phone".into()),
+        },
+        PushRequest::Confirm {
+            destination_id: "destination".into(),
+            generation: 8,
+            nonce: "challenge-secret".into(),
+        },
+        PushRequest::Revoke {
+            destination_id: "destination".into(),
+            generation: 8,
+        },
+        PushRequest::Test {
+            request_id: "test".into(),
+            destination_id: "destination".into(),
+            generation: 8,
+        },
+        PushRequest::Update {
+            request_id: "update".into(),
+            destination_id: "destination".into(),
+            generation: 8,
+            scope: NotificationScope::default(),
+            kinds: vec![NotificationKind::Error],
+        },
+    ];
+    for request in requests {
+        if let PushRequest::Enroll { device_label, .. } = &request {
+            assert!(device_label.is_some());
+            let mut absent = request.clone();
+            if let PushRequest::Enroll { device_label, .. } = &mut absent {
+                *device_label = None;
+            }
+            assert_request(Operation::Notifications {
+                request: NotificationRequest::Push {
+                    request: Box::new(absent),
+                },
+            });
+        }
+        assert!(!format!("{request:?}").contains("secret"));
+        assert_request(Operation::Notifications {
+            request: NotificationRequest::Push {
+                request: Box::new(request),
+            },
+        });
+    }
+    let request = Request::new(Operation::Notifications {
+        request: NotificationRequest::Push {
+            request: Box::new(PushRequest::Confirm {
+                destination_id: "destination".into(),
+                generation: 0,
+                nonce: "proof".into(),
+            }),
+        },
+    });
+    assert!(Codec::new().encode_request(&request).is_err());
+    let mut builder = Builder::new();
+    let id = builder.create_string("destination");
+    let proof = builder.create_string("proof");
+    let confirm = g::PushRequestConfirm::create(&mut builder, id, 0, proof);
+    let push = g::PushRequest::create_push_request_confirm(&mut builder, confirm);
+    let request = g::NotificationRequestPush::create(&mut builder, push);
+    let request = g::NotificationRequest::create_notification_request_push(&mut builder, request);
+    let operation = g::OperationNotifications::create(&mut builder, request);
+    let operation = g::Operation::create_operation_notifications(&mut builder, operation);
+    let request = g::Request::create(&mut builder, PROTOCOL_VERSION, operation);
+    let bytes = builder.finish(request, None).to_vec();
+    assert!(decode_request(&bytes).is_err());
+}
+
+#[test]
 fn notifications_roundtrip_structural_requests_and_optional_cursors() {
     let kinds = vec![
         NotificationKind::Attention,

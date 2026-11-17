@@ -2,7 +2,7 @@
 
 ## Status and prerequisite
 
-The backend event/store/subscription foundation and best-effort TUI desktop presentation are implemented. Push delivery remains a design, not implemented acceptance. The lifecycle prerequisite is one long-lived `bkprd` per host/OS user, owning multiple independent sessions. Closing the last workspace closes that session and its attached clients, not the daemon. An empty daemon remains idle and available. Notification handling lives inside `bkprd`, not an additional local daemon. Desktop presentation is tracked in [issue #7](https://github.com/calops/bkpr/issues/7); the future publisher-operated push relay is a separate remote deployment.
+The backend event/store/subscription foundation, best-effort TUI desktop presentation and host-owned UnifiedPush enrollment/delivery are implemented. Backend push acceptance uses isolated TLS providers and an independent receiver; Android distributor registration and phone display are not implemented acceptance. The lifecycle prerequisite is one long-lived `bkprd` per host/OS user, owning multiple independent sessions. Closing the last workspace closes that session and its attached clients, not the daemon. An empty daemon remains idle and available. Notification handling lives inside `bkprd`, not an additional local daemon. Desktop presentation is tracked in [issue #7](https://github.com/calops/bkpr/issues/7); the future publisher-operated push relay is a separate remote deployment.
 
 Named sessions retain independently leased endpoints and recovery roots inside the host process. Incompatible live daemons are never adopted, replaced or stopped automatically. Explicit private runtime/state roots remain available for isolated fixtures.
 
@@ -140,7 +140,95 @@ Use standard Web Push: RFC 8030 delivery, RFC 8291 `aes128gcm` encryption, and R
 
 The app transports registration/rotation/revocation to the backend through the authenticated client boundary. Validate enrollment with a push challenge. Prevent arbitrary HTTP/SSRF forwarding: checked endpoint destinations, no unchecked redirects/DNS rebinding, and narrow explicit allowances for private self-hosted providers. Do not globally forbid legitimate private hosting or silently allow arbitrary private targets.
 
-POST ciphertext to the enrolled endpoint, not a fabricated ntfy topic. Honor TTL, urgency, provider acceptance/rejection and subscription expiry. A successful HTTP submission does not establish device delivery. Keep payloads well below provider limits and avoid any need to fetch terminal content to display a notification. The publisher spike below evaluates maintained libraries; no production dependency is selected yet.
+POST ciphertext to the enrolled endpoint, not a fabricated ntfy topic. Honor TTL, urgency, provider acceptance/rejection and subscription expiry. A successful HTTP submission does not establish device delivery. Keep payloads well below provider limits and avoid any need to fetch terminal content to display a notification.
+
+### Selected publisher (2026-11-17)
+
+The user selected `web-push` 0.11.0 with its default HTTP clients disabled,
+using the supported exact-origin VAPID claim override and a controlled Reqwest
+transport. The user explicitly accepts its known `crypto-bigint` advisory
+exposure while upstream remediation is pending. The risk is unresolved, not
+silently waived by tests or described as fixed. The older spike recommendation
+below is historical; it does not block the selected integration.
+
+The adapter keeps HTTPS certificate validation, validates and pins resolved
+addresses per attempt, disables ambient proxies/redirects/automatic retries,
+and requires explicit CIDR exceptions for private providers. Expiry and failed
+or ambiguous provider attempts remain separate from device delivery.
+
+The transport reuses Reqwest/Rustls rather than an HTTP implementation of our
+own. `iprfc` 1.0.0 (MIT OR Apache-2.0) supplies checked-in IANA special-purpose
+address tables; its package has no build-time or runtime table fetch. The
+[table provenance](https://github.com/al8n/iprfc/blob/ae8a78b6b33863b273359ec0ac79e9788a8f4f8d/data/iana/README.md)
+records the 2025-10-09 snapshots. Private exceptions include narrowly selected
+RFC 1918, ULA, loopback and CGNAT ranges, permitting self-hosted and Tailscale
+providers. Link-local, multicast, unspecified and known cloud metadata
+addresses remain denied even inside an exception.
+
+All resolved addresses must pass policy before a request is pinned to them.
+DNS admission is bounded across abandoned requests: at most four queued/running
+blocking resolver calls, with each permit retained until the actual resolver
+returns, not merely until its async waiter times out. HTTP has no automatic
+retry; the durable scheduler decides whether a recorded outcome is safe to
+retry. Any HTTP 2xx means provider acceptance, not phone delivery.
+
+### Implemented host delivery contract
+
+The [native management API](reference.md#push-destinations) owns a persistent
+VAPID identity and proven subscriptions. Ten-minute encrypted nonce challenges
+precede activation; the management receipt never reveals the nonce. Logical
+destination IDs survive subscription rotation and renewal after provider expiry.
+Monotonic generations fence stale proof, filter changes, revocation and late
+network completions. Public device labels/settings survive bounded retirement;
+subscription secrets do not. Empty filters mute automatic alerts without
+destroying the proven route.
+
+Eligible notification records and their outbox admissions commit in one SQLite
+transaction, independent of terminal/session lifetime. New enrollment and filter
+changes never replay notification history. Enrollment/update/test receipts
+promise exact-request deduplication for seven days and return its expiry; the
+bounded ledger rejects saturation rather than dropping an unexpired promise.
+Do not blindly retry an ambiguous mutation after its receipt horizon.
+
+The outbox permits 512 pending jobs, at most 64 per destination, four independent
+lazy network workers and six attempts. Event/test payloads expire after five
+minutes, challenges after ten. There are at most 32 live logical destinations
+and 32 pending generations. Recent terminal diagnostics and retired generations
+are each bounded to 128. Overflow is durably counted, never disguised as delivery.
+Shutdown/restart preserves queued work and records interrupted dispatch as
+unknown rather than replaying a potentially accepted send. Private SQLite page
+or journal retention is not a secure-erasure guarantee.
+
+### Backend acceptance (2026-11-17)
+
+`target/smoke/unifiedpush/actual-3/acceptance.json` records 15 passing checks with
+an immutable incremental-dev `bkpr`/`bkprd` pair, UID 1000 and loopback-only
+network isolation. Real OpenSSH carried enrollment and confirmation JSON through
+stdin. Synthetic native managed executables emitted authenticated OSC 7501 over
+real PTYs; no model service, user session, profile or approval cache was used.
+
+The independent receiver verified encrypted challenges/status payloads, exact
+VAPID identity/audience including port, ES256 signatures, TTL, tamper rejection
+and wrong-auth rejection. Scenarios covered scope/muting/rotation, expired-route
+renewal, 2xx acceptance, 404/410 expiry, 429/503 scheduling, redirect rejection,
+ambiguous EOF without replay, last-session closure, restart, TLS/endpoint
+rejection, writer-lock failure without a receipt/send, bounded admission and
+secret-free management diagnostics. Both inner and namespace cleanup reported
+no surviving owned processes.
+
+With one TLS provider held mid-response, health/history completed in 1.93/3.07 ms
+and another provider was accepted in 95.2 ms while the first remained
+dispatching. These are informational loopback observations, not latency budgets.
+
+| Isolated daemon state | CPU ticks over two seconds | Threads | RSS (KiB) |
+| --- | ---: | ---: | ---: |
+| Before enrollment | 0 | 3 | 16,824 |
+| After delivery settlement | 0 | 7 | 24,604 |
+
+The second sample followed restart and delivery work; this is not a controlled
+memory-growth comparison. No real distributor, phone decryption, background
+wake or OS notification display was tested. HTTP acceptance remains only
+provider acceptance.
 
 ### Publisher feasibility spike (2026-11-16)
 

@@ -1,3 +1,13 @@
+## Unreleased
+
+### Features
+
+* **notifications:** add host-owned UnifiedPush enrollment, encrypted confirmation and durable Web Push delivery. Destination rotation, source filters, muting, revocation and redacted diagnostics use the authenticated host API. Secret-bearing CLI requests can use stdin.
+
+### Security
+
+* **notifications:** `web-push` 0.11.0 retains the accepted `crypto-bigint` advisory exposure pending upstream remediation. See [notification dependency notes](docs/notifications.md#selected-publisher-2026-11-17). A receiving mobile app is still separate work.
+
 ## [0.7.1](https://github.com/calops/bkpr/compare/v0.7.0...v0.7.1) (2026-11-16)
 
 ### Bug Fixes

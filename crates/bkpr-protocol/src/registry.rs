@@ -266,6 +266,18 @@ pub enum Operation {
 }
 impl std::fmt::Debug for Operation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn contains_push(operation: &Operation) -> bool {
+            match operation {
+                Operation::Notifications {
+                    request: crate::NotificationRequest::Push { .. },
+                } => true,
+                Operation::Client { request, .. } => contains_push(request),
+                _ => false,
+            }
+        }
+        if contains_push(self) {
+            return f.write_str("Operation::Notifications(Push([REDACTED]))");
+        }
         let mut value = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
         fn redact(value: &mut serde_json::Value) {
             match value {

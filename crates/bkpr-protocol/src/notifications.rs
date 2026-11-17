@@ -296,6 +296,11 @@ pub enum NotificationRequest {
     /// Read observation/storage health even when the retained store cannot be opened.
     /// Does not fabricate a store identity or imply successful durable acceptance.
     Health {},
+    /// Manage host-owned encrypted push destinations; never available through session control.
+    Push {
+        /// Authenticated host management operation.
+        request: Box<PushRequest>,
+    },
 }
 impl NotificationRequest {
     /// Reject invalid selectors, cursors, kinds, limits, policy or subscription wait.
@@ -310,12 +315,344 @@ impl NotificationRequest {
             }
             Self::PolicyGet {} | Self::Health {} => {}
             Self::PolicySet { policy } => policy.validate()?,
+            Self::Push { request } => request.validate()?,
         }
         if let Self::Subscribe { wait_ms, .. } = self {
             ensure!(
                 *wait_ms <= MAX_NOTIFICATION_WAIT_MS,
                 "notification subscription wait exceeds 5000ms"
             );
+        }
+        Ok(())
+    }
+    /// Whether this operation requires the explicit authenticated host endpoint.
+    pub fn host_only(&self) -> bool {
+        matches!(self, Self::PolicySet { .. } | Self::Push { .. })
+    }
+}
+
+/// Browser-compatible Web Push subscription; every field is confidential.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PushSubscription {
+    /// HTTPS push-service capability URL.
+    pub endpoint: String,
+    /// Base64url uncompressed P-256 recipient public key.
+    pub p256dh: String,
+    /// Base64url recipient authentication secret.
+    pub auth: String,
+}
+impl std::fmt::Debug for PushSubscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PushSubscription([REDACTED])")
+    }
+}
+/// Explicit host-authorized private-provider network exceptions.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PushEndpointPolicy {
+    /// At most eight private-network CIDRs; public HTTPS remains the default.
+    pub allow_private_cidrs: Vec<String>,
+}
+/// Exact destination revision used to fence replacement and revocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PushRevision {
+    /// Opaque destination identity.
+    pub destination_id: String,
+    /// Exact destination generation.
+    pub generation: u64,
+}
+/// Public application-server identity; no private signing material.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushPublicKey {
+    /// Base64url uncompressed SEC1 public key used when creating a subscription.
+    pub public_key: String,
+}
+/// Secret-free projection of one retained destination generation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushDestinationInfo {
+    /// Stable logical destination identity.
+    pub destination_id: String,
+    /// Monotonic subscription/filter generation.
+    pub generation: u64,
+    /// Pending, active, revoked or expired; never a device delivery status.
+    pub state: String,
+    /// Pending proof expiry, or the original deadline for a confirmed generation.
+    pub challenge_expires_at_ms: u64,
+    /// Jobs rejected by bounded admission for this generation.
+    pub dropped_jobs: u64,
+    /// Human-readable label, retained independently of retired subscription secrets.
+    pub device_label: Option<String>,
+    /// Source selectors, retained independently of retired subscription secrets.
+    pub scope: Option<NotificationScope>,
+    /// Selected semantic kinds; an empty list mutes automatic delivery.
+    pub kinds: Option<Vec<NotificationKind>>,
+    /// Whether automatic event delivery is configured; independent of endpoint expiry.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+/// Bounded destination list, prioritizing every active and pending generation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushDestinationPage {
+    /// At most 128 secret-free generations; older retired generations may be omitted.
+    pub destinations: Vec<PushDestinationInfo>,
+    /// Maximum retained projections returned by this request.
+    pub retained_limit: u16,
+}
+/// A durable encrypted-challenge admission receipt, not proof of receipt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushEnrollmentReceipt {
+    /// Stable logical destination identity.
+    pub destination_id: String,
+    /// Exact pending generation required by confirmation.
+    pub generation: u64,
+    /// Pending proof state at acceptance.
+    pub state: String,
+    /// Deadline for authenticated confirmation of the encrypted nonce.
+    pub challenge_expires_at_ms: u64,
+    /// Durable challenge job identity for diagnostic inspection.
+    pub job_id: String,
+    /// End of the seven-day exact-request deduplication guarantee.
+    pub idempotency_expires_at_ms: u64,
+}
+/// Exact committed destination generation after proof, update or revocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushMutationReceipt {
+    /// Stable logical destination identity.
+    pub destination_id: String,
+    /// Exact committed generation.
+    pub generation: u64,
+    /// Active or revoked; never a device delivery status.
+    pub state: String,
+    /// Revocation cannot retract network dispatch already admitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_flight_outcome: Option<String>,
+    /// Filter-update deduplication deadline; proof and revocation are revision-idempotent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_expires_at_ms: Option<u64>,
+}
+/// Durable test receipt; identical request IDs deduplicate within its explicit horizon.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushTestReceipt {
+    /// Stable durable job identity.
+    pub job_id: String,
+    /// Queued at admission; inspect diagnostics for subsequent provider outcomes.
+    pub state: String,
+    /// End of the seven-day exact-request deduplication guarantee.
+    pub idempotency_expires_at_ms: u64,
+}
+/// Secret-free outcome of one bounded retained push job.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushJobDiagnostic {
+    /// Durable job identity.
+    pub job_id: String,
+    /// Stable logical destination identity.
+    pub destination_id: String,
+    /// Exact subscription generation used by this job.
+    pub generation: u64,
+    /// Challenge, notification or test.
+    pub kind: String,
+    /// Durable scheduling/provider outcome, never device delivery.
+    pub state: String,
+    /// Number of durably admitted network attempts.
+    pub attempts: u32,
+    /// Stable redacted outcome or absence before the first attempt.
+    pub result: Option<String>,
+}
+/// Bounded push admission and attempt diagnostics.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushDiagnostics {
+    /// At most 128 most-recent job projections.
+    pub jobs: Vec<PushJobDiagnostic>,
+    /// Cumulative durable job admission losses, independent of diagnostic pruning.
+    pub dropped_jobs: u64,
+    /// Maximum retained job projections returned by this request.
+    pub retained_limit: u16,
+    /// Always false: HTTP acceptance never proves device delivery or display.
+    pub acceptance_is_delivery: bool,
+}
+
+/// Authenticated, host-only push enrollment and diagnostics.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PushRequest {
+    /// Read the persistent host's public VAPID application-server key.
+    PublicKey {},
+    /// List secret-free pending and active destinations.
+    List {},
+    /// Enroll a pending subscription and queue one encrypted nonce challenge.
+    Enroll {
+        /// Seven-day idempotency key; retries within the receipt horizon require identical arguments.
+        request_id: String,
+        /// Recipient subscription; never returned by management reads.
+        subscription: PushSubscription,
+        /// Explicit endpoint network policy.
+        policy: PushEndpointPolicy,
+        /// Source selectors; no historical events are replayed.
+        scope: NotificationScope,
+        /// Semantic kinds to deliver.
+        kinds: Vec<NotificationKind>,
+        /// Active or expired current destination to replace only after successful proof.
+        replaces: Option<PushRevision>,
+        /// Optional human-readable device label, at most 160 UTF-8 bytes without controls.
+        #[serde(default)]
+        device_label: Option<String>,
+    },
+    /// Prove receipt of an encrypted challenge using its private nonce.
+    Confirm {
+        /// Pending destination identity.
+        destination_id: String,
+        /// Exact pending generation.
+        generation: u64,
+        /// Nonce received through the encrypted push channel.
+        nonce: String,
+    },
+    /// Revoke a destination and cancel undispatched work.
+    Revoke {
+        /// Destination identity.
+        destination_id: String,
+        /// Exact destination generation.
+        generation: u64,
+    },
+    /// Queue one idempotent encrypted test for an active destination.
+    Test {
+        /// Seven-day idempotency key; identical retries within the receipt horizon never duplicate sends.
+        request_id: String,
+        /// Active destination identity.
+        destination_id: String,
+        /// Exact active generation.
+        generation: u64,
+    },
+    /// Read bounded secret-free provider attempt diagnostics.
+    Diagnostics {},
+    /// Replace future-event filters without changing the proven subscription.
+    Update {
+        /// Seven-day idempotency key for this exact filter replacement.
+        request_id: String,
+        /// Stable logical destination identity.
+        destination_id: String,
+        /// Exact active subscription generation to replace.
+        generation: u64,
+        /// Source selectors applied only to newly accepted events.
+        scope: NotificationScope,
+        /// Semantic kinds to deliver; an empty list disables automatic sends but permits explicit tests.
+        kinds: Vec<NotificationKind>,
+    },
+}
+impl std::fmt::Debug for PushRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PushRequest([REDACTED])")
+    }
+}
+impl PushRequest {
+    /// Reject unbounded secrets, malformed revisions and ambiguous semantic selectors.
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::PublicKey {} | Self::List {} | Self::Diagnostics {} => {}
+            Self::Enroll {
+                request_id,
+                subscription,
+                policy,
+                scope,
+                kinds,
+                replaces,
+                device_label,
+            } => {
+                valid_id(request_id)?;
+                ensure!(
+                    !subscription.endpoint.is_empty() && subscription.endpoint.len() <= 4096,
+                    "push endpoint exceeds bound"
+                );
+                ensure!(
+                    !subscription.p256dh.is_empty() && subscription.p256dh.len() <= 128,
+                    "invalid push recipient key bound"
+                );
+                ensure!(
+                    !subscription.auth.is_empty() && subscription.auth.len() <= 128,
+                    "invalid push authentication bound"
+                );
+                ensure!(
+                    policy.allow_private_cidrs.len() <= 8
+                        && policy
+                            .allow_private_cidrs
+                            .iter()
+                            .all(|cidr| !cidr.is_empty() && cidr.len() <= 64),
+                    "push endpoint policy exceeds bound"
+                );
+                scope.validate()?;
+                valid_kinds(kinds)?;
+                ensure!(
+                    device_label.as_ref().is_none_or(
+                        |label| label.len() <= 160 && !label.chars().any(char::is_control)
+                    ),
+                    "push device label exceeds bound or contains controls"
+                );
+                if let Some(revision) = replaces {
+                    valid_id(&revision.destination_id)?;
+                    ensure!(
+                        revision.generation > 0 && revision.generation <= i64::MAX as u64,
+                        "invalid push generation"
+                    );
+                }
+            }
+            Self::Confirm {
+                destination_id,
+                generation,
+                nonce,
+            } => {
+                valid_id(destination_id)?;
+                ensure!(
+                    *generation > 0 && *generation <= i64::MAX as u64,
+                    "invalid push generation"
+                );
+                ensure!(
+                    !nonce.is_empty() && nonce.len() <= 128,
+                    "invalid push challenge bound"
+                );
+            }
+            Self::Update {
+                request_id,
+                destination_id,
+                generation,
+                scope,
+                kinds,
+            } => {
+                valid_id(request_id)?;
+                valid_id(destination_id)?;
+                ensure!(
+                    *generation > 0 && *generation < i64::MAX as u64,
+                    "invalid push generation"
+                );
+                scope.validate()?;
+                valid_kinds(kinds)?;
+            }
+            Self::Revoke {
+                destination_id,
+                generation,
+            }
+            | Self::Test {
+                destination_id,
+                generation,
+                ..
+            } => {
+                valid_id(destination_id)?;
+                ensure!(
+                    *generation > 0 && *generation <= i64::MAX as u64,
+                    "invalid push generation"
+                );
+                if let Self::Test { request_id, .. } = self {
+                    valid_id(request_id)?;
+                }
+            }
         }
         Ok(())
     }
