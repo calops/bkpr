@@ -9,6 +9,8 @@
   git,
   gh,
   openssh,
+  openssl,
+  pkg-config,
   libghostty-vt,
 }:
 stdenvNoCC.mkDerivation (
@@ -79,7 +81,8 @@ stdenvNoCC.mkDerivation (
         cargoHash
         cargoDeps
         ;
-      nativeBuildInputs = [ installShellFiles ];
+      nativeBuildInputs = [ installShellFiles pkg-config ];
+      buildInputs = [ openssl ];
       BKPR_GHOSTTY_VT_DIR = libghostty-vt;
       GHOSTTY_INSTALL_DIR = libghostty-vt;
       # Precompiled std panic/source paths must not retain a Rust compiler in

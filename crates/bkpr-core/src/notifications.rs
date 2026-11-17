@@ -19,6 +19,11 @@
 //! optional statement cache, WASM backend, async runtimes and extension features.
 //! SQLite owns rollback recovery, transactions and fsync; this module owns only
 //! notification policy, admission, private-file authority and finite retention.
+mod push_scheduler;
+mod push_store;
+#[cfg(test)]
+mod push_tests;
+pub(crate) mod push_transport;
 mod storage;
 #[cfg(test)]
 mod tests;
@@ -156,10 +161,12 @@ enum Command {
     },
     PolicyGet,
     PolicySet(NotificationPolicy),
+    Push(Box<bkpr_protocol::PushRequest>),
 }
 enum Reply {
     Page(NotificationPage),
     Policies(Vec<NotificationPolicy>),
+    Push(serde_json::Value),
 }
 enum Work {
     Observation(NotificationObservation),
@@ -281,9 +288,9 @@ impl NotificationService {
         self.handle.shared.health()
     }
 
-    /// Inspect retained records, configure host policy, or wait for resumable changes.
+    /// Inspect retained records, administer host policy/push, or wait for resumable changes.
     ///
-    /// A session endpoint is clamped to its persistent ID and cannot write policy.
+    /// Session reads clamp to their persistent ID; policy writes and all push management are host-only.
     /// Validates before admission; rejects saturation/cancellation and bounds waits.
     /// A storage timeout reports an unknown outcome, never a negative durable ACK.
     pub fn request(
@@ -306,6 +313,10 @@ impl NotificationService {
             NotificationRequest::PolicySet { .. } => ensure!(
                 session_id.is_none(),
                 "notification policy writes require host control"
+            ),
+            NotificationRequest::Push { .. } => ensure!(
+                session_id.is_none(),
+                "push management requires host control"
             ),
             NotificationRequest::PolicyGet {} | NotificationRequest::Health {} => {}
         }
@@ -396,6 +407,9 @@ impl NotificationService {
                 }
                 Reply::Policies(policies).payload()
             }
+            NotificationRequest::Push { request } => self
+                .command(Command::Push(request), is_connected)?
+                .payload(),
             NotificationRequest::PolicySet { policy } => self
                 .command(Command::PolicySet(policy), is_connected)?
                 .payload(),
@@ -484,6 +498,7 @@ impl Reply {
         Ok(Payload::Control(match self {
             Self::Page(page) => serde_json::to_value(page)?,
             Self::Policies(policies) => serde_json::to_value(policies)?,
+            Self::Push(value) => value,
         }))
     }
 }
@@ -523,11 +538,41 @@ fn now_ms() -> u64 {
         .min(i64::MAX as u128) as u64
 }
 fn run(mut store: storage::Store, queue: Receiver<Work>, stopping: Receiver<()>, shared: &Shared) {
+    let mut scheduler: Option<push_scheduler::Scheduler> = None;
     loop {
+        if !shared.failed.load(Ordering::Acquire) && store.push_dirty {
+            let dispatch = (|| -> Result<()> {
+                if let Some(scheduler) = &scheduler {
+                    scheduler.fence(&store)?;
+                }
+                while scheduler
+                    .as_ref()
+                    .is_none_or(|scheduler| scheduler.available())
+                {
+                    let Some(job) = store.push_claim(now_ms())? else {
+                        break;
+                    };
+                    if scheduler.is_none() {
+                        scheduler = Some(push_scheduler::Scheduler::new()?);
+                    }
+                    scheduler.as_mut().unwrap().submit(job)?;
+                }
+                Ok(())
+            })();
+            store.push_dirty = false;
+            if let Err(error) = dispatch {
+                shared.fail(&error);
+            }
+        }
         let expiry = if shared.failed.load(Ordering::Acquire) {
             None
         } else {
-            match store.next_expiry() {
+            let deadlines = (|| -> Result<Option<u64>> {
+                let history = store.next_expiry()?;
+                let push = store.push_deadline(scheduler.as_ref().is_none_or(|s| s.available()))?;
+                Ok(history.into_iter().chain(push).min())
+            })();
+            match deadlines {
                 Ok(expiry) => expiry,
                 Err(error) => {
                     shared.fail(&error);
@@ -538,19 +583,38 @@ fn run(mut store: storage::Store, queue: Receiver<Work>, stopping: Receiver<()>,
         let expiration = expiry.map_or_else(crossbeam_channel::never, |deadline| {
             crossbeam_channel::after(Duration::from_millis(deadline.saturating_sub(now_ms())))
         });
+        let results = scheduler
+            .as_ref()
+            .map_or_else(crossbeam_channel::never, |s| s.results.clone());
         select_biased! {
             recv(stopping) -> _ => break,
-            recv(expiration) -> _ => match store.expire(now_ms()) {
-                Ok(changed) => {
-                    if changed {
-                        match store.retained() {
-                            Ok(retained) => shared.retained.store(retained, Ordering::Relaxed),
-                            Err(error) => shared.fail(&error),
-                        }
-                        shared.wake();
-                    }
+            recv(results) -> result => {
+                if let Ok((id, outcome)) = result {
+                    scheduler.as_mut().unwrap().complete(&id);
+                    if let Err(error) = store.push_complete(&id, outcome, now_ms()) { shared.fail(&error); }
+                } else {
+                    scheduler = None;
+                    if let Err(error) = store.push_interrupt() { shared.fail(&error); }
+                    shared.fail(&anyhow::anyhow!("push network workers unavailable"));
                 }
-                Err(error) => shared.fail(&error),
+            },
+            recv(expiration) -> _ => {
+                let result = store.expire(now_ms()).and_then(|changed| {
+                    store.push_expire(now_ms())?;
+                    Ok(changed)
+                });
+                match result {
+                    Ok(changed) => {
+                        if changed {
+                            match store.retained() {
+                                Ok(retained) => shared.retained.store(retained, Ordering::Relaxed),
+                                Err(error) => shared.fail(&error),
+                            }
+                            shared.wake();
+                        }
+                    }
+                    Err(error) => shared.fail(&error),
+                }
             },
             recv(queue) -> work => match work {
                 Ok(work) => process(&mut store, work, shared),
@@ -558,8 +622,12 @@ fn run(mut store: storage::Store, queue: Receiver<Work>, stopping: Receiver<()>,
             }
         }
     }
+    drop(scheduler);
     while let Ok(work) = queue.try_recv() {
         process(&mut store, work, shared);
+    }
+    if let Err(error) = store.push_interrupt() {
+        shared.fail(&error);
     }
     if let Err(error) = store.sync_dropped(shared.dropped.load(Ordering::Relaxed)) {
         shared.fail(&error);
@@ -629,6 +697,7 @@ fn process(store: &mut storage::Store, work: Work, shared: &Shared) {
                             .map(|()| Reply::Policies(store.policies().to_vec()))
                     }
                 }
+                Command::Push(request) => store.push_request(*request, now_ms()).map(Reply::Push),
             };
             // Validation errors must not poison a healthy store. Storage errors mark
             // their origin inside Store, independently of request/cursor rejection.

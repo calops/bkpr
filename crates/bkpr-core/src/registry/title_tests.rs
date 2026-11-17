@@ -118,8 +118,20 @@ fn native_titles_update_hidden_registry_survive_event_eviction_and_clear_to_base
     );
     let live_view = view(&fixture.registry, &id, 80);
     input_title(&fixture.registry, &id, &live_view, "日本語 editor");
-    let changed = wait_title(&fixture.registry, &id, "日本語 editor");
-    assert!(changed.revision > first.revision);
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while wait_title(&fixture.registry, &id, "日本語 editor").revision <= first.revision {
+        assert!(
+            Instant::now() < deadline,
+            "title revision was not published"
+        );
+        send(
+            &fixture.registry,
+            Operation::Wait {
+                after: first.revision,
+                wait_ms: 1000,
+            },
+        );
+    }
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
         let pane_snapshot: PaneSnapshot =

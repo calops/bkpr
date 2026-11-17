@@ -195,10 +195,7 @@ fn parse_operation(bytes: &[u8]) -> Result<Operation> {
     if let Operation::Notifications { request } = &operation {
         request.validate()?;
         ensure!(
-            !matches!(
-                request,
-                bkpr_protocol::NotificationRequest::PolicySet { .. }
-            ),
+            !request.host_only(),
             "notification policy writes require an explicit host control socket"
         );
     }

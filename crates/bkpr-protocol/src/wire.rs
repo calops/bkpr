@@ -12,6 +12,7 @@ mod notifications;
 mod operations;
 mod pane;
 mod paths;
+mod push;
 #[cfg(test)]
 mod tests;
 mod types;

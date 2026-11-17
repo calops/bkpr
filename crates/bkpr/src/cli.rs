@@ -177,8 +177,8 @@ pub fn command() -> Command {
         )
         .subcommand(
             Command::new("request")
-                .about("Send one versioned typed JSON request")
-                .arg(Arg::new("payload").required(true)),
+                .about("Send one versioned typed JSON request; '-' reads bounded JSON from stdin")
+                .arg(Arg::new("payload").required(true).help("Typed request JSON, or '-' for private stdin input")),
         )
         .subcommand(
             Command::new("api")

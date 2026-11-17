@@ -144,21 +144,36 @@ fn main() -> Result<()> {
     }
 }
 
+fn read_request(payload: &str, input: impl std::io::Read) -> Result<Request> {
+    if payload != "-" {
+        anyhow::ensure!(
+            payload.len() <= bkpr_protocol::wire::MAX_REQUEST,
+            "request exceeds native request bound"
+        );
+        return serde_json::from_str(payload).context("decoding typed request");
+    }
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    input
+        .take(bkpr_protocol::wire::MAX_REQUEST as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= bkpr_protocol::wire::MAX_REQUEST,
+        "request exceeds native request bound"
+    );
+    serde_json::from_slice(&bytes).context("decoding typed request from stdin")
+}
+
 fn run_request(matches: &clap::ArgMatches, roots: &session::Roots) -> Result<()> {
     let payload = matches
         .subcommand_matches("request")
         .and_then(|arguments| arguments.get_one::<String>("payload"))
         .context("request needs a JSON payload")?;
-    let request: Request = serde_json::from_str(payload)?;
+    let request = read_request(payload, std::io::stdin().lock())?;
     let host_only = matches!(
         &request.operation,
-        Operation::DaemonInfo
-            | Operation::SessionOpen { .. }
-            | Operation::DaemonShutdown { .. }
-            | Operation::Notifications {
-                request: bkpr_protocol::NotificationRequest::PolicySet { .. }
-            }
-    );
+        Operation::DaemonInfo | Operation::SessionOpen { .. } | Operation::DaemonShutdown { .. }
+    ) || matches!(&request.operation, Operation::Notifications { request } if request.host_only());
     let explicit_notifications = matches!(&request.operation, Operation::Notifications { .. })
         && matches.contains_id("socket");
     let response = if host_only || explicit_notifications {
@@ -288,6 +303,28 @@ fn local_defaults(matches: &clap::ArgMatches) -> Result<SpawnDefaults> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_request_stdin_is_bounded_and_uses_the_closed_decoder() {
+        let request = Request::new(Operation::Notifications {
+            request: bkpr_protocol::NotificationRequest::Push {
+                request: Box::new(bkpr_protocol::PushRequest::Confirm {
+                    destination_id: "destination".into(),
+                    generation: 1,
+                    nonce: "private-proof".into(),
+                }),
+            },
+        });
+        let bytes = serde_json::to_vec(&request).unwrap();
+        let decoded = read_request("-", bytes.as_slice()).unwrap();
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            serde_json::to_value(request).unwrap()
+        );
+        let oversized = vec![b' '; bkpr_protocol::wire::MAX_REQUEST + 1];
+        assert!(read_request("-", oversized.as_slice()).is_err());
+        assert!(read_request("-", br#"{"version":11,"op":"notifications","request":{"method":"push","request":{"method":"public_key","unexpected":"secret"}}}"#.as_slice()).is_err());
+    }
+
     use std::os::{
         fd::AsRawFd,
         unix::{fs::PermissionsExt, net::UnixListener},

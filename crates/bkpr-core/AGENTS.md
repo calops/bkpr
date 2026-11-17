@@ -43,6 +43,39 @@ acknowledge gaps without hiding historical loss or causing permanent busy waits.
 Bounded shutdown drains accepted work or reports failure while a stalled worker
 retains its store lease. Do not reuse agent inbox notifications or acknowledgements.
 
+Push enrollment and its outbox share that same connection and notification-acceptance
+transaction (`notifications/push_store.rs`). No history cursor feeds a second pipeline.
+Only explicit authenticated host control manages destinations; pending encrypted nonce
+challenges expire after ten minutes. Confirmation stores a SHA-256 proof, while the
+private queued challenge payload is cleared when its attempt becomes terminal.
+Rotation preserves the logical destination ID, keeps the old generation active until
+proof, then atomically retires its queued jobs. Filter updates retain the proven
+subscription while advancing its generation. Enrollment, update and test request IDs
+deduplicate exact request fingerprints for seven days, with the horizon in each
+receipt. The 4096-entry/4-MiB ledger rejects admission until old receipts expire rather
+than prematurely forgetting a promised key. After that horizon, inspect durable
+destination/job state before retrying an uncertain mutation. Retired generations
+compact to 128; a separate secret-free highwater preserves monotonic generations for
+every retained logical destination. Subscription descriptors separately have a
+4-MiB bound; at most 32 logical destinations and 32 pending generations are live.
+Jobs retain their own compact payload independently of history pruning: 512 pending
+host-wide, 64 per destination, four independent network workers and 128 recent terminal
+diagnostics. Overflow commits explicit per-destination loss with the source record.
+Five-minute event/test TTLs, at most six attempts and provider minimum retry deadlines
+bound retries. Unknown, local rejection and provider acceptance never replay blindly.
+Retired generations retain public labels/filter settings while removing subscription
+capability URLs, recipient/auth keys and proof hashes. Renewal of an expired current
+generation uses the same logical ID and a new encrypted challenge; explicit revocation
+cannot be renewed. Empty destination kinds mute automatic events without removing the
+proven route; explicit tests remain available. Idempotency stores request fingerprints,
+not original secret-bearing enrollment bodies. Private SQLite retention does not imply
+secure erasure of old pages or journals. The immutable committed master PEM is cached
+as an `Arc<str>`; no job rereads or copies it after the first load.
+The scheduler is lazy and deadline-driven; full workers do not arm due-now queue
+timers. Shutdown cancels network futures and retains dispatching work as unknown;
+restart never treats an interrupted dispatch as safe to resend. No source authority,
+phone delivery or display is inferred from durable history or HTTP acceptance.
+
 ## Verification
 
 Use root Cargo/artifact coordination and host-user execution for permission-sensitive tests. Snapshot tests cover deltas/resource receipts; client `updates::tests` cover missing scenes, revision mismatches and nested JSON rejection. Exercise real PTY input/write receipts and repeated large styled snapshots; allocation evidence is not presentation latency. Run coordinated workspace tests, strict all-target Clippy, formatting and warnings-denied rustdoc.
