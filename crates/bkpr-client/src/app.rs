@@ -1,3 +1,4 @@
+use crate::metadata::ProjectSpan;
 use crate::transport::{Endpoint, RegisteredClient};
 use crate::tree::{Node as TreeNode, Owner as TreeOwner, Target as TreeTarget, Tree};
 use crate::{
@@ -425,8 +426,7 @@ impl SidebarTitleAnimation {
         Self {
             clock: bkpr_tui_framework::animation::AnimationClock::new(
                 now,
-                Duration::from_millis(80),
-                Duration::from_millis(1500),
+                Duration::from_millis(50),
             ),
             spans: Vec::new(),
             styles: Vec::new(),
@@ -436,43 +436,46 @@ impl SidebarTitleAnimation {
     fn capture(
         &mut self,
         frame: &bkpr_protocol::Frame,
-        titles: &[Rect],
+        titles: &[ProjectSpan],
         theme: &Theme,
-        truecolor: bool,
+        projects: &crate::project_colors::ProjectPalette,
         occluded: impl Fn(Rect) -> bool,
         now: Instant,
     ) {
         self.spans.clear();
         self.styles.clear();
-        if truecolor && let ColorSource::Rgb(accent) = theme.ink(Role::Warning, false) {
-            for &rect in titles {
-                if occluded(rect) {
-                    continue;
-                }
-                let Some(row) = frame.rows.get(usize::from(rect.y)) else {
-                    continue;
-                };
-                let left = usize::from(rect.x).min(row.cells.len());
-                let right = usize::from(rect.x.saturating_add(rect.width)).min(row.cells.len());
-                let Some(first) = row.cells.get(left).filter(|_| left < right) else {
-                    continue;
-                };
-                if !matches!(theme.effective_ink(&first.style), Some(ColorSource::Rgb(_))) {
-                    continue;
-                }
-                self.spans.push(TitleSweepSpan {
-                    rect: Rect {
-                        width: (right - left) as u16,
-                        ..rect
-                    },
-                    effect: bkpr_tui_framework::animation::TextSweep {
-                        highlight: accent,
-                        width: 0.4,
-                    },
-                });
-                self.styles
-                    .extend(row.cells[left..right].iter().map(|cell| cell.style.clone()));
+        for title in titles {
+            let rect = title.rect;
+            if occluded(rect) {
+                continue;
             }
+            let Some(row) = frame.rows.get(usize::from(rect.y)) else {
+                continue;
+            };
+            let left = usize::from(rect.x).min(row.cells.len());
+            let right = usize::from(rect.x.saturating_add(rect.width)).min(row.cells.len());
+            let Some(first) = row.cells.get(left).filter(|_| left < right) else {
+                continue;
+            };
+            if !matches!(theme.effective_ink(&first.style), Some(ColorSource::Rgb(_))) {
+                continue;
+            }
+            let Some(color) = projects.color(title.slot) else {
+                continue;
+            };
+            self.spans.push(TitleSweepSpan {
+                rect: Rect {
+                    width: (right - left) as u16,
+                    ..rect
+                },
+                effect: bkpr_tui_framework::animation::TextSweep {
+                    highlight: color.bright(),
+                    half_width_cells: 6.0,
+                    cells_per_second: 32.0,
+                },
+            });
+            self.styles
+                .extend(row.cells[left..right].iter().map(|cell| cell.style.clone()));
         }
         self.clock.set_active(!self.spans.is_empty(), now);
         self.clock.advance(now);
@@ -494,7 +497,7 @@ impl SidebarTitleAnimation {
     fn apply(&self, frame: &mut bkpr_protocol::Frame) {
         self.restore(frame);
         for span in &self.spans {
-            span.effect.apply(frame, span.rect, self.clock.phase());
+            span.effect.apply(frame, span.rect, self.clock.elapsed());
         }
     }
 
@@ -5742,7 +5745,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 &chrome_surface.frame,
                 &working_titles,
                 &theme,
-                app.colors.truecolor,
+                &project_palette,
                 |title| {
                     app.overlays.layers().any(|layer| {
                         layer.policy.modal
@@ -8324,8 +8327,11 @@ pub(super) mod tests {
                 cell.style.underline = 1; // Hover intent remains independent.
             }
             let baseline = surface.frame.clone();
+            let mut projects = crate::project_colors::ProjectPalette::default();
+            projects.update(&colors, 0);
+            let title = ProjectSpan { rect, slot: None };
             let mut animation = SidebarTitleAnimation::new(now);
-            animation.capture(&surface.frame, &[rect], &theme, true, |_| false, now);
+            animation.capture(&surface.frame, &[title], &theme, &projects, |_| false, now);
             assert!(animation.clock.next_deadline().is_some());
             assert!(animation.clock.advance(now + Duration::from_secs(1)));
             animation.apply(&mut surface.frame);
@@ -8360,11 +8366,13 @@ pub(super) mod tests {
                 "Stable style restored before cached paint/theme"
             );
             for (truecolor, covered, titles) in [
-                (false, false, vec![rect]),
-                (true, true, vec![rect]),
+                (false, false, vec![title]),
+                (true, true, vec![title]),
                 (true, false, Vec::new()),
             ] {
-                animation.capture(&surface.frame, &titles, &theme, truecolor, |_| covered, now);
+                colors.truecolor = truecolor;
+                projects.update(&colors, 0);
+                animation.capture(&surface.frame, &titles, &theme, &projects, |_| covered, now);
                 assert!(animation.clock.next_deadline().is_none());
                 animation.apply(&mut surface.frame);
                 assert_eq!(
@@ -8372,6 +8380,60 @@ pub(super) mod tests {
                     "Fallback/covered/offscreen is static"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn working_title_highlight_uses_each_project_hue_not_the_status_accent() {
+        let now = Instant::now();
+        let size = Size {
+            cols: 24,
+            rows: 1,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 1,
+        };
+        let mut colors = ColorProbe {
+            truecolor: true,
+            foreground: Some([230; 3]),
+            background: Some([15; 3]),
+            ..Default::default()
+        };
+        colors.palette.insert(3, [220, 200, 40]);
+        colors.palette.insert(4, [220, 40, 60]);
+        colors.palette.insert(5, [40, 200, 90]);
+        let mut projects = crate::project_colors::ProjectPalette::default();
+        projects.update(&colors, 2);
+        let mut theme = Theme::default();
+        crate::appearance::update_theme(&mut theme, &colors);
+        for slot in 0..2 {
+            let mut surface = UiSurface::new(size);
+            surface.paint(size, vec![(rect, "working title".into(), false)], None);
+            surface.apply_theme(&theme, Role::Base, &[]);
+            let mut animation = SidebarTitleAnimation::new(now);
+            animation.capture(
+                &surface.frame,
+                &[ProjectSpan {
+                    rect,
+                    slot: Some(slot),
+                }],
+                &theme,
+                &projects,
+                |_| false,
+                now,
+            );
+            animation.clock.advance(now + Duration::from_millis(250));
+            animation.apply(&mut surface.frame);
+            let ink = surface.frame.rows[0].cells[2].style.foreground;
+            assert!(
+                u16::from(ink[slot as usize]) > u16::from(ink[1 - slot as usize]) + 20,
+                "{ink:?}"
+            );
         }
     }
 

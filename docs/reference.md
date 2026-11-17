@@ -1132,9 +1132,12 @@ references separately. Transparent graphics-only layers preserve native cells,
 cursor and hit testing; shadow pixels can shade edge content without changing
 canonical terminal state.
 Visible sidebar pane titles with current harness status `working` receive a
-foreground sweep using the working icon's palette color when truecolor is confirmed.
-The framework owns the reusable animation clock and text effect; Bkpr chooses its
-colors, width and 80-ms/1.5-second cadence. Icons, tree guides, status and branch metadata remain
+foreground sweep in a vivid, perceptually normalized version of their project's
+bee hue when truecolor is confirmed. Light backgrounds use deeper saturated ink;
+dark backgrounds use lighter ink. The framework owns cached Okhsl color families,
+the animation clock and the text effect; Bkpr chooses the tone targets, a 12-cell
+band, 32 terminal cells/second and a 50-ms sampling cadence. Title length changes
+the repeat interval, not travel speed. Icons, tree guides, status and branch metadata remain
 static. Selection backgrounds and whole Unicode glyphs are preserved. Hidden,
 modal-covered and non-working titles schedule no animation; unsupported color
 capabilities retain static native ink. Decorative ticks reuse retained presentation

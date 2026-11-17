@@ -995,7 +995,7 @@ fn native_row_label(
     kind: SidebarRowKind,
     context: NativeRowContext<'_>,
     project_spans: &mut Vec<ProjectSpan>,
-    working_titles: &mut Vec<Rect>,
+    working_titles: &mut Vec<ProjectSpan>,
 ) -> (String, u16) {
     let NativeRowContext {
         registry,
@@ -1099,6 +1099,10 @@ fn native_row_label(
         }
         SidebarRowKind::Pane { index, projected } => {
             let pane = &registry.panes[index];
+            let slot = pane
+                .project
+                .as_ref()
+                .and_then(|project| projects.slot(project));
             project_spans.push(ProjectSpan {
                 rect: Rect {
                     x: marker_x,
@@ -1106,10 +1110,7 @@ fn native_row_label(
                     width: 2.min(width.saturating_sub(marker_x)),
                     height: 1,
                 },
-                slot: pane
-                    .project
-                    .as_ref()
-                    .and_then(|project| projects.slot(project)),
+                slot,
             });
             let (text, title) = sidebar_pane_label(
                 pane,
@@ -1120,11 +1121,14 @@ fn native_row_label(
                 && harness_status(pane, known).is_some_and(|status| status.state == "working")
                 && !title.is_empty()
             {
-                working_titles.push(Rect {
-                    x: entry.content_column() + title.start,
-                    y: row,
-                    width: title.end - title.start,
-                    height: 1,
+                working_titles.push(ProjectSpan {
+                    rect: Rect {
+                        x: entry.content_column() + title.start,
+                        y: row,
+                        width: title.end - title.start,
+                        height: 1,
+                    },
+                    slot,
                 });
             }
             write!(label, "{} {text}", if projected { "●" } else { "◌" }).unwrap();
@@ -1147,7 +1151,7 @@ pub(crate) fn tree_chrome<'a>(
     snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
     history: impl Fn(&str) -> Option<(u64, u64)>,
     project_spans: &mut Vec<ProjectSpan>,
-    working_titles: &mut Vec<Rect>,
+    working_titles: &mut Vec<ProjectSpan>,
 ) -> Vec<(crate::tree::Target, u16)> {
     let mut hits = Vec::new();
     render_chrome(
@@ -1211,7 +1215,7 @@ fn render_chrome<'a>(
     pane_status: impl Fn(&str) -> Option<&'static str>,
     snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
     history: impl Fn(&str) -> Option<(u64, u64)>,
-    (project_spans, working_titles): (&mut Vec<ProjectSpan>, &mut Vec<Rect>),
+    (project_spans, working_titles): (&mut Vec<ProjectSpan>, &mut Vec<ProjectSpan>),
     mut hit: impl FnMut(crate::tree::Node, crate::tree::Owner, u16),
 ) {
     let TreeChromeContext {
@@ -3055,7 +3059,7 @@ mod tests {
         };
         let (surface, titles) = paint(&pane, &snapshot, 0);
         assert_eq!(titles.len(), 1, "No workspace/window/detail spans");
-        let title = titles[0];
+        let title = titles[0].rect;
         let row = &surface.frame.rows[usize::from(title.y)].cells;
         let text = row[usize::from(title.x)..usize::from(title.x + title.width)]
             .iter()
