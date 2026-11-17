@@ -301,6 +301,14 @@ The retained controller archive, tool versions, protected build receipts and
 host-UID workspace test logs make this reproducible; sampling is correctness
 evidence, not a presentation-latency benchmark.
 
+The two-wave extension uses framework `TextSweep::apply_repeated` with positive
+wave count and nearest periodic distance: constant work per cell and one blend
+even where bands overlap. Bkpr selects two 16-cell bands at the existing speed.
+`target/smoke/title-two-waves/actual-1/` records light/dark native-PTY Kitty
+captures, about 32 cells/second for both 3-cell and 26-cell titles, zero idle
+repaint bytes and no surviving fixture processes. The framework regression also
+checks two distinct moving peaks and bounded overlap without color amplification.
+
 
 ### Terminal-native theme
 
