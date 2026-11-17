@@ -4,6 +4,7 @@
 
 use crate::appearance::{blend, surface};
 use bkpr_protocol::{ColorSource, ProjectSnapshot, RegistrySnapshot};
+use bkpr_tui_framework::color::{ColorTones, ColorVariants};
 use bkpr_tui_framework::{ColorProbe, Role};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -185,15 +186,23 @@ impl Evidence {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ProjectColor {
+    source: ColorSource,
+    variants: Option<ColorVariants>,
+}
+
 #[derive(Default)]
 pub(crate) struct ProjectPalette {
     evidence: Option<Evidence>,
     capacity: u32,
-    colours: Vec<ColorSource>,
+    colours: Vec<ProjectColor>,
     seen: BTreeSet<[u8; 3]>,
     background: Option<[u8; 3]>,
     next_shade: usize,
     exhausted: bool,
+    tones: Option<ColorTones>,
+    fallback: Option<ColorVariants>,
 }
 impl ProjectPalette {
     /// Cache colour evidence and monotonically grow finite demand. Returns whether
@@ -206,6 +215,16 @@ impl ProjectPalette {
         if self.evidence != Some(evidence) {
             self.evidence = Some(evidence);
             self.background = evidence.surface();
+            self.tones = self.background.map(crate::appearance::project_color_tones);
+            let fallback = evidence
+                .foreground
+                .zip(self.background)
+                .zip(self.tones)
+                .map(|((foreground, background), tones)| {
+                    tones.resolve(blend(foreground, background, 65))
+                });
+            changed |= self.fallback != fallback;
+            self.fallback = fallback;
             self.seen.clear();
             self.next_shade = 0;
             self.exhausted = self.background.is_none();
@@ -259,8 +278,17 @@ impl ProjectPalette {
     /// Unknown and exhausted ordinals use the caller's current muted style.
     fn colour(&self, slot: Option<u32>, muted: ColorSource) -> ColorSource {
         slot.and_then(|slot| self.colours.get(slot as usize))
-            .copied()
+            .map(|color| color.source)
             .unwrap_or(muted)
+    }
+
+    /// Cached project variants; unknown/exhausted slots use the same muted hue as bees.
+    /// Native-only entries have no fabricated RGB variant.
+    pub(crate) fn color(&self, slot: Option<u32>) -> Option<&ColorVariants> {
+        match slot.and_then(|slot| self.colours.get(slot as usize)) {
+            Some(color) => color.variants.as_ref(),
+            None => self.fallback.as_ref(),
+        }
     }
 
     /// Main's project escapes include SGR 22: a known accent must not inherit
@@ -285,6 +313,13 @@ impl ProjectPalette {
         {
             return false;
         }
+        let colour = ProjectColor {
+            source: colour,
+            variants: match (colour, self.tones) {
+                (ColorSource::Rgb(rgb), Some(tones)) => Some(tones.resolve(rgb)),
+                _ => None,
+            },
+        };
         let changed = if let Some(previous) = self.colours.get_mut(*length) {
             let changed = *previous != colour;
             *previous = colour;
@@ -635,5 +670,27 @@ mod tests {
         assert!(!palette.update(&probe, 40));
         assert_eq!(assigned(&palette, 40), colours);
         assert_eq!(palette.colours.as_ptr(), allocation);
+    }
+    #[test]
+    fn normalized_inks_follow_background_even_when_bee_rgb_is_unchanged() {
+        let mut probe = ColorProbe {
+            truecolor: true,
+            background: Some([0; 3]),
+            ..ColorProbe::default()
+        };
+        probe.palette.insert(4, [240, 200, 160]);
+        let mut palette = ProjectPalette::default();
+        palette.update(&probe, 1);
+        let bee = palette.colour(Some(0), MUTED);
+        let bright = palette.color(Some(0)).unwrap().bright();
+        probe.background = Some([240; 3]);
+        probe.palette.insert(4, [160, 120, 80]);
+        assert!(palette.update(&probe, 1));
+        assert_eq!(palette.colour(Some(0), MUTED), bee);
+        assert_ne!(palette.color(Some(0)).unwrap().bright(), bright);
+        assert!(!palette.update(&probe, 1));
+        probe.truecolor = false;
+        palette.update(&probe, 1);
+        assert!(palette.color(Some(0)).is_none());
     }
 }

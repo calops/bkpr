@@ -6,6 +6,7 @@ mod render;
 pub use render::*;
 pub mod animation;
 pub mod chord;
+pub mod color;
 pub mod decoration;
 pub mod graphics;
 pub mod image_viewer;

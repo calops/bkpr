@@ -1,7 +1,10 @@
 //! Bkpr's terminal-derived visual policy. The framework stores resolved styles only.
 use bkpr_protocol::{ColorSource, Size, Style};
 use bkpr_tui_framework::{
-    ColorProbe, Role, Theme, ThemeStyles, decoration::DecorationStyle, default_style,
+    ColorProbe, Role, Theme, ThemeStyles,
+    color::{ColorTones, Tone},
+    decoration::DecorationStyle,
+    default_style,
 };
 
 /// Native PTYs and pointer coordinates use the same gutter in rich and plain modes.
@@ -402,6 +405,15 @@ fn linear_luminance(rgb: [f64; 3]) -> f64 {
 }
 fn luminance(color: [u8; 3]) -> f64 {
     linear_luminance(color.map(linear))
+}
+
+/// Vivid and subdued project inks normalized for the actual sidebar background.
+pub(crate) fn project_color_tones(background: [u8; 3]) -> ColorTones {
+    let light = luminance(background) > 0.4;
+    ColorTones {
+        bright: Tone::new(if light { 0.47 } else { 0.78 }, 0.90),
+        muted: Tone::new(if light { 0.62 } else { 0.56 }, 0.18),
+    }
 }
 
 pub(crate) fn surface(fg: [u8; 3], bg: [u8; 3]) -> [u8; 3] {

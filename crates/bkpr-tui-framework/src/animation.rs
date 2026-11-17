@@ -6,30 +6,27 @@ use bkpr_protocol::{ColorSource, Frame, Style};
 use crate::Rect;
 
 /// A dormant-by-default periodic clock. The caller owns waiting and repainting.
-/// Activation restarts the cycle; missed ticks coalesce against its original epoch.
+/// Activation restarts elapsed time; missed ticks coalesce against its original epoch.
 pub struct AnimationClock {
     epoch: Instant,
     interval: Duration,
-    cycle: Duration,
     next: Option<Instant>,
-    phase_nanos: u128,
+    elapsed: Duration,
     active: bool,
 }
 
 impl AnimationClock {
-    /// Create an inactive clock with the given tick interval and phase cycle.
+    /// Create an inactive clock with the given positive tick interval.
     ///
     /// # Panics
-    /// Panics if `interval` or `cycle` is zero.
-    pub fn new(now: Instant, interval: Duration, cycle: Duration) -> Self {
+    /// Panics if `interval` is zero.
+    pub fn new(now: Instant, interval: Duration) -> Self {
         assert!(!interval.is_zero(), "animation interval must be positive");
-        assert!(!cycle.is_zero(), "animation cycle must be positive");
         Self {
             epoch: now,
             interval,
-            cycle,
             next: None,
-            phase_nanos: 0,
+            elapsed: Duration::ZERO,
             active: false,
         }
     }
@@ -41,22 +38,21 @@ impl AnimationClock {
         }
         self.active = active;
         self.epoch = now;
-        self.phase_nanos = 0;
+        self.elapsed = Duration::ZERO;
         self.next = active.then(|| now.checked_add(self.interval)).flatten();
         true
     }
 
-    /// Sample the current phase once when due, without replaying missed ticks.
-    /// Return whether the sampled phase changed, rather than merely a tick being due.
+    /// Sample active elapsed time once when due, without replaying missed ticks.
+    /// Return whether the sampled elapsed time changed.
     pub fn advance(&mut self, now: Instant) -> bool {
         if self.next.is_none_or(|next| now < next) {
             return false;
         }
-        let elapsed = now.saturating_duration_since(self.epoch).as_nanos();
-        let phase_nanos = elapsed % self.cycle.as_nanos();
-        let changed = self.phase_nanos != phase_nanos;
-        self.phase_nanos = phase_nanos;
-        let remainder = elapsed % self.interval.as_nanos();
+        let elapsed = now.saturating_duration_since(self.epoch);
+        let changed = self.elapsed != elapsed;
+        self.elapsed = elapsed;
+        let remainder = elapsed.as_nanos() % self.interval.as_nanos();
         let remainder = Duration::new(
             (remainder / 1_000_000_000) as u64,
             (remainder % 1_000_000_000) as u32,
@@ -70,20 +66,22 @@ impl AnimationClock {
         self.next
     }
 
-    /// Most recently sampled cycle position in `[0, 1)`; zero while inactive.
-    pub fn phase(&self) -> f64 {
-        (self.phase_nanos as f64 / self.cycle.as_nanos() as f64).min(1.0 - f64::EPSILON)
+    /// Most recently sampled time since activation; zero while inactive.
+    pub fn elapsed(&self) -> Duration {
+        self.elapsed
     }
 }
 
-/// A smooth band traveling left to right across the requested rectangle.
-/// This effect is stateless: restore stable styling before each application.
+/// A fixed-width band traveling left to right at a constant terminal-cell velocity.
+/// Each rectangle repeats independently. Restore stable styling before application.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextSweep {
     /// RGB ink color at the center of the band.
     pub highlight: [u8; 3],
-    /// Band half-width as a fraction of the rectangle's width; finite and positive.
-    pub width: f64,
+    /// Band half-width in terminal cells; finite and positive.
+    pub half_width_cells: f64,
+    /// Left-to-right velocity in terminal cells per second; finite and positive.
+    pub cells_per_second: f64,
 }
 
 impl TextSweep {
@@ -92,22 +90,38 @@ impl TextSweep {
     /// background and all attributes. Default/indexed ink is intentionally skipped.
     /// Whole wide graphemes share one weight; clipped graphemes are left untouched.
     /// Cursor, graphics resources, text and hyperlinks are never modified.
-    /// Finite phases are clamped to `[0, 1]`; invalid phase or width leaves the frame unchanged.
+    /// The band starts entirely left of `rect`, wrapping after crossing its right edge.
+    /// Invalid half-width or velocity leaves the frame unchanged.
     /// Weights use smoothstep falloff; RGB channels are interpolated and rounded.
-    pub fn apply(&self, frame: &mut Frame, rect: Rect, phase: f64) -> bool {
+    pub fn apply(&self, frame: &mut Frame, rect: Rect, elapsed: Duration) -> bool {
         if rect.width == 0
             || rect.height == 0
-            || !self.width.is_finite()
-            || self.width <= 0.0
-            || !phase.is_finite()
+            || !self.half_width_cells.is_finite()
+            || self.half_width_cells <= 0.0
+            || !self.cells_per_second.is_finite()
+            || self.cells_per_second <= 0.0
         {
             return false;
         }
         let left = usize::from(rect.x);
         let right = usize::from(rect.x.saturating_add(rect.width).min(frame.size.cols));
         let bottom = usize::from(rect.y.saturating_add(rect.height).min(frame.size.rows));
-        // Normalizing by the band width avoids overflow for very wide bands.
-        let center = phase.clamp(0.0, 1.0) * (1.0 / self.width + 2.0) - 1.0;
+        let seconds = elapsed.as_secs_f64();
+        let period = f64::from(rect.width) + 2.0 * self.half_width_cells;
+        let center = if period.is_finite() {
+            let distance = seconds * self.cells_per_second;
+            let progress = if distance.is_finite() {
+                distance % period
+            } else {
+                (seconds % (period / self.cells_per_second)) * self.cells_per_second
+            };
+            progress - self.half_width_cells
+        } else {
+            // Normalize enormous bands before either distance or period can overflow.
+            let period = f64::from(rect.width) / self.half_width_cells + 2.0;
+            let distance = seconds * (self.cells_per_second / self.half_width_cells);
+            (distance % period - 1.0) * self.half_width_cells
+        };
         let mut changed = false;
         for row in frame.rows.iter_mut().take(bottom).skip(usize::from(rect.y)) {
             let end = right.min(row.cells.len());
@@ -133,7 +147,7 @@ impl TextSweep {
                     continue;
                 }
                 let position = (x - left) as f64 + width as f64 * 0.5;
-                let distance = (position / f64::from(rect.width) / self.width - center).abs();
+                let distance = (position - center).abs() / self.half_width_cells;
                 if distance < 1.0 {
                     let t = 1.0 - distance;
                     let weight = t * t * (3.0 - 2.0 * t);
@@ -179,47 +193,254 @@ mod tests {
     use std::sync::Arc;
 
     const INTERVAL: Duration = Duration::from_millis(20);
-    const CYCLE: Duration = Duration::from_millis(200);
 
     #[test]
-    fn inactive_clocks_have_no_deadlines_and_reactivation_restarts() {
+    fn hidden_clocks_have_no_deadlines_and_reactivation_restarts_elapsed_time() {
         let now = Instant::now();
-        let mut clock = AnimationClock::new(now, INTERVAL, CYCLE);
+        let mut clock = AnimationClock::new(now, INTERVAL);
         assert_eq!(clock.next_deadline(), None);
-        assert_eq!(clock.phase(), 0.0);
-        assert!(!clock.advance(now + CYCLE));
+        assert_eq!(clock.elapsed(), Duration::ZERO);
+        assert!(!clock.advance(now + Duration::from_secs(1)));
         assert!(clock.set_active(true, now));
         assert_eq!(clock.next_deadline(), Some(now + INTERVAL));
         assert!(clock.advance(now + INTERVAL));
-        assert_eq!(clock.phase(), 0.1);
+        assert_eq!(clock.elapsed(), INTERVAL);
         assert!(!clock.set_active(true, now + INTERVAL));
         assert_eq!(clock.next_deadline(), Some(now + INTERVAL * 2));
         assert!(clock.set_active(false, now + INTERVAL));
         assert_eq!(clock.next_deadline(), None);
-        assert_eq!(clock.phase(), 0.0);
-        assert!(!clock.advance(now + CYCLE * 100));
-        let resumed = now + CYCLE * 101;
+        assert_eq!(clock.elapsed(), Duration::ZERO);
+        let resumed = now + Duration::from_secs(86_400);
+        assert!(!clock.advance(resumed));
         assert!(clock.set_active(true, resumed));
         assert_eq!(clock.next_deadline(), Some(resumed + INTERVAL));
-        assert_eq!(clock.phase(), 0.0);
+        assert_eq!(clock.elapsed(), Duration::ZERO);
+        assert!(clock.advance(resumed + INTERVAL));
+        assert_eq!(clock.elapsed(), INTERVAL);
     }
 
     #[test]
-    fn delayed_ticks_coalesce_without_moving_the_original_schedule() {
+    fn delayed_ticks_sample_elapsed_time_without_moving_the_original_schedule() {
         let now = Instant::now();
-        let mut clock = AnimationClock::new(now, INTERVAL, CYCLE);
+        let mut clock = AnimationClock::new(now, INTERVAL);
         clock.set_active(true, now);
         assert!(!clock.advance(now + INTERVAL - Duration::from_nanos(1)));
+        assert_eq!(clock.elapsed(), Duration::ZERO);
         assert!(clock.advance(now + INTERVAL));
-        assert_eq!(clock.phase(), 0.1);
-        assert!(!clock.advance(now + CYCLE * 30 + INTERVAL));
-        assert_eq!(clock.phase(), 0.1);
-        assert_eq!(clock.next_deadline(), Some(now + CYCLE * 30 + INTERVAL * 2));
-        let delayed = now + CYCLE * 30 + Duration::from_millis(67);
-        assert!(clock.advance(delayed));
-        assert_eq!(clock.phase(), 0.335);
-        assert_eq!(clock.next_deadline(), Some(now + CYCLE * 30 + INTERVAL * 4));
-        assert!(!clock.advance(delayed));
+        assert_eq!(clock.elapsed(), INTERVAL);
+        let skipped = INTERVAL * 301;
+        assert!(clock.advance(now + skipped));
+        assert_eq!(clock.elapsed(), skipped);
+        assert_eq!(clock.next_deadline(), Some(now + skipped + INTERVAL));
+        let delayed = Duration::from_millis(6067);
+        assert!(clock.advance(now + delayed));
+        assert_eq!(clock.elapsed(), delayed);
+        assert_eq!(
+            clock.next_deadline(),
+            Some(now + Duration::from_millis(6080))
+        );
+        assert!(!clock.advance(now + delayed));
+        assert!(!clock.advance(now + Duration::from_millis(6079)));
+        assert_eq!(clock.elapsed(), delayed);
+    }
+
+    #[test]
+    fn clocks_handle_unrepresentable_deadlines_without_panicking() {
+        let now = Instant::now();
+        let mut clock = AnimationClock::new(now, Duration::MAX);
+        assert!(clock.set_active(true, now));
+        assert_eq!(clock.next_deadline(), now.checked_add(Duration::MAX));
+        assert!(!clock.advance(now));
+        assert_eq!(clock.elapsed(), Duration::ZERO);
+        assert!(clock.set_active(false, now));
+        assert_eq!(clock.next_deadline(), None);
+    }
+
+    fn ink_line(width: u16) -> Frame {
+        let mut frame = crate::blank(Size {
+            cols: width,
+            rows: 1,
+            cell_width: 8,
+            cell_height: 16,
+        });
+        crate::text(&mut frame, 0, 0, &"x".repeat(usize::from(width)), false);
+        for cell in &mut frame.rows[0].cells {
+            cell.style.foreground = [0; 3];
+            cell.style.foreground_source = ColorSource::Rgb([0; 3]);
+        }
+        frame
+    }
+
+    #[test]
+    fn short_and_long_rectangles_share_cell_displacement_and_band_width() {
+        let sweep = TextSweep {
+            highlight: [255; 3],
+            half_width_cells: 2.0,
+            cells_per_second: 4.0,
+        };
+        for (millis, center_cell) in [(625, 0), (1125, 2)] {
+            let mut short = ink_line(8);
+            let mut long = ink_line(20);
+            let short_rect = Rect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 1,
+            };
+            let long_rect = Rect {
+                width: 20,
+                ..short_rect
+            };
+            let elapsed = Duration::from_millis(millis);
+            assert!(sweep.apply(&mut short, short_rect, elapsed));
+            assert!(sweep.apply(&mut long, long_rect, elapsed));
+            for x in 0..8 {
+                assert_eq!(short.rows[0].cells[x].style, long.rows[0].cells[x].style);
+            }
+            assert_eq!(
+                short.rows[0].cells[center_cell].style.foreground,
+                sweep.highlight
+            );
+            assert_eq!(
+                short.rows[0].cells[center_cell + 1].style.foreground,
+                [128; 3]
+            );
+            assert_eq!(
+                short.rows[0].cells[center_cell + 2].style.foreground,
+                [0; 3]
+            );
+        }
+    }
+
+    #[test]
+    fn rectangles_wrap_on_their_own_cell_distance_periods() {
+        let sweep = TextSweep {
+            highlight: [255; 3],
+            half_width_cells: 2.0,
+            cells_per_second: 4.0,
+        };
+        let short_rect = Rect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 1,
+        };
+        let long_rect = Rect {
+            width: 20,
+            ..short_rect
+        };
+        let mut short = ink_line(8);
+        let mut long = ink_line(20);
+        assert!(sweep.apply(&mut short, short_rect, Duration::from_millis(625)));
+        assert!(sweep.apply(&mut long, long_rect, Duration::from_millis(625)));
+        let mut short_repeat = ink_line(8);
+        assert!(sweep.apply(&mut short_repeat, short_rect, Duration::from_millis(3625)));
+        assert_eq!(short_repeat, short);
+        let mut long_later = ink_line(20);
+        assert!(sweep.apply(&mut long_later, long_rect, Duration::from_millis(3625)));
+        assert_ne!(long_later, long);
+        assert_eq!(long_later.rows[0].cells[12].style.foreground, [255; 3]);
+        let mut long_repeat = ink_line(20);
+        assert!(sweep.apply(&mut long_repeat, long_rect, Duration::from_millis(6625)));
+        assert_eq!(long_repeat, long);
+    }
+
+    #[test]
+    fn invalid_sweep_parameters_leave_frames_unchanged() {
+        let baseline = fixture();
+        let rect = Rect {
+            x: 1,
+            y: 0,
+            width: 5,
+            height: 2,
+        };
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for (half_width_cells, cells_per_second) in [(invalid, 4.0), (2.0, invalid)] {
+                let mut frame = baseline.clone();
+                let sweep = TextSweep {
+                    highlight: [255; 3],
+                    half_width_cells,
+                    cells_per_second,
+                };
+                assert!(!sweep.apply(&mut frame, rect, Duration::MAX));
+                assert_eq!(frame, baseline);
+            }
+        }
+    }
+
+    #[test]
+    fn finite_extreme_parameters_keep_ink_and_other_frame_fields_valid() {
+        let baseline = fixture();
+        let rect = Rect {
+            x: 1,
+            y: 0,
+            width: 5,
+            height: 2,
+        };
+        for (half_width_cells, cells_per_second) in [
+            (2.0, f64::MAX),
+            (f64::MAX, f64::MAX),
+            (f64::from_bits(1), f64::MAX),
+            (2.0, f64::from_bits(1)),
+        ] {
+            let sweep = TextSweep {
+                highlight: [240, 220, 200],
+                half_width_cells,
+                cells_per_second,
+            };
+            let mut frame = baseline.clone();
+            sweep.apply(&mut frame, rect, Duration::MAX);
+            for y in 0..2 {
+                for x in 1..6 {
+                    let actual = &frame.rows[y].cells[x].style;
+                    let before = &baseline.rows[y].cells[x].style;
+                    let (ink, base, source) = if before.inverse {
+                        (
+                            actual.background,
+                            before.background,
+                            &actual.background_source,
+                        )
+                    } else {
+                        (
+                            actual.foreground,
+                            before.foreground,
+                            &actual.foreground_source,
+                        )
+                    };
+                    assert_eq!(*source, ColorSource::Rgb(ink));
+                    for channel in 0..3 {
+                        assert!(ink[channel] >= base[channel]);
+                        assert!(ink[channel] <= sweep.highlight[channel]);
+                    }
+                    frame.rows[y].cells[x].style = before.clone();
+                }
+            }
+            assert_eq!(frame, baseline);
+        }
+    }
+
+    #[test]
+    fn finite_extreme_band_widths_still_reach_visible_ink() {
+        for (half_width_cells, cells_per_second) in [(f64::from_bits(1), 0.5), (f64::MAX, f64::MAX)]
+        {
+            let mut frame = ink_line(8);
+            let sweep = TextSweep {
+                highlight: [255; 3],
+                half_width_cells,
+                cells_per_second,
+            };
+            assert!(sweep.apply(
+                &mut frame,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 8,
+                    height: 1,
+                },
+                Duration::from_secs(1)
+            ));
+            assert_eq!(frame.rows[0].cells[0].style.foreground, [255; 3]);
+        }
     }
 
     fn fixture() -> Frame {
@@ -279,7 +500,8 @@ mod tests {
         let baseline = frame.clone();
         let sweep = TextSweep {
             highlight: [240, 220, 200],
-            width: 0.75,
+            half_width_cells: 3.0,
+            cells_per_second: 5.5,
         };
         assert!(sweep.apply(
             &mut frame,
@@ -289,7 +511,7 @@ mod tests {
                 width: 5,
                 height: 2
             },
-            0.5
+            Duration::from_secs(1)
         ));
         for y in 0..2 {
             assert_ne!(
@@ -337,7 +559,8 @@ mod tests {
         let baseline = frame.clone();
         let sweep = TextSweep {
             highlight: [255; 3],
-            width: 1.0,
+            half_width_cells: 20.0,
+            cells_per_second: 22.0,
         };
         // Starts at the wide glyph's continuation, never colors half a glyph.
         assert!(!sweep.apply(
@@ -348,7 +571,7 @@ mod tests {
                 width: 20,
                 height: 20
             },
-            0.5
+            Duration::from_secs(1)
         ));
         assert_eq!(frame, baseline);
         assert!(!sweep.apply(
@@ -359,7 +582,7 @@ mod tests {
                 width: 2,
                 height: 2
             },
-            0.5
+            Duration::from_secs(1)
         ));
         assert_eq!(frame, baseline);
         assert!(!sweep.apply(
@@ -370,7 +593,7 @@ mod tests {
                 width: 1,
                 height: 1
             },
-            0.5
+            Duration::from_secs(1)
         ));
     }
 
@@ -385,20 +608,21 @@ mod tests {
         };
         let sweep = TextSweep {
             highlight: [240, 220, 200],
-            width: 0.5,
+            half_width_cells: 2.5,
+            cells_per_second: 5.0,
         };
         let mut middle = baseline.clone();
-        assert!(sweep.apply(&mut middle, rect, 0.5));
+        assert!(sweep.apply(&mut middle, rect, Duration::from_secs(1)));
         assert!(
             middle.rows[0].cells[2].style.foreground[0]
                 > middle.rows[0].cells[1].style.foreground[0]
         );
         let mut replay = baseline.clone();
-        assert!(sweep.apply(&mut replay, rect, 0.5));
+        assert!(sweep.apply(&mut replay, rect, Duration::from_secs(1)));
         assert_eq!(replay, middle);
-        for phase in [0.0, 1.0, f64::NAN] {
+        for elapsed in [Duration::ZERO, Duration::from_secs(2)] {
             let mut frame = baseline.clone();
-            assert!(!sweep.apply(&mut frame, rect, phase));
+            assert!(!sweep.apply(&mut frame, rect, elapsed));
             assert_eq!(frame, baseline);
         }
     }

@@ -13,6 +13,7 @@ termwiz = { version = "=0.23.3", default-features = false }
 hashlink = "0.12.2"
 libc = "0.2"
 nucleo-matcher = "0.3"
+palette = { version = "=0.7.7", default-features = false, features = ["std"] }
 png = "0.18"
 image = { version = "0.25", default-features = false }
 uuid = { version = "1", features = ["v4"] }

@@ -265,13 +265,13 @@ The existing renderer retains source-valid inactive native projections by last v
 Actual debug rich/plain, live-theme, draft/gesture, local Git and framed two-client correction evidence is recorded in the [engine report](engine-proof.md#main-aligned-chrome-correction); the earlier functional pass is retained separately, not treated as visual parity. Provider-owned forge/PR/issues/CI snapshots and refresh remain unavailable; no frontend network calls, fake fields or no-op actions substitute for that deferred backend contract. Animation and a command palette remain outside this pass.
 
 The user subsequently authorized a narrow animation extension: visible working
-sidebar titles sweep their foreground toward a client-selected palette accent.
+sidebar titles sweep their foreground toward a client-selected project hue.
 Framework `animation::{AnimationClock, TextSweep}` owns epoch-aligned coalesced
 deadlines and allocation-free glyph-safe foreground mixing; the client owns
 eligibility, style retention, colors, width and cadence. Existing `Instant`,
-protocol styles, Unicode cell metadata and the differential scene renderer suffice;
-no additional scheduler, graphics engine or dependency is needed for this small
-effect. Animation-only ticks reuse presentation without backend observation,
+protocol styles, Unicode cell metadata and the differential scene renderer supply
+the scheduler and presentation path without another graphics engine.
+Animation-only ticks reuse presentation without backend observation,
 graphics preparation or hit-map rebuilding. There are no animation deadlines
 without eligible visible truecolor titles. Native/default ink remains static.
 
@@ -281,6 +281,25 @@ Unicode titles plus a static graphics resource. Content-ready captures show
 changes confined to the title band, identical idle frames and no graphics
 commands after the initial frame. This is physical framework-effect evidence,
 not an authenticated harness-status end-to-end screenshot.
+
+The subsequent project-color extension uses framework `color::{ColorTones,
+ColorVariants}` backed by Palette 0.7.7's gamut-aware Okhsl conversion. Client
+policy normalizes vivid light/dark ink and caches it alongside the existing bee
+color; terminal evidence changes invalidate variants even when base RGB is equal.
+The fixed-width sweep uses elapsed time and terminal-cell velocity, not a
+title-relative cycle. Dependency comparison is recorded in framework guidance.
+
+Current end-to-end debug evidence is under
+`target/smoke/project-title-sweep/actual-4/`: real Kitty 0.48.2 at 140x44,
+two private Git projects, eight recognized native ELF fixtures and authenticated
+OSC 7501 working/idle transitions, with no model calls. Light/dark screenshots and
+sampled terminal ink show project-specific sweeps; 3-cell and 26-cell titles
+measure about 31-32 cells/second rather than sharing a repeat interval.
+Both two-second idle observations record zero client CPU ticks and output bytes.
+Graphics uploads finish during initial material preparation, not on sweep ticks.
+The retained controller archive, tool versions, protected build receipts and
+host-UID workspace test logs make this reproducible; sampling is correctness
+evidence, not a presentation-latency benchmark.
 
 
 ### Terminal-native theme
