@@ -101,11 +101,17 @@ impl<T> Drop for Pump<T> {
         drop(self.worker.take());
     }
 }
-pub fn pane(socket: &Endpoint, pane_id: &str, view: &str) -> Result<Pump<Snapshot>> {
+/// Observe progressive scenes with independent frame/metadata cursors and fresh residency receipts.
+pub fn pane(
+    socket: &Endpoint,
+    pane_id: &str,
+    view: &str,
+    receipts: crate::resources::Receipts,
+) -> Result<Pump<Snapshot>> {
     let socket = socket.to_owned();
     let pane_id = pane_id.to_owned();
     let view_id = view.to_owned();
-    let (mut frame_after, mut snapshot_after, mut resources) = (0, 0, Vec::new());
+    let (mut frame_after, mut snapshot_after) = (0, 0);
     Pump::start(move || {
         let (metadata, scene) = socket.checked_scene(Operation::Pane {
             pane_id: pane_id.clone(),
@@ -113,11 +119,11 @@ pub fn pane(socket: &Endpoint, pane_id: &str, view: &str) -> Result<Pump<Snapsho
                 view_id: view_id.clone(),
                 after: 0,
                 frame_after,
-                resources: resources.clone(),
+                resources: receipts.received(&pane_id, &view_id),
                 snapshot_after,
                 wait_ms: 1000,
                 row_deltas: true,
-                scene_encoding: Some("planus_v1".into()),
+                scene_encoding: Some(PROGRESSIVE_SCENE_ENCODING.into()),
             },
         })?;
         ensure!(
@@ -126,9 +132,6 @@ pub fn pane(socket: &Endpoint, pane_id: &str, view: &str) -> Result<Pump<Snapsho
         );
         snapshot_after = metadata.snapshot_revision;
         frame_after = metadata.revision;
-        if scene.is_some() {
-            resources = metadata.image_refs.clone();
-        }
         Ok(Snapshot { metadata, scene })
     })
 }
@@ -246,7 +249,7 @@ mod tests {
                 view_timeout_ms: 0,
                 poll_wait_max_ms: 1000,
                 row_deltas: true,
-                scene_encodings: vec!["planus_v1".into()],
+                scene_encodings: vec![PROGRESSIVE_SCENE_ENCODING.into()],
             },
             selection: None,
             search: None,
@@ -264,12 +267,12 @@ mod tests {
             (0, None),
             (
                 1,
-                Some(scene_wire::encode(&initial, 1, None, 0, &[]).unwrap()),
+                Some(scene_wire::encode_progressive(&initial, 1, None, 0, &[]).unwrap()),
             ),
             (1, None),
             (
                 2,
-                Some(scene_wire::encode(&changed, 2, Some(&baseline), 1, &[]).unwrap()),
+                Some(scene_wire::encode_progressive(&changed, 2, Some(&baseline), 1, &[]).unwrap()),
             ),
             (3, invalid_scene),
         ];
@@ -310,7 +313,7 @@ mod tests {
                 );
                 assert!(resources.is_empty());
                 assert!(row_deltas);
-                assert_eq!(scene_encoding.as_deref(), Some("planus_v1"));
+                assert_eq!(scene_encoding.as_deref(), Some(PROGRESSIVE_SCENE_ENCODING));
                 let mut snapshot = metadata(revision, index as u64 + 11);
                 if index == 4 {
                     snapshot.frame = nested_frame.take();
@@ -334,7 +337,8 @@ mod tests {
             }
         });
         let endpoint = Endpoint::unmanaged(&socket);
-        let mut pump = pane(&endpoint, "pane", "view").unwrap();
+        let resources = crate::resources::Resources::new(endpoint.clone()).unwrap();
+        let mut pump = pane(&endpoint, "pane", "view", resources.receipts()).unwrap();
         let (mut revision, mut current) = (0, None);
         let empty = pump.initial().unwrap();
         assert!(empty.metadata.frame.is_none());
@@ -378,20 +382,160 @@ mod tests {
 
     #[test]
     fn native_polls_reject_scene_revision_mismatch_before_delivery() {
-        let scene = scene_wire::encode(&frame("m"), 4, None, 0, &[]).unwrap();
+        let scene = scene_wire::encode_progressive(&frame("m"), 4, None, 0, &[]).unwrap();
         invalid_update_is_not_delivered(Some(scene), None);
     }
 
     #[test]
     fn native_polls_reject_nested_json_frame_even_with_a_valid_binary_scene() {
         let nested = frame("n");
-        let scene = scene_wire::encode(&nested, 3, None, 0, &[]).unwrap();
+        let scene = scene_wire::encode_progressive(&nested, 3, None, 0, &[]).unwrap();
         invalid_update_is_not_delivered(Some(scene), Some(nested));
     }
 
     #[test]
     fn native_polls_reject_omitted_changed_scene_without_replacing_the_last_good_frame() {
         invalid_update_is_not_delivered(None, None);
+    }
+
+    #[test]
+    fn polls_sample_complete_residency_instead_of_acknowledging_scene_descriptors() {
+        use crate::resources::{ResourcePhase, Resources};
+        use crate::transport::test_wire::{read_request, write_response};
+        use std::os::fd::AsRawFd;
+
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("progressive-polls.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let image = Arc::new(Image {
+            id: 7,
+            generation: 1,
+            width: 1,
+            height: 1,
+            format: PixelFormat::Rgb,
+            pixels: vec![1, 2, 3],
+        });
+        let descriptor = ImageDescriptor::from_image(&image).unwrap();
+        let mut initial = frame("λ");
+        initial.images.push(image);
+        let scene = scene_wire::encode_progressive(&initial, 1, None, 0, &[]).unwrap();
+        let (polled, polled_rx) = mpsc::channel();
+        let (complete, complete_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let poll = |listener: &UnixListener, expected: &[ImageKey], snapshot_after| {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                assert!(matches!(read_request(&mut stream).unwrap().operation,
+                    Operation::Pane { pane_id, request: PaneRequest::Poll {
+                        view_id, frame_after, resources, snapshot_after: actual_snapshot,
+                        scene_encoding, ..
+                    } } if pane_id == "pane" && view_id == "view"
+                        && frame_after == u64::from(snapshot_after != 0)
+                        && actual_snapshot == snapshot_after && resources == expected
+                        && scene_encoding.as_deref() == Some(PROGRESSIVE_SCENE_ENCODING)));
+                stream
+            };
+            let reply = |stream: &mut UnixStream, snapshot_revision, scene: Option<Vec<u8>>| {
+                let mut metadata = metadata(1, snapshot_revision);
+                metadata.image_refs = vec![descriptor.key];
+                write_response(
+                    stream,
+                    &Response {
+                        version: PROTOCOL_VERSION,
+                        ok: true,
+                        result: Some(Payload::Pane(PanePayload {
+                            metadata: serde_json::to_value(metadata).unwrap(),
+                            scene: scene.map(Into::into),
+                        })),
+                        error: None,
+                        failure: None,
+                    },
+                )
+                .unwrap();
+            };
+            let mut first = poll(&listener, &[], 0);
+            reply(&mut first, 11, Some(scene));
+            let mut second = poll(&listener, &[], 11);
+            polled.send(()).unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            assert!(matches!(read_request(&mut stream).unwrap().operation,
+                Operation::Pane { pane_id, request: PaneRequest::ImageResource { view_id, key } }
+                if pane_id == "pane" && view_id == "view" && key == descriptor.key));
+            for resource in [
+                ImageResource::Start {
+                    descriptor,
+                    encoding: ImageEncoding::Raw,
+                    encoded_len: 3,
+                },
+                ImageResource::Data {
+                    key: descriptor.key,
+                    offset: 0,
+                    data: vec![1, 2, 3].into(),
+                },
+                ImageResource::End {
+                    key: descriptor.key,
+                    encoded_len: 3,
+                },
+            ] {
+                write_response(
+                    &mut stream,
+                    &Response {
+                        version: PROTOCOL_VERSION,
+                        ok: true,
+                        result: Some(Payload::ImageResource(resource)),
+                        error: None,
+                        failure: None,
+                    },
+                )
+                .unwrap();
+            }
+            complete_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            reply(&mut second, 12, None);
+            let mut third = poll(&listener, &[descriptor.key], 12);
+            reply(&mut third, 13, Some(vec![0]));
+        });
+        let endpoint = Endpoint::unmanaged(&socket);
+        let mut resources = Resources::new(endpoint.clone()).unwrap();
+        let mut pump = pane(&endpoint, "pane", "view", resources.receipts()).unwrap();
+        let first = pump.initial().unwrap();
+        let descriptors = first.scene.as_ref().unwrap().image_descriptors();
+        assert_eq!(descriptors, &[descriptor]);
+        assert!(resources.received("pane", "view").is_empty());
+        polled_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        resources
+            .sync_view("pane", "view", descriptors, |_| None)
+            .unwrap();
+        loop {
+            resources.poll().unwrap();
+            if resources
+                .statuses("pane", "view")
+                .iter()
+                .any(|status| status.phase == ResourcePhase::Ready)
+            {
+                break;
+            }
+            let mut fd = libc::pollfd {
+                fd: resources.wake().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: fd points to one initialized pollfd for this call.
+            assert_eq!(
+                unsafe { libc::poll(&mut fd, 1, 3000) },
+                1,
+                "resource wake timed out"
+            );
+        }
+        complete.send(()).unwrap();
+        assert!(pump.initial().unwrap().scene.is_none());
+        assert!(pump.initial().is_err());
+        pump.worker.take().unwrap().join().unwrap();
+        server.join().unwrap();
     }
 
     #[test]

@@ -19,6 +19,7 @@ mod project_colors;
 const TEXT_INPUT_LIMIT: usize = 4096;
 /// Owned OpenSSH attachment and discovery.
 pub mod remote;
+mod resources;
 mod themes;
 mod tiling;
 /// Typed daemon requests, client authority and lifetime tracking.

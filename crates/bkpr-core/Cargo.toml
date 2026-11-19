@@ -32,3 +32,4 @@ jwt-simple = { version = "=0.12.17", default-features = false, features = ["pure
 base64 = "0.22"
 iprfc = { version = "=1.0.0", default-features = false }
 httpdate = "1"
+bytes = "1"

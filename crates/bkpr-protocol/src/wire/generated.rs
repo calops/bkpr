@@ -48782,10 +48782,399 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestShutdownRef<'a> {
 }
 
     
+/// The table `PaneRequestImageResource` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `PaneRequestImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:485`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct PaneRequestImageResource{
+    
+        /// The field `view_id` in the table `PaneRequestImageResource`
+        pub view_id: ::planus::alloc::string::String,
+        /// The field `key` in the table `PaneRequestImageResource`
+        pub key: ::planus::alloc::boxed::Box<self::ImageKey>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for PaneRequestImageResource {
+    fn default() -> Self {
+        Self {
+        view_id: ::core::default::Default::default(),
+        key: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl PaneRequestImageResource {
+    /// Creates a [PaneRequestImageResourceBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> PaneRequestImageResourceBuilder<()> {
+        PaneRequestImageResourceBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_view_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_key: impl ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_view_id = field_view_id.prepare(builder);let prepared_key = field_key.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ImageKey>>(1);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_view_id);object_writer.write::<_, _, 4>(&prepared_key);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<PaneRequestImageResource>> for PaneRequestImageResource {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PaneRequestImageResource> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<PaneRequestImageResource>> for PaneRequestImageResource {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PaneRequestImageResource>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<PaneRequestImageResource> for PaneRequestImageResource {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PaneRequestImageResource> {
+        PaneRequestImageResource::create(
+            builder,
+        
+            
+            &self.view_id,
+            
+        
+            
+            &self.key,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [PaneRequestImageResource] type.
+///
+/// Can be created using the [PaneRequestImageResource::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct PaneRequestImageResourceBuilder<State>(State);
+
+impl<
+    
+> PaneRequestImageResourceBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`view_id` field](PaneRequestImageResource#structfield.view_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn view_id<T0>(self, value: T0) -> PaneRequestImageResourceBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        PaneRequestImageResourceBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> PaneRequestImageResourceBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`key` field](PaneRequestImageResource#structfield.key).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn key<T1>(self, value: T1) -> PaneRequestImageResourceBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<self::ImageKey>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;PaneRequestImageResourceBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> PaneRequestImageResourceBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PaneRequestImageResource].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<PaneRequestImageResource>
+        where Self: ::planus::WriteAsOffset<PaneRequestImageResource>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+    
+> ::planus::WriteAs<::planus::Offset<PaneRequestImageResource>> for PaneRequestImageResourceBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<PaneRequestImageResource>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PaneRequestImageResource> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<PaneRequestImageResource>> for PaneRequestImageResourceBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<PaneRequestImageResource>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<PaneRequestImageResource>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+    
+> ::planus::WriteAsOffset<PaneRequestImageResource> for PaneRequestImageResourceBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<PaneRequestImageResource> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;PaneRequestImageResource::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [PaneRequestImageResource].
+#[derive(Copy, Clone)]
+pub struct PaneRequestImageResourceRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> PaneRequestImageResourceRef<'a> {
+    
+        /// Getter for the [`view_id` field](PaneRequestImageResource#structfield.view_id).
+        #[inline]
+        pub fn view_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "PaneRequestImageResource", "view_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`key` field](PaneRequestImageResource#structfield.key).
+        #[inline]
+        pub fn key(&self) -> ::planus::Result<self::ImageKeyRef<'a>> {
+            
+            
+              
+              self.0.access_required(1, "PaneRequestImageResource", "key")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for PaneRequestImageResourceRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("PaneRequestImageResourceRef");
+        f.field("view_id", &self.view_id());f.field("key", &self.key());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<PaneRequestImageResourceRef<'a>> for PaneRequestImageResource {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: PaneRequestImageResourceRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            view_id: ::core::convert::Into::into(value.view_id()?),key: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.key()?)?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for PaneRequestImageResourceRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for PaneRequestImageResourceRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[PaneRequestImageResourceRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<PaneRequestImageResource>> for PaneRequestImageResource {
+    type Value = ::planus::Offset<PaneRequestImageResource>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<PaneRequestImageResource>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestImageResourceRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[PaneRequestImageResourceRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The union `PaneRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:485`
+/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:489`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -48850,6 +49239,9 @@ pub enum PaneRequest{
     
         /// The variant of type `PaneRequestShutdown` in the union `PaneRequest`
         PaneRequestShutdown(::planus::alloc::boxed::Box<self::PaneRequestShutdown>),
+    
+        /// The variant of type `PaneRequestImageResource` in the union `PaneRequest`
+        PaneRequestImageResource(::planus::alloc::boxed::Box<self::PaneRequestImageResource>),
     
 }
 
@@ -49021,6 +49413,14 @@ impl PaneRequest {
         ::planus::UnionOffset::new(20, value.prepare(builder).downcast())
     }
 
+    #[inline]
+    pub fn create_pane_request_image_resource(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::PaneRequestImageResource>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(21, value.prepare(builder).downcast())
+    }
+
     
 }
 
@@ -49050,6 +49450,7 @@ impl ::planus::WriteAsUnion<PaneRequest> for PaneRequest {
             Self::PaneRequestColors(value) => Self::create_pane_request_colors(builder, value),
             Self::PaneRequestTerminate(value) => Self::create_pane_request_terminate(builder, value),
             Self::PaneRequestShutdown(value) => Self::create_pane_request_shutdown(builder, value),
+            Self::PaneRequestImageResource(value) => Self::create_pane_request_image_resource(builder, value),
             
         }
     }
@@ -49268,6 +49669,16 @@ impl PaneRequestBuilder<::planus::Uninitialized> {
         value: T,
     ) -> PaneRequestBuilder<::planus::Initialized<20, T>>
         where T: ::planus::WriteAsOffset<self::PaneRequestShutdown> {
+        PaneRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`PaneRequestImageResource` variant](PaneRequest#variant.PaneRequestImageResource).
+    #[inline]
+    pub fn pane_request_image_resource<T>(
+        self,
+        value: T,
+    ) -> PaneRequestBuilder<::planus::Initialized<21, T>>
+        where T: ::planus::WriteAsOffset<self::PaneRequestImageResource> {
         PaneRequestBuilder(::planus::Initialized(value))
     }
 
@@ -49624,6 +50035,23 @@ impl<T> ::planus::WriteAsOptionalUnion<PaneRequest> for PaneRequestBuilder<::pla
         ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
     }
 }
+impl<T> ::planus::WriteAsUnion<PaneRequest> for PaneRequestBuilder<::planus::Initialized<21, T>>
+    where T: ::planus::WriteAsOffset<self::PaneRequestImageResource>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<PaneRequest> {
+        ::planus::UnionOffset::new(21, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<PaneRequest> for PaneRequestBuilder<::planus::Initialized<21, T>>
+    where T: ::planus::WriteAsOffset<self::PaneRequestImageResource>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<PaneRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
 
 
 /// Reference to a deserialized [PaneRequest].
@@ -49649,6 +50077,7 @@ pub enum PaneRequestRef<'a>{
     PaneRequestColors(self::PaneRequestColorsRef<'a>),
     PaneRequestTerminate(self::PaneRequestTerminateRef<'a>),
     PaneRequestShutdown(self::PaneRequestShutdownRef<'a>),
+    PaneRequestImageResource(self::PaneRequestImageResourceRef<'a>),
     
 }
 
@@ -49719,6 +50148,9 @@ impl<'a> ::core::convert::TryFrom<PaneRequestRef<'a>> for PaneRequest {
                 PaneRequestRef::PaneRequestShutdown(value) => Self::PaneRequestShutdown(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
+                PaneRequestRef::PaneRequestImageResource(value) => Self::PaneRequestImageResource(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
         })
     }
 }
@@ -49728,7 +50160,7 @@ impl<'a> ::core::convert::TryFrom<PaneRequestRef<'a>> for PaneRequest {
 impl<'a> ::planus::TableReadUnion<'a> for PaneRequestRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::PaneRequestInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::PaneRequestAttach(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::PaneRequestUpdate(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::PaneRequestDetach(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::PaneRequestPoll(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::PaneRequestPin(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::PaneRequestInput(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::PaneRequestPaste(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::PaneRequestPasteContents(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::PaneRequestKey(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::PaneRequestMouse(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::PaneRequestFocus(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::PaneRequestScroll(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::PaneRequestSelect(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::PaneRequestCopySelection(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::PaneRequestSearch(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::PaneRequestClipboard(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::PaneRequestColors(::planus::TableRead::from_buffer(buffer, field_offset)?)),19 => ::core::result::Result::Ok(Self::PaneRequestTerminate(::planus::TableRead::from_buffer(buffer, field_offset)?)),20 => ::core::result::Result::Ok(Self::PaneRequestShutdown(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::PaneRequestInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::PaneRequestAttach(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::PaneRequestUpdate(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::PaneRequestDetach(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::PaneRequestPoll(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::PaneRequestPin(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::PaneRequestInput(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::PaneRequestPaste(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::PaneRequestPasteContents(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::PaneRequestKey(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::PaneRequestMouse(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::PaneRequestFocus(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::PaneRequestScroll(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::PaneRequestSelect(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::PaneRequestCopySelection(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::PaneRequestSearch(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::PaneRequestClipboard(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::PaneRequestColors(::planus::TableRead::from_buffer(buffer, field_offset)?)),19 => ::core::result::Result::Ok(Self::PaneRequestTerminate(::planus::TableRead::from_buffer(buffer, field_offset)?)),20 => ::core::result::Result::Ok(Self::PaneRequestShutdown(::planus::TableRead::from_buffer(buffer, field_offset)?)),21 => ::core::result::Result::Ok(Self::PaneRequestImageResource(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
@@ -49744,7 +50176,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PaneRequestRef<'a> {
 /// The table `SearchActionQuery` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:486`
+/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:490`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -50049,7 +50481,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionQueryRef<'a> {
 /// The table `SearchActionNext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:489`
+/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:493`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -50275,7 +50707,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionNextRef<'a> {
 /// The table `SearchActionPrevious` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:492`
+/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:496`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -50501,7 +50933,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionPreviousRef<'a> {
 /// The table `SearchActionClear` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:495`
+/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:499`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -50727,7 +51159,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionClearRef<'a> {
 /// The union `SearchAction` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:498`
+/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:502`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -50998,7 +51430,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SearchActionRef<'a> {
 /// The table `LayoutNodeLeaf` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:499`
+/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:503`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -51303,7 +51735,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeLeafRef<'a> {
 /// The table `LayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:502`
+/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:506`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -51901,7 +52333,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeSplitRef<'a> {
 /// The union `LayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:508`
+/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:512`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -52086,7 +52518,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for LayoutNodeRef<'a> {
 /// The table `SpawnLayoutNodeExisting` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:509`
+/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:513`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -52391,7 +52823,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeExistingRef<'a> {
 /// The table `SpawnLayoutNodeNew` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:512`
+/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:516`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -52696,7 +53128,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeNewRef<'a> {
 /// The table `SpawnLayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:515`
+/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:519`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -53294,7 +53726,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeSplitRef<'a> {
 /// The union `SpawnLayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:521`
+/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:525`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -53522,7 +53954,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SpawnLayoutNodeRef<'a> {
 /// The table `NativeConversation` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NativeConversation` in the file `crates/bkpr-protocol/src/wire/native.fbs:522`
+/// * Table `NativeConversation` in the file `crates/bkpr-protocol/src/wire/native.fbs:526`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -54033,7 +54465,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NativeConversationRef<'a> {
 /// The table `AgentBindingGuard` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentBindingGuard` in the file `crates/bkpr-protocol/src/wire/native.fbs:527`
+/// * Table `AgentBindingGuard` in the file `crates/bkpr-protocol/src/wire/native.fbs:531`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -54422,7 +54854,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentBindingGuardRef<'a> {
 /// The table `CaptureEventBind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:531`
+/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:535`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -55054,7 +55486,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventBindRef<'a> {
 /// The table `CaptureEventError` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:537`
+/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:541`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -55359,7 +55791,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventErrorRef<'a> {
 /// The table `CaptureEventEnd` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:540`
+/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:544`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -55585,7 +56017,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventEndRef<'a> {
 /// The table `CaptureEventPromptSubmitted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventPromptSubmitted` in the file `crates/bkpr-protocol/src/wire/native.fbs:543`
+/// * Table `CaptureEventPromptSubmitted` in the file `crates/bkpr-protocol/src/wire/native.fbs:547`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -55987,7 +56419,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventPromptSubmittedRef<'a> {
 /// The table `CaptureEventStatusEnroll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventStatusEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:547`
+/// * Table `CaptureEventStatusEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:551`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56389,7 +56821,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventStatusEnrollRef<'a> {
 /// The table `CaptureEventStatusReport` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventStatusReport` in the file `crates/bkpr-protocol/src/wire/native.fbs:551`
+/// * Table `CaptureEventStatusReport` in the file `crates/bkpr-protocol/src/wire/native.fbs:555`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -57154,7 +57586,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventStatusReportRef<'a> {
 /// The table `CaptureEventUnbind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventUnbind` in the file `crates/bkpr-protocol/src/wire/native.fbs:558`
+/// * Table `CaptureEventUnbind` in the file `crates/bkpr-protocol/src/wire/native.fbs:562`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -57684,7 +58116,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventUnbindRef<'a> {
 /// The table `CaptureEventNativeContext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventNativeContext` in the file `crates/bkpr-protocol/src/wire/native.fbs:563`
+/// * Table `CaptureEventNativeContext` in the file `crates/bkpr-protocol/src/wire/native.fbs:567`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58073,7 +58505,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventNativeContextRef<'a> {
 /// The union `CaptureEvent` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:567`
+/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:571`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -58516,7 +58948,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for CaptureEventRef<'a> {
 /// The table `AgentRequestWhoami` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:568`
+/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:572`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58832,7 +59264,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWhoamiRef<'a> {
 /// The table `AgentRequestControl` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:571`
+/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:575`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -59331,7 +59763,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestControlRef<'a> {
 /// The table `AgentRequestSetTitle` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:576`
+/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:580`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -59636,7 +60068,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSetTitleRef<'a> {
 /// The table `AgentRequestDiscoverAgents` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:579`
+/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:583`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -60577,7 +61009,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestDiscoverAgentsRef<'a> {
 /// The table `AgentRequestSendMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:587`
+/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:591`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -61181,7 +61613,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSendMessageRef<'a> {
 /// The table `AgentRequestReadInbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:594`
+/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:598`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -61821,7 +62253,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadInboxRef<'a> {
 /// The table `AgentRequestReadMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:600`
+/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:604`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62348,7 +62780,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadMessageRef<'a> {
 /// The table `AgentRequestAckMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:605`
+/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:609`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62653,7 +63085,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestAckMessageRef<'a> {
 /// The table `AgentRequestInspectOutbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:608`
+/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:612`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -63191,7 +63623,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestInspectOutboxRef<'a> {
 /// The table `AgentRequestReceiverRegister` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:613`
+/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:617`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -63702,7 +64134,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverRegisterRef<'a> {
 /// The table `AgentRequestReceiverSubscribe` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:618`
+/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:622`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64104,7 +64536,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverSubscribeRef<'a> {
 /// The table `AgentRequestWakeValidate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:622`
+/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:626`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64602,7 +65034,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeValidateRef<'a> {
 /// The table `AgentRequestWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:627`
+/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:631`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -65191,7 +65623,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeOutcomeRef<'a> {
 /// The union `AgentRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:633`
+/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:637`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -65849,7 +66281,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentRequestRef<'a> {
 /// The table `AgentWakeOutcomeAccepted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:634`
+/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:638`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -66075,7 +66507,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeAcceptedRef<'a> {
 /// The table `AgentWakeOutcomeFailed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:637`
+/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:641`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -66380,7 +66812,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeFailedRef<'a> {
 /// The table `AgentWakeOutcomeUnknown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:640`
+/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:644`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -66685,7 +67117,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeUnknownRef<'a> {
 /// The union `AgentWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:643`
+/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:647`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -66913,7 +67345,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentWakeOutcomeRef<'a> {
 /// The table `RequestFailureSessionClosing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:644`
+/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:648`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -67229,7 +67661,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureSessionClosingRef<'a> {
 /// The table `RequestFailureBusy` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:647`
+/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:651`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -67534,7 +67966,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureBusyRef<'a> {
 /// The union `RequestFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:650`
+/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:654`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -67719,7 +68151,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for RequestFailureRef<'a> {
 /// The table `OptionalU64` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:651`
+/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:655`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -68035,7 +68467,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalU64Ref<'a> {
 /// The table `OptionalPalette` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:654`
+/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:658`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -68340,7 +68772,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPaletteRef<'a> {
 /// The table `OptionalUsize` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:657`
+/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:661`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -68656,7 +69088,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalUsizeRef<'a> {
 /// The table `NullValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:662`
+/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:666`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -68882,7 +69314,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NullValueRef<'a> {
 /// The table `BoolValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:663`
+/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:667`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -69198,7 +69630,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for BoolValueRef<'a> {
 /// The table `SignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:664`
+/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:668`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -69514,7 +69946,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SignedValueRef<'a> {
 /// The table `UnsignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:665`
+/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:669`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -69830,7 +70262,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for UnsignedValueRef<'a> {
 /// The table `FloatValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:666`
+/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:670`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -70146,7 +70578,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FloatValueRef<'a> {
 /// The table `StringValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:667`
+/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:671`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -70451,7 +70883,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for StringValueRef<'a> {
 /// The table `ArrayValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:668`
+/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:672`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -70756,7 +71188,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ArrayValueRef<'a> {
 /// The table `Entry` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:669`
+/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:673`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -71134,7 +71566,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for EntryRef<'a> {
 /// The table `ObjectValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:670`
+/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:674`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -71439,7 +71871,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ObjectValueRef<'a> {
 /// The union `ValueBody` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:671`
+/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:675`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -71882,7 +72314,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ValueBodyRef<'a> {
 /// The table `Value` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:672`
+/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:676`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -72177,7 +72609,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ValueRef<'a> {
 /// The table `ControlPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:673`
+/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:677`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -72472,7 +72904,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ControlPayloadRef<'a> {
 /// The table `PanePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:674`
+/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:678`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -72862,10 +73294,3349 @@ impl<'a> ::planus::ReadAsRoot<'a> for PanePayloadRef<'a> {
 }
 
     
+/// The enum `ImagePixelFormat` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Enum `ImagePixelFormat` in the file `crates/bkpr-protocol/src/wire/native.fbs:679`
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImagePixelFormat {
+    
+        /// The variant `Rgb` in the enum `ImagePixelFormat`
+        Rgb = 0,
+    
+        /// The variant `Rgba` in the enum `ImagePixelFormat`
+        Rgba = 1,
+    
+        /// The variant `GrayAlpha` in the enum `ImagePixelFormat`
+        GrayAlpha = 2,
+    
+        /// The variant `Gray` in the enum `ImagePixelFormat`
+        Gray = 3,
+    
+}
+
+impl ImagePixelFormat {
+    /// Array containing all valid variants of ImagePixelFormat
+    pub const ENUM_VALUES: [Self; 4] = [Self::Rgb,Self::Rgba,Self::GrayAlpha,Self::Gray,];
+}
+
+impl ::core::convert::TryFrom<u8> for ImagePixelFormat {
+    type Error = ::planus::errors::UnknownEnumTagKind;
+    #[inline]
+    fn try_from(value: u8) -> ::core::result::Result<Self, ::planus::errors::UnknownEnumTagKind> {
+        #[allow(clippy::match_single_binding)]
+        match value {
+            0 => ::core::result::Result::Ok(ImagePixelFormat::Rgb),
+            1 => ::core::result::Result::Ok(ImagePixelFormat::Rgba),
+            2 => ::core::result::Result::Ok(ImagePixelFormat::GrayAlpha),
+            3 => ::core::result::Result::Ok(ImagePixelFormat::Gray),
+            
+
+            _ => ::core::result::Result::Err(::planus::errors::UnknownEnumTagKind { tag: value as i128 }),
+        }
+    }
+}
+
+impl ::core::convert::From<ImagePixelFormat> for u8 {
+    #[inline]
+    fn from(value: ImagePixelFormat) -> Self {
+        value as u8
+    }
+}
+
+/// # Safety
+/// The Planus compiler correctly calculates `ALIGNMENT` and `SIZE`.
+unsafe impl ::planus::Primitive for ImagePixelFormat {
+    const ALIGNMENT: usize = 1;
+    const SIZE: usize = 1;
+}
+
+impl ::planus::WriteAsPrimitive<ImagePixelFormat> for ImagePixelFormat {
+    #[inline]
+    fn write<const N: usize>(&self, cursor: ::planus::Cursor<'_, N>, buffer_position: u32) {
+        (*self as u8).write(cursor, buffer_position);
+    }
+}
+
+impl ::planus::WriteAs<ImagePixelFormat> for ImagePixelFormat {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> ImagePixelFormat {
+        *self
+    }
+}
+
+impl ::planus::WriteAsDefault<ImagePixelFormat, ImagePixelFormat> for ImagePixelFormat {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder, default: &ImagePixelFormat) -> ::core::option::Option<ImagePixelFormat> {
+        if self == default {
+            ::core::option::Option::None
+        } else {
+            ::core::option::Option::Some(*self)
+        }
+    }
+}
+
+impl ::planus::WriteAsOptional<ImagePixelFormat> for ImagePixelFormat {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> ::core::option::Option<ImagePixelFormat> {
+        ::core::option::Option::Some(*self)
+    }
+}
+
+impl<'buf> ::planus::TableRead<'buf> for ImagePixelFormat {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'buf>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        let n: u8 = ::planus::TableRead::from_buffer(buffer, offset)?;
+        ::core::result::Result::Ok(::core::convert::TryInto::try_into(n)?)
+    }
+}
+
+impl<'buf> ::planus::VectorReadInner<'buf> for ImagePixelFormat {
+    type Error = ::planus::errors::UnknownEnumTag;
+    const STRIDE: usize = 1;
+    #[inline]
+    unsafe fn from_buffer(
+        buffer: ::planus::SliceWithStartOffset<'buf>,
+        offset: usize,
+    ) -> ::core::result::Result<Self, ::planus::errors::UnknownEnumTag> {let value = unsafe { *buffer.buffer.get_unchecked(offset) };let value: ::core::result::Result<Self, _> = ::core::convert::TryInto::try_into(value);
+        value.map_err(|error_kind| error_kind.with_error_location(
+            "ImagePixelFormat",
+            "VectorRead::from_buffer",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<ImagePixelFormat> for ImagePixelFormat {
+    const STRIDE: usize = 1;
+
+    type Value = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> Self {
+        *self
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[Self],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 1];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                
+                buffer_position - i as u32,
+                
+            );
+        }
+    }
+}
+
+    
+/// The enum `ImageEncoding` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Enum `ImageEncoding` in the file `crates/bkpr-protocol/src/wire/native.fbs:680`
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImageEncoding {
+    
+        /// The variant `Raw` in the enum `ImageEncoding`
+        Raw = 0,
+    
+        /// The variant `Zstd` in the enum `ImageEncoding`
+        Zstd = 1,
+    
+}
+
+impl ImageEncoding {
+    /// Array containing all valid variants of ImageEncoding
+    pub const ENUM_VALUES: [Self; 2] = [Self::Raw,Self::Zstd,];
+}
+
+impl ::core::convert::TryFrom<u8> for ImageEncoding {
+    type Error = ::planus::errors::UnknownEnumTagKind;
+    #[inline]
+    fn try_from(value: u8) -> ::core::result::Result<Self, ::planus::errors::UnknownEnumTagKind> {
+        #[allow(clippy::match_single_binding)]
+        match value {
+            0 => ::core::result::Result::Ok(ImageEncoding::Raw),
+            1 => ::core::result::Result::Ok(ImageEncoding::Zstd),
+            
+
+            _ => ::core::result::Result::Err(::planus::errors::UnknownEnumTagKind { tag: value as i128 }),
+        }
+    }
+}
+
+impl ::core::convert::From<ImageEncoding> for u8 {
+    #[inline]
+    fn from(value: ImageEncoding) -> Self {
+        value as u8
+    }
+}
+
+/// # Safety
+/// The Planus compiler correctly calculates `ALIGNMENT` and `SIZE`.
+unsafe impl ::planus::Primitive for ImageEncoding {
+    const ALIGNMENT: usize = 1;
+    const SIZE: usize = 1;
+}
+
+impl ::planus::WriteAsPrimitive<ImageEncoding> for ImageEncoding {
+    #[inline]
+    fn write<const N: usize>(&self, cursor: ::planus::Cursor<'_, N>, buffer_position: u32) {
+        (*self as u8).write(cursor, buffer_position);
+    }
+}
+
+impl ::planus::WriteAs<ImageEncoding> for ImageEncoding {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> ImageEncoding {
+        *self
+    }
+}
+
+impl ::planus::WriteAsDefault<ImageEncoding, ImageEncoding> for ImageEncoding {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder, default: &ImageEncoding) -> ::core::option::Option<ImageEncoding> {
+        if self == default {
+            ::core::option::Option::None
+        } else {
+            ::core::option::Option::Some(*self)
+        }
+    }
+}
+
+impl ::planus::WriteAsOptional<ImageEncoding> for ImageEncoding {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> ::core::option::Option<ImageEncoding> {
+        ::core::option::Option::Some(*self)
+    }
+}
+
+impl<'buf> ::planus::TableRead<'buf> for ImageEncoding {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'buf>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        let n: u8 = ::planus::TableRead::from_buffer(buffer, offset)?;
+        ::core::result::Result::Ok(::core::convert::TryInto::try_into(n)?)
+    }
+}
+
+impl<'buf> ::planus::VectorReadInner<'buf> for ImageEncoding {
+    type Error = ::planus::errors::UnknownEnumTag;
+    const STRIDE: usize = 1;
+    #[inline]
+    unsafe fn from_buffer(
+        buffer: ::planus::SliceWithStartOffset<'buf>,
+        offset: usize,
+    ) -> ::core::result::Result<Self, ::planus::errors::UnknownEnumTag> {let value = unsafe { *buffer.buffer.get_unchecked(offset) };let value: ::core::result::Result<Self, _> = ::core::convert::TryInto::try_into(value);
+        value.map_err(|error_kind| error_kind.with_error_location(
+            "ImageEncoding",
+            "VectorRead::from_buffer",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<ImageEncoding> for ImageEncoding {
+    const STRIDE: usize = 1;
+
+    type Value = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> Self {
+        *self
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[Self],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 1];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                
+                buffer_position - i as u32,
+                
+            );
+        }
+    }
+}
+
+    
+/// The table `ImageDescriptor` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:681`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ImageDescriptor{
+    
+        /// The field `key` in the table `ImageDescriptor`
+        pub key: ::planus::alloc::boxed::Box<self::ImageKey>,
+        /// The field `width` in the table `ImageDescriptor`
+        pub width: u32,
+        /// The field `height` in the table `ImageDescriptor`
+        pub height: u32,
+        /// The field `format` in the table `ImageDescriptor`
+        pub format: self::ImagePixelFormat,
+        /// The field `decoded_len` in the table `ImageDescriptor`
+        pub decoded_len: u64,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ImageDescriptor {
+    fn default() -> Self {
+        Self {
+        key: ::core::default::Default::default(),
+        width: 0,
+        height: 0,
+        format: self::ImagePixelFormat::Rgb,
+        decoded_len: 0,
+        
+        }
+    }
+}
+
+
+impl ImageDescriptor {
+    /// Creates a [ImageDescriptorBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ImageDescriptorBuilder<()> {
+        ImageDescriptorBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_key: impl ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+        field_width: impl ::planus::WriteAsDefault<u32, u32>,
+        field_height: impl ::planus::WriteAsDefault<u32, u32>,
+        field_format: impl ::planus::WriteAsDefault<self::ImagePixelFormat, self::ImagePixelFormat>,
+        field_decoded_len: impl ::planus::WriteAsDefault<u64, u64>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_key = field_key.prepare(builder);let prepared_width = field_width.prepare(builder, &0);let prepared_height = field_height.prepare(builder, &0);let prepared_format = field_format.prepare(builder, &self::ImagePixelFormat::Rgb);let prepared_decoded_len = field_decoded_len.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<14> = ::core::default::Default::default();
+        if prepared_decoded_len.is_some() {table_writer.write_entry::<u64>(4);}table_writer.write_entry::<::planus::Offset<self::ImageKey>>(0);if prepared_width.is_some() {table_writer.write_entry::<u32>(1);}if prepared_height.is_some() {table_writer.write_entry::<u32>(2);}if prepared_format.is_some() {table_writer.write_entry::<self::ImagePixelFormat>(3);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_decoded_len) = prepared_decoded_len {object_writer.write::<_, _, 8>(&prepared_decoded_len);}object_writer.write::<_, _, 4>(&prepared_key);if let ::core::option::Option::Some(prepared_width) = prepared_width {object_writer.write::<_, _, 4>(&prepared_width);}if let ::core::option::Option::Some(prepared_height) = prepared_height {object_writer.write::<_, _, 4>(&prepared_height);}if let ::core::option::Option::Some(prepared_format) = prepared_format {object_writer.write::<_, _, 1>(&prepared_format);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ImageDescriptor>> for ImageDescriptor {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageDescriptor> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ImageDescriptor>> for ImageDescriptor {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImageDescriptor>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ImageDescriptor> for ImageDescriptor {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageDescriptor> {
+        ImageDescriptor::create(
+            builder,
+        
+            
+            &self.key,
+            
+        
+            
+            self.width,
+            
+        
+            
+            self.height,
+            
+        
+            
+            self.format,
+            
+        
+            
+            self.decoded_len,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ImageDescriptor] type.
+///
+/// Can be created using the [ImageDescriptor::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ImageDescriptorBuilder<State>(State);
+
+impl<
+    
+> ImageDescriptorBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`key` field](ImageDescriptor#structfield.key).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn key<T0>(self, value: T0) -> ImageDescriptorBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<self::ImageKey>>
+    {
+        ImageDescriptorBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ImageDescriptorBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`width` field](ImageDescriptor#structfield.width).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn width<T1>(self, value: T1) -> ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u32, u32>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ImageDescriptorBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`width` field](ImageDescriptor#structfield.width) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn width_as_default(self) -> ImageDescriptorBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.width(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ImageDescriptorBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`height` field](ImageDescriptor#structfield.height).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn height<T2>(self, value: T2) -> ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsDefault<u32, u32>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ImageDescriptorBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`height` field](ImageDescriptor#structfield.height) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn height_as_default(self) -> ImageDescriptorBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.height(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ImageDescriptorBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`format` field](ImageDescriptor#structfield.format).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn format<T3>(self, value: T3) -> ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAsDefault<self::ImagePixelFormat, self::ImagePixelFormat>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;ImageDescriptorBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`format` field](ImageDescriptor#structfield.format) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn format_as_default(self) -> ImageDescriptorBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.format(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+> ImageDescriptorBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )
+>
+{
+    /// Setter for the [`decoded_len` field](ImageDescriptor#structfield.decoded_len).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn decoded_len<T4>(self, value: T4) -> ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+    )>
+    where T4: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        ) = self.0;ImageDescriptorBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`decoded_len` field](ImageDescriptor#structfield.decoded_len) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn decoded_len_as_default(self) -> ImageDescriptorBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.decoded_len(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+> ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ImageDescriptor].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageDescriptor>
+        where Self: ::planus::WriteAsOffset<ImageDescriptor>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAsDefault<u32, u32>,
+    
+        T3: ::planus::WriteAsDefault<self::ImagePixelFormat, self::ImagePixelFormat>,
+    
+        T4: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAs<::planus::Offset<ImageDescriptor>> for ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+)> {
+    type Prepared = ::planus::Offset<ImageDescriptor>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageDescriptor> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAsDefault<u32, u32>,
+    
+        T3: ::planus::WriteAsDefault<self::ImagePixelFormat, self::ImagePixelFormat>,
+    
+        T4: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ImageDescriptor>> for ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+)> {
+    type Prepared = ::planus::Offset<ImageDescriptor>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImageDescriptor>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAsDefault<u32, u32>,
+    
+        T3: ::planus::WriteAsDefault<self::ImagePixelFormat, self::ImagePixelFormat>,
+    
+        T4: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOffset<ImageDescriptor> for ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageDescriptor> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+        ) = &self.0;ImageDescriptor::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ImageDescriptor].
+#[derive(Copy, Clone)]
+pub struct ImageDescriptorRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ImageDescriptorRef<'a> {
+    
+        /// Getter for the [`key` field](ImageDescriptor#structfield.key).
+        #[inline]
+        pub fn key(&self) -> ::planus::Result<self::ImageKeyRef<'a>> {
+            
+            
+              
+              self.0.access_required(0, "ImageDescriptor", "key")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`width` field](ImageDescriptor#structfield.width).
+        #[inline]
+        pub fn width(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "ImageDescriptor", "width")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`height` field](ImageDescriptor#structfield.height).
+        #[inline]
+        pub fn height(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(2, "ImageDescriptor", "height")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`format` field](ImageDescriptor#structfield.format).
+        #[inline]
+        pub fn format(&self) -> ::planus::Result<self::ImagePixelFormat> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(3, "ImageDescriptor", "format")
+              
+            
+            ?.unwrap_or(self::ImagePixelFormat::Rgb))
+            
+        }
+    
+        /// Getter for the [`decoded_len` field](ImageDescriptor#structfield.decoded_len).
+        #[inline]
+        pub fn decoded_len(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(4, "ImageDescriptor", "decoded_len")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ImageDescriptorRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ImageDescriptorRef");
+        f.field("key", &self.key());f.field("width", &self.width());f.field("height", &self.height());f.field("format", &self.format());f.field("decoded_len", &self.decoded_len());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ImageDescriptorRef<'a>> for ImageDescriptor {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ImageDescriptorRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            key: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.key()?)?),width: ::core::convert::TryInto::try_into(value.width()?)?,height: ::core::convert::TryInto::try_into(value.height()?)?,format: ::core::convert::TryInto::try_into(value.format()?)?,decoded_len: ::core::convert::TryInto::try_into(value.decoded_len()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ImageDescriptorRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ImageDescriptorRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ImageDescriptorRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ImageDescriptor>> for ImageDescriptor {
+    type Value = ::planus::Offset<ImageDescriptor>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ImageDescriptor>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ImageDescriptorRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ImageDescriptorRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `ImagePreparing` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ImagePreparing` in the file `crates/bkpr-protocol/src/wire/native.fbs:688`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ImagePreparing{
+    
+        /// The field `descriptor` in the table `ImagePreparing`
+        pub descriptor: ::planus::alloc::boxed::Box<self::ImageDescriptor>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ImagePreparing {
+    fn default() -> Self {
+        Self {
+        descriptor: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl ImagePreparing {
+    /// Creates a [ImagePreparingBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ImagePreparingBuilder<()> {
+        ImagePreparingBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_descriptor: impl ::planus::WriteAs<::planus::Offset<self::ImageDescriptor>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_descriptor = field_descriptor.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::ImageDescriptor>>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_descriptor);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ImagePreparing>> for ImagePreparing {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImagePreparing> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ImagePreparing>> for ImagePreparing {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImagePreparing>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ImagePreparing> for ImagePreparing {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImagePreparing> {
+        ImagePreparing::create(
+            builder,
+        
+            
+            &self.descriptor,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ImagePreparing] type.
+///
+/// Can be created using the [ImagePreparing::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ImagePreparingBuilder<State>(State);
+
+impl<
+    
+> ImagePreparingBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`descriptor` field](ImagePreparing#structfield.descriptor).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn descriptor<T0>(self, value: T0) -> ImagePreparingBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<self::ImageDescriptor>>
+    {
+        ImagePreparingBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> ImagePreparingBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ImagePreparing].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImagePreparing>
+        where Self: ::planus::WriteAsOffset<ImagePreparing>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageDescriptor>>,
+    
+> ::planus::WriteAs<::planus::Offset<ImagePreparing>> for ImagePreparingBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<ImagePreparing>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImagePreparing> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageDescriptor>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ImagePreparing>> for ImagePreparingBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<ImagePreparing>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImagePreparing>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageDescriptor>>,
+    
+> ::planus::WriteAsOffset<ImagePreparing> for ImagePreparingBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImagePreparing> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;ImagePreparing::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ImagePreparing].
+#[derive(Copy, Clone)]
+pub struct ImagePreparingRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ImagePreparingRef<'a> {
+    
+        /// Getter for the [`descriptor` field](ImagePreparing#structfield.descriptor).
+        #[inline]
+        pub fn descriptor(&self) -> ::planus::Result<self::ImageDescriptorRef<'a>> {
+            
+            
+              
+              self.0.access_required(0, "ImagePreparing", "descriptor")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ImagePreparingRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ImagePreparingRef");
+        f.field("descriptor", &self.descriptor());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ImagePreparingRef<'a>> for ImagePreparing {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ImagePreparingRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            descriptor: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.descriptor()?)?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ImagePreparingRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ImagePreparingRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ImagePreparingRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ImagePreparing>> for ImagePreparing {
+    type Value = ::planus::Offset<ImagePreparing>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ImagePreparing>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ImagePreparingRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ImagePreparingRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `ImageStart` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ImageStart` in the file `crates/bkpr-protocol/src/wire/native.fbs:689`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ImageStart{
+    
+        /// The field `descriptor` in the table `ImageStart`
+        pub descriptor: ::planus::alloc::boxed::Box<self::ImageDescriptor>,
+        /// The field `encoding` in the table `ImageStart`
+        pub encoding: self::ImageEncoding,
+        /// The field `encoded_len` in the table `ImageStart`
+        pub encoded_len: u64,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ImageStart {
+    fn default() -> Self {
+        Self {
+        descriptor: ::core::default::Default::default(),
+        encoding: self::ImageEncoding::Raw,
+        encoded_len: 0,
+        
+        }
+    }
+}
+
+
+impl ImageStart {
+    /// Creates a [ImageStartBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ImageStartBuilder<()> {
+        ImageStartBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_descriptor: impl ::planus::WriteAs<::planus::Offset<self::ImageDescriptor>>,
+        field_encoding: impl ::planus::WriteAsDefault<self::ImageEncoding, self::ImageEncoding>,
+        field_encoded_len: impl ::planus::WriteAsDefault<u64, u64>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_descriptor = field_descriptor.prepare(builder);let prepared_encoding = field_encoding.prepare(builder, &self::ImageEncoding::Raw);let prepared_encoded_len = field_encoded_len.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        if prepared_encoded_len.is_some() {table_writer.write_entry::<u64>(2);}table_writer.write_entry::<::planus::Offset<self::ImageDescriptor>>(0);if prepared_encoding.is_some() {table_writer.write_entry::<self::ImageEncoding>(1);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_encoded_len) = prepared_encoded_len {object_writer.write::<_, _, 8>(&prepared_encoded_len);}object_writer.write::<_, _, 4>(&prepared_descriptor);if let ::core::option::Option::Some(prepared_encoding) = prepared_encoding {object_writer.write::<_, _, 1>(&prepared_encoding);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ImageStart>> for ImageStart {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageStart> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ImageStart>> for ImageStart {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImageStart>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ImageStart> for ImageStart {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageStart> {
+        ImageStart::create(
+            builder,
+        
+            
+            &self.descriptor,
+            
+        
+            
+            self.encoding,
+            
+        
+            
+            self.encoded_len,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ImageStart] type.
+///
+/// Can be created using the [ImageStart::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ImageStartBuilder<State>(State);
+
+impl<
+    
+> ImageStartBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`descriptor` field](ImageStart#structfield.descriptor).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn descriptor<T0>(self, value: T0) -> ImageStartBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<self::ImageDescriptor>>
+    {
+        ImageStartBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ImageStartBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`encoding` field](ImageStart#structfield.encoding).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn encoding<T1>(self, value: T1) -> ImageStartBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<self::ImageEncoding, self::ImageEncoding>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ImageStartBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`encoding` field](ImageStart#structfield.encoding) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn encoding_as_default(self) -> ImageStartBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.encoding(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ImageStartBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`encoded_len` field](ImageStart#structfield.encoded_len).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn encoded_len<T2>(self, value: T2) -> ImageStartBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ImageStartBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`encoded_len` field](ImageStart#structfield.encoded_len) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn encoded_len_as_default(self) -> ImageStartBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.encoded_len(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ImageStartBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ImageStart].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageStart>
+        where Self: ::planus::WriteAsOffset<ImageStart>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageDescriptor>>,
+    
+        T1: ::planus::WriteAsDefault<self::ImageEncoding, self::ImageEncoding>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAs<::planus::Offset<ImageStart>> for ImageStartBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ImageStart>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageStart> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageDescriptor>>,
+    
+        T1: ::planus::WriteAsDefault<self::ImageEncoding, self::ImageEncoding>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ImageStart>> for ImageStartBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ImageStart>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImageStart>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageDescriptor>>,
+    
+        T1: ::planus::WriteAsDefault<self::ImageEncoding, self::ImageEncoding>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOffset<ImageStart> for ImageStartBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageStart> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;ImageStart::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ImageStart].
+#[derive(Copy, Clone)]
+pub struct ImageStartRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ImageStartRef<'a> {
+    
+        /// Getter for the [`descriptor` field](ImageStart#structfield.descriptor).
+        #[inline]
+        pub fn descriptor(&self) -> ::planus::Result<self::ImageDescriptorRef<'a>> {
+            
+            
+              
+              self.0.access_required(0, "ImageStart", "descriptor")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`encoding` field](ImageStart#structfield.encoding).
+        #[inline]
+        pub fn encoding(&self) -> ::planus::Result<self::ImageEncoding> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "ImageStart", "encoding")
+              
+            
+            ?.unwrap_or(self::ImageEncoding::Raw))
+            
+        }
+    
+        /// Getter for the [`encoded_len` field](ImageStart#structfield.encoded_len).
+        #[inline]
+        pub fn encoded_len(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(2, "ImageStart", "encoded_len")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ImageStartRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ImageStartRef");
+        f.field("descriptor", &self.descriptor());f.field("encoding", &self.encoding());f.field("encoded_len", &self.encoded_len());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ImageStartRef<'a>> for ImageStart {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ImageStartRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            descriptor: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.descriptor()?)?),encoding: ::core::convert::TryInto::try_into(value.encoding()?)?,encoded_len: ::core::convert::TryInto::try_into(value.encoded_len()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ImageStartRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ImageStartRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ImageStartRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ImageStart>> for ImageStart {
+    type Value = ::planus::Offset<ImageStart>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ImageStart>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ImageStartRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ImageStartRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `ImageData` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ImageData` in the file `crates/bkpr-protocol/src/wire/native.fbs:694`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ImageData{
+    
+        /// The field `key` in the table `ImageData`
+        pub key: ::planus::alloc::boxed::Box<self::ImageKey>,
+        /// The field `offset` in the table `ImageData`
+        pub offset: u64,
+        /// The field `data` in the table `ImageData`
+        pub data: ::planus::alloc::vec::Vec<u8>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ImageData {
+    fn default() -> Self {
+        Self {
+        key: ::core::default::Default::default(),
+        offset: 0,
+        data: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl ImageData {
+    /// Creates a [ImageDataBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ImageDataBuilder<()> {
+        ImageDataBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_key: impl ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+        field_offset: impl ::planus::WriteAsDefault<u64, u64>,
+        field_data: impl ::planus::WriteAs<::planus::Offset<[u8]>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_key = field_key.prepare(builder);let prepared_offset = field_offset.prepare(builder, &0);let prepared_data = field_data.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        if prepared_offset.is_some() {table_writer.write_entry::<u64>(1);}table_writer.write_entry::<::planus::Offset<self::ImageKey>>(0);table_writer.write_entry::<::planus::Offset<[u8]>>(2);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_offset) = prepared_offset {object_writer.write::<_, _, 8>(&prepared_offset);}object_writer.write::<_, _, 4>(&prepared_key);object_writer.write::<_, _, 4>(&prepared_data);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ImageData>> for ImageData {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageData> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ImageData>> for ImageData {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImageData>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ImageData> for ImageData {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageData> {
+        ImageData::create(
+            builder,
+        
+            
+            &self.key,
+            
+        
+            
+            self.offset,
+            
+        
+            
+            &self.data,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ImageData] type.
+///
+/// Can be created using the [ImageData::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ImageDataBuilder<State>(State);
+
+impl<
+    
+> ImageDataBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`key` field](ImageData#structfield.key).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn key<T0>(self, value: T0) -> ImageDataBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<self::ImageKey>>
+    {
+        ImageDataBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ImageDataBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`offset` field](ImageData#structfield.offset).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn offset<T1>(self, value: T1) -> ImageDataBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ImageDataBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`offset` field](ImageData#structfield.offset) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn offset_as_default(self) -> ImageDataBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.offset(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ImageDataBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`data` field](ImageData#structfield.data).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn data<T2>(self, value: T2) -> ImageDataBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAs<::planus::Offset<[u8]>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ImageDataBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ImageDataBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ImageData].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageData>
+        where Self: ::planus::WriteAsOffset<ImageData>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<[u8]>>,
+    
+> ::planus::WriteAs<::planus::Offset<ImageData>> for ImageDataBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ImageData>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageData> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<[u8]>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ImageData>> for ImageDataBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ImageData>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImageData>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<[u8]>>,
+    
+> ::planus::WriteAsOffset<ImageData> for ImageDataBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageData> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;ImageData::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ImageData].
+#[derive(Copy, Clone)]
+pub struct ImageDataRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ImageDataRef<'a> {
+    
+        /// Getter for the [`key` field](ImageData#structfield.key).
+        #[inline]
+        pub fn key(&self) -> ::planus::Result<self::ImageKeyRef<'a>> {
+            
+            
+              
+              self.0.access_required(0, "ImageData", "key")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`offset` field](ImageData#structfield.offset).
+        #[inline]
+        pub fn offset(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "ImageData", "offset")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`data` field](ImageData#structfield.data).
+        #[inline]
+        pub fn data(&self) -> ::planus::Result<&'a [u8]> {
+            
+            
+              
+              self.0.access_required(2, "ImageData", "data")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ImageDataRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ImageDataRef");
+        f.field("key", &self.key());f.field("offset", &self.offset());f.field("data", &self.data());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ImageDataRef<'a>> for ImageData {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ImageDataRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            key: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.key()?)?),offset: ::core::convert::TryInto::try_into(value.offset()?)?,data: value.data()?.to_vec(),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ImageDataRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ImageDataRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ImageDataRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ImageData>> for ImageData {
+    type Value = ::planus::Offset<ImageData>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ImageData>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ImageDataRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ImageDataRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `ImageEnd` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ImageEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:695`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ImageEnd{
+    
+        /// The field `key` in the table `ImageEnd`
+        pub key: ::planus::alloc::boxed::Box<self::ImageKey>,
+        /// The field `encoded_len` in the table `ImageEnd`
+        pub encoded_len: u64,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ImageEnd {
+    fn default() -> Self {
+        Self {
+        key: ::core::default::Default::default(),
+        encoded_len: 0,
+        
+        }
+    }
+}
+
+
+impl ImageEnd {
+    /// Creates a [ImageEndBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ImageEndBuilder<()> {
+        ImageEndBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_key: impl ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+        field_encoded_len: impl ::planus::WriteAsDefault<u64, u64>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_key = field_key.prepare(builder);let prepared_encoded_len = field_encoded_len.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        if prepared_encoded_len.is_some() {table_writer.write_entry::<u64>(1);}table_writer.write_entry::<::planus::Offset<self::ImageKey>>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_encoded_len) = prepared_encoded_len {object_writer.write::<_, _, 8>(&prepared_encoded_len);}object_writer.write::<_, _, 4>(&prepared_key);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ImageEnd>> for ImageEnd {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageEnd> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ImageEnd>> for ImageEnd {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImageEnd>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ImageEnd> for ImageEnd {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageEnd> {
+        ImageEnd::create(
+            builder,
+        
+            
+            &self.key,
+            
+        
+            
+            self.encoded_len,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ImageEnd] type.
+///
+/// Can be created using the [ImageEnd::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ImageEndBuilder<State>(State);
+
+impl<
+    
+> ImageEndBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`key` field](ImageEnd#structfield.key).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn key<T0>(self, value: T0) -> ImageEndBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<self::ImageKey>>
+    {
+        ImageEndBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ImageEndBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`encoded_len` field](ImageEnd#structfield.encoded_len).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn encoded_len<T1>(self, value: T1) -> ImageEndBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ImageEndBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`encoded_len` field](ImageEnd#structfield.encoded_len) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn encoded_len_as_default(self) -> ImageEndBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.encoded_len(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ImageEndBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ImageEnd].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageEnd>
+        where Self: ::planus::WriteAsOffset<ImageEnd>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAs<::planus::Offset<ImageEnd>> for ImageEndBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<ImageEnd>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageEnd> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ImageEnd>> for ImageEndBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<ImageEnd>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImageEnd>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOffset<ImageEnd> for ImageEndBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageEnd> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;ImageEnd::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ImageEnd].
+#[derive(Copy, Clone)]
+pub struct ImageEndRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ImageEndRef<'a> {
+    
+        /// Getter for the [`key` field](ImageEnd#structfield.key).
+        #[inline]
+        pub fn key(&self) -> ::planus::Result<self::ImageKeyRef<'a>> {
+            
+            
+              
+              self.0.access_required(0, "ImageEnd", "key")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`encoded_len` field](ImageEnd#structfield.encoded_len).
+        #[inline]
+        pub fn encoded_len(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "ImageEnd", "encoded_len")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ImageEndRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ImageEndRef");
+        f.field("key", &self.key());f.field("encoded_len", &self.encoded_len());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ImageEndRef<'a>> for ImageEnd {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ImageEndRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            key: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.key()?)?),encoded_len: ::core::convert::TryInto::try_into(value.encoded_len()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ImageEndRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ImageEndRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ImageEndRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ImageEnd>> for ImageEnd {
+    type Value = ::planus::Offset<ImageEnd>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ImageEnd>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ImageEndRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ImageEndRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The union `ImageResource` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Union `ImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:696`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize)]
+pub enum ImageResource{
+    
+        /// The variant of type `ImagePreparing` in the union `ImageResource`
+        ImagePreparing(::planus::alloc::boxed::Box<self::ImagePreparing>),
+    
+        /// The variant of type `ImageStart` in the union `ImageResource`
+        ImageStart(::planus::alloc::boxed::Box<self::ImageStart>),
+    
+        /// The variant of type `ImageData` in the union `ImageResource`
+        ImageData(::planus::alloc::boxed::Box<self::ImageData>),
+    
+        /// The variant of type `ImageEnd` in the union `ImageResource`
+        ImageEnd(::planus::alloc::boxed::Box<self::ImageEnd>),
+    
+}
+
+
+impl ImageResource {
+    /// Creates a [ImageResourceBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ImageResourceBuilder<::planus::Uninitialized> {
+        ImageResourceBuilder(::planus::Uninitialized)
+    }
+
+    #[inline]
+    pub fn create_image_preparing(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::ImagePreparing>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(1, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_image_start(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::ImageStart>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(2, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_image_data(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::ImageData>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(3, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_image_end(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::ImageEnd>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(4, value.prepare(builder).downcast())
+    }
+
+    
+}
+
+
+
+impl ::planus::WriteAsUnion<ImageResource> for ImageResource {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<Self> {
+        match self {
+            Self::ImagePreparing(value) => Self::create_image_preparing(builder, value),
+            Self::ImageStart(value) => Self::create_image_start(builder, value),
+            Self::ImageData(value) => Self::create_image_data(builder, value),
+            Self::ImageEnd(value) => Self::create_image_end(builder, value),
+            
+        }
+    }
+}
+
+
+impl ::planus::WriteAsOptionalUnion<ImageResource> for ImageResource {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<Self>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+
+/// Builder for serializing an instance of the [ImageResource] type.
+///
+/// Can be created using the [ImageResource::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ImageResourceBuilder<T>(T);
+
+impl ImageResourceBuilder<::planus::Uninitialized> {
+    /// Creates an instance of the [`ImagePreparing` variant](ImageResource#variant.ImagePreparing).
+    #[inline]
+    pub fn image_preparing<T>(
+        self,
+        value: T,
+    ) -> ImageResourceBuilder<::planus::Initialized<1, T>>
+        where T: ::planus::WriteAsOffset<self::ImagePreparing> {
+        ImageResourceBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`ImageStart` variant](ImageResource#variant.ImageStart).
+    #[inline]
+    pub fn image_start<T>(
+        self,
+        value: T,
+    ) -> ImageResourceBuilder<::planus::Initialized<2, T>>
+        where T: ::planus::WriteAsOffset<self::ImageStart> {
+        ImageResourceBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`ImageData` variant](ImageResource#variant.ImageData).
+    #[inline]
+    pub fn image_data<T>(
+        self,
+        value: T,
+    ) -> ImageResourceBuilder<::planus::Initialized<3, T>>
+        where T: ::planus::WriteAsOffset<self::ImageData> {
+        ImageResourceBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`ImageEnd` variant](ImageResource#variant.ImageEnd).
+    #[inline]
+    pub fn image_end<T>(
+        self,
+        value: T,
+    ) -> ImageResourceBuilder<::planus::Initialized<4, T>>
+        where T: ::planus::WriteAsOffset<self::ImageEnd> {
+        ImageResourceBuilder(::planus::Initialized(value))
+    }
+
+    
+}
+
+impl<const N: u8, T> ImageResourceBuilder<::planus::Initialized<N, T>> {
+    /// Finish writing the builder to get an [UnionOffset](::planus::UnionOffset) to a serialized [ImageResource].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<ImageResource>
+        where Self: ::planus::WriteAsUnion<ImageResource>
+    {
+        ::planus::WriteAsUnion::prepare(&self, builder)
+    }
+}
+
+impl<T> ::planus::WriteAsUnion<ImageResource> for ImageResourceBuilder<::planus::Initialized<1, T>>
+    where T: ::planus::WriteAsOffset<self::ImagePreparing>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<ImageResource> {
+        ::planus::UnionOffset::new(1, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<ImageResource> for ImageResourceBuilder<::planus::Initialized<1, T>>
+    where T: ::planus::WriteAsOffset<self::ImagePreparing>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<ImageResource>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<ImageResource> for ImageResourceBuilder<::planus::Initialized<2, T>>
+    where T: ::planus::WriteAsOffset<self::ImageStart>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<ImageResource> {
+        ::planus::UnionOffset::new(2, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<ImageResource> for ImageResourceBuilder<::planus::Initialized<2, T>>
+    where T: ::planus::WriteAsOffset<self::ImageStart>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<ImageResource>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<ImageResource> for ImageResourceBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::ImageData>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<ImageResource> {
+        ::planus::UnionOffset::new(3, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<ImageResource> for ImageResourceBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::ImageData>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<ImageResource>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<ImageResource> for ImageResourceBuilder<::planus::Initialized<4, T>>
+    where T: ::planus::WriteAsOffset<self::ImageEnd>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<ImageResource> {
+        ::planus::UnionOffset::new(4, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<ImageResource> for ImageResourceBuilder<::planus::Initialized<4, T>>
+    where T: ::planus::WriteAsOffset<self::ImageEnd>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<ImageResource>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+
+
+/// Reference to a deserialized [ImageResource].
+#[derive(Copy, Clone, Debug)]
+pub enum ImageResourceRef<'a>{
+    ImagePreparing(self::ImagePreparingRef<'a>),
+    ImageStart(self::ImageStartRef<'a>),
+    ImageData(self::ImageDataRef<'a>),
+    ImageEnd(self::ImageEndRef<'a>),
+    
+}
+
+
+impl<'a> ::core::convert::TryFrom<ImageResourceRef<'a>> for ImageResource {
+    type Error = ::planus::Error;
+
+    fn try_from(value: ImageResourceRef<'a>) -> ::planus::Result<Self> {
+        ::core::result::Result::Ok(match value {
+            
+                ImageResourceRef::ImagePreparing(value) => Self::ImagePreparing(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                ImageResourceRef::ImageStart(value) => Self::ImageStart(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                ImageResourceRef::ImageData(value) => Self::ImageData(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                ImageResourceRef::ImageEnd(value) => Self::ImageEnd(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+        })
+    }
+}
+
+
+
+impl<'a> ::planus::TableReadUnion<'a> for ImageResourceRef<'a> {
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        match tag {
+            1 => ::core::result::Result::Ok(Self::ImagePreparing(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::ImageStart(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::ImageData(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::ImageEnd(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+        }
+    }
+}
+
+
+
+impl<'a> ::planus::VectorReadUnion<'a> for ImageResourceRef<'a> {
+    const VECTOR_NAME: &'static str = "[ImageResourceRef]";
+}
+
+
+    
+/// The table `ImageResourcePayload` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ImageResourcePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:697`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ImageResourcePayload{
+    
+        /// The field `value` in the table `ImageResourcePayload`
+        pub value: self::ImageResource,}
+
+
+
+impl ImageResourcePayload {
+    /// Creates a [ImageResourcePayloadBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ImageResourcePayloadBuilder<()> {
+        ImageResourcePayloadBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_value: impl ::planus::WriteAsUnion<self::ImageResource>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_value = field_value.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::ImageResource>>(1);table_writer.write_entry::<u8>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_value.offset());object_writer.write::<_, _, 1>(&prepared_value.tag());
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ImageResourcePayload>> for ImageResourcePayload {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageResourcePayload> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ImageResourcePayload>> for ImageResourcePayload {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImageResourcePayload>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ImageResourcePayload> for ImageResourcePayload {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageResourcePayload> {
+        ImageResourcePayload::create(
+            builder,
+        
+            
+            &self.value,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ImageResourcePayload] type.
+///
+/// Can be created using the [ImageResourcePayload::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ImageResourcePayloadBuilder<State>(State);
+
+impl<
+    
+> ImageResourcePayloadBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`value` field](ImageResourcePayload#structfield.value).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn value<T0>(self, value: T0) -> ImageResourcePayloadBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsUnion<self::ImageResource>
+    {
+        ImageResourcePayloadBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> ImageResourcePayloadBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ImageResourcePayload].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageResourcePayload>
+        where Self: ::planus::WriteAsOffset<ImageResourcePayload>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::ImageResource>,
+    
+> ::planus::WriteAs<::planus::Offset<ImageResourcePayload>> for ImageResourcePayloadBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<ImageResourcePayload>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageResourcePayload> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::ImageResource>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ImageResourcePayload>> for ImageResourcePayloadBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<ImageResourcePayload>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImageResourcePayload>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::ImageResource>,
+    
+> ::planus::WriteAsOffset<ImageResourcePayload> for ImageResourcePayloadBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageResourcePayload> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;ImageResourcePayload::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ImageResourcePayload].
+#[derive(Copy, Clone)]
+pub struct ImageResourcePayloadRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ImageResourcePayloadRef<'a> {
+    
+        /// Getter for the [`value` field](ImageResourcePayload#structfield.value).
+        #[inline]
+        pub fn value(&self) -> ::planus::Result<self::ImageResourceRef<'a>> {
+            
+            
+              
+              self.0.access_union_required(0, "ImageResourcePayload", "value")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ImageResourcePayloadRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ImageResourcePayloadRef");
+        f.field("value", &self.value());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ImageResourcePayloadRef<'a>> for ImageResourcePayload {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ImageResourcePayloadRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            value: ::core::convert::TryInto::try_into(value.value()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ImageResourcePayloadRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ImageResourcePayloadRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ImageResourcePayloadRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ImageResourcePayload>> for ImageResourcePayload {
+    type Value = ::planus::Offset<ImageResourcePayload>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ImageResourcePayload>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ImageResourcePayloadRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ImageResourcePayloadRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The union `Payload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:675`
+/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:698`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -72876,6 +76647,9 @@ pub enum Payload{
     
         /// The variant of type `PanePayload` in the union `Payload`
         PanePayload(::planus::alloc::boxed::Box<self::PanePayload>),
+    
+        /// The variant of type `ImageResourcePayload` in the union `Payload`
+        ImageResourcePayload(::planus::alloc::boxed::Box<self::ImageResourcePayload>),
     
 }
 
@@ -72903,6 +76677,14 @@ impl Payload {
         ::planus::UnionOffset::new(2, value.prepare(builder).downcast())
     }
 
+    #[inline]
+    pub fn create_image_resource_payload(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::ImageResourcePayload>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(3, value.prepare(builder).downcast())
+    }
+
     
 }
 
@@ -72914,6 +76696,7 @@ impl ::planus::WriteAsUnion<Payload> for Payload {
         match self {
             Self::ControlPayload(value) => Self::create_control_payload(builder, value),
             Self::PanePayload(value) => Self::create_pane_payload(builder, value),
+            Self::ImageResourcePayload(value) => Self::create_image_resource_payload(builder, value),
             
         }
     }
@@ -72952,6 +76735,16 @@ impl PayloadBuilder<::planus::Uninitialized> {
         value: T,
     ) -> PayloadBuilder<::planus::Initialized<2, T>>
         where T: ::planus::WriteAsOffset<self::PanePayload> {
+        PayloadBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`ImageResourcePayload` variant](Payload#variant.ImageResourcePayload).
+    #[inline]
+    pub fn image_resource_payload<T>(
+        self,
+        value: T,
+    ) -> PayloadBuilder<::planus::Initialized<3, T>>
+        where T: ::planus::WriteAsOffset<self::ImageResourcePayload> {
         PayloadBuilder(::planus::Initialized(value))
     }
 
@@ -73002,6 +76795,23 @@ impl<T> ::planus::WriteAsOptionalUnion<Payload> for PayloadBuilder<::planus::Ini
         ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
     }
 }
+impl<T> ::planus::WriteAsUnion<Payload> for PayloadBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::ImageResourcePayload>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<Payload> {
+        ::planus::UnionOffset::new(3, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<Payload> for PayloadBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::ImageResourcePayload>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<Payload>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
 
 
 /// Reference to a deserialized [Payload].
@@ -73009,6 +76819,7 @@ impl<T> ::planus::WriteAsOptionalUnion<Payload> for PayloadBuilder<::planus::Ini
 pub enum PayloadRef<'a>{
     ControlPayload(self::ControlPayloadRef<'a>),
     PanePayload(self::PanePayloadRef<'a>),
+    ImageResourcePayload(self::ImageResourcePayloadRef<'a>),
     
 }
 
@@ -73025,6 +76836,9 @@ impl<'a> ::core::convert::TryFrom<PayloadRef<'a>> for Payload {
                 PayloadRef::PanePayload(value) => Self::PanePayload(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
+                PayloadRef::ImageResourcePayload(value) => Self::ImageResourcePayload(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
         })
     }
 }
@@ -73034,7 +76848,7 @@ impl<'a> ::core::convert::TryFrom<PayloadRef<'a>> for Payload {
 impl<'a> ::planus::TableReadUnion<'a> for PayloadRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::ControlPayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::PanePayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::ControlPayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::PanePayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::ImageResourcePayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
@@ -73050,7 +76864,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PayloadRef<'a> {
 /// The table `Request` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:676`
+/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:699`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -73439,7 +77253,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestRef<'a> {
 /// The table `OptionalPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:677`
+/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:700`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -73734,7 +77548,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPayloadRef<'a> {
 /// The table `OptionalFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:678`
+/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:701`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -74029,7 +77843,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalFailureRef<'a> {
 /// The table `Response` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:679`
+/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:702`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize

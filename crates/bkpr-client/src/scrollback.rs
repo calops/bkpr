@@ -112,7 +112,7 @@ impl App {
     }
 
     pub(super) fn paste(&mut self, text: String) -> Result<()> {
-        if self.image_viewer.is_some() {
+        if self.image_viewer.is_some() || self.diagnostic_view.is_some() {
             return Ok(());
         }
         if self

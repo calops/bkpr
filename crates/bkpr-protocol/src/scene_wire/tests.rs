@@ -465,6 +465,7 @@ fn compact_aliases_cannot_bypass_expanded_link_or_image_budgets() {
         scene.styles.as_slice(),
         scene.hyperlinks.as_slice(),
         scene.rows.as_slice(),
+        None::<planus::Offset<[planus::Offset<g::ImageDescriptor>]>>,
     );
     let error = match decode(builder.finish(root, None)) {
         Ok(_) => panic!("accepted amplified image resources"),
@@ -488,4 +489,113 @@ fn empty_ascii_and_continuation_cells_keep_distinct_shapes() {
         decode(&bytes).unwrap().apply(&mut 0, &mut actual).unwrap();
         assert_eq!(actual, Some(frame));
     }
+}
+
+#[test]
+fn progressive_scene_installs_text_and_validated_manifest_without_pixel_receipts() {
+    let frame = fixture();
+    let bytes = encode_progressive(&frame, 7, None, 0, &frame.image_keys()).unwrap();
+    let mut decoded = decode(&bytes).unwrap();
+    assert_eq!(decoded.image_descriptors().len(), frame.images.len());
+    assert_eq!(decoded.image_keys().count(), 0);
+    for (descriptor, image) in decoded.image_descriptors().iter().zip(&frame.images) {
+        assert_eq!(*descriptor, ImageDescriptor::from_image(image).unwrap());
+    }
+    let descriptors = decoded.take_image_descriptors();
+    assert_eq!(descriptors.len(), frame.images.len());
+    assert!(decoded.image_descriptors().is_empty() && decoded.is_progressive());
+    let mut actual = None;
+    let mut revision = 0;
+    decoded.apply(&mut revision, &mut actual).unwrap();
+    let actual = actual.unwrap();
+    assert_eq!(revision, 7);
+    assert_eq!(actual.rows, frame.rows);
+    assert_eq!(actual.placements, frame.placements);
+    assert!(actual.images.is_empty());
+    assert_eq!(
+        to_json(&bytes).unwrap()["image_descriptors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+}
+
+#[test]
+fn progressive_manifests_reject_missing_generations_crops_duplicates_and_decoded_quotas() {
+    let frame = fixture();
+    let bytes = encode_progressive(&frame, 7, None, 0, &[]).unwrap();
+    let valid = g::Scene::try_from(g::SceneRef::read_as_root(&bytes).unwrap()).unwrap();
+    let mut unknown = valid.clone();
+    unknown.frame.placements[0].generation = 10;
+    assert!(decode(&binary(&unknown)).is_err());
+    let mut crop = valid.clone();
+    crop.frame.placements[0].source_x = u32::MAX;
+    assert!(decode(&binary(&crop)).is_err());
+    let mut missing = valid.clone();
+    missing.image_descriptors = None;
+    assert!(decode(&binary(&missing)).is_err());
+    let mut duplicate = valid.clone();
+    let descriptors = duplicate.image_descriptors.as_mut().unwrap();
+    descriptors.push(descriptors[0].clone());
+    assert!(decode(&binary(&duplicate)).is_err());
+    let mut quota = valid.clone();
+    for (index, descriptor) in quota
+        .image_descriptors
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+    {
+        descriptor.width = 4096;
+        descriptor.height = 4096;
+        descriptor.format = g::PixelFormat::Rgba;
+        descriptor.decoded_len = crate::IMAGE_MAX_BYTES as u64;
+        descriptor.id = index as u32;
+    }
+    assert!(decode(&binary(&quota)).is_err());
+    let mut inline = valid;
+    inline.version = 1;
+    assert!(decode(&binary(&inline)).is_err());
+}
+
+#[test]
+fn progressive_delta_rejection_is_atomic_and_pending_placements_keep_exact_crops() {
+    let original = Arc::new(fixture());
+    let mut next = original.as_ref().clone();
+    next.rows[0].cells[0].text = "new".into();
+    next.placements[0].width = 0;
+    let bytes = encode_progressive(&next, 9, Some(&(7, original.clone())), 7, &[]).unwrap();
+    let mut actual = Some(original.as_ref().clone());
+    let mut revision = 6;
+    assert!(
+        decode(&bytes)
+            .unwrap()
+            .apply(&mut revision, &mut actual)
+            .is_err()
+    );
+    assert_eq!(revision, 6);
+    assert_eq!(actual, Some(original.as_ref().clone()));
+    revision = 7;
+    decode(&bytes)
+        .unwrap()
+        .apply(&mut revision, &mut actual)
+        .unwrap();
+    assert_eq!(actual.as_ref().unwrap().rows, next.rows);
+    assert_eq!(actual.as_ref().unwrap().placements, next.placements);
+}
+
+#[test]
+fn empty_progressive_manifest_keeps_its_representation_after_ownership_transfer() {
+    let mut frame = fixture();
+    frame.images.clear();
+    frame.placements.clear();
+    let mut progressive = decode(&encode_progressive(&frame, 1, None, 0, &[]).unwrap()).unwrap();
+    assert!(progressive.take_image_descriptors().is_empty());
+    assert!(progressive.is_progressive());
+    assert!(
+        !decode(&encode(&frame, 1, None, 0, &[]).unwrap())
+            .unwrap()
+            .is_progressive()
+    );
 }

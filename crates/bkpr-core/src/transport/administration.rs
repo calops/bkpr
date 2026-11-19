@@ -107,6 +107,10 @@ pub(super) fn serve(
             let _ = ResponseWriter {
                 stream,
                 deadline: std::time::Instant::now() + Duration::from_secs(3),
+                progress: std::time::Instant::now(),
+                stall: None,
+                active: None,
+                sent: 0,
             }
             .write_all(&bytes[..length]);
         }

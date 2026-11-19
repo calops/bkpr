@@ -14,3 +14,4 @@ serde_json.workspace = true
 schemars = "1"
 base64 = "0.22"
 sha2 = "0.10"
+zstd = { version = "=0.14.4", default-features = false }

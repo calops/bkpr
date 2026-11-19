@@ -146,6 +146,8 @@ pub enum Action {
     CloseSelected,
     OpenFinder,
     OpenThemes,
+    /// Inspect retained failure details without retrying an operation.
+    ShowDiagnostics,
     Submit,
     Cancel,
     AllowClipboard,
@@ -211,6 +213,7 @@ impl Action {
             Self::CloseSelected => "close",
             Self::OpenFinder => "find panes",
             Self::OpenThemes => "themes",
+            Self::ShowDiagnostics => "diagnostics",
             Self::Submit => match context {
                 Context::Create => "create",
                 Context::Edit => "save",
@@ -356,7 +359,7 @@ impl Context {
             Self::Search => "Search",
             Self::Resize => "Resize",
             Self::Chooser => "Choose",
-            Self::Details => "Project details",
+            Self::Details => "Details",
             Self::ClipboardConsent => "Clipboard permission",
         }
     }
@@ -514,6 +517,7 @@ static BINDINGS: &[Binding] = &[
     text(PREFIX, "i", A::ProjectDetails, 30),
     text(PREFIX, "g", A::ToggleChrome, 31),
     text(PREFIX, "t", A::OpenThemes, 32),
+    text(PREFIX, "!", A::ShowDiagnostics, 33),
     text(PREFIX, "R", A::ReopenPane, 42),
     text(PREFIX, "n", A::SplitHorizontal, 21),
     text(PREFIX, "%", A::SplitHorizontal, 21),

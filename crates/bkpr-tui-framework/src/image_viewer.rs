@@ -1,6 +1,6 @@
 //! Full-resource image viewing and canonical scene image picking.
-use crate::{Rect, Role, RoleSpan, Theme, UiSurface, window};
-use bkpr_protocol::{Frame, Image, ImageLayer, Placement, Size};
+use crate::{Rect, Role, RoleSpan, Theme, UiSurface, image_resources::ImageManifest, window};
+use bkpr_protocol::{Frame, Image, ImageKey, ImageLayer, Placement, Size};
 use std::sync::Arc;
 
 /// A caller-controlled viewer retaining the original immutable image resource.
@@ -69,6 +69,27 @@ impl ImageViewer {
     }
 }
 
+/// A picked image generation, distinguishing complete pixels from declared pending data.
+#[derive(Clone, Debug)]
+pub enum ImageHit {
+    /// Complete immutable pixels that can be opened immediately.
+    Ready(Arc<Image>),
+    /// A declared generation whose pixels have not arrived.
+    Pending(ImageKey),
+}
+
+/// Pick using the ordinary canonical geometry and layer order, including pending images.
+/// A topmost pending placement owns its hit rather than exposing an image below it.
+/// Undeclared references, invalid crops and resident/descriptor mismatches are not hits.
+pub fn hit_test_with_manifest(
+    frame: &Frame,
+    manifest: &ImageManifest,
+    x: f32,
+    y: f32,
+) -> Option<ImageHit> {
+    pick(frame, Some(manifest), x, y)
+}
+
 /// Pick the topmost image at fractional canonical frame-cell coordinates.
 /// Off-frame/non-finite points, empty or invalid source rectangles, missing
 /// generations and below-background placements are not selectable. Placement
@@ -77,6 +98,13 @@ impl ImageViewer {
 /// match scene projection, with later placements winning equal-order ties.
 /// This is rectangular picking; alpha and overlaid text do not mask image hits.
 pub fn hit_test(frame: &Frame, x: f32, y: f32) -> Option<Arc<Image>> {
+    match pick(frame, None, x, y)? {
+        ImageHit::Ready(image) => Some(image),
+        ImageHit::Pending(_) => None,
+    }
+}
+
+fn pick(frame: &Frame, manifest: Option<&ImageManifest>, x: f32, y: f32) -> Option<ImageHit> {
     let size = frame.size;
     if !x.is_finite()
         || !y.is_finite()
@@ -112,21 +140,34 @@ pub fn hit_test(frame: &Frame, x: f32, y: f32) -> Option<Arc<Image>> {
             {
                 return None;
             }
-            let image = frame
-                .images
-                .iter()
-                .find(|image| image.id == p.image_id && image.generation == p.generation)?;
-            if p.source_width == 0
-                || p.source_height == 0
-                || u64::from(p.source_x) + u64::from(p.source_width) > u64::from(image.width)
-                || u64::from(p.source_y) + u64::from(p.source_height) > u64::from(image.height)
-            {
-                return None;
+            let key = ImageKey {
+                id: p.image_id,
+                generation: p.generation,
+            };
+            let image = frame.images.iter().find(|image| image.key() == key);
+            if let Some(manifest) = manifest {
+                manifest.descriptor(key)?.validate_placement(p).ok()?;
+                if let Some(image) = image {
+                    manifest.validate_image(image).ok()?;
+                }
+            } else {
+                let image = image?;
+                if p.source_width == 0
+                    || p.source_height == 0
+                    || u64::from(p.source_x) + u64::from(p.source_width) > u64::from(image.width)
+                    || u64::from(p.source_y) + u64::from(p.source_height) > u64::from(image.height)
+                {
+                    return None;
+                }
             }
-            Some(((z, index), image))
+            Some(((z, index), (key, image)))
         })
         .max_by_key(|(order, _)| *order)
-        .map(|(_, image)| Arc::clone(image))
+        .map(|(_, (key, image))| {
+            image.map_or(ImageHit::Pending(key), |image| {
+                ImageHit::Ready(Arc::clone(image))
+            })
+        })
 }
 
 /// Return whether a local cell is the viewer's top-right close button.
@@ -308,5 +349,45 @@ mod tests {
         assert!(Arc::ptr_eq(&hit_test(&frame, 0.0, 0.75).unwrap(), &first));
         assert!(hit_test(&frame, f32::NAN, 0.75).is_none());
         assert!(hit_test(&frame, 0.0, f32::INFINITY).is_none());
+    }
+
+    #[test]
+    fn pending_pick_keeps_topmost_geometry_and_becomes_ready_without_scene_change() {
+        let first = image(1, PixelFormat::Rgb);
+        let second = image(2, PixelFormat::Rgba);
+        let manifest = ImageManifest::new(vec![
+            bkpr_protocol::ImageDescriptor::from_image(&first).unwrap(),
+            bkpr_protocol::ImageDescriptor::from_image(&second).unwrap(),
+        ])
+        .unwrap();
+        let mut frame = crate::blank(size());
+        frame.images.push(Arc::clone(&first));
+        let mut p = aspect_fit(&first, size()).unwrap();
+        p.col = -1;
+        p.row = 0;
+        p.offset_x = 5;
+        p.offset_y = 10;
+        p.width = 20;
+        p.height = 20;
+        frame.placements.push(p.clone());
+        p.image_id = second.id;
+        frame.placements.push(p);
+        assert!(
+            matches!(hit_test_with_manifest(&frame, &manifest, 0.0, 0.75),
+            Some(ImageHit::Pending(key)) if key == second.key())
+        );
+        assert!(Arc::ptr_eq(&hit_test(&frame, 0.0, 0.75).unwrap(), &first));
+        assert!(hit_test_with_manifest(&frame, &manifest, 1.5, 0.75).is_none());
+        assert!(hit_test_with_manifest(&frame, &manifest, 0.0, 0.49).is_none());
+        frame.images.push(Arc::clone(&second));
+        assert!(
+            matches!(hit_test_with_manifest(&frame, &manifest, 0.0, 0.75),
+            Some(ImageHit::Ready(image)) if Arc::ptr_eq(&image, &second))
+        );
+        frame.placements[1].source_x = u32::MAX;
+        assert!(
+            matches!(hit_test_with_manifest(&frame, &manifest, 0.0, 0.75),
+            Some(ImageHit::Ready(image)) if Arc::ptr_eq(&image, &first))
+        );
     }
 }

@@ -45,11 +45,15 @@ pub struct ToastCard {
     pub body: Rect,
     /// Dismiss-button hitbox in screen cells.
     pub dismiss: Rect,
+    /// Optional action-button hitbox in screen cells; omitted when space is tight.
+    pub action: Option<Rect>,
     /// Retained card-local text and styling.
     pub surface: UiSurface,
     /// Whether the current paint uses caller-provided graphical decoration.
     pub graphical: bool,
     message: String,
+    action_label: Option<String>,
+    action_text: String,
     deadline: Instant,
     rows: Vec<String>,
     spans: [RoleSpan; 5],
@@ -65,13 +69,21 @@ pub enum PointerRoute {
     Block,
     /// Consume the event after removing the identified card.
     Dismissed(ToastId),
+    /// Consume a valid action click without removing the card or renewing its lifetime.
+    Activated(ToastId),
+}
+
+#[derive(Clone, Copy)]
+enum ButtonTarget {
+    Dismiss,
+    Action,
 }
 
 #[derive(Clone, Copy)]
 struct Capture {
     id: ToastId,
     button: MouseButton,
-    dismiss: bool,
+    target: Option<ButtonTarget>,
     pressed: u8,
 }
 
@@ -89,6 +101,29 @@ impl ToastStack {
     /// Insert bounded, control-safe text. Byte and visual truncation are marked
     /// with an ellipsis. A zero lifetime expires at `now` on the next `expire`.
     pub fn push(&mut self, message: &str, now: Instant, lifetime: Duration) -> ToastId {
+        self.insert(message, None, now, lifetime)
+    }
+
+    /// Insert a notice with one caller-defined action. Labels are bounded and
+    /// control-safe, and may be truncated or omitted on small viewports.
+    /// Activation reports its ID without removing the card or changing its deadline.
+    pub fn push_with_action(
+        &mut self,
+        message: &str,
+        action_label: &str,
+        now: Instant,
+        lifetime: Duration,
+    ) -> ToastId {
+        self.insert(message, Some(action_label), now, lifetime)
+    }
+
+    fn insert(
+        &mut self,
+        message: &str,
+        action_label: Option<&str>,
+        now: Instant,
+        lifetime: Duration,
+    ) -> ToastId {
         self.expire(now);
         if self.cards.len() == MAX_CARDS {
             self.cards.remove(0);
@@ -114,6 +149,7 @@ impl ToastStack {
             outer: Rect::default(),
             body: Rect::default(),
             dismiss: Rect::default(),
+            action: None,
             surface: UiSurface::new(Size {
                 cols: 1,
                 rows: 1,
@@ -122,6 +158,8 @@ impl ToastStack {
             }),
             graphical: false,
             message: bounded_text(message),
+            action_label: action_label.map(bounded_text),
+            action_text: String::new(),
             // An unrepresentable lifetime cannot be scheduled. Expiring now is
             // preferable to retaining an unschedulable notification forever.
             deadline: now.checked_add(lifetime).unwrap_or(now),
@@ -141,6 +179,18 @@ impl ToastStack {
     pub fn expire(&mut self, now: Instant) -> bool {
         let old_len = self.cards.len();
         self.cards.retain(|card| now < card.deadline);
+        let changed = old_len != self.cards.len();
+        if changed {
+            self.layout = None;
+        }
+        changed
+    }
+
+    /// Remove a notice by ID, preserving any captured gesture until all releases.
+    /// Returns whether the notice was still retained.
+    pub fn dismiss(&mut self, id: ToastId) -> bool {
+        let old_len = self.cards.len();
+        self.cards.retain(|card| card.id != id);
         let changed = old_len != self.cards.len();
         if changed {
             self.layout = None;
@@ -226,6 +276,18 @@ impl ToastStack {
                     if card.dismiss.width >= 3 { "[x]" } else { "x" }.into(),
                     false,
                 ));
+                if let Some(action) = card.action {
+                    lines.push((
+                        Rect {
+                            x: action.x - card.outer.x,
+                            y: action.y - card.outer.y,
+                            width: action.width,
+                            height: 1,
+                        },
+                        card.action_text.clone(),
+                        false,
+                    ));
+                }
                 card.surface.paint(size, lines, None);
                 card.spans = window::theme_spans(size);
                 card.painted = Some((size, card.graphical));
@@ -245,6 +307,8 @@ impl ToastStack {
             card.outer = Rect::default();
             card.body = Rect::default();
             card.dismiss = Rect::default();
+            card.action = None;
+            card.action_text.clear();
             if width == 0 || y >= screen.rows {
                 continue;
             }
@@ -252,9 +316,21 @@ impl ToastStack {
             let framed = width >= 3 && remaining >= 3;
             let inset = if framed { 2 } else { 0 };
             let body_width = width - inset;
-            let max_rows = layout.max_lines.clamp(1, MAX_LINES).min(remaining - inset);
+            let available_rows = remaining - inset;
+            if body_width >= 3
+                && available_rows >= 2
+                && let Some(label) = &card.action_label
+                && let Some(label) = wrap(label, body_width - 2, 1).pop()
+            {
+                card.action_text = format!("[{label}]");
+            }
+            let footer_rows = u16::from(!card.action_text.is_empty());
+            let max_rows = layout
+                .max_lines
+                .clamp(1, MAX_LINES)
+                .min(available_rows - footer_rows);
             card.rows = wrap(&card.message, text_width(body_width), max_rows);
-            let height = (card.rows.len() as u16).max(1) + inset;
+            let height = (card.rows.len() as u16).max(1) + inset + footer_rows;
             card.outer = Rect {
                 x: (screen.cols - width) / 2,
                 y,
@@ -275,6 +351,15 @@ impl ToastStack {
                 width: dismiss_width,
                 height: 1,
             };
+            if footer_rows != 0 {
+                let action_width = columns(&card.action_text) as u16;
+                card.action = Some(Rect {
+                    x: card.body.x + card.body.width - action_width,
+                    y: card.body.y + card.body.height - 1,
+                    width: action_width,
+                    height: 1,
+                });
+            }
             card.painted = None;
             y = y.saturating_add(height).saturating_add(layout.gap);
         }
@@ -282,7 +367,7 @@ impl ToastStack {
 
     /// Route only when no other widget owns a prior gesture, or this stack
     /// already owns it. A press anywhere on a card captures its whole gesture;
-    /// dismissal requires a primary-button click begun and ended on its button.
+    /// a button activates only on a primary release begun and ended on that button.
     /// Uncaptured outside events pass through; keyboard events need no routing.
     pub fn route_pointer(
         &mut self,
@@ -298,20 +383,31 @@ impl ToastStack {
                 self.capture = Some(capture);
             } else if phase == PointerPhase::Release {
                 capture.pressed &= !bit;
-                let dismiss = capture.dismiss
-                    && button == capture.button
-                    && self
-                        .cards
-                        .iter()
-                        .any(|card| card.id == capture.id && card.dismiss.contains(x, y));
+                let target = (button == capture.button)
+                    .then_some(capture.target)
+                    .flatten()
+                    .filter(|target| {
+                        self.cards.iter().any(|card| {
+                            card.id == capture.id
+                                && match target {
+                                    ButtonTarget::Dismiss => card.dismiss.contains(x, y),
+                                    ButtonTarget::Action => {
+                                        card.action.is_some_and(|rect| rect.contains(x, y))
+                                    }
+                                }
+                        })
+                    });
                 if button == capture.button {
-                    capture.dismiss = false;
+                    capture.target = None;
                 }
                 self.capture = (capture.pressed != 0).then_some(capture);
-                if dismiss {
-                    self.cards.retain(|card| card.id != capture.id);
-                    self.layout = None;
-                    return PointerRoute::Dismissed(capture.id);
+                match target {
+                    Some(ButtonTarget::Dismiss) => {
+                        self.dismiss(capture.id);
+                        return PointerRoute::Dismissed(capture.id);
+                    }
+                    Some(ButtonTarget::Action) => return PointerRoute::Activated(capture.id),
+                    None => {}
                 }
             }
             return PointerRoute::Block;
@@ -323,7 +419,15 @@ impl ToastStack {
             self.capture = Some(Capture {
                 id: card.id,
                 button,
-                dismiss: button == MouseButton::Left && card.dismiss.contains(x, y),
+                target: if button != MouseButton::Left {
+                    None
+                } else if card.dismiss.contains(x, y) {
+                    Some(ButtonTarget::Dismiss)
+                } else if card.action.is_some_and(|rect| rect.contains(x, y)) {
+                    Some(ButtonTarget::Action)
+                } else {
+                    None
+                },
                 pressed: button_bit(button),
             });
         }
@@ -765,5 +869,246 @@ mod tests {
         assert!(!card.graphical);
         assert_eq!(card.surface.frame.rows[0].cells[0].text, "╭");
         assert_eq!(stack.next_deadline(), Some(now + Duration::from_secs(5)));
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+
+    fn paint(stack: &mut ToastStack, cols: u16, rows: u16) {
+        stack.paint(
+            Size {
+                cols,
+                rows,
+                cell_width: 8,
+                cell_height: 16,
+            },
+            ToastLayout {
+                max_width: 30,
+                top_margin: 0,
+                side_margin: 0,
+                gap: 1,
+                max_lines: 3,
+            },
+            &Theme::default(),
+            |_, _, _| false,
+        );
+    }
+
+    fn route(stack: &mut ToastStack, rect: Rect, phase: PointerPhase) -> PointerRoute {
+        stack.route_pointer(rect.x, rect.y, phase, MouseButton::Left)
+    }
+
+    #[test]
+    fn action_reports_identity_without_dismissal_or_deadline_extension() {
+        let now = Instant::now();
+        let mut stack = ToastStack::default();
+        let id = stack.push_with_action("Message", "Details", now, Duration::from_secs(5));
+        paint(&mut stack, 80, 24);
+        let card = stack.cards().next().unwrap();
+        let action = card.action.unwrap();
+        let dismiss = card.dismiss;
+        assert!(action.y > dismiss.y);
+        assert_eq!(
+            route(&mut stack, action, PointerPhase::Press),
+            PointerRoute::Block
+        );
+        assert_eq!(
+            route(&mut stack, action, PointerPhase::Release),
+            PointerRoute::Activated(id)
+        );
+        assert!(!stack.pointer_captured());
+        assert_eq!(stack.cards().count(), 1);
+        assert_eq!(stack.next_deadline(), Some(now + Duration::from_secs(5)));
+        assert_eq!(
+            route(&mut stack, dismiss, PointerPhase::Press),
+            PointerRoute::Block
+        );
+        assert_eq!(
+            route(&mut stack, dismiss, PointerPhase::Release),
+            PointerRoute::Dismissed(id)
+        );
+        assert!(!stack.dismiss(id));
+    }
+
+    #[test]
+    fn action_requires_primary_press_and_release_on_the_same_button() {
+        let mut stack = ToastStack::default();
+        stack.push_with_action("Message", "Details", Instant::now(), Duration::from_secs(5));
+        paint(&mut stack, 80, 24);
+        let card = stack.cards().next().unwrap();
+        let action = card.action.unwrap();
+        let dismiss = card.dismiss;
+        let body = card.body;
+        for (start, end, button) in [
+            (action, body, MouseButton::Left),
+            (action, dismiss, MouseButton::Left),
+            (dismiss, action, MouseButton::Left),
+            (body, action, MouseButton::Left),
+            (action, action, MouseButton::Right),
+        ] {
+            assert_eq!(
+                stack.route_pointer(start.x, start.y, PointerPhase::Press, button),
+                PointerRoute::Block
+            );
+            assert_eq!(
+                stack.route_pointer(end.x, end.y, PointerPhase::Motion, button),
+                PointerRoute::Block
+            );
+            assert_eq!(
+                stack.route_pointer(end.x, end.y, PointerPhase::Release, button),
+                PointerRoute::Block
+            );
+            assert!(!stack.pointer_captured());
+            assert_eq!(stack.cards().count(), 1);
+        }
+        route(&mut stack, action, PointerPhase::Press);
+        assert_eq!(
+            stack.route_pointer(79, 23, PointerPhase::Release, MouseButton::Left),
+            PointerRoute::Block
+        );
+        assert!(!stack.pointer_captured());
+    }
+
+    #[test]
+    fn removed_expired_and_evicted_actions_capture_every_chord_tail() {
+        for removal in 0..3 {
+            let now = Instant::now();
+            let mut stack = ToastStack::default();
+            let id = stack.push_with_action("Message", "Details", now, Duration::from_secs(1));
+            paint(&mut stack, 80, 24);
+            let action = stack.cards().next().unwrap().action.unwrap();
+            route(&mut stack, action, PointerPhase::Press);
+            assert_eq!(
+                stack.route_pointer(79, 23, PointerPhase::Press, MouseButton::Right),
+                PointerRoute::Block
+            );
+            match removal {
+                0 => assert!(stack.dismiss(id)),
+                1 => assert!(stack.expire(now + Duration::from_secs(1))),
+                _ => {
+                    for _ in 0..3 {
+                        stack.push_with_action(
+                            "Replacement",
+                            "Details",
+                            now,
+                            Duration::from_secs(5),
+                        );
+                    }
+                }
+            }
+            if removal != 2 {
+                stack.push_with_action("Replacement", "Details", now, Duration::from_secs(5));
+            }
+            paint(&mut stack, 80, 24);
+            assert_eq!(
+                route(&mut stack, action, PointerPhase::Release),
+                PointerRoute::Block
+            );
+            assert!(stack.pointer_captured());
+            assert_eq!(
+                stack.route_pointer(79, 23, PointerPhase::Wheel, MouseButton::WheelDown),
+                PointerRoute::Block
+            );
+            assert_eq!(
+                stack.route_pointer(79, 23, PointerPhase::Motion, MouseButton::Right),
+                PointerRoute::Block
+            );
+            assert_eq!(
+                stack.route_pointer(79, 23, PointerPhase::Release, MouseButton::Right),
+                PointerRoute::Block
+            );
+            assert!(!stack.pointer_captured());
+            assert!(stack.cards().all(|card| card.id != id));
+        }
+    }
+
+    #[test]
+    fn activated_card_can_be_removed_while_chord_tail_remains_owned() {
+        let now = Instant::now();
+        let mut stack = ToastStack::default();
+        let id = stack.push_with_action("Message", "Details", now, Duration::from_secs(5));
+        paint(&mut stack, 80, 24);
+        let action = stack.cards().next().unwrap().action.unwrap();
+        route(&mut stack, action, PointerPhase::Press);
+        stack.route_pointer(79, 23, PointerPhase::Press, MouseButton::Right);
+        assert_eq!(
+            route(&mut stack, action, PointerPhase::Release),
+            PointerRoute::Activated(id)
+        );
+        assert!(stack.dismiss(id));
+        assert!(stack.pointer_captured());
+        assert_eq!(
+            route(&mut stack, action, PointerPhase::Release),
+            PointerRoute::Block
+        );
+        assert_eq!(
+            stack.route_pointer(79, 23, PointerPhase::Release, MouseButton::Right),
+            PointerRoute::Block
+        );
+        assert!(!stack.pointer_captured());
+        assert!(stack.is_empty());
+    }
+
+    #[test]
+    fn tiny_action_cards_preserve_dismiss_and_never_overlap_message() {
+        for cols in 1..14 {
+            for rows in 1..7 {
+                let mut stack = ToastStack::default();
+                let id = stack.push_with_action(
+                    "Message",
+                    "👩‍💻e\u{301}界",
+                    Instant::now(),
+                    Duration::from_secs(5),
+                );
+                paint(&mut stack, cols, rows);
+                let card = stack.cards().next().unwrap();
+                let dismiss = card.dismiss;
+                assert!(card.body.contains(dismiss.x, dismiss.y));
+                assert!(card.outer.x + card.outer.width <= cols);
+                assert!(card.outer.y + card.outer.height <= rows);
+                if let Some(action) = card.action {
+                    assert!(card.body.contains(action.x, action.y));
+                    assert!(action.x + action.width <= card.body.x + card.body.width);
+                    assert!(action.y > dismiss.y);
+                    assert!(action.y >= card.body.y + card.rows.len() as u16);
+                }
+                route(&mut stack, dismiss, PointerPhase::Press);
+                assert_eq!(
+                    route(&mut stack, dismiss, PointerPhase::Release),
+                    PointerRoute::Dismissed(id)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_action_label_is_visible_whole_and_truncates_to_footer_width() {
+        let mut stack = ToastStack::default();
+        let id = stack.push_with_action(
+            "Message",
+            "e\u{301}界",
+            Instant::now(),
+            Duration::from_secs(5),
+        );
+        paint(&mut stack, 9, 8);
+        let card = stack.cards().next().unwrap();
+        let action = card.action.unwrap();
+        assert_eq!(action.width, 5);
+        let row = &card.surface.frame.rows[usize::from(action.y - card.outer.y)];
+        assert!(row.cells.iter().any(|cell| cell.text == "e\u{301}"));
+        assert!(row.cells.iter().any(|cell| cell.text == "界"));
+        paint(&mut stack, 5, 8);
+        let card = stack.cards().next().unwrap();
+        let action = card.action.unwrap();
+        assert_eq!(action.width, 3);
+        let row = &card.surface.frame.rows[usize::from(action.y - card.outer.y)];
+        assert!(row.cells.iter().any(|cell| cell.text == "…"));
+        route(&mut stack, action, PointerPhase::Press);
+        assert_eq!(
+            route(&mut stack, action, PointerPhase::Release),
+            PointerRoute::Activated(id)
+        );
     }
 }

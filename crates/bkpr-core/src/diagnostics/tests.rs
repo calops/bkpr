@@ -19,6 +19,7 @@ fn event(time_ms: u64) -> Event {
         operation: "pane.terminate",
         target: OpaqueId::new(TARGET),
         outcome: "success",
+        transfer: None,
     }
 }
 fn lines(path: &Path) -> Vec<serde_json::Value> {
@@ -281,4 +282,34 @@ fn checked_directory_descriptor_survives_path_replacement_without_following_link
         lines(&held.join("events.jsonl")).last().unwrap()["time_ms"],
         19
     );
+}
+
+#[test]
+fn partial_response_failure_records_exact_body_free_transfer_accounting() {
+    let root = private_root();
+    let (recorder, guard) = start(root.path(), SESSION, FILE_BYTES).unwrap();
+    recorder.record_event(
+        "transport.response",
+        Some(TARGET),
+        "failed",
+        Some(ResponseFailure {
+            stage: "image.data",
+            expected_payload: 65536,
+            expected_framed: 65560,
+            sent: 1347,
+            elapsed_ms: 5100,
+            kind: "timeout",
+        }),
+    );
+    guard.signal_stop();
+    guard.done.recv().unwrap();
+    let entries = lines(&root.path().join("diagnostics/events.jsonl"));
+    let transfer = &entries[0]["transfer"];
+    assert_eq!(transfer["expected_payload"], 65536);
+    assert_eq!(transfer["expected_framed"], 65560);
+    assert_eq!(transfer["sent"], 1347);
+    assert_eq!(transfer["stage"], "image.data");
+    assert_eq!(transfer["elapsed_ms"], 5100);
+    assert_eq!(transfer["kind"], "timeout");
+    assert_eq!(entries[0]["target_id"], TARGET);
 }

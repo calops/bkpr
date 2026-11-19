@@ -5,6 +5,15 @@
 * **notifications:** add host-owned UnifiedPush enrollment, encrypted confirmation and durable Web Push delivery. Destination rotation, source filters, muting, revocation and redacted diagnostics use the authenticated host API. Secret-bearing CLI requests can use stdin.
 * **client:** animate working titles with two evenly spaced waves in vivid, perceptually normalized project colors, with light-theme contrast and constant terminal-cell speed.
 * **cli:** accept `-A` as shorthand for `--forward-agent`, matching SSH.
+* **terminal:** separate interactive pane scenes from bounded, lossless image streams. Slow image loads show one delayed pane-level indicator without blocking typing or full-resolution viewing.
+
+### Bug Fixes
+
+* **client:** deduplicate transfer-failure notifications and keep technical diagnostics behind Details instead of repeating protocol errors.
+
+### Breaking Rust API Changes
+
+* **tui-framework:** `Surface` accepts an explicit optional image manifest; `SurfaceContent` and toast pointer routing add passive-annotation and activation variants. Protocol request/payload enums add image-resource variants. Exhaustive Rust matches must be updated; native wire family 11 and remote control 2 are unchanged.
 
 ### Security
 

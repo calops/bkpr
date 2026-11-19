@@ -6,6 +6,7 @@ use crate::registry::{Registry, RegistryBusy, SessionClosing};
 mod administration;
 mod capacity;
 mod clients;
+mod resources;
 mod status;
 use anyhow::{Context, Result, bail};
 #[cfg(test)]
@@ -651,9 +652,11 @@ impl BoundSocket {
                     let mut subscription = None;
                     let mut lifetime = None;
                     let mut status_stream = None;
+                    let mut image_stream = None;
                     let mut pending_response = None;
                     let mut dispatched = false;
                     let mut diagnostic = None;
+                    let mut response_target = None;
                     let mut service = None;
                     let result = (|| -> Result<_> {
                         let (request, _request_buffer) = incoming?;
@@ -661,6 +664,7 @@ impl BoundSocket {
                         service = endpoint.upgrade();
                         let service = service.as_ref().context("endpoint is shutting down")?;
                         diagnostic = diagnostic_operation(&request.operation);
+                        response_target = response_target_id(&request.operation);
                         let requested_subscription = match &request.operation {
                             Operation::Agent {
                                 launch_id,
@@ -719,7 +723,14 @@ impl BoundSocket {
                                 Payload::Control(response)
                             }
                             Operation::Client { authority, request: operation } => {
-                                registry.client_request(authority, *operation, &stream)?
+                                if matches!(operation.as_ref(), Operation::Pane { request: bkpr_protocol::PaneRequest::ImageResource { .. }, .. }) {
+                                    let admitted = resources::admit(registry, &authority, *operation, &stream)?;
+                                    let descriptor = admitted.observation.descriptor;
+                                    image_stream = Some(admitted);
+                                    Payload::ImageResource(bkpr_protocol::ImageResource::Preparing { descriptor })
+                                } else {
+                                    registry.client_request(authority, *operation, &stream)?
+                                }
                             }
                             operation @ Operation::HarnessEvent {
                                 event: bkpr_protocol::CaptureEvent::StatusEnroll { .. }, ..
@@ -775,7 +786,7 @@ impl BoundSocket {
                     let mut encoding_unknown = false;
                     let sent = match codec.encode_response(&reply) {
                         Ok(bytes) if bytes.len() <= MAX_RESPONSE => {
-                            write_buffered_response(&mut stream, bytes, &response_buffers, response_stage)
+                            write_buffered_response(&mut stream, bytes, &response_buffers, response_stage, response_target.as_ref().map(crate::diagnostics::OpaqueId::as_str))
                         }
                         _ => {
                             encoding_unknown = dispatched;
@@ -784,7 +795,7 @@ impl BoundSocket {
                                 dispatched,
                             );
                             codec.encode_response(&fallback)
-                                .and_then(|bytes| write_buffered_response(&mut stream, bytes, &response_buffers, response_stage))
+                                .and_then(|bytes| write_buffered_response(&mut stream, bytes, &response_buffers, response_stage, response_target.as_ref().map(crate::diagnostics::OpaqueId::as_str)))
                         }
                     };
                     drop(codec);
@@ -827,6 +838,9 @@ impl BoundSocket {
                         } else {
                             service.as_ref().and_then(|service| service.registry()).expect("session client").detach_client(&client, "disconnected");
                         }
+                    }
+                    if let Some(admitted) = image_stream && sent.is_ok() {
+                        resources::serve(&mut stream, admitted, &shutdown);
                     }
                     drop(service);
                     drop(pending_response);
@@ -917,42 +931,80 @@ fn response(result: Result<Payload>, dispatched: bool) -> Response {
     }
 }
 
+fn response_target_id(operation: &Operation) -> Option<crate::diagnostics::OpaqueId> {
+    match operation {
+        Operation::Client { request, .. } => response_target_id(request),
+        Operation::Pane { pane_id, .. } => crate::diagnostics::OpaqueId::new(pane_id),
+        _ => None,
+    }
+}
+
 fn write_buffered_response(
     stream: &mut UnixStream,
     bytes: &[u8],
     buffers: &FrameBuffers,
     stage: capacity::WorkStage<'_>,
+    target: Option<&str>,
 ) -> Result<()> {
     // If encoded buffers cannot be retained safely, fail this connection before
     // writing any reply. Existing clients then report the truthful transport
     // unknown outcome after dispatch, rather than a fabricated known failure.
-    let _buffer = buffers.reserve(bytes.len())?;
+    let _buffer = buffers.reserve(bytes.len()).inspect_err(|_| {
+        crate::diagnostics::response_failure(
+            target,
+            crate::diagnostics::ResponseFailure {
+                stage: "response.admission",
+                expected_payload: bytes.len() as u64,
+                expected_framed: bytes.len().saturating_add(wire::FRAME_OVERHEAD) as u64,
+                sent: 0,
+                elapsed_ms: 0,
+                kind: "capacity",
+            },
+        );
+    })?;
     drop(stage);
-    write_response(stream, bytes, Duration::from_secs(3))
+    write_response(stream, bytes, Duration::from_secs(3), target)
 }
 
-fn write_response(stream: &mut UnixStream, bytes: &[u8], timeout: Duration) -> Result<()> {
-    wire::write_frame(
-        &mut ResponseWriter {
-            stream,
-            deadline: std::time::Instant::now() + timeout,
-        },
-        Kind::Response,
-        bytes,
-    )
+fn write_response(
+    stream: &mut UnixStream,
+    bytes: &[u8],
+    timeout: Duration,
+    target: Option<&str>,
+) -> Result<()> {
+    let started = std::time::Instant::now();
+    let mut writer = ResponseWriter {
+        stream,
+        deadline: started + timeout,
+        progress: started,
+        stall: None,
+        active: None,
+        sent: 0,
+    };
+    let result = wire::write_frame(&mut writer, Kind::Response, bytes);
+    if let Err(error) = &result {
+        writer.failure(target, "response", bytes.len(), 0, started, error);
+    }
+    result
 }
 
 struct ResponseWriter<'a> {
     stream: &'a UnixStream,
     deadline: std::time::Instant,
+    progress: std::time::Instant,
+    stall: Option<Duration>,
+    active: Option<&'a dyn Fn() -> bool>,
+    sent: usize,
 }
 impl Write for ResponseWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let mut remaining = bytes;
         while !remaining.is_empty() {
-            let timeout = self
-                .deadline
-                .saturating_duration_since(std::time::Instant::now());
+            if self.active.is_some_and(|active| !active()) {
+                return Err(std::io::ErrorKind::ConnectionAborted.into());
+            }
+            let now = std::time::Instant::now();
+            let timeout = self.remaining(now);
             if timeout.is_zero() {
                 return Err(std::io::ErrorKind::TimedOut.into());
             }
@@ -967,6 +1019,8 @@ impl Write for ResponseWriter<'_> {
             };
             if written > 0 {
                 remaining = &remaining[written as usize..];
+                self.sent += written as usize;
+                self.progress = std::time::Instant::now();
                 continue;
             }
             if written == 0 {
@@ -981,10 +1035,15 @@ impl Write for ResponseWriter<'_> {
                         events: libc::POLLOUT,
                         revents: 0,
                     };
-                    let millis = timeout.as_millis().saturating_add(1).min(i32::MAX as u128) as i32;
+                    let wait = if self.active.is_some() {
+                        timeout.min(Duration::from_millis(100))
+                    } else {
+                        timeout
+                    };
+                    let millis = wait.as_millis().saturating_add(1).min(i32::MAX as u128) as i32;
                     let ready = unsafe { libc::poll(&mut descriptor, 1, millis) };
                     if ready == 0 {
-                        return Err(std::io::ErrorKind::TimedOut.into());
+                        continue;
                     }
                     if ready < 0 {
                         let error = std::io::Error::last_os_error();
@@ -1000,6 +1059,47 @@ impl Write for ResponseWriter<'_> {
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+impl ResponseWriter<'_> {
+    fn remaining(&self, now: std::time::Instant) -> Duration {
+        self.deadline.saturating_duration_since(now).min(
+            self.stall.map_or(Duration::MAX, |stall| {
+                (self.progress + stall).saturating_duration_since(now)
+            }),
+        )
+    }
+    fn failure(
+        &self,
+        target: Option<&str>,
+        stage: &'static str,
+        expected: usize,
+        before: usize,
+        started: std::time::Instant,
+        error: &anyhow::Error,
+    ) {
+        let kind = error
+            .downcast_ref::<std::io::Error>()
+            .map_or("encoding", |error| match error.kind() {
+                std::io::ErrorKind::TimedOut => "timeout",
+                std::io::ErrorKind::ConnectionAborted => "cancelled",
+                std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::UnexpectedEof => "disconnected",
+                _ => "io",
+            });
+        crate::diagnostics::response_failure(
+            target,
+            crate::diagnostics::ResponseFailure {
+                stage,
+                expected_payload: expected as u64,
+                expected_framed: expected.saturating_add(wire::FRAME_OVERHEAD) as u64,
+                sent: self.sent.saturating_sub(before) as u64,
+                elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                kind,
+            },
+        );
     }
 }
 

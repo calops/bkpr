@@ -1814,6 +1814,7 @@ impl Registry {
                     pane.shared
                         .forgotten
                         .store(true, std::sync::atomic::Ordering::Release);
+                    crate::image_resources::retire(pane.shared.image_incarnation);
                 }
                 state.live.remove(id);
                 state.closing_panes.remove(id);
@@ -2200,6 +2201,9 @@ impl Registry {
             state.live.values().cloned().collect::<Vec<_>>()
         };
         self.detach_all_clients("shutdown");
+        for pane in &panes {
+            crate::image_resources::retire(pane.shared.image_incarnation);
+        }
         let agent_shutdown = self.inner.agents.shutdown();
         let forwarding = self.inner.ssh_agent.lock().unwrap().clone();
         let forwarding_shutdown = forwarding.map(|relay| relay.shutdown()).transpose();

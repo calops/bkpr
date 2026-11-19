@@ -105,6 +105,7 @@ struct RemoteConnector {
     lifetime: Arc<Semaphore>,
     control: Arc<Semaphore>,
     observations: Arc<Semaphore>,
+    bulk: Arc<Semaphore>,
 }
 
 impl RemoteConnector {
@@ -113,6 +114,7 @@ impl RemoteConnector {
             ConnectionPurpose::Lifetime => &self.lifetime,
             ConnectionPurpose::Control => &self.control,
             ConnectionPurpose::Observation => &self.observations,
+            ConnectionPurpose::Bulk => &self.bulk,
         };
         pool.clone()
             .acquire_owned()
@@ -356,7 +358,8 @@ impl RemoteSession {
             sender,
             lifetime: Arc::new(Semaphore::new(1)),
             control: Arc::new(Semaphore::new(15)),
-            observations: Arc::new(Semaphore::new(79)),
+            observations: Arc::new(Semaphore::new(77)),
+            bulk: Arc::new(Semaphore::new(2)),
         });
         let (stop, stop_rx) = watch::channel(false);
         let (ready, ready_rx) = sync::sync_channel(1);

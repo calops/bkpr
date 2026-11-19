@@ -56,6 +56,7 @@ pub(super) fn serve(
             codec.encode_response(&reply)?,
             resources.response_buffers,
             stage,
+            None,
         )?;
         if !accepted {
             return Ok(());

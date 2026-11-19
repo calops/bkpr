@@ -73,6 +73,15 @@ table Image {
   pixels:[ubyte] (required);
 }
 
+table ImageDescriptor {
+  id:uint;
+  generation:ulong;
+  width:uint;
+  height:uint;
+  format:PixelFormat;
+  decoded_len:ulong;
+}
+
 table Frame {
   size:Size (required);
   cursor:Cursor (required);
@@ -109,4 +118,5 @@ table Scene {
   styles:[Style] (required);
   hyperlinks:[string] (required);
   rows:[Row] (required);
+  image_descriptors:[ImageDescriptor];
 }

@@ -72,6 +72,24 @@ struct Event {
     operation: &'static str,
     target: Option<OpaqueId>,
     outcome: &'static str,
+    transfer: Option<ResponseFailure>,
+}
+
+/// Body-free response failure accounting for one framed write or transfer stage.
+#[derive(Clone, Copy, Serialize)]
+pub(crate) struct ResponseFailure {
+    /// Static transport stage label.
+    pub(crate) stage: &'static str,
+    /// Expected payload bytes, excluding the native header.
+    pub(crate) expected_payload: u64,
+    /// Expected bytes including framing.
+    pub(crate) expected_framed: u64,
+    /// Bytes actually accepted by socket writes, including any partial frame.
+    pub(crate) sent: u64,
+    /// Monotonic elapsed transfer time in milliseconds.
+    pub(crate) elapsed_ms: u64,
+    /// Static failure category, never arbitrary error text.
+    pub(crate) kind: &'static str,
 }
 fn label(value: &str) -> bool {
     !value.is_empty()
@@ -124,6 +142,15 @@ struct Recorder {
 }
 impl Recorder {
     fn record(&self, operation: &'static str, target: Option<&str>, outcome: &'static str) {
+        self.record_event(operation, target, outcome, None);
+    }
+    fn record_event(
+        &self,
+        operation: &'static str,
+        target: Option<&str>,
+        outcome: &'static str,
+        transfer: Option<ResponseFailure>,
+    ) {
         let Ok(_admission) = self.counts.admission.try_read() else {
             self.counts.dropped.fetch_add(1, Ordering::Relaxed);
             return;
@@ -146,6 +173,7 @@ impl Recorder {
             operation,
             target: parsed_target,
             outcome,
+            transfer,
         };
         self.counts.pending.fetch_add(1, Ordering::Relaxed);
         if self.queue.try_send(event).is_err() {
@@ -163,6 +191,13 @@ impl Recorder {
 pub fn record(operation: &'static str, target_id: Option<&str>, outcome: &'static str) {
     if let Some(recorder) = ACTIVE.get() {
         recorder.record(operation, target_id, outcome);
+    }
+}
+
+/// Record bounded body-free transfer diagnostics without changing request outcomes.
+pub(crate) fn response_failure(target_id: Option<&str>, failure: ResponseFailure) {
+    if let Some(recorder) = ACTIVE.get() {
+        recorder.record_event("transport.response", target_id, "failed", Some(failure));
     }
 }
 /// Daemon-owned recorder lifetime; drop stops admission and requests worker shutdown.
@@ -289,6 +324,7 @@ fn run(
             operation: "diagnostics.summary",
             target: None,
             outcome: "best_effort",
+            transfer: None,
         };
         if writer.event(&session, summary, counts).is_err() {
             counts.io_failures.fetch_add(1, Ordering::Relaxed);
@@ -451,10 +487,12 @@ impl PrivateFiles {
             outcome: &'static str,
             dropped_total: u64,
             io_failures_total: u64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            transfer: Option<ResponseFailure>,
         }
         // Fixed stack storage also bounds serialization work; no per-event heap
         // buffer, user-controlled escaping or arbitrary-length formatted values.
-        let mut bytes = [0_u8; 512];
+        let mut bytes = [0_u8; 1024];
         let mut line = std::io::Cursor::new(bytes.as_mut_slice());
         serde_json::to_writer(
             &mut line,
@@ -466,6 +504,7 @@ impl PrivateFiles {
                 outcome: event.outcome,
                 dropped_total: counts.dropped.load(Ordering::Relaxed),
                 io_failures_total: counts.io_failures.load(Ordering::Relaxed),
+                transfer: event.transfer,
             },
         )?;
         line.write_all(b"\n")?;
