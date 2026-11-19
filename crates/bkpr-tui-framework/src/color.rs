@@ -3,13 +3,29 @@
 //! Resolve colors when the source palette changes and cache the resulting bytes;
 //! frame rendering should only read the resolved variants.
 
-use palette::{FromColor, Okhsl, Srgb};
+use palette::{
+    FromColor, LinLuma, Okhsl, Okhsv, Oklch, Srgb, color_difference::Wcag21RelativeContrast,
+    white_point::D65,
+};
 
-/// Caller-selected perceptual Okhsl lightness and saturation in the sRGB gamut.
+type Luminance = LinLuma<D65, f64>;
+
+/// A fixed perceptual tone or the most colorful readable tone at the source hue.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tone {
-    lightness: f32,
-    saturation: f32,
+    target: Target,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Target {
+    Fixed {
+        lightness: f32,
+        saturation: f32,
+    },
+    Vivid {
+        background: Luminance,
+        minimum_contrast: f64,
+    },
 }
 
 impl Tone {
@@ -28,23 +44,123 @@ impl Tone {
             "tone saturation must be finite and in 0.0..=1.0"
         );
         Self {
-            lightness,
-            saturation,
+            target: Target::Fixed {
+                lightness,
+                saturation,
+            },
+        }
+    }
+
+    /// Maximizes in-gamut Oklch chroma at the source hue while meeting a WCAG
+    /// contrast ratio against `background`, including final RGB quantization.
+    ///
+    /// Neutral sources use the highest-contrast neutral. Resolution is bounded
+    /// and allocation-free; cache its result rather than resolving per frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the ratio is non-finite, below one, or unattainable against
+    /// `background` even with black or white.
+    pub fn vivid(background: [u8; 3], minimum_contrast: f64) -> Self {
+        let background = luminance(background);
+        let maximum = luminance([0; 3])
+            .relative_contrast(background)
+            .max(luminance([255; 3]).relative_contrast(background));
+        assert!(
+            minimum_contrast.is_finite() && (1.0..=maximum).contains(&minimum_contrast),
+            "tone contrast must be finite, at least one, and achievable"
+        );
+        Self {
+            target: Target::Vivid {
+                background,
+                minimum_contrast,
+            },
         }
     }
 
     fn resolve(self, source: Okhsl<f64>, achromatic: bool) -> [u8; 3] {
-        let normalized = Okhsl::new(
-            source.hue,
-            if achromatic {
-                0.0
-            } else {
-                f64::from(self.saturation)
-            },
-            f64::from(self.lightness),
-        );
-        Srgb::from_color(normalized).into_format::<u8>().into()
+        match self.target {
+            Target::Fixed {
+                lightness,
+                saturation,
+            } => rgb_at(
+                source,
+                if achromatic {
+                    0.0
+                } else {
+                    f64::from(saturation)
+                },
+                f64::from(lightness),
+            ),
+            Target::Vivid {
+                background,
+                minimum_contrast,
+            } => vivid(source, achromatic, background, minimum_contrast),
+        }
     }
+}
+
+fn luminance(rgb: [u8; 3]) -> Luminance {
+    Srgb::from(rgb).into_format::<f64>().relative_luminance()
+}
+
+fn rgb_at(source: Okhsl<f64>, saturation: f64, lightness: f64) -> [u8; 3] {
+    Srgb::from_color(Okhsl::new(source.hue, saturation, lightness))
+        .into_format::<u8>()
+        .into()
+}
+
+fn chroma(rgb: [u8; 3]) -> f64 {
+    Oklch::from_color(Srgb::from(rgb).into_format::<f64>()).chroma
+}
+
+fn vivid(
+    source: Okhsl<f64>,
+    achromatic: bool,
+    background: Luminance,
+    minimum_contrast: f64,
+) -> [u8; 3] {
+    let endpoints = [[0; 3], [255; 3]];
+    let mut best = if luminance(endpoints[0]).relative_contrast(background)
+        >= luminance(endpoints[1]).relative_contrast(background)
+    {
+        endpoints[0]
+    } else {
+        endpoints[1]
+    };
+    if achromatic {
+        return best;
+    }
+    let cusp = Okhsl::from_color(Okhsv::new(source.hue, 1.0_f64, 1.0));
+    let peak = rgb_at(source, 1.0, cusp.lightness);
+    if luminance(peak).relative_contrast(background) >= minimum_contrast {
+        return peak;
+    }
+    let mut best_chroma = chroma(best);
+    for (endpoint, lightness) in endpoints.into_iter().zip([0.0, 1.0]) {
+        if luminance(endpoint).relative_contrast(background) < minimum_contrast {
+            continue;
+        }
+        let mut feasible = lightness;
+        let mut infeasible = cusp.lightness;
+        let mut candidate = endpoint;
+        for _ in 0..20 {
+            let middle = (feasible + infeasible) * 0.5;
+            let rgb = rgb_at(source, 1.0, middle);
+            if luminance(rgb).relative_contrast(background) >= minimum_contrast {
+                feasible = middle;
+                candidate = rgb;
+            } else {
+                infeasible = middle;
+            }
+        }
+        let candidate_chroma = chroma(candidate);
+        if candidate_chroma > best_chroma {
+            best = candidate;
+            best_chroma = candidate_chroma;
+        }
+    }
+    best
 }
 
 /// Application-selected targets for the two perceptually normalized variants.
@@ -59,10 +175,9 @@ pub struct ColorTones {
 impl ColorTones {
     /// Resolves bounded sRGB variants using gamut-aware perceptual Okhsl.
     ///
-    /// Both variants retain the source hue and replace its lightness and
-    /// saturation with the selected targets. Achromatic sources (equal RGB
-    /// channels, including black and white) remain neutral regardless of the
-    /// target saturation. The base bytes are preserved exactly.
+    /// Both variants retain the source hue and apply the selected tone policy.
+    /// Achromatic sources (equal RGB channels, including black and white) remain
+    /// neutral. The base bytes are preserved exactly.
     ///
     /// This allocates nothing, but performs color conversions: cache the result
     /// when the source palette changes rather than resolving on every frame.
@@ -222,6 +337,79 @@ mod tests {
                 assert!(result[0] > 0 && result[0] < 255);
             }
         }
+    }
+
+    #[test]
+    fn vivid_hues_remain_readable_across_the_gamut_and_backgrounds() {
+        for background in [[18, 18, 32], [253, 246, 227], [118; 3]] {
+            let tone = Tone::vivid(background, 4.5);
+            for hue in (0..360).step_by(5) {
+                let source = perceptual(rgb(f64::from(hue), 0.8, 0.6));
+                let result = tone.resolve(source, false);
+                assert!(
+                    luminance(result).relative_contrast(luminance(background)) >= 4.5,
+                    "{background:?}, hue {hue}: {result:?}"
+                );
+                let delta = (perceptual(result).hue - source.hue).into_radians();
+                let hue_error = 2.0 * chroma(result) * (delta * 0.5).sin().abs();
+                assert!(
+                    hue_error < 0.005,
+                    "hue {hue}: {result:?}, Oklab hue displacement {hue_error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vivid_chroma_matches_a_full_lightness_search_without_hue_exceptions() {
+        for background in [[18, 18, 32], [253, 246, 227], [118; 3], [0; 3]] {
+            let tone = Tone::vivid(background, 4.5);
+            for hue in (0..360).step_by(15) {
+                let source = perceptual(rgb(f64::from(hue), 0.8, 0.6));
+                let result = tone.resolve(source, false);
+                let actual_chroma = chroma(result);
+                for step in 0..=400 {
+                    let alternative = rgb_at(source, 1.0, f64::from(step) / 400.0);
+                    if luminance(alternative).relative_contrast(luminance(background)) >= 4.5 {
+                        assert!(
+                            actual_chroma + 0.005 >= chroma(alternative),
+                            "{background:?}, hue {hue}: {result:?} less vivid than {alternative:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vivid_neutrals_stay_neutral_and_readable_for_every_source_gray() {
+        for background in [[18, 18, 32], [253, 246, 227], [118; 3]] {
+            let tones = ColorTones {
+                bright: Tone::vivid(background, 4.5),
+                muted: Tone::new(0.5, 0.2),
+            };
+            let expected = tones.resolve([128; 3]).bright();
+            for gray in 0..=255 {
+                let result = tones.resolve([gray; 3]);
+                assert_eq!(result.base(), [gray; 3]);
+                assert_eq!(result.bright(), expected);
+                assert_eq!(expected[0], expected[1]);
+                assert_eq!(expected[1], expected[2]);
+                assert!(luminance(expected).relative_contrast(luminance(background)) >= 4.5);
+            }
+        }
+    }
+
+    #[test]
+    fn vivid_rejects_impossible_or_invalid_contrast() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.99, 22.0] {
+            assert!(std::panic::catch_unwind(|| Tone::vivid([0; 3], invalid)).is_err());
+        }
+        assert!(std::panic::catch_unwind(|| Tone::vivid([118; 3], 7.0)).is_err());
+        assert_eq!(
+            Tone::vivid([0; 3], 21.0).resolve(perceptual([137, 180, 250]), false),
+            [255; 3]
+        );
     }
 
     #[test]
