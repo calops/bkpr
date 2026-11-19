@@ -3,7 +3,7 @@
 ### Features
 
 * **notifications:** add host-owned UnifiedPush enrollment, encrypted confirmation and durable Web Push delivery. Destination rotation, source filters, muting, revocation and redacted diagnostics use the authenticated host API. Secret-bearing CLI requests can use stdin.
-* **client:** animate working titles with two evenly spaced waves in vivid, perceptually normalized project colors, with light-theme contrast and constant terminal-cell speed.
+* **client:** animate working titles with two evenly spaced waves in fully saturated, perceptually normalized project colors, with light-theme contrast and constant terminal-cell speed.
 * **cli:** accept `-A` as shorthand for `--forward-agent`, matching SSH.
 * **terminal:** separate interactive pane scenes from bounded, lossless image streams. Slow image loads show one delayed pane-level indicator without blocking typing or full-resolution viewing.
 
