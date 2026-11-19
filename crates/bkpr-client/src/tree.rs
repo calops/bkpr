@@ -105,6 +105,8 @@ impl NavigationRow<Target> for TreeRow {
 #[derive(Clone)]
 pub(crate) struct Session {
     pub owner: Owner,
+    /// Whether this admitted generation can accept its first session-stop intent.
+    pub can_stop: bool,
     pub project_host: ProjectHost,
     pub group: SessionGroup,
     pub registry: Arc<RegistrySnapshot>,
@@ -123,6 +125,7 @@ pub(crate) struct Tree {
     sessions: Vec<Arc<Session>>,
     collapsed: HashSet<Target>,
     projects: ProjectColors,
+    session_roots: bool,
 }
 impl std::ops::Deref for Tree {
     type Target = Navigation<Target, TreeRow>;
@@ -264,6 +267,7 @@ impl Tree {
         match &target.node {
             Node::Session => None,
             Node::Native(SidebarTarget::Workspace(_)) => (self.sessions.len() > 1
+                || self.session_roots
                 || session.group.status != SessionStatus::Online)
                 .then_some(Target {
                     owner: target.owner,
@@ -362,7 +366,7 @@ impl Tree {
     }
     fn rebuild(&mut self) {
         self.navigation.rows.clear();
-        let multi = self.sessions.len() > 1;
+        let multi = self.sessions.len() > 1 || self.session_roots;
         for session in &self.sessions {
             let owner = session.owner;
             if !self.navigation.rows.is_empty() {
@@ -560,6 +564,13 @@ impl Tree {
         self.repair(target.owner);
     }
     pub fn jump_session(&mut self, active: Owner) {
+        if !self.session_roots {
+            self.session_roots = true;
+            if self.sessions.len() == 1 {
+                self.rebuild();
+                self.repair(active);
+            }
+        }
         let root = Target {
             owner: active,
             node: Node::Session,
@@ -576,6 +587,14 @@ impl Tree {
             self.select(target);
         }
         self.refresh_viewport();
+    }
+
+    /// Restore the default workspace-first projection after explicit root navigation.
+    pub fn leave_session_roots(&mut self, active: Owner) {
+        if std::mem::take(&mut self.session_roots) && self.sessions.len() == 1 {
+            self.rebuild();
+            self.repair(active);
+        }
     }
 }
 
@@ -670,6 +689,7 @@ mod tests {
         sidebar.reconcile(&registry, Some("workspace"), Some("one"), Some("first"));
         Arc::new(Session {
             owner,
+            can_stop: status == SessionStatus::Online,
             project_host: ProjectHost::Local,
             group: SessionGroup {
                 name: format!("owner {}", owner.slot),
@@ -797,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn sole_disconnected_owner_keeps_status_root_and_online_jump_selects_workspace() {
+    fn explicit_session_navigation_exposes_the_sole_root_until_leaving() {
         let mut tree = Tree::new();
         tree.reconcile(
             vec![session(owner(0), SessionStatus::Connecting, false)],
@@ -806,16 +826,21 @@ mod tests {
         assert_eq!(tree.rows.len(), 1);
         assert_eq!(tree.rows[0].kind, Kind::Session);
         assert_eq!(tree.cursor, Some(root(owner(0))));
+        tree.enter();
         tree.jump_session(owner(0));
         assert_eq!(tree.cursor, Some(root(owner(0))));
         tree.reconcile(
             vec![session(owner(0), SessionStatus::Online, false)],
             owner(0),
         );
+        assert!(tree.contains(&root(owner(0))));
+        assert_eq!(tree.cursor, Some(root(owner(0))));
+        tree.jump_session(owner(0));
+        assert_eq!(tree.cursor, Some(root(owner(0))));
+        tree.active = false;
+        tree.leave_session_roots(owner(0));
         assert!(!tree.contains(&root(owner(0))));
         assert_eq!(tree.cursor, Some(pane(owner(0))));
-        tree.jump_session(owner(0));
-        assert_eq!(tree.cursor, Some(workspace(owner(0))));
         tree.reconcile(
             vec![session(owner(0), SessionStatus::Offline, false)],
             owner(0),

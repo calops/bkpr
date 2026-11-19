@@ -129,6 +129,8 @@ pub enum Action {
     ToggleChrome,
     EnterSessions,
     ReconnectSession,
+    /// Stop the selected session runtime without deleting its recovery metadata.
+    StopSession,
     RefreshCi,
     LeaveSidebar,
     Navigate(Navigation),
@@ -187,6 +189,7 @@ impl Action {
             Self::ToggleSidebar => "sidebar",
             Self::EnterSessions => "sessions",
             Self::ReconnectSession => "force reconnect session",
+            Self::StopSession => "stop session, keep recovery",
             Self::RefreshCi => "refresh checks",
             Self::LeaveSidebar => "return to app",
             Self::Navigate(Navigation::Previous) => "select previous",
@@ -470,6 +473,7 @@ use Navigation as N;
 // reconnect, and native management remains tied to an owning native context.
 static BINDINGS: &[Binding] = &[
     text(SESSIONS, "R", A::ReconnectSession, 5),
+    text(SESSIONS, "s", A::StopSession, 6),
     selected(text(SIDEBAR, "R", A::RefreshCi, 6)),
     physical(
         APPLICATION | SIDEBAR | SESSIONS | HISTORY | SEARCH | RESIZE,

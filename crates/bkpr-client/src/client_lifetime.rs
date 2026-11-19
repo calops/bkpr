@@ -484,6 +484,44 @@ impl Endpoint {
         })
     }
 
+    /// Stop the captured session runtime once, retaining recovery intent.
+    ///
+    /// Runs on a worker. A lost receipt leaves the outcome unknown; never replay it.
+    pub(crate) fn stop_session(&self, session: &SessionInfo) -> Result<()> {
+        use bkpr_protocol::administration as admin;
+
+        self.ensure_live()?;
+        ensure!(
+            self.lease.authority.is_some(),
+            "session stop requires a registered attachment"
+        );
+        let request = admin::Request::Stop {
+            expected: admin::Identity::Session {
+                daemon_id: session.daemon_id.clone(),
+                session_id: session.session_id.clone(),
+                session_instance_id: session.session_instance_id.clone(),
+            },
+        };
+        let mut stream = self.connector.connect(ConnectionPurpose::Control)?;
+        stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+        let _inflight = self.track_request(&stream, false)?;
+        admin::write_request(&mut stream, &request).map_err(|error| {
+            if error.is::<std::io::Error>() {
+                super::mark_outcome_unknown(error)
+            } else {
+                error
+            }
+        })?;
+        match admin::read_response(&mut stream).map_err(super::mark_outcome_unknown)? {
+            admin::Response::Stopped {} => Ok(()),
+            admin::Response::Rejected { error } => bail!("session stop failed: {error}"),
+            admin::Response::Identified { .. } => Err(super::mark_outcome_unknown(
+                anyhow::anyhow!("session stop returned an identity instead of its outcome"),
+            )),
+        }
+    }
+
     /// Dispatch without converting binary pane scenes into diagnostic JSON.
     pub fn checked_payload(&self, operation: Operation) -> Result<Payload> {
         let is_observation = observational(&operation);
@@ -992,6 +1030,106 @@ mod tests {
     use super::*;
     use bkpr_protocol::{ClientEvent, PROTOCOL_VERSION, Response};
     use std::{io::Write, os::unix::net::UnixListener, sync::mpsc, thread};
+
+    fn stop_endpoint(socket: &Path) -> Endpoint {
+        Endpoint::new(
+            socket,
+            Some(ClientAuthority {
+                client_id: "client".into(),
+                token: "fixture-token".into(),
+            }),
+        )
+    }
+
+    #[test]
+    fn session_stop_receipt_drains_after_attachment_retirement() {
+        use bkpr_protocol::administration as admin;
+
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("stop.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let endpoint = stop_endpoint(&socket);
+        let lease = endpoint.lease.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert_eq!(
+                admin::read_request(&mut stream).unwrap(),
+                admin::Request::Stop {
+                    expected: admin::Identity::Session {
+                        daemon_id: session().daemon_id,
+                        session_id: session().session_id,
+                        session_instance_id: session().session_instance_id,
+                    },
+                }
+            );
+            lease.revoke();
+            admin::write_response(&mut stream, &admin::Response::Stopped {}).unwrap();
+        });
+        endpoint.stop_session(&session()).unwrap();
+        server.join().unwrap();
+        assert!(endpoint.is_revoked());
+        assert!(endpoint.lease.state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn session_stop_failure_never_claims_success_or_replays_the_mutation() {
+        use bkpr_protocol::administration as admin;
+
+        for response in [
+            None,
+            Some(admin::Response::Rejected {
+                error: "cleanup persistence failed".into(),
+            }),
+            Some(admin::Response::Identified {
+                identity: admin::Identity::Host {
+                    daemon_id: session().daemon_id,
+                },
+            }),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("stop.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let server_listener = listener.try_clone().unwrap();
+            let unknown = !matches!(response, Some(admin::Response::Rejected { .. }));
+            let server = thread::spawn(move || {
+                let (mut stream, _) = server_listener.accept().unwrap();
+                admin::read_request(&mut stream).unwrap();
+                if let Some(response) = response {
+                    admin::write_response(&mut stream, &response).unwrap();
+                }
+            });
+            let endpoint = stop_endpoint(&socket);
+            let error = endpoint.stop_session(&session()).unwrap_err();
+            server.join().unwrap();
+            assert_eq!(super::super::outcome_unknown(&error), unknown);
+            assert!(endpoint.lease.state.lock().unwrap().requests.is_empty());
+            listener.set_nonblocking(true).unwrap();
+            assert!(matches!(listener.accept(), Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock));
+        }
+    }
+
+    #[test]
+    fn session_stop_requires_live_registered_authority_before_dispatch() {
+        for revoked in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("stop.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let endpoint = if revoked {
+                let endpoint = stop_endpoint(&socket);
+                endpoint.lease.revoke();
+                endpoint
+            } else {
+                Endpoint::admin(&socket)
+            };
+            let error = endpoint.stop_session(&session()).unwrap_err();
+            assert_eq!(detached_before_dispatch(&error), revoked);
+            assert!(!super::super::outcome_unknown(&error));
+            listener.set_nonblocking(true).unwrap();
+            assert!(matches!(listener.accept(), Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock));
+        }
+    }
 
     #[test]
     fn resource_frame_limit_rejects_oversized_header_without_waiting_for_body() {

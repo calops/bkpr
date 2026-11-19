@@ -11,6 +11,7 @@ Sidebar: Ctrl-Space, then
   n               New workspace        N           New terminal window
   r               Rename selected      x / Delete  Close selected (confirm)
   S               Select session root  R           Reconnect session
+  s               Stop session; keep recovery (session row, confirm)
   /               Find panes
 
 Panes: Ctrl-b, then

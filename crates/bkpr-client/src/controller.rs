@@ -8,6 +8,23 @@ use std::fmt::Write as _;
 mod sidebar;
 pub use sidebar::{Row as SidebarRow, RowKind as SidebarRowKind, Sidebar, SidebarTarget};
 
+/// Exact attachment and admitted runtime selected for one session stop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionStopTarget {
+    /// Client-local attachment slot and connection generation.
+    pub(crate) owner: crate::tree::Owner,
+    /// Immutable identity captured from the original registered connection.
+    pub(crate) session: SessionInfo,
+    /// Literal SSH destination, absent for a local session.
+    pub(crate) host: Option<String>,
+}
+impl SessionStopTarget {
+    /// Correlates the single stop attempt with its captured attachment generation.
+    pub(crate) fn key(&self) -> String {
+        format!("session-stop:{}:{}", self.owner.slot, self.owner.generation)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FormKind {
     CreateWorkspace,
@@ -26,6 +43,8 @@ pub enum FormKind {
     },
     CloseWorkspace,
     CloseWindow,
+    /// Stop the exact session runtime while retaining its recovery metadata.
+    StopSession(SessionStopTarget),
     ProjectDetails,
 }
 #[derive(Clone, Debug)]
@@ -54,6 +73,11 @@ impl Form {
             target: None,
         }
     }
+    /// Coordinator-owned stops continue after their presentation is dismissed.
+    pub(crate) fn can_dismiss(&self) -> bool {
+        matches!(self.kind, FormKind::StopSession(_)) || (self.pending.is_none() && !self.ambiguous)
+    }
+
     pub fn context(&self) -> crate::keyguide::Context {
         use crate::keyguide::Context;
         match self.kind {
@@ -61,9 +85,10 @@ impl Form {
             FormKind::RenameWorkspace | FormKind::RenameWindow | FormKind::RenamePane => {
                 Context::Edit
             }
-            FormKind::TerminatePane | FormKind::CloseWorkspace | FormKind::CloseWindow => {
-                Context::Confirmation
-            }
+            FormKind::TerminatePane
+            | FormKind::CloseWorkspace
+            | FormKind::CloseWindow
+            | FormKind::StopSession(_) => Context::Confirmation,
             FormKind::ProjectDetails => Context::Details,
             FormKind::ReopenPane { .. } => Context::Chooser,
         }
@@ -1256,7 +1281,7 @@ fn render_chrome<'a>(
                 .first()
                 .is_some_and(|row| matches!(row.kind, crate::tree::Kind::Session))
             {
-                "Sessions · Ctrl-b S"
+                "Sessions · Ctrl-Space, S"
             } else {
                 "Workspaces"
             },
@@ -1974,6 +1999,7 @@ pub fn modal(surface: &mut UiSurface, size: Size, form: &Form, registry: &Regist
         FormKind::ReopenPane { .. } => "Open a new shell here",
         FormKind::CloseWorkspace => "Close workspace, all its windows and owned terminals?",
         FormKind::CloseWindow => "Close window and all its owned terminals?",
+        FormKind::StopSession(_) => "Stop session, keep recovery?",
         FormKind::ProjectDetails => "Focused project (arrows scroll)",
     };
     if matches!(
@@ -2048,6 +2074,25 @@ pub fn modal(surface: &mut UiSurface, size: Size, form: &Form, registry: &Regist
             "↑/↓ choose directory · no old program or conversation is resumed",
             false,
         ));
+    } else if let FormKind::StopSession(target) = &form.kind {
+        let descriptions = [
+            format!("Session: {}", target.session.name),
+            format!("Host: {}", target.host.as_deref().unwrap_or("local")),
+            String::new(),
+            "All programs in this session stop.".into(),
+            "Every client attached to this session disconnects.".into(),
+            "Saved layout, directories and supported harness recovery intent remain.".into(),
+            "The host daemon and other sessions keep running.".into(),
+        ];
+        let mut row = 2;
+        for description in &descriptions {
+            for text in wrapped(description, usize::from(width).max(1)) {
+                if row < size.rows.saturating_sub(3) {
+                    lines.push(line(x, row, width, text, false));
+                }
+                row += 1;
+            }
+        }
     } else {
         let target = match form.target.as_ref().map(|(target, _)| target) {
             Some(SidebarTarget::Workspace(id)) => registry
@@ -2094,7 +2139,10 @@ pub fn modal(surface: &mut UiSurface, size: Size, form: &Form, registry: &Regist
             "↑/↓ scroll · Enter / Esc close"
         } else if matches!(
             form.kind,
-            FormKind::TerminatePane | FormKind::CloseWorkspace | FormKind::CloseWindow
+            FormKind::TerminatePane
+                | FormKind::CloseWorkspace
+                | FormKind::CloseWindow
+                | FormKind::StopSession(_)
         ) {
             "y / Enter confirms · n / Esc cancels"
         } else {
@@ -2155,7 +2203,10 @@ pub(crate) fn theme_modal(surface: &mut UiSurface, theme: &Theme, form: &Form) {
     ];
     if matches!(
         form.kind,
-        FormKind::TerminatePane | FormKind::CloseWorkspace | FormKind::CloseWindow
+        FormKind::TerminatePane
+            | FormKind::CloseWorkspace
+            | FormKind::CloseWindow
+            | FormKind::StopSession(_)
     ) {
         spans.push(RoleSpan {
             rect: Rect {
@@ -2210,6 +2261,7 @@ mod tests {
         tree.reconcile(
             vec![Arc::new(crate::tree::Session {
                 owner: FIXTURE_OWNER,
+                can_stop: true,
                 project_host: Default::default(),
                 group: SessionGroup {
                     name: "fixture".into(),
@@ -2358,6 +2410,7 @@ mod tests {
         let state = Controller::new(&registry);
         std::sync::Arc::new(crate::tree::Session {
             owner,
+            can_stop: true,
             project_host: Default::default(),
             group: super::SessionGroup {
                 name: label.into(),

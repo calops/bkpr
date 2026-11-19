@@ -6,6 +6,7 @@
 * **client:** animate working titles with two evenly spaced waves in fully saturated, perceptually normalized project colors, with light-theme contrast and constant terminal-cell speed.
 * **cli:** accept `-A` as shorthand for `--forward-agent`, matching SSH.
 * **terminal:** separate interactive pane scenes from bounded, lossless image streams. Slow image loads show one delayed pane-level indicator without blocking typing or full-resolution viewing.
+* **client:** stop a selected local or remote session from its sidebar row with `s` and confirmation, preserving recovery intent without stopping the host daemon or other sessions.
 
 ### Bug Fixes
 

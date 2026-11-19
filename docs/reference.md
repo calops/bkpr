@@ -943,6 +943,17 @@ separate full terminal window, and `r` renames the selected item. `x`/Delete clo
 the selected workspace, window or terminal after confirmation, terminating all
 its owned processes, including hidden terminals. A separate window is not a split.
 
+On a session row, `s` opens **Stop session, keep recovery**. Press `Ctrl-Space`,
+then `S` to select the current session row, or navigate to another session.
+Confirmation names the selected session and remote host when applicable.
+Stopping terminates that session's programs and disconnects all of its clients,
+but preserves its layout, last verified directories and supported harness
+recovery intent. It does not stop the host daemon or another local/remote
+session. Other sessions in the current TUI remain available; a TUI with no
+remaining sessions exits. `Ctrl-b d` only detaches and leaves programs running.
+Open the stopped session again with `bkpr -s NAME` (or `bkpr -r HOST -s NAME`)
+to recover it; stopping does not preserve terminal contents or process memory.
+
 The sidebar owns local navigation and entity management. The `Ctrl-b` prefix
 owns global pane, layout and client actions: `w`/`W`/`o` choose a
 workspace/window/pane, `n`/`%` and `"` split, arrows focus, Shift-arrows exchange

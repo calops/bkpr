@@ -140,6 +140,93 @@ fn cold_restore_keeps_nested_layout_hidden_ownership_names_and_excludes_receipts
 }
 
 #[test]
+fn frozen_session_stop_preserves_pending_native_resume_and_owned_layout_for_recovery() {
+    use bkpr_protocol::administration as admin;
+
+    let root = private_tempdir();
+    let registry = Registry::open(root.path()).unwrap();
+    configure(&registry, root.path());
+    let workspace = create(&registry, "saved native");
+    let home = root.path().join("native");
+    crate::prepare_home(&home).unwrap();
+    let (pane_id, _) = unavailable(&registry, &workspace, &home);
+    let expected = intent(&registry, &pane_id, &home, true);
+    let before = serde_json::to_value(registry.snapshot().unwrap().workspaces).unwrap();
+    registry
+        .bootstrap(sentinel_spec(&root.path().join("unused")))
+        .unwrap();
+    wait_until(|| home.join("native-argv").exists());
+    let old = registry.inner.state.lock().unwrap().live[&pane_id].clone();
+    let session = registry.session_info();
+    let socket = root.path().join("stop.sock");
+    let bound = crate::transport::bind(&socket).unwrap();
+    let serving = registry.clone();
+    let server = std::thread::spawn(move || bound.serve(serving));
+    let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    admin::write_request(
+        &mut stream,
+        &admin::Request::Stop {
+            expected: admin::Identity::Session {
+                daemon_id: session.daemon_id.clone(),
+                session_id: session.session_id.clone(),
+                session_instance_id: session.session_instance_id.clone(),
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        admin::read_response(&mut stream).unwrap(),
+        admin::Response::Stopped {}
+    );
+    server.join().unwrap().unwrap();
+    assert!(
+        old.shared
+            .finished
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+    assert!(!socket.exists());
+    drop(stream);
+    drop(old);
+    drop(registry);
+
+    let reopened = Registry::open(root.path()).unwrap();
+    assert_eq!(
+        serde_json::to_value(reopened.snapshot().unwrap().workspaces).unwrap(),
+        before
+    );
+    let recovery = reopened.recovery_candidates().unwrap();
+    assert_eq!(recovery.len(), 1);
+    assert_eq!(recovery[0].pane_id, pane_id);
+    assert_eq!(recovery[0].harness, expected);
+    configure(&reopened, root.path());
+    fs::remove_file(home.join("native-argv")).unwrap();
+    reopened
+        .bootstrap(sentinel_spec(&root.path().join("unused")))
+        .unwrap();
+    wait_until(|| home.join("native-argv").exists());
+    assert_eq!(
+        fs::read_to_string(home.join("native-argv")).unwrap(),
+        format!("run\nomp\n--resume\n{}\n", expected.conversation_id)
+    );
+    assert_eq!(
+        serde_json::to_value(reopened.snapshot().unwrap().workspaces).unwrap(),
+        before
+    );
+    assert!(
+        reopened
+            .snapshot()
+            .unwrap()
+            .panes
+            .iter()
+            .any(|pane| pane.id == pane_id && pane.status == PaneStatus::Running)
+    );
+    reopened.shutdown().unwrap();
+}
+
+#[test]
 fn partial_missing_cwd_and_unbound_native_refusal_preserve_original_intent_and_layout() {
     let fixture = Fixture::new();
     let registry = &fixture.registry;

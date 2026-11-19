@@ -425,9 +425,18 @@ impl RemoteSession {
     /// Lifecycle consumption never waits for SSH teardown. Explicit native
     /// detach events take precedence over a coincident transport failure.
     pub fn poll_lifecycle(&mut self) -> Result<Lifecycle> {
+        self.poll_lifecycle_with_stop(false)
+    }
+
+    /// Retire lifetime authority without aborting an admitted session-stop receipt.
+    pub(crate) fn poll_stopping_lifecycle(&mut self) -> Result<Lifecycle> {
+        self.poll_lifecycle_with_stop(true)
+    }
+
+    fn poll_lifecycle_with_stop(&mut self, stopping: bool) -> Result<Lifecycle> {
         let result = self.client.poll_lifecycle();
         if !matches!(result, Ok(Lifecycle::Active)) {
-            if matches!(result, Ok(Lifecycle::Detached { .. })) {
+            if stopping || matches!(result, Ok(Lifecycle::Detached { .. })) {
                 self.supervisor.retire();
             } else {
                 self.supervisor.cancel();
