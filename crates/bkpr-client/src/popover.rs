@@ -914,6 +914,7 @@ mod tests {
         let session = |owner, project_host| {
             Arc::new(Session {
                 owner,
+                can_stop: true,
                 project_host,
                 group: SessionGroup {
                     name: "Session".into(),
@@ -1004,6 +1005,7 @@ mod tests {
             };
             let session = Arc::new(Session {
                 owner,
+                can_stop: true,
                 project_host: Default::default(),
                 group,
                 registry: Arc::new(registry),
@@ -1587,6 +1589,7 @@ mod tests {
             let state = Controller::new(&registry);
             Arc::new(Session {
                 owner,
+                can_stop: true,
                 project_host: Default::default(),
                 group: SessionGroup {
                     name: "Exact owner".into(),

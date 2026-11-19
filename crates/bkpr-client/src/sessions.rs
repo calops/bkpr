@@ -28,6 +28,7 @@ pub(super) enum SessionAction {
         owner: crate::tree::Owner,
         target: bkpr_protocol::CiRefreshTarget,
     },
+    Stop(crate::controller::SessionStopTarget),
 }
 
 pub(super) enum Attachment {
@@ -57,6 +58,12 @@ impl Attachment {
         match self {
             Self::Local(client) => client.poll_lifecycle(),
             Self::Remote(session) => session.poll_lifecycle(),
+        }
+    }
+    fn lifecycle_for_stop(&mut self, stopping: bool) -> Result<Lifecycle> {
+        match self {
+            Self::Remote(session) if stopping => session.poll_stopping_lifecycle(),
+            _ => self.lifecycle(),
         }
     }
     fn lifetime_fd(&self) -> std::os::fd::RawFd {
@@ -121,6 +128,19 @@ impl Completion {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum StopState {
+    #[default]
+    None,
+    Pending,
+    Finished,
+}
+
+struct PendingStop {
+    target: crate::controller::SessionStopTarget,
+    origin: crate::tree::Owner,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Queued,
@@ -152,6 +172,7 @@ struct Session {
     last_error: Option<String>,
     membership: Membership,
     presentation: Option<Arc<crate::tree::Session>>,
+    stop: StopState,
 }
 
 impl Session {
@@ -178,6 +199,7 @@ impl Session {
             last_error: None,
             membership: Membership::default(),
             presentation: None,
+            stop: StopState::None,
         }
     }
 
@@ -188,7 +210,7 @@ impl Session {
         self.last_error = Some(message.clone());
         self.status = if rejected {
             format!("rejected: {message}\nPress R to retry this target.")
-        } else if self.ever_active {
+        } else if self.ever_active && self.stop == StopState::None {
             format!("offline: {message}\nWaiting to reconnect.")
         } else {
             format!("offline: {message}\nPress R to retry this target.")
@@ -199,8 +221,8 @@ impl Session {
             Phase::Offline
         };
         self.failures = self.failures.saturating_add(1);
-        self.next_attempt =
-            (self.ever_active && !rejected).then(|| now + retry_delay(self.failures));
+        self.next_attempt = (self.ever_active && !rejected && self.stop == StopState::None)
+            .then(|| now + retry_delay(self.failures));
     }
 
     fn queue_reconnect(&mut self, now: Instant) -> Result<()> {
@@ -212,6 +234,7 @@ impl Session {
             .checked_add(1)
             .context("session attempt generation exhausted")?;
         self.cancellation = CancellationToken::new();
+        self.stop = StopState::None;
         self.phase = Phase::Queued;
         self.status = match &self.last_error {
             Some(error) => format!("reconnect queued\nPrevious failure: {error}"),
@@ -248,6 +271,8 @@ pub(super) struct Coordinator {
     retirement_jobs: Option<jobs::Jobs<Retirement>>,
     desktop: crate::desktop::Desktop,
     notification_turn: usize,
+    stops: HashMap<String, PendingStop>,
+    stop_error: Option<anyhow::Error>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -456,8 +481,10 @@ fn refresh_presentation(index: usize, session: &mut Session, empty: &EmptyMetada
                 .to_string_lossy(),
         },
     };
+    let can_stop = session.phase == Phase::Online && session.stop == StopState::None;
     if previous.is_some_and(|previous| {
         previous.owner == owner
+            && previous.can_stop == can_stop
             && previous.group.name == name.as_ref()
             && previous.group.host.as_deref() == host
             && previous.group.status == status
@@ -475,6 +502,7 @@ fn refresh_presentation(index: usize, session: &mut Session, empty: &EmptyMetada
     }
     session.presentation = Some(Arc::new(crate::tree::Session {
         owner,
+        can_stop,
         project_host: match &session.target {
             SessionTarget::Local { .. } => crate::project_colors::ProjectHost::Local,
             SessionTarget::Remote(target) => crate::project_colors::ProjectHost::Remote {
@@ -570,6 +598,8 @@ impl Coordinator {
             retirement_jobs: Some(retirement_jobs),
             desktop: crate::desktop::Desktop::default(),
             notification_turn: 0,
+            stops: HashMap::new(),
+            stop_error: None,
         })
     }
 
@@ -600,7 +630,7 @@ impl Coordinator {
     }
 
     pub fn should_exit(&self) -> bool {
-        !self.sessions.iter().any(|session| session.present)
+        !self.sessions.iter().any(|session| session.present) && self.stops.is_empty()
     }
 
     fn publish(
@@ -761,6 +791,10 @@ impl Coordinator {
     /// Connection failure retains the named target. Only an actually admitted
     /// owner is eligible for automatic reconnect; initial errors require R.
     fn fail(&mut self, index: usize, error: anyhow::Error) -> Result<()> {
+        if self.sessions[index].stop == StopState::Pending {
+            self.sessions[index].last_error = Some(format!("{error:#}"));
+            return Ok(());
+        }
         self.retire_current(index, false)?;
         self.sessions[index].record_failure(error, Instant::now());
         Ok(())
@@ -940,6 +974,166 @@ impl Coordinator {
         }
     }
 
+    fn confirm_stop(&mut self, owner: crate::tree::Owner) -> Result<()> {
+        anyhow::ensure!(
+            !self.options.read_only,
+            "read-only client cannot stop a session"
+        );
+        let session = self
+            .sessions
+            .get(owner.slot)
+            .context("session is no longer attached")?;
+        anyhow::ensure!(
+            session.present
+                && session.generation == owner.generation
+                && session.phase == Phase::Online
+                && session.stop == StopState::None,
+            "session is no longer available for a stop"
+        );
+        let identity = session
+            .owner
+            .as_ref()
+            .context("session has no registered owner")?
+            .info()
+            .clone();
+        let host = match &session.target {
+            SessionTarget::Remote(target) => Some(target.destination.clone()),
+            SessionTarget::Local { .. } => None,
+        };
+        self.app_mut().open_form(
+            FormKind::StopSession(crate::controller::SessionStopTarget {
+                owner,
+                session: identity,
+                host,
+            }),
+            String::new(),
+        )
+    }
+
+    fn submit_stop(&mut self, target: crate::controller::SessionStopTarget) -> Result<()> {
+        anyhow::ensure!(
+            !self.options.read_only,
+            "read-only client cannot stop a session"
+        );
+        let session = self
+            .sessions
+            .get(target.owner.slot)
+            .context("session is no longer attached")?;
+        anyhow::ensure!(
+            session.present
+                && session.generation == target.owner.generation
+                && session.phase == Phase::Online
+                && session.stop == StopState::None
+                && session.identity.as_ref() == Some(&target.session),
+            "session changed or a stop was already attempted; reopen confirmation"
+        );
+        let endpoint = session
+            .owner
+            .as_ref()
+            .context("session has no registered owner")?
+            .endpoint();
+        endpoint.ensure_live()?;
+        let key = target.key();
+        let identity = target.session.clone();
+        self.jobs.submit(key.clone(), move || {
+            Ok(Background::SessionStop(endpoint.stop_session(&identity)))
+        })?;
+        let origin = self.current_owner();
+        self.sessions[target.owner.slot].stop = StopState::Pending;
+        self.sessions[target.owner.slot].next_attempt = None;
+        self.stops.insert(key, PendingStop { target, origin });
+        self.presentation_dirty = true;
+        Ok(())
+    }
+
+    fn complete_stop(
+        &mut self,
+        completion: jobs::Completion<Background>,
+        size: Size,
+    ) -> Result<()> {
+        let Some(pending) = self.stops.remove(&completion.key) else {
+            bail!("session stop receipt lost its original intent");
+        };
+        let result = match completion.result {
+            Ok(Background::SessionStop(result)) => result,
+            Ok(_) => Err(anyhow::anyhow!(
+                "session stop returned an unrelated receipt"
+            )),
+            Err(error) => Err(transport::mark_outcome_unknown(error)),
+        };
+        let owner = pending.target.owner;
+        let current = self.sessions.get(owner.slot).is_some_and(|session| {
+            session.generation == owner.generation
+                && session.identity.as_ref() == Some(&pending.target.session)
+        });
+        if current {
+            self.sessions[owner.slot].stop = StopState::Finished;
+        }
+        if let Some(app) = self
+            .sessions
+            .get_mut(pending.origin.slot)
+            .filter(|session| session.generation == pending.origin.generation)
+            .and_then(|session| session.app.as_mut())
+            && let Some(form) = &mut app.state.form
+            && matches!(&form.kind, FormKind::StopSession(target) if target == &pending.target)
+            && form.pending.as_deref() == Some(completion.key.as_str())
+        {
+            form.pending = None;
+            match &result {
+                Ok(()) => app.cancel_modal(),
+                Err(error) => {
+                    form.ambiguous = transport::outcome_unknown(error);
+                    form.error = Some(if form.ambiguous {
+                        "Stop result unknown; it will not be repeated. Esc closes this dialog."
+                            .into()
+                    } else {
+                        "Session stop failed. Esc closes this dialog; diagnostics retain details."
+                            .into()
+                    });
+                }
+            }
+        }
+        match result {
+            Ok(()) => {
+                if current && self.sessions[owner.slot].present {
+                    self.remove(owner.slot, size, true)?;
+                }
+                self.app_mut().notify(format!(
+                    "Session {} stopped; recovery retained",
+                    pending.target.session.name
+                ));
+            }
+            Err(error) => {
+                self.app().report_failure(
+                    &format!(
+                        "Couldn't confirm stopping session {}.",
+                        pending.target.session.name
+                    ),
+                    &error,
+                );
+                if current
+                    && self.sessions[owner.slot].present
+                    && self.sessions[owner.slot]
+                        .app
+                        .as_ref()
+                        .is_some_and(|app| app.socket.is_revoked())
+                {
+                    self.fail(
+                        owner.slot,
+                        anyhow::anyhow!(
+                            "session stop failed; inspect diagnostics before reconnecting"
+                        ),
+                    )?;
+                }
+                if !self.sessions.iter().any(|session| session.present) {
+                    self.stop_error = Some(error);
+                }
+            }
+        }
+        self.presentation_dirty = true;
+        Ok(())
+    }
+
     fn dispatch_tree(
         &mut self,
         target: crate::tree::Target,
@@ -956,8 +1150,20 @@ impl Coordinator {
         {
             return Ok(());
         }
+        if action == Action::StopSession && target.node == Node::Session {
+            if let Err(error) = self.confirm_stop(target.owner) {
+                self.app_mut().notify(format!("{error:#}"));
+            }
+            return Ok(());
+        }
         if action == Action::ReconnectSession {
             if target.node == Node::Session {
+                if self.sessions[index].stop == StopState::Pending {
+                    self.app_mut().notify(
+                        "Session stop is still pending; reconnect was not attempted".into(),
+                    );
+                    return Ok(());
+                }
                 self.retire_current(index, false)?;
                 self.sessions[index].queue_reconnect(Instant::now())?;
             }
@@ -1071,7 +1277,25 @@ impl Coordinator {
                     self.app_mut().popover.refresh_receipt(owner, &target, true);
                 }
             }
+            Some(SessionAction::Stop(target)) => {
+                let owner = target.owner;
+                if let Err(error) = self.submit_stop(target) {
+                    self.app()
+                        .report_failure("Couldn't submit the session stop.", &error);
+                    if let Some(form) = &mut self.app_mut().state.form
+                        && matches!(&form.kind, FormKind::StopSession(captured) if captured.owner == owner)
+                    {
+                        form.pending = None;
+                        form.error = Some(
+                            "Session changed or stop was rejected. Esc closes this dialog.".into(),
+                        );
+                    }
+                }
+            }
             None => {}
+        }
+        for completion in self.jobs.latest()? {
+            self.complete_stop(completion, size)?;
         }
         for completion in self.retirement_jobs.as_mut().unwrap().latest()? {
             if let Err(error) = self.complete_retirement(completion) {
@@ -1190,10 +1414,11 @@ impl Coordinator {
             }
         }
         for index in 0..self.sessions.len() {
+            let stopping = self.sessions[index].stop == StopState::Pending;
             let lifecycle = self.sessions[index]
                 .owner
                 .as_mut()
-                .map(Attachment::lifecycle);
+                .map(|owner| owner.lifecycle_for_stop(stopping));
             match lifecycle {
                 Some(Ok(Lifecycle::Detached { reason: _ })) => {
                     self.remove(index, size, true)?;
@@ -1208,6 +1433,9 @@ impl Coordinator {
                     continue;
                 }
                 _ => {}
+            }
+            if self.sessions[index].stop == StopState::Pending {
+                continue;
             }
             let session = &mut self.sessions[index];
             if let Some(app) = &mut session.app {
@@ -1313,7 +1541,22 @@ impl Coordinator {
             events: libc::POLLIN,
             revents: 0,
         });
+        fds.push(libc::pollfd {
+            fd: self.jobs.wake.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        });
         for (index, session) in self.sessions.iter().enumerate() {
+            if session.stop == StopState::Pending {
+                if let Some(owner) = &session.owner {
+                    fds.push(libc::pollfd {
+                        fd: owner.lifetime_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    });
+                }
+                continue;
+            }
             for fd in [
                 session.owner.as_ref().map(Attachment::lifetime_fd),
                 session.registry.as_ref().map(|pump| pump.wake.as_raw_fd()),
@@ -1697,12 +1940,39 @@ impl Coordinator {
     }
 
     pub fn finish(mut self) -> Result<()> {
+        let replacement = self.jobs.scope()?;
+        let jobs = std::mem::replace(&mut self.jobs, replacement);
+        let mut stop_result = self.stop_error.take().map_or(Ok(()), Err);
+        match jobs.finish() {
+            Ok(completions) => {
+                for completion in completions {
+                    let pending = self.stops.remove(&completion.key);
+                    let result = match completion.result {
+                        Ok(Background::SessionStop(result)) => result,
+                        Ok(_) => Err(anyhow::anyhow!(
+                            "session stop returned an unrelated receipt"
+                        )),
+                        Err(error) => Err(transport::mark_outcome_unknown(error)),
+                    };
+                    if result.is_ok()
+                        && let Some(pending) = pending
+                        && let Some(session) = self.sessions.get_mut(pending.target.owner.slot)
+                        && session.generation == pending.target.owner.generation
+                        && let Some(owner) = &mut session.owner
+                    {
+                        owner.close_for_shutdown();
+                    }
+                    accumulate_cleanup(&mut stop_result, result);
+                }
+            }
+            Err(error) => accumulate_cleanup(&mut stop_result, Err(error)),
+        }
         for session in &mut self.sessions {
             if session.owner.is_none() {
                 session.cancellation.cancel();
             }
         }
-        let mut result = Ok(());
+        let mut result = stop_result;
         for session in &mut self.sessions {
             if let Some(mut owner) = session.owner.take() {
                 if let Some(app) = session.app.take() {
@@ -2478,5 +2748,122 @@ mod tests {
         assert_eq!(physical_origin("a0g17_native"), None);
         assert_eq!(physical_origin("native-backend-id"), None);
         assert_eq!(physical_origin("a2gwrong_native"), None);
+    }
+
+    fn stop_target(
+        coordinator: &mut Coordinator,
+        index: usize,
+    ) -> crate::controller::SessionStopTarget {
+        let target = crate::controller::SessionStopTarget {
+            owner: crate::tree::Owner {
+                slot: index,
+                generation: coordinator.sessions[index].generation,
+            },
+            session: SessionInfo {
+                name: format!("session-{index}"),
+                session_id: format!("logical-{index}"),
+                daemon_id: "host".into(),
+                session_instance_id: format!("runtime-{index}"),
+            },
+            host: Some("fixture-host".into()),
+        };
+        coordinator.sessions[index].identity = Some(target.session.clone());
+        target
+    }
+
+    #[test]
+    fn changed_generation_and_read_only_transition_reject_confirmed_inactive_stop() {
+        let (mut coordinator, captures) = coordinator_fixture();
+        let target = stop_target(&mut coordinator, 1);
+        coordinator
+            .app_mut()
+            .open_form(FormKind::StopSession(target.clone()), String::new())
+            .unwrap();
+        coordinator.app_mut().state.form.as_mut().unwrap().confirmed = true;
+        coordinator.sessions[1].generation += 1;
+        assert!(coordinator.submit_stop(target.clone()).is_err());
+        coordinator.sessions[1].generation = target.owner.generation;
+        coordinator.options.read_only = true;
+        assert!(coordinator.submit_stop(target).is_err());
+        assert_eq!(coordinator.selected, 0);
+        assert!(coordinator.stops.is_empty());
+        assert!(captures.iter().all(|capture| capture.try_recv().is_err()));
+    }
+
+    #[test]
+    fn unknown_session_stop_remains_unknown_dismissible_and_never_auto_reconnects() {
+        let (mut coordinator, _) = coordinator_fixture();
+        let target = stop_target(&mut coordinator, 1);
+        coordinator
+            .app_mut()
+            .open_form(FormKind::StopSession(target.clone()), String::new())
+            .unwrap();
+        coordinator.app_mut().state.form.as_mut().unwrap().pending = Some(target.key());
+        let origin = coordinator.current_owner();
+        coordinator.sessions[1].stop = StopState::Pending;
+        coordinator.sessions[1].ever_active = true;
+        coordinator.stops.insert(
+            target.key(),
+            PendingStop {
+                target: target.clone(),
+                origin,
+            },
+        );
+        coordinator
+            .complete_stop(
+                jobs::Completion {
+                    key: target.key(),
+                    result: Ok(Background::SessionStop(Err(
+                        transport::mark_outcome_unknown(anyhow::anyhow!("lost original receipt")),
+                    ))),
+                },
+                size(),
+            )
+            .unwrap();
+        assert!(coordinator.app().state.form.as_ref().unwrap().ambiguous);
+        assert!(coordinator.submit_stop(target).is_err());
+        coordinator.app_mut().cancel_modal();
+        assert!(coordinator.app().state.form.is_none());
+        let session = &mut coordinator.sessions[1];
+        session.record_failure(anyhow::anyhow!("transport closed"), Instant::now());
+        assert!(session.next_attempt.is_none());
+        assert_eq!(session.stop, StopState::Finished);
+        session.queue_reconnect(Instant::now()).unwrap();
+        assert!(session.next_attempt.is_some());
+        assert_eq!(session.stop, StopState::None);
+    }
+
+    #[test]
+    fn last_session_exit_waits_for_stop_receipt_and_retains_failed_cleanup() {
+        let (mut coordinator, _) = coordinator_fixture();
+        let target = stop_target(&mut coordinator, 1);
+        for session in &mut coordinator.sessions {
+            session.present = false;
+        }
+        let origin = coordinator.current_owner();
+        coordinator.stops.insert(
+            target.key(),
+            PendingStop {
+                target: target.clone(),
+                origin,
+            },
+        );
+        assert!(!coordinator.should_exit());
+        coordinator
+            .complete_stop(
+                jobs::Completion {
+                    key: target.key(),
+                    result: Ok(Background::SessionStop(Err(anyhow::anyhow!(
+                        "durable cleanup rejected"
+                    )))),
+                },
+                size(),
+            )
+            .unwrap();
+        assert!(coordinator.should_exit());
+        assert!(
+            format!("{:#}", coordinator.stop_error.as_ref().unwrap())
+                .contains("durable cleanup rejected")
+        );
     }
 }

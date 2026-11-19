@@ -154,6 +154,7 @@ use sessions::{Coordinator, SessionAction};
 enum Background {
     Management(management::Completion),
     Resize(management::Completion),
+    SessionStop(Result<()>),
     CiRefresh {
         owner: TreeOwner,
         target: bkpr_protocol::CiRefreshTarget,
@@ -765,13 +766,11 @@ impl App {
         self.overlays.remove("ui:guide");
     }
     fn cancel_modal(&mut self) {
-        // A dispatched or ambiguous operation cannot be unsent. Keep its result
-        // correlated rather than claiming that cancellation aborted it.
         if self
             .state
             .form
             .as_ref()
-            .is_some_and(|form| form.pending.is_some() || form.ambiguous)
+            .is_some_and(|form| !form.can_dismiss())
         {
             return;
         }
@@ -872,6 +871,7 @@ impl App {
             tree.active = false;
             tree.hover(None);
             tree.pointer_row = None;
+            tree.leave_session_roots(self.tree_owner());
             tree.follow_active(self.tree_owner());
         }
         self.synchronize_tree_focus();
@@ -913,6 +913,20 @@ impl App {
 
     fn supports_action(&self, action: crate::keyguide::Action) -> bool {
         use crate::keyguide::Action;
+        if let Some(form) = &self.state.form
+            && matches!(form.kind, FormKind::StopSession(_))
+        {
+            match action {
+                Action::Cancel => return true,
+                Action::Submit => {
+                    return !self.options.read_only
+                        && form.pending.is_none()
+                        && !form.ambiguous
+                        && form.error.is_none();
+                }
+                _ => {}
+            }
+        }
         if action == Action::ShowDiagnostics {
             return self.latest_diagnostic().is_some();
         }
@@ -957,6 +971,19 @@ impl App {
             return false;
         }
         match action {
+            Action::StopSession => {
+                !self.options.read_only
+                    && self.state.sidebar.active
+                    && self.sidebar_target.as_ref().is_some_and(|target| {
+                        target.node == TreeNode::Session
+                            && self
+                                .tree
+                                .lock()
+                                .unwrap()
+                                .session(target.owner)
+                                .is_some_and(|session| session.can_stop)
+                    })
+            }
             Action::RefreshCi => {
                 !self.options.read_only
                     && self.state.sidebar.active
@@ -1037,9 +1064,10 @@ impl App {
                 FormKind::RenameWorkspace | FormKind::RenameWindow | FormKind::RenamePane => {
                     ModalContext::Edit
                 }
-                FormKind::TerminatePane | FormKind::CloseWorkspace | FormKind::CloseWindow => {
-                    ModalContext::Confirmation
-                }
+                FormKind::TerminatePane
+                | FormKind::CloseWorkspace
+                | FormKind::CloseWindow
+                | FormKind::StopSession(_) => ModalContext::Confirmation,
                 FormKind::ProjectDetails => ModalContext::Details,
                 FormKind::ReopenPane { .. } => ModalContext::Chooser,
             })
@@ -1095,7 +1123,11 @@ impl App {
             | (u16::from(self.sidebar_has_workspace) << 10)
             | (u16::from(self.spawn_defaults.is_some() && !self.socket.is_revoked()) << 11)
             | (u16::from(self.supports_action(crate::keyguide::Action::RefreshCi)) << 12)
-            | (u16::from(self.latest_diagnostic().is_some()) << 13);
+            | (u16::from(self.latest_diagnostic().is_some()) << 13)
+            | (u16::from(self.supports_action(crate::keyguide::Action::StopSession)) << 14)
+            | (u16::from(self.state.form.as_ref().is_some_and(|form| {
+                matches!(form.kind, FormKind::StopSession(_)) && form.error.is_some()
+            })) << 15);
         let sidebar_columns = self.screen_geometry(size).0.width;
         let key = GuideKey {
             context,
@@ -1243,6 +1275,7 @@ impl App {
                     FormKind::TerminatePane | FormKind::CloseWorkspace | FormKind::CloseWindow,
                 ) => (88, 9),
                 Some(FormKind::ReopenPane { .. }) => (100, 12),
+                Some(FormKind::StopSession(_)) => (112, 20),
                 _ => (112, screen.rows.saturating_sub(4)),
             }
         };
@@ -1263,13 +1296,19 @@ impl App {
         (placement.outer, content)
     }
     fn open_form(&mut self, kind: FormKind, value: String) -> Result<()> {
-        self.socket.ensure_live()?;
+        if !matches!(kind, FormKind::StopSession(_)) {
+            self.socket.ensure_live()?;
+        }
         self.begin_modal();
         self.finder = None;
         self.popover.hide();
         self.retire_resize("modal opened");
         self.selection_focus_lost();
         self.close_search();
+        if matches!(kind, FormKind::StopSession(_)) {
+            self.state.open(kind, value);
+            return Ok(());
+        }
         let target = self
             .state
             .current(&self.registry)
@@ -1555,6 +1594,9 @@ impl App {
                     self.notify(format!("{} completed", completion.key));
                 }
                 Ok(Background::Resize(_)) => bail!("resize completion lost its captured intent"),
+                Ok(Background::SessionStop(_)) => {
+                    bail!("session stop receipt escaped its coordinator")
+                }
                 Ok(Background::Attached { pane, attached }) => {
                     if self.views.contains_key(&pane) || attached.retirement_requested {
                         self.retiring_candidates.push(RetiringCandidate {
@@ -3042,6 +3084,19 @@ impl App {
             );
         }
         match form.kind {
+            FormKind::StopSession(target) => {
+                anyhow::ensure!(
+                    !self.options.read_only,
+                    "read-only client cannot stop a session"
+                );
+                anyhow::ensure!(
+                    form.confirmed && form.error.is_none(),
+                    "session stop is not confirmed"
+                );
+                let key = target.key();
+                self.session_action = Some(SessionAction::Stop(target));
+                self.state.form.as_mut().unwrap().pending = Some(key);
+            }
             FormKind::ProjectDetails => self.state.cancel(),
             FormKind::ReopenPane {
                 workspace_id,
@@ -3378,6 +3433,7 @@ impl App {
                 | Action::CreateTerminal
                 | Action::RenameSelected
                 | Action::CloseSelected
+                | Action::StopSession
                 | Action::ReopenPane
                 | Action::SplitHorizontal
                 | Action::SplitVertical
@@ -3566,6 +3622,7 @@ impl App {
                 | Action::CreateTerminal
                 | Action::RenameSelected
                 | Action::CloseSelected
+                | Action::StopSession
                 | Action::OpenFinder
                 | Action::ReconnectSession),
             ) => self.emit_tree_action(action, size),
@@ -3827,7 +3884,10 @@ impl App {
                 self.cancel_modal();
                 return Ok(false);
             }
-            if form.pending.is_some() || form.ambiguous {
+            if form.pending.is_some()
+                || form.ambiguous
+                || (matches!(form.kind, FormKind::StopSession(_)) && form.error.is_some())
+            {
                 return Ok(false);
             }
             if action == Some(Action::Submit) {
@@ -5423,9 +5483,10 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         Some(3)
                     }
                     FormKind::CreateWorkspace | FormKind::CreateWindow => Some(4),
-                    FormKind::TerminatePane | FormKind::CloseWorkspace | FormKind::CloseWindow => {
-                        Some(1)
-                    }
+                    FormKind::TerminatePane
+                    | FormKind::CloseWorkspace
+                    | FormKind::CloseWindow
+                    | FormKind::StopSession(_) => Some(1),
                     _ => None,
                 };
                 if graphics.decorate_region(&mut window_effects, outer, inner, 1, accent) {
@@ -6695,6 +6756,12 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
                         accumulate_cleanup(&mut cleanup, result.context(completion.key));
                     }
                     Ok(Background::Management(_) | Background::Resize(_)) => {}
+                    Ok(Background::SessionStop(_)) => accumulate_cleanup(
+                        &mut cleanup,
+                        Err(anyhow::anyhow!(
+                            "session stop receipt escaped its coordinator"
+                        )),
+                    ),
                     Err(error) => {
                         accumulate_cleanup(&mut cleanup, Err(error.context(completion.key)))
                     }
@@ -6944,6 +7011,7 @@ pub(super) mod tests {
         );
         Arc::new(tree::Session {
             owner,
+            can_stop: status == SessionStatus::Online,
             project_host: Default::default(),
             group: SessionGroup {
                 name: format!("session {}", owner.slot),
@@ -7403,9 +7471,7 @@ pub(super) mod tests {
         let (mut app, capture) = fixture();
         publish_test_tree(&mut app);
         app.enter_sessions();
-        assert!(app.tree.lock().unwrap().rows.is_empty());
         assert!(app.state.sidebar.active);
-        assert!(app.sidebar_target.is_none());
         let mut create = key("KeyN");
         create.text = "n".into();
         app.key(create, &mut Vec::new(), size(), &[]).unwrap();
@@ -11643,4 +11709,5 @@ pub(super) mod tests {
     include!("diagnostic_tests.rs");
     include!("attach_shutdown_tests.rs");
     include!("search_tests.rs");
+    include!("session_stop_tests.rs");
 }

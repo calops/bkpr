@@ -10,7 +10,10 @@ Historical baseline: main at `30c467f`, including focus-loss fix `a82aec4`.
 - The sidebar owns local navigation and selected-entity management: `n` creates
   a workspace, `N` creates a separate terminal window, `r` renames, and
   `x`/Delete closes the selected entity after confirmation. Sidebar `S` selects
-  the session-root context; session-row `R` reconnects its attachment.
+  the session-root context; `R` reconnects its attachment. Session-row `s` opens
+  **Stop session, keep recovery**, with an exact session/host confirmation.
+  It terminates that session's programs and disconnects its clients while
+  preserving recovery intent; the host daemon and other sessions remain.
 - Prefix `c`/`N`, `r`/`p` and `!`/`X` are removed; creation, rename and close
   use the sidebar instead. A separate terminal window is not a split.
 - The `Ctrl-b` prefix retains global pane/layout/client actions: `w`/`W`/`o`
@@ -48,6 +51,39 @@ creation used an existing session; empty-headless routing is covered by the
 ownership regression, not claimed as separate terminal acceptance.
 Evidence and cleanup receipts: `target/smoke/keybinding-cleanup/`,
 especially `final-actual-kitty-ready/result.json` and `build/host-tests.json`.
+
+### Recoverable session stop acceptance (2026-11-19)
+
+Session-row `s` uses the existing frozen BKPA session-stop operation, pinned to
+the confirmed owner generation and complete session/runtime identity through
+its original connector. It is not a workspace close, host stop or detach.
+Pending receipts outlive dismissible forms; intentional stop suppresses automatic
+reconnect even after ambiguous EOF. Final exit and remote teardown drain the
+receipt rather than treating lifetime closure as success.
+
+The final incremental debug pair is `1ead0c1d…` / `c0639ff2…`; native family 11
+and remote control 2 are unchanged. Actual-UID workspace verification passes
+1,477 tests with 19 ignored, plus formatting, strict all-target workspace Clippy
+and doctests. Joined command/receipt provenance is retained in
+`target/smoke/session-stop.PwlkNh/workspace-verification.json`.
+
+Actual Kitty local and real OpenSSH acceptance both pass in
+`target/smoke/session-stop/{local-final,remote-final}/acceptance.json`.
+Coverage includes sole/inactive selection, exact host/session confirmation,
+read-only rejection, cancellation, selected-versus-hover ownership, no input
+leak or replay, attached-client exit, surviving sessions/daemons and explicit
+layout/CWD recovery. Local termios is restored. The SSH trace proves a single
+exact-runtime stop whose successful receipt arrives after lifetime FIN.
+Parent inspection confirms complete final local/remote dialogs and truthful
+keyboard guidance; all fixture and namespace survivor lists are empty.
+
+A separate core regression stops a provider-free pending native-resume process
+through BKPA, then reopens its saved native descriptor and owned layout. No real
+model/harness service was used. Curated controllers are archived in
+`target/smoke/session-stop/controllers-final.zip`; full registration-bearing SSH
+tapes and redundant executable copies were removed. Generated harness wrappers
+are not recovery evidence. No live daemon, session or public executable changed.
+
 
 
 ## Historical audit boundary
@@ -189,6 +225,6 @@ No recommendation to remove n/% split aliases, g/G tree navigation, or existing 
 
 Exercise actual Kitty enhanced input and a legacy terminal with QWERTY/AZERTY layouts: produced punctuation, non-ASCII text, Ctrl/Shift/Alt combinations, Caps/Num Lock, repeat and release. Check every local context's ownership, unknown keys, read-only/offline targets, modal close/rollback, unavailable operations and narrow-window hints. Include focus loss, held-key settlement, late real releases, cross-pane and multi-session generation routing. Do not replace the existing focus-loss regression with a binding-table test.
 
-Stop-session acceptance must prove confirmed shutdown, retained recovery records, no surviving owned daemon/programs, clean attached-client retirement and untouched unrelated sessions. Cancellation must make no mutation. An unknown dispatched outcome must be inspected, not replayed.
+Stop-session acceptance must prove confirmed shutdown, retained recovery records, no surviving owned session programs, clean attached-client retirement, a live host daemon and untouched unrelated sessions. Cancellation must make no mutation. An unknown dispatched outcome must be inspected, not replayed.
 
-The historical inventory did not authorize remapping. The implemented policy at the top records the subsequently approved removal and sidebar/prefix separation. Modifier matching, stop-session presentation, consent denial, chooser paging and shared editing improvements remain separate proposals; none is implied complete by this binding change.
+The historical inventory did not authorize remapping. The implemented policy at the top records the subsequently approved removal and sidebar/prefix separation, plus confirmed session-row stop. Modifier matching, consent denial, chooser paging and shared editing improvements remain separate proposals; none is implied complete by those binding changes.
