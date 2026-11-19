@@ -25,8 +25,9 @@ function bee(t, x, y, rot, scale) {
       <ellipse cx="-3" cy="-5" rx="3.2" ry="5" transform="rotate(-25 -3 -5)"/>
       <ellipse cx="3" cy="-5" rx="3.2" ry="5" transform="rotate(25 3 -5)"/>
     </g>
+    <clipPath id="bee-body"><ellipse cx="0" cy="1" rx="5.5" ry="4.2"/></clipPath>
     <ellipse cx="0" cy="1" rx="5.5" ry="4.2" fill="${t.honey}"/>
-    <rect x="-1.1" y="-3" width="2.2" height="8" fill="${t.stripe}"/>
+    <rect x="-1.1" y="-4" width="2.2" height="10" fill="${t.stripe}" clip-path="url(#bee-body)"/>
   </g>`;
 }
 
